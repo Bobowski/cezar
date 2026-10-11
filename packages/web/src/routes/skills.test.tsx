@@ -8,6 +8,7 @@ import { createQueryClient } from '@/api/query-client'
 import type { Skill, SkillsUpdateState, WorkflowsResponse } from '@open-mercato/cezar-api-client'
 import { Toaster, resetToasts } from '@/components/ui/toaster'
 import { AppRoutes } from '@/routes'
+import { ShellWithSidebar } from '@/test/shell-with-sidebar'
 
 /**
  * `/skills` (R6 Step 1.4): the catalog + detail against fixture payloads, the #377
@@ -171,7 +172,11 @@ function renderAt(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[entry]}>
         {onNavigate && <CaptureNavigate />}
-        <AppRoutes />
+        {/* `AppRoutes` is the route table without the shell. The catalog (filter, rows, switches) is
+            this screen's contextual sidebar, so the test supplies that host. */}
+        <ShellWithSidebar>
+          <AppRoutes />
+        </ShellWithSidebar>
         <Toaster />
       </MemoryRouter>
     </QueryClientProvider>,

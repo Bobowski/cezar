@@ -10,7 +10,7 @@ import { TrackerRoute, trackerDetailReadyForDrag } from './tracker'
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
-/** The hand-off composer is a dialog over the issue, opened from its header. */
+/** The hand-off composer sits in the issue panel; the header button only brings it into view. */
 const openHand = async () => fireEvent.click(await screen.findByRole('button', { name: 'Hand to agent' }))
 
 describe('Tracker route', () => {
@@ -168,6 +168,6 @@ function issue(id: string, title: string) {
   return {
     kind: 'issue', id, title, author: 'Ada', createdAt: '2026-09-18T10:00:00.000Z', updatedAt: '2026-09-19T10:00:00.000Z',
     labels: ['bug'], body: 'description', bodyTruncated: false, unsupportedContent: false,
-    url: `https://acme.atlassian.net/browse/${id}`, status: 'Open',
+    url: `https://acme.atlassian.net/browse/${id}`, status: 'Open', statusId: 'status-1', statusCategory: 'started',
   }
 }

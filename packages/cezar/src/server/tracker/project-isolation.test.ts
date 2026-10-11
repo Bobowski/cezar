@@ -23,7 +23,7 @@ const fetcher: typeof fetch = async (_url, init) => {
   if (query.includes('TrackerTeam(')) return json({ team: { id: team, name: auth } });
   const item = { identifier: 'ENG-1', title: auth, description: 'Context', url: 'https://linear.app/same/issue/ENG-1',
     createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z', creator: null, team: { id: team },
-    state: { name: 'Open', type: 'started' }, labels: { nodes: [], pageInfo: { hasNextPage: false } } };
+    state: { id: 'state-1', name: 'Open', type: 'started' }, labels: { nodes: [], pageInfo: { hasNextPage: false } } };
   return query.includes('TrackerIssue(') ? json({ issue: item }) : json({ result: { nodes: [item], pageInfo } });
 };
 beforeEach(async () => {

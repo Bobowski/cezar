@@ -36,7 +36,7 @@ const item = {
   bodyTruncated: false,
   unsupportedContent: false,
   url: 'https://example.atlassian.net/browse/CEZ-42',
-  status: 'In Progress',
+  status: 'In Progress', statusId: 'status-1', statusCategory: 'started',
 };
 
 describe('tracker entity schemas', () => {

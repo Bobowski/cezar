@@ -54,6 +54,14 @@ export const trackerAssociationInputSchema = z
   .strict();
 export type TrackerAssociationInput = z.infer<typeof trackerAssociationInputSchema>;
 
+/**
+ * Where a vendor status sits in a workflow, normalized across providers (Jira's status category,
+ * Linear's state type). It orders board columns and list groups; `other` is a vendor value this
+ * contract does not know, never a guess.
+ */
+export const trackerStatusCategorySchema = z.enum(['backlog', 'unstarted', 'started', 'done', 'canceled', 'other']);
+export type TrackerStatusCategory = z.infer<typeof trackerStatusCategorySchema>;
+
 /** A provider-neutral Jira issue or Linear issue. */
 export const trackerItemSchema = z
   .object({
@@ -69,9 +77,12 @@ export const trackerItemSchema = z
     unsupportedContent: z.boolean(),
     url: httpsUrlSchema,
     status: z.string(),
+    /** The vendor's own id for `status`: display names are not unique and can be renamed. */
+    statusId: z.string().min(1),
+    statusCategory: trackerStatusCategorySchema,
   })
   .strict();
-export type TrackerItem = z.infer<typeof trackerItemSchema>;
+export type TrackerItem= z.infer<typeof trackerItemSchema>;
 
 export const trackerFailureCodeSchema = z.enum([
   'not_configured',

@@ -9,7 +9,7 @@ const issue = (over: Record<string, unknown> = {}) => ({
   identifier: 'ENG-1', title: 'Fix', description: 'Full detail', creator: { name: 'Ada' },
   createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-02T00:00:00.000Z',
   labels: { nodes: [{ name: 'backend' }], pageInfo: { hasNextPage: false } },
-  state: { name: 'Started', type: 'started' }, team: { id: teamId },
+  state: { id: 'state-1', name: 'Started', type: 'started' }, team: { id: teamId },
   url: 'https://linear.app/acme/issue/ENG-1/fix', ...over,
 });
 const json = (data: unknown, status = 200, headers: RequestInit['headers'] = {}) => new Response(JSON.stringify(data), { status, headers });

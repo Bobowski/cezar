@@ -17,7 +17,7 @@ const item: TrackerItem = {
   bodyTruncated: false,
   unsupportedContent: false,
   url: 'https://example.atlassian.net/browse/OPS-42',
-  status: 'In Progress',
+  status: 'In Progress', statusId: 'status-1', statusCategory: 'started',
 }
 
 describe('tracker handoff', () => {

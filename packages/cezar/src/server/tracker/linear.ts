@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type {
   TrackerAssociation, TrackerAssociationInput, TrackerAssociationResult, TrackerCandidatesQuery,
   TrackerCandidatesResult, TrackerItemsResult, TrackerItemResult, TrackerItem, TrackerSource,
-  TrackerListQuery, TrackerSearchQuery,
+  TrackerListQuery, TrackerSearchQuery, TrackerStatusCategory,
 } from '@open-mercato/cezar-contract';
 import type { TrackerProvider, TrackerDriver } from './types.ts';
 import { TrackerHttp, TrackerRequestError, ResultCache, requestFailure, runOperation } from './transport.ts';
@@ -15,7 +15,7 @@ const sourceQuery = 'query TrackerSource { organization { id urlKey } }';
 const teamFields = 'id name';
 const pageFields = 'pageInfo { hasNextPage endCursor }';
 const issueFields = `identifier title description url createdAt updatedAt creator { name }
-  team { id } state { name type } labels(first: 100) { nodes { name } pageInfo { hasNextPage } }`;
+  team { id } state { id name type } labels(first: 100) { nodes { name } pageInfo { hasNextPage } }`;
 const sourceSchema = z.object({ organization: z.object({ id: z.string().min(1), urlKey: z.string().regex(/^[a-zA-Z0-9_-]+$/) }) });
 const teamSchema = z.object({ id: z.uuid(), name: z.string().min(1) });
 const pageSchema = z.object({ hasNextPage: z.boolean(), endCursor: z.string().min(1).nullable() });
@@ -24,7 +24,7 @@ const itemSchema = z.object({
   title: z.string(), description: z.string().nullable(),
   url: z.url(), createdAt: z.iso.datetime({ offset: true }), updatedAt: z.iso.datetime({ offset: true }),
   creator: z.object({ name: z.string() }).nullable(), team: z.object({ id: z.string().min(1) }),
-  state: z.object({ name: z.string(), type: z.string() }),
+  state: z.object({ id: z.string().min(1), name: z.string(), type: z.string() }),
   labels: z.object({ nodes: z.array(z.object({ name: z.string() })), pageInfo: z.object({ hasNextPage: z.boolean() }) }),
 });
 const envelopeSchema = z.object({
@@ -32,6 +32,10 @@ const envelopeSchema = z.object({
   errors: z.array(z.object({ extensions: z.object({ code: z.string().optional() }).passthrough().optional() }).passthrough()).optional(),
 });
 type Cached = TrackerCandidatesResult | TrackerAssociationResult | TrackerItemsResult | TrackerItemResult;
+/** Linear's documented workflow state types; anything else stays `other`. */
+const linearCategories: Record<string, TrackerStatusCategory> = {
+  triage: 'backlog', backlog: 'backlog', unstarted: 'unstarted', started: 'started', completed: 'done', canceled: 'canceled',
+};
 function invalid(): never { throw new TrackerRequestError('invalid_response', 'Linear returned incomplete or invalid data. Try again.'); }
 function parse<S extends z.ZodType>(schema: S, value: unknown): z.infer<S> {
   const parsed = schema.safeParse(value);
@@ -120,6 +124,7 @@ TrackerProvider {
       kind: 'issue', id: raw.identifier, title: raw.title, author: raw.creator?.name ?? '',
       createdAt: raw.createdAt, updatedAt: raw.updatedAt, labels: raw.labels.nodes.map(label => label.name),
       ...descriptionBody(raw.description ?? '', cap), url: raw.url, status: raw.state.name,
+      statusId: raw.state.id, statusCategory: linearCategories[raw.state.type] ?? 'other',
     };
   };
   const listCandidates = async (query: TrackerCandidatesQuery): Promise<TrackerCandidatesResult> => {

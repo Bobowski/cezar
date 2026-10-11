@@ -12,7 +12,7 @@ vi.mock('./queries', () => ({ useHealth: () => ({ data: mocks.health }), workspa
 vi.mock('./ws', () => ({ subscribeTopic: mocks.subscribe }))
 afterEach(() => { mocks.health.capabilities.localHandoff = true; cleanup(); vi.restoreAllMocks(); vi.clearAllMocks() })
 const input = { association: { kind: 'jira' as const, source: { id: 's', webUrl: 'https://example.com' }, externalId: '1', externalName: 'One' }, query: '', labels: [], state: 'active' as const }
-const page = (title: string): TrackerItemsResponse => ({ available: true, items: [{ id: 'ONE-1', title, kind: 'issue', body: '', author: 'A', status: 'Open', createdAt: '2026-09-19T00:00:00Z', updatedAt: '2026-09-19T00:00:00Z', url: 'https://example.com/1', labels: [], bodyTruncated: false, unsupportedContent: false }], truncated: false })
+const page = (title: string): TrackerItemsResponse => ({ available: true, items: [{ id: 'ONE-1', title, kind: 'issue', body: '', author: 'A', status: 'Open', statusId: 'status-1', statusCategory: 'started', createdAt: '2026-09-19T00:00:00Z', updatedAt: '2026-09-19T00:00:00Z', url: 'https://example.com/1', labels: [], bodyTruncated: false, unsupportedContent: false }], truncated: false })
 it('updates page one, preserves loaded pages with a banner, and applies the latest snapshot on demand', async () => {
   const client = createQueryClient()
   const key = ['tracker', 'default', 'items']

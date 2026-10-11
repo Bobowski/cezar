@@ -46,7 +46,7 @@ function issue(overrides: Record<string, unknown> = {}): Record<string, unknown>
         version: 1,
         content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Issue body' }] }],
       },
-      status: { name: 'In Progress', statusCategory: { key: 'indeterminate' } },
+      status: { id: '10001', name: 'In Progress', statusCategory: { key: 'indeterminate' } },
     },
     ...overrides,
   };
@@ -292,7 +292,7 @@ describe('Jira Cloud adapter', () => {
         bodyTruncated: false,
         unsupportedContent: false,
         url: `${origin}/browse/PROJ-1`,
-        status: 'In Progress',
+        status: 'In Progress', statusId: '10001', statusCategory: 'started',
       },
     });
   });

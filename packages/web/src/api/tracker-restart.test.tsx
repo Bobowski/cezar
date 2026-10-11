@@ -9,7 +9,7 @@ import { queryKeys, useTrackerItems } from './queries'
 
 const association = { kind: 'jira' as const, source: { id: 'cloud', webUrl: 'https://acme.atlassian.net' }, externalId: '100', externalName: 'OPS' }
 const params = { state: 'all' as const, labels: ['bug'], query: '' }
-const page = (title: string): TrackerItemsResponse => ({ available: true, items: [{ id: 'OPS-1', title, kind: 'issue', body: '', author: 'A', status: 'Open', createdAt: '2026-09-19T00:00:00Z', updatedAt: '2026-09-19T00:00:00Z', url: 'https://acme.atlassian.net/1', labels: [], bodyTruncated: false, unsupportedContent: false }], truncated: true, nextCursor: title })
+const page = (title: string): TrackerItemsResponse => ({ available: true, items: [{ id: 'OPS-1', title, kind: 'issue', body: '', author: 'A', status: 'Open', statusId: 'status-1', statusCategory: 'started', createdAt: '2026-09-19T00:00:00Z', updatedAt: '2026-09-19T00:00:00Z', url: 'https://acme.atlassian.net/1', labels: [], bodyTruncated: false, unsupportedContent: false }], truncated: true, nextCursor: title })
 const old = { pages: [page('First'), page('Second')], pageParams: [undefined, 'First'] }
 const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 })
 function deferred() {

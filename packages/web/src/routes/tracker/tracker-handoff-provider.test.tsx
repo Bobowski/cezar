@@ -12,7 +12,7 @@ const ITEM: TrackerItem = {
   kind: 'issue', id: 'OPS-1', title: 'Fix it', author: 'Ada',
   createdAt: '2026-09-18T10:00:00.000Z', updatedAt: '2026-09-19T10:00:00.000Z',
   labels: [], body: 'Full detail', bodyTruncated: false, unsupportedContent: false,
-  url: 'https://acme.atlassian.net/browse/OPS-1', status: 'Open',
+  url: 'https://acme.atlassian.net/browse/OPS-1', status: 'Open', statusId: 'status-1', statusCategory: 'started',
 }
 const connected = { providers: [{ provider: 'claude', status: 'connected', enabled: true }] }
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })

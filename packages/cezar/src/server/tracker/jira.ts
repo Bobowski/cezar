@@ -7,6 +7,7 @@ import type {
   TrackerCandidatesQuery,
   TrackerCandidatesResult,
   TrackerItem,
+  TrackerStatusCategory,
   TrackerItemResult,
   TrackerItemsResult,
   TrackerListQuery,
@@ -48,7 +49,7 @@ const issueSchema = z.object({
     updated: z.string().min(1),
     labels: z.array(z.string()),
     description: z.unknown().nullable(),
-    status: z.object({ name: z.string() }),
+    status: z.object({ id: z.string().min(1), name: z.string(), statusCategory: z.object({ key: z.string() }).optional() }),
   }),
 });
 const issuePageSchema = z.object({
@@ -99,6 +100,9 @@ function normalizeTimestamp(value: string): string {
   return new Date(milliseconds).toISOString();
 }
 
+/** Jira Cloud's status-category keys; it has no backlog or canceled, and `undefined` is "No Category". */
+const jiraCategories: Record<string, TrackerStatusCategory> = { new: 'unstarted', indeterminate: 'started', done: 'done' };
+
 function mapIssue(raw: JiraIssue, origin: string, expectedProjectId: string, maximum: number): TrackerItem {
   if (raw.fields.project.id !== expectedProjectId) {
     throw new TrackerRequestError('not_found', 'The requested Jira issue was not found in this project.');
@@ -116,6 +120,8 @@ function mapIssue(raw: JiraIssue, origin: string, expectedProjectId: string, max
     ...body,
     url: `${origin}/browse/${encodeURIComponent(raw.key)}`,
     status: raw.fields.status.name,
+    statusId: raw.fields.status.id,
+    statusCategory: jiraCategories[raw.fields.status.statusCategory?.key ?? ''] ?? 'other',
   };
 }
 

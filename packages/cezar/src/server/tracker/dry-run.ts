@@ -17,13 +17,21 @@ export function createDryTrackerClient(kind: TrackerKind): TrackerProvider {
   const all = Array.from({ length: 125 }, (_, i) => candidate(i + 1));
   const wrongSource = { available: false, code: 'source_changed', reason: 'Tracker source changed. Reconnect in Settings.' } as const;
   const missing = { available: false, code: 'not_found', reason: 'Tracker item not found in this scope.' } as const;
+  // Every fifth item is done, as before; the rest spread over a workflow so a board has columns.
+  function status(n: number): Pick<TrackerItem, 'status' | 'statusId' | 'statusCategory'> {
+    if (n % 5 === 0) return { status: 'Done', statusId: 'dry-done', statusCategory: 'done' };
+    if (n % 5 === 1) return { status: 'In Progress', statusId: 'dry-progress', statusCategory: 'started' };
+    if (n % 5 === 2) return { status: 'To Do', statusId: 'dry-todo', statusCategory: 'unstarted' };
+    if (n % 5 === 3) return { status: 'In Review', statusId: 'dry-review', statusCategory: 'started' };
+    return { status: 'Backlog', statusId: 'dry-backlog', statusCategory: 'backlog' };
+  }
   function item(n: number, association: TrackerAssociation, cap: number): TrackerItem {
     const prefix = `${fixture.prefix}${association.externalId}`;
     const id = `${prefix}-${n}`;
     return {
       kind: 'issue', id, title: n === 1 ? 'Improve account sign-in' : `Tracker task ${n}`,
       author: 'Demo user', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: new Date(Date.UTC(2026, 0, 1, 0, 125 - n)).toISOString(),
-      labels: n % 2 ? ['backend'] : ['frontend'], status: n % 5 ? 'In Progress' : 'Done',
+      labels: n % 2 ? ['backend'] : ['frontend'], ...status(n),
       ...descriptionBody(n === 3 ? 'Large import requirements. '.repeat(3000) : n === 2 ? 'Detailed requirements. '.repeat(500) + '\nAcceptance: preserve all requirements.' : `Implement task ${n} for ${association.externalName}.\n\n- Preserve existing behavior.\n- Add regression coverage.`, cap, n === 4),
       url: `${source.webUrl}/${fixture.itemPath}/${id}`,
     };

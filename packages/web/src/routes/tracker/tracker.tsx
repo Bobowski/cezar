@@ -1,33 +1,36 @@
-import { useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query'
-import { AlertTriangleIcon, ArrowLeftIcon, CheckIcon, CircleDotIcon, ExternalLinkIcon, MoreHorizontalIcon, PlayIcon, RefreshCwIcon, SettingsIcon, TicketIcon } from 'lucide-react'
-import { useEffect, useMemo, useState, type DragEvent } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { AlertTriangleIcon, ArrowLeftIcon, CheckIcon, Columns3Icon, ExternalLinkIcon, ListIcon, MoreHorizontalIcon, PlayIcon, RefreshCwIcon, SettingsIcon, TicketIcon, XIcon } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router'
 
-import type { TrackerAssociation, TrackerItem, TrackerItemResponse } from '@open-mercato/cezar-api-client'
-import { ContextSidebar } from '@/components/context-sidebar'
+import type { TrackerAssociation, TrackerItem } from '@open-mercato/cezar-api-client'
 import { IssueBrowserEmpty } from '@/components/issue-browser-layout'
 import { Page } from '@/components/page'
 import { shortAge } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { TRACKER_PROVIDERS } from '@/lib/tracker-providers'
-import { getTrackerItem } from '@/api/client'
 import { useTrackerWatch } from '@/api/tracker-watch'
 import { useProjectScope } from '@/api/project-scope-context'
-import { queryKeys, TRACKER_STALE_TIME, TrackerRefreshError, useSkills, useTrackerConnection, useTrackerAssociation, useTrackerItem, useTrackerItems, useWorkflows } from '@/api/queries'
+import { queryKeys, TrackerRefreshError, useSkills, useTrackerConnection, useTrackerAssociation, useTrackerItem, useTrackerItems, useWorkflows } from '@/api/queries'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { SidebarContent, SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarInput, SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from '@/components/ui/sidebar'
+import { Input } from '@/components/ui/input'
+import { useSidebar } from '@/components/ui/sidebar'
 import { Spinner } from '@/components/ui/spinner'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { toast } from '@/components/ui/toaster'
 import { Link } from '@/lib/project-router'
-import { trackerLosses, trackerTaskPrompt } from '@/lib/tracker-task'
+import { groupByStatus } from '@/lib/tracker-groups'
+import { trackerLosses } from '@/lib/tracker-task'
 import { Markdown } from '../task-thread/markdown'
 import { TrackerHandoff, type TrackerHandoffSelection, type TrackerDraftCache } from './tracker-handoff'
 import { TrackerLabelFilter } from './tracker-label-filter'
+import { LabelChip, TrackerBoard, TrackerList, TrackerStatusIcon } from './tracker-surface'
+
+export { trackerDetailReadyForDrag } from './tracker-surface'
 
 const emptySelection = (): TrackerHandoffSelection => ({ workflow: null, selectedSkills: [], engine: { runner: null, model: null, account: null } })
 
@@ -81,16 +84,9 @@ function trackerAssociationKey(association: TrackerAssociation): string {
   return `${association.kind}:${association.source.id}:${association.source.webUrl}:${association.externalId}:${association.connectionId ?? 'legacy'}`
 }
 
-/** A tracker screen with no list to show: the sidebar carries only its header, main the state. */
+/** A tracker screen with no list to show: one centred state. */
 function TrackerFrame({ children, ...props }: React.ComponentProps<typeof Page>) {
-  return <Page width="full" data-route="tracker" {...props}>
-    <ContextSidebar>
-      <SidebarHeader className="gap-3 p-3">
-        <h2 className="px-1 text-[15px] font-semibold text-foreground">Tracker</h2>
-      </SidebarHeader>
-    </ContextSidebar>
-    {children}
-  </Page>
+  return <Page width="full" data-route="tracker" {...props}>{children}</Page>
 }
 
 function SetupState() {
@@ -105,12 +101,29 @@ function SetupState() {
   </TrackerFrame>
 }
 
+type TrackerView = 'list' | 'board'
+const VIEW_STORAGE_KEY = 'cezar.tracker.view'
+
+/** List or board: a per-viewer convenience, remembered in this browser and never required. */
+function useTrackerView(): [TrackerView, (next: TrackerView) => void] {
+  const [view, setView] = useState<TrackerView>(() => {
+    try { return window.localStorage.getItem(VIEW_STORAGE_KEY) === 'board' ? 'board' : 'list' } catch { return 'list' }
+  })
+  return [view, (next) => {
+    setView(next)
+    try { window.localStorage.setItem(VIEW_STORAGE_KEY, next) } catch { /* private mode: keep it for this visit */ }
+  }]
+}
+
 function TrackerBrowse({ scopePending, association, selectedId, drafts, selection, setSelection }: { scopePending: boolean; association: TrackerAssociation; selectedId?: string; drafts: TrackerDraftCache; selection: TrackerHandoffSelection; setSelection: React.Dispatch<React.SetStateAction<TrackerHandoffSelection>> }) {
   const queryClient = useQueryClient()
-  // The list lives in the contextual sidebar: a column on desktop, a sheet on phones. A phone
-  // reading an issue only needs the list while that sheet is open.
-  const { isMobile, openMobile } = useSidebar()
-  const listVisible = !isMobile || selectedId === undefined || openMobile
+  // Desktop keeps the issue surface beside the open issue; a phone shows one pane at a time, so
+  // a phone reading an issue holds no list demand.
+  const { isMobile } = useSidebar()
+  const detailId = selectedId ?? null
+  const listVisible = !isMobile || detailId === null
+  const [view, setView] = useTrackerView()
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
   const [queryDraft, setQueryDraft] = useState('')
   const [query, setQuery] = useState('')
   const [state, setState] = useState<'active' | 'all'>('active')
@@ -120,9 +133,9 @@ function TrackerBrowse({ scopePending, association, selectedId, drafts, selectio
   const watch = useTrackerWatch({ association, state, labels, query }, result.queryKey, listVisible)
   const pages = result.data?.pages ?? []
   const failure = pages.find((page) => !page.available)
-  const items = pages.flatMap((page) => page.available ? page.items : [])
+  const items = useMemo(() => pages.flatMap((page) => page.available ? page.items : []), [pages])
+  const groups = useMemo(() => groupByStatus(items), [items])
 
-  const detailId = selectedId ?? null
   const provider = TRACKER_PROVIDERS[association.kind].label
   // Mirrors GitHub's refresh (`github.tsx`'s `openThreadRef` cascade): a manual refresh must also
   // reach the item on screen, not just the list — otherwise "refresh" is theatre for whoever is
@@ -134,137 +147,78 @@ function TrackerBrowse({ scopePending, association, selectedId, drafts, selectio
   }
   const busy = watch.checking || result.isFetching
   const syncedLabel = watch.checkedAt ? `Synced ${shortAge(watch.checkedAt)} ago` : null
-  const countLabel = `${items.length}${result.hasNextPage ? '+' : ''} ${items.length === 1 && !result.hasNextPage ? 'issue' : 'issues'}`
+  // Loaded, not total: the surface shows the pages fetched so far, never the vendor's backlog.
+  const countLabel = `${items.length}${result.hasNextPage ? '+' : ''} loaded`
+  const toggleGroup = (statusId: string) => setCollapsed(previous => {
+    const next = new Set(previous)
+    if (!next.delete(statusId)) next.add(statusId)
+    return next
+  })
 
-  // One fragment for the list's chrome and one for its rows, rendered in the contextual sidebar
-  // and — on phones, on the bare `/tracker` — in main.
-  const listHeader = <>
-    <div data-slot="tracker-header" className="flex min-w-0 items-start gap-1">
-      <div className="min-w-0 flex-1 px-1">
-        <h2 className="text-[15px] font-semibold text-foreground">{provider}</h2>
-        <p className="truncate text-xs text-muted-foreground tabular-nums" title={association.externalName}>{association.externalName} · {countLabel}</p>
-      </div>
-      <Button variant="ghost" size="icon-sm" aria-label="Refresh" title={syncedLabel ? `${syncedLabel} — refresh from ${provider}` : `Refresh from ${provider}`} disabled={busy} onClick={() => void refresh()} className="shrink-0">
-        <RefreshCwIcon aria-hidden="true" className={cn(busy && 'motion-safe:animate-spin')} />
-      </Button>
-      <Button asChild variant="ghost" size="icon-sm" className="shrink-0">
-        <Link to="/settings/tracker" aria-label="Connection settings" title="Connection settings"><SettingsIcon aria-hidden="true" /></Link>
-      </Button>
+  const toolbar = <header data-slot="tracker-header" className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2.5">
+    <div className="mr-auto min-w-0">
+      <h1 className="text-[15px] leading-5 font-semibold text-foreground">{provider}</h1>
+      <p className="truncate text-xs text-muted-foreground tabular-nums" title={association.externalName}>{association.externalName} · {countLabel}</p>
     </div>
+    <ToggleGroup type="single" variant="outline" size="sm" spacing={0} aria-label="View" value={view} onValueChange={(next) => { if (next === 'list' || next === 'board') setView(next) }}>
+      <ToggleGroupItem value="list" aria-label="List view"><ListIcon aria-hidden="true" />List</ToggleGroupItem>
+      <ToggleGroupItem value="board" aria-label="Board view"><Columns3Icon aria-hidden="true" />Board</ToggleGroupItem>
+    </ToggleGroup>
     <Tabs value={state} onValueChange={(next) => { setState(next === 'all' ? 'all' : 'active'); setStateExplicit(true) }}>
-      <TabsList aria-label="Issue state" className="w-full">
+      <TabsList aria-label="Issue state">
         <TabsTrigger value="active">Active</TabsTrigger>
         <TabsTrigger value="all">All states</TabsTrigger>
       </TabsList>
     </Tabs>
-    <form className="flex items-center gap-1.5" onSubmit={(event) => {
+    <form className="flex min-w-0 items-center gap-1.5" onSubmit={(event) => {
       event.preventDefault()
       const next = queryDraft.trim()
       const nextState = stateExplicit ? state : next ? 'all' : 'active'
       if (next === query && nextState === state) void refresh()
       else { setQuery(next); setState(nextState) }
     }}>
-      <SidebarInput type="search" aria-label="Search tracker" title="Press Enter to search" maxLength={256} value={queryDraft} onChange={(event) => setQueryDraft(event.target.value)} placeholder="Search issues…" className="min-w-0 flex-1" />
+      <Input type="search" aria-label="Search tracker" title="Press Enter to search" maxLength={256} value={queryDraft} onChange={(event) => setQueryDraft(event.target.value)} placeholder="Search issues…" className="h-8 w-56 min-w-0" />
       <Button type="submit" className="sr-only h-px p-0" disabled={result.isFetching}>Search</Button>
       <TrackerLabelFilter options={items.flatMap(item => item.labels)} selected={labels} onChange={setLabels} />
     </form>
-  </>
+    <div className="flex items-center">
+      <Button variant="ghost" size="icon-sm" aria-label="Refresh" title={syncedLabel ? `${syncedLabel} — refresh from ${provider}` : `Refresh from ${provider}`} disabled={busy} onClick={() => void refresh()}>
+        <RefreshCwIcon aria-hidden="true" className={cn(busy && 'motion-safe:animate-spin')} />
+      </Button>
+      <Button asChild variant="ghost" size="icon-sm">
+        <Link to="/settings/tracker" aria-label="Connection settings" title="Connection settings"><SettingsIcon aria-hidden="true" /></Link>
+      </Button>
+    </div>
+  </header>
 
-  const listRows = <>
-    {watch.error ? <p role="status" className="px-2 py-2 text-[13px] text-danger">{watch.error} The displayed list may be outdated.</p> : null}
-    {watch.hasChanges ? <div className="mb-2 flex flex-col items-start gap-2 rounded-lg bg-muted/60 px-3 py-2.5 text-[13px]"><p className="text-pretty">New changes are available. Your loaded pages have been preserved.</p><Button size="sm" variant="outline" onClick={() => void watch.applyChanges()}>Show changes</Button></div> : null}
+  const notices = <>
+    {watch.error ? <p role="status" className="px-4 py-2 text-[13px] text-danger">{watch.error} The displayed list may be outdated.</p> : null}
+    {watch.hasChanges ? <div className="m-3 flex flex-wrap items-center gap-3 rounded-lg bg-muted/60 px-3 py-2.5 text-[13px]"><p className="text-pretty">New changes are available. Your loaded pages have been preserved.</p><Button size="sm" variant="outline" onClick={() => void watch.applyChanges()}>Show changes</Button></div> : null}
     {result.isPending && listVisible ? <PageState text="Loading issues…" loading /> : null}
-    {result.isError ? <Failure reason={result.error.message} generation={result.errorUpdatedAt} retryAfterSeconds={result.error instanceof TrackerRefreshError && result.error.failure.code === 'rate_limited' ? result.error.failure.retryAfterSeconds : undefined} retry={() => void result.restart()} /> : null}
-    {failure && !failure.available ? <Failure reason={failure.reason} generation={result.dataUpdatedAt} retryAfterSeconds={failure.code === 'rate_limited' ? failure.retryAfterSeconds : undefined} retry={() => void result.restart()} /> : null}
+    {result.isError ? <div className="px-4"><Failure reason={result.error.message} generation={result.errorUpdatedAt} retryAfterSeconds={result.error instanceof TrackerRefreshError && result.error.failure.code === 'rate_limited' ? result.error.failure.retryAfterSeconds : undefined} retry={() => void result.restart()} /></div> : null}
+    {failure && !failure.available ? <div className="px-4"><Failure reason={failure.reason} generation={result.dataUpdatedAt} retryAfterSeconds={failure.code === 'rate_limited' ? failure.retryAfterSeconds : undefined} retry={() => void result.restart()} /></div> : null}
     {!result.isPending && !result.isError && !failure && items.length === 0 ? <PageState text={query.trim() ? 'No issues match this search.' : 'No issues in this view.'} /> : null}
-    <SidebarMenu data-slot="tracker-rows">{items.map(item => <TrackerRow scopePending={scopePending} key={item.id} association={association} item={item} active={detailId === item.id} />)}</SidebarMenu>
-    {result.hasNextPage ? <Button className="mt-2 w-full shrink-0" variant="outline" size="sm" onClick={() => void result.fetchNextPage()} disabled={result.isFetchingNextPage}>Load more</Button> : null}
   </>
+  const loadMore = result.hasNextPage
+    ? <div className="shrink-0 p-3"><Button className="w-full" variant="outline" size="sm" onClick={() => void result.fetchNextPage()} disabled={result.isFetchingNextPage}>Load more</Button></div>
+    : null
+  const surfaceProps = { groups, association, scopePending, activeId: detailId }
 
-  return <Page width="full" data-route="tracker">
-    <ContextSidebar>
-      <SidebarHeader className="gap-3 p-3">{listHeader}</SidebarHeader>
-      <SidebarContent>
-        <SidebarGroup className="pt-0">
-          <SidebarGroupContent data-slot="tracker-list">{listRows}</SidebarGroupContent>
-        </SidebarGroup>
-      </SidebarContent>
-    </ContextSidebar>
-    {detailId
-      ? <TrackerDetail scopePending={scopePending} key={`${trackerAssociationKey(association)}:${detailId}`} association={association} id={detailId} drafts={drafts} selection={selection} onSelectionChange={setSelection} />
-      : isMobile
-        ? <section data-slot="tracker-list" aria-label="Issues" className="flex flex-col">
-            <div className="flex flex-col gap-3 p-3">{listHeader}</div>
-            <div className="px-2 pb-6">{listRows}</div>
-          </section>
-        : <IssueBrowserEmpty slot="tracker-pick" icon={<CircleDotIcon />} title="Pick an issue" description="Choose one from the list to read it and hand it to an agent." />}
+  return <Page width="full" data-route="tracker" className="h-full">
+    {listVisible ? toolbar : null}
+    <div className="flex min-h-0 flex-1">
+      {listVisible ? <section data-slot="tracker-list" aria-label="Issues" className={cn('flex min-h-0 min-w-0 flex-1 flex-col', view === 'list' && 'overflow-y-auto')}>
+        {notices}
+        {view === 'board'
+          ? <TrackerBoard {...surfaceProps} />
+          : <TrackerList {...surfaceProps} collapsed={collapsed} onToggle={toggleGroup} compact={detailId !== null} />}
+        {loadMore}
+      </section> : null}
+      {detailId ? <aside data-slot="tracker-panel" aria-label="Issue" className={cn('@container min-h-0 min-w-0 overflow-y-auto bg-background', isMobile ? 'flex-1' : 'w-[min(64rem,66%)] shrink-0 border-l border-border')}>
+        <TrackerDetail scopePending={scopePending} key={`${trackerAssociationKey(association)}:${detailId}`} association={association} id={detailId} drafts={drafts} selection={selection} onSelectionChange={setSelection} />
+      </aside> : null}
+    </div>
   </Page>
-}
-
-/** How many label chips a list row shows before folding the rest into "+n". */
-const ROW_LABELS = 2
-
-function TrackerRow({ scopePending, association, item, active }: { scopePending: boolean; association: TrackerAssociation; item: TrackerItem; active: boolean }) {
-  const queryClient = useQueryClient()
-  const key = queryKeys.tracker.detail(association, item.id)
-  const preload = () => void queryClient.prefetchQuery({ queryKey: key, queryFn: ({ signal }) => getTrackerItem(item.id, { signal, association }), staleTime: TRACKER_STALE_TIME })
-  const drag = (event: DragEvent) => {
-    if (scopePending) { event.preventDefault(); return }
-    const state = queryClient.getQueryState<TrackerItemResponse>(key)
-    const detail = trackerDetailReadyForDrag(queryClient, key)
-    if (!detail) {
-      event.preventDefault()
-      preload()
-      toast(
-        state?.status === 'error'
-          ? 'Full issue detail failed to load. Open the issue to retry.'
-          : 'Loading fresh issue detail. Drag again when it is ready.',
-        state?.status === 'error' ? { tone: 'danger' } : undefined,
-      )
-      return
-    }
-    if (trackerLosses(detail.item).length) {
-      event.preventDefault()
-      toast('Open this issue to acknowledge snapshot limitations before handoff.', { tone: 'danger' })
-      return
-    }
-    event.dataTransfer.setData('text/plain', trackerTaskPrompt(detail.item))
-    event.dataTransfer.effectAllowed = 'copy'
-  }
-  const shownLabels = item.labels.slice(0, ROW_LABELS)
-  const hiddenLabels = item.labels.length - shownLabels.length
-  return <SidebarMenuItem><SidebarMenuButton asChild isActive={active} className="h-auto items-start gap-2.5 py-2">
-    <Link to={`/tracker/${encodeURIComponent(item.id)}`} draggable onMouseEnter={preload} onFocus={preload} onDragStart={drag} data-slot="tracker-row" aria-current={active ? 'page' : undefined} title="Drag into the composer to prefill a task">
-      <CircleDotIcon aria-hidden="true" className="mt-0.5 text-muted-foreground" />
-      {/* A div, not a span: the menu button truncates its last child SPAN to one line. */}
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <span className="line-clamp-2 text-[13px] leading-snug text-pretty">{item.title}</span>
-        <span className="flex min-w-0 items-center gap-1.5 text-xs font-normal text-muted-foreground tabular-nums"><span className="shrink-0">{item.id}</span><span aria-hidden="true">·</span><span className="min-w-0 truncate">{item.author}</span><span aria-hidden="true">·</span><span className="shrink-0" title={new Date(item.updatedAt).toLocaleString()}>{shortAge(item.updatedAt)}</span></span>
-        <span className="flex flex-wrap items-center gap-1 pt-0.5"><Badge variant="secondary" className="px-1.5 py-0 font-normal">{item.status}</Badge>{shownLabels.map(label => <LabelChip key={label} label={label} />)}{hiddenLabels > 0 ? <span title={item.labels.slice(ROW_LABELS).join(', ')} className="text-xs font-normal text-muted-foreground tabular-nums">+{hiddenLabels}</span> : null}</span>
-      </div>
-    </Link>
-  </SidebarMenuButton></SidebarMenuItem>
-}
-
-function LabelChip({ label }: { label: string }) {
-  return <Badge variant="outline" className="max-w-40 px-1.5 py-0 font-normal text-muted-foreground"><span className="truncate">{label}</span></Badge>
-}
-
-export function trackerDetailReadyForDrag(
-  queryClient: QueryClient,
-  key: QueryKey,
-  now = Date.now(),
-): TrackerItemResponse & { available: true } | null {
-  const state = queryClient.getQueryState<TrackerItemResponse>(key)
-  if (
-    state?.status !== 'success'
-    || state.fetchStatus !== 'idle'
-    || state.isInvalidated
-    || state.dataUpdatedAt <= 0
-    || now - state.dataUpdatedAt >= TRACKER_STALE_TIME
-    || !state.data?.available
-  ) return null
-  return state.data
 }
 
 function TrackerDetail({ scopePending, association, id, selection, onSelectionChange, drafts }: { scopePending: boolean; drafts: TrackerDraftCache; association: TrackerAssociation; id: string; selection: TrackerHandoffSelection; onSelectionChange: React.Dispatch<React.SetStateAction<TrackerHandoffSelection>> }) {
@@ -275,7 +229,6 @@ function TrackerDetail({ scopePending, association, id, selection, onSelectionCh
   useEffect(() => {
     if (detail.data?.available) setLastItem(detail.data.item)
   }, [detail.data])
-  const [handOpen, setHandOpen] = useState(false)
   const [queuedRunId, setQueuedRunId] = useState<string | null>(null)
   const failure = detail.isError
     ? <Failure reason={detail.error.message} generation={detail.errorUpdatedAt} retry={() => void detail.refetch()} />
@@ -284,19 +237,25 @@ function TrackerDetail({ scopePending, association, id, selection, onSelectionCh
       : null
   // Keep the composer's context through a failed refresh; retained context is never launchable.
   const item = detail.data?.available ? detail.data.item : lastItem
-  if (!item) return <div className="mx-auto w-full max-w-3xl px-4 pt-5 md:px-10 md:pt-8"><DetailBackLink />{detail.isPending ? <PageState text="Loading full issue detail…" loading /> : failure}</div>
+  if (!item) return <div className="px-4 pt-4 md:px-6"><DetailNav />{detail.isPending ? <PageState text="Loading full issue detail…" loading /> : failure}</div>
   const providerLabel = TRACKER_PROVIDERS[association.kind].label
   const losses = trackerLosses(item)
+  // The composer sits in the panel, not behind a dialog: this only brings it into view.
+  const focusComposer = () => {
+    const instruction = document.getElementById('tracker-instruction')
+    instruction?.scrollIntoView?.({ block: 'center' })
+    instruction?.focus({ preventScroll: true })
+  }
   return (
-    <article data-slot="tracker-detail-inner" className="mx-auto w-full max-w-3xl min-w-0 px-4 pt-5 pb-12 md:px-10 md:pt-8">
-      <DetailBackLink />
+    <article data-slot="tracker-detail-inner" className="min-w-0 px-4 pt-4 pb-12 md:px-6">
+      <DetailNav />
       <header className="flex flex-wrap items-start gap-x-4 gap-y-3">
         <div className="min-w-0 flex-1 basis-72 space-y-2">
           <div className="flex flex-wrap items-center gap-2 text-[13px] text-muted-foreground">
-            <Badge variant="secondary" className="font-medium">{item.status}</Badge>
+            <Badge variant="secondary" className="gap-1.5 font-medium"><TrackerStatusIcon category={item.statusCategory} className="size-3.5" />{item.status}</Badge>
             <span>Issue <span className="tabular-nums">{item.id}</span></span>
           </div>
-          <h1 className="text-[22px] leading-7 font-semibold text-pretty">{item.title}</h1>
+          <h1 className="text-[20px] leading-7 font-semibold text-pretty">{item.title}</h1>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {queuedRunId ? (
@@ -304,7 +263,7 @@ function TrackerDetail({ scopePending, association, id, selection, onSelectionCh
               <Link to={`/tasks/${queuedRunId}`}><CheckIcon aria-hidden="true" className="text-success" />Queued — view task</Link>
             </Button>
           ) : null}
-          <Button variant={queuedRunId ? 'outline' : 'primary'} data-action="tracker-hand-open" onClick={() => setHandOpen(true)}>
+          <Button variant="outline" data-action="tracker-hand-open" onClick={focusComposer}>
             <PlayIcon aria-hidden="true" />
             Hand to agent
           </Button>
@@ -323,36 +282,40 @@ function TrackerDetail({ scopePending, association, id, selection, onSelectionCh
           </DropdownMenu>
         </div>
       </header>
-      <dl className="mt-5 grid grid-cols-[6.5rem_minmax(0,1fr)] items-baseline gap-x-4 gap-y-2 text-[13px]">
-        <dt className="text-muted-foreground">Author</dt>
-        <dd>{item.author}</dd>
-        <dt className="text-muted-foreground">Opened</dt>
-        <dd title={new Date(item.createdAt).toLocaleString()}>{shortAge(item.createdAt)} ago</dd>
-        <dt className="text-muted-foreground">Updated</dt>
-        <dd title={new Date(item.updatedAt).toLocaleString()}>{shortAge(item.updatedAt)} ago</dd>
-        {item.labels.length > 0 ? <>
-          <dt className="text-muted-foreground">Labels</dt>
-          <dd className="flex flex-wrap gap-1">{item.labels.map(label => <LabelChip key={label} label={label} />)}</dd>
-        </> : null}
-      </dl>
-      {failure}
-      {losses.length ? (
-        <Alert className="mt-5">
-          <AlertTriangleIcon className="text-pending-strong" />
-          <AlertTitle>This snapshot is incomplete.</AlertTitle>
-          <AlertDescription>Review the limitations in the handoff panel.</AlertDescription>
-        </Alert>
-      ) : null}
-      <section data-slot="tracker-body" className="mt-6 border-t border-border pt-6 text-sm leading-relaxed"><Markdown>{item.body.trim() || '*No description was provided.*'}</Markdown></section>
-      <Dialog open={handOpen} onOpenChange={setHandOpen}>
-        <DialogContent data-slot="tracker-hand-dialog" className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Hand to agent</DialogTitle>
-            <DialogDescription className="line-clamp-2">{item.id} — {item.title}</DialogDescription>
-          </DialogHeader>
-          <TrackerHandoff scopePending={scopePending} key={`${trackerAssociationKey(association)}:${item.id}`} item={item} detailUnavailable={detail.isError || !detail.data?.available} drafts={drafts} selection={selection} onSelectionChange={onSelectionChange} workflows={workflows.data?.workflows ?? []} skills={skills.data ?? []} onQueued={(runId) => { setQueuedRunId(runId); if (runId) setHandOpen(false) }} />
-        </DialogContent>
-      </Dialog>
+      {/* One column in a narrow panel; description beside properties and the composer in a wide one. */}
+      <div className="mt-5 grid gap-x-8 gap-y-6 @3xl:grid-cols-[minmax(0,1fr)_20rem] @3xl:items-start">
+        <div className="min-w-0">
+          {failure}
+          {losses.length ? (
+            <Alert className="mb-5">
+              <AlertTriangleIcon className="text-pending-strong" />
+              <AlertTitle>This snapshot is incomplete.</AlertTitle>
+              <AlertDescription>Review the limitations in the handoff panel.</AlertDescription>
+            </Alert>
+          ) : null}
+          <section data-slot="tracker-body" className="text-sm leading-relaxed"><Markdown>{item.body.trim() || '*No description was provided.*'}</Markdown></section>
+        </div>
+        <div className="flex min-w-0 flex-col gap-6 border-t border-border pt-6 @3xl:sticky @3xl:top-4 @3xl:border-t-0 @3xl:pt-0">
+          <dl className="grid grid-cols-[5.5rem_minmax(0,1fr)] items-baseline gap-x-4 gap-y-2 text-[13px]">
+            <dt className="text-muted-foreground">Status</dt>
+            <dd>{item.status}</dd>
+            <dt className="text-muted-foreground">Author</dt>
+            <dd>{item.author}</dd>
+            <dt className="text-muted-foreground">Opened</dt>
+            <dd title={new Date(item.createdAt).toLocaleString()}>{shortAge(item.createdAt)} ago</dd>
+            <dt className="text-muted-foreground">Updated</dt>
+            <dd title={new Date(item.updatedAt).toLocaleString()}>{shortAge(item.updatedAt)} ago</dd>
+            {item.labels.length > 0 ? <>
+              <dt className="text-muted-foreground">Labels</dt>
+              <dd className="flex flex-wrap gap-1">{item.labels.map(label => <LabelChip key={label} label={label} />)}</dd>
+            </> : null}
+          </dl>
+          <section aria-labelledby="tracker-hand-title" className="border-t border-border pt-5">
+            <h2 id="tracker-hand-title" className="mb-3 text-[13px] font-semibold">Hand to agent</h2>
+            <TrackerHandoff scopePending={scopePending} key={`${trackerAssociationKey(association)}:${item.id}`} item={item} detailUnavailable={detail.isError || !detail.data?.available} drafts={drafts} selection={selection} onSelectionChange={onSelectionChange} workflows={workflows.data?.workflows ?? []} skills={skills.data ?? []} onQueued={setQueuedRunId} />
+          </section>
+        </div>
+      </div>
     </article>
   )
 }
@@ -381,6 +344,10 @@ function PageState({ text, danger = false, loading = false }: { text: string; da
   return <div className={cn('flex items-center justify-center gap-2 p-8 text-center text-[13px]', danger ? 'text-danger' : 'text-muted-foreground')}>{loading ? <Spinner /> : null}{text}</div>
 }
 
-function DetailBackLink() {
-  return <Button asChild variant="ghost" size="sm" className="mb-3 -ml-2.5 md:hidden"><Link to="/tracker"><ArrowLeftIcon aria-hidden="true" />Back to the list</Link></Button>
+/** Leaves the open issue: "back to the list" on a phone, a close button beside the surface. */
+function DetailNav() {
+  return <div className="mb-3 flex items-center">
+    <Button asChild variant="ghost" size="sm" className="-ml-2.5 md:hidden"><Link to="/tracker"><ArrowLeftIcon aria-hidden="true" />Back to the list</Link></Button>
+    <Button asChild variant="ghost" size="icon-sm" className="ml-auto hidden md:inline-flex"><Link to="/tracker" aria-label="Close issue" title="Close issue"><XIcon aria-hidden="true" /></Link></Button>
+  </div>
 }

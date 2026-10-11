@@ -69,7 +69,7 @@ const ITEM: TrackerItem = {
   kind: 'issue', id: 'OPS-1', title: 'Keep every skill', author: 'Ada',
   createdAt: '2026-09-18T10:00:00.000Z', updatedAt: '2026-09-19T10:00:00.000Z',
   labels: [], body: 'Full detail', bodyTruncated: false, unsupportedContent: false,
-  url: 'https://acme.atlassian.net/browse/OPS-1', status: 'Open',
+  url: 'https://acme.atlassian.net/browse/OPS-1', status: 'Open', statusId: 'status-1', statusCategory: 'started',
 }
 
 it('keyboard submission obeys the same snapshot acknowledgment guard as the button', async () => {

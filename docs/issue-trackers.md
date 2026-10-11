@@ -190,12 +190,19 @@ reconciliation; it opens no browser WebSocket. No new configuration or credentia
 
 ## Issue browser layout
 
-Jira and Linear reuse GitHub's split-pane shell: compact issues on the left, full detail on the
-right. Mobile shows one pane at a time with a Back to the list link. Workflow and skills pickers
-are shared with GitHub. Workflow/engine/skills choices persist between rows; per-issue instruction
-drafts stay in memory until leaving the browser or changing project/association. Automatic list
-updates preserve the open issue. Explicit filters reset only the implicit first-row selection;
-an issue selected through its URL remains open. Snapshot limitations still require acknowledgment.
+Jira and Linear issues fill the screen as a **List** (rows under one collapsible heading per
+status) or a **Board** (one column per status); the toolbar switches between them and the choice
+is remembered in this browser. Groups and columns follow the vendor's workflow order (Jira status
+category, Linear state type) and describe the issues **loaded so far**: counts are not backlog
+totals, and a status with no loaded issue has no column. The board is read-only; a card or row can
+be dragged into the task composer, not between columns.
+
+Opening an issue shows it in a panel beside the surface, with its description, its properties and
+the hand-to-agent composer; nothing is opened until you pick an issue. Mobile shows one pane at a
+time with a Back to the list link. Workflow and skills pickers are shared with GitHub.
+Workflow/engine/skills choices persist between issues; per-issue instruction drafts stay in memory
+until leaving the tracker or changing project/association. Automatic list updates preserve the
+open issue. Snapshot limitations still require acknowledgment.
 
 ## Event automations
 

@@ -26,7 +26,7 @@ it.each([true, false])('blocks handoff during metadata reconciliation (source ch
   }
   const item: TrackerItem = {
     kind: 'issue', id: 'OPS-1', title: 'A issue', body: 'A description',
-    bodyTruncated: false, unsupportedContent: false, author: 'Ada', labels: [], status: 'Open',
+    bodyTruncated: false, unsupportedContent: false, author: 'Ada', labels: [], status: 'Open', statusId: 'status-1', statusCategory: 'started',
     createdAt: '2026-09-18T00:00:00Z', updatedAt: '2026-09-18T00:00:00Z',
     url: 'https://a.atlassian.net/browse/OPS-1',
   }

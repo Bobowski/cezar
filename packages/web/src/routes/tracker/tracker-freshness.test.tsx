@@ -14,7 +14,7 @@ vi.mock('@/components/engine-pills', () => ({
 }))
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers() })
 const association = { kind: 'jira' as const, source: { id: 'cloud', webUrl: 'https://acme.atlassian.net' }, externalId: '100', externalName: 'OPS' }
-const item = { kind: 'issue' as const, id: 'OPS-1', title: 'Issue', body: 'Original detail', bodyTruncated: false, unsupportedContent: false, author: 'Ada', labels: [], status: 'Open', createdAt: '2026-09-18T00:00:00Z', updatedAt: '2026-09-18T00:00:00Z', url: 'https://acme.atlassian.net/browse/OPS-1' }
+const item = { kind: 'issue' as const, id: 'OPS-1', title: 'Issue', body: 'Original detail', bodyTruncated: false, unsupportedContent: false, author: 'Ada', labels: [], status: 'Open', statusId: 'status-1', statusCategory: 'started', createdAt: '2026-09-18T00:00:00Z', updatedAt: '2026-09-18T00:00:00Z', url: 'https://acme.atlassian.net/browse/OPS-1' }
 const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 })
 /** The issue list lives in the shell's contextual sidebar: a column on desktop — hosted here by
  *  `ShellWithSidebar` — and a sheet on a phone, which is closed until asked for, so `phone` gets
@@ -28,16 +28,10 @@ function asPhone() {
   vi.stubGlobal('matchMedia', () => ({ matches: true, addEventListener() {}, removeEventListener() {} }))
   vi.stubGlobal('innerWidth', 390)
 }
-/** The hand-off composer is a dialog over the issue, opened from its header. While it is open the
- *  page behind it is inert (and hidden from role queries), so a test that then acts on the page —
- *  a Retry in the detail, say — closes it first, exactly as a user has to. */
+/** The hand-off composer sits in the issue panel; the header button only brings it into view. */
 async function openHand() {
   fireEvent.click(await screen.findByRole('button', { name: 'Hand to agent' }))
   return (await screen.findByLabelText('Custom instruction')) as HTMLTextAreaElement
-}
-async function closeHand() {
-  fireEvent.click(document.querySelector('[data-slot="tracker-hand-dialog"] [data-slot="dialog-close"]')!)
-  await waitFor(() => expect(document.querySelector('[data-slot="tracker-hand-dialog"]')).toBeNull())
 }
 
 describe('tracker snapshot freshness', () => {
@@ -78,7 +72,6 @@ describe('tracker snapshot freshness', () => {
     expect(await screen.findByText('Temporary outage')).toBeTruthy()
     expect((screen.getByLabelText('Custom instruction') as HTMLTextAreaElement).value).toBe('Keep through outage')
     // Retry is on the page behind the composer; closing and reopening it must keep the draft too.
-    await closeHand()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(screen.queryByText('Temporary outage')).toBeNull())
     expect((await openHand()).value).toBe('Keep through outage')
@@ -118,7 +111,6 @@ describe('tracker snapshot freshness', () => {
     fireEvent.keyDown(instruction, { key: 'Enter', ctrlKey: true })
     expect(launches).toEqual([])
     // Retry is on the page behind the composer: close it, retry, and come back to the same draft.
-    await closeHand()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(calls).toBe(3))
     const reopened = await openHand()
@@ -258,7 +250,6 @@ it('preserves a bound connection draft across transport failure and recovery', a
   client.setQueryData(queryKeys.tracker.connection(), {connection:{...connected.connection,id:nextId},demo:false});
  });
  // A new connection is a new scope: the browser remounts for it, and its composer starts clean.
- await waitFor(() => expect(document.querySelector('[data-slot="tracker-hand-dialog"]')).toBeNull());
  expect((await openHand()).value).toBe('');
  expect(screen.getByRole('button', { name:'Choose a workflow' }).textContent).not.toContain('review-only');
 });

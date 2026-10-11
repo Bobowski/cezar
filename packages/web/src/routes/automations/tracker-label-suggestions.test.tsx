@@ -6,7 +6,7 @@ import { TrackerLabelSuggestions } from './tracker-label-suggestions'
 vi.mock('@/api/client', () => ({ getTrackerItems: vi.fn() }))
 afterEach(() => { cleanup(); vi.resetAllMocks() })
 const association = { kind: 'jira' as const, source: { id: 'cloud', webUrl: 'https://fixture.atlassian.net' }, externalId: '1', externalName: 'Project', connectionId: 'one' }
-const page = (labels: string[], nextCursor?: string) => ({ available: true as const, items: [{ kind: 'issue' as const, author: '', createdAt: '2026-09-19T00:00:00Z', updatedAt: '2026-09-19T00:00:00Z', body: '', bodyTruncated: false, unsupportedContent: false, id: '1', title: 'Task', url: 'https://fixture.atlassian.net/browse/P-1', status: 'Done', labels }], truncated: !!nextCursor, ...(nextCursor ? { nextCursor } : {}) })
+const page = (labels: string[], nextCursor?: string) => ({ available: true as const, items: [{ kind: 'issue' as const, author: '', createdAt: '2026-09-19T00:00:00Z', updatedAt: '2026-09-19T00:00:00Z', body: '', bodyTruncated: false, unsupportedContent: false, id: '1', title: 'Task', url: 'https://fixture.atlassian.net/browse/P-1', status: 'Done', statusId: 'status-1', statusCategory: 'started' as const, labels }], truncated: !!nextCursor, ...(nextCursor ? { nextCursor } : {}) })
 it('loads scoped labels including closed tasks, filters locally and paginates on demand', async () => {
   vi.mocked(getTrackerItems).mockImplementation(async query => query?.cursor ? page(['urgent', 'bug']) : page(['bug', 'feature', 'bug'], 'next'))
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })

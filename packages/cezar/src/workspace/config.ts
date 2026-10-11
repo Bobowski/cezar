@@ -367,6 +367,27 @@ export function atomicTmpPath(path: string): string {
   return `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
 }
 
+/**
+ * `renameSync` onto a path another writer may be replacing at this instant. POSIX swaps the file
+ * atomically; Windows refuses the loser (`EPERM`/`EBUSY`/`EACCES`) for the few milliseconds the
+ * winner holds the target, which turned two concurrent merge-writes into a thrown error instead of
+ * the convergence the read-modify-write promises. Retried there only, bounded at ~0.3 s — off
+ * Windows the same codes mean a real permission problem and are thrown at once.
+ */
+function renameOverSync(from: string, to: string): void {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      renameSync(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const contended = code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
+      if (process.platform !== 'win32' || !contended || attempt >= 9) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 6 * (attempt + 1));
+    }
+  }
+}
+
 /** Atomic JSON write (`0600`, dir `0700`) via a per-writer tmp + rename —
  *  shared by the workspace config and ui-state writers. Throws on write
  *  failure (e.g. a read-only home) — degrading is the caller's policy. */
@@ -381,7 +402,7 @@ export function atomicWriteJsonSync(path: string, value: unknown): void {
     fsyncSync(fd);
     closeSync(fd);
     fd = -1;
-    renameSync(tmp, path);
+    renameOverSync(tmp, path);
   } catch (error) {
     if (fd !== -1) {
       try {

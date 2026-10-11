@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import { repoFileQuerySchema, repoTreeSchema, type RepoTree } from '@open-mercato/cezar-contract';
 import { RunStore } from '../runs/store.ts';
 import type { RunManager } from '../workflows/run.ts';
@@ -58,8 +59,8 @@ describe('listRepoPaths — the repository path index', () => {
     initRepo(dir);
   });
 
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+  afterEach(async () => {
+    await removeTempDir(dir);
   });
 
   it('lists tracked and untracked-not-ignored paths, skips ignored ones, sorts stably', async () => {
@@ -147,8 +148,8 @@ describe('repoIndexContains — the Q5 membership guard', () => {
     writeFileSync(join(dir, 'ignored.env'), 'TOKEN=shh\n');
   });
 
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+  afterEach(async () => {
+    await removeTempDir(dir);
   });
 
   it('admits indexed paths and refuses an ignored file that exists on disk', async () => {
@@ -207,9 +208,9 @@ describe('repo file-browser routes', () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     store.flush();
-    rmSync(repoRoot, { recursive: true, force: true });
+    await removeTempDir(repoRoot);
   });
 
   const file = (query: string) => apiRequest(app, `/api/v1/repo/files?${query}`);

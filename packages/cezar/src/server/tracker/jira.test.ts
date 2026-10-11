@@ -274,6 +274,7 @@ describe('Jira Cloud adapter', () => {
     const fetcher = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
       if (url === `${origin}/_edge/tenant_info`) return json({ cloudId: 'cloud-1' });
+      if (url.includes('/comment?')) return json({ total: 0, comments: [] });
       return json(issue());
     }) as unknown as typeof fetch;
 
@@ -294,7 +295,53 @@ describe('Jira Cloud adapter', () => {
         url: `${origin}/browse/PROJ-1`,
         status: 'In Progress', statusId: '10001', statusCategory: 'started',
       },
+      comments: { available: true, items: [], truncated: false },
     });
+  });
+
+  it('reads the newest comments with the ticket, oldest first, bounded, and says when it is partial', async () => {
+    const paragraph = (text: string) => ({ type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] });
+    const requests: string[] = [];
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      requests.push(url);
+      if (url === `${origin}/_edge/tenant_info`) return json({ cloudId: 'cloud-1' });
+      if (url.includes('/comment?')) return json({ total: 41, comments: [
+        // Newest first, as `orderBy=-created` answers.
+        { id: '3', author: { displayName: 'Grace Hopper' }, created: '2026-03-03T10:00:00.000+0100', body: paragraph('z'.repeat(4_500)) },
+        { id: '2', author: null, created: '2026-03-02T10:00:00.000+0100', body: { type: 'doc', content: [{ type: 'mediaSingle' }] } },
+        { id: '1', author: { displayName: 'Ada Lovelace' }, created: '2026-03-01T10:00:00.000+0100', body: paragraph('Decision: keep the endpoint.') },
+      ] });
+      return json(issue());
+    }) as unknown as typeof fetch;
+    const detail = trackerItemResultSchema.parse(await createJiraClient(credentials, fetcher).driver(association()).getItem('PROJ-1'));
+    if (!detail.available || !detail.comments.available) throw new Error('expected a ticket with comments');
+    const commentRequest = new URL(requests.find(url => url.includes('/comment?'))!);
+    expect(commentRequest.pathname.endsWith('/rest/api/3/issue/PROJ-1/comment')).toBe(true);
+    expect(commentRequest.searchParams.get('orderBy')).toBe('-created');
+    expect(commentRequest.searchParams.get('maxResults')).toBe('30');
+    expect(detail.comments.truncated).toBe(true);
+    expect(detail.comments.items.map(comment => comment.id)).toEqual(['1', '2', '3']);
+    expect(detail.comments.items[0]).toEqual({ id: '1', author: 'Ada Lovelace', createdAt: '2026-03-01T09:00:00.000Z', body: 'Decision: keep the endpoint.', bodyTruncated: false, unsupportedContent: false });
+    expect(detail.comments.items[1]).toMatchObject({ author: 'Unknown', unsupportedContent: true });
+    expect(detail.comments.items[2]!.body).toHaveLength(4_000);
+    expect(detail.comments.items[2]!.bodyTruncated).toBe(true);
+  });
+
+  it.each([
+    ['a refused comment read', () => json({}, 403)],
+    ['a malformed comment payload', () => json({ comments: 'nope' })],
+  ])('keeps the ticket and reports its comments as unavailable, not empty, after %s', async (_name, answer) => {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === `${origin}/_edge/tenant_info`) return json({ cloudId: 'cloud-1' });
+      if (url.includes('/comment?')) return answer();
+      return json(issue());
+    }) as unknown as typeof fetch;
+    const detail = trackerItemResultSchema.parse(await createJiraClient(credentials, fetcher).driver(association()).getItem('PROJ-1'));
+    expect(detail).toMatchObject({ available: true, item: { id: 'PROJ-1' }, comments: { available: false } });
+    if (!detail.available || detail.comments.available) throw new Error('expected unavailable comments');
+    expect(detail.comments.reason).not.toContain('jira-secret-token');
   });
 
   it('returns controlled invalid-response failures for malformed vendor data', async () => {
@@ -449,6 +496,7 @@ it('revalidates detail on a subsequent request instead of renewing a cached snap
   const fetcher = vi.fn(async (input: string | URL | Request) => {
     if (String(input).endsWith('/_edge/tenant_info')) return json({ cloudId: 'cloud-1' });
     if (revoked) return json({}, 403);
+    if (String(input).includes('/comment?')) return json({ total: 0, comments: [] });
     reads++;
     const row = issue();
     return json({ ...row, fields: { ...(row.fields as Record<string, unknown>), summary: `Revision ${reads}` } });

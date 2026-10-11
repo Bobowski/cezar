@@ -3,7 +3,7 @@ import { AlertTriangleIcon, ArrowLeftIcon, CheckIcon, Columns3Icon, ExternalLink
 import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router'
 
-import { trackerReadScope, type ApiRun, type TrackerAssociation, type TrackerItem } from '@open-mercato/cezar-api-client'
+import { trackerReadScope, type ApiRun, type TrackerAssociation, type TrackerComments, type TrackerItem } from '@open-mercato/cezar-api-client'
 import { IssueBrowserEmpty } from '@/components/issue-browser-layout'
 import { Page } from '@/components/page'
 import { shortAge } from '@/lib/format'
@@ -232,9 +232,9 @@ function TrackerDetail({ scopePending, association, id, runs, selection, onSelec
   const detail = useTrackerItem(association, id)
   const workflows = useWorkflows()
   const skills = useSkills()
-  const [lastItem, setLastItem] = useState<TrackerItem | null>(null)
+  const [last, setLast] = useState<{ item: TrackerItem; comments: TrackerComments } | null>(null)
   useEffect(() => {
-    if (detail.data?.available) setLastItem(detail.data.item)
+    if (detail.data?.available) setLast({ item: detail.data.item, comments: detail.data.comments })
   }, [detail.data])
   const [queuedRunId, setQueuedRunId] = useState<string | null>(null)
   const failure = detail.isError
@@ -243,10 +243,12 @@ function TrackerDetail({ scopePending, association, id, runs, selection, onSelec
       ? <Failure reason={detail.data.reason} generation={detail.dataUpdatedAt} retryAfterSeconds={detail.data.code === 'rate_limited' ? detail.data.retryAfterSeconds : undefined} retry={() => void detail.refetch()} />
       : null
   // Keep the composer's context through a failed refresh; retained context is never launchable.
-  const item = detail.data?.available ? detail.data.item : lastItem
+  const ticket = detail.data?.available ? detail.data : last
+  const item = ticket?.item
   if (!item) return <div className="px-4 pt-4 md:px-6"><DetailNav />{detail.isPending ? <PageState text="Loading full issue detail…" loading /> : failure}</div>
   const providerLabel = TRACKER_PROVIDERS[association.kind].label
-  const losses = trackerLosses(item)
+  const comments = ticket!.comments
+  const losses = trackerLosses(item, comments)
   // The composer sits in the panel, not behind a dialog: this only brings it into view.
   const focusComposer = () => {
     const instruction = document.getElementById('tracker-instruction')
@@ -301,6 +303,7 @@ function TrackerDetail({ scopePending, association, id, runs, selection, onSelec
             </Alert>
           ) : null}
           <section data-slot="tracker-body" className="text-sm leading-relaxed"><Markdown>{item.body.trim() || '*No description was provided.*'}</Markdown></section>
+          <TrackerCommentThread comments={comments} />
         </div>
         <div className="flex min-w-0 flex-col gap-6 border-t border-border pt-6 @3xl:sticky @3xl:top-4 @3xl:border-t-0 @3xl:pt-0">
           <dl className="grid grid-cols-[5.5rem_minmax(0,1fr)] items-baseline gap-x-4 gap-y-2 text-[13px]">
@@ -333,12 +336,38 @@ function TrackerDetail({ scopePending, association, id, runs, selection, onSelec
           <section aria-labelledby="tracker-hand-title" className="border-t border-border pt-5">
             <h2 id="tracker-hand-title" className="mb-3 text-[13px] font-semibold">Hand to agent</h2>
             {hasActiveRun(runs) ? <p role="status" className="mb-3 text-[13px] text-muted-foreground">A task for this issue is already in progress. You can still start another.</p> : null}
-            <TrackerHandoff expectedScope={trackerReadScope(association)} scopePending={scopePending} key={`${trackerAssociationKey(association)}:${item.id}`} item={item} detailUnavailable={detail.isError || !detail.data?.available} drafts={drafts} selection={selection} onSelectionChange={onSelectionChange} workflows={workflows.data?.workflows ?? []} skills={skills.data ?? []} onQueued={setQueuedRunId} />
+            <TrackerHandoff comments={comments} expectedScope={trackerReadScope(association)} scopePending={scopePending} key={`${trackerAssociationKey(association)}:${item.id}`} item={item} detailUnavailable={detail.isError || !detail.data?.available} drafts={drafts} selection={selection} onSelectionChange={onSelectionChange} workflows={workflows.data?.workflows ?? []} skills={skills.data ?? []} onQueued={setQueuedRunId} />
           </section>
         </div>
       </div>
     </article>
   )
+}
+
+/** The ticket's comments under its description, oldest first: what the agent will be given. */
+function TrackerCommentThread({ comments }: { comments: TrackerComments }) {
+  const count = comments.available ? comments.items.length : 0
+  return <section data-slot="tracker-comments" aria-labelledby="tracker-comments-title" className="mt-8 border-t border-border pt-5">
+    <h2 id="tracker-comments-title" className="text-[13px] font-semibold">Comments{count ? <span className="ml-1.5 font-normal text-muted-foreground tabular-nums">{count}</span> : null}</h2>
+    {!comments.available
+      ? <p role="status" className="mt-2 text-[13px] text-danger">Comments could not be loaded: {comments.reason}</p>
+      : count === 0
+        ? <p className="mt-2 text-[13px] text-muted-foreground">{comments.truncated ? 'This issue has comments that could not be included.' : 'No comments.'}</p>
+        : <>
+            {comments.truncated ? <p className="mt-2 text-[13px] text-muted-foreground">Showing {count} comments; this issue has more.</p> : null}
+            <ol className="mt-3 flex flex-col gap-4">
+              {comments.items.map(comment => <li key={comment.id} data-slot="tracker-comment" className="rounded-lg border border-border px-3.5 py-3">
+                <p className="flex flex-wrap items-baseline gap-x-2 text-[13px]">
+                  <span className="font-medium">{comment.author || 'Unknown'}</span>
+                  <span className="text-xs text-muted-foreground" title={new Date(comment.createdAt).toLocaleString()}>{shortAge(comment.createdAt)} ago</span>
+                  {comment.bodyTruncated ? <span className="text-xs text-pending-strong">truncated</span> : null}
+                  {comment.unsupportedContent ? <span className="text-xs text-pending-strong">some content not shown</span> : null}
+                </p>
+                <div className="mt-1.5 text-sm leading-relaxed"><Markdown>{comment.body.trim() || '*Empty comment.*'}</Markdown></div>
+              </li>)}
+            </ol>
+          </>}
+  </section>
 }
 
 function Failure({ reason, retry, retryAfterSeconds = 0, generation }: { reason: string; retry: () => void; retryAfterSeconds?: number; generation: number }) {

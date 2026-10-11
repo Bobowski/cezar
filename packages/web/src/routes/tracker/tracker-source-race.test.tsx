@@ -48,7 +48,7 @@ it.each([true, false])('blocks handoff during metadata reconciliation (source ch
     if (url.pathname.endsWith('/tracker/OPS-1')) {
       detailScopes.push(url.searchParams.get('expectedScope'))
       // Deliberately emulate an old server without the scope guard: UI must still block launch.
-      return json({ available: true, item: replaced ? replacement : item })
+      return json({ available: true, comments: { available: true, items: [], truncated: false }, item: replaced ? replacement : item })
     }
     if (url.pathname.endsWith('/tracker')) return json({ available: true, items: [replaced ? replacement : item], truncated: false })
     if (url.pathname.endsWith('/runs') && init?.method === 'POST') launches.push(String(init?.body))

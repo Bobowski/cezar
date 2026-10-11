@@ -80,12 +80,12 @@ function useTrackerItemLink(association: TrackerAssociation, item: TrackerItem, 
       )
       return
     }
-    if (trackerLosses(detail.item).length) {
+    if (trackerLosses(detail.item, detail.comments).length) {
       event.preventDefault()
       toast('Open this issue to acknowledge snapshot limitations before handoff.', { tone: 'danger' })
       return
     }
-    event.dataTransfer.setData('text/plain', trackerTaskPrompt(detail.item))
+    event.dataTransfer.setData('text/plain', trackerTaskPrompt(detail.item, detail.comments))
     event.dataTransfer.effectAllowed = 'copy'
   }
   return {

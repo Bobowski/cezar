@@ -84,3 +84,12 @@ function escapeTableCell(text: string): string {
 export function descriptionBody(body: string, maximum: number, unsupportedContent = false): { body: string; bodyTruncated: boolean; unsupportedContent: boolean } {
   return { body: body.slice(0, maximum), bodyTruncated: body.length > maximum, unsupportedContent };
 }
+
+/** One detail read carries at most this many comments, each cut to this many characters. */
+export const TRACKER_COMMENT_LIMIT = 30;
+export const TRACKER_COMMENT_CAP = 4_000;
+
+/** Oldest first, whatever order the vendor answered in. */
+export function chronological<T extends { createdAt: string }>(comments: T[]): T[] {
+  return [...comments].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+}

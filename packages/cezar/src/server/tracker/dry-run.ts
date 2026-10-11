@@ -1,7 +1,7 @@
-import type { TrackerAssociation, TrackerAssociationInput, TrackerAssociationResult, TrackerCandidatesQuery, TrackerCandidatesResult, TrackerItemsResult, TrackerItemResult, TrackerKind, TrackerListQuery, TrackerSearchQuery, TrackerItem } from '@open-mercato/cezar-contract';
+import type { TrackerAssociation, TrackerAssociationInput, TrackerAssociationResult, TrackerCandidatesQuery, TrackerCandidatesResult, TrackerItemsResult, TrackerItemResult, TrackerKind, TrackerListQuery, TrackerSearchQuery, TrackerItem, TrackerComments } from '@open-mercato/cezar-contract';
 import type { TrackerProvider, TrackerDriver } from './types.ts';
 import { decodeCursor, encodeCursor } from './cursor.ts';
-import { descriptionBody } from './adf.ts';
+import { descriptionBody, TRACKER_COMMENT_CAP, TRACKER_COMMENT_LIMIT } from './adf.ts';
 import { requestFailure } from './transport.ts';
 
 const FIXTURES = {
@@ -35,6 +35,23 @@ export function createDryTrackerClient(kind: TrackerKind): TrackerProvider {
       ...descriptionBody(n === 3 ? 'Large import requirements. '.repeat(3000) : n === 2 ? 'Detailed requirements. '.repeat(500) + '\nAcceptance: preserve all requirements.' : `Implement task ${n} for ${association.externalName}.\n\n- Preserve existing behavior.\n- Add regression coverage.`, cap, n === 4),
       url: `${source.webUrl}/${fixture.itemPath}/${id}`,
     };
+  }
+  // Item 2 carries a decision only its comments state; 3 an over-cap thread with a cut and a
+  // lossy comment; 6 a thread that could not be read. Everything else has no comments.
+  function comments(n: number): TrackerComments {
+    const comment = (index: number, body: string, unsupported = false) => ({
+      id: `c${n}-${index}`, author: index % 2 ? 'Demo reviewer' : 'Demo user',
+      createdAt: new Date(Date.UTC(2026, 0, 2, 0, index)).toISOString(), ...descriptionBody(body, TRACKER_COMMENT_CAP, unsupported),
+    });
+    if (n === 2) return { available: true, truncated: false, items: [
+      comment(1, 'Can we keep the old endpoint for one release?'),
+      comment(2, 'Decision: keep the old endpoint, behind a deprecation warning.'),
+      comment(3, 'Agreed. Please add a regression test for the warning.'),
+    ] };
+    if (n === 3) return { available: true, truncated: true, items: Array.from({ length: TRACKER_COMMENT_LIMIT }, (_, i) =>
+      comment(i + 6, i === 0 ? 'Long log excerpt. '.repeat(400) : `Follow-up note ${i + 6}.`, i === 1)) };
+    if (n === 6) return { available: false, reason: 'Demo: the comment thread could not be read.' };
+    return { available: true, truncated: false, items: [] };
   }
   function page<T>(items: T[], limit: number, cursor: string | undefined, scope: unknown) {
     const offset = Number(decodeCursor(scope, cursor) ?? '0');
@@ -79,7 +96,7 @@ export function createDryTrackerClient(kind: TrackerKind): TrackerProvider {
           const prefix = `${fixture.prefix}${association.externalId}`;
           const match = new RegExp(`^${prefix}-(\\d+)$`).exec(id);
           const n = Number(match?.[1]);
-          return n >= 1 && n <= 125 ? { available: true, item: item(n, association, 60000) } : missing;
+          return n >= 1 && n <= 125 ? { available: true, item: item(n, association, 60000), comments: comments(n) } : missing;
         },
       };
     },

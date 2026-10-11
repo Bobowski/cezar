@@ -26,6 +26,7 @@ export * from './host.ts';
 export * from './terminal.ts';
 export * from './workspace-layouts.ts';
 export * from './tracker.ts';
+export * from './tracker-context.ts';
 export * from './self-update.ts';
 export * from './star-count.ts';
 export * from './preview.ts';

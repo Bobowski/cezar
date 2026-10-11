@@ -8,7 +8,7 @@ import type {
 import type { TrackerProvider, TrackerDriver } from './types.ts';
 import { TrackerHttp, TrackerRequestError, ResultCache, requestFailure, runOperation } from './transport.ts';
 import { encodeCursor, decodeCursor } from './cursor.ts';
-import { descriptionBody } from './adf.ts';
+import { chronological, descriptionBody, TRACKER_COMMENT_CAP, TRACKER_COMMENT_LIMIT } from './adf.ts';
 
 const endpoint = 'https://api.linear.app/graphql';
 const sourceQuery = 'query TrackerSource { organization { id urlKey } }';
@@ -26,6 +26,15 @@ const itemSchema = z.object({
   creator: z.object({ name: z.string() }).nullable(), team: z.object({ id: z.string().min(1) }),
   state: z.object({ id: z.string().min(1), name: z.string(), type: z.string() }),
   labels: z.object({ nodes: z.array(z.object({ name: z.string() })), pageInfo: z.object({ hasNextPage: z.boolean() }) }),
+});
+// Detail only. No `orderBy`: the enum names a field, not a direction, so the page is whatever
+// end of the thread Linear serves first; `hasNextPage` is what says the read is partial.
+const commentFields = `comments(first: ${TRACKER_COMMENT_LIMIT}) { nodes { id body createdAt user { name } } pageInfo { hasNextPage } }`;
+const detailSchema = itemSchema.extend({
+  comments: z.object({
+    nodes: z.array(z.object({ id: z.string().min(1), body: z.string().nullable(), createdAt: z.iso.datetime({ offset: true }), user: z.object({ name: z.string() }).nullable() })),
+    pageInfo: z.object({ hasNextPage: z.boolean() }),
+  }),
 });
 const envelopeSchema = z.object({
   data: z.unknown().optional(),
@@ -202,10 +211,14 @@ TrackerProvider {
           // Browser detail cache owns freshness; retain in-flight deduplication, not stale reads.
           return await runOperation(signal => withSource(signal, [association, 'issue', id], true, async current => {
             checkScope(association, current);
-            const data = await graphql(`query TrackerIssue($id: String!) { issue(id: $id) { ${issueFields} } }`, { id }, signal);
-            const row = parse(z.object({ issue: itemSchema.nullable() }), data).issue;
+            const data = await graphql(`query TrackerIssue($id: String!) { issue(id: $id) { ${issueFields} ${commentFields} } }`, { id }, signal);
+            const row = parse(z.object({ issue: detailSchema.nullable() }), data).issue;
             if (!row) throw new TrackerRequestError('not_found', 'The requested Linear issue was not found.');
-            return { available: true, item: mapItem(row, association, 60000) };
+            const comments = chronological(row.comments.nodes.map(node => ({
+              id: node.id, author: node.user?.name ?? 'Unknown', createdAt: node.createdAt,
+              ...descriptionBody(node.body ?? '', TRACKER_COMMENT_CAP),
+            })));
+            return { available: true, item: mapItem(row, association, 60000), comments: { available: true, items: comments, truncated: row.comments.pageInfo.hasNextPage } };
           }));
         } catch (error) { return lookupError(error); }
       },

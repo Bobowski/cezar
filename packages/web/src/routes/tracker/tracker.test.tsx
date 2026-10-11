@@ -26,7 +26,7 @@ describe('Tracker route', () => {
       if (url.endsWith('/tracker/association')) return json({ association: {
         kind: 'jira', source: { id: 'acme', webUrl: 'https://acme.atlassian.net' }, externalId: '100', externalName: 'OPS',
       } })
-      if (new URL(url, 'http://localhost').pathname.endsWith('/tracker/OPS-1')) return json({ available: true, item: { ...issue('OPS-1', 'First page'), body: 'FULL_DETAIL_FOR_DRAG' } })
+      if (new URL(url, 'http://localhost').pathname.endsWith('/tracker/OPS-1')) return json({ available: true, comments: { available: true, items: [], truncated: false }, item: { ...issue('OPS-1', 'First page'), body: 'FULL_DETAIL_FOR_DRAG' } })
       if (url.includes('/tracker/search')) return json({ available: true, items: [issue('OPS-9', 'Search result')], truncated: false })
       if (url.includes('cursor=next')) return json({ available: true, items: [issue('OPS-2', 'Second page')], truncated: false })
       if (url.includes('/tracker')) return json({ available: true, items: [issue('OPS-1', 'First page')], truncated: true, nextCursor: 'next' })
@@ -54,7 +54,7 @@ describe('Tracker route', () => {
     const afterError = vi.fn()
     fireEvent.dragStart(firstRow, { dataTransfer: { setData: afterError, effectAllowed: 'none' } })
     expect(afterError).not.toHaveBeenCalled()
-    client.setQueryData(detailKey, { available: true, item: { ...issue('OPS-1', 'First page'), body: 'STALE_DETAIL' } }, { updatedAt: Date.now() - 60_001 })
+    client.setQueryData(detailKey, { available: true, comments: { available: true, items: [], truncated: false }, item: { ...issue('OPS-1', 'First page'), body: 'STALE_DETAIL' } }, { updatedAt: Date.now() - 60_001 })
     const stale = vi.fn()
     fireEvent.dragStart(firstRow, { dataTransfer: { setData: stale, effectAllowed: 'none' } })
     expect(stale).not.toHaveBeenCalled()
@@ -71,7 +71,7 @@ describe('Tracker route', () => {
   it('blocks the drag payload while a retained successful detail is refreshing', async () => {
     const client = createQueryClient()
     const key = ['tracker', 'project', 'detail', 'OPS-1'] as const
-    const response = { available: true as const, item: issue('OPS-1', 'First page') }
+    const response = { available: true as const, comments: { available: true, items: [], truncated: false }, item: issue('OPS-1', 'First page') }
     client.setQueryData(key, response)
     await client.invalidateQueries({ queryKey: key, refetchType: 'none' })
     let finish!: (value: typeof response) => void
@@ -95,7 +95,7 @@ describe('Tracker route', () => {
       if (url.endsWith('/tracker/association')) return json({ association: {
         kind: 'jira', source: { id: 'acme', webUrl: 'https://acme.atlassian.net' }, externalId: '100', externalName: 'OPS',
       } })
-      if (new URL(url, 'http://localhost').pathname.endsWith('/tracker/OPS-7')) return json({ available: true, item: {
+      if (new URL(url, 'http://localhost').pathname.endsWith('/tracker/OPS-7')) return json({ available: true, comments: { available: true, items: [], truncated: false }, item: {
         ...issue('OPS-7', 'Long issue'), body: `${'x'.repeat(8_100)}${tail}\n\n<script>evil(1)</script>`,
         bodyTruncated: true, unsupportedContent: true,
       } })
@@ -127,7 +127,7 @@ describe('Tracker route', () => {
       if (url.endsWith('/tracker/association')) return json({ association: {
         kind: 'linear', source: { id: 'org', webUrl: 'https://linear.app/acme' }, externalId: 'team', externalName: 'Platform',
       } })
-      if (new URL(url, 'http://localhost').pathname.endsWith('/tracker/LIN-2')) return json({ available: true, item: { ...issue('LIN-2', 'Needs context'), body: '' } })
+      if (new URL(url, 'http://localhost').pathname.endsWith('/tracker/LIN-2')) return json({ available: true, comments: { available: true, items: [], truncated: false }, item: { ...issue('LIN-2', 'Needs context'), body: '' } })
       return new Promise<never>(() => {})
     }))
     render(
@@ -171,3 +171,59 @@ function issue(id: string, title: string) {
     url: `https://acme.atlassian.net/browse/${id}`, status: 'Open', statusId: 'status-1', statusCategory: 'started',
   }
 }
+
+describe('Tracker comments', () => {
+  const mount = (comments: unknown) => {
+    const launches: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 })
+      if (url.endsWith('/tracker/association')) return json({ association: {
+        kind: 'jira', source: { id: 'acme', webUrl: 'https://acme.atlassian.net' }, externalId: '100', externalName: 'OPS',
+      } })
+      if (new URL(url, 'http://localhost').pathname.endsWith('/tracker/OPS-7')) return json({ available: true, item: issue('OPS-7', 'With a thread'), comments })
+      if (url.endsWith('/workflows')) return json({ workflows: [] })
+      if (url.endsWith('/runs') && init?.method === 'POST') { launches.push(String(init.body)); return json({ id: 'run-1' }) }
+      return new Promise<never>(() => {})
+    }))
+    render(
+      <MemoryRouter initialEntries={['/tracker/OPS-7']}>
+        <QueryClientProvider client={createQueryClient()}>
+          <ShellWithSidebar><Routes><Route path="/tracker/:id" element={<TrackerRoute />} /></Routes></ShellWithSidebar>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    )
+    return launches
+  }
+  const comment = (id: string, body: string) => ({ id, author: 'Grace', createdAt: '2026-09-20T10:00:00.000Z', body, bodyTruncated: false, unsupportedContent: false })
+
+  it('shows the thread under the description and counts it into the task', async () => {
+    mount({ available: true, truncated: false, items: [comment('1', 'Can we keep the endpoint?'), comment('2', 'DECISION_ONLY_IN_A_COMMENT')] })
+    expect(await screen.findByText('DECISION_ONLY_IN_A_COMMENT')).toBeTruthy()
+    expect(document.querySelectorAll('[data-slot="tracker-comment"]')).toHaveLength(2)
+    // A complete thread is no loss: nothing to acknowledge.
+    expect(screen.queryByText('This snapshot is incomplete.')).toBeNull()
+    expect(screen.queryByRole('checkbox', { name: /I understand/i })).toBeNull()
+    expect(screen.getByText(/its comments and the source link are included/i)).toBeTruthy()
+  })
+
+  it('says "No comments." only for a thread that was read and is empty', async () => {
+    mount({ available: true, truncated: false, items: [] })
+    expect(await screen.findByText('No comments.')).toBeTruthy()
+  })
+
+  it('treats unreadable comments as a loss that must be acknowledged, never as an empty thread', async () => {
+    mount({ available: false, reason: 'Jira denied access.' })
+    expect(await screen.findByText(/Comments could not be loaded: Jira denied access\./)).toBeTruthy()
+    expect(screen.queryByText('No comments.')).toBeNull()
+    expect(screen.getByText('This snapshot is incomplete.')).toBeTruthy()
+    expect(screen.getByRole('checkbox', { name: /I understand/i })).toBeTruthy()
+    expect((screen.getByRole('button', { name: /Run agent/i }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('requires acknowledgment for a partial thread', async () => {
+    mount({ available: true, truncated: true, items: [comment('1', 'Latest note')] })
+    expect(await screen.findByText(/this issue has more/i)).toBeTruthy()
+    expect(screen.getByRole('checkbox', { name: /I understand/i })).toBeTruthy()
+  })
+})

@@ -21,7 +21,7 @@ describe('Tracker handoff', () => {
   it('requires a new acknowledgment when a refreshed lossy description changes, retaining the draft', () => {
     const client = createQueryClient()
     const view = (body: string) => <MemoryRouter><QueryClientProvider client={client}>
-      <TrackerHandoff item={{ ...ITEM, body, bodyTruncated: true }} workflows={[]} skills={[]} />
+      <TrackerHandoff comments={{ available: true, items: [], truncated: false }} item={{ ...ITEM, body, bodyTruncated: true }} workflows={[]} skills={[]} />
     </QueryClientProvider></MemoryRouter>
     const rendered = render(view('Old partial description'))
     fireEvent.change(screen.getByLabelText('Custom instruction'), { target: { value: 'Keep this instruction' } })
@@ -47,7 +47,7 @@ describe('Tracker handoff', () => {
     }))
     render(
       <MemoryRouter><QueryClientProvider client={createQueryClient()}>
-        <TrackerHandoff item={ITEM} workflows={[]} skills={skills} />
+        <TrackerHandoff comments={{ available: true, items: [], truncated: false }} item={ITEM} workflows={[]} skills={skills} />
       </QueryClientProvider></MemoryRouter>,
     )
 
@@ -75,7 +75,7 @@ const ITEM: TrackerItem = {
 it('keyboard submission obeys the same snapshot acknowledgment guard as the button', async () => {
   const send = vi.fn(async () => new Response(JSON.stringify({ id: 'run-shortcut' }), { status: 200 }))
   vi.stubGlobal('fetch', send)
-  render(<MemoryRouter><QueryClientProvider client={createQueryClient()}><TrackerHandoff item={{ ...ITEM, unsupportedContent: true }} workflows={[]} skills={[]} /></QueryClientProvider></MemoryRouter>)
+  render(<MemoryRouter><QueryClientProvider client={createQueryClient()}><TrackerHandoff comments={{ available: true, items: [], truncated: false }} item={{ ...ITEM, unsupportedContent: true }} workflows={[]} skills={[]} /></QueryClientProvider></MemoryRouter>)
   fireEvent.keyDown(screen.getByLabelText('Custom instruction'), { key: 'Enter', ctrlKey: true })
   expect(send).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole('checkbox', { name: /I understand/ }))

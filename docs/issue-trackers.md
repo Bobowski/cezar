@@ -108,6 +108,11 @@ Browsing does not call `/myself`. Enabled Jira automations read the account time
 `GET /rest/api/3/myself`, which additionally requires classic **`read:jira-user`**. Its granular
 scopes are `read:application-role:jira`, `read:group:jira`, `read:user:jira`, and `read:avatar:jira`
 (already included in the aggregate table above). See [current-user permissions](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-myself/#api-rest-api-3-myself-get).
+Opening an issue additionally reads its comments (`GET /rest/api/3/issue/{key}/comment`). The
+classic `read:jira-work` scope is expected to cover it; with granular scopes add
+`read:comment:jira` and `read:comment.property:jira`. This row has not been re-checked against
+Atlassian's OpenAPI contract the way the table above was: if the token lacks it, the issue still
+opens and its comments are reported as unavailable.
 These reads require no write scope; agent-requested status updates need suitable vendor write permissions.
 
 For Linear, create a personal API key with **Read** permission and access to the desired
@@ -136,9 +141,10 @@ says so first. Tasks started before this feature, and tasks typed by hand, carry
 
 ## Agent context
 
-Handing off a ticket fetches its detail description, including text beyond the list preview.
-The prompt includes the identifier, title, source URL, description snapshot, selected skills,
-supplemental context and your instruction. The snapshot persists in normal run history. If no agent backend is ready or its authentication
+Handing off a ticket fetches its detail description, including text beyond the list preview, and
+its comment thread. The prompt includes the identifier, title, source URL, description snapshot,
+comments, selected skills, supplemental context and your instruction. Everything the vendor wrote
+travels inside one block marked as untrusted reference data. The snapshot persists in normal run history. If no agent backend is ready or its authentication
 cannot be checked, the handoff explains the problem and links to **Configure providers**;
 your draft stays in place while you restore access.
 
@@ -151,10 +157,17 @@ connection identity, so changing a connection cannot mix another source’s tick
 draft. An unchanged scope preserves the draft; a changed scope clears it. Submitting the same search
 again refreshes its results from page one. Detail refetches revalidate with the provider.
 
-Comments, attachments and custom fields are not fetched. Previews are capped at 8,000
-characters and detail descriptions at 60,000. If conversion drops unsupported content or
-the description reaches its cap, the composer discloses the limitation and requires
-acknowledgment; you can add supplemental context. Final prompts over 100,000 characters
+Opening an issue reads up to 30 comments, each capped at 4,000 characters, and shows them under
+the description oldest first. Jira returns the 30 most recent; for Linear the page is whichever
+end of the thread its API serves first, which has not been confirmed against a live workspace, so
+a longer thread is reported as partial rather than as "the latest". A task prompt spends at most
+30,000 characters on comments, keeping the newest that fit. Only comments the token's account
+may see are returned. Attachments and custom fields are not fetched.
+
+Previews are capped at 8,000 characters and detail descriptions at 60,000. If conversion drops
+unsupported content, the description or a comment reaches its cap, the thread is partial, or the
+comments could not be read at all, the composer says so and requires acknowledgment; you can add
+supplemental context. Comments that could not be read are never shown as "no comments". Final prompts over 100,000 characters
 must be edited before launch. Tracker credentials are not forwarded to agents by default:
 a source link does not grant the agent access to omitted context.
 

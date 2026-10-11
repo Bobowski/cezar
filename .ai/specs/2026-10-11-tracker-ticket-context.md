@@ -169,6 +169,24 @@ cards, the Tasks section and the in-progress notice. Deviations from the text ab
   the server (phase 3). It lives in `packages/contract` (Node-free; the service may import its
   values, and `inline-contract.mjs` already folds it into `dist/`).
 
+**Status 2026-10-11:** implemented — `comments` on the detail response, comment reads in
+both adapters and the demo fixtures, `renderTrackerContext`/`trackerContextLosses` in
+`packages/contract/src/tracker-context.ts`, the thread in the issue panel, the envelope and
+the new losses in the composer. Differences from the text above:
+
+- `getItem` returns the comments; there is no separate `listComments` driver method. One read
+  per detail view keeps the existing deadline, dedupe and cooldown without a second code path.
+- No `bodiesTruncated` counter: it is derivable from the items.
+- A prompt spends at most 30,000 characters on comments (`TRACKER_COMMENT_BUDGET`), keeping the
+  newest that fit and reporting the rest as a loss. Without it a full thread plus a long
+  description could exceed the 100,000-character task limit and block the launch.
+- **Unverified against vendors.** The Jira comment endpoint, its parameters and scopes are
+  implemented from prior knowledge of the API: the documentation page could not be read this
+  session. Which end of a thread Linear's `comments(first:)` serves first is not documented
+  where I could find it; the adapter sorts what it gets and reports `hasNextPage` as partial
+  instead of claiming "most recent". Linear comments by integrations (no `user`) appear as
+  "Unknown". Neither adapter has been exercised against a live account.
+
 ### Phase 3 — server-built snapshot for automations
 
 - At launch, the automation path reads the item and its comments through the driver bound to the

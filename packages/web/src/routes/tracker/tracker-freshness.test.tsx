@@ -58,7 +58,7 @@ describe('tracker snapshot freshness', () => {
         calls++
         return calls === 2
           ? json({ available: false, code: 'unavailable', reason: 'Temporary outage' })
-          : json({ available: true, item })
+          : json({ available: true, comments: { available: true, items: [], truncated: false }, item })
       }
       return new Promise<never>(() => {})
     }))
@@ -88,7 +88,7 @@ describe('tracker snapshot freshness', () => {
       const url = String(input)
       if (new URL(url, 'http://localhost').pathname.endsWith('/tracker/OPS-1')) {
         calls++
-        if (calls === 1) return json({ available: true, item })
+        if (calls === 1) return json({ available: true, comments: { available: true, items: [], truncated: false }, item })
         if (calls === 2) {
           if (failureKind === 'transport') throw new Error('Detail unavailable')
           return json({ available: false, code: failureKind, reason: 'Detail unavailable' })
@@ -116,7 +116,7 @@ describe('tracker snapshot freshness', () => {
     await waitFor(() => expect(calls).toBe(3))
     const reopened = await openHand()
     expect(runButton().disabled).toBe(true)
-    await act(async () => finishRetry(json({ available: true, item: { ...item, body: 'Recovered detail' } })))
+    await act(async () => finishRetry(json({ available: true, comments: { available: true, items: [], truncated: false }, item: { ...item, body: 'Recovered detail' } })))
     expect(await screen.findByText('Recovered detail')).toBeTruthy()
     expect(runButton().disabled).toBe(false)
     expect(reopened.value).toBe('Keep this draft')
@@ -135,7 +135,7 @@ describe('tracker snapshot freshness', () => {
       const url = new URL(String(input), 'http://localhost')
       if (url.pathname.endsWith('/tracker/watch')) return json({ id: '00000000-0000-4000-8000-000000000001', topic: 'tracker:test' })
       if (url.pathname.includes('/tracker/watch/')) return json({ version: changed ? 2 : 1, checkedAt: changed ? '2026-09-19T01:02:00Z' : '2026-09-19T01:00:00Z', checking: false, result: changed ? { available: true, items: [{ ...item, title: 'Changed issue' }], truncated: false } : first })
-      if (url.pathname.endsWith('/tracker/OPS-1')) return json({ available: true, item })
+      if (url.pathname.endsWith('/tracker/OPS-1')) return json({ available: true, comments: { available: true, items: [], truncated: false }, item })
       if (url.pathname.endsWith('/tracker')) {
         listCalls.push(url.searchParams.get('cursor') ?? 'first')
         if (changed) return json({ available: true, items: [{ ...item, title: 'Unwanted automatic replacement' }], truncated: false })
@@ -176,7 +176,7 @@ describe('tracker snapshot freshness', () => {
   it('leaves launch enabled while a background refetch of the open detail is pending (GitHub parity, no staleness gate)', async () => {
     const client = createQueryClient()
     client.setQueryData(queryKeys.tracker.association(), { association })
-    client.setQueryData(queryKeys.tracker.detail(association, item.id), { available: true, item }, { updatedAt: Date.now() - 301_000 })
+    client.setQueryData(queryKeys.tracker.detail(association, item.id), { available: true, comments: { available: true, items: [], truncated: false }, item }, { updatedAt: Date.now() - 301_000 })
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       if (new URL(String(input), 'http://localhost').pathname.endsWith('/tracker/OPS-1')) return new Promise<Response>(() => {})
       return new Promise<never>(() => {})
@@ -229,7 +229,7 @@ it('preserves a bound connection draft across transport failure and recovery', a
  client.setQueryData(queryKeys.tracker.association(),{association:bound});
  client.setQueryData(queryKeys.tracker.connection(),connected);
  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-  if(new URL(String(input), 'http://localhost').pathname.endsWith('/tracker/OPS-1')) return json({available:true,item});
+  if(new URL(String(input), 'http://localhost').pathname.endsWith('/tracker/OPS-1')) return json({available:true,comments: { available: true, items: [], truncated: false }, item});
   if(String(input).endsWith('/tracker/connection')) { if(failing) throw new Error('temporary transport outage'); return json(connected); }
   return new Promise<never>(()=>{});
  }));

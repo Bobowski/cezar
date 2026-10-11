@@ -58,7 +58,11 @@ Reads begin only on user demand. Credentials stay on the server.
    `trackerItemParamsSchema`. Item and source links must use HTTPS.
 3. **Implement `TrackerProvider`.** Add `server/tracker/<provider>.ts` with discovery,
    association resolution, driver construction, cache invalidation, and driver operations
-   `listIssues`, `searchItems`, `getItem`. Validate vendor JSON with Zod. Resolve canonical
+   `listIssues`, `searchItems`, `getItem`. `getItem` also returns the ticket's comment thread
+   (`trackerCommentsSchema`): bounded by `TRACKER_COMMENT_LIMIT`/`TRACKER_COMMENT_CAP`, oldest
+   first, `truncated` when the ticket has more, and `{ available: false, reason }` when the
+   ticket was read but its comments were not — never an empty list. Lists and search do not
+   read comments. Validate vendor JSON with Zod. Resolve canonical
    names/URLs server-side; never trust a client-authored URL or scope name. Verify source
    identity and scope membership for every read, including direct ticket lookup.
 4. **Reuse the transport discipline.** Use bounded requests with a deadline spanning the

@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { CheckIcon, PlayIcon, XIcon } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
-import type { Skill, TrackerItem, WorkflowDef } from '@open-mercato/cezar-api-client'
+import type { Skill, TrackerComments, TrackerItem, WorkflowDef } from '@open-mercato/cezar-api-client'
 import { createRun } from '@/api/client'
 import { queryKeys } from '@/api/queries'
 import { EnginePills, engineRunBody, useResolvedEngine, type EnginePick } from '@/components/engine-pills'
@@ -28,10 +28,12 @@ export type TrackerHandoffSelection = {
   engine: EnginePick
 }
 
-export function TrackerHandoff({ item, expectedScope, workflows, skills, selection, onSelectionChange, drafts, scopePending = false, detailUnavailable = false, onQueued }: {
+export function TrackerHandoff({ item, comments, expectedScope, workflows, skills, selection, onSelectionChange, drafts, scopePending = false, detailUnavailable = false, onQueued }: {
   /** Fires with the queued run's id, so the host can confirm it outside this panel. */
   onQueued?: (runId: string | null) => void
   item: TrackerItem
+  /** The comment thread read with the ticket; part of the snapshot the agent receives. */
+  comments: TrackerComments
   /** The scope this ticket was read from; with it the launched task is linked to the ticket. */
   expectedScope?: string
   scopePending?: boolean
@@ -53,25 +55,27 @@ export function TrackerHandoff({ item, expectedScope, workflows, skills, selecti
   const [supplemental, setSupplemental] = useState(drafts?.get(item.url)?.supplemental ?? '')
   const [acknowledgedSnapshot, setAcknowledgedSnapshot] = useState<string | null>(drafts?.get(item.url)?.acknowledgedSnapshot ?? null)
   useEffect(() => { drafts?.set(item.url, { instruction, supplemental, acknowledgedSnapshot }) }, [drafts, item.url, instruction, supplemental, acknowledgedSnapshot])
-  const snapshotIdentity = JSON.stringify([item.id, item.body, item.bodyTruncated, item.unsupportedContent])
+  // An acknowledgment covers exactly the snapshot it was given for, comments included.
+  const snapshotIdentity = JSON.stringify([item.id, item.body, item.bodyTruncated, item.unsupportedContent, comments])
   const acknowledgeLoss = acknowledgedSnapshot === snapshotIdentity
   const [queued, setQueued] = useState<string | null>(null)
   const resolved = useResolvedEngine(engine)
-  const losses = trackerLosses(item)
+  const losses = trackerLosses(item, comments)
   const emptyDescription = item.body.trim() === ''
   const validSkills = selectedSkills.filter((name) => skills.some((skill) => skill.name === name))
   const skillChainOverLimit = workflow === null && validSkills.length > MAX_CHAIN_STEPS
   const composition = useMemo(() => {
     try {
-      const task = trackerTaskPrompt(item, { skills: workflow ? validSkills : [], instruction, supplemental })
+      const task = trackerTaskPrompt(item, comments, { skills: workflow ? validSkills : [], instruction, supplemental })
       return { task, error: null }
     } catch (error) {
       return { task: '', error: (error as Error).message }
     }
-  }, [item, workflow, validSkills.join('\0'), instruction, supplemental])
+  }, [item, comments, workflow, validSkills.join('\0'), instruction, supplemental])
   const start = useMutation({
     mutationFn: () => createRun(trackerRunBody(
       item,
+      comments,
       workflow,
       validSkills,
       engineRunBody(resolved),
@@ -118,7 +122,7 @@ export function TrackerHandoff({ item, expectedScope, workflows, skills, selecti
         <FieldLabel htmlFor="tracker-instruction">Custom instruction</FieldLabel>
         <Textarea id="tracker-instruction" aria-keyshortcuts="Control+Enter Meta+Enter" onKeyDown={event => { if (isSubmitShortcut(event.nativeEvent)) { event.preventDefault(); if (canSubmit) start.mutate() } }} value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="Optional instructions; these are placed last in the task." className="min-h-28 text-[13.5px]" />
         <FieldDescription className="flex justify-between gap-4 text-xs">
-          <span className={composition.error ? 'text-danger' : undefined}>{composition.error ?? 'Full tracker detail and source link are included. Comments, attachments, and custom fields are outside the snapshot.'}</span>
+          <span className={composition.error ? 'text-danger' : undefined}>{composition.error ?? (comments.available ? 'The description, its comments and the source link are included. Attachments and custom fields are outside the snapshot.' : 'The description and the source link are included. Comments could not be read; attachments and custom fields are outside the snapshot.')}</span>
           <span className="shrink-0 tabular-nums">{composition.task.length.toLocaleString()} / {TRACKER_TASK_LIMIT.toLocaleString()}</span>
         </FieldDescription>
       </Field>

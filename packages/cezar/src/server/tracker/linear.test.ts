@@ -9,6 +9,7 @@ const issue = (over: Record<string, unknown> = {}) => ({
   identifier: 'ENG-1', title: 'Fix', description: 'Full detail', creator: { name: 'Ada' },
   createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-02T00:00:00.000Z',
   labels: { nodes: [{ name: 'backend' }], pageInfo: { hasNextPage: false } },
+  comments: { nodes: [], pageInfo: { hasNextPage: false } },
   state: { id: 'state-1', name: 'Started', type: 'started' }, team: { id: teamId },
   url: 'https://linear.app/acme/issue/ENG-1/fix', ...over,
 });
@@ -80,6 +81,30 @@ describe('Linear read-only adapter', () => {
     expect(detail.available && detail.item.bodyTruncated).toBe(true);
     client.clearCache(); unsafe = true;
     expect(await driver.getItem('ENG-1')).toMatchObject({ code: 'invalid_response' });
+  });
+  it('reads the comment thread with the ticket, oldest first, bounded, and says when it is partial', async () => {
+    const node = (id: string, createdAt: string, over: Record<string, unknown> = {}) => ({ id, body: `Comment ${id}`, createdAt, user: { name: 'Grace' }, ...over });
+    let query = '';
+    const { client } = mock(sent => { query = sent; return json({ data: { issue: issue({ comments: {
+      // Deliberately newest first: the adapter must not trust the vendor's order.
+      nodes: [node('c3', '2026-01-05T00:00:00.000Z', { body: 'y'.repeat(4_500) }), node('c1', '2026-01-03T00:00:00.000Z'), node('c2', '2026-01-04T00:00:00.000Z', { user: null, body: null })],
+      pageInfo: { hasNextPage: true },
+    } }) } }); });
+    const detail = await client.driver(association).getItem('ENG-1');
+    if (!detail.available || !detail.comments.available) throw new Error('expected a ticket with comments');
+    expect(query).toContain('comments(first: 30)');
+    expect(detail.comments.truncated).toBe(true);
+    expect(detail.comments.items.map(comment => comment.id)).toEqual(['c1', 'c2', 'c3']);
+    expect(detail.comments.items[0]).toEqual({ id: 'c1', author: 'Grace', createdAt: '2026-01-03T00:00:00.000Z', body: 'Comment c1', bodyTruncated: false, unsupportedContent: false });
+    expect(detail.comments.items[1]).toMatchObject({ author: 'Unknown', body: '' });
+    expect(detail.comments.items[2]!.body).toHaveLength(4_000);
+    expect(detail.comments.items[2]!.bodyTruncated).toBe(true);
+  });
+  it('does not ask for comments when listing', async () => {
+    let query = '';
+    const { client } = mock(sent => { query = sent; return json({ data: { result: { nodes: [issue()], pageInfo } } }); });
+    await client.driver(association).listIssues({ state: 'all', limit: 50 });
+    expect(query).not.toContain('comments(');
   });
   it('binds cursors to team and filters and rejects incomplete continuation', async () => {
     let incomplete = false;

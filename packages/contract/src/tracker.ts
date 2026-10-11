@@ -169,10 +169,35 @@ export const trackerItemsSuccessSchema = z
   .superRefine(enforcePagination);
 export type TrackerItemsSuccess = z.infer<typeof trackerItemsSuccessSchema>;
 
+/** One comment on a ticket, converted and bounded like the description. */
+export const trackerCommentSchema = z
+  .object({
+    id: z.string(),
+    author: z.string(),
+    createdAt: z.iso.datetime({ offset: true }),
+    body: z.string(),
+    bodyTruncated: z.boolean(),
+    unsupportedContent: z.boolean(),
+  })
+  .strict();
+export type TrackerComment = z.infer<typeof trackerCommentSchema>;
+
+/**
+ * A ticket's comment thread as one bounded read, oldest first. `truncated` means the ticket has
+ * comments this read did not include. A failed comment read is its own state: the ticket itself
+ * was read, and "unavailable" must never be rendered as "no comments".
+ */
+export const trackerCommentsSchema = z.discriminatedUnion('available', [
+  z.object({ available: z.literal(true), items: z.array(trackerCommentSchema), truncated: z.boolean() }).strict(),
+  z.object({ available: z.literal(false), reason: z.string() }).strict(),
+]);
+export type TrackerComments = z.infer<typeof trackerCommentsSchema>;
+
 export const trackerItemSuccessSchema = z
   .object({
     available: z.literal(true),
     item: trackerItemSchema,
+    comments: trackerCommentsSchema,
   })
   .strict();
 export type TrackerItemSuccess = z.infer<typeof trackerItemSuccessSchema>;

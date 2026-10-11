@@ -38,7 +38,7 @@ it.each(['missing', 'failed'] as const)('explains a %s backend and recovers with
     return new Promise<Response>(() => {})
   }))
   render(<MemoryRouter initialEntries={['/p/acme/tracker']}><QueryClientProvider client={client}>
-    <TrackerHandoff item={ITEM} workflows={[]} skills={[]} />
+    <TrackerHandoff comments={{ available: true, items: [], truncated: false }} item={ITEM} workflows={[]} skills={[]} />
   </QueryClientProvider></MemoryRouter>)
 
   const run = screen.getByRole('button', { name: /Run agent/ }) as HTMLButtonElement

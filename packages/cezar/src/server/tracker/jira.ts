@@ -6,6 +6,7 @@ import type {
   TrackerAssociationResult,
   TrackerCandidatesQuery,
   TrackerCandidatesResult,
+  TrackerComments,
   TrackerItem,
   TrackerStatusCategory,
   TrackerItemResult,
@@ -14,7 +15,7 @@ import type {
   TrackerSearchQuery,
   TrackerSource,
 } from '@open-mercato/cezar-contract';
-import { adfMarkdown, descriptionBody } from './adf.ts';
+import { adfMarkdown, chronological, descriptionBody, TRACKER_COMMENT_CAP, TRACKER_COMMENT_LIMIT } from './adf.ts';
 import { decodeCursor, encodeCursor } from './cursor.ts';
 import {
   ResultCache,
@@ -51,6 +52,16 @@ const issueSchema = z.object({
     description: z.unknown().nullable(),
     status: z.object({ id: z.string().min(1), name: z.string(), statusCategory: z.object({ key: z.string() }).optional() }),
   }),
+});
+/** `GET /issue/{key}/comment`: only the comments this account may see are returned. */
+const commentPageSchema = z.object({
+  total: z.number().int().nonnegative().optional(),
+  comments: z.array(z.object({
+    id: z.string().min(1),
+    author: z.object({ displayName: z.string() }).nullable().optional(),
+    body: z.unknown().nullable(),
+    created: z.string().min(1),
+  })),
 });
 const issuePageSchema = z.object({
   isLast: z.boolean(),
@@ -362,6 +373,28 @@ export function createJiraClient(
       }
     };
 
+    // The ticket was read; a comment read that then fails is reported as such, never as "none".
+    const readComments = async (currentSource: TrackerSource, key: string, signal: AbortSignal): Promise<TrackerComments> => {
+      try {
+        const params = new URLSearchParams({ orderBy: '-created', maxResults: String(TRACKER_COMMENT_LIMIT) });
+        const raw = await authenticatedJson(currentSource, `/rest/api/3/issue/${encodeURIComponent(key)}/comment?${params}`, { method: 'GET' }, signal);
+        const page = parseVendor(commentPageSchema, raw);
+        const rows = page.comments.slice(0, TRACKER_COMMENT_LIMIT);
+        const items = rows.map((row) => {
+          const converted = adfMarkdown(row.body);
+          return {
+            id: row.id,
+            author: row.author?.displayName ?? 'Unknown',
+            createdAt: normalizeTimestamp(row.created),
+            ...descriptionBody(converted.body, TRACKER_COMMENT_CAP, converted.unsupportedContent),
+          };
+        });
+        return { available: true, items: chronological(items), truncated: (page.total ?? page.comments.length) > rows.length };
+      } catch (error) {
+        return { available: false, reason: requestFailure(error).reason };
+      }
+    };
+
     const getItem = async (id: string): Promise<TrackerItemResult> => {
       try {
         if (!issueKeyPattern.test(id) || id.length > 256) {
@@ -385,10 +418,8 @@ export function createJiraClient(
             const parsed = parseVendor(issueSchema, raw);
             // Jira resolves historical keys after rename/move. Numeric project scope
             // in mapIssue is authoritative; return the canonical current key.
-            return {
-              available: true,
-              item: mapIssue(parsed, config.origin, association.externalId, 60_000),
-            };
+            const item = mapIssue(parsed, config.origin, association.externalId, 60_000);
+            return { available: true, item, comments: await readComments(currentSource, item.id, signal) };
           },
         ));
       } catch (error) {

@@ -1,4 +1,5 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { SettingsPane } from './settings-field'
 import { TesterArmyE2eCard } from './tester-army-e2e-card'
 
 /**
@@ -8,18 +9,18 @@ import { TesterArmyE2eCard } from './tester-army-e2e-card'
  */
 export function IntegrationsSection() {
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 p-4 md:p-6" data-slot="integrations-settings">
-      <p className="text-sm text-muted-foreground">
+    <SettingsPane data-slot="integrations-settings" className="gap-4">
+      <p className="max-w-prose text-[13px] text-pretty text-muted-foreground">
         Tools cezar can set up in this project for you — each one as a task you review and merge.
       </p>
       <Tabs defaultValue="test-frameworks">
         <TabsList variant="line" data-slot="integrations-tabs">
           <TabsTrigger value="test-frameworks">Test frameworks</TabsTrigger>
         </TabsList>
-        <TabsContent value="test-frameworks" className="pt-4">
+        <TabsContent value="test-frameworks" className="pt-5">
           <TesterArmyE2eCard />
         </TabsContent>
       </Tabs>
-    </div>
+    </SettingsPane>
   )
 }

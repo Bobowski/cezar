@@ -6,10 +6,15 @@ import { Link, useNavigate } from 'react-router'
 import { E2E_CREDENTIAL_NAMES, queryScope, type E2eCredentialName, type RunStatus } from '@open-mercato/cezar-api-client'
 import { startE2eSetup } from '@/api/client'
 import { queryKeys, useE2eStatus, useRun } from '@/api/queries'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { toast } from '@/components/ui/toaster'
+import { cn } from '@/lib/utils'
 import { scopeTo } from '@/lib/project-router'
 import testerArmyLogo from '@/assets/integrations/tester-army.png'
+import { SettingsField, SettingsGroup, SettingsNote } from './settings-field'
 
 /** TesterArmy's own repository — where the card sends someone who wants to know what e2e is. */
 export const TESTER_ARMY_REPO = 'https://github.com/tester-army/e2e'
@@ -42,8 +47,8 @@ function setupLine(status: RunStatus, landed: boolean, branch: string | undefine
 
 function Row({ ok, children }: { ok: boolean; children: React.ReactNode }) {
   return (
-    <li className="flex items-center gap-2 text-sm" data-ok={ok}>
-      {ok ? <CheckIcon className="size-4 text-success" aria-hidden /> : <MinusIcon className="size-4 text-muted-foreground" aria-hidden />}
+    <li className="flex items-center gap-2 text-[13px]" data-ok={ok}>
+      {ok ? <CheckIcon className="size-4 shrink-0 text-success" aria-hidden /> : <MinusIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
       <span className={ok ? undefined : 'text-muted-foreground'}>{children}</span>
     </li>
   )
@@ -98,79 +103,151 @@ export function TesterArmyE2eCard() {
 
   const badge = inFlight ? 'Setting up' : installed ? 'Installed' : 'Not set up'
   return (
-    <div className="flex flex-col gap-4" data-slot="e2e-settings">
-      <section className="rounded-lg border border-border bg-card p-4">
-        <div className="flex items-start gap-3">
-          <img src={testerArmyLogo} alt="" width={40} height={40} className="size-10 shrink-0 rounded-md" />
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-sm font-semibold">TesterArmy e2e</h2>
-              <span data-slot="e2e-badge" data-state={inFlight ? 'setting-up' : installed ? 'installed' : 'none'}
-                className={installed && !inFlight
-                  ? 'rounded-full bg-success/10 px-2 py-0.5 text-xs font-medium text-success'
-                  : 'rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground'}>
-                {badge}
-              </span>
+    <div className="flex flex-col gap-8" data-slot="e2e-settings">
+      <SettingsGroup>
+        <div className="flex flex-col gap-3 px-5 py-4">
+          <div className="flex items-start gap-3">
+            <img src={testerArmyLogo} alt="" width={40} height={40} className="size-10 shrink-0 rounded-md" />
+            <div className="min-w-0 flex-1 space-y-0.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-[15px] font-semibold text-foreground">TesterArmy e2e</h2>
+                <Badge
+                  variant="secondary"
+                  data-slot="e2e-badge"
+                  data-state={inFlight ? 'setting-up' : installed ? 'installed' : 'none'}
+                  className={cn(installed && !inFlight && 'bg-success/10 text-success')}
+                >
+                  {badge}
+                </Badge>
+              </div>
+              <p className="text-[13px] text-muted-foreground">Agentic browser end-to-end testing</p>
             </div>
-            <p className="text-xs text-muted-foreground">Agentic browser end-to-end testing</p>
+            <Button asChild variant="ghost" size="sm" className="shrink-0 text-muted-foreground">
+              <a href={TESTER_ARMY_REPO} target="_blank" rel="noreferrer">
+                tester-army/e2e <ExternalLinkIcon aria-hidden />
+              </a>
+            </Button>
           </div>
-          <a href={TESTER_ARMY_REPO} target="_blank" rel="noreferrer"
-            className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
-            tester-army/e2e <ExternalLinkIcon className="size-3" aria-hidden />
-          </a>
-        </div>
-        <p className="mt-3 text-sm text-muted-foreground">
-          cezar installs it for this project, points it at your dev server, writes a smoke test and an
-          {' '}<code>implement-and-e2e</code> workflow, proves it all passes in a real browser and opens a draft PR for you to merge.
-        </p>
-        {status.isPending ? <p className="mt-4 text-sm text-muted-foreground">Loading…</p> : null}
-        {status.isError ? <p role="alert" className="mt-4 text-sm text-danger">{status.error.message}</p> : null}
-        {status.data ? (
-          <ul className="mt-4 flex flex-col gap-1.5" aria-label="e2e status">
-            <Row ok={Boolean(status.data.configFile)}>{status.data.configFile ? <>Configured (<code>{status.data.configFile}</code>)</> : 'Not configured in this checkout'}</Row>
-            <Row ok={status.data.workflow}><code>implement-and-e2e</code> workflow {status.data.workflow ? 'available' : 'not added yet'}</Row>
-            <Row ok={credentials.length > 0}>
-              {credentials.length > 0
-                ? <>Model key: <code>{credentials.join(', ')}</code></>
-                : 'No model key — smoke tests run without one; agent steps need one'}
-            </Row>
-          </ul>
-        ) : null}
-        {status.data?.setup && setupStatus ? (
-          <p className="mt-3 text-sm" data-slot="e2e-setup-run" data-status={setupStatus}>
-            {setupLine(setupStatus, Boolean(status.data.configFile), setupRun.data?.branch, prUrl)}{' '}
-            {prUrl && !status.data.configFile ? (
-              <><a className="underline" href={prUrl} target="_blank" rel="noreferrer">Open the draft PR</a>{' · '}</>
-            ) : null}
-            <Link className="underline" to={scopeTo(queryScope(), `/tasks/${status.data.setup.runId}`)}>Open the setup task</Link>
+          <p className="max-w-prose text-[13px] text-pretty text-muted-foreground">
+            cezar installs it for this project, points it at your dev server, writes a smoke test and an{' '}
+            <code className="rounded-sm bg-muted px-1 py-0.5 font-mono text-[11px]">implement-and-e2e</code> workflow, proves it all passes in a real browser and
+            opens a draft PR for you to merge.
           </p>
-        ) : null}
-      </section>
-
-      <form className="rounded-lg border border-border bg-card p-4" autoComplete="off" onSubmit={(event) => { event.preventDefault(); starting.mutate() }}>
-        <h2 className="text-sm font-semibold">{installed ? 'Set up again' : 'Set up e2e'}</h2>
-        <label className="mt-3 block text-sm">Model provider
-          <select aria-label="Model provider" value={provider} onChange={(event) => setProvider(event.target.value as E2eCredentialName)}
-            className="mt-1 block w-full rounded border border-border bg-background p-2 outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50">
-            {E2E_CREDENTIAL_NAMES.map((name) => (
-              <option key={name} value={name}>{PROVIDER_LABELS[name]} ({name}){credentials.includes(name) ? ' — stored' : ''}</option>
-            ))}
-          </select>
-        </label>
-        <label className="mt-3 block text-sm">API key <span className="text-muted-foreground">(optional)</span>
-          <input aria-label="API key" type="password" autoComplete="off" value={key} onChange={(event) => setKey(event.target.value)}
-            placeholder={credentials.includes(provider) ? 'stored — leave empty to keep it' : ''}
-            className="mt-1 block w-full rounded border border-border bg-background p-2" />
-        </label>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Stored encrypted as a project secret for check steps only — never handed to an agent session.
-        </p>
-        {error ? <p role="alert" className="mt-2 text-sm text-danger">{error}</p> : null}
-        <div className="mt-3">
-          <Button type="submit" disabled={starting.isPending || inFlight || !status.data}>
-            {inFlight ? 'Setup in progress…' : installed ? 'Set up again' : 'Set up e2e'}
-          </Button>
         </div>
+        {status.isPending ? (
+          <div className="px-5 py-4">
+            <SettingsNote>Loading…</SettingsNote>
+          </div>
+        ) : null}
+        {status.isError ? (
+          <div className="px-5 py-4">
+            <SettingsNote tone="danger" role="alert">
+              {status.error.message}
+            </SettingsNote>
+          </div>
+        ) : null}
+        {status.data ? (
+          <div className="flex flex-col gap-3 px-5 py-4">
+            <ul className="flex flex-col gap-1.5" aria-label="e2e status">
+              <Row ok={Boolean(status.data.configFile)}>
+                {status.data.configFile ? (
+                  <>
+                    Configured (<code className="rounded-sm bg-muted px-1 py-0.5 font-mono text-[11px]">{status.data.configFile}</code>)
+                  </>
+                ) : (
+                  'Not configured in this checkout'
+                )}
+              </Row>
+              <Row ok={status.data.workflow}>
+                <code className="rounded-sm bg-muted px-1 py-0.5 font-mono text-[11px]">implement-and-e2e</code> workflow{' '}
+                {status.data.workflow ? 'available' : 'not added yet'}
+              </Row>
+              <Row ok={credentials.length > 0}>
+                {credentials.length > 0 ? (
+                  <>
+                    Model key: <code className="rounded-sm bg-muted px-1 py-0.5 font-mono text-[11px]">{credentials.join(', ')}</code>
+                  </>
+                ) : (
+                  'No model key — smoke tests run without one; agent steps need one'
+                )}
+              </Row>
+            </ul>
+            {status.data.setup && setupStatus ? (
+              <p className="text-[13px] text-pretty" data-slot="e2e-setup-run" data-status={setupStatus}>
+                {setupLine(setupStatus, Boolean(status.data.configFile), setupRun.data?.branch, prUrl)}{' '}
+                {prUrl && !status.data.configFile ? (
+                  <>
+                    <a className="font-medium underline decoration-border underline-offset-4 hover:decoration-foreground" href={prUrl} target="_blank" rel="noreferrer">
+                      Open the draft PR
+                    </a>
+                    {' · '}
+                  </>
+                ) : null}
+                <Link
+                  className="font-medium underline decoration-border underline-offset-4 hover:decoration-foreground"
+                  to={scopeTo(queryScope(), `/tasks/${status.data.setup.runId}`)}
+                >
+                  Open the setup task
+                </Link>
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+      </SettingsGroup>
+
+      <form
+        autoComplete="off"
+        onSubmit={(event) => {
+          event.preventDefault()
+          starting.mutate()
+        }}
+      >
+        <SettingsGroup title={installed ? 'Set up again' : 'Set up e2e'}>
+          <SettingsField
+            title="Model provider"
+            htmlFor="e2e-provider"
+            hint="The provider whose key e2e's agent steps use."
+            control={
+              <NativeSelect
+                id="e2e-provider"
+                aria-label="Model provider"
+                value={provider}
+                onChange={(event) => setProvider(event.target.value as E2eCredentialName)}
+              >
+                {E2E_CREDENTIAL_NAMES.map((name) => (
+                  <NativeSelectOption key={name} value={name}>
+                    {PROVIDER_LABELS[name]} ({name}){credentials.includes(name) ? ' — stored' : ''}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            }
+          />
+          <SettingsField
+            title="API key (optional)"
+            htmlFor="e2e-key"
+            hint="Stored encrypted as a project secret for check steps only — never handed to an agent session."
+          >
+            <Input
+              id="e2e-key"
+              aria-label="API key"
+              type="password"
+              autoComplete="off"
+              value={key}
+              onChange={(event) => setKey(event.target.value)}
+              placeholder={credentials.includes(provider) ? 'stored — leave empty to keep it' : ''}
+            />
+          </SettingsField>
+          <div className="flex flex-wrap items-center justify-end gap-3 px-5 py-3">
+            {error ? (
+              <SettingsNote tone="danger" role="alert" className="mr-auto">
+                {error}
+              </SettingsNote>
+            ) : null}
+            <Button type="submit" disabled={starting.isPending || inFlight || !status.data}>
+              {inFlight ? 'Setup in progress…' : installed ? 'Set up again' : 'Set up e2e'}
+            </Button>
+          </div>
+        </SettingsGroup>
       </form>
     </div>
   )

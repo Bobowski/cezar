@@ -13,10 +13,7 @@ import { ShellProviders } from '@/test/shell-providers'
 
 let requests: Array<{ method: string; url: string; body?: unknown }> = []
 
-function serve(
-  overrides: Partial<WorkspaceConfigResponse> = {},
-  updateOverrides: Partial<SkillsUpdateState> = {},
-) {
+function serve(overrides: Partial<WorkspaceConfigResponse> = {}) {
   requests = []
   const config: WorkspaceConfigResponse = {
     branding: { name: 'cezar', logoUrl: null },
@@ -42,36 +39,6 @@ function serve(
     agentDefaults: {},
     ...overrides,
   }
-  const update: SkillsUpdateState = {
-    status: 'current',
-    available: false,
-    autoUpdateEnabled: true,
-    inherited: true,
-    checkedAt: null,
-    updatedAt: null,
-    needsUpgradeNotes: false,
-    scopes: [
-      {
-        scope: 'project',
-        status: 'current',
-        available: false,
-        skills: [],
-        checkedAt: null,
-        updatedAt: null,
-        reason: 'Open Mercato installation is not tracked',
-      },
-      {
-        scope: 'global',
-        status: 'current',
-        available: false,
-        skills: [],
-        checkedAt: null,
-        updatedAt: null,
-        reason: 'Open Mercato installation is not tracked',
-      },
-    ],
-    ...updateOverrides,
-  }
   const json = (payload: unknown) =>
     new Response(JSON.stringify(payload), {
       status: 200,
@@ -92,7 +59,6 @@ function serve(
         }
         return json(config)
       }
-      if (url === '/api/v1/workspace/skills-update?projectId=boot') return json(update)
       return new Promise<never>(() => {})
     }),
   )
@@ -140,7 +106,6 @@ describe('Global settings → Skills', () => {
     expect(screen.getByText('CEZ_SKILLS_AUTO_UPDATE').parentElement?.textContent).toMatch(
       /CEZ_SKILLS_AUTO_UPDATE\s+supplies the inherited default/,
     )
-    expect(await screen.findByText('No tracked Open Mercato installation found.')).toBeTruthy()
     expect((screen.getByRole('button', { name: 'Use default' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
@@ -158,26 +123,4 @@ describe('Global settings → Skills', () => {
     await waitFor(() => expect(puts().at(-1)?.body).toEqual({ skillsAutoUpdate: null }))
   })
 
-  it('degrades to an unavailable status without disabling the preference', async () => {
-    serve(
-      {},
-      {
-        status: 'unavailable',
-        scopes: [
-          {
-            scope: 'project',
-            status: 'unavailable',
-            available: false,
-            skills: [],
-            checkedAt: null,
-            updatedAt: null,
-            reason: 'npx is unavailable',
-          },
-        ],
-      },
-    )
-    renderSkills()
-    expect(await screen.findByText('npx is unavailable')).toBeTruthy()
-    expect((screen.getByRole('switch') as HTMLButtonElement).disabled).toBe(false)
-  })
 })

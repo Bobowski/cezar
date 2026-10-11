@@ -9,6 +9,7 @@ import {
   ScaleIcon,
   SearchXIcon,
   SlidersHorizontalIcon,
+  WorkflowIcon,
 } from 'lucide-react'
 import * as React from 'react'
 import { Link, useNavigate } from '@/lib/project-router'
@@ -34,7 +35,9 @@ import { Page, PageBody, PageHeader, PageToolbar } from '@/components/page'
 import { PinToggle } from '@/components/pin-toggle'
 import { TaskReferenceChip } from '@/components/reference-conflict-action'
 import { ReferenceStatusProvider } from '@/components/reference-status'
-import { StatusDot } from '@/components/status-dot'
+import { FacetMenu } from '@/components/facet-filter'
+import { Segmented } from '@/components/segmented'
+import { UnreadMarker } from '@/components/unread-marker'
 import { SubtaskToggle } from '@/components/subtask-toggle'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -75,7 +78,20 @@ import {
   workflowLabel,
   type UsageCell,
 } from '@/lib/tasks-table'
+import {
+  activeTaskFacetCount,
+  automationIndex,
+  distinctValues,
+  filterTaskTable,
+  NO_TASK_FILTERS,
+  originCounts,
+  taskFacetCounts,
+  type TaskFacetId,
+  type TaskTableFilters,
+} from '@/lib/task-filters'
+import { TASK_ORIGIN_OPTIONS, useTaskOrigin, type TaskOrigin } from '@/lib/task-origin'
 import { usageMetricVisibility } from '@/lib/token-metrics'
+import { useAutomationsGate, useAutomationsQuery } from '@/routes/automations/use-automations'
 import { useTaskTableColumns } from '@/lib/use-task-table-columns'
 import { useNow } from '@/lib/use-now'
 import { cn } from '@/lib/utils'
@@ -150,6 +166,9 @@ export function TasksOverview({
   expandedColumns = normalizeExpandedColumns(undefined),
   onToggleColumn = () => undefined,
   columnsPending = false,
+  origin = 'all',
+  onOriginChange = () => undefined,
+  automationNames,
 }: {
   /** Undefined while `/api/runs` has not answered: the frame renders, the body is a skeleton —
    *  an empty state before we know there are no runs would be a lie. */
@@ -173,6 +192,13 @@ export function TasksOverview({
   onToggleColumn?: (id: TaskColumnId) => void
   /** Prevent a shallow write before the authoritative workspace state can preserve siblings. */
   columnsPending?: boolean
+  /** Who started the rows shown: a person, an automation, or either. The route passes the
+   *  remembered choice (`useTaskOrigin`, Regular by default); a direct render shows everything. */
+  origin?: TaskOrigin
+  onOriginChange?: (origin: TaskOrigin) => void
+  /** Automation id → name, for the Automation facet. An id it does not know (a deleted
+   *  automation, or automations off) is shown as itself. */
+  automationNames?: ReadonlyMap<string, string>
 }) {
   const [query, setQuery] = React.useState('')
   // The subtask accordion (#1110): ids of the parents whose dispatched rows are unfolded.
@@ -184,9 +210,15 @@ export function TasksOverview({
       if (!next.delete(id)) next.add(id)
       return next
     })
-  const all = runs ?? []
-  const counts = listCounts(all)
-  const visible = sortRuns(filterRuns(all, query), view)
+  // The facets are session-local, like the search text; only the origin is remembered.
+  const [filters, setFilters] = React.useState<TaskTableFilters>(NO_TASK_FILTERS)
+  const all = React.useMemo(() => runs ?? [], [runs])
+  const automations = React.useMemo(() => automationIndex(all), [all])
+  // Origin and facets narrow BEFORE everything else, so the tab counts, the queue-free rows and
+  // the compare strips all describe the same list the table shows.
+  const narrowed = filterTaskTable(all, origin, filters, automations)
+  const counts = listCounts(narrowed)
+  const visible = sortRuns(filterRuns(narrowed, query), view)
   // A live search overrides the fold wholesale: a match the accordion hid would read as a miss.
   const searching = query.trim() !== ''
   // Dispatched children nest under the task that ordered them. One derivation, both layouts.
@@ -194,7 +226,7 @@ export function TasksOverview({
   // Positions come from the full list, never the filtered one: a search must not renumber the
   // queue the engine is actually going to drain.
   const positions = queuePositions(all)
-  const strips = compareGroups(filterRuns(all, query), view)
+  const strips = compareGroups(filterRuns(narrowed, query), view)
   const finished = finishedRunCount(all)
   const columns = taskColumnsForCapabilities({ tokens: showTokens, cost: showCost })
   const available = new Set(columns.map((column) => column.id))
@@ -278,6 +310,19 @@ export function TasksOverview({
       </PageToolbar>
 
       <PageBody className="flex flex-col gap-4 pb-[calc(96px+env(safe-area-inset-bottom))] md:pb-10">
+        {/* No bar over the first-run hero: with nothing to narrow, filters are noise. */}
+        {all.length > 0 ? (
+          <TasksFilterBar
+            runs={all}
+            view={view}
+            origin={origin}
+            onOriginChange={onOriginChange}
+            filters={filters}
+            onFiltersChange={setFilters}
+            automations={automations}
+            automationNames={automationNames}
+          />
+        ) : null}
         {/* Finished variant groups are a decision waiting on a person, so they sit above the list. */}
         {strips.length > 0 ? (
           <ListFrame className="divide-y divide-border">
@@ -308,7 +353,18 @@ export function TasksOverview({
         {runs === undefined ? (
           <ListSkeleton />
         ) : visible.length === 0 ? (
-          <TasksEmptyState view={view} query={query} />
+          <TasksEmptyState
+            view={view}
+            query={query}
+            filtered={activeTaskFacetCount(filters) > 0}
+            onClearFilters={() => setFilters(NO_TASK_FILTERS)}
+            origin={origin}
+            hiddenByOrigin={
+              origin !== 'all' &&
+              filterTaskTable(sortRuns(all, view), 'all', filters, automations).length > 0
+            }
+            onShowAll={() => onOriginChange('all')}
+          />
         ) : (
           <>
             {/* ≥md: the table. */}
@@ -483,12 +539,63 @@ function ListSkeleton() {
 }
 
 /** What an empty list honestly means, given how it got empty — one variant per cause. */
-function TasksEmptyState({ view, query }: { view: ListView; query: string }) {
+function TasksEmptyState({
+  view,
+  query,
+  filtered = false,
+  onClearFilters = () => undefined,
+  origin = 'all',
+  hiddenByOrigin = false,
+  onShowAll = () => undefined,
+}: {
+  view: ListView
+  query: string
+  /** A status/workflow/automation facet is narrowing the list. */
+  filtered?: boolean
+  onClearFilters?: () => void
+  origin?: TaskOrigin
+  /** The origin split is the only reason this view is empty: switching to All would show rows. */
+  hiddenByOrigin?: boolean
+  onShowAll?: () => void
+}) {
   const needle = query.trim()
-  const kind = needle ? 'search-miss' : view === 'archived' ? 'archive' : 'no-tasks'
+  const kind = needle
+    ? 'search-miss'
+    : filtered
+      ? 'filtered'
+      : hiddenByOrigin
+        ? 'origin-hidden'
+        : view === 'archived'
+          ? 'archive'
+          : 'no-tasks'
   return (
     <div data-slot="tasks-empty" data-empty-kind={kind} className="flex flex-1 flex-col">
-      {kind === 'search-miss' ? (
+      {kind === 'filtered' ? (
+        <ListEmpty
+          icon={<SearchXIcon />}
+          title="No tasks match these filters"
+          action={
+            <Button variant="outline" onClick={onClearFilters}>
+              Clear filters
+            </Button>
+          }
+        />
+      ) : kind === 'origin-hidden' ? (
+        <ListEmpty
+          icon={<WorkflowIcon />}
+          title={origin === 'regular' ? 'No regular tasks here' : 'No automation tasks here'}
+          description={
+            origin === 'regular'
+              ? 'Tasks started by automations are hidden.'
+              : 'Only tasks started by automations are shown.'
+          }
+          action={
+            <Button variant="outline" onClick={onShowAll}>
+              Show all tasks
+            </Button>
+          }
+        />
+      ) : kind === 'search-miss' ? (
         <ListEmpty
           icon={<SearchXIcon />}
           title="No matching tasks"
@@ -520,6 +627,113 @@ function TasksEmptyState({ view, query }: { view: ListView; query: string }) {
   )
 }
 
+/**
+ * The filter row over the table: the remembered Regular | Automations | All split, then every
+ * facet this page can answer behind the one Filter button (`FacetMenu`). Options and counts come
+ * from the runs in the CURRENT view (Active or Archived), each counted as the other facets
+ * narrow it.
+ *
+ * The Automation facet appears only while automation tasks are on screen: under Regular it
+ * could only ever empty the table.
+ */
+function TasksFilterBar({
+  runs,
+  view,
+  origin,
+  onOriginChange,
+  filters,
+  onFiltersChange,
+  automations,
+  automationNames,
+}: {
+  runs: readonly RunRecord[]
+  view: ListView
+  origin: TaskOrigin
+  onOriginChange: (origin: TaskOrigin) => void
+  filters: TaskTableFilters
+  onFiltersChange: (update: (current: TaskTableFilters) => TaskTableFilters) => void
+  automations: ReadonlyMap<string, string | undefined>
+  automationNames?: ReadonlyMap<string, string>
+}) {
+  const inView = React.useMemo(
+    () => runs.filter((run) => (view === 'archived' ? run.archived : !run.archived)),
+    [runs, view],
+  )
+  const perOrigin = originCounts(inView, filters, automations)
+  const countsOf = (facet: TaskFacetId) => taskFacetCounts(inView, origin, filters, automations, facet)
+  const statusCounts = countsOf('statuses')
+  const workflowCounts = countsOf('workflows')
+  const automationCounts = countsOf('automations')
+  const automationIds = distinctValues(inView.map((run) => automations.get(run.id)))
+  const toggle = (facet: TaskFacetId) => (value: string) =>
+    onFiltersChange((current) => ({
+      ...current,
+      [facet]: current[facet].includes(value)
+        ? current[facet].filter((picked) => picked !== value)
+        : [...current[facet], value],
+    }))
+  const active = activeTaskFacetCount(filters)
+
+  return (
+    <div data-slot="tasks-filters" className="flex flex-wrap items-center gap-2">
+      <Segmented
+        slot="task-origin"
+        label="Show tasks started by"
+        value={origin}
+        options={TASK_ORIGIN_OPTIONS.map((option) => ({ ...option, count: perOrigin[option.value] }))}
+        onChange={onOriginChange}
+      />
+      <FacetMenu
+        activeCount={active}
+        emptyLabel="No tasks to filter"
+        groups={[
+          {
+            id: 'status',
+            label: 'Status',
+            onToggle: toggle('statuses'),
+            options: distinctValues(inView.map((run) => run.status)).map((status) => ({
+              value: status,
+              label: status,
+              count: statusCounts.get(status) ?? 0,
+              checked: filters.statuses.includes(status),
+            })),
+          },
+          {
+            id: 'workflow',
+            label: 'Workflow',
+            onToggle: toggle('workflows'),
+            options: distinctValues(inView.map((run) => workflowLabel(run))).map((workflow) => ({
+              value: workflow,
+              label: workflow,
+              count: workflowCounts.get(workflow) ?? 0,
+              checked: filters.workflows.includes(workflow),
+            })),
+          },
+          {
+            id: 'automation',
+            label: 'Automation',
+            onToggle: toggle('automations'),
+            options:
+              origin === 'regular'
+                ? []
+                : automationIds.map((id) => ({
+                    value: id,
+                    label: automationNames?.get(id) ?? id,
+                    count: automationCounts.get(id) ?? 0,
+                    checked: filters.automations.includes(id),
+                  })),
+          },
+        ]}
+      />
+      {active > 0 ? (
+        <Button variant="ghost" data-action="clear-filters" onClick={() => onFiltersChange(() => NO_TASK_FILTERS)}>
+          Clear
+        </Button>
+      ) : null}
+    </div>
+  )
+}
+
 const titleTone = (run: RunRecord) =>
   // Read/unread (#unread-done-items): promote an unread done item, dim a read one — the same
   // grammar as the sidebar row.
@@ -533,18 +747,6 @@ function DispatchKind({ run, className }: { run: RunRecord; className?: string }
       {kind}
     </Badge>
   ) : null
-}
-
-function UnreadDot({ className }: { className?: string }) {
-  return (
-    <StatusDot
-      tone="violet"
-      role="img"
-      aria-label="unread"
-      title="Unread — not opened since it finished"
-      className={cn('shrink-0', className)}
-    />
-  )
 }
 
 /**
@@ -645,8 +847,8 @@ function TaskRow({
               ) : null}
               <Link to={to} title={title} className={cn('min-w-0 truncate text-sm', titleTone(run))}>
                 {title}
+                {isUnread(run) ? <UnreadMarker /> : null}
               </Link>
-              {isUnread(run) ? <UnreadDot /> : null}
               <DispatchKind run={run} />
               {subtasks ? (
                 <SubtaskToggle
@@ -832,8 +1034,8 @@ function TaskCard({
       <div className="flex items-start gap-2">
         <Link to={to} className={cn('min-w-0 flex-1 text-sm leading-snug', titleTone(run))}>
           {runTitle(run)}
+          {isUnread(run) ? <UnreadMarker /> : null}
         </Link>
-        {isUnread(run) ? <UnreadDot className="mt-1.5" /> : null}
         <span className="mt-px shrink-0 text-xs text-muted-foreground tabular-nums">
           {shortAge(run.finishedAt ?? run.createdAt, now)}
         </span>
@@ -919,6 +1121,19 @@ export function TasksOverviewRoute() {
   const health = useHealth()
   const metricVisibility = usageMetricVisibility(health.data)
   const [view, setView] = useListView()
+  const [origin, setOrigin] = useTaskOrigin()
+  // Names for the Automation facet. Only asked for while automations are on AND automation rows
+  // are on screen — a project that never ran one pays no request for a facet it will not show.
+  const gate = useAutomationsGate()
+  const hasAutomationRuns = React.useMemo(
+    () => (runs.data ?? []).some((run) => run.automation ?? run.automationTrigger ?? run.automationTracker),
+    [runs.data],
+  )
+  const automationsQuery = useAutomationsQuery(gate.known && !gate.off && hasAutomationRuns && origin !== 'regular')
+  const automationNames = React.useMemo(
+    () => new Map((automationsQuery.data?.automations ?? []).map((entry) => [entry.id, entry.name])),
+    [automationsQuery.data],
+  )
   const queryClient = useQueryClient()
   const archive = useMutation({
     mutationFn: archiveFinished,
@@ -974,6 +1189,9 @@ export function TasksOverviewRoute() {
         onViewChange={setView}
         onArchiveFinished={() => archive.mutate()}
         onMarkAllRead={() => markAllRead.mutate()}
+        origin={origin}
+        onOriginChange={setOrigin}
+        automationNames={automationNames}
         onRename={(id, title) => rename.mutate({ id, title })}
         onTogglePin={(run, pinned) =>
           pin.mutate(

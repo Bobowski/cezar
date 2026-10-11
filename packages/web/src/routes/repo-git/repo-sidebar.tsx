@@ -10,18 +10,19 @@ import { Link } from '@/lib/project-router'
 
 import { BranchChip } from '../task-git/diff-controls'
 
-export type RepoTab = 'changes' | 'commits' | 'branches'
+export type RepoTab = 'changes' | 'commits' | 'branches' | 'files'
 
 const TABS: { value: RepoTab; to: string; label: string }[] = [
   { value: 'changes', to: '/git', label: 'Changes' },
   { value: 'commits', to: '/git/commits', label: 'Commits' },
   { value: 'branches', to: '/git/branches', label: 'Branches' },
+  { value: 'files', to: '/git/files', label: 'Files' },
 ]
 
 /**
  * The Git screen's sidebar header: the title, the checked-out branch, and the
- * Changes | Commits | Branches switch. Each item is a link, so every section stays a URL
- * (`/git`, `/git/commits[/:sha]`, `/git/branches`). `children` is the section's own filter row.
+ * Changes | Commits | Branches | Files switch. Each item is a link, so every section stays a URL
+ * (`/git`, `/git/commits[/:sha]`, `/git/branches`, `/git/files[/*path]`). `children` is the section's own filter row.
  */
 export function RepoSidebarHeader({ info, tab, children }: { info?: RepoInfo; tab: RepoTab; children?: ReactNode }) {
   return (

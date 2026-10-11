@@ -7,7 +7,7 @@ import { ApiError, createRunPr, getRunFile, openRunFileInApp, openRunInCli, push
 import { queryKeys, useHealth, useRepo, useRun, useRunChanges } from '@/api/queries'
 import type { ApiRun } from '@open-mercato/cezar-api-client'
 import { CenteredState } from '@/components/centered-state'
-import { Diff, type DiffHandle, type DiffMode, type DiffRevealTarget } from '@/components/diff'
+import { canPreviewMarkdown, Diff, type DiffHandle, type DiffMode, type DiffRevealTarget } from '@/components/diff'
 import { toast } from '@/components/ui/toaster'
 import { gitActionPolicy, type GitActionId } from '@/lib/git-actions'
 import { useIsDesktop } from '@/lib/use-desktop'
@@ -74,6 +74,7 @@ export function ChangesView({
 
   const [mode, setMode] = useState<DiffMode>('unified')
   const [wrap, setWrap] = useState(false)
+  const [preview, setPreview] = useState(false)
   const [selected, setSelected] = useRememberedState<string | null>(stateKey, null)
   const [commitOpen, setCommitOpen] = useState(false)
   const diffRef = useRef<DiffHandle | null>(null)
@@ -195,6 +196,7 @@ export function ChangesView({
   const files = changes.data?.files ?? []
   const diffShown = !changes.isPending && !changes.isError && files.length > 0
   const tree = useMemo(() => buildFileTree(files), [files])
+  const hasMarkdown = useMemo(() => files.some(canPreviewMarkdown), [files])
 
   // Phones force the readable combination; the toggles only exist ≥md (toolbar hides them).
   const effectiveMode: DiffMode = desktop ? mode : 'unified'
@@ -244,8 +246,10 @@ export function ChangesView({
         stat={changes.data?.stat}
         mode={effectiveMode}
         wrap={effectiveWrap}
+        preview={preview}
         onModeChange={setMode}
         onWrapChange={setWrap}
+        onPreviewChange={hasMarkdown ? setPreview : undefined}
         onAction={onAction}
         // In a workspace column the toolbar is the view's own top edge: it stays put while the
         // diff scrolls, and the tree and the file headers park directly under it. Without that
@@ -292,11 +296,9 @@ export function ChangesView({
           }
         >
           {/* The tree column: sticky under the header so long diffs scroll beside it, and its OWN
-              scroller. Sticky alone is not enough — a tree taller than the viewport grows the page
-              instead, so the only way to reach its last file was to drag the shared `main` scroller
-              (and the diff with it) to the bottom. Capping the pane at the space left under the
-              sticky chrome gives the list its own scrollbar; `overscroll-contain` keeps a wheel
-              inside it from chaining into the diff once it bottoms out. */}
+              scroller — capped at the space left under the sticky chrome, so its last file is
+              reachable without dragging the diff; `overscroll-contain` keeps a wheel inside it
+              from chaining into the diff once it bottoms out. */}
           <aside
             data-slot="changes-tree-pane"
             className={cn('sticky', embedded ? 'top-[calc(2.75rem+1rem)]' : 'top-40', 'hidden max-h-[calc(100dvh_-_var(--diff-sticky-top)_-_1rem)] w-60 pb-[var(--changes-dock,0px)] shrink-0 overflow-y-auto overscroll-contain md:block lg:w-72')}
@@ -312,6 +314,7 @@ export function ChangesView({
             viewRef={diffRef}
             mode={effectiveMode}
             wrap={effectiveWrap}
+            preview={desktop && hasMarkdown && preview}
             loadFileText={(path) => loadWorktreeText(run.id, path)}
             imageSrc={(path) => runFileRawUrl(run.id, path)}
             onOpenInApp={

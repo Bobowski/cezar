@@ -156,7 +156,7 @@ export function FilesView({
             <FilesTree runId={run.id} selected={selected} onSelect={select} />
           </aside>
           <FilePreview
-            runId={run.id}
+            source={{ kind: 'run', runId: run.id }}
             path={selected}
             className="min-w-0 flex-1"
             edit={edit}

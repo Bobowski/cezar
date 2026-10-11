@@ -1,13 +1,17 @@
 import { GitBranchIcon, TriangleAlertIcon } from 'lucide-react'
+import { useParams } from 'react-router'
 
 import { useRepo } from '@/api/queries'
 import type { RepoInfo, RepoResponse } from '@open-mercato/cezar-api-client'
+import { ContextSidebar } from '@/components/context-sidebar'
 import { Page } from '@/components/page'
+import { useNavigate } from '@/lib/project-router'
 
 import { RepoBranchesSection } from './repo-branches'
 import { RepoChangesSection } from './repo-changes'
 import { RepoCommitsSection } from './repo-commits'
 import { RepoEmpty } from './repo-empty'
+import { RepoFilesSection } from './repo-files'
 import { RepoGitLoading } from './repo-git-loading'
 import { RepoSidebarHeader, type RepoTab } from './repo-sidebar'
 
@@ -21,8 +25,11 @@ import { RepoSidebarHeader, type RepoTab } from './repo-sidebar'
  *
  * Master–detail: the contextual sidebar holds the section switch and the section's list (the
  * changed-files tree, the commit log, the branches); the main area is the detail only. Each
- * section is a URL (`/git`, `/git/commits[/:sha]`, `/git/branches`), so every surface
- * deep-links and survives a refresh.
+ * section is a URL (`/git`, `/git/commits[/:sha]`, `/git/branches`, `/git/files[/*path]`), so every
+ * surface deep-links and survives a refresh.
+ *
+ * `files` (#1279) is the one section that is not a view of a diff: the repository's own tree and
+ * the file under the cursor.
  */
 export type { RepoTab }
 
@@ -70,9 +77,44 @@ function RepoView({ repo, info, tab }: { repo: RepoResponse; info: RepoInfo; tab
         <RepoChangesSection header={header()} />
       ) : tab === 'commits' ? (
         <RepoCommitsSection log={repo.log} header={header()} />
+      ) : tab === 'files' ? (
+        <>
+          <ContextSidebar>{header()}</ContextSidebar>
+          <RepoFilesPane />
+        </>
       ) : (
         <RepoBranchesSection repo={repo} info={info} header={header} />
       )}
     </Page>
   )
+}
+
+/**
+ * The Files segment's URL binding: `/git/files/<path>` IS the file's address, so a selection
+ * survives a refresh and can be pasted to a colleague.
+ *
+ * Selection REPLACES history rather than pushing it — arrow-keying down a folder would otherwise
+ * bury the previous tab under twenty selections, and Back should leave the Files tab, not walk
+ * backwards through it.
+ */
+function RepoFilesPane() {
+  const params = useParams()
+  const navigate = useNavigate()
+  const selected = params['*'] !== undefined && params['*'] !== '' ? params['*'] : null
+  return (
+    <RepoFilesSection
+      selected={selected}
+      onSelect={(path) =>
+        navigate(path === null ? '/git/files' : `/git/files/${encodePathSegments(path)}`, {
+          replace: true,
+        })
+      }
+    />
+  )
+}
+
+/** Per-SEGMENT encoding, so the slashes stay structural while a `#`, `?` or space in a file name
+ *  cannot truncate the URL. React Router decodes the splat on the way back in. */
+function encodePathSegments(path: string): string {
+  return path.split('/').map(encodeURIComponent).join('/')
 }

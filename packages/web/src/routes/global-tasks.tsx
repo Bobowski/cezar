@@ -57,6 +57,7 @@ import { ReferenceChip } from '@/components/reference-chip'
 import { ResolveConflictsForRun } from '@/components/reference-conflict-action'
 import { ReferenceStatusProvider } from '@/components/reference-status'
 import { StatusDot } from '@/components/status-dot'
+import { UnreadMarker } from '@/components/unread-marker'
 import { SubtaskToggle } from '@/components/subtask-toggle'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -97,6 +98,8 @@ import {
   urlStateFromSearchParams,
   urlStateToSearchParams,
   groupGlobalTasks,
+  filterGlobalTasksByOrigin,
+  globalAutomationIndex,
   hasActiveFilters,
   tagValuesOf,
   tasksExcludingFacet,
@@ -110,6 +113,7 @@ import {
   type GroupBy,
 } from '@/lib/global-tasks'
 import { scopeTo } from '@/lib/project-router'
+import { TASK_ORIGIN_OPTIONS, useTaskOrigin, type TaskOrigin } from '@/lib/task-origin'
 import { allProjectTags } from '@/lib/project-tags'
 import { canBeUnread, isReadDoneItem, isUnread } from '@/lib/read-state'
 import { runTitle, type ListView } from '@/lib/task-groups'
@@ -400,10 +404,25 @@ export function GlobalTasksRoute() {
     if (indexedStatuses) rememberReferenceStatuses(indexedStatuses)
   }, [indexedStatuses])
   const registry = React.useMemo(() => projects.data?.projects ?? [], [projects.data])
-  const tasks = React.useMemo(
+  const allTasks = React.useMemo(
     () => toGlobalTasks(index.data?.runs ?? [], registry),
     [index.data, registry],
   )
+  // Who started each row (a person, or an automation) — the remembered origin split narrows the
+  // list before any facet does, so the facet counts are counts of the list actually on screen.
+  // It lives in localStorage rather than the URL: it is a standing preference shared with the
+  // per-project table, not a narrowing worth pasting into a colleague's chat.
+  const [origin, setOrigin] = useTaskOrigin()
+  const automations = React.useMemo(() => globalAutomationIndex(allTasks), [allTasks])
+  const tasks = React.useMemo(
+    () => filterGlobalTasksByOrigin(allTasks, origin, automations),
+    [allTasks, origin, automations],
+  )
+  const originCounts = React.useMemo(() => {
+    const count = (value: TaskOrigin) =>
+      filterGlobalTasks(filterGlobalTasksByOrigin(allTasks, value, automations), filters, view).length
+    return { regular: count('regular'), automation: count('automation'), all: count('all') }
+  }, [allTasks, automations, filters, view])
   const visible = React.useMemo(
     () => filterGlobalTasks(tasks, filters, view),
     [tasks, filters, view],
@@ -475,6 +494,10 @@ export function GlobalTasksRoute() {
         projects={registry}
         tasks={tasks}
         shown={visible.length}
+        total={allTasks.length}
+        origin={origin}
+        onOriginChange={setOrigin}
+        originCounts={originCounts}
       />
       <PageHeader title="All tasks" description="Work across every project in this workspace." />
 
@@ -512,7 +535,7 @@ export function GlobalTasksRoute() {
         </div>
         <div className="flex-1" />
         <span data-slot="global-tasks-count" className="hidden text-[13px] text-muted-foreground tabular-nums sm:inline">
-          {visible.length} of {tasks.length}
+          {visible.length} of {allTasks.length}
         </span>
         <ListSearch
           value={queryDraft}
@@ -581,6 +604,9 @@ export function GlobalTasksRoute() {
             view={view}
             filtered={hasActiveFilters(filters)}
             onClear={canReset({ filters, groupBy }) ? clearAll : undefined}
+            origin={origin}
+            hiddenByOrigin={origin !== 'all' && originCounts.all > 0}
+            onShowAll={() => setOrigin('all')}
           />
         ) : (
           // No `projectId` on the provider, uniquely on this page: every chip under it names its
@@ -667,6 +693,10 @@ function GlobalTasksSidebar({
   projects,
   tasks,
   shown,
+  total,
+  origin,
+  onOriginChange,
+  originCounts,
 }: {
   view: ListView
   onViewChange: (view: ListView) => void
@@ -680,6 +710,12 @@ function GlobalTasksSidebar({
   tasks: readonly GlobalTask[]
   /** How many rows the current cut leaves. */
   shown: number
+  /** Every task in the workspace, before the origin split. */
+  total: number
+  origin: TaskOrigin
+  onOriginChange: (origin: TaskOrigin) => void
+  /** Rows each origin would show under the current facets and view. */
+  originCounts: Record<TaskOrigin, number>
 }) {
   const globalSettings = useGlobalSettings()
   const tags = React.useMemo(() => allProjectTags(projects), [projects])
@@ -699,7 +735,7 @@ function GlobalTasksSidebar({
         <div className="flex items-center justify-between gap-2">
           <h2 className="px-1 text-[15px] font-semibold text-foreground">All tasks</h2>
           <span className="px-1 text-xs text-muted-foreground tabular-nums">
-            {shown} of {tasks.length}
+            {shown} of {total}
           </span>
         </div>
         <Tabs value={view} onValueChange={(next) => onViewChange(next as ListView)}>
@@ -710,7 +746,30 @@ function GlobalTasksSidebar({
         </Tabs>
       </SidebarHeader>
       <SidebarContent>
+        {/* Who started the task. First, because it narrows the list before any facet does, and
+            remembered across visits — the selected row says what is hidden every time. */}
         <SidebarGroup className="pt-0">
+          <SidebarGroupLabel>Started by</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu data-slot="task-origin" aria-label="Show tasks started by">
+              {TASK_ORIGIN_OPTIONS.map((option) => (
+                <SidebarMenuItem key={option.value}>
+                  <SidebarMenuButton
+                    isActive={origin === option.value}
+                    aria-pressed={origin === option.value}
+                    data-value={option.value}
+                    onClick={() => onOriginChange(option.value)}
+                  >
+                    <span>{option.label}</span>
+                  </SidebarMenuButton>
+                  <SidebarMenuBadge>{originCounts[option.value]}</SidebarMenuBadge>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        <SidebarGroup>
           <SidebarGroupLabel>Group by</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
@@ -1222,16 +1281,8 @@ function TaskRow({
               )}
             >
               {runTitle(run)}
+              {unread ? <UnreadMarker /> : null}
             </Link>
-            {unread ? (
-              <StatusDot
-                tone="violet"
-                role="img"
-                aria-label="unread"
-                title="Unread — not opened since it finished"
-                className="shrink-0"
-              />
-            ) : null}
             {/* What a DISPATCHED row is for — `review` or `implement`. Null on every root. */}
             {kind ? (
               <Badge
@@ -1612,11 +1663,38 @@ function GlobalTasksEmptyState({
   view,
   filtered,
   onClear,
+  origin = 'all',
+  hiddenByOrigin = false,
+  onShowAll = () => undefined,
 }: {
   view: ListView
   filtered: boolean
   onClear?: () => void
+  origin?: TaskOrigin
+  /** The origin split is what emptied this view: switching to All would show rows. */
+  hiddenByOrigin?: boolean
+  onShowAll?: () => void
 }) {
+  if (hiddenByOrigin) {
+    return (
+      <div data-slot="global-tasks-empty" data-empty-kind="origin-hidden">
+        <ListEmpty
+          icon={<LayersIcon />}
+          title={origin === 'regular' ? 'No regular tasks here' : 'No automation tasks here'}
+          description={
+            origin === 'regular'
+              ? 'Tasks started by automations are hidden.'
+              : 'Only tasks started by automations are shown.'
+          }
+          action={
+            <Button variant="outline" onClick={onShowAll}>
+              Show all tasks
+            </Button>
+          }
+        />
+      </div>
+    )
+  }
   if (filtered) {
     return (
       <ListEmpty

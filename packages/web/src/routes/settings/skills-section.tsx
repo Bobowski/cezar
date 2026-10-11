@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { putWorkspaceConfig } from '@/api/client'
-import { useProjects, useSkillsUpdate, useWorkspaceConfig, workspaceQueryKeys } from '@/api/queries'
+import { useWorkspaceConfig, workspaceQueryKeys } from '@/api/queries'
 import type { SetWorkspaceConfigInput, WorkspaceConfigResponse } from '@open-mercato/cezar-api-client'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -10,9 +10,6 @@ import { SettingsError, SettingsField, SettingsGroup, SettingsLoading, SettingsP
 
 export function SkillsSection() {
   const config = useWorkspaceConfig()
-  const projects = useProjects()
-  const projectId = projects.data?.bootProject ?? ''
-  const update = useSkillsUpdate(projectId, Boolean(projectId))
 
   if (config.isPending) {
     return <SettingsLoading data-slot="skills-settings-loading" label="Loading skill settings…" />
@@ -20,18 +17,10 @@ export function SkillsSection() {
   if (config.isError) {
     return <SettingsError title="Skill settings did not load">{config.error.message}</SettingsError>
   }
-  return <SkillsForm config={config.data} update={update.data} updateError={update.error} />
+  return <SkillsForm config={config.data} />
 }
 
-function SkillsForm({
-  config,
-  update,
-  updateError,
-}: {
-  config: WorkspaceConfigResponse
-  update?: ReturnType<typeof useSkillsUpdate>['data']
-  updateError: Error | null
-}) {
+function SkillsForm({ config }: { config: WorkspaceConfigResponse }) {
   const queryClient = useQueryClient()
   const save = useMutation({
     mutationFn: (patch: SetWorkspaceConfigInput) => putWorkspaceConfig(patch),
@@ -39,17 +28,6 @@ function SkillsForm({
     onError: (error: Error) => toast(error.message, { tone: 'danger' }),
   })
   const inherited = config.skillsAutoUpdate === null
-  const status = (() => {
-    if (updateError) return 'Installation status is unavailable right now.'
-    if (!update) return 'Checking tracked Open Mercato installations…'
-    if (update.status === 'unavailable')
-      return update.scopes.find((scope) => scope.reason)?.reason ?? 'Automatic skill updates are unavailable.'
-    if (update.scopes.every((scope) => scope.skills.length === 0))
-      return 'No tracked Open Mercato installation found.'
-    const count = new Set(update.scopes.flatMap((scope) => scope.skills)).size
-    return `${count} tracked Open Mercato skill${count === 1 ? '' : 's'} found.`
-  })()
-
   return (
     <SettingsPane data-slot="skills-settings-section">
       <SettingsGroup title="Updates">
@@ -97,17 +75,6 @@ function SkillsForm({
             >
               Use default
             </Button>
-          }
-        />
-        <SettingsField
-          title="Installations"
-          hint={
-            <span
-              data-slot="skills-installation-status"
-              role={updateError || update?.status === 'unavailable' ? 'status' : undefined}
-            >
-              {status}
-            </span>
           }
         />
       </SettingsGroup>

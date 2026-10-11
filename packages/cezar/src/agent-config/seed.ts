@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, sep } from 'node:path';
-import { agentHomePaths } from '../paths.ts';
+import { dirname, join, relative, sep } from 'node:path';
+import { agentHomePaths, isAbsolutePath } from '../paths.ts';
 import { CONFIG_FILES } from './catalog.ts';
 
 /**
@@ -58,7 +58,7 @@ export async function resolveCommonGitDir(worktreeCwd: string): Promise<string |
   const commonGitDir = commonDir.stdout.trim();
   // `isAbsolute`, not a leading-`/` test: git on Windows answers `C:/repo/.git`, and joining that
   // onto the worktree named a directory that cannot exist — the exclude line was never written.
-  return isAbsolute(commonGitDir) ? commonGitDir : join(worktreeCwd, commonGitDir);
+  return isAbsolutePath(commonGitDir) ? commonGitDir : join(worktreeCwd, commonGitDir);
 }
 
 /**

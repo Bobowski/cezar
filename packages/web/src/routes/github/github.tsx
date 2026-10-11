@@ -27,10 +27,11 @@ import { useParams } from 'react-router'
 import { Link, Navigate } from '@/lib/project-router'
 
 import { getGithub, getGithubComments, getGithubPrChanges, getGithubPrMergeState, mergeGithubPr, putUiState } from '@/api/client'
-import { queryKeys, useGithub, useGithubChecks, useGithubComments, useGithubPrChanges, useGithubSearch, useHealth, useSkills, useUiState, useWorkflows } from '@/api/queries'
+import { queryKeys, useGithubInfinite, useGithubChecks, useGithubComments, useGithubPrChanges, useGithubSearch, useHealth, useSkills, useUiState, useWorkflows } from '@/api/queries'
 import type {
   GithubComment,
   GithubItem,
+  GithubData,
   GithubTimelineEvent,
   GithubTimelineEventKind,
   GithubMergeMethod,
@@ -113,24 +114,19 @@ import { readFollowupSelection, writeFollowupSelection } from './hand-to-agent-d
  * `/github/prs`, `/github/issues/:n`, `/github/prs/:n`. PR rows also carry a compact checks
  * glyph (#400) — the same tones as the detail pane's `ChecksBadge`, just the symbol.
  *
- * Data loads in ONE fast shot (#664): the list call no longer fetches `statusCheckRollup` — the
- * CI rollup for every open PR was the dominant cost and forced the old two-shot `30 → 1000`
- * pattern — so a single `limit`-capped fetch paints the whole open set quickly and search works
- * across it immediately. Each PR row's checks glyph is then hydrated lazily, for the on-screen
- * rows only, via `useGithubChecks` (`GET /api/github/checks`), the same way comment counts fill
- * in a beat later. A cheap React-Query prefetch on row hover/focus warms the thread so an opened
- * item is usually instant. (Cursor pagination + "Load more"/infinite scroll + row virtualization
- * are the Phase 2 follow-up.)
+ * Data loads in cheap cursor pages (#664/#1261): the list call no longer fetches
+ * `statusCheckRollup` or bodies, while exact open totals and comment counts come from lightweight
+ * GraphQL fields. PR checks are hydrated lazily for the visible rows, and selected body/diffstat
+ * details arrive through the background thread request. A cheap React-Query prefetch on row
+ * hover/focus warms the thread so an opened item is usually instant.
  *
  * Gating: the nav item is hidden by the shell when health reports no forge — but the URL
  * stays reachable (pasted links), so an unavailable payload renders the honest explainer
  * with the server's own reason, never an error.
  */
 
-/** The single fast list fetch (`/api/github` limit). No longer split into a fast batch + a slow
- *  everything-open shot — dropping `statusCheckRollup` from the list made one fetch of the whole
- *  open set cheap. A count AT this cap still reads `N+`, since the open set may exceed it. */
-const LIST_LIMIT = 1000
+/** The first cursor page size. Totals are supplied independently by GitHub's GraphQL connection. */
+const LIST_LIMIT = 50
 
 /** How many on-screen PR rows one checks request covers (matches the server's `GH_CHECKS_MAX`).
  *  The visible window is hydrated first; without virtualization (Phase 2) rows past this stay
@@ -151,6 +147,40 @@ function useDebouncedValue<T>(value: T, delay: number): T {
     return () => clearTimeout(timer)
   }, [value, delay])
   return settled
+}
+
+/** How far below the visible list the next page starts loading, so it usually lands before the
+ *  user reaches the end. */
+const LOAD_AHEAD_PX = 600
+
+/**
+ * Scroll-driven paging: calls `loadMore` whenever the returned sentinel ref comes within
+ * `LOAD_AHEAD_PX` of the visible bottom of whatever the list scrolls in (the contextual sidebar, or
+ * `main` on a phone). The observer is rebuilt every time `enabled`
+ * flips back on (after each page lands), and a fresh observer reports its initial state — so a
+ * sentinel still in view after a short page keeps loading until it scrolls out or pages run out.
+ */
+function useLoadMoreSentinel(enabled: boolean, loadMore: () => void) {
+  const [sentinel, setSentinel] = useState<HTMLElement | null>(null)
+  const loadMoreRef = useRef(loadMore)
+  useEffect(() => {
+    loadMoreRef.current = loadMore
+  })
+  useEffect(() => {
+    if (!enabled || !sentinel || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) loadMoreRef.current()
+      },
+      {
+        root: sentinel.closest<HTMLElement>('[data-slot="sidebar-content"], [data-slot="main"]'),
+        rootMargin: `0px 0px ${LOAD_AHEAD_PX}px 0px`,
+      },
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [enabled, sentinel])
+  return setSentinel
 }
 
 export type GithubView = 'issues' | 'prs'
@@ -185,14 +215,30 @@ export function GithubRoute({
   const { n } = useParams()
   // Phones have no sidebar column (it is a sheet), so the bare list URLs render the list in main.
   const { isMobile } = useSidebar()
-  // One fast shot now that the list dropped `statusCheckRollup` (#664) — no more fast/full swap.
-  const list = useGithub({ limit: LIST_LIMIT })
+  // One fast page now that the list is cursor-backed; later pages append without replacing this
+  // first-paint result or refetching rows already shown.
+  const list = useGithubInfinite(LIST_LIMIT)
   // #801: automations are opt-in, so the cross-link into them exists exactly while the server
   // says the feature does — otherwise this tab would advertise a page that only says "off".
   // `capabilities?.` because this tab renders against minimal health payloads too; absent is
   // fail-closed, which is the honest answer while the server has not spoken.
   const automationsAvailable = useHealth().data?.capabilities?.automations === true
-  const gh = list.data
+  const gh = useMemo<GithubData | undefined>(() => {
+    const pages = list.data?.pages
+    if (!pages || pages.length === 0) return undefined
+    const first = pages[0]
+    const last = pages[pages.length - 1]
+    if (!first || !last) return undefined
+    return {
+      ...first,
+      available: first.available ?? false,
+      issues: pages.flatMap((page) => page.issues ?? []),
+      prs: pages.flatMap((page) => page.prs ?? []),
+      labelColors: Object.assign({}, ...pages.map((page) => page.labelColors ?? {})),
+      issuesNextCursor: last.issuesNextCursor,
+      prsNextCursor: last.prsNextCursor,
+    }
+  }, [list.data])
 
   // The remembered list order (#gh-sort). Read up here, above the checks window below, because
   // that window is "the PRs the user can see" and flipping to oldest-first changes which ones
@@ -245,8 +291,7 @@ export function GithubRoute({
   }
 
   // The list order (#gh-sort), remembered the same way the sub-tab is. A presentation pref, not a
-  // fetch parameter: `LIST_LIMIT` pulls the whole open set in one shot, so flipping the order
-  // re-renders what is already in hand and never re-slices which items were fetched.
+  // fetch parameter: flipping the order re-renders all loaded pages and never re-fetches them.
   //
   // Same read-then-write shape as `saveGithubView`, including the eager cache patch — without it
   // the toggle would render the OLD order until the PUT resolved, which on a slow write reads as
@@ -272,10 +317,10 @@ export function GithubRoute({
 
   const refresh = useMutation({
     mutationFn: () => getGithub({ refresh: true, limit: LIST_LIMIT }),
-    onSuccess: (data) => {
-      // One list query now (#664) — patch it directly, then re-hydrate the visible checks window
-      // so glyphs track the fresh rows (they carry their own ≤60 s cache server-side).
-      queryClient.setQueryData(queryKeys.github({ limit: LIST_LIMIT }), data)
+    onSuccess: () => {
+      // Replace the paged cache from the first page; the next page cursor is intentionally
+      // discarded because a refresh may have inserted or removed rows before it.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.githubPages(LIST_LIMIT) })
       void queryClient.invalidateQueries({ queryKey: queryKeys.githubChecks(checkPrNumbers) })
 
       // The open thread must be re-fetched with `refresh: true` (#525). Invalidating its key is
@@ -356,6 +401,14 @@ export function GithubRoute({
   // List filtering (#gh-filter): free-text search (by #id or any text) + a label narrow.
   const [query, setQuery] = useState('')
   const [labelFilter, setLabelFilter] = useState<readonly string[]>([])
+  const filtering = query.trim() !== '' || labelFilter.length > 0
+  // No paging under a filter: a narrowed list would keep the sentinel in view and crawl every page,
+  // and anything past the open list is the forge search's job (#730). A failed page stops the
+  // observer too — otherwise the still-visible sentinel would retry it in a tight loop.
+  const loadMoreRef = useLoadMoreSentinel(
+    list.hasNextPage && !list.isFetchingNextPage && !list.isFetchNextPageError && !filtering,
+    () => void list.fetchNextPage(),
+  )
 
   // Cross-state search fallback (#730). The list tier only ever holds OPEN items, so a closed or
   // merged issue/PR is not "past the fetched window" — it was never fetched, and no amount of
@@ -445,7 +498,6 @@ export function GithubRoute({
 
   const allItems = openItems
   const items = filterGithubItems(allItems, { query, labels: labelFilter })
-  const filtering = query.trim() !== '' || labelFilter.length > 0
   // Gated on `searchWanted`, not just on the payload: the query key is (kind, text), so flipping
   // `enabled` off does not evict what a previous run cached under the same text. Reading `data`
   // alone therefore kept the hits on screen after the local narrow started matching again —
@@ -615,13 +667,13 @@ export function GithubRoute({
           <TabsTrigger value="issues" asChild>
             <Link to="/github" aria-current={view === 'issues' ? 'page' : undefined} onClick={() => saveGithubView('issues')}>
               Issues
-              <span className="font-mono text-[11px] tabular-nums opacity-70">{countLabel(gh.issues.length)}</span>
+              <span className="font-mono text-[11px] tabular-nums opacity-70">{countLabel(gh.issuesTotal ?? gh.issues.length)}</span>
             </Link>
           </TabsTrigger>
           <TabsTrigger value="prs" asChild>
             <Link to="/github/prs" aria-current={view === 'prs' ? 'page' : undefined} onClick={() => saveGithubView('prs')}>
               Pull requests
-              <span className="font-mono text-[11px] tabular-nums opacity-70">{countLabel(gh.prs.length)}</span>
+              <span className="font-mono text-[11px] tabular-nums opacity-70">{countLabel(gh.prsTotal ?? gh.prs.length)}</span>
             </Link>
           </TabsTrigger>
         </TabsList>
@@ -686,6 +738,34 @@ export function GithubRoute({
       ) : (
         <SidebarMenu data-slot="gh-rows">{items.map((item) => renderRow(item, true))}</SidebarMenu>
       )}
+
+      {list.hasNextPage && !filtering && items.length > 0 ? (
+        <div
+          ref={loadMoreRef}
+          data-slot="gh-load-more"
+          className="flex min-h-6 items-center justify-center gap-1.5 px-2 py-2 text-xs text-muted-foreground"
+        >
+          {list.isFetchingNextPage ? (
+            <>
+              <Spinner />
+              Loading more…
+            </>
+          ) : list.isFetchNextPageError ? (
+            <>
+              Could not load more.
+              <Button
+                variant="link"
+                size="sm"
+                data-slot="gh-load-more-retry"
+                className="h-auto p-0 text-xs"
+                onClick={() => void list.fetchNextPage()}
+              >
+                Retry
+              </Button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* Cross-state hits (#730) — rendered under their own heading so it is never ambiguous
           whether a row came from the open list or from a search that reached past it. */}
@@ -790,10 +870,9 @@ function GithubSidebarTitle() {
   )
 }
 
-/** The exact open count from the single fast fetch — with a `+` only when it hit the list cap, so
- *  a repo with more than `LIST_LIMIT` open items reads honestly as "at least this many". */
+/** Counts are exact when supplied by the server; this fallback keeps older payloads readable. */
 function countLabel(count: number): string {
-  return `${count}${count >= LIST_LIMIT ? '+' : ''}`
+  return String(count)
 }
 
 /** How many label chips a list row shows before folding the rest into "+n". */
@@ -1019,7 +1098,11 @@ function GithubDetail({
 }) {
   const kindWord = item.kind === 'pr' ? 'pull request' : 'issue'
   const kindLabel = item.kind === 'pr' ? 'Pull request' : 'Issue'
-  const hasDiffStat = item.kind === 'pr' && Boolean(item.additions || item.deletions)
+  const detailQuery = useGithubComments(item.kind, item.number)
+  const detailBody = detailQuery.data?.detail?.body ?? item.body
+  const detailAdditions = detailQuery.data?.detail?.additions ?? item.additions
+  const detailDeletions = detailQuery.data?.detail?.deletions ?? item.deletions
+  const hasDiffStat = item.kind === 'pr' && Boolean(detailAdditions || detailDeletions)
   const linkable = isHttpUrl(item.url)
   const copyLink = () => {
     void navigator.clipboard?.writeText(item.url).then(() => toast('Link copied'))
@@ -1133,8 +1216,8 @@ function GithubDetail({
           <>
             <dt className="text-muted-foreground">Changes</dt>
             <dd data-slot="gh-diffstat" className="font-mono text-xs tabular-nums">
-              <span className="text-success">+{item.additions ?? 0}</span>{' '}
-              <span className="text-danger">−{item.deletions ?? 0}</span>
+              <span className="text-success">+{detailAdditions ?? 0}</span>{' '}
+              <span className="text-danger">−{detailDeletions ?? 0}</span>
             </dd>
           </>
         ) : null}
@@ -1177,8 +1260,8 @@ function GithubDetail({
 
       {changes && item.kind === 'pr' ? <GithubPrChanges item={item} /> : <>
       <div data-slot="gh-body" className="mt-6 border-t border-border pt-6 text-sm leading-relaxed">
-        {item.body ? (
-          <Markdown>{item.body}</Markdown>
+        {detailBody ? (
+          <Markdown>{detailBody}</Markdown>
         ) : (
           <p className="text-muted-foreground">No description.</p>
         )}
@@ -1252,8 +1335,8 @@ function GithubMergeBox({ number }: { number: number }) {
       setConfirming(false)
       toast(`Pull request #${number} merged`)
       void queryClient.invalidateQueries({ queryKey: queryKeys.githubMergeState(number) })
-      // The single list query (#664) — a merged PR drops out of the open set on the next fetch.
-      void queryClient.invalidateQueries({ queryKey: queryKeys.github({ limit: LIST_LIMIT }) })
+      // A merged PR drops out of the first page on the next paged fetch.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.githubPages(LIST_LIMIT) })
       void queryClient.invalidateQueries({ queryKey: queryKeys.githubComments('pr', number) })
     },
     onError: (error) => {

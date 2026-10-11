@@ -4,7 +4,7 @@ import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { ApiError } from '@/api/client'
 import { useRepoChanges } from '@/api/queries'
 import { ContextSidebar } from '@/components/context-sidebar'
-import { Diff, type DiffHandle, type DiffMode } from '@/components/diff'
+import { canPreviewMarkdown, Diff, type DiffHandle, type DiffMode } from '@/components/diff'
 import { PageBody, PageToolbar } from '@/components/page'
 import { SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel } from '@/components/ui/sidebar'
 import { Spinner } from '@/components/ui/spinner'
@@ -35,6 +35,7 @@ export function RepoChangesSection({ header }: { header: ReactNode }) {
 
   const [mode, setMode] = useState<DiffMode>('unified')
   const [wrap, setWrap] = useState(false)
+  const [preview, setPreview] = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
   const diffRef = useRef<DiffHandle | null>(null)
 
@@ -43,6 +44,7 @@ export function RepoChangesSection({ header }: { header: ReactNode }) {
 
   const files = changes.data?.files ?? []
   const tree = useMemo(() => buildFileTree(files), [files])
+  const hasMarkdown = useMemo(() => files.some(canPreviewMarkdown), [files])
 
   const effectiveMode: DiffMode = desktop ? mode : 'unified'
   const effectiveWrap = desktop ? wrap : true
@@ -83,7 +85,14 @@ export function RepoChangesSection({ header }: { header: ReactNode }) {
         {changes.data ? <AnimatedDiffStat stat={changes.data.stat} /> : null}
         {/* Same rule as the task toolbar: toggles exist ≥md only — phones force unified+wrap. */}
         <span className="ml-auto hidden items-center gap-1 md:flex">
-          <DiffViewToggles mode={mode} wrap={wrap} onModeChange={setMode} onWrapChange={setWrap} />
+          <DiffViewToggles
+            mode={mode}
+            wrap={wrap}
+            preview={preview}
+            onModeChange={setMode}
+            onWrapChange={setWrap}
+            onPreviewChange={hasMarkdown ? setPreview : undefined}
+          />
         </span>
       </PageToolbar>
 
@@ -107,7 +116,7 @@ export function RepoChangesSection({ header }: { header: ReactNode }) {
         />
       ) : (
         <PageBody className="[--diff-sticky-top:0rem]">
-          <Diff files={files} viewRef={diffRef} mode={effectiveMode} wrap={effectiveWrap} className="min-w-0" />
+          <Diff files={files} viewRef={diffRef} mode={effectiveMode} wrap={effectiveWrap} preview={desktop && hasMarkdown && preview} className="min-w-0" />
         </PageBody>
       )}
     </section>

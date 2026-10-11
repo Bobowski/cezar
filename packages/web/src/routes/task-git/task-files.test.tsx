@@ -188,6 +188,30 @@ describe('the Files tab route', () => {
     )
   })
 
+  // The same grammar as the Changes tab's diff: scrolling a long file keeps its name pinned at the
+  // top of the preview column. jsdom lays nothing out, so these are the conditions sticky needs:
+  // the header is sticky and opaque, the card does not become a scroll container of its own
+  // (`overflow-hidden` would pin the header to the card), and the column carries no top padding
+  // that would park the stuck header below its edge.
+  it('pins the preview header under the view chrome while the file scrolls', async () => {
+    stubFetch()
+    renderFilesRoute()
+    await openFile('hello.ts')
+
+    const head = (await waitFor(() => {
+      const el = document.querySelector('[data-slot="file-preview-head"]')
+      expect(el).not.toBeNull()
+      return el
+    })) as HTMLElement
+    // Under whatever chrome the view declares — the same pin the sticky tree hangs from.
+    expect(head.className).toContain('sticky top-[var(--diff-sticky-top,0px)]')
+    expect(head.className).toContain('bg-[color-mix(in_oklab,var(--muted)_40%,var(--card))]')
+    expect(head.className).not.toContain('bg-muted/40')
+    const card = document.querySelector('[data-slot="file-preview"]') as HTMLElement
+    expect(card.className).toContain('overflow-clip')
+    expect(card.className).not.toContain('overflow-hidden')
+  })
+
   it('an image renders inline through the raw URL (binary flag notwithstanding)', async () => {
     stubFetch()
     renderFilesRoute()

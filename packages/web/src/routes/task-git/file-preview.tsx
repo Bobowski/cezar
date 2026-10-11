@@ -243,21 +243,19 @@ function FileEntryView({
           </span>
         ) : null}
         {showModes ? (
-          <div data-slot="markdown-view-toggle" className="ml-auto flex shrink-0 overflow-hidden rounded-sm border border-border">
+          <div data-slot="markdown-view-toggle" className="ml-auto flex shrink-0 items-center gap-0.5">
             {(['rendered', 'source'] as const).map((value) => (
-              <button
+              <Button
                 key={value}
-                type="button"
+                variant="ghost"
+                size="xs"
                 data-mode={value}
                 aria-pressed={mode === value}
                 onClick={() => pick(value)}
-                className={cn(
-                  'px-2 py-0.5 capitalize',
-                  mode === value ? 'bg-muted font-medium text-foreground' : 'text-soft-foreground hover:bg-muted',
-                )}
+                className={cn('capitalize', mode === value ? 'bg-muted text-foreground' : 'text-muted-foreground')}
               >
                 {value}
-              </button>
+              </Button>
             ))}
           </div>
         ) : null}

@@ -3,7 +3,7 @@ import { AlertTriangleIcon, ArrowLeftIcon, CheckIcon, Columns3Icon, ExternalLink
 import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router'
 
-import type { TrackerAssociation, TrackerItem } from '@open-mercato/cezar-api-client'
+import { trackerReadScope, type ApiRun, type TrackerAssociation, type TrackerItem } from '@open-mercato/cezar-api-client'
 import { IssueBrowserEmpty } from '@/components/issue-browser-layout'
 import { Page } from '@/components/page'
 import { shortAge } from '@/lib/format'
@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 import { TRACKER_PROVIDERS } from '@/lib/tracker-providers'
 import { useTrackerWatch } from '@/api/tracker-watch'
 import { useProjectScope } from '@/api/project-scope-context'
-import { queryKeys, TrackerRefreshError, useSkills, useTrackerConnection, useTrackerAssociation, useTrackerItem, useTrackerItems, useWorkflows } from '@/api/queries'
+import { queryKeys, TrackerRefreshError, useRuns, useSkills, useTrackerConnection, useTrackerAssociation, useTrackerItem, useTrackerItems, useWorkflows } from '@/api/queries'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -19,11 +19,15 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Input } from '@/components/ui/input'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Spinner } from '@/components/ui/spinner'
+import { StatusDot } from '@/components/status-dot'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { toast } from '@/components/ui/toaster'
 import { Link } from '@/lib/project-router'
+import { statusLabel, statusTone } from '@/lib/automation-format'
+import { runTitle } from '@/lib/task-groups'
 import { groupByStatus } from '@/lib/tracker-groups'
+import { hasActiveRun, runsByTicket } from '@/lib/tracker-links'
 import { trackerLosses } from '@/lib/tracker-task'
 import { Markdown } from '../task-thread/markdown'
 import { TrackerHandoff, type TrackerHandoffSelection, type TrackerDraftCache } from './tracker-handoff'
@@ -135,6 +139,9 @@ function TrackerBrowse({ scopePending, association, selectedId, drafts, selectio
   const failure = pages.find((page) => !page.available)
   const items = useMemo(() => pages.flatMap((page) => page.available ? page.items : []), [pages])
   const groups = useMemo(() => groupByStatus(items), [items])
+  // From the run list the cockpit already keeps live: no vendor request, and it survives an outage.
+  const runList = useRuns()
+  const runs = useMemo(() => runsByTicket(runList.data ?? [], association), [runList.data, association])
 
   const provider = TRACKER_PROVIDERS[association.kind].label
   // Mirrors GitHub's refresh (`github.tsx`'s `openThreadRef` cascade): a manual refresh must also
@@ -202,7 +209,7 @@ function TrackerBrowse({ scopePending, association, selectedId, drafts, selectio
   const loadMore = result.hasNextPage
     ? <div className="shrink-0 p-3"><Button className="w-full" variant="outline" size="sm" onClick={() => void result.fetchNextPage()} disabled={result.isFetchingNextPage}>Load more</Button></div>
     : null
-  const surfaceProps = { groups, association, scopePending, activeId: detailId }
+  const surfaceProps = { groups, association, scopePending, activeId: detailId, runs }
 
   return <Page width="full" data-route="tracker" className="h-full">
     {listVisible ? toolbar : null}
@@ -215,13 +222,13 @@ function TrackerBrowse({ scopePending, association, selectedId, drafts, selectio
         {loadMore}
       </section> : null}
       {detailId ? <aside data-slot="tracker-panel" aria-label="Issue" className={cn('@container min-h-0 min-w-0 overflow-y-auto bg-background', isMobile ? 'flex-1' : 'w-[min(64rem,66%)] shrink-0 border-l border-border')}>
-        <TrackerDetail scopePending={scopePending} key={`${trackerAssociationKey(association)}:${detailId}`} association={association} id={detailId} drafts={drafts} selection={selection} onSelectionChange={setSelection} />
+        <TrackerDetail scopePending={scopePending} key={`${trackerAssociationKey(association)}:${detailId}`} association={association} id={detailId} runs={runs.get(detailId)} drafts={drafts} selection={selection} onSelectionChange={setSelection} />
       </aside> : null}
     </div>
   </Page>
 }
 
-function TrackerDetail({ scopePending, association, id, selection, onSelectionChange, drafts }: { scopePending: boolean; drafts: TrackerDraftCache; association: TrackerAssociation; id: string; selection: TrackerHandoffSelection; onSelectionChange: React.Dispatch<React.SetStateAction<TrackerHandoffSelection>> }) {
+function TrackerDetail({ scopePending, association, id, runs, selection, onSelectionChange, drafts }: { scopePending: boolean; runs: readonly ApiRun[] | undefined; drafts: TrackerDraftCache; association: TrackerAssociation; id: string; selection: TrackerHandoffSelection; onSelectionChange: React.Dispatch<React.SetStateAction<TrackerHandoffSelection>> }) {
   const detail = useTrackerItem(association, id)
   const workflows = useWorkflows()
   const skills = useSkills()
@@ -310,9 +317,23 @@ function TrackerDetail({ scopePending, association, id, selection, onSelectionCh
               <dd className="flex flex-wrap gap-1">{item.labels.map(label => <LabelChip key={label} label={label} />)}</dd>
             </> : null}
           </dl>
+          {runs?.length ? <section data-slot="tracker-tasks" aria-labelledby="tracker-tasks-title" className="border-t border-border pt-5">
+            <h2 id="tracker-tasks-title" className="mb-2 text-[13px] font-semibold">Tasks <span className="font-normal text-muted-foreground tabular-nums">{runs.length}</span></h2>
+            <ul className="flex flex-col">
+              {runs.map(run => <li key={run.id}>
+                <Link to={`/tasks/${run.id}`} className="-mx-2 flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/50">
+                  <StatusDot tone={statusTone(run.status)} />
+                  <span className="min-w-0 flex-1 truncate">{runTitle(run)}</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">{statusLabel(run.status)}</span>
+                  <span className="w-8 shrink-0 text-right text-xs text-muted-foreground tabular-nums" title={new Date(run.createdAt).toLocaleString()}>{shortAge(run.createdAt)}</span>
+                </Link>
+              </li>)}
+            </ul>
+          </section> : null}
           <section aria-labelledby="tracker-hand-title" className="border-t border-border pt-5">
             <h2 id="tracker-hand-title" className="mb-3 text-[13px] font-semibold">Hand to agent</h2>
-            <TrackerHandoff scopePending={scopePending} key={`${trackerAssociationKey(association)}:${item.id}`} item={item} detailUnavailable={detail.isError || !detail.data?.available} drafts={drafts} selection={selection} onSelectionChange={onSelectionChange} workflows={workflows.data?.workflows ?? []} skills={skills.data ?? []} onQueued={setQueuedRunId} />
+            {hasActiveRun(runs) ? <p role="status" className="mb-3 text-[13px] text-muted-foreground">A task for this issue is already in progress. You can still start another.</p> : null}
+            <TrackerHandoff expectedScope={trackerReadScope(association)} scopePending={scopePending} key={`${trackerAssociationKey(association)}:${item.id}`} item={item} detailUnavailable={detail.isError || !detail.data?.available} drafts={drafts} selection={selection} onSelectionChange={onSelectionChange} workflows={workflows.data?.workflows ?? []} skills={skills.data ?? []} onQueued={setQueuedRunId} />
           </section>
         </div>
       </div>

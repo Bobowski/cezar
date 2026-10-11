@@ -84,7 +84,7 @@ describe('tracker snapshot freshness', () => {
     let calls = 0
     let finishRetry!: (response: Response) => void
     const launches: string[] = []
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (new URL(url, 'http://localhost').pathname.endsWith('/tracker/OPS-1')) {
         calls++
@@ -96,7 +96,8 @@ describe('tracker snapshot freshness', () => {
         return new Promise<Response>(resolve => { finishRetry = resolve })
       }
       if (url.endsWith('/tracker/association')) return json({ association })
-      if (url.endsWith('/runs')) launches.push(url)
+      // The surface also READS the run list (ticket activity); only a POST is a launch.
+      if (url.endsWith('/runs') && init?.method === 'POST') launches.push(url)
       return new Promise<never>(() => {})
     }))
     mount(client, '/tracker/OPS-1')

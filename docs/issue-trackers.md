@@ -121,6 +121,19 @@ Rotate or renew an expired token using Replace credentials in project Settings, 
 Changing the Jira site or Linear organization requires explicitly reconnecting the project;
 saved IDs are never silently retargeted.
 
+## Tickets and tasks
+
+A task handed off from a ticket, and a task a tracker automation launches, is **linked** to that
+ticket. The task header shows the ticket key with the status it had when the task started, as a
+link to the vendor. In the tracker, a dot on a row or card says a task exists for that ticket
+(working, waiting for review, or finished) and the issue panel lists those tasks. Both are computed
+from local task records, so they need no vendor request and keep working while the vendor is down.
+
+The link is recorded by the server from the project's saved scope and its own read of the ticket,
+never from the prompt text. If the vendor does not answer at launch the task still starts, linked
+by key only. A second task for a ticket that already has one in progress is allowed; the panel
+says so first. Tasks started before this feature, and tasks typed by hand, carry no link.
+
 ## Agent context
 
 Handing off a ticket fetches its detail description, including text beyond the list preview.

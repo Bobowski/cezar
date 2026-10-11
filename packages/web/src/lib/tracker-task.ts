@@ -42,7 +42,8 @@ export function trackerRunBody(
   workflow: string | null,
   skills: readonly string[],
   backend: Pick<CreateRunInput, 'model' | 'runner' | 'agentProfile'>,
-  options: TrackerPromptOptions & { acknowledgeLoss?: boolean },
+  /** `expectedScope` (the association's `trackerReadScope`) makes the server record the ticket link. */
+  options: TrackerPromptOptions & { acknowledgeLoss?: boolean; expectedScope?: string },
 ): CreateRunInput {
   if (!workflow && skills.length > MAX_CHAIN_STEPS) {
     throw new Error(`A skill chain can contain at most ${MAX_CHAIN_STEPS} skills. Remove a skill before launching.`)
@@ -54,7 +55,8 @@ export function trackerRunBody(
     ...options,
     skills: workflow ? skills : [],
   })
-  if (workflow) return { ...backend, workflow, task }
-  if (skills.length) return { ...backend, steps: skillChainSteps(skills), task }
-  return { ...backend, workflow: 'quick-task', task }
+  const link = options.expectedScope ? { tracker: { itemId: item.id, expectedScope: options.expectedScope } } : {}
+  if (workflow) return { ...backend, ...link, workflow, task }
+  if (skills.length) return { ...backend, ...link, steps: skillChainSteps(skills), task }
+  return { ...backend, ...link, workflow: 'quick-task', task }
 }

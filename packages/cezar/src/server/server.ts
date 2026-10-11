@@ -4,7 +4,7 @@ import {
   terminalCreateSchema, terminalInputSchema, terminalOutputQuerySchema, terminalOutputSchema,
   terminalResizeSchema, terminalSessionParamsSchema, terminalSessionSchema, terminalStateSchema,
   trackerWatchInputSchema, trackerWatchParamsSchema, trackerWatchQuerySchema,
-  trackerCandidatesQuerySchema, trackerListQuerySchema, trackerSearchQuerySchema, trackerItemQuerySchema, trackerReadScope,
+  trackerCandidatesQuerySchema, trackerListQuerySchema, trackerSearchQuerySchema, trackerItemQuerySchema, trackerReadScope, trackerRunLinkInputSchema,
   trackerCredentialsSchema, trackerItemParamsSchema, trackerAssociationInputSchema, type TrackerChangedEvent,
 } from '@open-mercato/cezar-contract';
 import { createTrackerService } from './tracker/index.ts';
@@ -133,6 +133,8 @@ import { getTeamSkillsCached, refreshTeamSkills, waitForTeamSkills } from '../sk
 import { appendHandoffHeartbeat, handoffProgressExcerpt, readHandoff } from '../handoff.ts';
 import { markStarted, onTodosChanged, readTodos, removeTodo, todoTaskText, type TodoItem } from '../todos.ts';
 import type { RunEvent, RunRecord, RunStatus, RunStore } from '../runs/store.ts';
+import { buildTrackerLink } from '../runs/tracker-links.ts';
+import type { TrackerLink } from '@open-mercato/cezar-contract';
 import {
   HistoryCursorError,
   deriveRunContextEvents,
@@ -722,6 +724,9 @@ const startRunSchema = z
     // dispatch tree, within the user's limits. Dropped — not refused — when the capability is
     // off: the task itself is still perfectly valid as an ordinary run.
     dispatch: dispatchIntentSchema.optional(),
+    // The tracker ticket this task was handed off from (spec 2026-10-11-tracker-ticket-context).
+    // Only an id and the scope the client was looking at: the link itself is built server-side.
+    tracker: trackerRunLinkInputSchema.optional(),
   })
   .refine((b) => Boolean(b.workflow) !== Boolean(b.steps), {
     message: 'provide either "workflow" or "steps", not both',
@@ -4369,10 +4374,25 @@ export function createApp(deps: ServerDeps) {
     })
 
     .post('/runs', jsonZodValidator(startRunSchema), async (c) => {
-      const { root: repoRoot, dataDir, manager } = c.get('project');
+      const { root: repoRoot, dataDir, manager, store } = c.get('project');
       const parsed = { data: c.req.valid('json') };
       if (agentModelsLocked(repoRoot) && parsed.data.model?.trim()) {
         return c.json({ error: AGENT_MODELS_LOCKED_ERROR }, 409);
+      }
+      // Resolve the ticket link before anything is started: a scope that moved under the user is
+      // refused like any tracker read, while a vendor that merely fails to answer costs the link
+      // its title and snapshot, never the launch.
+      let trackerLink: TrackerLink | undefined;
+      if (parsed.data.tracker) {
+        const driver = await trackers.driver(repoRoot, dataDir);
+        if ('available' in driver) return c.json({ error: driver.reason }, 409);
+        if (parsed.data.tracker.expectedScope !== trackerReadScope(driver.association)) {
+          return c.json({ error: 'This tracker connection or scope changed. Reload the tracker view.' }, 409);
+        }
+        const read = await driver.getItem(parsed.data.tracker.itemId);
+        if (!read.available && read.code === 'not_found') return c.json({ error: read.reason }, 404);
+        if (!read.available && read.code === 'source_changed') return c.json({ error: read.reason }, 409);
+        trackerLink = buildTrackerLink(driver.association, parsed.data.tracker.itemId, 'handoff', read.available ? read.item : undefined);
       }
       let workflow: WorkflowDef | undefined;
       if (parsed.data.steps) {
@@ -4433,13 +4453,16 @@ export function createApp(deps: ServerDeps) {
         ...(parsed.data.dispatch && capabilities().dispatch ? { dispatchIntent: parsed.data.dispatch } : {}),
       };
       if (variants > 1) {
-        const runs = manager.startVariants(workflow, input, variants);
+        const started = manager.startVariants(workflow, input, variants);
+        // Every variant works on the same ticket.
+        const runs = trackerLink ? started.map((run) => store.updateRun(run.id, { trackerLinks: [trackerLink] }) ?? run) : started;
         // The entry points at the first variant — the thread the composer navigates to.
         const first = runs[0];
         if (parsed.data.todoId && first) await noteTodoStarted(dataDir, parsed.data.todoId, first.id);
         return c.json({ runs }, 201);
       }
-      const run = manager.startRun(workflow, input);
+      const started = manager.startRun(workflow, input);
+      const run = trackerLink ? store.updateRun(started.id, { trackerLinks: [trackerLink] }) ?? started : started;
       if (parsed.data.todoId) await noteTodoStarted(dataDir, parsed.data.todoId, run.id);
       return c.json(run, 201);
     })

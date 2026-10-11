@@ -145,6 +145,17 @@ rendered oldest-first. Description cap stays 60,000; the final task cap stays 10
 - A "Has task" list filter is local and is labelled as covering loaded rows only.
 - Launching on a ticket that has an active task shows a non-blocking notice with a link to it.
 
+**Status 2026-10-11:** implemented — `trackerLinks` in the contract and the store, the
+`POST /runs` field, the automation link, the task-header chip, the activity dot on rows and
+cards, the Tasks section and the in-progress notice. Deviations from the text above:
+
+- No legacy fold. `runTrackerLinks` was not built: earlier tracker-automation runs show no chip.
+  `automationTracker` is not in the HTTP contract, so folding it would have meant either
+  rewriting stored records or widening the contract for history alone.
+- An unenriched link is not enriched later; it stays key-only.
+- The "Has task" filter is not built.
+- Dispatch children do not show their root's ticket.
+
 ### Phase 2 — comments in the handoff
 
 - The detail pane renders the comment thread under the description.

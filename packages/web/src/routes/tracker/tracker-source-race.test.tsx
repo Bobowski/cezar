@@ -51,7 +51,7 @@ it.each([true, false])('blocks handoff during metadata reconciliation (source ch
       return json({ available: true, item: replaced ? replacement : item })
     }
     if (url.pathname.endsWith('/tracker')) return json({ available: true, items: [replaced ? replacement : item], truncated: false })
-    if (url.pathname.endsWith('/runs')) launches.push(String(init?.body))
+    if (url.pathname.endsWith('/runs') && init?.method === 'POST') launches.push(String(init?.body))
     return new Promise<Response>(() => {})
   }))
   render(<MemoryRouter initialEntries={['/tracker/OPS-1']}><QueryClientProvider client={client}>

@@ -1,4 +1,4 @@
-import type { DispatchIntent } from '@open-mercato/cezar-contract';
+import type { DispatchIntent, TrackerLink } from '@open-mercato/cezar-contract';
 import { zonedParts } from '@open-mercato/cezar-contract';
 import { loadWorkflows } from '../workflows/load.ts';
 import { stepsIssue, type WorkflowDef } from '../workflows/types.ts';
@@ -247,7 +247,14 @@ export async function launchTrackerAutomationRun(options: {
     key: candidate.key,
     url: candidate.url,
   };
-  for (const run of runs) options.store.updateRun(run.id, { automationTracker: provenance });
+  // The same link a cockpit handoff records, so one reader serves both origins. The poll
+  // candidate is not a full read of the ticket, hence no content snapshot.
+  const link: TrackerLink = {
+    provider: candidate.provider, sourceId: candidate.association.source.id, scopeId: candidate.association.externalId,
+    itemId: candidate.key, origin: 'automation', linkedAt: new Date().toISOString(),
+    title: bounded(candidate.title, 500), url: candidate.url,
+  };
+  for (const run of runs) options.store.updateRun(run.id, { automationTracker: provenance, trackerLinks: [link] });
   const first = runs[0];
   if (!first) throw new Error('run manager did not create a run');
   // Receipt/checkpoint acknowledgement must follow durable run provenance, not its debounce.

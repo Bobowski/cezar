@@ -49,6 +49,14 @@ describe('tracker handoff', () => {
     expect(body.task).toContain('Missing acceptance criteria copied from Jira.')
   })
 
+  it('names the ticket for the server to link on every launch shape, and only when a scope is given', () => {
+    const link = { tracker: { itemId: 'OPS-42', expectedScope: 'scope-1' } }
+    expect(trackerRunBody(item, 'ship', [], {}, { expectedScope: 'scope-1' })).toMatchObject(link)
+    expect(trackerRunBody(item, null, ['review'], {}, { expectedScope: 'scope-1' })).toMatchObject(link)
+    expect(trackerRunBody(item, null, [], {}, { expectedScope: 'scope-1' })).toMatchObject(link)
+    expect('tracker' in trackerRunBody(item, null, [], {}, {})).toBe(false)
+  })
+
   it('states that an empty vendor description is empty', () => {
     expect(trackerTaskPrompt({ ...item, body: '   ' })).toContain('No description was provided')
   })

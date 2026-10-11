@@ -8,6 +8,7 @@ import { workflowDefSchema, workflowStepDefSchema } from './workflows.ts';
 // one. `src/runs/store.ts` imports the SAME value for its persistence twin, so the two halves of
 // `contract-parity.runs.test.ts` cannot drift apart by construction.
 import { dispatchIntentSchema, dispatchSchema } from './dispatch.ts';
+import { trackerLinkSchema, trackerRunLinkInputSchema } from './tracker.ts';
 
 /**
  * The RUNS family of `/api/v1` — a task's record, its lifecycle mutations, and the artifacts
@@ -217,6 +218,9 @@ export const runRecordSchema = z.object({
       occurrenceAt: z.string(),
     })
     .optional(),
+  /** The tracker tickets this run works on (spec 2026-10-11-tracker-ticket-context). An array
+   *  from the start: a single field is what the projects reviewed there had to migrate away from. */
+  trackerLinks: z.array(trackerLinkSchema).optional(),
   /**
    * This run's place in a dispatch tree (spec `.ai/specs/2026-09-10-dispatch.md`): its root,
    * its parent, its budget, its report. Absent on a plain task, which behaves exactly as it
@@ -979,6 +983,9 @@ export const createRunInputBaseSchema = z
      *  a dispatch tree, with the user's limits. Omit for an ordinary task. Ignored — the run is
      *  still created — on a server with `capabilities.dispatch` off. */
     dispatch: dispatchIntentSchema.optional(),
+    /** The tracker ticket this task was handed off from. The server records the link from the
+     *  project's saved scope and its own read of the ticket; a stale scope is a 409. */
+    tracker: trackerRunLinkInputSchema.optional(),
   });
 
 /**

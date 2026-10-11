@@ -316,15 +316,53 @@ export type TrackerSearchQuery = z.output<typeof trackerSearchQuerySchema>;
 const reservedTrackerItemIds = ['association', 'candidates', 'search', 'connection'];
 
 /** One bounded vendor identifier path segment; static tracker routes are never detail IDs. */
-export const trackerItemParamsSchema = z.object({
-  id: z
-    .string()
-    .min(1)
-    .max(256)
-    .regex(/^[^/]+$/, 'id must be one path segment')
-    .refine((id) => !reservedTrackerItemIds.includes(id), 'id is reserved by a static route'),
-});
+const trackerItemIdSchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .regex(/^[^/]+$/, 'id must be one path segment')
+  .refine((id) => !reservedTrackerItemIds.includes(id), 'id is reserved by a static route');
+export const trackerItemParamsSchema = z.object({ id: trackerItemIdSchema });
 export type TrackerItemParams = z.infer<typeof trackerItemParamsSchema>;
+
+/**
+ * A run's link to the tracker ticket it works on (spec 2026-10-11-tracker-ticket-context §
+ * Data model). Identity is `(provider, sourceId, itemId)`: not the connection, so rotating a
+ * token does not orphan history. `title`, `url` and `snapshot` come from the server's own read
+ * of the ticket and are absent when that read failed; nothing here is client-authored.
+ */
+export const trackerLinkSchema = z
+  .object({
+    provider: trackerKindSchema,
+    sourceId: nonemptyStringSchema,
+    scopeId: z.string(),
+    itemId: nonemptyStringSchema,
+    origin: z.enum(['handoff', 'automation']),
+    linkedAt: z.iso.datetime({ offset: true }),
+    title: z.string().optional(),
+    url: httpsUrlSchema.optional(),
+    snapshot: z
+      .object({
+        status: z.string(),
+        statusCategory: trackerStatusCategorySchema.optional(),
+        updatedAt: z.string(),
+        /** sha256 of the title and description this run started from: a change detector only. */
+        contentHash: z.string(),
+        syncedAt: z.iso.datetime({ offset: true }),
+      })
+      .optional(),
+  });
+export type TrackerLink = z.infer<typeof trackerLinkSchema>;
+
+/** `POST /runs`' optional `tracker` key: which ticket of the project's saved scope this task is for. */
+export const trackerRunLinkInputSchema = z
+  .object({
+    itemId: trackerItemIdSchema,
+    /** `trackerReadScope` of the association the client was looking at; a mismatch is a 409. */
+    expectedScope: z.string().min(1).max(4096),
+  })
+  .strict();
+export type TrackerRunLinkInput = z.infer<typeof trackerRunLinkInputSchema>;
 
 
 // Association changes are workspace events; consumers refetch authoritative local state.

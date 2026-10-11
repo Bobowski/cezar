@@ -28,10 +28,12 @@ export type TrackerHandoffSelection = {
   engine: EnginePick
 }
 
-export function TrackerHandoff({ item, workflows, skills, selection, onSelectionChange, drafts, scopePending = false, detailUnavailable = false, onQueued }: {
+export function TrackerHandoff({ item, expectedScope, workflows, skills, selection, onSelectionChange, drafts, scopePending = false, detailUnavailable = false, onQueued }: {
   /** Fires with the queued run's id, so the host can confirm it outside this panel. */
   onQueued?: (runId: string | null) => void
   item: TrackerItem
+  /** The scope this ticket was read from; with it the launched task is linked to the ticket. */
+  expectedScope?: string
   scopePending?: boolean
   detailUnavailable?: boolean
   drafts?: TrackerDraftCache
@@ -73,7 +75,7 @@ export function TrackerHandoff({ item, workflows, skills, selection, onSelection
       workflow,
       validSkills,
       engineRunBody(resolved),
-      { instruction, supplemental, acknowledgeLoss },
+      { instruction, supplemental, acknowledgeLoss, expectedScope },
     )),
     onSuccess: (created) => {
       const run = 'runs' in created ? created.runs[0] : created

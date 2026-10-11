@@ -124,8 +124,14 @@ describe('RunManager repository-root isolation', { timeout: 30_000 }, () => {
     const second = manager.startRun(workflow, { task: 'second', worktree: false });
     await waitForRuns(store, [first.id, second.id]);
 
-    expect(store.getRun(first.id)?.status).toBe('done');
-    expect(store.getRun(second.id)?.status).toBe('done');
+    // With the error and the check's output, so a rare failure under load names its own cause.
+    const outcome = (id: string) => ({
+      status: store.getRun(id)?.status,
+      error: store.getRun(id)?.error,
+      check: store.readEvents(id).filter((event) => event.type === 'check-output').map((event) => event.text),
+    });
+    expect(outcome(first.id)).toMatchObject({ status: 'done', error: undefined });
+    expect(outcome(second.id)).toMatchObject({ status: 'done', error: undefined });
     for (const id of [first.id, second.id]) {
       const notes = store.readEvents(id).filter((event) => event.type === 'note');
       expect(notes.some((event) => String(event.message).includes('worktree off'))).toBe(true);

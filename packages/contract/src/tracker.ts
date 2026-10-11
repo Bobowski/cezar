@@ -80,9 +80,13 @@ export const trackerItemSchema = z
     /** The vendor's own id for `status`: display names are not unique and can be renamed. */
     statusId: z.string().min(1),
     statusCategory: trackerStatusCategorySchema,
+    /** Who the ticket is assigned to and how urgent the vendor says it is, as display text.
+     *  Absent when the ticket has neither; never an empty string. */
+    assignee: z.string().min(1).optional(),
+    priority: z.string().min(1).optional(),
   })
   .strict();
-export type TrackerItem= z.infer<typeof trackerItemSchema>;
+export type TrackerItem = z.infer<typeof trackerItemSchema>;
 
 export const trackerFailureCodeSchema = z.enum([
   'not_configured',
@@ -381,6 +385,10 @@ export const trackerLinkSchema = z
     latest: z
       .object({ status: z.string(), statusCategory: trackerStatusCategorySchema.optional(), syncedAt: z.iso.datetime({ offset: true }) })
       .optional(),
+    /** What the TASK was last told about its ticket by a change note, so one change is announced
+     *  once. Distinct from `latest`, which is what the cockpit knows: a status moved in the
+     *  cockpit is known at once and told to the task only when it is next continued. */
+    noted: z.object({ status: z.string(), contentHash: z.string(), at: z.iso.datetime({ offset: true }) }).optional(),
   });
 export type TrackerLink = z.infer<typeof trackerLinkSchema>;
 

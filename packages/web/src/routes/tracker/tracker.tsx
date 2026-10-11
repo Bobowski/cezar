@@ -21,6 +21,7 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { Spinner } from '@/components/ui/spinner'
 import { StatusDot } from '@/components/status-dot'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Toggle } from '@/components/ui/toggle'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { toast } from '@/components/ui/toaster'
 import { Link } from '@/lib/project-router'
@@ -34,6 +35,7 @@ import { trackerLosses } from '@/lib/tracker-task'
 import { Markdown } from '../task-thread/markdown'
 import { TrackerHandoff, type TrackerHandoffSelection, type TrackerDraftCache } from './tracker-handoff'
 import { TrackerLabelFilter } from './tracker-label-filter'
+import { TrackerDisplayMenu, useTrackerDisplay, useTrackerPanelWidth } from './tracker-display'
 import { TrackerMoveMenu, useTrackerMove, withPendingMoves, type TrackerMove } from './tracker-move'
 import { LabelChip, TrackerBoard, TrackerList, TrackerStatusIcon } from './tracker-surface'
 
@@ -144,10 +146,15 @@ function TrackerBrowse({ scopePending, association, selectedId, drafts, selectio
   // A ticket being moved shows in its new status at once; a refusal puts it back.
   const { pending, move } = useTrackerMove(association, result.queryKey)
   const items = useMemo(() => withPendingMoves(loaded, pending), [loaded, pending])
-  const groups = useMemo(() => groupByStatus(items), [items])
   // From the run list the cockpit already keeps live: no vendor request, and it survives an outage.
   const runList = useRuns()
   const runs = useMemo(() => runsByTicket(runList.data ?? [], association), [runList.data, association])
+  // "Has task" narrows what is LOADED, from local run records: it never asks the vendor, and says so.
+  const [hasTaskOnly, setHasTaskOnly] = useState(false)
+  const visible = useMemo(() => hasTaskOnly ? items.filter(item => runs.has(item.id)) : items, [hasTaskOnly, items, runs])
+  const groups = useMemo(() => groupByStatus(visible), [visible])
+  const display = useTrackerDisplay()
+  const panel = useTrackerPanelWidth()
 
   const provider = TRACKER_PROVIDERS[association.kind].label
   // Mirrors GitHub's refresh (`github.tsx`'s `openThreadRef` cascade): a manual refresh must also
@@ -194,6 +201,8 @@ function TrackerBrowse({ scopePending, association, selectedId, drafts, selectio
       <Button type="submit" className="sr-only h-px p-0" disabled={result.isFetching}>Search</Button>
       <TrackerLabelFilter options={items.flatMap(item => item.labels)} selected={labels} onChange={setLabels} />
     </form>
+    <Toggle variant="outline" size="sm" pressed={hasTaskOnly} onPressedChange={setHasTaskOnly} data-slot="tracker-has-task" title="Show only loaded issues that have a cezar task" className="h-8 font-normal">Has task</Toggle>
+    <TrackerDisplayMenu shown={display.shown} toggle={display.toggle} />
     <div className="flex items-center">
       <Button variant="ghost" size="icon-sm" aria-label="Refresh" title={syncedLabel ? `${syncedLabel} — refresh from ${provider}` : `Refresh from ${provider}`} disabled={busy} onClick={() => void refresh()}>
         <RefreshCwIcon aria-hidden="true" className={cn(busy && 'motion-safe:animate-spin')} />
@@ -211,6 +220,7 @@ function TrackerBrowse({ scopePending, association, selectedId, drafts, selectio
     {result.isError ? <div className="px-4"><Failure reason={result.error.message} generation={result.errorUpdatedAt} retryAfterSeconds={result.error instanceof TrackerRefreshError && result.error.failure.code === 'rate_limited' ? result.error.failure.retryAfterSeconds : undefined} retry={() => void result.restart()} /></div> : null}
     {failure && !failure.available ? <div className="px-4"><Failure reason={failure.reason} generation={result.dataUpdatedAt} retryAfterSeconds={failure.code === 'rate_limited' ? failure.retryAfterSeconds : undefined} retry={() => void result.restart()} /></div> : null}
     {!result.isPending && !result.isError && !failure && items.length === 0 ? <PageState text={query.trim() ? 'No issues match this search.' : 'No issues in this view.'} /> : null}
+    {hasTaskOnly && items.length > 0 && visible.length === 0 ? <PageState text={result.hasNextPage ? 'No loaded issue has a task. Load more, or turn the filter off.' : 'No issue in this view has a task.'} /> : null}
   </>
   const loadMore = result.hasNextPage
     ? <div className="shrink-0 p-3"><Button className="w-full" variant="outline" size="sm" onClick={() => void result.fetchNextPage()} disabled={result.isFetchingNextPage}>Load more</Button></div>
@@ -219,11 +229,11 @@ function TrackerBrowse({ scopePending, association, selectedId, drafts, selectio
   const automationsGate = useAutomationsGate()
   const automationList = useAutomationsQuery(automationsGate.known && !automationsGate.off)
   const automations = useMemo(() => automationsByTargetStatus(automationList.data?.automations, association), [automationList.data, association])
-  const surfaceProps = { groups, association, scopePending, activeId: detailId, runs }
+  const surfaceProps = { groups, association, scopePending, activeId: detailId, runs, shown: display.shown }
 
   return <Page width="full" data-route="tracker" className="h-full">
     {listVisible ? toolbar : null}
-    <div className="flex min-h-0 flex-1">
+    <div ref={panel.container} className="flex min-h-0 flex-1">
       {listVisible ? <section data-slot="tracker-list" aria-label="Issues" className={cn('flex min-h-0 min-w-0 flex-1 flex-col', view === 'list' && 'overflow-y-auto')}>
         {notices}
         {view === 'board'
@@ -231,7 +241,8 @@ function TrackerBrowse({ scopePending, association, selectedId, drafts, selectio
           : <TrackerList {...surfaceProps} collapsed={collapsed} onToggle={toggleGroup} compact={detailId !== null} />}
         {loadMore}
       </section> : null}
-      {detailId ? <aside data-slot="tracker-panel" aria-label="Issue" className={cn('@container min-h-0 min-w-0 overflow-y-auto bg-background', isMobile ? 'flex-1' : 'w-[min(64rem,66%)] shrink-0 border-l border-border')}>
+      {detailId && !isMobile ? <div {...panel.separator} data-slot="tracker-panel-resize" title="Drag to resize. Double-click to reset." className="relative z-10 -mx-1 w-2 shrink-0 cursor-col-resize outline-none after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-transparent hover:after:bg-ring/60 focus-visible:after:w-0.5 focus-visible:after:bg-ring" /> : null}
+      {detailId ? <aside data-slot="tracker-panel" aria-label="Issue" style={!isMobile && panel.width !== null ? { width: panel.width } : undefined} className={cn('@container min-h-0 min-w-0 overflow-y-auto bg-background', isMobile ? 'flex-1' : cn('max-w-[calc(100%-17.5rem)] shrink-0 border-l border-border', panel.width === null && 'w-[min(64rem,66%)]'))}>
         <TrackerDetail scopePending={scopePending} key={`${trackerAssociationKey(association)}:${detailId}`} association={association} id={detailId} move={move} moving={pending.has(detailId)} automations={automations} runs={runs.get(detailId)} drafts={drafts} selection={selection} onSelectionChange={setSelection} />
       </aside> : null}
     </div>
@@ -320,6 +331,14 @@ function TrackerDetail({ scopePending, association, id, runs, move, moving, auto
             <dt className="text-muted-foreground">Status</dt>
             {/* Retained context (a failed refresh) is not a status anyone should move from. */}
             <dd><TrackerMoveMenu association={association} item={item} move={move} automations={automations} disabled={scopePending || moving || !detail.data?.available} /></dd>
+            {item.assignee ? <>
+              <dt className="text-muted-foreground">Assignee</dt>
+              <dd>{item.assignee}</dd>
+            </> : null}
+            {item.priority ? <>
+              <dt className="text-muted-foreground">Priority</dt>
+              <dd>{item.priority}</dd>
+            </> : null}
             <dt className="text-muted-foreground">Author</dt>
             <dd>{item.author}</dd>
             <dt className="text-muted-foreground">Opened</dt>

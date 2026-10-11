@@ -167,7 +167,18 @@ reflected there.
 The link is recorded by the server from the project's saved scope and its own read of the ticket,
 never from the prompt text. If the vendor does not answer at launch the task still starts, linked
 by key only. A second task for a ticket that already has one in progress is allowed; the panel
-says so first. Tasks started before this feature, and tasks typed by hand, carry no link.
+says so first. A task typed by hand carries no link.
+
+- A task an automation launched before links existed is shown with its ticket anyway: the link is
+  derived from the automation's own record each time, never written back.
+- A link recorded by key only is completed the next time that issue is opened in the tracker.
+- A task dispatched by a linked task shows its dispatcher's ticket in its header.
+
+When you **Continue** a linked task, cezar re-reads the ticket once (waiting at most four
+seconds) and, if its title, description or status differ from what the task was last told, adds
+one line saying so after your message. The same change is announced once. If the tracker does
+not answer in time, the task continues without the note. Messages sent to a task that is already
+running do not trigger this read.
 
 ## Re-reading the ticket from inside a task
 
@@ -275,8 +286,14 @@ totals, and a status with no loaded issue has no column. A card or row can be dr
 task composer to prefill a task; a card can also be dragged to another column to change the
 issue's status.
 
+The toolbar also has **Has task**, which narrows the loaded issues to those with a cezar task
+(it never asks the vendor, so it only knows the pages on screen), and **Display**, which chooses
+the optional properties rows and cards show: labels, assignee, priority, author and updated time.
+Both the Display choice and the panel width below are remembered in this browser.
+
 Opening an issue shows it in a panel beside the surface, with its description, its properties and
-the hand-to-agent composer; nothing is opened until you pick an issue. Mobile shows one pane at a
+the hand-to-agent composer; nothing is opened until you pick an issue. Drag the divider on the
+panel's left edge to resize it, or focus the divider and use the arrow keys; double-click resets it. Mobile shows one pane at a
 time with a Back to the list link. Workflow and skills pickers are shared with GitHub.
 Workflow/engine/skills choices persist between issues; per-issue instruction drafts stay in memory
 until leaving the tracker or changing project/association. Automatic list updates preserve the

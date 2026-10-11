@@ -54,6 +54,8 @@ const issueSchema = z.object({
     labels: z.array(z.string()),
     description: z.unknown().nullable(),
     status: z.object({ id: z.string().min(1), name: z.string(), statusCategory: z.object({ key: z.string() }).optional() }),
+    assignee: z.object({ displayName: z.string() }).nullable().optional(),
+    priority: z.object({ name: z.string() }).nullable().optional(),
   }),
 });
 /** `GET /issue/{key}/comment`: only the comments this account may see are returned. */
@@ -92,7 +94,7 @@ type JiraIssue = z.infer<typeof issueSchema>;
 type CachedResult = TrackerCandidatesResult | TrackerAssociationResult | TrackerItemsResult | TrackerItemResult;
 type Transport = 'gateway' | 'site';
 
-const issueFields = ['project', 'summary', 'creator', 'created', 'updated', 'labels', 'description', 'status'] as const;
+const issueFields = ['project', 'summary', 'creator', 'created', 'updated', 'labels', 'description', 'status', 'assignee', 'priority'] as const;
 const issueKeyPattern = /^[A-Z][A-Z0-9_]*-[1-9]\d*$/;
 
 function invalidResponse(reason = 'Jira returned an invalid response. Try again later.'): never {
@@ -152,6 +154,8 @@ function mapIssue(raw: JiraIssue, origin: string, expectedProjectId: string, max
     status: raw.fields.status.name,
     statusId: raw.fields.status.id,
     statusCategory: jiraCategories[raw.fields.status.statusCategory?.key ?? ''] ?? 'other',
+    ...(raw.fields.assignee?.displayName ? { assignee: raw.fields.assignee.displayName } : {}),
+    ...(raw.fields.priority?.name ? { priority: raw.fields.priority.name } : {}),
   };
 }
 

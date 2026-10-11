@@ -48,7 +48,9 @@ Reads begin only on user demand. Credentials stay on the server.
    Specify minimal read permissions, stable account/source and scope IDs, ticket ID,
    canonical web URLs, active/done mapping, the status **id** and its mapping to
    `trackerStatusCategorySchema` (list groups and board columns are keyed and ordered by them;
-   an unknown vendor value is `other`, never a guess), label semantics, ordering, search, pagination,
+   an unknown vendor value is `other`, never a guess), the optional `assignee` and `priority`
+   display strings (omit the key when the ticket has none; never an empty string, and only from
+   reads already being made), label semantics, ordering, search, pagination,
    limits and description format. Verify with a real test account when available; clearly
    distinguish live evidence from mocked tests. Never mutate that account without authorization.
 2. **Extend `trackerKindSchema`.** Keep the finite Zod enum. Do not change it to an

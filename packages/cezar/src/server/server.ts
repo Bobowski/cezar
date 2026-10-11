@@ -133,7 +133,7 @@ import { getTeamSkillsCached, refreshTeamSkills, waitForTeamSkills } from '../sk
 import { appendHandoffHeartbeat, handoffProgressExcerpt, readHandoff } from '../handoff.ts';
 import { markStarted, onTodosChanged, readTodos, removeTodo, todoTaskText, type TodoItem } from '../todos.ts';
 import type { RunEvent, RunRecord, RunStatus, RunStore } from '../runs/store.ts';
-import { buildTrackerLink, trackerContentHash } from '../runs/tracker-links.ts';
+import { buildTrackerLink, enrichTrackerLink, runTrackerLinks, ticketChangeSince, trackerContentHash } from '../runs/tracker-links.ts';
 import type { TrackerLink } from '@open-mercato/cezar-contract';
 import {
   HistoryCursorError,
@@ -671,6 +671,9 @@ const streamSSENoBuffer: typeof streamSSE = (c, cb, onError) => {
 
 // A run starts from a named workflow OR an inline chain of steps (spec 008 —
 // the approved plan is posted as-is, never written to a file).
+/** How long a Continue waits for the linked ticket before going ahead without a change note. */
+const TICKET_NOTE_BUDGET_MS = 4_000;
+
 const startRunSchema = z
   .object({
     workflow: z.string().min(1).optional(),
@@ -4283,7 +4286,10 @@ export function createApp(deps: ServerDeps) {
   // nothing. The stored record itself is never touched.
   const withUsage = (run: RunRecord): RunRecord & { usage?: ReturnType<typeof currentUsage> } => {
     const usage = currentUsage(run.id);
-    return usage ? { ...run, usage } : run;
+    // A pre-`trackerLinks` automation run answers with its ticket link derived (never stored).
+    const links = run.trackerLinks?.length ? undefined : runTrackerLinks(run);
+    const linked = links?.length ? { ...run, trackerLinks: links } : run;
+    return usage ? { ...linked, usage } : linked;
   };
 
   // The inbox half of a composer launch (#374). Since the cockpit's "▶ Run"
@@ -4485,7 +4491,7 @@ export function createApp(deps: ServerDeps) {
         const { store, root, dataDir } = c.get('project');
         const run = store.getRun(c.req.valid('param').id);
         if (!run) return c.json({ error: 'not found' }, 404);
-        const link = run.trackerLinks?.[0];
+        const link = runTrackerLinks(run)[0];
         if (!link) return c.json({ error: 'This task is not linked to a tracker ticket.' }, 404);
         const driver = await trackers.driver(root, dataDir);
         if ('available' in driver) return c.json(driver, 200);
@@ -4774,8 +4780,37 @@ export function createApp(deps: ServerDeps) {
         const account = await resolveWorkspaceProfile(provider, parsed.data.agentProfile);
         if ('error' in account) return c.json({ error: account.error }, 400);
       }
+      // A linked task being picked up again is told, once, if its ticket moved on (spec
+      // 2026-10-11-tracker-ticket-context § Phase 4). Only here: a Continue is a person's act, so
+      // neither the autonomous nudge nor a wake timer ever causes a vendor read. Bounded, and a
+      // read that fails or is slow adds nothing and blocks nothing.
+      let ticketNote: string | undefined;
+      const ownLink = run.trackerLinks?.[0];
+      if (ownLink) {
+        try {
+          const { dataDir } = c.get('project');
+          const read = await Promise.race([
+            (async () => {
+              const driver = await trackers.driver(repoRoot, dataDir);
+              if ('available' in driver) return undefined;
+              const bound = driver.association;
+              if (bound.kind !== ownLink.provider || bound.source.id !== ownLink.sourceId || bound.externalId !== ownLink.scopeId) return undefined;
+              const item = await driver.getItem(ownLink.itemId);
+              return item.available ? item.item : undefined;
+            })(),
+            new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), TICKET_NOTE_BUDGET_MS)),
+          ]);
+          if (read) {
+            const change = ticketChangeSince(ownLink, read);
+            ticketNote = change.note;
+            store.updateRun(id, { trackerLinks: [change.link, ...run.trackerLinks!.slice(1)] });
+          }
+        } catch {
+          // No note. The Continue itself must not depend on the tracker.
+        }
+      }
       const result = manager.continueRun(id, {
-        text: parsed.data.text,
+        text: ticketNote ? [parsed.data.text?.trim(), ticketNote].filter(Boolean).join('\n\n') : parsed.data.text,
         images: parsed.data.images?.map((image) => toPastedContent(image)),
         runner: parsed.data.runner,
         model: parsed.data.model,
@@ -6350,6 +6385,15 @@ export function createApp(deps: ServerDeps) {
       }
       const result = await driver.getItem(c.req.valid('param').id);
       if (!result.available && result.code === 'not_found') return c.json({ error: result.reason }, 404);
+      if (result.available) {
+        // A link recorded while the vendor was down has a key only; this read gives it the rest.
+        const { store } = c.get('project');
+        const bare = (link: TrackerLink) => link.provider === driver.association.kind && link.sourceId === driver.association.source.id && link.itemId === result.item.id && (!link.url || link.title === undefined);
+        for (const run of store.listRuns()) {
+          if (!run.trackerLinks?.some(bare)) continue;
+          store.updateRun(run.id, { trackerLinks: run.trackerLinks.map((link) => (bare(link) ? enrichTrackerLink(link, result.item) : link)) });
+        }
+      }
       return c.json(result, 200);
     })
     // Status change (spec 2026-10-11-tracker-ticket-context § Phase 6). Which statuses this ticket

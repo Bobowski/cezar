@@ -24,7 +24,9 @@ describe('POST /runs ticket link', () => {
   afterEach(async () => { store.flush(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); await removeTempDir(root); });
 
   const create = (task: string) => store.createRun({ title: task, workflow: 'quick-task', task, steps: [{ id: 'work', name: 'work', kind: 'agent' }] });
+  const continued: Array<{ id: string; text?: string }> = [];
   const manager = {
+    continueRun: (id: string, input: { text?: string }) => { continued.push({ id, text: input.text }); return { ok: true }; },
     startRun: (_workflow: unknown, input: { task: string }) => create(input.task),
     startVariants: (_workflow: unknown, input: { task: string }, count: number) => Array.from({ length: count }, () => create(input.task)),
   } as unknown as RunManager;
@@ -147,6 +149,87 @@ describe('POST /runs ticket link', () => {
       expect(await (await read(instance, run.id)).json()).toMatchObject({ available: false, code: 'source_changed' });
       await apiRequest(instance, '/api/v1/tracker/association', { method: 'DELETE' });
       expect(await (await read(instance, run.id)).json()).toMatchObject({ available: false, code: 'not_configured' });
+    });
+  });
+
+  describe('what an earlier or interrupted link still gets', () => {
+    it('answers an earlier automation run with its ticket link derived, without storing it', async () => {
+      const instance = app();
+      const association = await connect(instance);
+      const legacy = create('automation task');
+      store.updateRun(legacy.id, { automationTracker: { automationId: 'a', automationRevision: 1, receiptId: 'r', provider: 'jira', association, key: 'DEMO51-2', url: 'https://demo.atlassian.net/browse/DEMO51-2' } });
+      const one = runRecordSchema.parse(await (await apiRequest(instance, `/api/v1/runs/${legacy.id}`)).json());
+      expect(one.trackerLinks).toEqual([expect.objectContaining({ itemId: 'DEMO51-2', origin: 'automation', sourceId: 'dry-jira', scopeId: '51' })]);
+      const list = (await (await apiRequest(instance, '/api/v1/runs')).json()) as Array<{ id: string; trackerLinks?: unknown[] }>;
+      expect(list.find(run => run.id === legacy.id)?.trackerLinks).toHaveLength(1);
+      expect(store.getRun(legacy.id)?.trackerLinks).toBeUndefined();
+      // And its agent can re-read that ticket.
+      expect(await (await apiRequest(instance, `/api/v1/runs/${legacy.id}/tracker-issue`)).json()).toMatchObject({ available: true, item: { id: 'DEMO51-2' }, sinceStart: 'unknown' });
+    });
+
+    it('fills in a key-only link the next time anyone reads that ticket', async () => {
+      const instance = app();
+      await connect(instance);
+      const run = create('started while the vendor was down');
+      const bare = { provider: 'jira' as const, sourceId: 'dry-jira', scopeId: '51', itemId: 'DEMO51-2', origin: 'handoff' as const, linkedAt: '2026-10-11T10:00:00.000Z' };
+      store.updateRun(run.id, { trackerLinks: [bare] });
+      const untouched = create('another ticket');
+      store.updateRun(untouched.id, { trackerLinks: [{ ...bare, itemId: 'DEMO51-7' }] });
+      await apiRequest(instance, '/api/v1/tracker/DEMO51-2');
+      expect(store.getRun(run.id)!.trackerLinks![0]).toMatchObject({ title: 'Tracker task 2', url: 'https://demo.atlassian.net/browse/DEMO51-2', latest: { status: 'To Do' } });
+      expect(store.getRun(run.id)!.trackerLinks![0]!.snapshot).toBeUndefined();
+      expect(store.getRun(untouched.id)!.trackerLinks![0]!.title).toBeUndefined();
+    });
+  });
+
+  describe('continuing a linked task', () => {
+    const linkedRun = async (instance: ReturnType<typeof app>) => {
+      const association = await connect(instance);
+      const response = await start(instance, { tracker: { itemId: 'DEMO51-2', expectedScope: trackerReadScope(association) } });
+      return { association, run: runRecordSchema.parse(await response.json()) };
+    };
+    const resume = (instance: ReturnType<typeof app>, id: string, body: unknown = { text: 'Carry on.' }) =>
+      apiRequest(instance, `/api/v1/runs/${id}/continue`, json('POST', body));
+
+    it('adds nothing when the ticket is as the task knows it', async () => {
+      const instance = app();
+      const { run } = await linkedRun(instance);
+      expect((await resume(instance, run.id)).status).toBe(200);
+      expect(continued.at(-1)).toEqual({ id: run.id, text: 'Carry on.' });
+    });
+
+    it('tells the task, once, that its ticket moved on — after the user\'s own words', async () => {
+      const instance = app();
+      const { association, run } = await linkedRun(instance);
+      await apiRequest(instance, '/api/v1/tracker/DEMO51-2/transition', json('POST', { expectedScope: trackerReadScope(association), toStatusId: 'dry-review', expectedStatusId: 'dry-todo' }));
+      await resume(instance, run.id);
+      const text = continued.at(-1)!.text!;
+      expect(text.startsWith('Carry on.\n\n[cezar] The tracker ticket DEMO51-2')).toBe(true);
+      expect(text).toContain('its status went from "To Do" to "In Review"');
+      expect(text).not.toContain('title or description changed');
+      // Announced once.
+      await resume(instance, run.id);
+      expect(continued.at(-1)).toEqual({ id: run.id, text: 'Carry on.' });
+      expect(store.getRun(run.id)!.trackerLinks![0]).toMatchObject({ noted: { status: 'In Review' }, snapshot: { status: 'To Do' } });
+    });
+
+    it('carries the note alone when the user sent no text', async () => {
+      const instance = app();
+      const { association, run } = await linkedRun(instance);
+      await apiRequest(instance, '/api/v1/tracker/DEMO51-2/transition', json('POST', { expectedScope: trackerReadScope(association), toStatusId: 'dry-review', expectedStatusId: 'dry-todo' }));
+      await resume(instance, run.id, {});
+      expect(continued.at(-1)!.text!.startsWith('[cezar] The tracker ticket DEMO51-2')).toBe(true);
+    });
+
+    it('continues exactly as before when the tracker cannot answer, and for a task with no ticket', async () => {
+      const instance = app();
+      const { run } = await linkedRun(instance);
+      await apiRequest(instance, '/api/v1/tracker/association', { method: 'DELETE' });
+      expect((await resume(instance, run.id)).status).toBe(200);
+      expect(continued.at(-1)).toEqual({ id: run.id, text: 'Carry on.' });
+      const plain = runRecordSchema.parse(await (await start(instance, {})).json());
+      await resume(instance, plain.id);
+      expect(continued.at(-1)).toEqual({ id: plain.id, text: 'Carry on.' });
     });
   });
 });

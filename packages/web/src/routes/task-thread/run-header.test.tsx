@@ -1720,3 +1720,61 @@ describe('dispatch lines', () => {
     expect(document.querySelector('[data-slot="unit-role"]')).toBeNull()
   })
 })
+
+/** Spec 2026-10-11-tracker-ticket-context: the ticket a task works on, from its structured link. */
+describe('tracker ticket chip', () => {
+  const link = (extra: Record<string, unknown> = {}) => ({
+    provider: 'jira' as const, sourceId: 'acme', scopeId: '100', itemId: 'OPS-42', origin: 'handoff' as const, linkedAt: '2026-10-11T10:00:00.000Z',
+    title: 'Repair the deployment', url: 'https://acme.atlassian.net/browse/OPS-42',
+    snapshot: { status: 'To Do', updatedAt: '2026-10-11T09:00:00.000Z', contentHash: 'a'.repeat(64), syncedAt: '2026-10-11T10:00:00.000Z' },
+    ...extra,
+  })
+  const chip = () => document.querySelector('[data-slot="tracker-origin"]') as HTMLElement | null
+
+  it('links to the vendor with the key and the status the task started from', () => {
+    stubFetch()
+    renderHeader(run('done', { trackerLinks: [link()] }))
+    expect(chip()?.textContent).toBe('OPS-42 · To Do')
+    expect(chip()?.getAttribute('href')).toBe('https://acme.atlassian.net/browse/OPS-42')
+    expect(chip()?.getAttribute('title')).toContain("status as of this task's start")
+  })
+
+  it('shows the status after a move made in cezar and says where it came from', () => {
+    stubFetch()
+    renderHeader(run('done', { trackerLinks: [link({ latest: { status: 'In Review', syncedAt: '2026-10-11T12:00:00.000Z' } })] }))
+    expect(chip()?.textContent).toBe('OPS-42 · In Review')
+    expect(chip()?.getAttribute('title')).toContain('moved here from "To Do"')
+  })
+
+  it('is plain text, key only, for a link that was never enriched', () => {
+    stubFetch()
+    renderHeader(run('done', { trackerLinks: [link({ title: undefined, url: undefined, snapshot: undefined })] }))
+    expect(chip()?.textContent).toBe('OPS-42')
+    expect(chip()?.tagName).toBe('SPAN')
+  })
+
+  it('shows nothing for a task with no ticket', () => {
+    stubFetch()
+    renderHeader(run('done'))
+    expect(chip()).toBeNull()
+  })
+
+  it('shows a dispatched child the ticket of the task that dispatched it, without it being its own', async () => {
+    const root = run('running', { id: 'root-1', trackerLinks: [link()] })
+    stubFetch({ '/api/v1/runs': () => jsonResponse([root]) })
+    renderHeader(run('running', { id: 'child-1', dispatch: { rootRunId: 'root-1', parentRunId: 'root-1' } as never }))
+    await waitFor(() => expect(chip()).toBeTruthy())
+    expect(chip()?.textContent).toBe('OPS-42 · To Do')
+    expect(chip()?.getAttribute('data-inherited')).toBe('')
+    expect(chip()?.getAttribute('title')).toContain('the ticket of the task that dispatched this one')
+  })
+
+  it('prefers the own link of a child over the one of its root', async () => {
+    const root = run('running', { id: 'root-1', trackerLinks: [link({ itemId: 'OPS-1' })] })
+    stubFetch({ '/api/v1/runs': () => jsonResponse([root]) })
+    renderHeader(run('running', { id: 'child-1', trackerLinks: [link()], dispatch: { rootRunId: 'root-1', parentRunId: 'root-1' } as never }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(chip()?.textContent).toBe('OPS-42 · To Do')
+    expect(chip()?.getAttribute('data-inherited')).toBeNull()
+  })
+})

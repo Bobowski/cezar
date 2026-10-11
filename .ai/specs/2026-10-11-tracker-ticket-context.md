@@ -149,12 +149,15 @@ rendered oldest-first. Description cap stays 60,000; the final task cap stays 10
 `POST /runs` field, the automation link, the task-header chip, the activity dot on rows and
 cards, the Tasks section and the in-progress notice. Deviations from the text above:
 
-- No legacy fold. `runTrackerLinks` was not built: earlier tracker-automation runs show no chip.
-  `automationTracker` is not in the HTTP contract, so folding it would have meant either
-  rewriting stored records or widening the contract for history alone.
-- An unenriched link is not enriched later; it stays key-only.
-- The "Has task" filter is not built.
-- Dispatch children do not show their root's ticket.
+- Completed 2026-10-11:
+  - `runTrackerLinks` folds an earlier tracker-automation run into one derived link. It is applied
+    where the cockpit reads runs (`GET /runs`, `GET /runs/:id`) and in the brokered read, and is
+    never written back. A run event pushed over SSE carries the stored record, so the derived
+    chip can drop out until the next refetch; such runs are finished ones and rarely emit events.
+  - A key-only link is completed by the next detail read of that ticket (`enrichTrackerLink`).
+    It gains `title`, `url` and `latest`, not a `snapshot`: that read is not the task's start.
+  - The "Has task" filter exists (phase 5).
+  - A dispatch child shows its root's ticket in the task header, derived from the run list.
 
 ### Phase 2 — comments in the handoff
 
@@ -224,18 +227,20 @@ does not exist yet. Launch now waits for one bounded vendor read.
 `TRACKER_PROMPT`, composed at both `ActiveRun` construction sites for a linked run whose agent
 can reach the cockpit. Differences from the text above:
 
-- **No change note on Continue.** Re-reading on every user message would put a vendor request
-  (seconds, under a deadline) in front of each message to a linked task, and the note would have
-  to be spliced into the user's own message. Instead the comparison lives in the brokered answer
-  and the system prompt tells the agent to run the command when it resumes. The run's stored
-  snapshot is not updated afterwards, so `sinceStart` always compares against the start.
+- **The change note is on `POST /runs/:id/continue` only** (added 2026-10-11), not on messages to
+  a live session: a Continue is the "picked up again later" moment and a person's act, so the
+  autonomous nudge and wake timers never cause the read. The read is raced against a four-second
+  budget and any failure adds nothing. The note is appended after the user's own text.
+  `ticketChangeSince` compares against `noted ?? snapshot` — what the TASK was told — and never
+  against `latest`, which is what the cockpit knows; a status moved on the board is therefore
+  still announced. `snapshot` is not updated, so `sinceStart` keeps comparing against the start.
 - **Reachability follows dispatch.** `CEZ_API_URL`/`CEZ_BIN` reach an agent only while dispatch is
   reachable (`agentEnv`), so with `CEZ_DISPATCH=0` or a headless run the agent is not told about
   the command. That keeps the environment byte-for-byte as before in those modes.
 - A changed connection is refused by the tracker service itself; the route additionally checks
   provider, source and scope against the run's link, which deliberately carries no connection id.
-- The automation prompt of phase 3 still names the vendor API for a re-read; it was not switched
-  to this command.
+- The automation prompt of phase 3 now names this command first and the vendor API as the
+  fallback for a task that was not told about the command.
 
 ### Phase 5 — issue surface (screen redesign)
 
@@ -278,10 +283,12 @@ The view mode is a per-viewer convenience kept in browser storage, never require
 groups last for the visit.
 
 **Status 2026-10-11:** implemented — `statusId`/`statusCategory` in the contract and both
-adapters, List and Board, the detail panel with properties and the inline composer. Not yet
-done: the Display menu, the "Has task" filter and the Tasks section (they need phase 1), the
-comment thread (phase 2), a resizable panel, `assignee`/`priority`. The Jira and Linear status
-mappings are covered by mocked fixtures only; neither has been checked against a live account.
+adapters, List and Board, the detail panel with properties and the inline composer. Completed
+2026-10-11: the Display menu, the "Has task" filter, the Tasks section, the comment thread, the
+resizable panel (pointer, arrow keys, double-click to reset) and `assignee`/`priority` from
+both vendors. Display choices and the panel width live in browser storage with the view mode.
+The Jira and Linear mappings, including assignee and priority, are covered by mocked fixtures
+only; neither has been checked against a live account.
 
 ### Phase 6 — drag to change status
 

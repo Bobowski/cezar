@@ -36,7 +36,7 @@ export function createDryTrackerClient(kind: TrackerKind): TrackerProvider {
     const id = `${prefix}-${n}`;
     return {
       kind: 'issue', id, title: n === 1 ? 'Improve account sign-in' : `Tracker task ${n}`,
-      author: 'Demo user', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: new Date(Date.UTC(2026, 0, 1, 0, 125 - n)).toISOString(),
+      author: 'Demo user', ...(n % 3 ? { assignee: n % 3 === 1 ? 'Ada Lovelace' : 'Grace Hopper' } : {}), ...(n % 4 ? { priority: ['High', 'Medium', 'Low'][n % 4 - 1]! } : {}), createdAt: '2026-01-01T00:00:00.000Z', updatedAt: new Date(Date.UTC(2026, 0, 1, 0, 125 - n)).toISOString(),
       labels: n % 2 ? ['backend'] : ['frontend'], ...status(n, association.externalId),
       ...descriptionBody(n === 3 ? 'Large import requirements. '.repeat(3000) : n === 2 ? 'Detailed requirements. '.repeat(500) + '\nAcceptance: preserve all requirements.' : `Implement task ${n} for ${association.externalName}.\n\n- Preserve existing behavior.\n- Add regression coverage.`, cap, n === 4),
       url: `${source.webUrl}/${fixture.itemPath}/${id}`,

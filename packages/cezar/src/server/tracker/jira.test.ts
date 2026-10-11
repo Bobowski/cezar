@@ -299,6 +299,26 @@ describe('Jira Cloud adapter', () => {
     });
   });
 
+  it('maps the assignee and priority when the ticket has them, and omits the keys when it does not', async () => {
+    const fields = issue().fields as Record<string, unknown>;
+    let current: Record<string, unknown> = { ...fields, assignee: { displayName: 'Grace Hopper' }, priority: { name: 'High' } };
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === `${origin}/_edge/tenant_info`) return json({ cloudId: 'cloud-1' });
+      if (url.includes('/comment?')) return json({ total: 0, comments: [] });
+      return json(issue({ fields: current }));
+    }) as unknown as typeof fetch;
+    const driver = createJiraClient(credentials, fetcher).driver(association());
+    const withBoth = trackerItemResultSchema.parse(await driver.getItem('PROJ-1'));
+    expect(withBoth).toMatchObject({ available: true, item: { assignee: 'Grace Hopper', priority: 'High' } });
+    expect(new URL(String(vi.mocked(fetcher).mock.calls.map(call => String(call[0])).find(url => url.includes('/issue/PROJ-1?')))).searchParams.get('fields')).toContain('assignee,priority');
+    current = { ...fields, assignee: null, priority: null };
+    const without = trackerItemResultSchema.parse(await driver.getItem('PROJ-1'));
+    if (!without.available) throw new Error('expected a ticket');
+    expect('assignee' in without.item).toBe(false);
+    expect('priority' in without.item).toBe(false);
+  });
+
   it('reads the newest comments with the ticket, oldest first, bounded, and says when it is partial', async () => {
     const paragraph = (text: string) => ({ type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] });
     const requests: string[] = [];

@@ -749,6 +749,15 @@ function MetaRow({
   // #526: the issue chip may be synthesized from the CEZ:ISSUE marker, and the only repository
   // such a link may name is the one on screen — never the transcript's.
   const repoBase = useProjectRepoBase()
+  // A dispatched child carries no ticket link of its own: it shows its root's, read from the run
+  // list the cockpit already holds. Derived on every render, never stored on the child.
+  const rootRunId = run.trackerLinks?.length ? undefined : run.dispatch?.rootRunId
+  const inheritedLinks = useRuns(
+    useMemo(
+      () => (runs: ApiRun[]) => (rootRunId && rootRunId !== run.id ? runs.find((entry) => entry.id === rootRunId)?.trackerLinks : undefined),
+      [rootRunId, run.id],
+    ),
+  ).data
   // At most two references here, so this is a batch of one or two rather than of a table — but it
   // goes through the same seam, which is what keeps the header's chip and the table's chip
   // answering identically for the same PR.
@@ -832,13 +841,14 @@ function MetaRow({
   }
   if (run.diffStat) parts.push(<DiffStatLabel key="diff" stat={run.diffStat} />)
   // The tracker ticket this task works on: structured provenance, never parsed from the prompt.
-  for (const link of run.trackerLinks ?? []) {
+  const inherited = !run.trackerLinks?.length && !!inheritedLinks?.length
+  for (const link of run.trackerLinks?.length ? run.trackerLinks : inheritedLinks ?? []) {
     const status = link.latest?.status ?? link.snapshot?.status
     const label = status ? `${link.itemId} · ${status}` : link.itemId
     const when = link.latest ? (link.snapshot && link.snapshot.status !== link.latest.status ? `moved here from "${link.snapshot.status}", its status when this task started` : 'status after the last move made in cezar') : "status as of this task's start"
-    const title = link.title ? `${link.title} — ${when}` : undefined
+    const title = [link.title, inherited ? 'the ticket of the task that dispatched this one' : undefined, link.title ? when : undefined].filter(Boolean).join(' — ') || undefined
     parts.push(link.url && isHttpUrl(link.url)
-      ? <a key={`tracker:${link.itemId}`} data-slot="tracker-origin" href={link.url} target="_blank" rel="noopener noreferrer" title={title} className="underline-offset-2 hover:text-foreground hover:underline">{label}</a>
+      ? <a key={`tracker:${link.itemId}`} data-slot="tracker-origin" data-inherited={inherited ? '' : undefined} href={link.url} target="_blank" rel="noopener noreferrer" title={title} className="underline-offset-2 hover:text-foreground hover:underline">{label}</a>
       : <span key={`tracker:${link.itemId}`} data-slot="tracker-origin" title={title}>{label}</span>)
   }
   if (run.automation) {

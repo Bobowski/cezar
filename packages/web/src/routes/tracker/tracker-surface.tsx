@@ -13,6 +13,7 @@ import { shortAge } from '@/lib/format'
 import { Link } from '@/lib/project-router'
 import type { TrackerGroup } from '@/lib/tracker-groups'
 import { automationHint } from '@/lib/tracker-automations'
+import { ALL_TRACKER_FIELDS, type TrackerDisplay } from './tracker-display'
 import { TrackerMoveMenu, useTrackerTransitions, type TrackerMove } from './tracker-move'
 import { ticketActivity } from '@/lib/tracker-links'
 import { trackerLosses, trackerTaskPrompt } from '@/lib/tracker-task'
@@ -25,6 +26,8 @@ export type TrackerSurfaceProps = {
   activeId: string | null
   /** The project's tasks by linked ticket id (`runsByTicket`). */
   runs: ReadonlyMap<string, ApiRun[]>
+  /** Which optional properties rows and cards show (the Display menu). Everything when omitted. */
+  shown?: TrackerDisplay
 }
 
 const STATUS_ICONS: Record<TrackerStatusCategory, { icon: typeof CircleIcon; className: string }> = {
@@ -135,7 +138,7 @@ function Labels({ labels, className }: { labels: string[]; className?: string })
 }
 
 /** Full-width rows under one collapsible heading per loaded status. */
-export function TrackerList({ groups, association, scopePending, activeId, runs, collapsed, onToggle, compact }: TrackerSurfaceProps & {
+export function TrackerList({ groups, association, scopePending, activeId, runs, shown = ALL_TRACKER_FIELDS, collapsed, onToggle, compact }: TrackerSurfaceProps & {
   collapsed: ReadonlySet<string>
   onToggle: (statusId: string) => void
   /** The detail panel is open beside the list: keep the key and title, drop the rest. */
@@ -153,13 +156,13 @@ export function TrackerList({ groups, association, scopePending, activeId, runs,
             <span className="font-normal text-muted-foreground tabular-nums" title="Issues loaded in this status">{group.items.length}</span>
           </button>
         </h2>
-        {open ? <ul>{group.items.map(item => <li key={item.id}><TrackerRow item={item} runs={runs.get(item.id)} association={association} scopePending={scopePending} active={activeId === item.id} compact={compact} /></li>)}</ul> : null}
+        {open ? <ul>{group.items.map(item => <li key={item.id}><TrackerRow item={item} shown={shown} runs={runs.get(item.id)} association={association} scopePending={scopePending} active={activeId === item.id} compact={compact} /></li>)}</ul> : null}
       </section>
     })}
   </div>
 }
 
-function TrackerRow({ item, runs, association, scopePending, active, compact }: { item: TrackerItem; runs: readonly ApiRun[] | undefined; association: TrackerAssociation; scopePending: boolean; active: boolean; compact: boolean }) {
+function TrackerRow({ item, shown, runs, association, scopePending, active, compact }: { item: TrackerItem; shown: TrackerDisplay; runs: readonly ApiRun[] | undefined; association: TrackerAssociation; scopePending: boolean; active: boolean; compact: boolean }) {
   const link = useTrackerItemLink(association, item, scopePending)
   return <Link {...link} data-slot="tracker-row" aria-current={active ? 'page' : undefined} className={cn(
     'flex min-h-10 items-center gap-3 border-b border-border/60 px-4 py-2 text-[13px] font-normal outline-none hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset',
@@ -168,10 +171,14 @@ function TrackerRow({ item, runs, association, scopePending, active, compact }: 
     <span className="w-24 shrink-0 truncate text-xs text-muted-foreground tabular-nums">{item.id}</span>
     <span className="flex min-w-0 flex-1 items-center gap-2"><span className="truncate">{item.title}</span><TicketActivity runs={runs} /></span>
     {compact ? null : <>
-      <Labels labels={item.labels} className="hidden shrink-0 lg:flex" />
-      <span className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground md:block">{item.author}</span>
+      {shown.has('labels') ? <Labels labels={item.labels} className="hidden shrink-0 lg:flex" /> : null}
+      {shown.has('priority') ? (item.priority
+        ? <span data-slot="tracker-priority" className="hidden w-20 shrink-0 truncate text-xs text-muted-foreground lg:block" title={`Priority: ${item.priority}`}>{item.priority}</span>
+        : <span aria-hidden="true" className="hidden w-20 shrink-0 lg:block" />) : null}
+      {shown.has('assignee') ? <span data-slot="tracker-assignee" className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground md:block" title={item.assignee ? `Assigned to ${item.assignee}` : 'Unassigned'}>{item.assignee ?? '—'}</span> : null}
+      {shown.has('author') ? <span className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground xl:block" title={`Opened by ${item.author}`}>{item.author}</span> : null}
     </>}
-    <span className="w-10 shrink-0 text-right text-xs text-muted-foreground tabular-nums" title={new Date(item.updatedAt).toLocaleString()}>{shortAge(item.updatedAt)}</span>
+    {shown.has('updated') ? <span className="w-10 shrink-0 text-right text-xs text-muted-foreground tabular-nums" title={new Date(item.updatedAt).toLocaleString()}>{shortAge(item.updatedAt)}</span> : null}
   </Link>
 }
 
@@ -181,7 +188,7 @@ function TrackerRow({ item, runs, association, scopePending, active, compact }: 
  * statuses with loaded tickets exist, so a target with no column is reached from the issue
  * panel's "Move to" menu instead.
  */
-export function TrackerBoard({ groups, association, scopePending, activeId, runs, move, moving, automations }: TrackerSurfaceProps & {
+export function TrackerBoard({ groups, association, scopePending, activeId, runs, shown = ALL_TRACKER_FIELDS, move, moving, automations }: TrackerSurfaceProps & {
   move: TrackerMove
   /** Ticket ids whose move is in flight: their menu waits. */
   moving: ReadonlyMap<string, unknown>
@@ -244,14 +251,14 @@ export function TrackerBoard({ groups, association, scopePending, activeId, runs
       {starts ? <p data-slot="tracker-column-automation" className="flex items-start gap-1.5 px-3 pb-2 text-xs text-muted-foreground"><ZapIcon aria-hidden="true" className="mt-0.5 size-3 shrink-0" />{starts}</p> : null}
       {group.items.length === 0 ? <p className="px-3 pb-3 text-xs text-muted-foreground">{reason ?? 'No loaded issues. Drop here to move.'}</p> : null}
       <ul className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2">
-        {group.items.map(item => <li key={item.id}><TrackerCard item={item} runs={runs.get(item.id)} association={association} scopePending={scopePending} active={activeId === item.id} onPickUp={setDragging} move={move} moving={moving.has(item.id)} automations={automations} /></li>)}
+        {group.items.map(item => <li key={item.id}><TrackerCard item={item} shown={shown} runs={runs.get(item.id)} association={association} scopePending={scopePending} active={activeId === item.id} onPickUp={setDragging} move={move} moving={moving.has(item.id)} automations={automations} /></li>)}
       </ul>
     </section>
     })}
   </div>
 }
 
-function TrackerCard({ item, runs, association, scopePending, active, onPickUp, move, moving, automations }: { item: TrackerItem; onPickUp: (item: TrackerItem) => void; move: TrackerMove; moving: boolean; automations: ReadonlyMap<string, string[]>; runs: readonly ApiRun[] | undefined; association: TrackerAssociation; scopePending: boolean; active: boolean }) {
+function TrackerCard({ item, shown, runs, association, scopePending, active, onPickUp, move, moving, automations }: { item: TrackerItem; shown: TrackerDisplay; onPickUp: (item: TrackerItem) => void; move: TrackerMove; moving: boolean; automations: ReadonlyMap<string, string[]>; runs: readonly ApiRun[] | undefined; association: TrackerAssociation; scopePending: boolean; active: boolean }) {
   const link = useTrackerItemLink(association, item, scopePending, true)
   const pickUp = (event: DragEvent) => { link.onDragStart(event); if (!event.defaultPrevented) onPickUp(item) }
   // The menu sits beside the link, not inside it: a button nested in an anchor is not valid, and
@@ -263,10 +270,17 @@ function TrackerCard({ item, runs, association, scopePending, active, onPickUp, 
     )}>
       <span className="flex items-center justify-between gap-2 text-xs text-muted-foreground tabular-nums">
         <span className="flex min-w-0 items-center gap-1.5"><span className="truncate">{item.id}</span><TicketActivity runs={runs} /></span>
-        <span className="shrink-0 transition-opacity group-focus-within/card:opacity-0 group-hover/card:opacity-0 motion-reduce:transition-none" title={new Date(item.updatedAt).toLocaleString()}>{shortAge(item.updatedAt)}</span>
+        {shown.has('updated') ? <span className="shrink-0 transition-opacity group-focus-within/card:opacity-0 group-hover/card:opacity-0 motion-reduce:transition-none" title={new Date(item.updatedAt).toLocaleString()}>{shortAge(item.updatedAt)}</span> : null}
       </span>
       <span className="line-clamp-3 leading-snug text-pretty">{item.title}</span>
-      <Labels labels={item.labels} className="flex-wrap" />
+      {shown.has('labels') ? <Labels labels={item.labels} className="flex-wrap" /> : null}
+      {(shown.has('priority') && item.priority) || (shown.has('assignee') && item.assignee) || shown.has('author') ? <span className="flex min-w-0 items-center justify-between gap-2 text-xs text-muted-foreground">
+        <span className="flex min-w-0 items-center gap-2">
+          {shown.has('priority') && item.priority ? <span data-slot="tracker-priority" className="shrink-0" title={`Priority: ${item.priority}`}>{item.priority}</span> : null}
+          {shown.has('author') ? <span className="truncate" title={`Opened by ${item.author}`}>{item.author}</span> : null}
+        </span>
+        {shown.has('assignee') && item.assignee ? <span data-slot="tracker-assignee" className="max-w-[55%] shrink-0 truncate" title={`Assigned to ${item.assignee}`}>{item.assignee}</span> : null}
+      </span> : null}
     </Link>
     <div className="absolute top-1.5 right-1.5 opacity-0 transition-opacity group-focus-within/card:opacity-100 group-hover/card:opacity-100 has-[[data-state=open]]:opacity-100 motion-reduce:transition-none">
       <TrackerMoveMenu compact association={association} item={item} move={move} disabled={scopePending || moving} automations={automations} />

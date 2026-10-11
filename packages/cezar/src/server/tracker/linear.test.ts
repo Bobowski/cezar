@@ -100,6 +100,19 @@ describe('Linear read-only adapter', () => {
     expect(detail.comments.items[2]!.body).toHaveLength(4_000);
     expect(detail.comments.items[2]!.bodyTruncated).toBe(true);
   });
+  it('maps the assignee and a real priority, and treats "No priority" as none', async () => {
+    let over: Record<string, unknown> = { assignee: { name: 'Grace' }, priority: 2, priorityLabel: 'High' };
+    let query = '';
+    const { client } = mock(sent => { query = sent; return json({ data: { issue: issue(over) } }); });
+    const driver = client.driver(association);
+    expect(await driver.getItem('ENG-1')).toMatchObject({ available: true, item: { assignee: 'Grace', priority: 'High' } });
+    expect(query).toContain('assignee { name } priority priorityLabel');
+    over = { assignee: null, priority: 0, priorityLabel: 'No priority' };
+    const none = await driver.getItem('ENG-1');
+    if (!none.available) throw new Error('expected a ticket');
+    expect('assignee' in none.item).toBe(false);
+    expect('priority' in none.item).toBe(false);
+  });
   it('does not ask for comments when listing', async () => {
     let query = '';
     const { client } = mock(sent => { query = sent; return json({ data: { result: { nodes: [issue()], pageInfo } } }); });

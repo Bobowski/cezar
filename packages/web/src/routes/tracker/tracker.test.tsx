@@ -1,14 +1,16 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createQueryClient } from '@/api/query-client'
 import { queryKeys } from '@/api/queries'
 import { ShellWithSidebar } from '@/test/shell-with-sidebar'
 import { TrackerRoute, trackerDetailReadyForDrag } from './tracker'
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+// The list view's own behaviour; a desktop opens on the board unless a view was chosen.
+beforeEach(() => { window.localStorage.setItem('cezar.tracker.view', 'list') })
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.localStorage.clear() })
 
 /** The hand-off composer sits in the issue panel; the header button only brings it into view. */
 const openHand = async () => fireEvent.click(await screen.findByRole('button', { name: 'Hand to agent' }))

@@ -6,6 +6,7 @@ import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMe
 
 /** The optional properties a row or a card can show. The key and the title are always shown. */
 export const TRACKER_DISPLAY_FIELDS = [
+  { id: 'description', label: 'Description' },
   { id: 'labels', label: 'Labels' },
   { id: 'assignee', label: 'Assignee' },
   { id: 'priority', label: 'Priority' },

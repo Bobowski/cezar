@@ -1,11 +1,12 @@
 import { useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query'
-import { CheckCircle2Icon, ChevronDownIcon, CircleDashedIcon, CircleDotIcon, CircleHelpIcon, CircleIcon, XCircleIcon, ZapIcon } from 'lucide-react'
+import { CheckCircle2Icon, ChevronDownIcon, CircleDashedIcon, CircleDotIcon, CircleHelpIcon, CircleIcon, MinusIcon, SignalHighIcon, SignalIcon, SignalLowIcon, SignalMediumIcon, XCircleIcon, ZapIcon } from 'lucide-react'
 import { useState, type DragEvent } from 'react'
 
 import type { ApiRun, TrackerAssociation, TrackerItem, TrackerItemResponse, TrackerStatusCategory } from '@open-mercato/cezar-api-client'
 import { getTrackerItem } from '@/api/client'
 import { queryKeys, TRACKER_STALE_TIME } from '@/api/queries'
 import { StatusDot } from '@/components/status-dot'
+import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { toast } from '@/components/ui/toaster'
 import { statusTone } from '@/lib/automation-format'
@@ -15,6 +16,7 @@ import type { TrackerGroup } from '@/lib/tracker-groups'
 import { automationHint } from '@/lib/tracker-automations'
 import { ALL_TRACKER_FIELDS, type TrackerDisplay } from './tracker-display'
 import { TrackerMoveMenu, useTrackerTransitions, type TrackerMove } from './tracker-move'
+import { initials, priorityLevel, ticketExcerpt, type PriorityLevel } from '@/lib/tracker-card'
 import { ticketActivity } from '@/lib/tracker-links'
 import { trackerLosses, trackerTaskPrompt } from '@/lib/tracker-task'
 import { cn } from '@/lib/utils'
@@ -173,13 +175,35 @@ function TrackerRow({ item, shown, runs, association, scopePending, active, comp
     {compact ? null : <>
       {shown.has('labels') ? <Labels labels={item.labels} className="hidden shrink-0 lg:flex" /> : null}
       {shown.has('priority') ? (item.priority
-        ? <span data-slot="tracker-priority" className="hidden w-20 shrink-0 truncate text-xs text-muted-foreground lg:block" title={`Priority: ${item.priority}`}>{item.priority}</span>
-        : <span aria-hidden="true" className="hidden w-20 shrink-0 lg:block" />) : null}
+        ? <span className="hidden w-24 shrink-0 lg:block"><PriorityBadge priority={item.priority} /></span>
+        : <span aria-hidden="true" className="hidden w-24 shrink-0 lg:block" />) : null}
       {shown.has('assignee') ? <span data-slot="tracker-assignee" className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground md:block" title={item.assignee ? `Assigned to ${item.assignee}` : 'Unassigned'}>{item.assignee ?? '—'}</span> : null}
       {shown.has('author') ? <span className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground xl:block" title={`Opened by ${item.author}`}>{item.author}</span> : null}
     </>}
     {shown.has('updated') ? <span className="w-10 shrink-0 text-right text-xs text-muted-foreground tabular-nums" title={new Date(item.updatedAt).toLocaleString()}>{shortAge(item.updatedAt)}</span> : null}
   </Link>
+}
+
+/** A column's tint and its heading pill. Colour says where the status sits in the workflow. */
+type ColumnTone = 'neutral' | 'pending' | 'violet' | 'success'
+const COLUMN_TONES: Record<ColumnTone, { column: string; pill: string }> = {
+  neutral: { column: 'bg-muted/40', pill: 'text-foreground' },
+  pending: { column: 'bg-pending/[0.07]', pill: 'bg-pending/20 text-pending-strong' },
+  violet: { column: 'bg-violet/[0.08]', pill: 'bg-violet/20 text-violet' },
+  success: { column: 'bg-success/[0.07]', pill: 'bg-success/20 text-success' },
+}
+/**
+ * Not started is neutral, done is green. Work in progress is amber for the first such status and
+ * violet for the ones after it, so "In Progress" and "In Review" read as two stages — the same
+ * amber-then-violet a running and a to-review task use elsewhere in the cockpit.
+ */
+function columnTones(groups: readonly TrackerGroup[]): Map<string, ColumnTone> {
+  const tones = new Map<string, ColumnTone>()
+  let started = 0
+  for (const group of groups) {
+    tones.set(group.statusId, group.category === 'done' ? 'success' : group.category === 'started' ? (started++ === 0 ? 'pending' : 'violet') : 'neutral')
+  }
+  return tones
 }
 
 /**
@@ -216,12 +240,15 @@ export function TrackerBoard({ groups, association, scopePending, activeId, runs
   const ghosts: TrackerGroup[] = dragging && allowed?.writable
     ? allowed.targets.filter(target => !groups.some(group => group.statusId === target.statusId)).map(target => ({ statusId: target.statusId, status: target.status, category: target.statusCategory, items: [] }))
     : []
-  return <div data-slot="tracker-board" className="flex min-h-0 flex-1 items-stretch gap-3 overflow-x-auto p-3" onDragEnd={end}>
-    {[...groups, ...ghosts].map(group => {
+  const columns = [...groups, ...ghosts]
+  const tones = columnTones(columns)
+  return <div data-slot="tracker-board" className="flex min-h-0 flex-1 items-stretch gap-4 overflow-x-auto p-4" onDragEnd={end}>
+    {columns.map(group => {
+      const tone = COLUMN_TONES[tones.get(group.statusId) ?? 'neutral']
       const reason = refusal(group.statusId)
       const target = dragging !== null && dragging.statusId !== group.statusId
       const starts = target && !reason ? automationHint(automations, group.statusId) : null
-      return <section key={group.statusId} data-slot="tracker-column" data-ghost={group.items.length === 0 ? '' : undefined} data-drop={!target ? undefined : reason ? 'refused' : 'allowed'} aria-label={group.status} title={target && reason ? reason : undefined}
+      return <section key={group.statusId} data-slot="tracker-column" data-tone={tones.get(group.statusId)} data-ghost={group.items.length === 0 ? '' : undefined} data-drop={!target ? undefined : reason ? 'refused' : 'allowed'} aria-label={group.status} title={target && reason ? reason : undefined}
         onDragOver={(event) => {
           if (!target || reason || !event.dataTransfer.types.includes(TRACKER_MOVE_TYPE)) return
           event.preventDefault()
@@ -238,19 +265,22 @@ export function TrackerBoard({ groups, association, scopePending, activeId, runs
           move(item, { statusId: group.statusId, status: group.status, statusCategory: group.category })
         }}
         className={cn(
-          'flex max-h-full w-72 shrink-0 flex-col rounded-lg bg-muted/40 transition-opacity motion-reduce:transition-none',
+          'flex min-h-0 max-w-[26rem] min-w-72 flex-1 basis-0 flex-col rounded-xl transition-[opacity,box-shadow] motion-reduce:transition-none',
+          tone.column,
           target && reason && 'opacity-40',
           target && !reason && 'ring-1 ring-border',
-          over === group.statusId && target && !reason && 'bg-muted ring-2 ring-ring/60',
+          over === group.statusId && target && !reason && 'ring-2 ring-ring/60',
         )}>
-      <h2 className="flex items-center gap-2 px-3 py-2 text-[13px] font-medium">
-        <TrackerStatusIcon category={group.category} />
-        <span className="min-w-0 truncate">{group.status}</span>
+      <h2 className="flex items-center gap-2 px-3 pt-3 pb-2 text-[13px] font-medium">
+        <span className={cn('inline-flex min-w-0 items-center gap-1.5 rounded-md py-0.5', tone.pill, tone.pill.includes('bg-') && 'px-2')}>
+          <TrackerStatusIcon category={group.category} className={cn('size-3.5', tone.pill.includes('bg-') && 'text-current')} />
+          <span className="truncate">{group.status}</span>
+        </span>
         <span className="font-normal text-muted-foreground tabular-nums" title="Issues loaded in this status">{group.items.length}</span>
       </h2>
       {starts ? <p data-slot="tracker-column-automation" className="flex items-start gap-1.5 px-3 pb-2 text-xs text-muted-foreground"><ZapIcon aria-hidden="true" className="mt-0.5 size-3 shrink-0" />{starts}</p> : null}
       {group.items.length === 0 ? <p className="px-3 pb-3 text-xs text-muted-foreground">{reason ?? 'No loaded issues. Drop here to move.'}</p> : null}
-      <ul className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2">
+      <ul className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-2.5 pb-2.5">
         {group.items.map(item => <li key={item.id}><TrackerCard item={item} shown={shown} runs={runs.get(item.id)} association={association} scopePending={scopePending} active={activeId === item.id} onPickUp={setDragging} move={move} moving={moving.has(item.id)} automations={automations} /></li>)}
       </ul>
     </section>
@@ -258,31 +288,50 @@ export function TrackerBoard({ groups, association, scopePending, activeId, runs
   </div>
 }
 
+const PRIORITY_STYLE: Record<PriorityLevel, { icon: typeof SignalIcon; className: string }> = {
+  urgent: { icon: SignalIcon, className: 'bg-danger/15 text-danger' },
+  high: { icon: SignalHighIcon, className: 'bg-pending/20 text-pending-strong' },
+  medium: { icon: SignalMediumIcon, className: 'bg-pending/10 text-pending-strong' },
+  low: { icon: SignalLowIcon, className: 'bg-muted text-muted-foreground' },
+  other: { icon: MinusIcon, className: 'bg-muted text-muted-foreground' },
+}
+
+/** The vendor's own priority name, toned by how urgent a known name is. */
+export function PriorityBadge({ priority }: { priority: string }) {
+  const { icon: Icon, className } = PRIORITY_STYLE[priorityLevel(priority)]
+  return <span data-slot="tracker-priority" title={`Priority: ${priority}`} className={cn('inline-flex max-w-28 shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium', className)}>
+    <Icon aria-hidden="true" className="size-3 shrink-0" />
+    <span className="truncate">{priority}</span>
+  </span>
+}
+
 function TrackerCard({ item, shown, runs, association, scopePending, active, onPickUp, move, moving, automations }: { item: TrackerItem; shown: TrackerDisplay; onPickUp: (item: TrackerItem) => void; move: TrackerMove; moving: boolean; automations: ReadonlyMap<string, string[]>; runs: readonly ApiRun[] | undefined; association: TrackerAssociation; scopePending: boolean; active: boolean }) {
   const link = useTrackerItemLink(association, item, scopePending, true)
   const pickUp = (event: DragEvent) => { link.onDragStart(event); if (!event.defaultPrevented) onPickUp(item) }
+  const excerpt = shown.has('description') ? ticketExcerpt(item.body) : ''
+  const assignee = shown.has('assignee') ? item.assignee : undefined
+  const priority = shown.has('priority') ? item.priority : undefined
+  const labels = shown.has('labels') ? item.labels : []
   // The menu sits beside the link, not inside it: a button nested in an anchor is not valid, and
   // it is how a status is changed without dragging. It shows on hover and whenever it has focus.
   return <div data-slot="tracker-card" className="group/card relative">
     <Link {...link} onDragStart={pickUp} title="Drag to another column to change its status, or into the composer to prefill a task" data-slot="tracker-row" aria-current={active ? 'page' : undefined} className={cn(
-      'flex flex-col gap-1.5 rounded-md border border-border bg-card p-2.5 text-[13px] font-normal shadow-xs outline-none hover:border-foreground/20 focus-visible:ring-2 focus-visible:ring-ring/50',
-      active && 'border-foreground/30',
+      'flex flex-col gap-1.5 rounded-lg border border-border bg-card p-3 text-[13px] font-normal shadow-xs outline-none transition-colors hover:border-foreground/25 focus-visible:ring-2 focus-visible:ring-ring/50 motion-reduce:transition-none',
+      active && 'border-foreground/40 ring-1 ring-foreground/15',
     )}>
       <span className="flex items-center justify-between gap-2 text-xs text-muted-foreground tabular-nums">
         <span className="flex min-w-0 items-center gap-1.5"><span className="truncate">{item.id}</span><TicketActivity runs={runs} /></span>
         {shown.has('updated') ? <span className="shrink-0 transition-opacity group-focus-within/card:opacity-0 group-hover/card:opacity-0 motion-reduce:transition-none" title={new Date(item.updatedAt).toLocaleString()}>{shortAge(item.updatedAt)}</span> : null}
       </span>
-      <span className="line-clamp-3 leading-snug text-pretty">{item.title}</span>
-      {shown.has('labels') ? <Labels labels={item.labels} className="flex-wrap" /> : null}
-      {(shown.has('priority') && item.priority) || (shown.has('assignee') && item.assignee) || shown.has('author') ? <span className="flex min-w-0 items-center justify-between gap-2 text-xs text-muted-foreground">
-        <span className="flex min-w-0 items-center gap-2">
-          {shown.has('priority') && item.priority ? <span data-slot="tracker-priority" className="shrink-0" title={`Priority: ${item.priority}`}>{item.priority}</span> : null}
-          {shown.has('author') ? <span className="truncate" title={`Opened by ${item.author}`}>{item.author}</span> : null}
-        </span>
-        {shown.has('assignee') && item.assignee ? <span data-slot="tracker-assignee" className="max-w-[55%] shrink-0 truncate" title={`Assigned to ${item.assignee}`}>{item.assignee}</span> : null}
+      <span className="line-clamp-2 text-sm leading-snug font-medium text-pretty text-foreground">{item.title}</span>
+      {excerpt ? <span data-slot="tracker-excerpt" className="truncate text-xs text-muted-foreground">{excerpt}</span> : null}
+      {assignee || priority || labels.length ? <span className="mt-1 flex min-w-0 items-center gap-2">
+        {assignee ? <Avatar data-slot="tracker-assignee" title={`Assigned to ${assignee}`} className="size-5 shrink-0"><AvatarFallback className="text-[10px] font-medium">{initials(assignee)}</AvatarFallback></Avatar> : null}
+        {priority ? <PriorityBadge priority={priority} /> : null}
+        <Labels labels={labels} className="ml-auto justify-end" />
       </span> : null}
     </Link>
-    <div className="absolute top-1.5 right-1.5 opacity-0 transition-opacity group-focus-within/card:opacity-100 group-hover/card:opacity-100 has-[[data-state=open]]:opacity-100 motion-reduce:transition-none">
+    <div className="absolute top-2 right-2 opacity-0 transition-opacity group-focus-within/card:opacity-100 group-hover/card:opacity-100 has-[[data-state=open]]:opacity-100 motion-reduce:transition-none">
       <TrackerMoveMenu compact association={association} item={item} move={move} disabled={scopePending || moving} automations={automations} />
     </div>
   </div>

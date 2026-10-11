@@ -41,6 +41,7 @@ function mount(path = '/tracker') {
 const row = (id: string) => screen.getByText(`Title ${id}`).closest('a') as HTMLAnchorElement
 
 beforeEach(() => {
+  window.localStorage.setItem('cezar.tracker.view', 'list')
   Element.prototype.scrollIntoView = vi.fn()
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
 })
@@ -52,6 +53,7 @@ describe('assignee and priority', () => {
     await screen.findByText('Title OPS-1')
     expect(row('OPS-1').querySelector('[data-slot="tracker-assignee"]')?.textContent).toBe('Grace Assignee')
     expect(row('OPS-1').querySelector('[data-slot="tracker-priority"]')?.textContent).toBe('High')
+    expect(row('OPS-1').querySelector('[data-slot="tracker-priority"]')?.getAttribute('title')).toBe('Priority: High')
     expect(row('OPS-2').querySelector('[data-slot="tracker-assignee"]')?.textContent).toBe('—')
     expect(row('OPS-2').querySelector('[data-slot="tracker-priority"]')).toBeNull()
   })
@@ -90,6 +92,7 @@ describe('the Display menu', () => {
     expect(row('OPS-1').textContent).not.toContain('backend')
     cleanup()
     window.localStorage.setItem('cezar.tracker.hidden', '{not json')
+    window.localStorage.setItem('cezar.tracker.view', 'list')
     mount()
     await screen.findByText('Title OPS-1')
     expect(row('OPS-1').textContent).toContain('backend')
@@ -136,5 +139,50 @@ describe('the width of the issue panel', () => {
     mount('/tracker/OPS-1')
     await screen.findByRole('separator', { name: 'Resize the issue panel' })
     expect(panel().style.width).toBe('520px')
+  })
+})
+
+describe('the board', () => {
+  const column = (name: string) => document.querySelector(`[data-slot="tracker-column"][aria-label="${name}"]`) as HTMLElement
+  const card = (id: string) => screen.getByText(`Title ${id}`).closest('a') as HTMLAnchorElement
+
+  it('is what a desktop opens on when no view was chosen, and a chosen view wins', async () => {
+    window.localStorage.removeItem('cezar.tracker.view')
+    mount()
+    await screen.findByText('Title OPS-1')
+    expect(document.querySelector('[data-slot="tracker-board"]')).toBeTruthy()
+    expect(document.querySelector('[data-slot="tracker-group"]')).toBeNull()
+    fireEvent.click(screen.getByRole('radio', { name: 'List view' }))
+    await waitFor(() => expect(document.querySelector('[data-slot="tracker-group"]')).toBeTruthy())
+    expect(window.localStorage.getItem('cezar.tracker.view')).toBe('list')
+  })
+
+  it('shows a card as key, title, one line of the description, assignee initials and a toned priority', async () => {
+    window.localStorage.setItem('cezar.tracker.view', 'board')
+    mount()
+    await screen.findByText('Title OPS-1')
+    expect(card('OPS-1').querySelector('[data-slot="tracker-excerpt"]')?.textContent).toBe('description')
+    expect(card('OPS-1').querySelector('[data-slot="tracker-assignee"]')?.textContent).toBe('GA')
+    expect(card('OPS-1').querySelector('[data-slot="tracker-assignee"]')?.getAttribute('title')).toBe('Assigned to Grace Assignee')
+    expect(card('OPS-1').querySelector('[data-slot="tracker-priority"]')?.textContent).toBe('High')
+    // No placeholder for what a ticket does not have.
+    expect(card('OPS-2').querySelector('[data-slot="tracker-assignee"]')).toBeNull()
+    expect(card('OPS-2').querySelector('[data-slot="tracker-priority"]')).toBeNull()
+  })
+
+  it('lets Display drop the description line from cards', async () => {
+    window.localStorage.setItem('cezar.tracker.view', 'board')
+    mount()
+    await screen.findByText('Title OPS-1')
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Display' }), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'Description' }))
+    await waitFor(() => expect(card('OPS-1').querySelector('[data-slot="tracker-excerpt"]')).toBeNull())
+  })
+
+  it('tints a column by where its status sits in the workflow', async () => {
+    window.localStorage.setItem('cezar.tracker.view', 'board')
+    mount()
+    await screen.findByText('Title OPS-1')
+    expect(column('To Do').getAttribute('data-tone')).toBe('neutral')
   })
 })

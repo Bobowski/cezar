@@ -114,9 +114,12 @@ type TrackerView = 'list' | 'board'
 const VIEW_STORAGE_KEY = 'cezar.tracker.view'
 
 /** List or board: a per-viewer convenience, remembered in this browser and never required. */
-function useTrackerView(): [TrackerView, (next: TrackerView) => void] {
-  const [view, setView] = useState<TrackerView>(() => {
-    try { return window.localStorage.getItem(VIEW_STORAGE_KEY) === 'board' ? 'board' : 'list' } catch { return 'list' }
+function useTrackerView(): [TrackerView | null, (next: TrackerView) => void] {
+  const [view, setView] = useState<TrackerView | null>(() => {
+    try {
+      const stored = window.localStorage.getItem(VIEW_STORAGE_KEY)
+      return stored === 'board' || stored === 'list' ? stored : null
+    } catch { return null }
   })
   return [view, (next) => {
     setView(next)
@@ -131,7 +134,10 @@ function TrackerBrowse({ scopePending, association, selectedId, drafts, selectio
   const { isMobile } = useSidebar()
   const detailId = selectedId ?? null
   const listVisible = !isMobile || detailId === null
-  const [view, setView] = useTrackerView()
+  // Board first where there is room for columns; a phone starts on the list. A choice the viewer
+  // made wins over both.
+  const [chosenView, setView] = useTrackerView()
+  const view: TrackerView = chosenView ?? (isMobile ? 'list' : 'board')
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
   const [queryDraft, setQueryDraft] = useState('')
   const [query, setQuery] = useState('')
@@ -175,11 +181,8 @@ function TrackerBrowse({ scopePending, association, selectedId, drafts, selectio
     return next
   })
 
-  const toolbar = <header data-slot="tracker-header" className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2.5">
-    <div className="mr-auto min-w-0">
-      <h1 className="text-[15px] leading-5 font-semibold text-foreground">{provider}</h1>
-      <p className="truncate text-xs text-muted-foreground tabular-nums" title={association.externalName}>{association.externalName} · {countLabel}</p>
-    </div>
+  const toolbar = <header data-slot="tracker-header" className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-2 border-b border-border px-4 py-2.5">
+    <h1 className="sr-only">{provider} issues</h1>
     <ToggleGroup type="single" variant="outline" size="sm" spacing={0} aria-label="View" value={view} onValueChange={(next) => { if (next === 'list' || next === 'board') setView(next) }}>
       <ToggleGroupItem value="list" aria-label="List view"><ListIcon aria-hidden="true" />List</ToggleGroupItem>
       <ToggleGroupItem value="board" aria-label="Board view"><Columns3Icon aria-hidden="true" />Board</ToggleGroupItem>
@@ -190,6 +193,10 @@ function TrackerBrowse({ scopePending, association, selectedId, drafts, selectio
         <TabsTrigger value="all">All states</TabsTrigger>
       </TabsList>
     </Tabs>
+    <TrackerLabelFilter options={items.flatMap(item => item.labels)} selected={labels} onChange={setLabels} />
+    <Toggle variant="outline" size="sm" pressed={hasTaskOnly} onPressedChange={setHasTaskOnly} data-slot="tracker-has-task" title="Show only loaded issues that have a cezar task" className="h-8 font-normal">Has task</Toggle>
+    <TrackerDisplayMenu shown={display.shown} toggle={display.toggle} />
+    <p data-slot="tracker-scope" className="mr-1 ml-auto min-w-0 truncate text-xs text-muted-foreground tabular-nums" title={`${provider} · ${association.externalName}`}>{provider} · {association.externalName} · {countLabel}</p>
     <form className="flex min-w-0 items-center gap-1.5" onSubmit={(event) => {
       event.preventDefault()
       const next = queryDraft.trim()
@@ -199,10 +206,7 @@ function TrackerBrowse({ scopePending, association, selectedId, drafts, selectio
     }}>
       <Input type="search" aria-label="Search tracker" title="Press Enter to search" maxLength={256} value={queryDraft} onChange={(event) => setQueryDraft(event.target.value)} placeholder="Search issues…" className="h-8 w-56 min-w-0" />
       <Button type="submit" className="sr-only h-px p-0" disabled={result.isFetching}>Search</Button>
-      <TrackerLabelFilter options={items.flatMap(item => item.labels)} selected={labels} onChange={setLabels} />
     </form>
-    <Toggle variant="outline" size="sm" pressed={hasTaskOnly} onPressedChange={setHasTaskOnly} data-slot="tracker-has-task" title="Show only loaded issues that have a cezar task" className="h-8 font-normal">Has task</Toggle>
-    <TrackerDisplayMenu shown={display.shown} toggle={display.toggle} />
     <div className="flex items-center">
       <Button variant="ghost" size="icon-sm" aria-label="Refresh" title={syncedLabel ? `${syncedLabel} — refresh from ${provider}` : `Refresh from ${provider}`} disabled={busy} onClick={() => void refresh()}>
         <RefreshCwIcon aria-hidden="true" className={cn(busy && 'motion-safe:animate-spin')} />

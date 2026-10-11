@@ -278,9 +278,16 @@ reconciliation; it opens no browser WebSocket. No new configuration or credentia
 
 ## Issue browser layout
 
-Jira and Linear issues fill the screen as a **List** (rows under one collapsible heading per
-status) or a **Board** (one column per status); the toolbar switches between them and the choice
-is remembered in this browser. Groups and columns follow the vendor's workflow order (Jira status
+Jira and Linear issues fill the screen as a **Board** (one column per status) or a **List** (rows
+under one collapsible heading per status). A desktop opens on the board and a phone on the list;
+the toolbar switches between them and your choice is remembered in this browser.
+
+A board column is tinted by where its status sits in the workflow: neutral before work starts,
+amber for the first in-progress status, violet for the in-progress statuses after it (a review
+stage, typically), green for done. A card shows the issue key, its title, the first line of its
+description, the assignee's initials and the vendor's priority, plus its labels. A priority with
+a name cezar recognises (Urgent, Highest, High, Medium, Low, Lowest and a few synonyms) is
+toned by urgency; any other name is shown as written. Groups and columns follow the vendor's workflow order (Jira status
 category, Linear state type) and describe the issues **loaded so far**: counts are not backlog
 totals, and a status with no loaded issue has no column. A card or row can be dragged into the
 task composer to prefill a task; a card can also be dragged to another column to change the
@@ -288,7 +295,8 @@ issue's status.
 
 The toolbar also has **Has task**, which narrows the loaded issues to those with a cezar task
 (it never asks the vendor, so it only knows the pages on screen), and **Display**, which chooses
-the optional properties rows and cards show: labels, assignee, priority, author and updated time.
+the optional properties rows and cards show: the description line (cards), labels, assignee,
+priority, author (rows) and updated time.
 Both the Display choice and the panel width below are remembered in this browser.
 
 Opening an issue shows it in a panel beside the surface, with its description, its properties and

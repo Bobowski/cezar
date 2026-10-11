@@ -290,6 +290,17 @@ both vendors. Display choices and the panel width live in browser storage with t
 The Jira and Linear mappings, including assignee and priority, are covered by mocked fixtures
 only; neither has been checked against a live account.
 
+**Board restyle, 2026-10-11** (after comparing with multica's board at the owner's request):
+the board is the default view on a desktop (the list stays the default on a phone, and a chosen
+view wins); columns share the width instead of a fixed 18rem and are tinted by workflow stage
+(`columnTones`: neutral, amber for the first `started` status, violet for later ones, green for
+`done`) with the status as a pill; a card is key, title, one line of the description
+(`ticketExcerpt`), assignee initials and a priority badge toned by `priorityLevel`; the toolbar
+leads with the view switch and filters and carries provider, scope and loaded count as one muted
+line on the right. All of it uses the cockpit's own tokens and shadcn components. Not taken from
+multica: per-column "+" and "…" (they create and edit, which this tracker does not do), avatars
+with photos (the vendors' reads in use return a name only), and its light colour scheme.
+
 ### Phase 6 — drag to change status
 
 The first vendor write in the tracker. It is deliberately the narrowest one available: one

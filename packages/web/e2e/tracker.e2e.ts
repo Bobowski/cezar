@@ -63,21 +63,24 @@ describe('tracker complete flow', () => {
   it('browses, finds completed tickets outside page one and loads full handoff context', () => {
     browser.goto(page('/tracker'))
     browser.waitForFunction("document.body.textContent.includes('DEMO51-1')")
-    // The list fills main, grouped under a heading per loaded status; nothing is opened by itself.
-    browser.waitForFunction("document.querySelectorAll('[data-route=\"tracker\"] [data-slot=\"tracker-group\"]').length >= 2")
+    // A desktop opens on the board: one tinted column per loaded status, nothing opened by itself.
+    browser.waitForFunction("document.querySelectorAll('[data-slot=\"tracker-column\"]').length >= 2")
     expect(browser.count('[data-slot="tracker-panel"]')).toBe(0)
-    expect(browser.evaluate("[...document.querySelectorAll('[data-slot=\"tracker-group\"]')].map(group => group.getAttribute('aria-label')).includes('In Progress')")).toBe(true)
-    // Assignee and priority ride the list read.
+    expect(browser.evaluate("[...document.querySelectorAll('[data-slot=\"tracker-column\"]')].map(column => column.getAttribute('aria-label')).includes('In Progress')")).toBe(true)
+    expect(browser.evaluate("document.querySelector('[data-slot=\"tracker-column\"][aria-label=\"In Progress\"]').getAttribute('data-tone')")).toBe('pending')
+    // A card carries a line of the description, the assignee and the priority from the list read.
+    expect(browser.count('[data-slot="tracker-card"] [data-slot="tracker-excerpt"]')).toBeGreaterThan(0)
+    expect(browser.count('[data-slot="tracker-card"] [data-slot="tracker-assignee"]')).toBeGreaterThan(0)
+    expect(browser.count('[data-slot="tracker-card"] [data-slot="tracker-priority"]')).toBeGreaterThan(0)
+    // Columns scroll inside the board; the page itself never scrolls sideways.
+    expect(browser.evaluate('document.documentElement.scrollWidth <= window.innerWidth')).toBe(true)
+    browser.screenshot(artifacts + '/03-jira-board.png')
+    // The same issues as a list, grouped under a heading per loaded status. The choice is remembered.
+    clickText('List')
+    browser.waitForFunction("document.querySelectorAll('[data-route=\"tracker\"] [data-slot=\"tracker-group\"]').length >= 2")
     expect(browser.count('[data-slot="tracker-row"] [data-slot="tracker-assignee"]')).toBeGreaterThan(0)
     expect(browser.count('[data-slot="tracker-row"] [data-slot="tracker-priority"]')).toBeGreaterThan(0)
-    browser.screenshot(artifacts + '/03-jira-list.png')
-    // The same issues as a board: one column per loaded status.
-    clickText('Board')
-    browser.waitForFunction("document.querySelectorAll('[data-slot=\"tracker-column\"]').length >= 2")
-    expect(browser.evaluate('document.documentElement.scrollWidth <= window.innerWidth')).toBe(true)
-    browser.screenshot(artifacts + '/03b-jira-board.png')
-    clickText('List')
-    browser.waitForFunction("document.querySelector('[data-slot=\"tracker-group\"]') !== null")
+    browser.screenshot(artifacts + '/03b-jira-list.png')
     browser.fill('[aria-label="Search tracker"]', 'DEMO51-125')
     // Search is submitted rather than filtering the initial page.
     browser.evaluate("document.querySelector('[aria-label=\"Search tracker\"]').form?.requestSubmit()")

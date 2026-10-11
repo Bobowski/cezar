@@ -7,8 +7,8 @@ import { ShellProviders } from '@/test/shell-providers'
 import { ShellWithSidebar } from '@/test/shell-with-sidebar'
 import { TrackerRoute } from './tracker'
 vi.mock('@/components/engine-pills', () => ({ EnginePills: () => null, engineRunBody: () => ({}), useResolvedEngine: () => ({ canRun: true }) }))
-beforeEach(() => { Element.prototype.scrollIntoView = vi.fn(); vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} }) })
-afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+beforeEach(() => { window.localStorage.setItem('cezar.tracker.view', 'list'); Element.prototype.scrollIntoView = vi.fn(); vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} }) })
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.localStorage.clear() })
 const association = { kind: 'jira', source: { id: 's', webUrl: 'https://jira.example.com' }, externalId: '1', externalName: 'OPS' }
 const item = (id: string) => ({ kind: 'issue', id, title: `Title ${id}`, body: `Full description ${id}`, author: 'Ada', createdAt: '2026-09-19T00:00:00Z', updatedAt: '2026-09-19T00:00:00Z', status: 'In progress', statusId: 'status-1', statusCategory: 'started', labels: ['bug'], bodyTruncated: false, unsupportedContent: false, url: `https://jira.example.com/${id}` })
 /** A phone. The layout follows `useSidebar().isMobile`, which reads the window width behind a

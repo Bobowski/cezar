@@ -373,7 +373,19 @@ export class SecretStore {
     const temporary = `${path}.${randomUUID()}.tmp`;
     try {
       await fs.writeFile(temporary, text, { mode: 0o600, flag: 'wx' });
-      await fs.rename(temporary, path);
+      // Windows refuses a rename onto a file another writer is replacing at that instant
+      // (EPERM/EBUSY/EACCES) where POSIX swaps it atomically; `prepare` rewrites `.gitignore`
+      // from every concurrent writer, so the collision is routine there. Bounded: ~0.5 s.
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          await fs.rename(temporary, path);
+          break;
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (attempt >= 9 || (code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES')) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
+        }
+      }
     } finally {
       await fs.unlink(temporary).catch(() => {});
     }

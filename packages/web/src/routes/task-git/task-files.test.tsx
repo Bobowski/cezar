@@ -203,8 +203,10 @@ describe('the Files tab route', () => {
       expect(el).not.toBeNull()
       return el
     })) as HTMLElement
-    // Under whatever chrome the view declares — the same pin the sticky tree hangs from.
-    expect(head.className).toContain('sticky top-[var(--diff-sticky-top,0px)]')
+    // At the top of its own scroller. NOT at the tree's chrome offset: a sticky `top` also holds
+    // the element down while nothing is scrolled, which slid the header over the first line.
+    expect(head.className).toContain('sticky top-0')
+    expect(head.className).not.toContain('--diff-sticky-top')
     expect(head.className).toContain('bg-[color-mix(in_oklab,var(--muted)_40%,var(--card))]')
     expect(head.className).not.toContain('bg-muted/40')
     const card = document.querySelector('[data-slot="file-preview"]') as HTMLElement

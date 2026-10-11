@@ -234,7 +234,7 @@ function FileEntryView({
           header to close WebKit's sub-pixel seam at the column's top edge. */}
       <header
         data-slot="file-preview-head"
-        className="sticky top-[var(--diff-sticky-top,0px)] z-10 flex min-h-10 items-center gap-2 border-b border-border bg-[color-mix(in_oklab,var(--muted)_40%,var(--card))] px-4 py-1.5 text-xs shadow-[0_-1px_0_color-mix(in_oklab,var(--muted)_40%,var(--card))]"
+        className="sticky top-0 z-10 flex min-h-10 items-center gap-2 border-b border-border bg-[color-mix(in_oklab,var(--muted)_40%,var(--card))] px-4 py-1.5 text-xs shadow-[0_-1px_0_color-mix(in_oklab,var(--muted)_40%,var(--card))]"
       >
         <span className="min-w-0 truncate font-mono font-medium">{entry.path}</span>
         {dirty ? (

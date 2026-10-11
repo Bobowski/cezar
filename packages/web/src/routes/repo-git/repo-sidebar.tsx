@@ -39,7 +39,8 @@ export function RepoSidebarHeader({ info, tab, children }: { info?: RepoInfo; ta
       <Tabs value={tab}>
         <TabsList data-slot="repo-tabs" className="w-full">
           {TABS.map((entry) => (
-            <TabsTrigger key={entry.value} value={entry.value} asChild>
+            // Four sections in a 264px column: the default trigger padding clipped the outer two.
+            <TabsTrigger key={entry.value} value={entry.value} asChild className="min-w-0 px-1.5 text-xs">
               <Link to={entry.to} aria-current={tab === entry.value ? 'page' : undefined}>
                 {entry.label}
               </Link>

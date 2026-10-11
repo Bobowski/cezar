@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient, type InfiniteData, type QueryKey } from '@tanstack/react-query'
-import { ChevronDownIcon } from 'lucide-react'
+import { ChevronDownIcon, MoreHorizontalIcon, ZapIcon } from 'lucide-react'
 import { useCallback, useState } from 'react'
 
 import type { TrackerAssociation, TrackerItem, TrackerItemsResponse, TrackerTransitionTarget } from '@open-mercato/cezar-api-client'
@@ -8,6 +8,7 @@ import { queryKeys } from '@/api/queries'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { toast } from '@/components/ui/toaster'
+import { automationHint } from '@/lib/tracker-automations'
 import { TrackerStatusIcon } from './tracker-surface'
 
 /** The status a ticket is being moved to; the three fields a row shows while the vendor answers. */
@@ -88,17 +89,28 @@ export function withPendingMoves(items: readonly TrackerItem[], pending: Readonl
 }
 
 /** The keyboard and pointer-free way to change a status: the same move a drag between columns makes. */
-export function TrackerMoveMenu({ association, item, move, disabled = false }: { association: TrackerAssociation; item: TrackerItem; move: TrackerMove; disabled?: boolean }) {
+export function TrackerMoveMenu({ association, item, move, disabled = false, compact = false, automations }: {
+  association: TrackerAssociation
+  item: TrackerItem
+  move: TrackerMove
+  disabled?: boolean
+  /** On a board card: an icon trigger instead of the status button. */
+  compact?: boolean
+  /** Enabled automations by the target status that fires them (`automationsByTargetStatus`). */
+  automations?: ReadonlyMap<string, string[]>
+}) {
   const [open, setOpen] = useState(false)
   const transitions = useTrackerTransitions(association, item, open)
   const data = transitions.data
   return <DropdownMenu open={open} onOpenChange={setOpen}>
     <DropdownMenuTrigger asChild>
-      <Button variant="outline" size="sm" disabled={disabled} data-slot="tracker-move-trigger" aria-label={`Status: ${item.status}. Move to another status`} className="h-7 gap-1.5 px-2 font-normal">
-        <TrackerStatusIcon category={item.statusCategory} className="size-3.5" />
-        {item.status}
-        <ChevronDownIcon aria-hidden="true" className="size-3.5 text-muted-foreground" />
-      </Button>
+      {compact
+        ? <Button variant="ghost" size="icon-sm" disabled={disabled} data-slot="tracker-move-trigger" aria-label={`Move ${item.id} to another status`} title="Move to another status" className="size-6"><MoreHorizontalIcon aria-hidden="true" /></Button>
+        : <Button variant="outline" size="sm" disabled={disabled} data-slot="tracker-move-trigger" aria-label={`Status: ${item.status}. Move to another status`} className="h-7 gap-1.5 px-2 font-normal">
+            <TrackerStatusIcon category={item.statusCategory} className="size-3.5" />
+            {item.status}
+            <ChevronDownIcon aria-hidden="true" className="size-3.5 text-muted-foreground" />
+          </Button>}
     </DropdownMenuTrigger>
     <DropdownMenuContent align="start" className="w-64">
       <DropdownMenuLabel>Move to</DropdownMenuLabel>
@@ -112,6 +124,7 @@ export function TrackerMoveMenu({ association, item, move, disabled = false }: {
         <span className="flex min-w-0 flex-col">
           <span>{target.status}</span>
           {target.reason ? <span className="text-xs whitespace-normal text-muted-foreground">{target.reason}</span> : null}
+          {target.available && automations && automationHint(automations, target.statusId) ? <span className="flex items-center gap-1 text-xs whitespace-normal text-muted-foreground"><ZapIcon aria-hidden="true" className="size-3 shrink-0" />{automationHint(automations, target.statusId)}</span> : null}
         </span>
       </DropdownMenuItem>) : null}
     </DropdownMenuContent>

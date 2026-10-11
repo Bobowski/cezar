@@ -1,5 +1,5 @@
 import { useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query'
-import { CheckCircle2Icon, ChevronDownIcon, CircleDashedIcon, CircleDotIcon, CircleHelpIcon, CircleIcon, XCircleIcon } from 'lucide-react'
+import { CheckCircle2Icon, ChevronDownIcon, CircleDashedIcon, CircleDotIcon, CircleHelpIcon, CircleIcon, XCircleIcon, ZapIcon } from 'lucide-react'
 import { useState, type DragEvent } from 'react'
 
 import type { ApiRun, TrackerAssociation, TrackerItem, TrackerItemResponse, TrackerStatusCategory } from '@open-mercato/cezar-api-client'
@@ -12,7 +12,8 @@ import { statusTone } from '@/lib/automation-format'
 import { shortAge } from '@/lib/format'
 import { Link } from '@/lib/project-router'
 import type { TrackerGroup } from '@/lib/tracker-groups'
-import { useTrackerTransitions, type TrackerMove } from './tracker-move'
+import { automationHint } from '@/lib/tracker-automations'
+import { TrackerMoveMenu, useTrackerTransitions, type TrackerMove } from './tracker-move'
 import { ticketActivity } from '@/lib/tracker-links'
 import { trackerLosses, trackerTaskPrompt } from '@/lib/tracker-task'
 import { cn } from '@/lib/utils'
@@ -180,7 +181,13 @@ function TrackerRow({ item, runs, association, scopePending, active, compact }: 
  * statuses with loaded tickets exist, so a target with no column is reached from the issue
  * panel's "Move to" menu instead.
  */
-export function TrackerBoard({ groups, association, scopePending, activeId, runs, move }: TrackerSurfaceProps & { move: TrackerMove }) {
+export function TrackerBoard({ groups, association, scopePending, activeId, runs, move, moving, automations }: TrackerSurfaceProps & {
+  move: TrackerMove
+  /** Ticket ids whose move is in flight: their menu waits. */
+  moving: ReadonlyMap<string, unknown>
+  /** Enabled automations by the target status that fires them. */
+  automations: ReadonlyMap<string, string[]>
+}) {
   const [dragging, setDragging] = useState<TrackerItem | null>(null)
   const [over, setOver] = useState<string | null>(null)
   const transitions = useTrackerTransitions(association, dragging, dragging !== null)
@@ -197,11 +204,17 @@ export function TrackerBoard({ groups, association, scopePending, activeId, runs
     return target.available ? null : target.reason ?? 'This move cannot be made from cezar.'
   }
   const end = () => { setDragging(null); setOver(null) }
+  // A status the card in hand may reach but that holds no loaded ticket has no column of its own.
+  // While dragging it gets one, appended so nothing under the pointer shifts.
+  const ghosts: TrackerGroup[] = dragging && allowed?.writable
+    ? allowed.targets.filter(target => !groups.some(group => group.statusId === target.statusId)).map(target => ({ statusId: target.statusId, status: target.status, category: target.statusCategory, items: [] }))
+    : []
   return <div data-slot="tracker-board" className="flex min-h-0 flex-1 items-stretch gap-3 overflow-x-auto p-3" onDragEnd={end}>
-    {groups.map(group => {
+    {[...groups, ...ghosts].map(group => {
       const reason = refusal(group.statusId)
       const target = dragging !== null && dragging.statusId !== group.statusId
-      return <section key={group.statusId} data-slot="tracker-column" data-drop={!target ? undefined : reason ? 'refused' : 'allowed'} aria-label={group.status} title={target && reason ? reason : undefined}
+      const starts = target && !reason ? automationHint(automations, group.statusId) : null
+      return <section key={group.statusId} data-slot="tracker-column" data-ghost={group.items.length === 0 ? '' : undefined} data-drop={!target ? undefined : reason ? 'refused' : 'allowed'} aria-label={group.status} title={target && reason ? reason : undefined}
         onDragOver={(event) => {
           if (!target || reason || !event.dataTransfer.types.includes(TRACKER_MOVE_TYPE)) return
           event.preventDefault()
@@ -228,26 +241,35 @@ export function TrackerBoard({ groups, association, scopePending, activeId, runs
         <span className="min-w-0 truncate">{group.status}</span>
         <span className="font-normal text-muted-foreground tabular-nums" title="Issues loaded in this status">{group.items.length}</span>
       </h2>
+      {starts ? <p data-slot="tracker-column-automation" className="flex items-start gap-1.5 px-3 pb-2 text-xs text-muted-foreground"><ZapIcon aria-hidden="true" className="mt-0.5 size-3 shrink-0" />{starts}</p> : null}
+      {group.items.length === 0 ? <p className="px-3 pb-3 text-xs text-muted-foreground">{reason ?? 'No loaded issues. Drop here to move.'}</p> : null}
       <ul className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2">
-        {group.items.map(item => <li key={item.id}><TrackerCard item={item} runs={runs.get(item.id)} association={association} scopePending={scopePending} active={activeId === item.id} onPickUp={setDragging} /></li>)}
+        {group.items.map(item => <li key={item.id}><TrackerCard item={item} runs={runs.get(item.id)} association={association} scopePending={scopePending} active={activeId === item.id} onPickUp={setDragging} move={move} moving={moving.has(item.id)} automations={automations} /></li>)}
       </ul>
     </section>
     })}
   </div>
 }
 
-function TrackerCard({ item, runs, association, scopePending, active, onPickUp }: { item: TrackerItem; onPickUp: (item: TrackerItem) => void; runs: readonly ApiRun[] | undefined; association: TrackerAssociation; scopePending: boolean; active: boolean }) {
+function TrackerCard({ item, runs, association, scopePending, active, onPickUp, move, moving, automations }: { item: TrackerItem; onPickUp: (item: TrackerItem) => void; move: TrackerMove; moving: boolean; automations: ReadonlyMap<string, string[]>; runs: readonly ApiRun[] | undefined; association: TrackerAssociation; scopePending: boolean; active: boolean }) {
   const link = useTrackerItemLink(association, item, scopePending, true)
   const pickUp = (event: DragEvent) => { link.onDragStart(event); if (!event.defaultPrevented) onPickUp(item) }
-  return <Link {...link} onDragStart={pickUp} title="Drag to another column to change its status, or into the composer to prefill a task" data-slot="tracker-row" aria-current={active ? 'page' : undefined} className={cn(
-    'flex flex-col gap-1.5 rounded-md border border-border bg-card p-2.5 text-[13px] font-normal shadow-xs outline-none hover:border-foreground/20 focus-visible:ring-2 focus-visible:ring-ring/50',
-    active && 'border-foreground/30',
-  )}>
-    <span className="flex items-center justify-between gap-2 text-xs text-muted-foreground tabular-nums">
-      <span className="flex min-w-0 items-center gap-1.5"><span className="truncate">{item.id}</span><TicketActivity runs={runs} /></span>
-      <span className="shrink-0" title={new Date(item.updatedAt).toLocaleString()}>{shortAge(item.updatedAt)}</span>
-    </span>
-    <span className="line-clamp-3 leading-snug text-pretty">{item.title}</span>
-    <Labels labels={item.labels} className="flex-wrap" />
-  </Link>
+  // The menu sits beside the link, not inside it: a button nested in an anchor is not valid, and
+  // it is how a status is changed without dragging. It shows on hover and whenever it has focus.
+  return <div data-slot="tracker-card" className="group/card relative">
+    <Link {...link} onDragStart={pickUp} title="Drag to another column to change its status, or into the composer to prefill a task" data-slot="tracker-row" aria-current={active ? 'page' : undefined} className={cn(
+      'flex flex-col gap-1.5 rounded-md border border-border bg-card p-2.5 text-[13px] font-normal shadow-xs outline-none hover:border-foreground/20 focus-visible:ring-2 focus-visible:ring-ring/50',
+      active && 'border-foreground/30',
+    )}>
+      <span className="flex items-center justify-between gap-2 text-xs text-muted-foreground tabular-nums">
+        <span className="flex min-w-0 items-center gap-1.5"><span className="truncate">{item.id}</span><TicketActivity runs={runs} /></span>
+        <span className="shrink-0 transition-opacity group-focus-within/card:opacity-0 group-hover/card:opacity-0 motion-reduce:transition-none" title={new Date(item.updatedAt).toLocaleString()}>{shortAge(item.updatedAt)}</span>
+      </span>
+      <span className="line-clamp-3 leading-snug text-pretty">{item.title}</span>
+      <Labels labels={item.labels} className="flex-wrap" />
+    </Link>
+    <div className="absolute top-1.5 right-1.5 opacity-0 transition-opacity group-focus-within/card:opacity-100 group-hover/card:opacity-100 has-[[data-state=open]]:opacity-100 motion-reduce:transition-none">
+      <TrackerMoveMenu compact association={association} item={item} move={move} disabled={scopePending || moving} automations={automations} />
+    </div>
+  </div>
 }

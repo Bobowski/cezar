@@ -90,6 +90,40 @@ describe('tracker status change API', () => {
     expect(await (await apiRequest(instance, '/api/v1/tracker/DEMO51-2')).json()).toMatchObject({ item: { statusId: 'dry-todo' } });
   });
 
+  it('tells the tasks linked to the ticket where it now stands, keeping what they started from', async () => {
+    const instance = app();
+    const association = await connect(instance);
+    const link = (itemId: string, sourceId = 'dry-jira') => ({
+      provider: 'jira' as const, sourceId, scopeId: '51', itemId, origin: 'handoff' as const, linkedAt: '2026-10-11T10:00:00.000Z',
+      snapshot: { status: 'To Do', statusCategory: 'unstarted' as const, updatedAt: '2026-01-01T00:00:00.000Z', contentHash: 'a'.repeat(64), syncedAt: '2026-10-11T10:00:00.000Z' },
+    });
+    const run = (trackerLinks: ReturnType<typeof link>[] | undefined) => {
+      const created = store.createRun({ title: 't', workflow: 'quick-task', task: 't', steps: [{ id: 'work', name: 'work', kind: 'agent' }] });
+      return trackerLinks ? store.updateRun(created.id, { trackerLinks })! : created;
+    };
+    const linked = run([link('DEMO51-2')]);
+    const another = run([link('DEMO51-2')]);
+    const otherTicket = run([link('DEMO51-7')]);
+    const otherSource = run([link('DEMO51-2', 'another-site')]);
+    const plain = run(undefined);
+
+    await move(instance, 'DEMO51-2', { expectedScope: trackerReadScope(association), toStatusId: 'dry-review', expectedStatusId: 'dry-todo' });
+
+    for (const id of [linked.id, another.id]) {
+      const [updated] = store.getRun(id)!.trackerLinks!;
+      expect(updated!.latest).toMatchObject({ status: 'In Review', statusCategory: 'started' });
+      // The starting point is history and is not rewritten.
+      expect(updated!.snapshot).toEqual(link('DEMO51-2').snapshot);
+    }
+    expect(store.getRun(otherTicket.id)!.trackerLinks![0]!.latest).toBeUndefined();
+    expect(store.getRun(otherSource.id)!.trackerLinks![0]!.latest).toBeUndefined();
+    expect(store.getRun(plain.id)!.trackerLinks).toBeUndefined();
+
+    // A refused or stale move tells them nothing new.
+    await move(instance, 'DEMO51-2', { expectedScope: trackerReadScope(association), toStatusId: 'dry-done', expectedStatusId: 'dry-todo' });
+    expect(store.getRun(linked.id)!.trackerLinks![0]!.latest).toMatchObject({ status: 'In Review' });
+  });
+
   it('keeps a demo move inside this process and this scope', async () => {
     const instance = app();
     const expectedScope = trackerReadScope(await connect(instance));

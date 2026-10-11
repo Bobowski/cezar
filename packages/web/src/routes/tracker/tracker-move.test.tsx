@@ -25,13 +25,16 @@ const issue = (id: string, status: keyof typeof STATUS) => ({
 const noComments = { available: true, items: [], truncated: false }
 
 type Answer = { status?: number; body: unknown }
-function mount(options: { path?: string; transition?: () => Answer; transitions?: unknown } = {}) {
+function mount(options: { path?: string; transition?: () => Answer; transitions?: unknown; automations?: unknown[] } = {}) {
   const posts: unknown[] = []
   const state: Record<string, keyof typeof STATUS> = { 'OPS-1': 'todo', 'OPS-2': 'review', 'OPS-3': 'done' }
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
     const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
     if (url.pathname.endsWith('/tracker/association')) return json({ association })
+    // Automations are consulted only when the server says they are on.
+    if (url.pathname.endsWith('/health') && options.automations) return json({ ok: true, capabilities: { automations: true } })
+    if (url.pathname.endsWith('/automations') && options.automations) return json({ available: true, scheduler: { state: 'idle' }, timeZone: 'UTC', stats: {}, automations: options.automations })
     if (url.pathname.endsWith('/transitions')) return json(options.transitions ?? { available: true, currentStatusId: 'todo', writable: true, targets: [
       { ...STATUS.review, available: true },
       { ...STATUS.done, available: false, reason: 'This move requires fields to be filled in. Complete it in Jira.' },
@@ -40,6 +43,7 @@ function mount(options: { path?: string; transition?: () => Answer; transitions?
       const body = JSON.parse(String(init.body)) as { toStatusId: keyof typeof STATUS }
       posts.push(body)
       if (options.transition) { const answer = options.transition(); return json(answer.body, answer.status ?? 200) }
+      if (!(body.toStatusId in STATUS)) return json({ available: true, item: { ...issue('OPS-1', 'todo'), status: 'QA', statusId: body.toStatusId, statusCategory: 'started' }, comments: noComments })
       state['OPS-1'] = body.toStatusId
       return json({ available: true, item: issue('OPS-1', body.toStatusId), comments: noComments })
     }
@@ -140,7 +144,61 @@ describe('moving a card between board columns', () => {
   })
 })
 
+describe('what the board shows while a card is in hand', () => {
+  const qa = { status: 'QA', statusId: 'qa', statusCategory: 'started', available: true }
+
+  it('adds a column for a reachable status that holds no loaded ticket, and moves the card there', async () => {
+    const posts = mount({ transitions: { available: true, currentStatusId: 'todo', writable: true, targets: [{ ...STATUS.review, available: true }, qa] } })
+    expect(column('QA')).toBeNull()
+    const { card, dataTransfer } = await pickUp('OPS-1', 'In Review')
+    await waitFor(() => expect(column('QA')).toBeTruthy())
+    expect(column('QA').getAttribute('data-ghost')).toBe('')
+    expect(column('QA').getAttribute('data-drop')).toBe('allowed')
+    // Appended, so no existing column moves under the pointer.
+    const columns = [...document.querySelectorAll('[data-slot="tracker-column"]')].map(element => element.getAttribute('aria-label'))
+    expect(columns.at(-1)).toBe('QA')
+    fireEvent.dragOver(column('QA'), { dataTransfer })
+    fireEvent.drop(column('QA'), { dataTransfer })
+    await waitFor(() => expect(posts).toEqual([{ expectedScope: trackerReadScope(association), toStatusId: 'qa', expectedStatusId: 'todo' }]))
+    fireEvent.dragEnd(card)
+  })
+
+  it('shows no extra column when nothing is being dragged', async () => {
+    mount({ transitions: { available: true, currentStatusId: 'todo', writable: true, targets: [qa] } })
+    const { card } = await pickUp('OPS-1', 'In Review')
+    await waitFor(() => expect(column('QA')).toBeTruthy())
+    fireEvent.dragEnd(card)
+    await waitFor(() => expect(column('QA')).toBeNull())
+  })
+
+  it('says which enabled automation a move into a column would start', async () => {
+    const trigger = (targetStatusIds: string[]) => ({ events: ['issue.status_changed'], targetStatusIds, association })
+    mount({ automations: [
+      { id: 'a1', revision: 1, name: 'Review bot', enabled: true, kind: 'tracker', task: { prompt: 'x' }, createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z', trackerTrigger: trigger(['review']) },
+      { id: 'a2', revision: 1, name: 'Paused bot', enabled: false, kind: 'tracker', task: { prompt: 'x' }, createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z', trackerTrigger: trigger(['review']) },
+    ] })
+    await pickUp('OPS-1', 'In Review')
+    const hint = await waitFor(() => { const element = column('In Review').querySelector('[data-slot="tracker-column-automation"]'); expect(element).toBeTruthy(); return element! })
+    expect(hint.textContent).toBe('Starts automation: Review bot')
+    // Not on the column the card came from, nor on one that refuses it.
+    expect(column('To Do').querySelector('[data-slot="tracker-column-automation"]')).toBeNull()
+    expect(column('Done').querySelector('[data-slot="tracker-column-automation"]')).toBeNull()
+  })
+})
+
 describe('moving a ticket without a pointer', () => {
+  it('offers the move from a menu on the card itself', async () => {
+    const posts = mount()
+    await screen.findByText('Title OPS-1')
+    const trigger = screen.getByRole('button', { name: 'Move OPS-1 to another status' })
+    // Beside the card's link, never inside it.
+    expect(trigger.closest('a')).toBeNull()
+    fireEvent.keyDown(trigger, { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /In Review/ }))
+    await waitFor(() => expect(posts).toEqual([{ expectedScope: trackerReadScope(association), toStatusId: 'review', expectedStatusId: 'todo' }]))
+    await waitFor(() => expect(within(column('In Review')).getByText('Title OPS-1')).toBeTruthy())
+  })
+
   it('offers the same move from the issue panel\'s status menu', async () => {
     const posts = mount({ path: '/tracker/OPS-1' })
     const trigger = await screen.findByRole('button', { name: /Status: To Do\. Move to another status/ })

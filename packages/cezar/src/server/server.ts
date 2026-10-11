@@ -6379,7 +6379,17 @@ export function createApp(deps: ServerDeps) {
       }
       if (!driver.transition) return c.json({ available: false as const, code: 'unavailable' as const, reason: 'This tracker does not support changing a status from cezar.' }, 200);
       const result = await driver.transition(c.req.valid('param').id, { toStatusId, expectedStatusId });
-      if (result.available) return c.json(result, 200);
+      if (result.available) {
+        // Tasks linked to this ticket learn where it now stands; what they started from is kept.
+        const { store } = c.get('project');
+        const latest = { status: result.item.status, statusCategory: result.item.statusCategory, syncedAt: new Date().toISOString() };
+        const isThis = (link: TrackerLink) => link.provider === driver.association.kind && link.sourceId === driver.association.source.id && link.itemId === result.item.id;
+        for (const run of store.listRuns()) {
+          if (!run.trackerLinks?.some(isThis)) continue;
+          store.updateRun(run.id, { trackerLinks: run.trackerLinks.map((link) => (isThis(link) ? { ...link, latest } : link)) });
+        }
+        return c.json(result, 200);
+      }
       if (result.code === 'not_found') return c.json({ error: result.reason }, 404);
       if (result.code === 'conflict') return c.json({ error: result.reason, item: result.item, comments: result.comments }, 409);
       return c.json(result, 200);

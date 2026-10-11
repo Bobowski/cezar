@@ -833,8 +833,10 @@ function MetaRow({
   if (run.diffStat) parts.push(<DiffStatLabel key="diff" stat={run.diffStat} />)
   // The tracker ticket this task works on: structured provenance, never parsed from the prompt.
   for (const link of run.trackerLinks ?? []) {
-    const label = link.snapshot ? `${link.itemId} · ${link.snapshot.status}` : link.itemId
-    const title = link.title ? `${link.title} — status as of this task's start` : undefined
+    const status = link.latest?.status ?? link.snapshot?.status
+    const label = status ? `${link.itemId} · ${status}` : link.itemId
+    const when = link.latest ? (link.snapshot && link.snapshot.status !== link.latest.status ? `moved here from "${link.snapshot.status}", its status when this task started` : 'status after the last move made in cezar') : "status as of this task's start"
+    const title = link.title ? `${link.title} — ${when}` : undefined
     parts.push(link.url && isHttpUrl(link.url)
       ? <a key={`tracker:${link.itemId}`} data-slot="tracker-origin" href={link.url} target="_blank" rel="noopener noreferrer" title={title} className="underline-offset-2 hover:text-foreground hover:underline">{label}</a>
       : <span key={`tracker:${link.itemId}`} data-slot="tracker-origin" title={title}>{label}</span>)

@@ -349,12 +349,17 @@ Jira and Linear adapters and the demo tracker, the read-only marking in the trac
 two routes, drag between board columns and the "Move to" menu in the issue panel. Differences
 from the text above:
 
-- **No "Move to" menu on the card itself.** The menu is in the issue panel only; that is the
-  keyboard path. A card has no menu yet.
-- **No "starts automation <name>" hint** on a drop target.
-- **A target status with no loaded ticket has no column** to drop on; it is reachable from the
-  menu.
-- **Linked runs' snapshots are not updated** after a move.
+- Added 2026-10-11, completing the list above: the "Move to" menu on each card (beside the
+  card's link, never inside it); the "Starts automation: <name>" line on an allowed drop target
+  and on a menu item, from the project's enabled status-change automations bound to this scope;
+  a temporary column, appended while a card is in hand, for each reachable status that holds no
+  loaded ticket.
+- **A move updates `latest`, not `snapshot`,** on every run linked to the ticket. `snapshot`
+  is what the task started from and feeds `sinceStart`/`statusAtStart`; overwriting it would
+  have made both lie. The task header shows `latest` when present. Only moves made in cezar
+  reach it; a move made at the vendor does not.
+- The automation hint does not model `requiredLabels`: an automation that also requires labels
+  is named even when this ticket lacks them.
 - The Jira write never falls back from the API gateway to the site origin: once reads have
   settled the transport, a refused POST is final. This was added so a refusal cannot send the
   write twice.

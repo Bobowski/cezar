@@ -376,6 +376,11 @@ export const trackerLinkSchema = z
         syncedAt: z.iso.datetime({ offset: true }),
       })
       .optional(),
+    /** The status as the cockpit last learned it, after a move made here. `snapshot` stays what
+     *  the task started from: the two answer different questions and neither overwrites the other. */
+    latest: z
+      .object({ status: z.string(), statusCategory: trackerStatusCategorySchema.optional(), syncedAt: z.iso.datetime({ offset: true }) })
+      .optional(),
   });
 export type TrackerLink = z.infer<typeof trackerLinkSchema>;
 

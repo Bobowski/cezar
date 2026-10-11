@@ -27,7 +27,9 @@ import { Link } from '@/lib/project-router'
 import { statusLabel, statusTone } from '@/lib/automation-format'
 import { runTitle } from '@/lib/task-groups'
 import { groupByStatus } from '@/lib/tracker-groups'
+import { automationsByTargetStatus } from '@/lib/tracker-automations'
 import { hasActiveRun, runsByTicket } from '@/lib/tracker-links'
+import { useAutomationsGate, useAutomationsQuery } from '../automations/use-automations'
 import { trackerLosses } from '@/lib/tracker-task'
 import { Markdown } from '../task-thread/markdown'
 import { TrackerHandoff, type TrackerHandoffSelection, type TrackerDraftCache } from './tracker-handoff'
@@ -213,6 +215,10 @@ function TrackerBrowse({ scopePending, association, selectedId, drafts, selectio
   const loadMore = result.hasNextPage
     ? <div className="shrink-0 p-3"><Button className="w-full" variant="outline" size="sm" onClick={() => void result.fetchNextPage()} disabled={result.isFetchingNextPage}>Load more</Button></div>
     : null
+  // What a move would start: from the automation definitions, and only while automations are on.
+  const automationsGate = useAutomationsGate()
+  const automationList = useAutomationsQuery(automationsGate.known && !automationsGate.off)
+  const automations = useMemo(() => automationsByTargetStatus(automationList.data?.automations, association), [automationList.data, association])
   const surfaceProps = { groups, association, scopePending, activeId: detailId, runs }
 
   return <Page width="full" data-route="tracker" className="h-full">
@@ -221,18 +227,18 @@ function TrackerBrowse({ scopePending, association, selectedId, drafts, selectio
       {listVisible ? <section data-slot="tracker-list" aria-label="Issues" className={cn('flex min-h-0 min-w-0 flex-1 flex-col', view === 'list' && 'overflow-y-auto')}>
         {notices}
         {view === 'board'
-          ? <TrackerBoard {...surfaceProps} move={move} />
+          ? <TrackerBoard {...surfaceProps} move={move} moving={pending} automations={automations} />
           : <TrackerList {...surfaceProps} collapsed={collapsed} onToggle={toggleGroup} compact={detailId !== null} />}
         {loadMore}
       </section> : null}
       {detailId ? <aside data-slot="tracker-panel" aria-label="Issue" className={cn('@container min-h-0 min-w-0 overflow-y-auto bg-background', isMobile ? 'flex-1' : 'w-[min(64rem,66%)] shrink-0 border-l border-border')}>
-        <TrackerDetail scopePending={scopePending} key={`${trackerAssociationKey(association)}:${detailId}`} association={association} id={detailId} move={move} moving={pending.has(detailId)} runs={runs.get(detailId)} drafts={drafts} selection={selection} onSelectionChange={setSelection} />
+        <TrackerDetail scopePending={scopePending} key={`${trackerAssociationKey(association)}:${detailId}`} association={association} id={detailId} move={move} moving={pending.has(detailId)} automations={automations} runs={runs.get(detailId)} drafts={drafts} selection={selection} onSelectionChange={setSelection} />
       </aside> : null}
     </div>
   </Page>
 }
 
-function TrackerDetail({ scopePending, association, id, runs, move, moving, selection, onSelectionChange, drafts }: { scopePending: boolean; move: TrackerMove; moving: boolean; runs: readonly ApiRun[] | undefined; drafts: TrackerDraftCache; association: TrackerAssociation; id: string; selection: TrackerHandoffSelection; onSelectionChange: React.Dispatch<React.SetStateAction<TrackerHandoffSelection>> }) {
+function TrackerDetail({ scopePending, association, id, runs, move, moving, automations, selection, onSelectionChange, drafts }: { scopePending: boolean; move: TrackerMove; moving: boolean; automations: ReadonlyMap<string, string[]>; runs: readonly ApiRun[] | undefined; drafts: TrackerDraftCache; association: TrackerAssociation; id: string; selection: TrackerHandoffSelection; onSelectionChange: React.Dispatch<React.SetStateAction<TrackerHandoffSelection>> }) {
   const detail = useTrackerItem(association, id)
   const workflows = useWorkflows()
   const skills = useSkills()
@@ -313,7 +319,7 @@ function TrackerDetail({ scopePending, association, id, runs, move, moving, sele
           <dl className="grid grid-cols-[5.5rem_minmax(0,1fr)] items-baseline gap-x-4 gap-y-2 text-[13px]">
             <dt className="text-muted-foreground">Status</dt>
             {/* Retained context (a failed refresh) is not a status anyone should move from. */}
-            <dd><TrackerMoveMenu association={association} item={item} move={move} disabled={scopePending || moving || !detail.data?.available} /></dd>
+            <dd><TrackerMoveMenu association={association} item={item} move={move} automations={automations} disabled={scopePending || moving || !detail.data?.available} /></dd>
             <dt className="text-muted-foreground">Author</dt>
             <dd>{item.author}</dd>
             <dt className="text-muted-foreground">Opened</dt>

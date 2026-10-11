@@ -128,11 +128,15 @@ saved IDs are never silently retargeted.
 
 ## Changing a status
 
-Drag a card to another board column, or use the status menu in the issue panel (**Move to**),
-which also works from the keyboard and reaches statuses that have no column on screen.
+Drag a card to another board column, or use **Move to**: the menu on a card (shown on hover and
+on keyboard focus) and the status menu in the issue panel. Both menus work from the keyboard.
 
 - When you pick a card up, cezar asks the tracker where that issue may go. Columns it can move
-  to are outlined; the others dim and say why.
+  to are outlined; the others dim and say why. A status it can reach that has no loaded issue
+  gets a temporary column at the end of the board for as long as the card is in hand.
+- If the move would fire one of this project's enabled automations (a status-change automation
+  bound to this project or team), the column and the menu item name it before you let go. The
+  move is a real transition: the automation sees it at its next check.
 - The card moves at once. If the tracker refuses, it returns to its column with the reason.
 - If someone else moved the issue since you loaded it, nothing is written: you are told, and the
   issue is shown where it now is.
@@ -155,6 +159,10 @@ ticket. The task header shows the ticket key with the status it had when the tas
 link to the vendor. In the tracker, a dot on a row or card says a task exists for that ticket
 (working, waiting for review, or finished) and the issue panel lists those tasks. Both are computed
 from local task records, so they need no vendor request and keep working while the vendor is down.
+
+After you move an issue in cezar, the header of every task linked to it shows the new status; the
+status it started from is kept and shown on hover. A move made in the vendor's own UI is not
+reflected there.
 
 The link is recorded by the server from the project's saved scope and its own read of the ticket,
 never from the prompt text. If the vendor does not answer at launch the task still starts, linked

@@ -430,3 +430,23 @@ export const trackerWatchSnapshotSchema = z.object({
   result: trackerItemsResponseSchema.nullable(),
 }).strict();
 export type TrackerWatchSnapshot = z.infer<typeof trackerWatchSnapshotSchema>;
+
+/** `GET /runs/:id/tracker-issue`: `item` names another ticket of the run's scope; omitted, the run's own. */
+export const trackerRunIssueQuerySchema = z.object({ item: trackerItemIdSchema.optional() });
+export type TrackerRunIssueQuery = z.infer<typeof trackerRunIssueQuerySchema>;
+
+/**
+ * The linked ticket, read now by the cockpit for the agent of a run (spec
+ * 2026-10-11-tracker-ticket-context § Phase 4). `sinceStart` compares the title and description
+ * with the snapshot the run was started from; `unknown` when the run recorded none, or when the
+ * ticket asked for is not the one the run is linked to.
+ */
+export const trackerRunIssueSuccessSchema = trackerItemSuccessSchema.extend({
+  sinceStart: z.enum(['unchanged', 'changed', 'unknown']),
+  statusAtStart: z.string().optional(),
+});
+export const trackerRunIssueResponseSchema = z.discriminatedUnion('available', [
+  trackerRunIssueSuccessSchema,
+  trackerFailureSchema,
+]);
+export type TrackerRunIssueResponse = z.infer<typeof trackerRunIssueResponseSchema>;

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { runRecordSchema, trackerReadScope, type TrackerAssociation } from '@open-mercato/cezar-contract';
+import { runRecordSchema, trackerReadScope, trackerRunIssueResponseSchema, type TrackerAssociation } from '@open-mercato/cezar-contract';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import { RunStore } from '../runs/store.ts';
 import type { RunManager } from '../workflows/run.ts';
@@ -87,5 +87,66 @@ describe('POST /runs ticket link', () => {
     expect((await start(instance, { tracker: { itemId: 'a/b', expectedScope: 'x' } })).status).toBe(400);
     expect((await start(instance, { tracker: { itemId: 'DEMO51-2', expectedScope: 'x', url: 'https://evil.example' } })).status).toBe(400);
     expect(store.listRuns()).toHaveLength(0);
+  });
+
+  /** Phase 4: `GET /runs/:id/tracker-issue`, what `cez tracker issue` calls for an agent. */
+  describe('the linked ticket, re-read for the run', () => {
+    const linkedRun = async (instance: ReturnType<typeof app>) => {
+      const association = await connect(instance);
+      const response = await start(instance, { tracker: { itemId: 'DEMO51-2', expectedScope: trackerReadScope(association) } });
+      return runRecordSchema.parse(await response.json());
+    };
+    const read = async (instance: ReturnType<typeof app>, runId: string, query = '') =>
+      apiRequest(instance, `/api/v1/runs/${runId}/tracker-issue${query}`);
+
+    it('returns the description and comments and says the ticket is unchanged since start', async () => {
+      const instance = app();
+      const run = await linkedRun(instance);
+      const response = await read(instance, run.id);
+      expect(response.status).toBe(200);
+      const body = trackerRunIssueResponseSchema.parse(await response.json());
+      if (!body.available || !body.comments.available) throw new Error('expected the ticket with its comments');
+      expect(body.item.id).toBe('DEMO51-2');
+      expect(body.comments.items.map(comment => comment.body)).toContain('Decision: keep the old endpoint, behind a deprecation warning.');
+      expect(body).toMatchObject({ sinceStart: 'unchanged', statusAtStart: 'To Do' });
+    });
+
+    it('says "changed" when the content no longer matches the run\'s snapshot', async () => {
+      const instance = app();
+      const run = await linkedRun(instance);
+      const link = run.trackerLinks![0]!;
+      store.updateRun(run.id, { trackerLinks: [{ ...link, snapshot: { ...link.snapshot!, contentHash: 'a'.repeat(64) } }] });
+      expect(await (await read(instance, run.id)).json()).toMatchObject({ available: true, sinceStart: 'changed' });
+    });
+
+    it('says "unknown" for a link without a snapshot and for another ticket of the scope', async () => {
+      const instance = app();
+      const run = await linkedRun(instance);
+      const other = await (await read(instance, run.id, '?item=DEMO51-7')).json() as Record<string, unknown>;
+      expect(other).toMatchObject({ available: true, item: { id: 'DEMO51-7' }, sinceStart: 'unknown' });
+      expect('statusAtStart' in other).toBe(false);
+      const { snapshot: _snapshot, ...bare } = run.trackerLinks![0]!;
+      store.updateRun(run.id, { trackerLinks: [bare] });
+      expect(await (await read(instance, run.id)).json()).toMatchObject({ available: true, sinceStart: 'unknown' });
+    });
+
+    it('refuses a run with no link, an unknown run, a ticket outside the scope and a malformed key', async () => {
+      const instance = app();
+      const run = await linkedRun(instance);
+      const plain = runRecordSchema.parse(await (await start(instance, {})).json());
+      expect((await read(instance, plain.id)).status).toBe(404);
+      expect((await read(instance, 'no-such-run')).status).toBe(404);
+      expect((await read(instance, run.id, '?item=DEMO51-9999')).status).toBe(404);
+      expect((await read(instance, run.id, '?item=a%2Fb')).status).toBe(400);
+    });
+
+    it('does not read another scope once the project is pointed elsewhere, or disconnected', async () => {
+      const instance = app();
+      const run = await linkedRun(instance);
+      await apiRequest(instance, '/api/v1/tracker/association', json('PUT', { kind: 'jira', sourceId: 'dry-jira', externalId: '52' }));
+      expect(await (await read(instance, run.id)).json()).toMatchObject({ available: false, code: 'source_changed' });
+      await apiRequest(instance, '/api/v1/tracker/association', { method: 'DELETE' });
+      expect(await (await read(instance, run.id)).json()).toMatchObject({ available: false, code: 'not_configured' });
+    });
   });
 });

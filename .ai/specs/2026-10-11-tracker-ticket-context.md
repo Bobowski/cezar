@@ -219,6 +219,24 @@ does not exist yet. Launch now waits for one bounded vendor read.
   snapshot: <fields>" note, then updates `snapshot`. A failed read adds nothing and blocks
   nothing. The autonomous nudge and the monitoring wake timer never trigger this read.
 
+**Status 2026-10-11:** the brokered read is implemented — `GET /runs/:id/tracker-issue`
+(`sinceStart`, `statusAtStart`), `cez tracker issue` (`packages/cezar/src/tracker-cli.ts`) and
+`TRACKER_PROMPT`, composed at both `ActiveRun` construction sites for a linked run whose agent
+can reach the cockpit. Differences from the text above:
+
+- **No change note on Continue.** Re-reading on every user message would put a vendor request
+  (seconds, under a deadline) in front of each message to a linked task, and the note would have
+  to be spliced into the user's own message. Instead the comparison lives in the brokered answer
+  and the system prompt tells the agent to run the command when it resumes. The run's stored
+  snapshot is not updated afterwards, so `sinceStart` always compares against the start.
+- **Reachability follows dispatch.** `CEZ_API_URL`/`CEZ_BIN` reach an agent only while dispatch is
+  reachable (`agentEnv`), so with `CEZ_DISPATCH=0` or a headless run the agent is not told about
+  the command. That keeps the environment byte-for-byte as before in those modes.
+- A changed connection is refused by the tracker service itself; the route additionally checks
+  provider, source and scope against the run's link, which deliberately carries no connection id.
+- The automation prompt of phase 3 still names the vendor API for a re-read; it was not switched
+  to this command.
+
 ### Phase 5 — issue surface (screen redesign)
 
 Today `/p/:projectId/tracker` is a narrow list in the secondary sidebar plus a detail pane that

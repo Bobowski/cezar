@@ -44,6 +44,7 @@ import { runProjectsCommand } from './workspace/projects-cli.ts';
 import { WorkspaceSemaphore } from './workspace/semaphore.ts';
 import { runTaskCommand } from './dispatch/task-cli.ts';
 import { runAutomationCommand } from './automations/automation-cli.ts';
+import { runTrackerCommand } from './tracker-cli.ts';
 
 import { runTrackerConnectionsCommand } from './server/tracker/connections-cli.ts';
 
@@ -114,6 +115,11 @@ async function main(): Promise<void> {
   // `cez automation …` (spec 2026-09-13-automations-from-prompt): same shape, same reason.
   if (process.argv[2] === 'automation') {
     process.exitCode = await runAutomationCommand(process.argv.slice(3));
+    return;
+  }
+  // `cez tracker …` (spec 2026-10-11-tracker-ticket-context): the linked ticket, through the cockpit.
+  if (process.argv[2] === 'tracker') {
+    process.exitCode = await runTrackerCommand(process.argv.slice(3));
     return;
   }
   const { values, positionals } = parseArgs({

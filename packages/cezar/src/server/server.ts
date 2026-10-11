@@ -4,7 +4,7 @@ import {
   terminalCreateSchema, terminalInputSchema, terminalOutputQuerySchema, terminalOutputSchema,
   terminalResizeSchema, terminalSessionParamsSchema, terminalSessionSchema, terminalStateSchema,
   trackerWatchInputSchema, trackerWatchParamsSchema, trackerWatchQuerySchema,
-  trackerCandidatesQuerySchema, trackerListQuerySchema, trackerSearchQuerySchema, trackerItemQuerySchema, trackerReadScope, trackerRunLinkInputSchema,
+  trackerCandidatesQuerySchema, trackerListQuerySchema, trackerSearchQuerySchema, trackerItemQuerySchema, trackerReadScope, trackerRunLinkInputSchema, trackerRunIssueQuerySchema,
   trackerCredentialsSchema, trackerItemParamsSchema, trackerAssociationInputSchema, type TrackerChangedEvent,
 } from '@open-mercato/cezar-contract';
 import { createTrackerService } from './tracker/index.ts';
@@ -133,7 +133,7 @@ import { getTeamSkillsCached, refreshTeamSkills, waitForTeamSkills } from '../sk
 import { appendHandoffHeartbeat, handoffProgressExcerpt, readHandoff } from '../handoff.ts';
 import { markStarted, onTodosChanged, readTodos, removeTodo, todoTaskText, type TodoItem } from '../todos.ts';
 import type { RunEvent, RunRecord, RunStatus, RunStore } from '../runs/store.ts';
-import { buildTrackerLink } from '../runs/tracker-links.ts';
+import { buildTrackerLink, trackerContentHash } from '../runs/tracker-links.ts';
 import type { TrackerLink } from '@open-mercato/cezar-contract';
 import {
   HistoryCursorError,
@@ -4472,6 +4472,39 @@ export function createApp(deps: ServerDeps) {
       const run = store.getRun(c.req.param('id'));
       return run ? c.json(withUsage(run)) : c.json({ error: 'not found' }, 404);
     })
+
+    // The ticket a run is linked to, read NOW by the cockpit for that run's agent (spec
+    // 2026-10-11-tracker-ticket-context § Phase 4; the `cez tracker issue` CLI). The read uses the
+    // project's stored credentials, so the agent needs none. Bound to the scope the run was started
+    // from: a project since pointed elsewhere answers `source_changed`, not another scope's ticket.
+    .get(
+      '/runs/:id/tracker-issue',
+      paramZodValidator(runIdParamSchema),
+      queryZodValidator(trackerRunIssueQuerySchema),
+      async (c) => {
+        const { store, root, dataDir } = c.get('project');
+        const run = store.getRun(c.req.valid('param').id);
+        if (!run) return c.json({ error: 'not found' }, 404);
+        const link = run.trackerLinks?.[0];
+        if (!link) return c.json({ error: 'This task is not linked to a tracker ticket.' }, 404);
+        const driver = await trackers.driver(root, dataDir);
+        if ('available' in driver) return c.json(driver, 200);
+        const bound = driver.association;
+        if (bound.kind !== link.provider || bound.source.id !== link.sourceId || bound.externalId !== link.scopeId) {
+          return c.json({ available: false as const, code: 'source_changed' as const, reason: 'This project is no longer connected to the tracker scope this task was started from.' }, 200);
+        }
+        const read = await driver.getItem(c.req.valid('query').item ?? link.itemId);
+        if (!read.available) {
+          if (read.code === 'not_found') return c.json({ error: read.reason }, 404);
+          return c.json(read, 200);
+        }
+        // The comparison is only meaningful for the run's own ticket, and only against a snapshot.
+        const snapshot = read.item.id === link.itemId ? link.snapshot : undefined;
+        const sinceStart = !snapshot ? ('unknown' as const)
+          : trackerContentHash(read.item) === snapshot.contentHash ? ('unchanged' as const) : ('changed' as const);
+        return c.json({ ...read, sinceStart, ...(snapshot ? { statusAtStart: snapshot.status } : {}) }, 200);
+      },
+    )
 
     .get(
       '/runs/:id/history',

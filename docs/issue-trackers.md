@@ -139,6 +139,27 @@ never from the prompt text. If the vendor does not answer at launch the task sti
 by key only. A second task for a ticket that already has one in progress is allowed; the panel
 says so first. Tasks started before this feature, and tasks typed by hand, carry no link.
 
+## Re-reading the ticket from inside a task
+
+A task linked to a ticket is told, in its system prompt, that it can read the ticket as it is now:
+
+```sh
+node "$CEZ_BIN" tracker issue --current     # this task's ticket: description and comments
+node "$CEZ_BIN" tracker issue OPS-42        # another ticket of the same project or team
+node "$CEZ_BIN" tracker issue --current --json
+```
+
+The cockpit performs the read with the project's stored credentials, so the agent needs no
+tracker token for it. The answer says whether the ticket's title or description changed since
+the task started, and what its status was then. It is read-only, and it only reads the scope the
+task was started from: if the project has since been connected elsewhere, it refuses rather than
+read another scope. It needs a running cockpit and task dispatch left on (the default);
+with `CEZ_DISPATCH=0`, or in a headless `cezar run`, the agent is not told about it and works
+from the snapshot in its prompt.
+
+cezar does not push ticket changes into a running or continued task by itself: the agent learns
+of them when it runs the command.
+
 ## Agent context
 
 Handing off a ticket fetches its detail description, including text beyond the list preview, and

@@ -344,6 +344,28 @@ performs no vendor writes and says instead that the only write is a status chang
 by hand; the credentials section gains the optional write permission (Jira classic
 `write:jira-work`, Linear key with Write) and states that read-only tokens remain supported.
 
+**Status 2026-10-11:** implemented for both providers — `listTransitions`/`transition` in the
+Jira and Linear adapters and the demo tracker, the read-only marking in the tracker service, the
+two routes, drag between board columns and the "Move to" menu in the issue panel. Differences
+from the text above:
+
+- **No "Move to" menu on the card itself.** The menu is in the issue panel only; that is the
+  keyboard path. A card has no menu yet.
+- **No "starts automation <name>" hint** on a drop target.
+- **A target status with no loaded ticket has no column** to drop on; it is reachable from the
+  menu.
+- **Linked runs' snapshots are not updated** after a move.
+- The Jira write never falls back from the API gateway to the site origin: once reads have
+  settled the transport, a refused POST is final. This was added so a refusal cannot send the
+  write twice.
+- **Unverified against vendors, and this is the write path.** Jira's transitions endpoint
+  (`expand=transitions.fields`, `hasScreen`, `required`/`hasDefaultValue`, the 204 answer) and
+  Linear's `workflowStates` filter and `issueUpdate` mutation are implemented from prior
+  knowledge of both APIs and exercised only against mocks and the demo tracker. Whether a
+  Linear read-only key's refusal arrives as the `FORBIDDEN` code the adapter maps is not
+  confirmed. Nothing has been sent to a live account. Verify on a disposable project or team
+  before relying on it.
+
 ## 📝 Load-bearing behavior that this spec must not remove
 
 - **"cezar does not change your tracker on its own."** Phase 6 narrows this from "never writes"

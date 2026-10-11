@@ -9,6 +9,9 @@ import type {
   TrackerComments,
   TrackerItem,
   TrackerStatusCategory,
+  TrackerTransitionsResult,
+  TrackerTransitionTarget,
+  TrackerTransitionResult,
   TrackerItemResult,
   TrackerItemsResult,
   TrackerListQuery,
@@ -63,6 +66,22 @@ const commentPageSchema = z.object({
     created: z.string().min(1),
   })),
 });
+/** `GET /issue/{key}/transitions?expand=transitions.fields`: what this account may do from the current status. */
+const transitionsSchema = z.object({
+  transitions: z.array(z.object({
+    id: z.string().min(1),
+    to: z.object({ id: z.string().min(1), name: z.string(), statusCategory: z.object({ key: z.string() }).optional() }),
+    hasScreen: z.boolean().optional(),
+    fields: z.record(z.string(), z.object({ required: z.boolean().optional(), hasDefaultValue: z.boolean().optional() }).passthrough()).optional(),
+  })),
+});
+type JiraTransition = z.infer<typeof transitionsSchema>['transitions'][number];
+/** A transition cezar can perform is one that asks for nothing: no screen, no field without a default. */
+function transitionBlocker(transition: JiraTransition): string | undefined {
+  if (transition.hasScreen) return 'This move opens a screen in Jira. Complete it there.';
+  const missing = Object.values(transition.fields ?? {}).some(field => field.required && !field.hasDefaultValue);
+  return missing ? 'This move requires fields to be filled in. Complete it in Jira.' : undefined;
+}
 const issuePageSchema = z.object({
   isLast: z.boolean(),
   nextPageToken: z.string().min(1).optional(),
@@ -215,6 +234,9 @@ export function createJiraClient(
     };
 
     if (transport === 'site') return request('site');
+    // A write goes out once. By the time one is sent the preceding reads have settled which
+    // transport answers, so a refusal is the answer, not a cue to send the write again elsewhere.
+    if (transport === 'gateway' && init.method === 'POST') return request('gateway');
     try {
       const result = await request('gateway');
       transport = 'gateway';
@@ -395,6 +417,63 @@ export function createJiraClient(
       }
     };
 
+    // The ticket's current status and the transitions Jira offers this account from it.
+    const readTransitions = async (currentSource: TrackerSource, id: string, signal: AbortSignal) => {
+      if (!issueKeyPattern.test(id) || id.length > 256) throw new TrackerRequestError('not_found', 'The requested Jira issue was not found in this project.');
+      ensureAssociationSource(association, currentSource);
+      const params = new URLSearchParams({ fields: issueFields.join(',') });
+      const issue = mapIssue(parseVendor(issueSchema, await authenticatedJson(currentSource, `/rest/api/3/issue/${encodeURIComponent(id)}?${params}`, { method: 'GET' }, signal)), config.origin, association.externalId, 60_000);
+      const raw = await authenticatedJson(currentSource, `/rest/api/3/issue/${encodeURIComponent(issue.id)}/transitions?expand=transitions.fields`, { method: 'GET' }, signal);
+      return { issue, transitions: parseVendor(transitionsSchema, raw).transitions };
+    };
+
+    const listTransitions = async (id: string): Promise<TrackerTransitionsResult> => {
+      try {
+        return await runOperation(async signal => {
+          const { issue, transitions } = await readTransitions(await source(signal), id, signal);
+          // Several transitions can reach one status; the first that cezar can perform represents it.
+          const targets = new Map<string, TrackerTransitionTarget>();
+          for (const transition of transitions) {
+            if (transition.to.id === issue.statusId) continue;
+            const blocker = transitionBlocker(transition);
+            const known = targets.get(transition.to.id);
+            if (known?.available) continue;
+            targets.set(transition.to.id, {
+              statusId: transition.to.id, status: transition.to.name,
+              statusCategory: jiraCategories[transition.to.statusCategory?.key ?? ''] ?? 'other',
+              available: !blocker, ...(blocker ? { reason: blocker } : {}),
+            });
+          }
+          return { available: true, currentStatusId: issue.statusId, writable: true, targets: [...targets.values()] };
+        });
+      } catch (error) {
+        return lookupFailure(error);
+      }
+    };
+
+    // ONE POST, never retried: a lost answer is resolved by the caller re-reading the ticket.
+    const transition = async (id: string, input: { toStatusId: string; expectedStatusId: string }): Promise<TrackerTransitionResult> => {
+      try {
+        const conflict = await runOperation(async signal => {
+          const current = await source(signal);
+          const { issue, transitions } = await readTransitions(current, id, signal);
+          if (issue.statusId !== input.expectedStatusId) return true;
+          const chosen = transitions.find(candidate => candidate.to.id === input.toStatusId && !transitionBlocker(candidate));
+          if (!chosen) {
+            const blocked = transitions.find(candidate => candidate.to.id === input.toStatusId);
+            throw new TrackerRequestError('unavailable', blocked ? transitionBlocker(blocked)! : 'Jira does not allow moving this issue to that status from here.');
+          }
+          await authenticatedJson(current, `/rest/api/3/issue/${encodeURIComponent(issue.id)}/transitions`, { method: 'POST', body: JSON.stringify({ transition: { id: chosen.id } }) }, signal);
+          return false;
+        });
+        const after = await getItem(id);
+        if (conflict) return after.available ? { available: false, code: 'conflict', reason: 'This issue was moved by someone else. Nothing was changed.', item: after.item, comments: after.comments } : after;
+        return after;
+      } catch (error) {
+        return lookupFailure(error);
+      }
+    };
+
     const getItem = async (id: string): Promise<TrackerItemResult> => {
       try {
         if (!issueKeyPattern.test(id) || id.length > 256) {
@@ -456,6 +535,8 @@ export function createJiraClient(
       listIssues: readItems,
       searchItems: readItems,
       getItem,
+      listTransitions,
+      transition,
     };
   };
 

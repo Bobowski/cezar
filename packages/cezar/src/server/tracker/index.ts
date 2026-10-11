@@ -17,11 +17,17 @@ const missing = (): TrackerFailure => ({
 });
 const changed = (): TrackerFailure => ({ available: false, code: 'source_changed', reason: 'This project connection changed. Reconnect the tracker scope in Settings.' });
 
+const READ_ONLY = 'This tracker token is read-only: it was refused a status change. Replace the project credentials in Settings → Issue tracker with a token that may write.';
+
 /** Secrets, adapter instances and cursor namespaces belong to a project and connection revision. */
 export function createTrackerService(env: NodeJS.ProcessEnv = process.env, fetcher: typeof fetch = fetch) {
   const store = new TrackerConnections(env);
   const demo = env.CEZ_DRY_RUN === '1';
   const providers = new Map<string, { root: string; provider: TrackerProvider }>();
+  // Connection revisions a vendor refused a write for, remembered for this process only. Write
+  // access is discovered, never configured or probed: the first refused move marks the revision,
+  // and replacing the credentials makes a new revision that is not in this set.
+  const readOnly = new Set<string>();
   const invalidate = (root: string) => {
     for (const [key, entry] of providers) if (entry.root === root) {
       entry.provider.clearCache(); providers.delete(key);
@@ -106,6 +112,7 @@ export function createTrackerService(env: NodeJS.ProcessEnv = process.env, fetch
       if (!handle) { const status = await connection(root); return status.error ? { available: false, code: 'unavailable', reason: status.error } : missing(); }
       if (!demo && association.connectionId !== handle.id) return changed();
       const driver = handle.provider.driver(association);
+      const revision = JSON.stringify([root, handle.id]);
       const current = async () => await handle.current() && JSON.stringify(await readTrackerAssociation(dataDir)) === JSON.stringify(association);
       const read = async (query: TrackerListQuery | TrackerSearchQuery): Promise<TrackerItemsResult> => {
         if (!await current()) return changed();
@@ -147,6 +154,25 @@ export function createTrackerService(env: NodeJS.ProcessEnv = process.env, fetch
           const result = await driver.getItem(id);
           return await current() ? result : changed();
         },
+        ...(driver.listTransitions && driver.transition ? {
+          listTransitions: async (id: string) => {
+            if (!await current()) return changed();
+            const result = await driver.listTransitions!(id);
+            if (!await current()) return changed();
+            return result.available && readOnly.has(revision) ? { ...result, writable: false, reason: READ_ONLY } : result;
+          },
+          // The vendor write. Exactly one caller exists for this method: the cockpit's transition route.
+          transition: async (id: string, input: { toStatusId: string; expectedStatusId: string }) => {
+            if (!await current()) return changed();
+            if (readOnly.has(revision)) return { available: false as const, code: 'unauthorized' as const, reason: READ_ONLY };
+            const result = await driver.transition!(id, input);
+            if (!result.available && result.code === 'unauthorized') {
+              readOnly.add(revision);
+              return { available: false as const, code: 'unauthorized' as const, reason: READ_ONLY };
+            }
+            return result;
+          },
+        } : {}),
       };
     },
     clearCache: invalidate,

@@ -2,7 +2,7 @@
 
 Cezar can browse a Jira Cloud project or a Linear team and hand a selected issue to an
 agent. Each local project has one saved tracker connection. GitHub remains independent.
-Browsing performs no vendor writes. Enabled event automations can launch agent workflows as described below. The visible issue list checks its first page every 60 seconds; it stops when hidden or closed.
+cezar changes your tracker in exactly one way: when you move an issue to another status by hand (see [Changing a status](#changing-a-status)). Nothing else in the tracker screen writes, and cezar never does it on its own. Enabled event automations can launch agent workflows as described below. The visible issue list checks its first page every 60 seconds; it stops when hidden or closed.
 
 ## Connect
 
@@ -126,6 +126,28 @@ Rotate or renew an expired token using Replace credentials in project Settings, 
 Changing the Jira site or Linear organization requires explicitly reconnecting the project;
 saved IDs are never silently retargeted.
 
+## Changing a status
+
+Drag a card to another board column, or use the status menu in the issue panel (**Move to**),
+which also works from the keyboard and reaches statuses that have no column on screen.
+
+- When you pick a card up, cezar asks the tracker where that issue may go. Columns it can move
+  to are outlined; the others dim and say why.
+- The card moves at once. If the tracker refuses, it returns to its column with the reason.
+- If someone else moved the issue since you loaded it, nothing is written: you are told, and the
+  issue is shown where it now is.
+- **Jira** moves follow the project's workflow. A move that opens a screen or requires fields is
+  listed, explained and never attempted from cezar; make it in Jira. **Linear** offers the team's
+  other workflow states.
+- The write is sent once and never retried. After a lost answer the issue is simply re-read.
+
+This needs a token that may write: Jira classic scope `write:jira-work`, or a Linear key with
+write permission. There is no setting. A read-only token keeps working exactly as before; its
+first attempted move is refused with an explanation and moving is then switched off for that
+connection until you replace the credentials in Settings. cezar never sends a test write to find
+out. Only you can make this change: no agent, automation or timer reaches it, and agents still
+have no command for it.
+
 ## Tickets and tasks
 
 A task handed off from a ticket, and a task a tracker automation launches, is **linked** to that
@@ -241,8 +263,9 @@ Jira and Linear issues fill the screen as a **List** (rows under one collapsible
 status) or a **Board** (one column per status); the toolbar switches between them and the choice
 is remembered in this browser. Groups and columns follow the vendor's workflow order (Jira status
 category, Linear state type) and describe the issues **loaded so far**: counts are not backlog
-totals, and a status with no loaded issue has no column. The board is read-only; a card or row can
-be dragged into the task composer, not between columns.
+totals, and a status with no loaded issue has no column. A card or row can be dragged into the
+task composer to prefill a task; a card can also be dragged to another column to change the
+issue's status.
 
 Opening an issue shows it in a panel beside the surface, with its description, its properties and
 the hand-to-agent composer; nothing is opened until you pick an issue. Mobile shows one pane at a

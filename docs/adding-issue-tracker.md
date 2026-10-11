@@ -112,6 +112,25 @@ Reads begin only on user demand. Credentials stay on the server.
     changed `CEZ_*` variables must follow the root env-contract rule. No secrets in examples,
     screenshots, plans or test recordings.
 
+## Status change (optional)
+
+A provider may implement `listTransitions` and `transition` on its driver; without them its
+board has no drag and nothing else changes. This is the tracker's only vendor write, so:
+
+- `transition` compares the vendor's current status with `expectedStatusId` first and returns a
+  `conflict` carrying the current ticket instead of writing; it performs **at most one** write
+  request and never retries or falls back to another transport; it returns the ticket re-read
+  afterwards.
+- `listTransitions` returns one target per reachable status, with `available: false` and a
+  reason for a move that needs input cezar cannot give (a screen, a required field). Such a move
+  is never attempted.
+- A refused write must surface as `unauthorized`: the service marks that connection revision
+  read-only for the process and stops sending writes. Never probe for write access.
+- Only the cockpit's `POST /tracker/:id/transition` route may reach `transition`;
+  `transitions.test.ts` asserts the call sites. Do not expose it to agents, automations or timers.
+- Test with mocked vendors. A live run mutates vendor data and needs a disposable scope and
+  explicit authorization.
+
 ## Verification gate
 
 Use realistic, schema-validated vendor fixtures and the existing adapter tests as examples.

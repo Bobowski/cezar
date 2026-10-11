@@ -4,7 +4,7 @@ import type { TrackerEventCandidate, PollPage } from '../../automations/event-so
 import type {
   TrackerKind, TrackerAssociation, TrackerAssociationInput, TrackerAssociationResult,
   TrackerCandidatesQuery, TrackerCandidatesResult, TrackerListQuery, TrackerSearchQuery,
-  TrackerItemsResult, TrackerItemResult,
+  TrackerItemsResult, TrackerItemResult, TrackerTransitionsResult, TrackerTransitionResult,
 } from '@open-mercato/cezar-contract';
 
 export interface TrackerClient {
@@ -19,6 +19,13 @@ export interface TrackerDriver {
   listIssues(query: TrackerListQuery): Promise<TrackerItemsResult>;
   searchItems(query: TrackerSearchQuery): Promise<TrackerItemsResult>;
   getItem(id: string): Promise<TrackerItemResult>;
+  /**
+   * Status change (spec 2026-10-11-tracker-ticket-context § Phase 6) — the tracker's only vendor
+   * write, and optional: a provider without these two gets the board with no drag. `transition`
+   * must compare-and-set against `expectedStatusId`, write at most once, and never retry.
+   */
+  listTransitions?: (id: string) => Promise<TrackerTransitionsResult>;
+  transition?: (id: string, input: { toStatusId: string; expectedStatusId: string }) => Promise<TrackerTransitionResult>;
 }
 
 /** Complete compiled-in provider seam. Construction must perform no network I/O. */

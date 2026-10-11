@@ -4,7 +4,7 @@ import {
   terminalCreateSchema, terminalInputSchema, terminalOutputQuerySchema, terminalOutputSchema,
   terminalResizeSchema, terminalSessionParamsSchema, terminalSessionSchema, terminalStateSchema,
   trackerWatchInputSchema, trackerWatchParamsSchema, trackerWatchQuerySchema,
-  trackerCandidatesQuerySchema, trackerListQuerySchema, trackerSearchQuerySchema, trackerItemQuerySchema, trackerReadScope, trackerRunLinkInputSchema, trackerRunIssueQuerySchema,
+  trackerCandidatesQuerySchema, trackerListQuerySchema, trackerSearchQuerySchema, trackerItemQuerySchema, trackerReadScope, trackerRunLinkInputSchema, trackerRunIssueQuerySchema, trackerTransitionInputSchema,
   trackerCredentialsSchema, trackerItemParamsSchema, trackerAssociationInputSchema, type TrackerChangedEvent,
 } from '@open-mercato/cezar-contract';
 import { createTrackerService } from './tracker/index.ts';
@@ -6350,6 +6350,38 @@ export function createApp(deps: ServerDeps) {
       }
       const result = await driver.getItem(c.req.valid('param').id);
       if (!result.available && result.code === 'not_found') return c.json({ error: result.reason }, 404);
+      return c.json(result, 200);
+    })
+    // Status change (spec 2026-10-11-tracker-ticket-context § Phase 6). Which statuses this ticket
+    // may move to: read-only, asked when a card is picked up or the "Move to" menu opens.
+    .get('/tracker/:id/transitions', paramZodValidator(trackerItemParamsSchema), queryZodValidator(trackerItemQuerySchema), async (c) => {
+      const driver = await trackers.driver(c.get('project').root, c.get('project').dataDir);
+      if ('available' in driver) return c.json(driver, 200);
+      const { expectedScope } = c.req.valid('query');
+      if (expectedScope !== undefined && expectedScope !== trackerReadScope(driver.association)) {
+        return c.json({ available: false as const, code: 'source_changed' as const, reason: 'This tracker connection or scope changed. Reload the tracker view.' }, 200);
+      }
+      if (!driver.listTransitions) return c.json({ available: false as const, code: 'unavailable' as const, reason: 'This tracker does not support changing a status from cezar.' }, 200);
+      const result = await driver.listTransitions(c.req.valid('param').id);
+      if (!result.available && result.code === 'not_found') return c.json({ error: result.reason }, 404);
+      return c.json(result, 200);
+    })
+    // THE vendor write, and the only caller of `driver.transition`: a person moved one ticket, by
+    // hand, in the cockpit. No timer, automation, agent or review gate may reach this handler, and
+    // nothing here retries. The body names the status the user saw; a ticket moved by someone
+    // else since is a 409 carrying the ticket as it is now, with nothing written.
+    .post('/tracker/:id/transition', paramZodValidator(trackerItemParamsSchema), jsonZodValidator(trackerTransitionInputSchema), async (c) => {
+      const driver = await trackers.driver(c.get('project').root, c.get('project').dataDir);
+      if ('available' in driver) return c.json(driver, 200);
+      const { expectedScope, toStatusId, expectedStatusId } = c.req.valid('json');
+      if (expectedScope !== trackerReadScope(driver.association)) {
+        return c.json({ available: false as const, code: 'source_changed' as const, reason: 'This tracker connection or scope changed. Reload the tracker view.' }, 200);
+      }
+      if (!driver.transition) return c.json({ available: false as const, code: 'unavailable' as const, reason: 'This tracker does not support changing a status from cezar.' }, 200);
+      const result = await driver.transition(c.req.valid('param').id, { toStatusId, expectedStatusId });
+      if (result.available) return c.json(result, 200);
+      if (result.code === 'not_found') return c.json({ error: result.reason }, 404);
+      if (result.code === 'conflict') return c.json({ error: result.reason, item: result.item, comments: result.comments }, 409);
       return c.json(result, 200);
     });
 

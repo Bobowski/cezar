@@ -450,3 +450,68 @@ export const trackerRunIssueResponseSchema = z.discriminatedUnion('available', [
   trackerFailureSchema,
 ]);
 export type TrackerRunIssueResponse = z.infer<typeof trackerRunIssueResponseSchema>;
+
+// ---- status change (spec 2026-10-11-tracker-ticket-context § Phase 6) --------------------------
+// The tracker's one vendor write: a person moves one ticket to another status, by hand.
+
+/** A status this ticket could be moved to. `available: false` carries the reason it cannot be done from here. */
+export const trackerTransitionTargetSchema = z
+  .object({
+    statusId: nonemptyStringSchema,
+    status: z.string(),
+    statusCategory: trackerStatusCategorySchema,
+    available: z.boolean(),
+    reason: z.string().optional(),
+  })
+  .strict();
+export type TrackerTransitionTarget = z.infer<typeof trackerTransitionTargetSchema>;
+
+/**
+ * `GET /tracker/:id/transitions`. `writable: false` means this connection was refused a write
+ * earlier in this process (a read-only token): the targets are then informational only.
+ */
+export const trackerTransitionsSuccessSchema = z
+  .object({
+    available: z.literal(true),
+    currentStatusId: nonemptyStringSchema,
+    targets: z.array(trackerTransitionTargetSchema),
+    writable: z.boolean(),
+    reason: z.string().optional(),
+  })
+  .strict();
+export const trackerTransitionsResponseSchema = z.discriminatedUnion('available', [
+  trackerTransitionsSuccessSchema,
+  trackerFailureSchema,
+]);
+export type TrackerTransitionsResponse = z.infer<typeof trackerTransitionsResponseSchema>;
+/** Driver result: the route maps `not_found` to HTTP 404. */
+export const trackerTransitionsResultSchema = z.discriminatedUnion('available', [
+  trackerTransitionsSuccessSchema,
+  trackerLookupFailureSchema,
+]);
+export type TrackerTransitionsResult = z.infer<typeof trackerTransitionsResultSchema>;
+
+/** `POST /tracker/:id/transition`. `expectedStatusId` is the status the user saw: compare-and-set. */
+export const trackerTransitionInputSchema = z
+  .object({
+    expectedScope: z.string().min(1).max(4096),
+    toStatusId: nonemptyStringSchema.max(256),
+    expectedStatusId: nonemptyStringSchema.max(256),
+  })
+  .strict();
+export type TrackerTransitionInput = z.infer<typeof trackerTransitionInputSchema>;
+
+/** HTTP 200: the ticket after the move, or a controlled failure. A stale status is the 409 below. */
+export const trackerTransitionResponseSchema = trackerItemResponseSchema;
+export type TrackerTransitionResponse = z.infer<typeof trackerTransitionResponseSchema>;
+
+/** HTTP 409: someone moved the ticket first. Nothing was written; `item` is the ticket as it is now. */
+export const trackerTransitionConflictSchema = z
+  .object({ error: z.string(), item: trackerItemSchema, comments: trackerCommentsSchema })
+  .strict();
+export type TrackerTransitionConflict = z.infer<typeof trackerTransitionConflictSchema>;
+
+/** Driver result of a move: the ticket afterwards, a failure, or a conflict with the current ticket. */
+export type TrackerTransitionResult =
+  | TrackerItemResult
+  | { available: false; code: 'conflict'; reason: string; item: TrackerItem; comments: TrackerComments };

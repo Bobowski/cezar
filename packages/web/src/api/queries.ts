@@ -163,6 +163,11 @@ export const queryKeys = {
       'tracker', queryScope(), 'detail', association.kind, association.source.id,
       association.source.webUrl, association.externalId, association.connectionId ?? null, id,
     ] as const,
+    /** Not under `detail`: refreshing a ticket must not re-ask where it can be moved. */
+    transitions: (association: TrackerAssociation, id: string) => [
+      'tracker', queryScope(), 'transitions', association.kind, association.source.id,
+      association.source.webUrl, association.externalId, association.connectionId ?? null, id,
+    ] as const,
   },
   get health() {
     return [queryScope(), 'health'] as const

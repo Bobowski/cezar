@@ -1,6 +1,6 @@
 import { useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query'
 import { CheckCircle2Icon, ChevronDownIcon, CircleDashedIcon, CircleDotIcon, CircleHelpIcon, CircleIcon, XCircleIcon } from 'lucide-react'
-import type { DragEvent } from 'react'
+import { useState, type DragEvent } from 'react'
 
 import type { ApiRun, TrackerAssociation, TrackerItem, TrackerItemResponse, TrackerStatusCategory } from '@open-mercato/cezar-api-client'
 import { getTrackerItem } from '@/api/client'
@@ -12,6 +12,7 @@ import { statusTone } from '@/lib/automation-format'
 import { shortAge } from '@/lib/format'
 import { Link } from '@/lib/project-router'
 import type { TrackerGroup } from '@/lib/tracker-groups'
+import { useTrackerTransitions, type TrackerMove } from './tracker-move'
 import { ticketActivity } from '@/lib/tracker-links'
 import { trackerLosses, trackerTaskPrompt } from '@/lib/tracker-task'
 import { cn } from '@/lib/utils'
@@ -60,8 +61,11 @@ export function trackerDetailReadyForDrag(
   return state.data
 }
 
+/** Marks a drag that started on a board card, so a column knows it may be a status change. */
+export const TRACKER_MOVE_TYPE = 'application/x-cezar-tracker-item'
+
 /** What a row and a card share: preload the detail on intent, and drag it into the task composer. */
-function useTrackerItemLink(association: TrackerAssociation, item: TrackerItem, scopePending: boolean) {
+function useTrackerItemLink(association: TrackerAssociation, item: TrackerItem, scopePending: boolean, onBoard = false) {
   const queryClient = useQueryClient()
   const key = queryKeys.tracker.detail(association, item.id)
   const preload = () => void queryClient.prefetchQuery({ queryKey: key, queryFn: ({ signal }) => getTrackerItem(item.id, { signal, association }), staleTime: TRACKER_STALE_TIME })
@@ -69,6 +73,16 @@ function useTrackerItemLink(association: TrackerAssociation, item: TrackerItem, 
     if (scopePending) { event.preventDefault(); return }
     const state = queryClient.getQueryState<TrackerItemResponse>(key)
     const detail = trackerDetailReadyForDrag(queryClient, key)
+    if (onBoard) {
+      // A card may be dropped on another column (a status change) or on the task composer. The
+      // first needs only the ticket id; the second gets the prompt when the detail is in hand and
+      // lossless, and nothing otherwise — the composer then simply has no text to take.
+      event.dataTransfer.setData(TRACKER_MOVE_TYPE, item.id)
+      if (detail && !trackerLosses(detail.item, detail.comments).length) event.dataTransfer.setData('text/plain', trackerTaskPrompt(detail.item, detail.comments))
+      else preload()
+      event.dataTransfer.effectAllowed = 'copyMove'
+      return
+    }
     if (!detail) {
       event.preventDefault()
       preload()
@@ -160,25 +174,72 @@ function TrackerRow({ item, runs, association, scopePending, active, compact }: 
   </Link>
 }
 
-/** One column per loaded status. Read-only: a card drags into the task composer, not between columns. */
-export function TrackerBoard({ groups, association, scopePending, activeId, runs }: TrackerSurfaceProps) {
-  return <div data-slot="tracker-board" className="flex min-h-0 flex-1 items-stretch gap-3 overflow-x-auto p-3">
-    {groups.map(group => <section key={group.statusId} data-slot="tracker-column" aria-label={group.status} className="flex max-h-full w-72 shrink-0 flex-col rounded-lg bg-muted/40">
+/**
+ * One column per loaded status. A card dragged to another column changes the ticket's status at
+ * the vendor (`move`); dragged into the task composer it still prefills a task. Only columns for
+ * statuses with loaded tickets exist, so a target with no column is reached from the issue
+ * panel's "Move to" menu instead.
+ */
+export function TrackerBoard({ groups, association, scopePending, activeId, runs, move }: TrackerSurfaceProps & { move: TrackerMove }) {
+  const [dragging, setDragging] = useState<TrackerItem | null>(null)
+  const [over, setOver] = useState<string | null>(null)
+  const transitions = useTrackerTransitions(association, dragging, dragging !== null)
+  const allowed = transitions.data?.available ? transitions.data : null
+  // Why a column refuses the card in hand, or null when it may take it. While the answer is on
+  // its way a column accepts the drop: the server decides, and a refusal returns the card.
+  const refusal = (statusId: string): string | null => {
+    if (!dragging || dragging.statusId === statusId) return null
+    if (transitions.data && !transitions.data.available) return transitions.data.reason
+    if (!allowed) return null
+    if (!allowed.writable) return allowed.reason ?? 'This connection cannot change a status.'
+    const target = allowed.targets.find(candidate => candidate.statusId === statusId)
+    if (!target) return 'This issue cannot be moved here from its current status.'
+    return target.available ? null : target.reason ?? 'This move cannot be made from cezar.'
+  }
+  const end = () => { setDragging(null); setOver(null) }
+  return <div data-slot="tracker-board" className="flex min-h-0 flex-1 items-stretch gap-3 overflow-x-auto p-3" onDragEnd={end}>
+    {groups.map(group => {
+      const reason = refusal(group.statusId)
+      const target = dragging !== null && dragging.statusId !== group.statusId
+      return <section key={group.statusId} data-slot="tracker-column" data-drop={!target ? undefined : reason ? 'refused' : 'allowed'} aria-label={group.status} title={target && reason ? reason : undefined}
+        onDragOver={(event) => {
+          if (!target || reason || !event.dataTransfer.types.includes(TRACKER_MOVE_TYPE)) return
+          event.preventDefault()
+          event.dataTransfer.dropEffect = 'move'
+          if (over !== group.statusId) setOver(group.statusId)
+        }}
+        onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOver(current => current === group.statusId ? null : current) }}
+        onDrop={(event) => {
+          if (!target || !dragging) return
+          event.preventDefault()
+          const item = dragging
+          end()
+          if (reason) { toast(reason, { tone: 'danger' }); return }
+          move(item, { statusId: group.statusId, status: group.status, statusCategory: group.category })
+        }}
+        className={cn(
+          'flex max-h-full w-72 shrink-0 flex-col rounded-lg bg-muted/40 transition-opacity motion-reduce:transition-none',
+          target && reason && 'opacity-40',
+          target && !reason && 'ring-1 ring-border',
+          over === group.statusId && target && !reason && 'bg-muted ring-2 ring-ring/60',
+        )}>
       <h2 className="flex items-center gap-2 px-3 py-2 text-[13px] font-medium">
         <TrackerStatusIcon category={group.category} />
         <span className="min-w-0 truncate">{group.status}</span>
         <span className="font-normal text-muted-foreground tabular-nums" title="Issues loaded in this status">{group.items.length}</span>
       </h2>
       <ul className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2">
-        {group.items.map(item => <li key={item.id}><TrackerCard item={item} runs={runs.get(item.id)} association={association} scopePending={scopePending} active={activeId === item.id} /></li>)}
+        {group.items.map(item => <li key={item.id}><TrackerCard item={item} runs={runs.get(item.id)} association={association} scopePending={scopePending} active={activeId === item.id} onPickUp={setDragging} /></li>)}
       </ul>
-    </section>)}
+    </section>
+    })}
   </div>
 }
 
-function TrackerCard({ item, runs, association, scopePending, active }: { item: TrackerItem; runs: readonly ApiRun[] | undefined; association: TrackerAssociation; scopePending: boolean; active: boolean }) {
-  const link = useTrackerItemLink(association, item, scopePending)
-  return <Link {...link} data-slot="tracker-row" aria-current={active ? 'page' : undefined} className={cn(
+function TrackerCard({ item, runs, association, scopePending, active, onPickUp }: { item: TrackerItem; onPickUp: (item: TrackerItem) => void; runs: readonly ApiRun[] | undefined; association: TrackerAssociation; scopePending: boolean; active: boolean }) {
+  const link = useTrackerItemLink(association, item, scopePending, true)
+  const pickUp = (event: DragEvent) => { link.onDragStart(event); if (!event.defaultPrevented) onPickUp(item) }
+  return <Link {...link} onDragStart={pickUp} title="Drag to another column to change its status, or into the composer to prefill a task" data-slot="tracker-row" aria-current={active ? 'page' : undefined} className={cn(
     'flex flex-col gap-1.5 rounded-md border border-border bg-card p-2.5 text-[13px] font-normal shadow-xs outline-none hover:border-foreground/20 focus-visible:ring-2 focus-visible:ring-ring/50',
     active && 'border-foreground/30',
   )}>

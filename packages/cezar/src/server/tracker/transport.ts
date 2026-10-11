@@ -65,6 +65,8 @@ export class TrackerHttp {
       await response.body?.cancel();
       throw new TrackerRequestError('unavailable', 'Tracker request failed. Try again later.');
     }
+    // A successful write may answer with no body at all (Jira's transition is a 204).
+    if (response.status === 204) { await response.body?.cancel(); return null; }
     const cap = 2 * 1024 * 1024;
     if (Number(response.headers.get('content-length') ?? 0) > cap) {
       await response.body?.cancel();

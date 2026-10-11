@@ -149,6 +149,8 @@ import type {
   TrackerCandidatesResponse,
   TrackerClearedResponse,
   TrackerItemResponse,
+  TrackerTransitionResponse,
+  TrackerTransitionsResponse,
   TrackerItemsResponse,
   TrackerKind, TrackerCredentials, TrackerConnectionResponse,
 } from '@open-mercato/cezar-api-client'
@@ -967,6 +969,28 @@ export async function getTrackerItem(id: string, opts?: ReadOptions & { associat
       init(opts),
     ),
     `/tracker/${encodeURIComponent(id)}`,
+  )
+}
+
+/** Where a ticket may be moved (spec 2026-10-11-tracker-ticket-context § Phase 6). Read-only. */
+export async function getTrackerTransitions(id: string, association: TrackerAssociation, opts?: ReadOptions): Promise<TrackerTransitionsResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].tracker[':id'].transitions.$get(
+      { param: { projectId: queryScope(), id: encodeURIComponent(id) }, query: { expectedScope: trackerReadScope(association) } },
+      init(opts),
+    ),
+    `/tracker/${encodeURIComponent(id)}/transitions`,
+  )
+}
+
+/** The tracker's one vendor write: move a ticket to another status. A stale `expectedStatusId` is a 409. */
+export async function moveTrackerItem(id: string, association: TrackerAssociation, toStatusId: string, expectedStatusId: string): Promise<TrackerTransitionResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].tracker[':id'].transition.$post({
+      param: { projectId: queryScope(), id: encodeURIComponent(id) },
+      json: { expectedScope: trackerReadScope(association), toStatusId, expectedStatusId },
+    }),
+    `/tracker/${encodeURIComponent(id)}/transition`,
   )
 }
 

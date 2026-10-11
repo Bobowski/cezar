@@ -17,13 +17,19 @@ export function createDryTrackerClient(kind: TrackerKind): TrackerProvider {
   const all = Array.from({ length: 125 }, (_, i) => candidate(i + 1));
   const wrongSource = { available: false, code: 'source_changed', reason: 'Tracker source changed. Reconnect in Settings.' } as const;
   const missing = { available: false, code: 'not_found', reason: 'Tracker item not found in this scope.' } as const;
+  type Status = Pick<TrackerItem, 'status' | 'statusId' | 'statusCategory'>;
+  const STATUSES: Status[] = [
+    { status: 'Done', statusId: 'dry-done', statusCategory: 'done' },
+    { status: 'In Progress', statusId: 'dry-progress', statusCategory: 'started' },
+    { status: 'To Do', statusId: 'dry-todo', statusCategory: 'unstarted' },
+    { status: 'In Review', statusId: 'dry-review', statusCategory: 'started' },
+    { status: 'Backlog', statusId: 'dry-backlog', statusCategory: 'backlog' },
+  ];
+  // Demo moves live in this process only: nothing is written anywhere, and a restart resets them.
+  const moved = new Map<string, Status>();
   // Every fifth item is done, as before; the rest spread over a workflow so a board has columns.
-  function status(n: number): Pick<TrackerItem, 'status' | 'statusId' | 'statusCategory'> {
-    if (n % 5 === 0) return { status: 'Done', statusId: 'dry-done', statusCategory: 'done' };
-    if (n % 5 === 1) return { status: 'In Progress', statusId: 'dry-progress', statusCategory: 'started' };
-    if (n % 5 === 2) return { status: 'To Do', statusId: 'dry-todo', statusCategory: 'unstarted' };
-    if (n % 5 === 3) return { status: 'In Review', statusId: 'dry-review', statusCategory: 'started' };
-    return { status: 'Backlog', statusId: 'dry-backlog', statusCategory: 'backlog' };
+  function status(n: number, scope: string): Status {
+    return moved.get(`${scope}:${n}`) ?? STATUSES[n % 5]!;
   }
   function item(n: number, association: TrackerAssociation, cap: number): TrackerItem {
     const prefix = `${fixture.prefix}${association.externalId}`;
@@ -31,7 +37,7 @@ export function createDryTrackerClient(kind: TrackerKind): TrackerProvider {
     return {
       kind: 'issue', id, title: n === 1 ? 'Improve account sign-in' : `Tracker task ${n}`,
       author: 'Demo user', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: new Date(Date.UTC(2026, 0, 1, 0, 125 - n)).toISOString(),
-      labels: n % 2 ? ['backend'] : ['frontend'], ...status(n),
+      labels: n % 2 ? ['backend'] : ['frontend'], ...status(n, association.externalId),
       ...descriptionBody(n === 3 ? 'Large import requirements. '.repeat(3000) : n === 2 ? 'Detailed requirements. '.repeat(500) + '\nAcceptance: preserve all requirements.' : `Implement task ${n} for ${association.externalName}.\n\n- Preserve existing behavior.\n- Add regression coverage.`, cap, n === 4),
       url: `${source.webUrl}/${fixture.itemPath}/${id}`,
     };
@@ -89,14 +95,44 @@ export function createDryTrackerClient(kind: TrackerKind): TrackerProvider {
           return { available: true, items: sliced, ...pagination };
         } catch (error) { return collectionError(error); }
       };
+      const numberOf = (id: string): number | undefined => {
+        const n = Number(new RegExp(`^${fixture.prefix}${association.externalId}-(\\d+)$`).exec(id)?.[1]);
+        return n >= 1 && n <= 125 ? n : undefined;
+      };
       return {
         association, listIssues: read, searchItems: read,
+        // The demo workflow: every status reaches every other, except that the fictional Jira
+        // asks for a resolution before Done can be entered straight from Backlog.
+        async listTransitions(id: string) {
+          if (!valid()) return wrongSource;
+          const n = numberOf(id);
+          if (!n) return missing;
+          const current = status(n, association.externalId);
+          return {
+            available: true as const, currentStatusId: current.statusId, writable: true,
+            targets: STATUSES.filter(target => target.statusId !== current.statusId).map(target => {
+              const blocked = kind === 'jira' && current.statusId === 'dry-backlog' && target.statusId === 'dry-done';
+              return { ...target, available: !blocked, ...(blocked ? { reason: 'This move requires fields to be filled in. Complete it in Jira.' } : {}) };
+            }),
+          };
+        },
+        async transition(id: string, input: { toStatusId: string; expectedStatusId: string }) {
+          if (!valid()) return wrongSource;
+          const n = numberOf(id);
+          if (!n) return missing;
+          const current = status(n, association.externalId);
+          const now = { available: true as const, item: item(n, association, 60000), comments: comments(n) };
+          if (current.statusId !== input.expectedStatusId) return { available: false as const, code: 'conflict' as const, reason: 'This issue was moved by someone else. Nothing was changed.', item: now.item, comments: now.comments };
+          const target = STATUSES.find(candidate => candidate.statusId === input.toStatusId);
+          const blocked = kind === 'jira' && current.statusId === 'dry-backlog' && input.toStatusId === 'dry-done';
+          if (!target || blocked) return { available: false as const, code: 'unavailable' as const, reason: blocked ? 'This move requires fields to be filled in. Complete it in Jira.' : 'That status does not exist in this demo workflow.' };
+          moved.set(`${association.externalId}:${n}`, target);
+          return { available: true as const, item: item(n, association, 60000), comments: comments(n) };
+        },
         async getItem(id: string): Promise<TrackerItemResult> {
           if (!valid()) return wrongSource;
-          const prefix = `${fixture.prefix}${association.externalId}`;
-          const match = new RegExp(`^${prefix}-(\\d+)$`).exec(id);
-          const n = Number(match?.[1]);
-          return n >= 1 && n <= 125 ? { available: true, item: item(n, association, 60000), comments: comments(n) } : missing;
+          const n = numberOf(id);
+          return n ? { available: true, item: item(n, association, 60000), comments: comments(n) } : missing;
         },
       };
     },

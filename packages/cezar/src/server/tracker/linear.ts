@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type {
   TrackerAssociation, TrackerAssociationInput, TrackerAssociationResult, TrackerCandidatesQuery,
   TrackerCandidatesResult, TrackerItemsResult, TrackerItemResult, TrackerItem, TrackerSource,
-  TrackerListQuery, TrackerSearchQuery, TrackerStatusCategory,
+  TrackerListQuery, TrackerSearchQuery, TrackerStatusCategory, TrackerTransitionsResult, TrackerTransitionResult,
 } from '@open-mercato/cezar-contract';
 import type { TrackerProvider, TrackerDriver } from './types.ts';
 import { TrackerHttp, TrackerRequestError, ResultCache, requestFailure, runOperation } from './transport.ts';
@@ -186,6 +186,20 @@ TrackerProvider {
         }));
       } catch (error) { return collectionError(error); }
     };
+    // The ticket with its internal id, and the team's workflow states: what a move is checked against.
+    const readStates = async (id: string, signal: AbortSignal) => {
+      if (!/^[a-zA-Z][a-zA-Z0-9_]*-\d+$/.test(id) || id.length > 256) throw new TrackerRequestError('not_found', 'The requested Linear issue was not found.');
+      const data = await graphql(`query TrackerIssueStates($id: String!, $team: ID!) {
+        issue(id: $id) { id ${issueFields} }
+        workflowStates(first: 100, filter: { team: { id: { eq: $team } } }) { nodes { id name type } }
+      }`, { id, team: association.externalId }, signal);
+      const parsed = parse(z.object({
+        issue: itemSchema.extend({ id: z.string().min(1) }).nullable(),
+        workflowStates: z.object({ nodes: z.array(z.object({ id: z.string().min(1), name: z.string(), type: z.string() })) }),
+      }), data);
+      if (!parsed.issue) throw new TrackerRequestError('not_found', 'The requested Linear issue was not found.');
+      return { row: parsed.issue, states: parsed.workflowStates.nodes };
+    };
     return {
       association, listIssues: read, searchItems: read,
       async automationOptions(query) {
@@ -204,6 +218,39 @@ TrackerProvider {
           if (error instanceof z.ZodError) throw new TrackerRequestError('invalid_response', 'Tracker returned incomplete automation event data.');
           throw error;
         });
+      },
+      async listTransitions(id): Promise<TrackerTransitionsResult> {
+        try {
+          return await runOperation(async signal => {
+            const current = await currentSource(signal);
+            checkScope(association, current);
+            const { row, states } = await readStates(id, signal);
+            mapItem(row, association, 0);
+            return {
+              available: true, currentStatusId: row.state.id, writable: true,
+              targets: states.filter(state => state.id !== row.state.id).map(state => ({ statusId: state.id, status: state.name, statusCategory: linearCategories[state.type] ?? 'other', available: true })),
+            };
+          });
+        } catch (error) { return lookupError(error); }
+      },
+      // ONE mutation, never retried: a lost answer is resolved by the caller re-reading the ticket.
+      async transition(id, input): Promise<TrackerTransitionResult> {
+        try {
+          const moved = await runOperation(async signal => {
+            const current = await currentSource(signal);
+            checkScope(association, current);
+            const { row, states } = await readStates(id, signal);
+            const before = mapItem(row, association, 60000);
+            if (row.state.id !== input.expectedStatusId) return { conflict: before };
+            if (!states.some(state => state.id === input.toStatusId)) throw new TrackerRequestError('unavailable', 'That status does not belong to this Linear team.');
+            const data = await graphql('mutation TrackerMoveIssue($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }', { id: row.id, stateId: input.toStatusId }, signal);
+            if (!parse(z.object({ issueUpdate: z.object({ success: z.boolean() }) }), data).issueUpdate.success) throw new TrackerRequestError('unavailable', 'Linear did not apply the status change.');
+            return {};
+          });
+          const after = await this.getItem(id);
+          if (moved.conflict) return after.available ? { available: false, code: 'conflict', reason: 'This issue was moved by someone else. Nothing was changed.', item: after.item, comments: after.comments } : after;
+          return after;
+        } catch (error) { return lookupError(error); }
       },
       async getItem(id): Promise<TrackerItemResult> {
         try {

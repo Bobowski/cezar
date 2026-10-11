@@ -32,6 +32,7 @@ import { trackerLosses } from '@/lib/tracker-task'
 import { Markdown } from '../task-thread/markdown'
 import { TrackerHandoff, type TrackerHandoffSelection, type TrackerDraftCache } from './tracker-handoff'
 import { TrackerLabelFilter } from './tracker-label-filter'
+import { TrackerMoveMenu, useTrackerMove, withPendingMoves, type TrackerMove } from './tracker-move'
 import { LabelChip, TrackerBoard, TrackerList, TrackerStatusIcon } from './tracker-surface'
 
 export { trackerDetailReadyForDrag } from './tracker-surface'
@@ -137,7 +138,10 @@ function TrackerBrowse({ scopePending, association, selectedId, drafts, selectio
   const watch = useTrackerWatch({ association, state, labels, query }, result.queryKey, listVisible)
   const pages = result.data?.pages ?? []
   const failure = pages.find((page) => !page.available)
-  const items = useMemo(() => pages.flatMap((page) => page.available ? page.items : []), [pages])
+  const loaded = useMemo(() => pages.flatMap((page) => page.available ? page.items : []), [pages])
+  // A ticket being moved shows in its new status at once; a refusal puts it back.
+  const { pending, move } = useTrackerMove(association, result.queryKey)
+  const items = useMemo(() => withPendingMoves(loaded, pending), [loaded, pending])
   const groups = useMemo(() => groupByStatus(items), [items])
   // From the run list the cockpit already keeps live: no vendor request, and it survives an outage.
   const runList = useRuns()
@@ -217,18 +221,18 @@ function TrackerBrowse({ scopePending, association, selectedId, drafts, selectio
       {listVisible ? <section data-slot="tracker-list" aria-label="Issues" className={cn('flex min-h-0 min-w-0 flex-1 flex-col', view === 'list' && 'overflow-y-auto')}>
         {notices}
         {view === 'board'
-          ? <TrackerBoard {...surfaceProps} />
+          ? <TrackerBoard {...surfaceProps} move={move} />
           : <TrackerList {...surfaceProps} collapsed={collapsed} onToggle={toggleGroup} compact={detailId !== null} />}
         {loadMore}
       </section> : null}
       {detailId ? <aside data-slot="tracker-panel" aria-label="Issue" className={cn('@container min-h-0 min-w-0 overflow-y-auto bg-background', isMobile ? 'flex-1' : 'w-[min(64rem,66%)] shrink-0 border-l border-border')}>
-        <TrackerDetail scopePending={scopePending} key={`${trackerAssociationKey(association)}:${detailId}`} association={association} id={detailId} runs={runs.get(detailId)} drafts={drafts} selection={selection} onSelectionChange={setSelection} />
+        <TrackerDetail scopePending={scopePending} key={`${trackerAssociationKey(association)}:${detailId}`} association={association} id={detailId} move={move} moving={pending.has(detailId)} runs={runs.get(detailId)} drafts={drafts} selection={selection} onSelectionChange={setSelection} />
       </aside> : null}
     </div>
   </Page>
 }
 
-function TrackerDetail({ scopePending, association, id, runs, selection, onSelectionChange, drafts }: { scopePending: boolean; runs: readonly ApiRun[] | undefined; drafts: TrackerDraftCache; association: TrackerAssociation; id: string; selection: TrackerHandoffSelection; onSelectionChange: React.Dispatch<React.SetStateAction<TrackerHandoffSelection>> }) {
+function TrackerDetail({ scopePending, association, id, runs, move, moving, selection, onSelectionChange, drafts }: { scopePending: boolean; move: TrackerMove; moving: boolean; runs: readonly ApiRun[] | undefined; drafts: TrackerDraftCache; association: TrackerAssociation; id: string; selection: TrackerHandoffSelection; onSelectionChange: React.Dispatch<React.SetStateAction<TrackerHandoffSelection>> }) {
   const detail = useTrackerItem(association, id)
   const workflows = useWorkflows()
   const skills = useSkills()
@@ -308,7 +312,8 @@ function TrackerDetail({ scopePending, association, id, runs, selection, onSelec
         <div className="flex min-w-0 flex-col gap-6 border-t border-border pt-6 @3xl:sticky @3xl:top-4 @3xl:border-t-0 @3xl:pt-0">
           <dl className="grid grid-cols-[5.5rem_minmax(0,1fr)] items-baseline gap-x-4 gap-y-2 text-[13px]">
             <dt className="text-muted-foreground">Status</dt>
-            <dd>{item.status}</dd>
+            {/* Retained context (a failed refresh) is not a status anyone should move from. */}
+            <dd><TrackerMoveMenu association={association} item={item} move={move} disabled={scopePending || moving || !detail.data?.available} /></dd>
             <dt className="text-muted-foreground">Author</dt>
             <dd>{item.author}</dd>
             <dt className="text-muted-foreground">Opened</dt>

@@ -199,6 +199,13 @@ the new losses in the composer. Differences from the text above:
   scenario still works exactly as before.
 - Preview (`cez automation check`) performs no extra read and reserves nothing.
 
+**Status 2026-10-11:** implemented — `readTrackerTicket` and the optional `ticket` argument
+of `renderTrackerTask` (`automations/task-template.ts`); `getDriver` is a required option of
+`launchTrackerAutomationRun`, so all three launch sites in `server.ts` pass it. The link of an
+automation run carries the content hash when the read succeeded. The instruction to re-read
+names the vendor API and the environment credentials, since the brokered command of phase 4
+does not exist yet. Launch now waits for one bounded vendor read.
+
 ### Phase 4 — brokered read and change detection
 
 - `node "$CEZ_BIN" tracker issue (--current | <id>) [--comments] --json`, over the same

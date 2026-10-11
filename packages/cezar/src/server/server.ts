@@ -4096,7 +4096,7 @@ export function createApp(deps: ServerDeps) {
           if (isTrackerAutomation(automation)) {
             const scheduler = new ProjectTrackerAutomationScheduler({ projectId: project.id, store, timeZone: localTimeZone(),
               tracker: { getDriver: () => trackers.driver(project.root, project.dataDir), poller: new TrackerPoller() },
-              launchTracker: (definition, candidate, receiptId) => launchTrackerAutomationRun({ root: project.root, manager: project.manager, store: project.store, definition, candidate, receiptId, dispatchEnabled: capabilities().dispatch }),
+              launchTracker: (definition, candidate, receiptId) => launchTrackerAutomationRun({ root: project.root, manager: project.manager, store: project.store, definition, candidate, receiptId, dispatchEnabled: capabilities().dispatch, getDriver: () => trackers.driver(project.root, project.dataDir) }),
               onChange: (id, revision) => emitAutomationChange(project, id, revision),
             });
             const result = await scheduler.check(automation, parsed.data.mode);
@@ -4181,7 +4181,7 @@ export function createApp(deps: ServerDeps) {
           catch { return c.json({ error: 'Cannot safely reconcile automation receipts; try again.' }, 409); }
           if (!store.reserveRetry(receipt.receiptId)) return c.json({ error: 'receipt is not retryable' }, 409);
           const launched = await launchTrackerAutomationRun({ root: project.root, manager: project.manager, store: project.store, definition,
-            candidate: { ...candidate, association: candidate.association, event: candidate.event, issueId: candidate.issueId, change: candidate.change }, receiptId: receipt.receiptId, dispatchEnabled: capabilities().dispatch });
+            candidate: { ...candidate, association: candidate.association, event: candidate.event, issueId: candidate.issueId, change: candidate.change }, receiptId: receipt.receiptId, dispatchEnabled: capabilities().dispatch, getDriver: () => trackers.driver(project.root, project.dataDir) });
           store.appendReceipt({ ...receipt, status: 'launched', runId: launched.runId, updatedAt: new Date().toISOString() });
           return c.json({ receiptId: receipt.receiptId, runId: launched.runId }, 202);
         } catch (error) {
@@ -7218,7 +7218,7 @@ export function startServer(deps: ServerDeps, port: number): ServerType {
         },
         launchTracker: async (definition, candidate, receiptId) => {
           const context = await contextOf();
-          return launchTrackerAutomationRun({ root: context.root, manager: context.manager, store: context.store, definition, candidate, receiptId, dispatchEnabled });
+          return launchTrackerAutomationRun({ root: context.root, manager: context.manager, store: context.store, definition, candidate, receiptId, dispatchEnabled, getDriver: () => automationTrackers.driver(context.root, join(context.root, '.ai/cezar')) });
         },
       };
     },

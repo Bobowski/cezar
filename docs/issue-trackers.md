@@ -271,9 +271,13 @@ Jira automation discovery reads the authenticated account’s timezone through `
 timezone cannot be read, the scan retries without advancing its checkpoint. Around daylight
 saving changes, discovery includes a wider window; exact event timestamps still control matches.
 
-Before working on an automation, the agent is instructed to fetch the full current issue through
-the vendor API and stop if that read fails or is incomplete. This is an agent instruction, not a
-server-enforced fetch; event metadata alone is not the complete issue description.
+When an automation launches a task, cezar reads the issue itself and puts its description and
+comments into the task, in the same block a manual handoff sends, and links the task to the
+ticket. The agent therefore starts with the context on any backend. The read uses the connection
+and scope that fired the event; if they have changed since, or the vendor does not answer, the
+task still launches and carries the earlier instruction instead: fetch the full current issue
+through the vendor API and stop if that read fails or is incomplete. In that fallback the read is
+an agent instruction, not a server-enforced fetch. Previewing an automation reads nothing extra.
 
 Long history scans can span multiple polling intervals. Completed pages are checkpointed when
 the scan yields near its time budget, so a slow sequence of successful reads does not restart

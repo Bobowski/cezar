@@ -12,6 +12,7 @@ import { prunePrHeadRefs, resolvePrHead, runCommand, type CommandRunner } from '
 import { AutomationStore } from './store.ts';
 import { AutomationLaunchOutcome, launchAutomationRun } from './task-template.ts';
 import { automationDefinitionSchema, type GithubAutomationDefinition } from './types.ts';
+import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 
 const run = promisify(execFile);
 const GIT_ID = ['-c', 'user.name=test', '-c', 'user.email=test@local'];
@@ -178,10 +179,10 @@ describe('a pr-head automation launch', () => {
     secrets = new SecretStore();
     manager = new RunManager(store, repo.root, { projectId: PROJECT, secrets });
   });
-  afterEach(() => {
+  afterEach(async () => {
     manager.dispose();
     store.flush();
-    rmSync(repo.root, { recursive: true, force: true });
+    await removeTempDir(repo.root);
   });
 
   /** A checks-only verification workflow: no agent step, as a PR verifier would be. */

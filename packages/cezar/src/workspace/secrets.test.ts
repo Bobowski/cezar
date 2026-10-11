@@ -42,9 +42,12 @@ describe('SecretStore (spec 2026-10-10-project-secrets-vault-options)', () => {
   it('writes 0600 files inside a 0700 directory that ignores itself, and never the value in the clear', async () => {
     await store.set(project, 'E2E_KEY', 'value-1-with-enough-length');
     const dir = join(home, 'secrets');
-    expect((await stat(dir)).mode & 0o777).toBe(0o700);
-    expect((await stat(join(dir, 'demo.json'))).mode & 0o777).toBe(0o600);
-    expect((await stat(join(dir, '.key'))).mode & 0o777).toBe(0o600);
+    // POSIX permission bits; Windows reports 0666 for every file.
+    if (process.platform !== 'win32') expect((await stat(dir)).mode & 0o777).toBe(0o700);
+    // POSIX permission bits; Windows reports 0666 for every file.
+    if (process.platform !== 'win32') expect((await stat(join(dir, 'demo.json'))).mode & 0o777).toBe(0o600);
+    // POSIX permission bits; Windows reports 0666 for every file.
+    if (process.platform !== 'win32') expect((await stat(join(dir, '.key'))).mode & 0o777).toBe(0o600);
     expect(await readFile(join(dir, '.gitignore'), 'utf8')).toContain('*');
     const raw = await readFile(join(dir, 'demo.json'), 'utf8');
     expect(raw).not.toContain('value-1-with-enough-length');
@@ -80,7 +83,8 @@ describe('SecretStore (spec 2026-10-10-project-secrets-vault-options)', () => {
     // No keychain: the same store falls back to a 0600 key file and says so.
     expect(await store.keyBackend()).toBe('file');
     await store.set(workspace, 'OTHER', 'other-value');
-    expect((await stat(join(home, 'secrets', '.key'))).mode & 0o777).toBe(0o600);
+    // POSIX permission bits; Windows reports 0666 for every file.
+    if (process.platform !== 'win32') expect((await stat(join(home, 'secrets', '.key'))).mode & 0o777).toBe(0o600);
   });
 
   it('falls back to the key file when the keychain refuses the write', async () => {
@@ -180,7 +184,8 @@ describe('SecretStore (spec 2026-10-10-project-secrets-vault-options)', () => {
     expect(read.skipped).toBeUndefined();
   });
 
-  it('does not follow a symlinked file', async () => {
+  // Creating a symlink needs a privilege an ordinary Windows account does not hold.
+  it.skipIf(process.platform === 'win32')('does not follow a symlinked file', async () => {
     await store.set(project, 'KEY', 'real-value-long-enough');
     const target = join(home, 'elsewhere.json');
     await writeFile(target, await readFile(join(home, 'secrets', 'demo.json')), { mode: 0o600 });

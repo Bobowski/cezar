@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -10,6 +10,7 @@ import { RunStore } from '../runs/store.ts';
 import { SecretStore } from '../workspace/secrets.ts';
 import { CHECK_CONTEXT_VARS, RunManager } from './run.ts';
 import { workflowStepSchema, type WorkflowDef } from './types.ts';
+import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 
 const run = promisify(execFile);
 const GIT_ID = ['-c', 'user.name=test', '-c', 'user.email=test@local'];
@@ -63,7 +64,7 @@ describe('project and workspace secrets in check steps', () => {
       else process.env[key] = value;
     }
     store.flush();
-    rmSync(repoRoot, { recursive: true, force: true });
+    await removeTempDir(repoRoot);
   });
 
   const settle = async (id: string): Promise<void> => {
@@ -235,7 +236,7 @@ describe('project and workspace secrets in check steps', () => {
       expect(checkOutputs(record.id)).toEqual(['flag=']);
       expect(notes(record.id).some((note) => /project secrets skipped — the store belongs to another project root/.test(note))).toBe(true);
     } finally {
-      rmSync(elsewhere, { recursive: true, force: true });
+      await removeTempDir(elsewhere);
     }
   }, 30_000);
 });
@@ -266,14 +267,14 @@ describe('run context for check steps', () => {
     manager = new RunManager(store, repoRoot, { projectId: PROJECT });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     manager.dispose();
     for (const [key, value] of Object.entries(savedEnv)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
     store.flush();
-    rmSync(repoRoot, { recursive: true, force: true });
+    await removeTempDir(repoRoot);
   });
 
   const contextOf = (runId: string, stepId: string, cwd: string) =>
@@ -407,7 +408,8 @@ describe('run context for check steps', () => {
     const first = (await contextOf(record.id, 'verify', repoRoot)).CEZ_SHARED_CACHE_DIR!;
     const second = (await contextOf(record.id, 'verify', repoRoot)).CEZ_SHARED_CACHE_DIR!;
     expect(second).toBe(first);
-    expect(statSync(first).mode & 0o777).toBe(0o700);
+    // POSIX permission bits; Windows reports 0666 for every file.
+    if (process.platform !== 'win32') expect(statSync(first).mode & 0o777).toBe(0o700);
     const other = new RunManager(store, repoRoot, { projectId: 'another-project' });
     try {
       const theirs = await (other as unknown as {

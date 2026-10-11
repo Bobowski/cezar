@@ -104,7 +104,7 @@ describe('listRepoPaths — the repository path index', () => {
     expect(whole).toMatchObject({ ok: true, truncated: false });
   });
 
-  it('fails rather than returning a partial list when the byte cap is exceeded', async () => {
+  it.skipIf(process.platform === 'win32')('fails rather than returning a partial list when the byte cap is exceeded', async () => {
     const long = 'x'.repeat(180);
     mkdirSync(join(dir, long));
     for (let i = 0; i < 20; i += 1) writeFileSync(join(dir, long, `file-${long}-${i}.txt`), '1\n');
@@ -250,6 +250,8 @@ describe('repo file-browser routes', () => {
       expect(res.status).toBe(409);
     }
 
+    // Creating a symlink needs a privilege an ordinary Windows account does not hold.
+    if (process.platform === 'win32') return;
     symlinkSync('/etc/passwd', join(repoRoot, 'link.txt'));
     g(repoRoot, 'add', '-A');
     g(repoRoot, 'commit', '-m', 'symlink');

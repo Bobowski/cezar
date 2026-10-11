@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { z } from 'zod';
 // Contract VALUES, like `workspaceUiStateSchema` in workspace/migrations.ts: the tag bounds this
@@ -367,31 +367,54 @@ export function atomicTmpPath(path: string): string {
   return `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
 }
 
+/** Windows' answer to a rename onto a file that is open or being replaced right now. */
+function isRenameContention(error: unknown): boolean {
+  if (process.platform !== 'win32') return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
+}
+
+const RENAME_ATTEMPTS = 10;
+
 /**
- * `renameSync` onto a path another writer may be replacing at this instant. POSIX swaps the file
- * atomically; Windows refuses the loser (`EPERM`/`EBUSY`/`EACCES`) for the few milliseconds the
- * winner holds the target, which turned two concurrent merge-writes into a thrown error instead of
- * the convergence the read-modify-write promises. Retried there only, bounded at ~0.3 s — off
- * Windows the same codes mean a real permission problem and are thrown at once.
+ * `renameSync` onto a path another PROCESS may be replacing at this instant. POSIX swaps the file
+ * atomically; Windows refuses the loser for the few milliseconds the winner holds the target.
+ * Retried there only, bounded at ~0.3 s — off Windows the same codes mean a real permission
+ * problem and are thrown at once.
+ *
+ * The wait blocks the event loop, so this absorbs another process only. A holder inside THIS
+ * process (an in-flight `readFile` of the target) cannot let go while we block — an async caller
+ * that can race itself uses {@link atomicWriteJson} instead.
  */
 function renameOverSync(from: string, to: string): void {
-  for (let attempt = 0; ; attempt += 1) {
+  for (let attempt = 1; ; attempt += 1) {
     try {
       renameSync(from, to);
       return;
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      const contended = code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
-      if (process.platform !== 'win32' || !contended || attempt >= 9) throw error;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 6 * (attempt + 1));
+      if (!isRenameContention(error) || attempt >= RENAME_ATTEMPTS) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 6 * attempt);
     }
   }
 }
 
-/** Atomic JSON write (`0600`, dir `0700`) via a per-writer tmp + rename —
- *  shared by the workspace config and ui-state writers. Throws on write
- *  failure (e.g. a read-only home) — degrading is the caller's policy. */
-export function atomicWriteJsonSync(path: string, value: unknown): void {
+/** The awaited twin of {@link renameOverSync}: the wait yields, so a holder in this process — a
+ *  concurrent merge-write still reading the target — finishes and releases it. */
+async function renameOver(from: string, to: string): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await rename(from, to);
+      return;
+    } catch (error) {
+      if (!isRenameContention(error) || attempt >= RENAME_ATTEMPTS) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 6 * attempt));
+    }
+  }
+}
+
+/** Write `value` to a per-writer staging file beside `path` (`0600`, dir `0700`), fsynced.
+ *  Returns the staging path; nothing is left behind when the write fails. */
+function stageJsonSync(path: string, value: unknown): string {
   assertCezarHomeWriteIsSandboxed(path);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = atomicTmpPath(path);
@@ -402,27 +425,61 @@ export function atomicWriteJsonSync(path: string, value: unknown): void {
     fsyncSync(fd);
     closeSync(fd);
     fd = -1;
-    renameOverSync(tmp, path);
+    return tmp;
   } catch (error) {
     if (fd !== -1) {
       try {
         closeSync(fd);
       } catch {
-        // Preserve the original write/fsync/rename error.
+        // Preserve the original write/fsync error.
       }
     }
-    try {
-      rmSync(tmp, { force: true });
-    } catch {
-      // Preserve the original write/fsync/rename error.
-    }
+    discardStaged(tmp);
     throw error;
   }
+}
+
+function discardStaged(tmp: string): void {
+  try {
+    rmSync(tmp, { force: true });
+  } catch {
+    // Preserve the original error.
+  }
+}
+
+function tightenMode(path: string): void {
   try {
     chmodSync(path, 0o600); // best-effort — ignored on some filesystems
   } catch {
     // non-fatal
   }
+}
+
+/** Atomic JSON write (`0600`, dir `0700`) via a per-writer tmp + rename —
+ *  shared by the workspace config and ui-state writers. Throws on write
+ *  failure (e.g. a read-only home) — degrading is the caller's policy. */
+export function atomicWriteJsonSync(path: string, value: unknown): void {
+  const tmp = stageJsonSync(path, value);
+  try {
+    renameOverSync(tmp, path);
+  } catch (error) {
+    discardStaged(tmp);
+    throw error;
+  }
+  tightenMode(path);
+}
+
+/** {@link atomicWriteJsonSync} for an async read-modify-write that can overlap itself in one
+ *  process: same file on disk, but the rename's retry yields (see {@link renameOver}). */
+export async function atomicWriteJson(path: string, value: unknown): Promise<void> {
+  const tmp = stageJsonSync(path, value);
+  try {
+    await renameOver(tmp, path);
+  } catch (error) {
+    discardStaged(tmp);
+    throw error;
+  }
+  tightenMode(path);
 }
 
 /**

@@ -6,7 +6,7 @@ import { DEFAULT_AGENT_ACCOUNT_ID } from '@open-mercato/cezar-contract';
 import { PROVIDER_IDS, type ProviderId } from '../core/provider-auth.ts';
 import { supportsProfiles } from '../core/agent-profiles.ts';
 import { agentAccountsPath, isAbsolutePath, workspaceConfigPath } from '../paths.ts';
-import { atomicWriteJsonSync } from './config.ts';
+import { atomicWriteJson, atomicWriteJsonSync } from './config.ts';
 
 /**
  * `~/.cezar/agent-accounts.json` — the agent-accounts store (spec `2026-07-29-agent-profiles.md`).
@@ -228,7 +228,9 @@ export async function mergeWriteAgentAccounts(
 ): Promise<AgentAccountStore> {
   const current = await loadAgentAccounts();
   const next = mutator(current) ?? current;
-  atomicWriteJsonSync(agentAccountsPath(), next);
+  // Awaited, not the sync writer: two merge-writes in this process overlap, and on Windows the
+  // other one's in-flight read holds the file the rename lands on.
+  await atomicWriteJson(agentAccountsPath(), next);
   return next;
 }
 

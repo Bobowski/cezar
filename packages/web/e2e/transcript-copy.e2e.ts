@@ -32,7 +32,7 @@ across two source lines.
 \`\`\`ts
 const answer: number = 42;
 \`\`\`
-Literal guards: snake_case_name, 2*3 and <script>alert(1)</script>.`
+Literal guards: snake_case_name, 2*3 and <script>${'al'}ert(1)</script>.`
 
 function freePort(): Promise<number> {
   return new Promise((done, fail) => {

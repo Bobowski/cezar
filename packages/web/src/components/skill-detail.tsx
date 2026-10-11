@@ -65,8 +65,8 @@ export function SkillSourceTag({
             data-source={source}
             aria-label={description}
             className={cn(
-              'shrink-0 rounded-full border border-border px-2 py-px font-mono text-[10.5px]',
-              project ? 'font-semibold text-foreground' : 'text-soft-foreground',
+              'shrink-0 rounded-full px-2 py-0.5 text-[11px] leading-4',
+              project ? 'bg-primary/15 font-medium text-foreground' : 'bg-muted text-muted-foreground',
               className,
             )}
           >
@@ -102,15 +102,15 @@ export function SkillDetailBody({
         <div className="flex min-w-0 items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 flex-wrap items-center gap-2.5">
-              <Heading className="min-w-0 font-mono text-lg font-semibold break-all">{skill.name}</Heading>
+              <Heading className="min-w-0 font-mono text-[17px] font-semibold break-all">{skill.name}</Heading>
               <SkillSourceTag source={skill.source} teamRepo={skill.team?.repo} />
             </div>
-            <p data-slot="skill-path" className="mt-1 font-mono text-[10.5px] break-all text-soft-foreground">
+            <p data-slot="skill-path" className="mt-1 font-mono text-[11px] break-all text-soft-foreground">
               {skill.path}
               {skill.team ? ` · from ${skill.team.repo}` : ''}
             </p>
             {skill.description ? (
-              <p data-slot="skill-description" className="mt-2.5 text-[13px] text-muted-foreground">
+              <p data-slot="skill-description" className="mt-2 max-w-prose text-sm text-pretty text-muted-foreground">
                 {skill.description}
               </p>
             ) : null}
@@ -132,7 +132,7 @@ export function SkillDetailBody({
 
         {usedBy !== undefined ? (
           <section data-slot="skill-used-by" className="mt-4 border-t border-border pt-4">
-            <h3 className="text-[11px] font-semibold tracking-[.04em] text-soft-foreground uppercase">
+            <h3 className="text-[13px] font-semibold text-foreground">
               Used by
             </h3>
             {usedBy.length > 0 ? (
@@ -145,7 +145,7 @@ export function SkillDetailBody({
                 ))}
               </ul>
             ) : (
-              <p className="mt-1.5 text-xs text-soft-foreground">
+              <p className="mt-1.5 text-[13px] text-muted-foreground">
                 Not referenced by any workflow yet — quick-task picks it up when the task mentions it.
               </p>
             )}
@@ -154,7 +154,7 @@ export function SkillDetailBody({
       </section>
 
       <section data-slot="skill-content" className="mt-6 min-w-0 border-t border-border pt-5">
-        <h3 className="text-[11px] font-semibold tracking-[.04em] text-soft-foreground uppercase">Content</h3>
+        <h3 className="text-[13px] font-semibold text-foreground">Content</h3>
         <div data-slot="skill-body" className="mt-3 text-sm">
           <Markdown>{skill.body}</Markdown>
         </div>
@@ -178,7 +178,7 @@ function SkillBookmarklet({ skill }: { skill: Skill }) {
   const url = bookmarkletUrl(skill.name, auto, key, origin, projectId)
   return (
     <section data-slot="skill-run-from-github" className="mt-5 border-t border-border pt-4">
-      <h3 className="text-[11px] font-semibold tracking-[.04em] text-soft-foreground uppercase">Run from GitHub</h3>
+      <h3 className="text-[13px] font-semibold text-foreground">Run from GitHub</h3>
       <p className="mt-1.5 text-xs text-muted-foreground">
         Drag the button to your bookmarks bar, then click it on a GitHub PR or issue.
       </p>
@@ -206,7 +206,7 @@ function SkillBookmarklet({ skill }: { skill: Skill }) {
       <Link
         to="/settings/bookmarklets"
         data-slot="skill-bookmarklets-settings"
-        className="mt-2 inline-block text-xs font-medium text-violet hover:underline"
+        className="mt-2 inline-block text-[13px] font-medium text-foreground underline decoration-border underline-offset-4 hover:decoration-foreground"
       >
         Manage saved bookmarklets
       </Link>
@@ -236,7 +236,7 @@ export function SkillPreviewDialog({ skill, onClose }: { skill: Skill | null; on
                 to={`/skills?skill=${encodeURIComponent(skill.name)}`}
                 data-slot="skill-preview-manage"
                 onClick={onClose}
-                className="text-xs font-semibold text-violet hover:underline"
+                className="text-[13px] font-medium text-foreground underline decoration-border underline-offset-4 hover:decoration-foreground"
               >
                 Open in the Skills catalog
               </Link>

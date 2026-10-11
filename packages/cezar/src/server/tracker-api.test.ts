@@ -66,8 +66,6 @@ describe('tracker API boundaries and isolation', () => {
     expect(cleared.projects[0]?.tracker).toBeUndefined();
   });
 
-  // Passes on its own; under the full suite on Windows it has crossed vitest's 5 s
-  // default while 600 files share the machine.
   it('ignores legacy server credentials and never probes vendors before project configuration', async () => {
     vi.stubEnv('CEZ_DRY_RUN', '0');
     vi.stubEnv('JIRA_BASE_URL', 'https://acme.atlassian.net');
@@ -86,7 +84,7 @@ describe('tracker API boundaries and isolation', () => {
     expect(await (await apiRequest(instance, '/api/v1/health')).json()).not.toHaveProperty('capabilities.trackerJira');
     expect(await (await apiRequest(instance, '/api/v1/tracker/candidates?kind=jira')).json()).toMatchObject({ code: 'credentials_missing' });
     expect(fetcher).not.toHaveBeenCalled();
-  }, 30_000);
+  });
 
   it('paginates project discovery, connects a canonical selection beyond first page and dual-mounts reads', async () => {
     const instance = app();

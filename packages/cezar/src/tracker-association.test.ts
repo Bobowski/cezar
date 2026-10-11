@@ -83,6 +83,8 @@ describe('tracker association persistence', () => {
     expect(readdirSync(dataDir)).toEqual(['tracker.json']);
   });
 
+  // Passes on its own; under the full suite on Windows it has crossed vitest's 5 s
+  // default while 600 files share the machine.
   it('does not steal an old lease from a live process', async () => {
     expect(await writeTrackerAssociation(dataDir, jira)).toBe(true);
     const lock = join(dataDir, 'tracker-association.lock');
@@ -91,7 +93,7 @@ describe('tracker association persistence', () => {
     utimesSync(lock, new Date(0), new Date(0));
     expect(await writeTrackerAssociation(dataDir, linear)).toBe(false);
     expect(await readTrackerAssociation(dataDir)).toEqual(jira);
-  });
+  }, 30_000);
 
   it('reports inaccessible storage as a failed mutation without throwing', async () => {
     expect(await writeTrackerAssociation(dataDir, jira)).toBe(true);

@@ -17,6 +17,8 @@ const DEFAULT: Stored[] = [
 function setup(options: { secrets?: Stored[]; putStatus?: number; keyBackend?: 'keychain' | 'file'; scope?: 'project' | 'workspace' } = {}) {
   const { secrets = DEFAULT, putStatus = 204, keyBackend = 'keychain', scope = 'project' } = options
   const calls: { method: string; url: string; body?: string }[] = []
+  // The audience checkboxes (Radix) size their indicator with a ResizeObserver; jsdom has none.
+  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
     calls.push({ method, url: String(input), body: typeof init?.body === 'string' ? init.body : undefined })

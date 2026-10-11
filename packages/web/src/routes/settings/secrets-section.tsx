@@ -9,7 +9,12 @@ import {
 } from '@/api/client'
 import { queryKeys, useProjectSecrets, useWorkspaceSecrets, workspaceQueryKeys } from '@/api/queries'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { toast } from '@/components/ui/toaster'
+import { SettingsField, SettingsGroup, SettingsNote, SettingsPane } from './settings-field'
 
 /** What each audience means to the person storing the secret. */
 const AUDIENCE_LABELS: Record<SecretAudience, string> = {
@@ -79,59 +84,112 @@ function SecretsSection({ scope, list, save, remove, invalidate }: SecretsSectio
   const secrets = list.data?.secrets ?? []
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 p-4 md:p-6" data-slot="secrets-settings" data-scope={scope}>
-      <section className="rounded-lg border border-border bg-card p-4">
-        <h2 className="text-sm font-semibold">{title}</h2>
-        <p className="mt-1 text-sm text-muted-foreground">{intro}</p>
-        {list.isPending ? <p className="mt-4 text-sm text-muted-foreground">Loading…</p> : null}
-        {list.isError ? <p role="alert" className="mt-4 text-sm text-danger">{list.error?.message}</p> : null}
-        {list.data && secrets.length === 0 ? <p className="mt-4 text-sm text-muted-foreground">No secrets stored.</p> : null}
-        {list.data && secrets.length > 0 ? (
-          <ul className="mt-4 divide-y divide-border rounded-md border border-border" aria-label={`Stored ${scope} secrets`}>
-            {secrets.map((stored) => (
-              <li key={stored.name} className="flex items-center justify-between gap-3 px-3 py-2">
-                <div className="min-w-0">
-                  <code className="text-sm">{stored.name}</code>
-                  <p className="text-xs text-muted-foreground">{stored.audiences.map((a) => AUDIENCE_LABELS[a].split(' (')[0]).join(' · ')}</p>
-                </div>
-                <Button variant="outline" aria-label={`Delete ${stored.name}`} disabled={removing.isPending} onClick={() => removing.mutate(stored.name)}>
-                  <Trash2Icon className="size-3.5" /> Delete
-                </Button>
-              </li>
-            ))}
-          </ul>
+    <SettingsPane data-slot="secrets-settings" data-scope={scope}>
+      <SettingsGroup title={title} description={intro} bare>
+        {list.isPending ? <SettingsNote>Loading…</SettingsNote> : null}
+        {list.isError ? (
+          <SettingsNote tone="danger" role="alert">
+            {list.error?.message}
+          </SettingsNote>
         ) : null}
-        {list.data ? <p className="mt-3 text-xs text-muted-foreground" data-slot="key-backend">{keyBackendNote(list.data.keyBackend)}</p> : null}
-      </section>
+        {list.data && secrets.length === 0 ? <SettingsNote>No secrets stored.</SettingsNote> : null}
+        {list.data && secrets.length > 0 ? (
+          <Card flush>
+            <ul className="divide-y divide-border" aria-label={`Stored ${scope} secrets`}>
+              {secrets.map((stored) => (
+                <li key={stored.name} className="flex items-center justify-between gap-3 px-5 py-3">
+                  <div className="min-w-0 space-y-0.5">
+                    <code className="font-mono text-[13px] text-foreground">{stored.name}</code>
+                    <p className="text-xs text-muted-foreground">
+                      {stored.audiences.map((a) => AUDIENCE_LABELS[a].split(' (')[0]).join(' · ')}
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    aria-label={`Delete ${stored.name}`}
+                    disabled={removing.isPending}
+                    onClick={() => removing.mutate(stored.name)}
+                  >
+                    <Trash2Icon aria-hidden="true" /> Delete
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        ) : null}
+        {list.data ? <SettingsNote data-slot="key-backend">{keyBackendNote(list.data.keyBackend)}</SettingsNote> : null}
+      </SettingsGroup>
 
-      <form className="rounded-lg border border-border bg-card p-4" autoComplete="off" onSubmit={(event) => { event.preventDefault(); submit() }}>
-        <h2 className="text-sm font-semibold">Add or replace a secret</h2>
-        <label className="mt-3 block text-sm">Name
-          <input aria-label="Name" value={name} onChange={(event) => { setName(event.target.value.toUpperCase()); setError(null) }}
-            autoComplete="off" spellCheck={false} placeholder="AI_GATEWAY_API_KEY" aria-invalid={nameIssue ? true : undefined}
-            className="mt-1 block w-full rounded border border-border bg-background p-2 font-mono" />
-        </label>
-        {nameIssue ? <p className="mt-1 text-xs text-danger">{nameIssue}</p> : null}
-        <label className="mt-3 block text-sm">Value
-          <input aria-label="Value" type="password" autoComplete="off" required value={value} onChange={(event) => setValue(event.target.value)}
-            className="mt-1 block w-full rounded border border-border bg-background p-2" />
-        </label>
-        <fieldset className="mt-3">
-          <legend className="text-sm">Who may read it</legend>
-          {SECRET_AUDIENCES.map((audience) => (
-            <label key={audience} className="mt-1 flex items-center gap-2 text-sm">
-              <input type="checkbox" aria-label={AUDIENCE_LABELS[audience]} checked={audiences.includes(audience)} onChange={() => toggleAudience(audience)} />
-              {AUDIENCE_LABELS[audience]}
-            </label>
-          ))}
-          <p className="mt-1 text-xs text-muted-foreground">Agents are never an audience: a secret cannot be handed to a Claude Code, Codex or OpenCode session.</p>
-        </fieldset>
-        {error && error !== nameIssue ? <p role="alert" className="mt-2 text-sm text-danger">{error}</p> : null}
-        <div className="mt-3">
-          <Button type="submit" disabled={saving.isPending || name === '' || value === '' || audiences.length === 0 || !!nameIssue}>Save secret</Button>
-        </div>
+      <form
+        autoComplete="off"
+        onSubmit={(event) => {
+          event.preventDefault()
+          submit()
+        }}
+      >
+        <SettingsGroup title="Add or replace a secret">
+          <SettingsField title="Name" htmlFor={`secret-name-${scope}`}>
+            <Input
+              id={`secret-name-${scope}`}
+              aria-label="Name"
+              value={name}
+              onChange={(event) => {
+                setName(event.target.value.toUpperCase())
+                setError(null)
+              }}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="AI_GATEWAY_API_KEY"
+              aria-invalid={nameIssue ? true : undefined}
+              className="font-mono"
+            />
+            {nameIssue ? <SettingsNote tone="danger">{nameIssue}</SettingsNote> : null}
+          </SettingsField>
+          <SettingsField title="Value" htmlFor={`secret-value-${scope}`} hint="Write-only: a stored value is never shown again.">
+            <Input
+              id={`secret-value-${scope}`}
+              aria-label="Value"
+              type="password"
+              autoComplete="off"
+              required
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+            />
+          </SettingsField>
+          <SettingsField
+            title="Who may read it"
+            hint="Agents are never an audience: a secret cannot be handed to a Claude Code, Codex or OpenCode session."
+          >
+            <div className="flex flex-col gap-2.5">
+              {SECRET_AUDIENCES.map((audience) => (
+                <div key={audience} className="flex items-center gap-2.5">
+                  <Checkbox
+                    id={`secret-audience-${scope}-${audience}`}
+                    aria-label={AUDIENCE_LABELS[audience]}
+                    checked={audiences.includes(audience)}
+                    onCheckedChange={() => toggleAudience(audience)}
+                  />
+                  <Label htmlFor={`secret-audience-${scope}-${audience}`} className="font-normal">
+                    {AUDIENCE_LABELS[audience]}
+                  </Label>
+                </div>
+              ))}
+            </div>
+          </SettingsField>
+          <div className="flex flex-wrap items-center justify-end gap-3 px-5 py-3">
+            {error && error !== nameIssue ? (
+              <SettingsNote tone="danger" role="alert" className="mr-auto">
+                {error}
+              </SettingsNote>
+            ) : null}
+            <Button type="submit" disabled={saving.isPending || name === '' || value === '' || audiences.length === 0 || !!nameIssue}>
+              Save secret
+            </Button>
+          </div>
+        </SettingsGroup>
       </form>
-    </div>
+    </SettingsPane>
   )
 }
 

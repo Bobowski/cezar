@@ -592,8 +592,12 @@ describe('the repo view Files segment', () => {
     renderAt('/git/files')
 
     await waitFor(() => expect(document.querySelector('[data-slot="repo-files-tree"]')).not.toBeNull())
+    // The filter and the tree are the contextual sidebar; main holds only the file.
+    expect(sidebar().contains(document.querySelector('[data-slot="repo-files-tree"]'))).toBe(true)
+    expect(sidebar().contains(document.querySelector('[data-slot="repo-files-filter"]'))).toBe(true)
+    expect(sidebar().contains(document.querySelector('[data-slot="file-preview"]'))).toBe(false)
 
-    const dirs = [...document.querySelectorAll('[data-slot="repo-files-dir"]')].map((el) => ({
+    const dirs =[...document.querySelectorAll('[data-slot="repo-files-dir"]')].map((el) => ({
       path: el.getAttribute('data-path'),
       text: el.textContent,
       state: el.getAttribute('data-state'),

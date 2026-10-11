@@ -3,7 +3,6 @@ import { useParams } from 'react-router'
 
 import { useRepo } from '@/api/queries'
 import type { RepoInfo, RepoResponse } from '@open-mercato/cezar-api-client'
-import { ContextSidebar } from '@/components/context-sidebar'
 import { Page } from '@/components/page'
 import { useNavigate } from '@/lib/project-router'
 
@@ -78,10 +77,7 @@ function RepoView({ repo, info, tab }: { repo: RepoResponse; info: RepoInfo; tab
       ) : tab === 'commits' ? (
         <RepoCommitsSection log={repo.log} header={header()} />
       ) : tab === 'files' ? (
-        <>
-          <ContextSidebar>{header()}</ContextSidebar>
-          <RepoFilesPane />
-        </>
+        <RepoFilesPane header={header()} />
       ) : (
         <RepoBranchesSection repo={repo} info={info} header={header} />
       )}
@@ -97,12 +93,13 @@ function RepoView({ repo, info, tab }: { repo: RepoResponse; info: RepoInfo; tab
  * bury the previous tab under twenty selections, and Back should leave the Files tab, not walk
  * backwards through it.
  */
-function RepoFilesPane() {
+function RepoFilesPane({ header }: { header: React.ReactNode }) {
   const params = useParams()
   const navigate = useNavigate()
   const selected = params['*'] !== undefined && params['*'] !== '' ? params['*'] : null
   return (
     <RepoFilesSection
+      header={header}
       selected={selected}
       onSelect={(path) =>
         navigate(path === null ? '/git/files' : `/git/files/${encodePathSegments(path)}`, {

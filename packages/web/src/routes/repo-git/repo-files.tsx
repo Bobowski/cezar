@@ -1,21 +1,29 @@
-import { ArrowLeftIcon, ChevronRightIcon, FileIcon, FolderIcon, FolderTreeIcon, ImageIcon, TriangleAlertIcon } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronRightIcon, FileIcon, FolderIcon, FolderTreeIcon, ImageIcon, SearchIcon, TriangleAlertIcon } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import { ApiError } from '@/api/client'
 import { useRepoTree } from '@/api/queries'
-import { CenteredState } from '@/components/centered-state'
+import { ContextSidebar } from '@/components/context-sidebar'
+import { PageBody } from '@/components/page'
+import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group'
+import { SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel } from '@/components/ui/sidebar'
 import { cn } from '@/lib/utils'
 
 import { FilePreview } from '../task-git/file-preview'
 import { buildPathTree, type PathTreeDir } from '../task-git/file-tree'
 import { isImagePath } from '../task-git/worktree-files'
 import { matchPaths } from './match-paths'
+import { RepoEmpty } from './repo-empty'
+import { OpenSidebarButton, useCloseSidebarSheet } from './repo-sidebar'
 
 /**
  * `/git/files` — the project repository's own file browser (spec
- * `.ai/specs/2026-10-05-repo-file-browser.md`, #1279): the tree on the left from one
- * `GET /repo/tree`, the file on the right through the same `FilePreview` the run Files tab uses,
- * and a filter box over the index.
+ * `.ai/specs/2026-10-05-repo-file-browser.md`, #1279): the tree from one `GET /repo/tree`, the
+ * file through the same `FilePreview` the run Files tab uses, and a filter box over the index.
+ *
+ * Master–detail like the other Git sections: the filter and the tree live in the contextual
+ * sidebar, the main area is the file. On a phone that sidebar is a sheet, so main offers a button
+ * that opens it, and picking a file closes it again.
  *
  * The one structural difference from `/tasks/:id/files` is where the tree's shape comes from. A
  * worktree has no cheap whole-tree answer, so that tab fetches one listing per opened folder; a git
@@ -33,9 +41,12 @@ export type RepoFileLeaf = { kind: 'file'; name: string; path: string }
 const MATCH_LIMIT = 200
 
 export function RepoFilesSection({
+  header,
   selected,
   onSelect,
 }: {
+  /** The Git screen's sidebar header (title, branch, section switch). */
+  header: ReactNode
   selected: string | null
   onSelect: (path: string | null) => void
 }) {
@@ -44,94 +55,92 @@ export function RepoFilesSection({
   // A 409 is the server's answer ("not a git repository"), not an outage.
   const refused = tree.isError && tree.error instanceof ApiError && tree.error.status === 409
   const paths = tree.data?.paths ?? []
-
-  if (tree.isPending) {
-    return (
-      <Section>
-        <p data-slot="repo-files-loading" className="px-4 py-6 text-center text-xs text-soft-foreground md:px-6">
-          Loading files…
-        </p>
-      </Section>
-    )
-  }
-  if (tree.isError) {
-    return (
-      <Section>
-        <CenteredState
-          icon={refused ? <FolderTreeIcon /> : <TriangleAlertIcon />}
-          tone={refused ? 'neutral' : 'danger'}
-          heading="h2"
-          title={refused ? 'No files to browse' : 'Could not load the files'}
-          subtitle={tree.error.message}
-        />
-      </Section>
-    )
-  }
-  if (paths.length === 0) {
-    return (
-      <Section>
-        <CenteredState
-          icon={<FolderTreeIcon />}
-          tone="neutral"
-          heading="h2"
-          title="No files yet"
-          subtitle="Nothing is tracked in this repository. Files show up here once git knows about them."
-        />
-      </Section>
-    )
-  }
+  const browsable = tree.data !== undefined && paths.length > 0
 
   return (
-    <Section>
-      {tree.data.truncated ? (
-        <p
-          data-slot="repo-files-truncated"
-          role="status"
-          className="border-b border-border bg-muted/40 px-4 py-2 text-xs text-muted-foreground md:px-6"
-        >
-          Showing the first {paths.length.toLocaleString()} files; this repository has more. The tree
-          and the filter cover only what is loaded.
-        </p>
-      ) : null}
+    <section data-slot="repo-files" className="flex min-h-0 flex-1 flex-col">
+      <ContextSidebar>
+        {header}
+        <SidebarContent>
+          <SidebarGroup className="pt-0">
+            <SidebarGroupLabel className="justify-between">
+              Files
+              {browsable ? <span className="font-mono tabular-nums">{paths.length.toLocaleString()}</span> : null}
+            </SidebarGroupLabel>
+            <SidebarGroupContent data-slot="repo-files-tree-pane">
+              {tree.isPending ? (
+                <p data-slot="repo-files-loading" className="px-2 py-1.5 text-xs text-muted-foreground">
+                  Loading files…
+                </p>
+              ) : !browsable ? (
+                <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                  {tree.isError ? 'Files are unavailable.' : 'No files yet.'}
+                </p>
+              ) : (
+                <>
+                  {tree.data.truncated ? (
+                    <p
+                      data-slot="repo-files-truncated"
+                      role="status"
+                      className="mb-2 rounded-md bg-muted px-2 py-1.5 text-xs text-pretty text-muted-foreground"
+                    >
+                      Showing the first {paths.length.toLocaleString()} files; this repository has more. The
+                      tree and the filter cover only what is loaded.
+                    </p>
+                  ) : null}
+                  <SidebarFileBrowser paths={paths} selected={selected} onSelect={onSelect} />
+                </>
+              )}
+            </SidebarGroupContent>
+          </SidebarGroup>
+        </SidebarContent>
+      </ContextSidebar>
 
-      {/* Unlike the Changes views, the tree is NOT hidden below `md`: it is the only way to pick a
-          file. The two panes swap instead — the tree IS the view until something is selected, and a
-          back control returns to it. */}
-      <div className="flex min-h-0 flex-1 flex-col items-stretch gap-5 px-4 py-4 [--diff-sticky-top:7rem] md:flex-row md:items-start md:px-6">
-        <aside
-          data-slot="repo-files-tree-pane"
-          className={cn(
-            'w-full shrink-0 md:sticky md:top-[var(--diff-sticky-top)] md:block md:max-h-[calc(100dvh_-_var(--diff-sticky-top)_-_1rem)] md:w-60 md:overflow-y-auto md:overscroll-contain lg:w-72',
-            selected !== null && 'hidden',
-          )}
-        >
-          <RepoFileBrowser paths={paths} selected={selected} onSelect={onSelect} />
-        </aside>
-
-        <div className={cn('min-w-0 flex-1', selected === null && 'hidden md:block')}>
-          {selected !== null ? (
-            <button
-              type="button"
-              data-slot="repo-files-back"
-              onClick={() => onSelect(null)}
-              className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground md:hidden"
-            >
-              <ArrowLeftIcon aria-hidden="true" className="size-3.5" />
-              Back to the file tree
-            </button>
-          ) : null}
+      {tree.isPending ? null : tree.isError ? (
+        <RepoEmpty
+          icon={refused ? <FolderTreeIcon /> : <TriangleAlertIcon />}
+          tone={refused ? 'neutral' : 'danger'}
+          title={refused ? 'No files to browse' : 'Could not load the files'}
+          description={tree.error.message}
+        />
+      ) : paths.length === 0 ? (
+        <RepoEmpty
+          icon={<FolderTreeIcon />}
+          title="No files yet"
+          description="Nothing is tracked in this repository. Files show up here once git knows about them."
+        />
+      ) : (
+        <PageBody className="flex flex-col gap-3 pt-4 [--diff-sticky-top:0rem]">
+          {/* The tree is the only way to pick a file, and on a phone it is behind the sheet. */}
+          <OpenSidebarButton>Browse files</OpenSidebarButton>
           <FilePreview source={{ kind: 'repo' }} path={selected} />
-        </div>
-      </div>
-    </Section>
+        </PageBody>
+      )}
+    </section>
   )
 }
 
-function Section({ children }: { children: React.ReactNode }) {
+/** The browser as the sidebar shows it: a pick also dismisses the phone sheet, which a file click
+ *  (a URL replace, not a navigation the shell reacts to) would otherwise leave covering the file. */
+function SidebarFileBrowser({
+  paths,
+  selected,
+  onSelect,
+}: {
+  paths: readonly string[]
+  selected: string | null
+  onSelect: (path: string) => void
+}) {
+  const closeSheet = useCloseSidebarSheet()
   return (
-    <section data-slot="repo-files" className="flex min-h-0 flex-1 flex-col">
-      {children}
-    </section>
+    <RepoFileBrowser
+      paths={paths}
+      selected={selected}
+      onSelect={(path) => {
+        onSelect(path)
+        closeSheet()
+      }}
+    />
   )
 }
 
@@ -277,24 +286,28 @@ function RepoFileBrowser({
         <label htmlFor="repo-files-filter" className="sr-only">
           Filter repository files
         </label>
-        <input
-          id="repo-files-filter"
-          ref={inputRef}
-          data-slot="repo-files-filter"
-          type="search"
-          value={query}
-          placeholder="Filter files…  (/)"
-          aria-controls="repo-files-tree"
-          autoComplete="off"
-          spellCheck={false}
-          onChange={(event) => setQuery(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key !== 'Escape') return
-            event.preventDefault()
-            setQuery('')
-          }}
-          className="w-full rounded-sm border border-border bg-background px-2 py-1 text-xs placeholder:text-soft-foreground focus:border-foreground focus:outline-none"
-        />
+        <InputGroup className="bg-background shadow-none">
+          <InputGroupAddon>
+            <SearchIcon aria-hidden="true" />
+          </InputGroupAddon>
+          <InputGroupInput
+            id="repo-files-filter"
+            ref={inputRef}
+            data-slot="repo-files-filter"
+            type="search"
+            value={query}
+            placeholder="Filter files…  (/)"
+            aria-controls="repo-files-tree"
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Escape') return
+              event.preventDefault()
+              setQuery('')
+            }}
+          />
+        </InputGroup>
         {/* Polite, so the count lands after the typing rather than interrupting it. */}
         <p data-slot="repo-files-count" role="status" aria-live="polite" className="sr-only">
           {filtering ? `${matches.total} files match ${query.trim()}` : `${paths.length} files`}
@@ -302,7 +315,7 @@ function RepoFileBrowser({
       </div>
 
       {filtering && matches.total === 0 ? (
-        <p data-slot="repo-files-no-match" className="px-1.5 py-1 text-xs text-soft-foreground">
+        <p data-slot="repo-files-no-match" className="px-2 py-1.5 text-xs text-muted-foreground">
           No file matches <span className="font-mono">{query.trim()}</span>.
         </p>
       ) : (
@@ -344,7 +357,7 @@ function RepoFileBrowser({
       )}
 
       {filtering && matches.total > matches.results.length ? (
-        <p data-slot="repo-files-more" className="px-1.5 py-1 text-xs text-soft-foreground">
+        <p data-slot="repo-files-more" className="px-2 py-1.5 text-xs text-muted-foreground">
           {(matches.total - matches.results.length).toLocaleString()} more — refine the filter.
         </p>
       ) : null}
@@ -378,7 +391,7 @@ function DirRow({
       data-state={row.open ? 'open' : 'closed'}
       tabIndex={focused ? 0 : -1}
       onClick={onToggle}
-      className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-sm px-1.5 py-1 text-left text-muted-foreground hover:bg-muted hover:text-foreground focus:bg-muted focus:outline-none"
+      className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-muted-foreground hover:bg-sidebar-accent hover:text-foreground focus:bg-muted focus:outline-none"
       style={indent(row.level, 6)}
     >
       <ChevronRightIcon
@@ -415,8 +428,8 @@ function FileRow({
       tabIndex={focused ? 0 : -1}
       onClick={onSelect}
       className={cn(
-        'flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-sm px-1.5 py-1 text-left hover:bg-muted focus:outline-none',
-        active ? 'bg-muted font-medium text-foreground' : 'text-muted-foreground hover:text-foreground',
+        'flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-sidebar-accent focus:outline-none',
+        active ? 'bg-sidebar-accent font-medium text-foreground' : 'text-muted-foreground hover:text-foreground',
       )}
       style={indent(row.level, 24)}
     >

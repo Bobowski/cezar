@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { SCAN_OVERLAP, type DetectedUrls } from './detected-urls.ts';
 import { foregroundCommand, hasForeground, type ProcessRow } from './foreground.ts';
+import { descendantGroups, readProcessTreeSync, type TreeRow } from './process-tree.ts';
 import { loadPty, type PtyProcess } from './pty-module.ts';
 import { resolveShell } from './shells.ts';
 
@@ -16,12 +17,13 @@ import { resolveShell } from './shells.ts';
  * the user starts in it (`npm run dev`, `make dev`) is precisely the grandchildren, so "stop" has
  * to mean the whole tree or it means nothing.
  *
- * The mechanism is the process GROUP. A PTY is allocated through `forkpty`, which calls `setsid`,
- * so the shell is a session and group leader and every descendant inherits that group id; a
- * negative-pid signal reaches all of them at once. Verified on this platform before the code was
- * written: `process.kill(-pid, 0)` resolves, and a `SIGKILL` to the group reaps a sleeping child.
- * Windows has no process groups, so there the binding's own `kill()` is the whole story — it
- * terminates the job object node-pty created.
+ * The mechanism is the process GROUPS under the shell, found by walking its tree. One group is not
+ * enough: a PTY's shell is a session and group leader, but an interactive shell runs with job
+ * control and puts every job in its OWN group, so a signal to `-shellPid` alone reached the shell
+ * and nothing it started (`npm run dev &` survived a restart; a HUP-ignoring job survived a tab
+ * close). `process-tree.ts` reads the table and names every group; a host with no `ps` falls back
+ * to the shell's own group. Windows has no process groups, so there the binding's own `kill()` is
+ * the whole story — it terminates the job object node-pty created.
  */
 
 /** Scrollback held per session, in characters. Enough to scroll back through a failed build; small
@@ -131,10 +133,12 @@ export class TerminalSessions {
 
   /** `binding` is injectable so tests drive a fake PTY and never fork a real shell. `urls`, when
    *  given, is fed every chunk of output so a task's printed addresses are collected as they
-   *  appear (spec §7) — optional because the registry is useful without it. */
+   *  appear (spec §7) — optional because the registry is useful without it. `readTree` is the
+   *  process-table read a stop walks; injectable so a test never signals a real tree. */
   constructor(
     private readonly binding: typeof loadPty = loadPty,
     private readonly urls?: DetectedUrls,
+    private readonly readTree: () => TreeRow[] | null = readProcessTreeSync,
   ) {
     registries.add(this);
   }
@@ -286,8 +290,9 @@ export class TerminalSessions {
     };
   }
 
-  /** Fires whenever output arrives or the shell exits. The WS topic's publisher is the only
-   *  intended caller; the returned release is idempotent. */
+  /** Fires whenever output arrives or the shell exits, and once more when the session is
+   *  forgotten (`get` is null by then). The WS topic's publisher is the only intended caller; the
+   *  returned release is idempotent. */
   subscribe(id: string, listener: () => void): () => void {
     const entry = this.entries.get(id);
     if (!entry) return () => {};
@@ -305,9 +310,10 @@ export class TerminalSessions {
    *
    * SIGHUP first, because that is what a closing terminal sends and what shells and well-behaved
    * children treat as "your terminal went away"; SIGKILL after a grace period for anything that
-   * ignored it. Both go to the process GROUP (`-pid`) so the tree dies with the shell. The
-   * binding's own `kill()` is the fallback: it is all Windows has, and it is the backstop if the
-   * group signal fails because the leader is already gone.
+   * ignored it. Both go to every process GROUP under the shell, read ONCE up front: after the
+   * HUP the shell is gone and its survivors are reparented to init, where no walk finds them.
+   * The binding's own `kill()` is the fallback: it is all Windows has, and it is the backstop if
+   * the group signal fails because the leader is already gone.
    *
    * The entry goes NOW rather than after `EXITED_RETENTION_MS`, because every caller of this is
    * an EXPLICIT stop — the tab's X, an archive, a delete. The retention exists for the other
@@ -321,10 +327,11 @@ export class TerminalSessions {
   kill(id: string): boolean {
     const entry = this.entries.get(id);
     if (!entry) return false;
-    signalTree(entry.pty, 'SIGHUP');
+    const groups = this.groupsOf(entry.pty, this.tree());
+    signalTree(entry.pty, groups, 'SIGHUP');
     // Unconditional, where this used to re-check `entries.has`: the entry is dropped below, and a
     // SIGKILL aimed at a group that has already gone is swallowed inside `signalTree`.
-    const force = setTimeout(() => signalTree(entry.pty, 'SIGKILL'), 2_000);
+    const force = setTimeout(() => signalTree(entry.pty, groups, 'SIGKILL'), 2_000);
     force.unref?.();
     this.remove(id);
     return true;
@@ -336,10 +343,29 @@ export class TerminalSessions {
    *  a PTY child is deliberately in its OWN group and so does NOT receive the Ctrl-C that reaches
    *  cezar's foreground group. */
   closeAll(): void {
-    for (const entry of [...this.entries.values()]) {
-      signalTree(entry.pty, 'SIGKILL');
+    if (this.entries.size === 0) return;
+    // One table read for every session, before the first signal re-parents anything.
+    const rows = this.tree();
+    const stops = [...this.entries.values()].map((entry) => ({ entry, groups: this.groupsOf(entry.pty, rows) }));
+    for (const { entry, groups } of stops) {
+      signalTree(entry.pty, groups, 'SIGKILL');
       this.remove(entry.info.id);
     }
+  }
+
+  /** The process table, or null. Never throws: this runs inside a shutdown handler. */
+  private tree(): TreeRow[] | null {
+    try {
+      return this.readTree();
+    } catch {
+      return null;
+    }
+  }
+
+  /** Every process group under this shell, or null when the table cannot say (no `ps`, an exited
+   *  shell) — the caller then signals the shell's own group, as before. */
+  private groupsOf(pty: PtyProcess, rows: TreeRow[] | null): number[] | null {
+    return rows === null ? null : descendantGroups(rows, pty.pid);
   }
 
   /** Drop this registry from the process-wide set. For tests; a server keeps one for its life. */
@@ -377,14 +403,32 @@ export class TerminalSessions {
         // A binding that already tore its emitters down is not an error here.
       }
     }
-    entry.listeners.clear();
     this.entries.delete(id);
+    // Tell listeners the session is gone, AFTER it is: the WS topic disposes itself on exactly
+    // this call, and without it every session ever opened left a topic behind (spec §6).
+    for (const listener of [...entry.listeners]) {
+      try {
+        listener();
+      } catch {
+        // A listener must not be able to break a shutdown.
+      }
+    }
+    entry.listeners.clear();
   }
 }
 
-/** Signal the PTY's process group, falling back to the binding's own kill. */
-function signalTree(pty: PtyProcess, signal: NodeJS.Signals): void {
+/** Signal every process group under the PTY's shell (`groups`, from `descendantGroups`), or just
+ *  the shell's own when they are unknown, falling back to the binding's own kill. */
+function signalTree(pty: PtyProcess, groups: readonly number[] | null, signal: NodeJS.Signals): void {
   if (process.platform !== 'win32') {
+    for (const group of groups ?? []) {
+      if (group === pty.pid) continue; // the shell's own group goes last, below
+      try {
+        process.kill(-group, signal);
+      } catch {
+        // That job already ended.
+      }
+    }
     try {
       process.kill(-pty.pid, signal);
       return;

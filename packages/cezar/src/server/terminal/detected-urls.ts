@@ -78,6 +78,24 @@ export function portOf(url: string): { host: string; port: number } | null {
   }
 }
 
+/** Addresses kept per task. A dev stack announces a handful; a log of request URLs (an e2e run,
+ *  a proxy) announces thousands, and each one was a row, a chip and a socket per read. */
+export const MAX_URLS_PER_RUN = 50;
+
+/** Liveness probes open at once, across every reader. */
+export const PROBE_CONCURRENCY = 8;
+
+/** How long one host:port answer is reused. Shorter than the cockpit's 3 s poll, so a stopped
+ *  server is still seen to stop; long enough that two readers cost one connection. */
+export const PROBE_REUSE_MS = 1_000;
+
+/** The row to evict: oldest sighting, and on a tie the one that was added first. */
+function leastRecentlySeen(table: Map<string, DetectedUrl>): string {
+  let oldest: DetectedUrl | undefined;
+  for (const row of table.values()) if (!oldest || row.lastSeenAt < oldest.lastSeenAt) oldest = row;
+  return oldest!.url;
+}
+
 /** How long a liveness probe waits before calling an address dead. Loopback answers in under a
  *  millisecond; anything slower is not a dev server the user is waiting on. */
 const PROBE_TIMEOUT_MS = 400;
@@ -114,10 +132,15 @@ export function isListening(url: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<
  *
  * Per run rather than per session, because the spec lists them for the TASK — a server started
  * in one tab is the same server whichever tab you are looking at — and deduplicated by address,
- * so restarting a dev server updates its row instead of growing the list.
+ * so restarting a dev server updates its row instead of growing the list. Bounded both ways: at
+ * most `MAX_URLS_PER_RUN` rows a task, and one probe per host:port however many paths it printed.
  */
 export class DetectedUrls {
   private byRun = new Map<string, Map<string, DetectedUrl>>();
+  /** Recent answers by `host:port`, shared by every run and reader. */
+  private probed = new Map<string, { at: number; answer: Promise<boolean> }>();
+  private probing = 0;
+  private waiting: Array<() => void> = [];
 
   /** Record every address in a chunk of this run's output. Returns true when anything changed,
    *  so a caller can skip publishing when nothing did. */
@@ -138,6 +161,7 @@ export class DetectedUrls {
         existing.lastSeenAt = at;
         existing.running = null;
       } else {
+        while (table.size >= MAX_URLS_PER_RUN) table.delete(leastRecentlySeen(table));
         table.set(url, { url, lastSeenAt: at, running: null });
       }
     }
@@ -149,15 +173,47 @@ export class DetectedUrls {
   }
 
   /** Probe every address of a run and fold the answers back in. */
-  async refresh(runId: string, probe: (url: string) => Promise<boolean> = isListening): Promise<DetectedUrl[]> {
+  async refresh(
+    runId: string,
+    probe: (url: string) => Promise<boolean> = isListening,
+    now = Date.now(),
+  ): Promise<DetectedUrl[]> {
     const table = this.byRun.get(runId);
     if (!table) return [];
+    for (const [key, entry] of this.probed) if (now - entry.at >= PROBE_REUSE_MS) this.probed.delete(key);
     const rows = [...table.values()];
-    const answers = await Promise.all(rows.map((row) => probe(row.url)));
+    const answers = await Promise.all(rows.map((row) => this.probeOnce(row.url, probe, now)));
     rows.forEach((row, index) => {
       row.running = answers[index] ?? false;
     });
     return rows;
+  }
+
+  /** One probe per host:port — liveness is a property of the port, not of the path printed. */
+  private probeOnce(url: string, probe: (url: string) => Promise<boolean>, now: number): Promise<boolean> {
+    const target = portOf(url);
+    const key = target ? `${target.host}:${target.port}` : url;
+    const recent = this.probed.get(key);
+    if (recent) return recent.answer;
+    const answer = this.limited(() => probe(url));
+    this.probed.set(key, { at: now, answer });
+    return answer;
+  }
+
+  /** At most `PROBE_CONCURRENCY` probes open at once; a probe that throws is "not running". */
+  private async limited(run: () => Promise<boolean>): Promise<boolean> {
+    if (this.probing >= PROBE_CONCURRENCY) await new Promise<void>((resolve) => this.waiting.push(resolve));
+    else this.probing += 1;
+    try {
+      return await run();
+    } catch {
+      return false;
+    } finally {
+      // Hand the slot straight to the next waiter, so the count never dips and over-admits.
+      const next = this.waiting.shift();
+      if (next) next();
+      else this.probing -= 1;
+    }
   }
 
   /** Forget a task's addresses. For a deleted task, and for one whose terminals were all closed

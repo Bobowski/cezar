@@ -2865,6 +2865,9 @@ export function createApp(deps: ServerDeps) {
       // In-process handles for a project no route can reach any more: store
       // closed (index flushed), manager's timers and usage subscription dropped.
       trackerWatches.invalidateProject(entry.root);
+      // Its terminals live in the app-level registry, so nothing below reaches them — and once
+      // the project is gone no route can (spec §6). No built context means no session was opened.
+      for (const run of contexts.peek(id)?.store.listRuns() ?? []) stopTaskProcesses(run.id);
       contexts.dispose(id);
       workspaceEvents.emit('project-removed', { id });
       const body: RemoveProjectResponse = { removed: true, id };
@@ -4410,7 +4413,11 @@ export function createApp(deps: ServerDeps) {
     // Registered before the `/:id/...` routes so "archive-finished" and "read-all"
     // never match as a run id.
     .post('/runs/archive-finished', (c) => {
-      const archived = c.get('project').store.archiveFinished();
+      const { store } = c.get('project');
+      const open = store.listRuns().filter((run) => !run.archived).map((run) => run.id);
+      const archived = store.archiveFinished();
+      // The sweep is an archive like any other: each task it took loses its terminals (spec §6).
+      if (archived > 0) for (const id of open) if (store.getRun(id)?.archived) stopTaskProcesses(id);
       // One event for the sweep, `value` = how many it archived (summed on the dashboard).
       if (archived > 0) track('task_archived', { label: 'bulk', value: archived }, { sid: deviceSid(c.req.header('x-cezar-sid')) });
       return c.json({ archived });
@@ -5453,6 +5460,8 @@ export function createApp(deps: ServerDeps) {
       const run = store.getRun(id);
       if (!run) return c.json({ error: 'not found' }, 404);
       if (manager.isActive(id)) return c.json({ error: 'run is active — cancel it first' }, 409);
+      // A shell must not outlive the directory it is standing in (spec §6).
+      stopTaskProcesses(id);
       if (run.worktreePath) await removeWorktree(repoRoot, run.worktreePath, run.branch);
       store.updateRun(id, { worktreePath: undefined, branch: undefined });
       if (run.prHead) await manager.sweepPrHeadRefs();

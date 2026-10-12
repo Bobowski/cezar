@@ -460,6 +460,15 @@ lifecycle. A future terminal spec must resolve:
 > **IMPLEMENTATION NOTE — detected addresses have three states, not two.** Unprobed is not the
 > same claim as "nothing listening", and the strip renders them differently. Liveness is a TCP
 > connect and nothing more: cezar must not send a request to a server a task started.
+>
+> **IMPLEMENTATION NOTE — the detected list is bounded.** At most 50 addresses per task (the least
+> recently printed is dropped), and liveness is probed once per host:port, at most 8 probes at a
+> time, with an answer reused for one second — a log of request URLs is not a list of servers.
+>
+> **IMPLEMENTATION NOTE — "process tree" means every process group under the shell.** An
+> interactive shell gives each job its own group, so a stop reads the process table once and
+> signals each group it finds under the shell (falling back to the shell's own group without
+> `ps`). Bulk archive, worktree removal and project removal stop a task's terminals too.
 
 Browser is one of the selectable workspace views. Each Browser column has its own saved browser tabs.
 Tabs use the page title as their label, with the URL as the label when loading fails. They include

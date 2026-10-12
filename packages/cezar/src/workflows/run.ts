@@ -1356,7 +1356,10 @@ export class RunManager {
     // The same ONE gate the dispatch prompt uses, so an agent is never told about a CLI whose
     // address it was not given (and never given an address it was not told about).
     const apiUrl = this.dispatchReachable() ? process.env.CEZ_API_URL : undefined;
-    const runToken = apiUrl ? mintRunToken(runId, this.projectId) : undefined;
+    // The credential follows the ADDRESS, not the dispatch gate: with dispatch off the agent still
+    // inherits `CEZ_API_URL` from `serve` and is still told about `cez automation`.
+    const cliReachable = Boolean(apiUrl) || automationsReachable();
+    const runToken = cliReachable ? mintRunToken(runId, this.projectId) : undefined;
     return {
       CEZ_HANDOFF_FILE: handoffPath(this.dataDir, runId),
       CEZ_TASK_ID: runId,
@@ -1369,10 +1372,11 @@ export class RunManager {
       // which project the run belongs to. Absent (not empty) while the feature is off, so the env
       // is byte-for-byte as before.
       ...(apiUrl ? { CEZ_API_URL: apiUrl } : {}),
-      ...(apiUrl && this.projectId ? { CEZ_PROJECT_ID: this.projectId } : {}),
+      // With a token the project always rides along: the token opens that project's routes only.
+      ...((apiUrl || runToken) && this.projectId ? { CEZ_PROJECT_ID: this.projectId } : {}),
       // What those CLIs show a cockpit that enforces auth (spec 2026-10-12-cockpit-authentication
       // §7). Absent while auth is off.
-      ...(apiUrl && runToken ? { CEZ_API_TOKEN: runToken } : {}),
+      ...(runToken ? { CEZ_API_TOKEN: runToken } : {}),
       // The cockpit's OWN entrypoint, so an agent runs `node "$CEZ_BIN" task …` and never an older
       // `cez` that happens to be on its PATH without the command (observed on the first live run).
       ...(apiUrl && process.env.CEZ_BIN ? { CEZ_BIN: process.env.CEZ_BIN } : {}),

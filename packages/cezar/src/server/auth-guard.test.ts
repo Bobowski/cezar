@@ -3,7 +3,8 @@ import type { IncomingMessage } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Hono } from 'hono';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { WebSocket } from 'ws';
 import {
   authDevicesResponseSchema,
   authLoginResponseSchema,
@@ -14,15 +15,15 @@ import {
 } from '@open-mercato/cezar-contract';
 import { isPublicAuthPath, upgradeIsAuthenticated } from '../auth/guard.ts';
 import { ensureHostKey, readHostKey } from '../auth/host-key.ts';
-import { disableRunTokens, enableRunTokens, mintRunToken } from '../auth/run-tokens.ts';
+import { disableRunTokens, enableRunTokens, mintRunToken, runTokenAllows, verifyRunToken } from '../auth/run-tokens.ts';
 import { AuthService } from '../auth/service.ts';
 import { issueSetupCode } from '../auth/store.ts';
 import { base32Decode, hotp, totpStep } from '../auth/totp.ts';
 import { RunStore } from '../runs/store.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
-import type { RunManager } from '../workflows/run.ts';
+import { RunManager } from '../workflows/run.ts';
 import { authEnforced } from './capabilities.ts';
-import { createApp } from './server.ts';
+import { createApp, startServer } from './server.ts';
 
 /**
  * Spec `2026-10-12-cockpit-authentication.md` §6: under enforced auth every `/api` route is a
@@ -123,6 +124,63 @@ describe('cockpit authentication', () => {
     ]);
     for (const entry of open) expect(isPublicAuthPath(entry.split(' ')[1]!)).toBe(true);
   }, 30_000);
+
+  it('serves nothing outside /api but the static shell — a route added there is a route with no guard', () => {
+    const outside = (app as unknown as { routes: Array<{ method: string; path: string }> }).routes
+      .filter((route) => !route.path.startsWith('/api/'))
+      .map((route) => `${route.method} ${route.path}`);
+    // Build output only (`static-ui.ts`). Anything that serves DATA belongs under /api, where the
+    // guard is; adding a line here means deciding how that route authenticates.
+    expect([...new Set(outside)].sort()).toEqual([
+      'ALL /*', // bodyLimit
+      'GET /*', // the SPA shell
+      'GET /assets/:file',
+      'GET /icon.svg',
+      'GET /open-mercato.svg',
+    ]);
+  });
+
+  it('answers NO /api route with 401 or 403 for a signed-in owner — the other half of §6', async () => {
+    const { cookie } = await createOwner();
+    const routes = new Map<string, { method: string; path: string }>();
+    for (const route of (app as unknown as { routes: Array<{ method: string; path: string }> }).routes) {
+      if (route.method !== 'ALL' && route.path.startsWith('/api/')) routes.set(`${route.method} ${route.path}`, route);
+    }
+    expect(routes.size).toBeGreaterThan(150);
+    // Handlers really run here, so keep them on this machine: no fetch, and no CLI to shell out to.
+    vi.stubGlobal('fetch', async () => {
+      throw new TypeError('no network in the unit gate');
+    });
+    const path = process.env.PATH;
+    process.env.PATH = mkdtempSync(join(home, 'no-path-'));
+    const refused: string[] = [];
+    const unguarded: string[] = [];
+    // Never a valid body: a malformed one stops a validated write at its validator, AFTER the guard.
+    const send = (route: { method: string; path: string }, headers: Record<string, string>) =>
+      request(route.path.replace(':projectId', 'boot').replace(/:[A-Za-z0-9_]+/g, 'x'), {
+        method: route.method,
+        headers: route.method === 'GET' ? headers : { 'content-type': 'application/json', ...headers },
+        ...(route.method === 'GET' ? {} : { body: '{' }),
+      });
+    try {
+      for (const [name, route] of routes) {
+        if (name === 'POST /api/v1/auth/logout') continue; // would end the session the walk rides on
+        const anonymous = await send(route, {});
+        if (anonymous.status !== 401 && !isPublicAuthPath(route.path)) unguarded.push(`${anonymous.status} ${name}`);
+        const response = await send(route, { cookie });
+        void response.body?.cancel().catch(() => undefined); // an SSE stream would otherwise stay open
+        if (response.status === 401 || response.status === 403) refused.push(`${response.status} ${name}`);
+      }
+    } finally {
+      vi.unstubAllGlobals();
+      if (path === undefined) delete process.env.PATH;
+      else process.env.PATH = path;
+    }
+    // The guard answers before any validator: the malformed body never bought an anonymous 400.
+    expect(unguarded).toEqual([]);
+    expect(refused).toEqual([]);
+    expect((await request('/api/v1/auth/logout', { method: 'POST', headers: { cookie } })).status).toBe(200);
+  }, 60_000);
 
   it('does not run a guarded handler for an anonymous caller: health leaks nothing', async () => {
     const response = await request('/api/v1/health');
@@ -318,29 +376,162 @@ describe('cockpit authentication', () => {
     expect(upgrade({ host: HOST })).toBe(true);
   });
 
+  it('the real listener refuses a WebSocket handshake without a session, and accepts one with it', async () => {
+    const { cookie } = await createOwner();
+    const pinned = { dry: process.env.CEZ_DRY_RUN, automations: process.env.CEZ_AUTOMATIONS, skills: process.env.CEZ_SKILLS_AUTO_UPDATE };
+    // Nothing in the background: this boots the listener for its upgrade hook only.
+    process.env.CEZ_DRY_RUN = '1';
+    process.env.CEZ_AUTOMATIONS = '0';
+    process.env.CEZ_SKILLS_AUTO_UPDATE = '0';
+    // Its own AuthService, as `serve` builds one: the session is found through the store on disk.
+    const server = startServer(
+      { repoRoot, store, manager: { isActive: () => false } as unknown as RunManager, version: '0.0.0-test', bootProjectId: 'boot', auth: new AuthService({ scrypt: { N: 2 ** 10, r: 8, p: 1 } }) },
+      0,
+    );
+    try {
+      await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+      const { port } = server.address() as { port: number };
+      /** 101 when the socket opened, else the status the handshake was refused with. */
+      const handshake = (headers: Record<string, string>, path = '/api/v1/ws') =>
+        new Promise<number>((resolve) => {
+          const socket = new WebSocket(`ws://127.0.0.1:${port}${path}`, { headers: { ...HOSTED, ...headers } });
+          socket.once('open', () => { socket.terminate(); resolve(101); });
+          socket.once('unexpected-response', (_req, res) => { res.resume(); socket.terminate(); resolve(res.statusCode ?? 0); });
+          socket.once('error', () => resolve(0));
+        });
+      expect(await handshake({})).toBe(403);
+      expect(await handshake({ origin: `https://${HOST}` })).toBe(403); // same-origin is not a session
+      expect(await handshake({ cookie: '__Host-cez_session=forged' })).toBe(403);
+      expect(await handshake({ cookie: cookie.replace('__Host-', '') })).toBe(403); // the plain name, on a public host
+      expect(await handshake({ cookie })).toBe(101);
+      expect(await handshake({ cookie, origin: `https://${HOST}` })).toBe(101);
+      // A session does not replace the #426 origin guard — both halves of the `&&` are wired.
+      expect(await handshake({ cookie, origin: 'https://evil.example' })).toBe(403);
+      // And the plain HTTP surface of the same listener is the guarded app.
+      const health = await fetch(`http://127.0.0.1:${port}/api/v1/health`);
+      expect(health.status).toBe(401);
+    } finally {
+      await new Promise<void>((resolve) => { server.close(() => resolve()); (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.(); });
+      for (const [key, value] of [['CEZ_DRY_RUN', pinned.dry], ['CEZ_AUTOMATIONS', pinned.automations], ['CEZ_SKILLS_AUTO_UPDATE', pinned.skills]] as const) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }, 30_000);
+
   it('has no listener or upgrade hook outside the ones the spec accounts for', () => {
     // §6: a new server or upgrade path is a new way in. Adding one means deciding how it
-    // authenticates, then adding it here.
-    const accounted = new Set([
-      'server/ws.ts', // /api/v1/ws — gated in startServer by upgradeIsAuthenticated
-      'server/preview/gateway.ts', // its own ticket + cookie (spec 2026-10-10-preview-gateway §4)
-      'server/preview/design-proxy.ts', // loopback-only; unreachable from a hosted cockpit
-      'index.ts', // a free-port probe: listens, never accepts a request
-      'server-install/state.ts', // the same probe, for the installer
-    ]);
+    // authenticates, then adding it here. Pinned per file as COUNTS, so a second listener in a
+    // file that already has one is seen too.
+    const accounted: Record<string, { listeners: number; upgrades: number }> = {
+      'server/server.ts': { listeners: 1, upgrades: 0 }, // the cockpit itself: `serve()`, guarded app + the hub below
+      'server/ws.ts': { listeners: 1, upgrades: 1 }, // /api/v1/ws, `noServer` — gated in startServer by upgradeIsAuthenticated
+      'server/preview/gateway.ts': { listeners: 1, upgrades: 1 }, // its own ticket + cookie (spec 2026-10-10-preview-gateway §4)
+      'server/preview/design-proxy.ts': { listeners: 1, upgrades: 1 }, // loopback-only; unreachable from a hosted cockpit
+      'index.ts': { listeners: 1, upgrades: 0 }, // a free-port probe: listens, never accepts a request
+      'server-install/state.ts': { listeners: 1, upgrades: 0 }, // the same probe, for the installer
+    };
+    const LISTENER = /\b(?:createServer|createSecureServer|serve)\(|\bnew\s+(?:[\w.]+\.)?(?:WebSocketServer|Server)\(/g;
+    const UPGRADE = /\.(?:on|once|addListener|prependListener)\(\s*['"`]upgrade['"`]/g;
     const root = join(import.meta.dirname, '..');
-    const found = new Set<string>();
+    const found: Record<string, { listeners: number; upgrades: number }> = {};
     const walk = (dir: string): void => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         const path = join(dir, entry.name);
         if (entry.isDirectory()) walk(path);
         else if (entry.name.endsWith('.ts') && !/\.(test|testkit)\.ts$/.test(entry.name)) {
-          const source = readFileSync(path, 'utf8');
-          if (/\.on\(\s*'upgrade'/.test(source) || /\bcreateServer\(/.test(source)) found.add(path.slice(root.length + 1).replaceAll('\\', '/'));
+          // Comments talk about `serve()`; only code can open a port. Whole comment LINES only —
+          // pairing `/*` with `*/` would swallow the code between two `'/api/*'` route patterns.
+          const source = readFileSync(path, 'utf8').replace(/^\s*(?:\/\/|\/\*|\*).*$/gm, '');
+          const counts = { listeners: source.match(LISTENER)?.length ?? 0, upgrades: source.match(UPGRADE)?.length ?? 0 };
+          if (counts.listeners + counts.upgrades > 0) found[path.slice(root.length + 1).replaceAll('\\', '/')] = counts;
         }
       }
     };
     walk(root);
-    expect([...found].filter((file) => !accounted.has(file)).sort()).toEqual([]);
+    expect(found).toEqual(accounted);
+  });
+});
+
+/**
+ * §7: a task's CLIs need a credential wherever they are given the cockpit's address — the three
+ * of them (`cez task`, `cez automation`, `cez tracker`) are gated separately, and only one is
+ * dispatch. Read at `agentEnvForStep`, the one seam `execute` and `runContinuation` both spawn
+ * through.
+ */
+describe('a task’s CEZ_API_TOKEN', () => {
+  const NAMES = ['CEZ_HOME', 'CEZ_REMOTE', 'CEZ_AUTH', 'CEZ_API_URL', 'CEZ_BIN', 'CEZ_DISPATCH', 'CEZ_AUTOMATIONS'] as const;
+  const saved = Object.fromEntries(NAMES.map((name) => [name, process.env[name]]));
+  let home: string;
+  let repoRoot: string;
+  let store: RunStore;
+
+  type Seam = { agentEnvForStep(runId: string, backend: 'claude'): Promise<{ env: Record<string, string> }> };
+  const envOf = async (projectId: string | undefined = 'proj') => {
+    const manager = new RunManager(store, repoRoot, projectId ? { projectId } : {});
+    const run = store.createRun({ title: 't', workflow: 'quick-task', task: 't', steps: [{ id: 'work', name: 'work', kind: 'agent' }] });
+    return { run, env: (await (manager as unknown as Seam).agentEnvForStep(run.id, 'claude')).env };
+  };
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'cez-runtoken-home-'));
+    repoRoot = mkdtempSync(join(tmpdir(), 'cez-runtoken-repo-'));
+    process.env.CEZ_HOME = home;
+    process.env.CEZ_REMOTE = '1';
+    delete process.env.CEZ_AUTH;
+    // What `serve` writes into its own environment, and every agent inherits (`buildChildEnv`).
+    process.env.CEZ_API_URL = 'http://127.0.0.1:4321';
+    process.env.CEZ_BIN = '/opt/cezar/bin.js';
+    delete process.env.CEZ_DISPATCH;
+    delete process.env.CEZ_AUTOMATIONS;
+    store = RunStore.open(join(repoRoot, '.ai/cezar'), { keepLive: true });
+  });
+
+  afterEach(async () => {
+    disableRunTokens();
+    store.flush();
+    await removeTempDir(home, repoRoot);
+    for (const name of NAMES) {
+      if (saved[name] === undefined) delete process.env[name];
+      else process.env[name] = saved[name];
+    }
+  });
+
+  it('is minted with dispatch on, for the project the CLI will address', async () => {
+    enableRunTokens();
+    const { run, env } = await envOf();
+    expect(verifyRunToken(env.CEZ_API_TOKEN!)).toEqual({ runId: run.id, projectId: 'proj' });
+    expect(env.CEZ_PROJECT_ID).toBe('proj');
+  });
+
+  it('is minted with CEZ_DISPATCH=0 too — `cez automation` is still reachable and still needs it', async () => {
+    enableRunTokens();
+    process.env.CEZ_DISPATCH = '0';
+    const { run, env } = await envOf();
+    const claims = verifyRunToken(env.CEZ_API_TOKEN ?? '');
+    expect(claims).toEqual({ runId: run.id, projectId: 'proj' });
+    // The token only opens the project it names, so the CLI has to be told to address it.
+    expect(env.CEZ_PROJECT_ID).toBe('proj');
+    expect(runTokenAllows(claims!, 'GET', `/api/v1/p/${env.CEZ_PROJECT_ID}/automations`)).toBe(true);
+  });
+
+  it('is not minted when no CLI can reach the cockpit', async () => {
+    enableRunTokens();
+    process.env.CEZ_DISPATCH = '0';
+    process.env.CEZ_AUTOMATIONS = '0';
+    expect((await envOf()).env.CEZ_API_TOKEN).toBeUndefined();
+    delete process.env.CEZ_DISPATCH;
+    delete process.env.CEZ_AUTOMATIONS;
+    delete process.env.CEZ_API_URL; // a headless `cezar run`
+    expect((await envOf()).env.CEZ_API_TOKEN).toBeUndefined();
+  });
+
+  it.each(['1', '0'])('auth off leaves the environment as it was (CEZ_DISPATCH=%s)', async (dispatch) => {
+    process.env.CEZ_AUTH = '0';
+    process.env.CEZ_DISPATCH = dispatch;
+    const { env } = await envOf();
+    expect(env.CEZ_API_TOKEN).toBeUndefined();
+    expect('CEZ_PROJECT_ID' in env).toBe(dispatch === '1');
+    expect('CEZ_API_URL' in env).toBe(dispatch === '1');
   });
 });

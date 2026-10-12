@@ -1,3 +1,4 @@
+import { ProjectIcon } from '@/components/project-icon'
 import type { ServicesBadge } from '@/api/services'
 import {
   ArrowUpCircleIcon,
@@ -806,9 +807,13 @@ function ProjectSwitcher({
               aria-label={`Project: ${name}. Switch project`}
               className="size-9 justify-center rounded-md border bg-card p-0 text-[13px] font-semibold text-foreground uppercase shadow-xs data-[state=open]:bg-sidebar-accent"
             >
-              <span aria-hidden="true" data-slot="repo-chip">
-                {name.trim().charAt(0) || '·'}
-              </span>
+              {active?.icon ? (
+                <ProjectIcon project={active} size="default" fallbackSlot="repo-chip" className="size-full border-0" />
+              ) : (
+                <span aria-hidden="true" data-slot="repo-chip">
+                  {name.trim().charAt(0) || '·'}
+                </span>
+              )}
             </SidebarMenuButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent
@@ -834,9 +839,13 @@ function ProjectSwitcher({
                     onSelect={() => navigate(`/p/${encodeURIComponent(project.id)}/`)}
                     className="gap-2.5 py-2"
                   >
-                    <span className="flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-muted-foreground">
-                      <FolderGit2Icon className="size-3.5" aria-hidden="true" />
-                    </span>
+                    {project.icon ? (
+                      <ProjectIcon project={project} />
+                    ) : (
+                      <span className="flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-muted-foreground">
+                        <FolderGit2Icon className="size-3.5" aria-hidden="true" />
+                      </span>
+                    )}
                     <span className="grid min-w-0 flex-1 leading-tight">
                       <span className="truncate text-[13px] font-medium">{project.name}</span>
                       <span className="truncate font-mono text-[11px] text-muted-foreground">

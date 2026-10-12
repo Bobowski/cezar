@@ -69,6 +69,12 @@ export const projectListEntrySchema = z.object({
    * directly.
    */
   tags: z.array(z.string()).optional(),
+  /**
+   * The project's icon, as a version token (spec `2026-10-12-project-identity`). Present when
+   * the user set one; the image itself is `GET /api/v1/projects/:projectId/icon`, and this
+   * token is what a client appends to that address so a changed icon is a changed URL.
+   */
+  icon: z.string().optional(),
 });
 export type ProjectListEntry = z.infer<typeof projectListEntrySchema>;
 
@@ -116,6 +122,8 @@ export type UpdateProjectResponse = z.infer<typeof updateProjectResponseSchema>;
 /** Bounds for one tag and for a project's tag list. Named because three places must agree: this
  *  schema, the registry schema that must never `.catch` away a value this accepts
  *  (`workspaceProjectSchema` in the service), and the settings editor that refuses input early. */
+/** A display name's upper bound — under the registry's own 200, so a rename is never truncated. */
+export const PROJECT_NAME_MAX_LENGTH = 80;
 export const PROJECT_TAG_MAX_LENGTH = 32;
 export const PROJECT_TAGS_MAX = 20;
 
@@ -141,6 +149,9 @@ export const PROJECT_TAGS_MAX = 20;
  */
 export const updateProjectInputSchema = z
   .object({
+    /** The name the cockpit shows. Cosmetic: the id, the URL and the folder do not change.
+     *  `null` resets it to the folder's own name. */
+    name: z.string().trim().min(1).max(PROJECT_NAME_MAX_LENGTH).nullable().optional(),
     maxParallel: z.number().int().min(1).max(16).nullable().optional(),
     tags: z
       .array(z.string().trim().min(1).max(PROJECT_TAG_MAX_LENGTH))
@@ -149,8 +160,8 @@ export const updateProjectInputSchema = z
       .optional(),
   })
   .refine(
-    (body) => body.maxParallel !== undefined || body.tags !== undefined,
-    'specify maxParallel or tags',
+    (body) => body.maxParallel !== undefined || body.tags !== undefined || body.name !== undefined,
+    'specify name, maxParallel or tags',
   );
 export type UpdateProjectInput = z.infer<typeof updateProjectInputSchema>;
 
@@ -201,3 +212,30 @@ export const launchKeyResponseSchema = z.object({
   key: z.string(),
 });
 export type LaunchKeyResponse = z.infer<typeof launchKeyResponseSchema>;
+
+/**
+ * A project's icon (spec `2026-10-12-project-identity`): a small image the cockpit shows beside
+ * the project's name. Cosmetic, like the name.
+ */
+
+/** The decoded image's upper bound. A logo, not a photograph. */
+export const PROJECT_ICON_MAX_BYTES = 512 * 1024;
+export const PROJECT_ICON_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml', 'image/x-icon'] as const;
+export const projectIconTypeSchema = z.enum(PROJECT_ICON_TYPES);
+export type ProjectIconType = z.infer<typeof projectIconTypeSchema>;
+
+/**
+ * `PUT /api/v1/projects/:projectId/icon` — an uploaded image as base64, or `path`: a file of the
+ * project's own repository (one of `GET …/icon-candidates`), copied as it is now. The server
+ * decides the type from the bytes, never from a name or a header.
+ */
+export const setProjectIconSchema = z.union([
+  z.object({ data: z.string().min(1).max(Math.ceil((PROJECT_ICON_MAX_BYTES * 4) / 3) + 4) }).strict(),
+  z.object({ path: z.string().min(1).max(512) }).strict(),
+]);
+export type SetProjectIconInput = z.infer<typeof setProjectIconSchema>;
+
+/** `GET /api/v1/projects/:projectId/icon-candidates` — images in the repository that look like
+ *  its logo or favicon, likeliest first. Repo-relative paths; empty when there are none. */
+export const projectIconCandidatesSchema = z.object({ candidates: z.array(z.string()) });
+export type ProjectIconCandidates = z.infer<typeof projectIconCandidatesSchema>;

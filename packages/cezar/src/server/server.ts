@@ -9,12 +9,14 @@ import {
   secretParamsSchema, secretValueInputSchema, type SecretsList, type SecretValueInput,
   envFileQuerySchema, setEnvFileSchema, type EnvFilesList,
   codeSearchQuerySchema, codeWatchQuerySchema, repoFilePathQuerySchema, type CodeWatch,
+  PROJECT_ICON_MAX_BYTES, setProjectIconSchema, type ProjectIconCandidates,
   serviceLogsQuerySchema, serviceParamsSchema, servicePatchSchema, servicePinInputSchema, type ServiceLogs, type ServicesState,
   e2eSetupInputSchema, type E2eStatus,
 } from '@open-mercato/cezar-contract';
 import { SecretStore, SecretsError, type SecretScopeRef } from '../workspace/secrets.ts';
 import { listEnvFiles, readEnvFile, removeEnvFile, writeEnvFile } from '../env-files.ts';
 import { discoverServiceCandidates } from '../services/discover.ts';
+import { findIconCandidates, readProjectIcon, removeProjectIcons, saveProjectIcon } from '../workspace/project-icons.ts';
 import { searchCheckout } from './code-search.ts';
 import { checkoutWatchSupported, watchCheckout } from './checkout-watch.ts';
 import { ignoredAmong } from '../worktree-env.ts';
@@ -2747,6 +2749,28 @@ export function createApp(deps: ServerDeps) {
   };
 
   // ---- chained family: project registry (workspace-level) ----
+  /** The registry entry a `:projectId` names (`default` is the boot alias), or `null`. */
+  const registeredProject = async (raw: string): Promise<WorkspaceProject | null> => {
+    if (!projectIdSchema.safeParse(raw).success) return null;
+    const id = raw === 'default' ? await resolveBootProject() : raw;
+    try {
+      return (await loadWorkspaceConfig()).projects.find((project) => project.id === id) ?? null;
+    } catch {
+      return null;
+    }
+  };
+  /** Point a project at an icon file, or at none. Answers the entry as written. */
+  const writeProjectIcon = async (id: string, file: string | null): Promise<WorkspaceProject | undefined> => {
+    let updated: WorkspaceProject | undefined;
+    await mergeWriteWorkspaceConfig((config) => {
+      const entry = config.projects.find((project) => project.id === id);
+      if (!entry) return;
+      if (file === null) delete entry.icon;
+      else entry.icon = file;
+      updated = entry;
+    });
+    return updated;
+  };
   const projectsRoutes = new Hono<ProjectApiEnv>()
     .get('/projects', async (c) => {
       let projects: ProjectListEntry[] = [];
@@ -2879,6 +2903,7 @@ export function createApp(deps: ServerDeps) {
       // the project is gone no route can (spec §6). No built context means no session was opened.
       for (const run of contexts.peek(id)?.store.listRuns() ?? []) stopTaskProcesses(run.id);
       projectServices.stopProject(id);
+      void removeProjectIcons(id);
       contexts.dispose(id);
       workspaceEvents.emit('project-removed', { id });
       const body: RemoveProjectResponse = { removed: true, id };
@@ -2911,7 +2936,7 @@ export function createApp(deps: ServerDeps) {
       const parsed = { data: c.req.valid('json') };
       // `default` is the boot alias the cockpit is allowed to use everywhere else.
       const id = raw === 'default' ? await resolveBootProject() : raw;
-      const { maxParallel, tags } = parsed.data;
+      const { maxParallel, tags, name } = parsed.data;
 
       // Read-first (mirroring DELETE, server.ts:1252-1258): a well-formed but
       // unknown id must 404 WITHOUT rewriting the config — otherwise it would both
@@ -2936,6 +2961,9 @@ export function createApp(deps: ServerDeps) {
           // keeps the tags editor from clearing a concurrency ceiling (and the
           // pre-tags `{ maxParallel }` body from clearing tags). null clears;
           // a value sets. Mutated in place so `.passthrough()` keys survive.
+          // Cosmetic (spec 2026-10-12-project-identity): the id, the URL and the root stay.
+          // `null` goes back to what registration would have called it.
+          if (name !== undefined) entry.name = name === null ? basename(entry.root) : name;
           if (maxParallel !== undefined) {
             if (maxParallel === null) delete entry.maxParallel;
             else entry.maxParallel = maxParallel;
@@ -2965,6 +2993,72 @@ export function createApp(deps: ServerDeps) {
         project: { ...updated, ...(await probeProjectStatus(updated.root)) },
       };
       return c.json(body);
+    })
+    // ---- project icon (spec 2026-10-12-project-identity) ----
+    // The image is read by an `<img>`, so it is served the way the worktree's raw images are:
+    // typed from its bytes, `nosniff`, and under a CSP that makes an SVG inert as a document.
+    .get('/projects/:projectId/icon', async (c) => {
+      const entry = await registeredProject(c.req.param('projectId'));
+      const stored = entry?.icon ? await readProjectIcon(entry.icon) : null;
+      if (!stored) return c.json({ error: 'this project has no icon' }, 404);
+      return c.body(new Uint8Array(stored.bytes).buffer as ArrayBuffer, 200, {
+        'content-type': stored.type,
+        'x-content-type-options': 'nosniff',
+        'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+        // The address carries the file's hash (`?v=`), so the bytes behind it never change.
+        'cache-control': 'private, max-age=31536000, immutable',
+      });
+    })
+    .get('/projects/:projectId/icon-candidates', async (c) => {
+      const entry = await registeredProject(c.req.param('projectId'));
+      if (!entry) return c.json({ error: `unknown project: ${c.req.param('projectId')}` }, 404);
+      const found: ProjectIconCandidates = { candidates: await findIconCandidates(entry.root) };
+      return c.json(found, 200);
+    })
+    .put('/projects/:projectId/icon', bodyLimit({ maxSize: PROJECT_ICON_MAX_BYTES * 2 }), jsonZodValidator(setProjectIconSchema), async (c) => {
+      if (capabilities().singleProject) return c.json(singleProjectRefusal('editing projects'), 409);
+      const entry = await registeredProject(c.req.param('projectId'));
+      if (!entry) return c.json({ error: `unknown project: ${c.req.param('projectId')}` }, 404);
+      const input = c.req.valid('json');
+      let bytes: Buffer;
+      if ('path' in input) {
+        // Only a file discovery itself would have offered: this route copies a logo, it is not
+        // a way to read an arbitrary file of the checkout into `~/.cezar`.
+        if (!(await findIconCandidates(entry.root)).includes(input.path)) {
+          return c.json({ error: `not an icon of this repository: ${input.path}` }, 409);
+        }
+        const target = await readWorktreePath(entry.root, input.path);
+        if (target.kind !== 'file') return c.json({ error: `not a file of this repository: ${input.path}` }, 409);
+        if (target.size > PROJECT_ICON_MAX_BYTES) return c.json({ error: `an icon is at most ${PROJECT_ICON_MAX_BYTES / 1024} KB` }, 409);
+        try {
+          bytes = await readFile(join(entry.root, target.path));
+        } catch {
+          return c.json({ error: `could not read ${input.path}` }, 409);
+        }
+      } else {
+        bytes = Buffer.from(input.data, 'base64');
+      }
+      let saved;
+      try {
+        saved = await saveProjectIcon(entry.id, bytes);
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+      }
+      if (!saved.ok) return c.json({ error: saved.error }, 409);
+      const updated = await writeProjectIcon(entry.id, saved.value);
+      if (!updated) return c.json({ error: `unknown project: ${entry.id}` }, 404);
+      const body: UpdateProjectResponse = { project: { ...updated, ...(await probeProjectStatus(updated.root)) } };
+      return c.json(body, 200);
+    })
+    .delete('/projects/:projectId/icon', async (c) => {
+      if (capabilities().singleProject) return c.json(singleProjectRefusal('editing projects'), 409);
+      const entry = await registeredProject(c.req.param('projectId'));
+      if (!entry) return c.json({ error: `unknown project: ${c.req.param('projectId')}` }, 404);
+      const updated = await writeProjectIcon(entry.id, null);
+      if (!updated) return c.json({ error: `unknown project: ${entry.id}` }, 404);
+      await removeProjectIcons(entry.id);
+      const body: UpdateProjectResponse = { project: { ...updated, ...(await probeProjectStatus(updated.root)) } };
+      return c.json(body, 200);
     })
 
     .post('/projects/checkout', jsonZodValidator(() => checkoutSchema, { message: 'url must be a GitHub repository' }), async (c) => {

@@ -67,6 +67,9 @@ const workspaceProjectSchema = z
       .max(PROJECT_TAGS_MAX)
       .optional()
       .catch(undefined),
+    /** The file under `~/.cezar/project-icons/` holding this project's icon (spec
+     *  2026-10-12-project-identity). A bad value degrades to "no icon". */
+    icon: z.string().regex(/^[a-z0-9-]{1,80}\.[a-z0-9]{2,5}$/).optional().catch(undefined),
   })
   .passthrough();
 

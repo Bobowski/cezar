@@ -736,6 +736,8 @@ function applyProjectPatch(
   const tags = 'tags' in patch && patch.tags !== undefined ? patch.tags : project.tags
   const normalized = tags === null || tags === undefined ? [] : normalizeTagsForDisplay(tags)
   if (normalized.length > 0) next.tags = normalized
+  // A reset (`null`) is the server's to name: the folder's own name is not known here.
+  if (typeof patch.name === 'string') next.name = patch.name.trim()
   return next
 }
 

@@ -7,6 +7,7 @@ import { StatusDot } from '@/components/status-dot'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { useActiveProjectId } from '@/lib/project-router'
+import { ProjectIdentity } from './project-identity'
 import { ProjectFolderField } from './project-location'
 import { AddBootProjectButton, MaxParallelStepper, STATUS_LABEL } from './projects-section'
 import { RemoveProjectDialog, useProjectRemoval } from './remove-project'
@@ -108,6 +109,7 @@ export function ProjectGeneral({ capabilities }: { capabilities?: Partial<Pick<C
 
       {managesRegistry ? (
         <>
+          <ProjectIdentity project={project} />
           <SettingsGroup title="Limits">
             <SettingsField
               title="Max parallel tasks"

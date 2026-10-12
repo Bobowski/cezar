@@ -97,6 +97,8 @@ import type {
   ProjectsResponse,
   RegisterProjectResponse,
   RemoveProjectResponse,
+  ProjectIconCandidates,
+  SetProjectIconInput,
   UpdateProjectInput,
   UpdateProjectResponse,
   RemoveTodoResponse,
@@ -1522,6 +1524,26 @@ export async function removeProject(projectId: string): Promise<RemoveProjectRes
  * `selectAgentProfile` (`PUT /api/v1/workspace/agent-profiles/selection`), so
  * the selection is stored beside the accounts it names.
  */
+/** Set a project's icon from an upload (`data`, base64) or from a file of its repository (`path`). */
+export async function setProjectIcon(projectId: string, input: SetProjectIconInput): Promise<UpdateProjectResponse> {
+  return unwrap(
+    await cez.api.v1.projects[':projectId'].icon.$put({ param: { projectId: encodeURIComponent(projectId) }, json: input }),
+    `/projects/${encodeURIComponent(projectId)}/icon`,
+  )
+}
+export async function removeProjectIcon(projectId: string): Promise<UpdateProjectResponse> {
+  return unwrap(
+    await cez.api.v1.projects[':projectId'].icon.$delete({ param: { projectId: encodeURIComponent(projectId) } }),
+    `/projects/${encodeURIComponent(projectId)}/icon`,
+  )
+}
+export async function getProjectIconCandidates(projectId: string, opts?: ReadOptions): Promise<ProjectIconCandidates> {
+  return unwrap(
+    await cez.api.v1.projects[':projectId']['icon-candidates'].$get({ param: { projectId: encodeURIComponent(projectId) } }, init(opts)),
+    `/projects/${encodeURIComponent(projectId)}/icon-candidates`,
+  )
+}
+
 export async function updateProject(
   projectId: string,
   input: UpdateProjectInput,

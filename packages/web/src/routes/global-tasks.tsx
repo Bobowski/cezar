@@ -1,3 +1,4 @@
+import { ProjectIcon } from '@/components/project-icon'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ArchiveIcon,
@@ -847,7 +848,7 @@ function GlobalTasksSidebar({
                 <SidebarMenuItem key={project.id}>
                   <SidebarMenuButton asChild title={`Open ${project.name}'s tasks`}>
                     <Link to={scopeTo(project.id, '/')}>
-                      <FolderGit2Icon aria-hidden="true" />
+                      {project.icon ? <ProjectIcon project={project} className="size-4 rounded-sm" /> : <FolderGit2Icon aria-hidden="true" />}
                       <span>{project.name}</span>
                     </Link>
                   </SidebarMenuButton>

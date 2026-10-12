@@ -275,6 +275,36 @@ describe('cockpit authentication', () => {
     }
   });
 
+  it('a signed-in owner is a trusted operator: the hosted gates open for them and for nobody else', async () => {
+    const { cookie } = await createOwner();
+    const asOwner = { cookie };
+    const health = (await (await request('/api/v1/health', { headers: asOwner })).json()) as {
+      capabilities: Record<string, boolean>;
+    };
+    expect(health.capabilities).toMatchObject({ terminal: true, fileEdit: true });
+    // Machine properties did not move: there is still no editor to open on the viewer's side.
+    expect(health.capabilities).toMatchObject({ localHandoff: false, preview: false });
+
+    const listing = (await (await request('/api/v1/agent-config', { headers: asOwner })).json()) as { editable: boolean };
+    expect(listing.editable).toBe(true);
+    const write = (headers: Record<string, string>) =>
+      request('/api/v1/agent-config/claude.project.settings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify({ content: '{"hooks":{}}', version: null }),
+      });
+    expect((await write(asOwner)).status).toBe(200);
+    expect(readFileSync(join(repoRoot, '.claude/settings.json'), 'utf8')).toBe('{"hooks":{}}');
+    expect((await write({})).status).toBe(401); // the same write, anonymous
+
+    // Handing auth back to the proxy closes it again — the hooks RCE path #404 named.
+    process.env.CEZ_AUTH = '0';
+    const refused = await write({});
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: expect.stringContaining('CEZ_AUTH=0') });
+    expect((await request('/api/v1/open-in', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"target":"finder"}' })).status).toBe(409);
+  });
+
   it('gates the WebSocket handshake on the same session', async () => {
     const service = new AuthService({ scrypt: { N: 2 ** 10, r: 8, p: 1 } });
     const enforced = () => authEnforced(process.env);

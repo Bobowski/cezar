@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isLoopbackHost, isLoopbackHostHeader, normalizeHostname, resolveCapabilities } from './capabilities.ts';
+import { isLoopbackHost, isLoopbackHostHeader, normalizeHostname, resolveCapabilities, trustedOperator } from './capabilities.ts';
 
 /**
  * `resolveCapabilities` takes its env as a parameter, so these drive it
@@ -157,8 +157,9 @@ describe('resolveCapabilities — followups (#471)', () => {
   it('is independent of the deployment mode', () => {
     expect(resolveCapabilities({ CEZ_FOLLOWUPS: '1', CEZ_REMOTE: '1' }, '0.0.0.0')).toEqual({
       localHandoff: false,
-      terminal: false,
-      preview: false, designMode: false, fileEdit: false,
+      // A hosted cockpit enforces sign-in by default, so its operator is trusted with both.
+      terminal: true,
+      preview: false, designMode: false, fileEdit: true,
       followups: true,
       singleProject: false,
       automations: true,
@@ -314,17 +315,55 @@ describe('resolveCapabilities — fileEdit (spec 2026-07-20-worktree-file-editin
     expect(resolveCapabilities({}, '127.0.0.1').fileEdit).toBe(true);
   });
 
-  it('is off once the cockpit is hosted, by flag or by bind host', () => {
-    expect(resolveCapabilities({ CEZ_REMOTE: '1' }, '127.0.0.1').fileEdit).toBe(false);
-    expect(resolveCapabilities({}, '0.0.0.0').fileEdit).toBe(false);
+  it('is off on a hosted cockpit WITHOUT sign-in, by flag or by bind host', () => {
+    expect(resolveCapabilities({ CEZ_REMOTE: '1', CEZ_AUTH: '0' }, '127.0.0.1').fileEdit).toBe(false);
+    expect(resolveCapabilities({ CEZ_AUTH: '0' }, '0.0.0.0').fileEdit).toBe(false);
   });
 
-  it('CEZ_FILE_EDIT=1 opts a hosted cockpit in — and only an exact "1" does', () => {
-    expect(resolveCapabilities({ CEZ_REMOTE: '1', CEZ_FILE_EDIT: '1' }, '0.0.0.0').fileEdit).toBe(true);
-    expect(resolveCapabilities({ CEZ_REMOTE: '1', CEZ_FILE_EDIT: 'true' }, '0.0.0.0').fileEdit).toBe(false);
+  it('is on for a hosted cockpit that enforces sign-in — its default (spec 2026-10-12 §7)', () => {
+    expect(resolveCapabilities({ CEZ_REMOTE: '1' }, '127.0.0.1').fileEdit).toBe(true);
+    expect(resolveCapabilities({}, '0.0.0.0').fileEdit).toBe(true);
+  });
+
+  it('CEZ_FILE_EDIT=1 opts a hosted cockpit without sign-in in — and only an exact "1" does', () => {
+    expect(resolveCapabilities({ CEZ_REMOTE: '1', CEZ_AUTH: '0', CEZ_FILE_EDIT: '1' }, '0.0.0.0').fileEdit).toBe(true);
+    expect(resolveCapabilities({ CEZ_REMOTE: '1', CEZ_AUTH: '0', CEZ_FILE_EDIT: 'true' }, '0.0.0.0').fileEdit).toBe(false);
+  });
+
+  it('CEZ_FILE_EDIT=0 still wins over sign-in', () => {
+    expect(resolveCapabilities({ CEZ_REMOTE: '1', CEZ_FILE_EDIT: '0' }, '0.0.0.0').fileEdit).toBe(false);
   });
 
   it('CEZ_FILE_EDIT=0 turns it off everywhere, local included', () => {
     expect(resolveCapabilities({ CEZ_FILE_EDIT: '0' }, undefined).fileEdit).toBe(false);
+  });
+});
+
+describe('resolveCapabilities — terminal (spec 2026-10-07-task-workspace §6)', () => {
+  it('follows the same line as file editing: local, or hosted with sign-in', () => {
+    expect(resolveCapabilities({}, undefined).terminal).toBe(true);
+    expect(resolveCapabilities({ CEZ_REMOTE: '1' }, undefined).terminal).toBe(true);
+    expect(resolveCapabilities({ CEZ_REMOTE: '1', CEZ_AUTH: '0' }, undefined).terminal).toBe(false);
+    expect(resolveCapabilities({ CEZ_REMOTE: '1', CEZ_AUTH: '0', CEZ_TERMINAL: '1' }, undefined).terminal).toBe(true);
+    expect(resolveCapabilities({ CEZ_REMOTE: '1', CEZ_TERMINAL: '0' }, undefined).terminal).toBe(false);
+    expect(resolveCapabilities({ CEZ_TERMINAL: '0' }, undefined).terminal).toBe(false);
+  });
+});
+
+describe('trustedOperator vs localHandoff — the two questions hosted mode used to conflate', () => {
+  it('sign-in makes a hosted operator trusted, and never makes them local', () => {
+    const hosted = resolveCapabilities({ CEZ_REMOTE: '1' }, undefined);
+    expect(trustedOperator({ CEZ_REMOTE: '1' })).toBe(true);
+    // Machine properties do not move: nothing to open an editor on, nothing honest to frame.
+    expect(hosted.localHandoff).toBe(false);
+    expect(hosted.preview).toBe(false);
+    expect(hosted.designMode).toBe(false);
+  });
+
+  it('is false only for a hosted cockpit that handed auth to its proxy', () => {
+    expect(trustedOperator({})).toBe(true);
+    expect(trustedOperator({ CEZ_AUTH: '0' })).toBe(true); // local: the machine is the perimeter
+    expect(trustedOperator({ CEZ_REMOTE: '1', CEZ_AUTH: '0' })).toBe(false);
+    expect(trustedOperator({ CEZ_AUTH: '0' }, '0.0.0.0')).toBe(false);
   });
 });

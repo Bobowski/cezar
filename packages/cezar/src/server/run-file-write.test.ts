@@ -102,14 +102,15 @@ describe('saving a file from the Code view', () => {
   });
 
   // Written so it cannot pass for the wrong reason: the SAME request succeeds one line later.
-  it('refuses on a hosted cockpit until CEZ_FILE_EDIT=1 opts it in', async () => {
+  // The suite pins CEZ_AUTH=0, so "hosted" here is the pre-auth kind: the proxy owns identity.
+  it('refuses on a hosted cockpit without sign-in until CEZ_FILE_EDIT=1 opts it in', async () => {
     const runId = seedRun();
     const body = () => ({ content: 'export const a = 3\n', baseHash: baseHash() });
 
     process.env.CEZ_REMOTE = '1';
     const refused = await put(runId, body());
     expect(refused.status).toBe(409);
-    expect((await refused.json() as { error: string }).error).toMatch(/hosted mode.*CEZ_FILE_EDIT=1/);
+    expect((await refused.json() as { error: string }).error).toMatch(/hosted cockpit.*without sign-in.*CEZ_FILE_EDIT=1/);
     expect(onDisk()).toBe('export const a = 1\n');
 
     process.env.CEZ_FILE_EDIT = '1';

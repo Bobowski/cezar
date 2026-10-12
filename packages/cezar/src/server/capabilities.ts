@@ -201,7 +201,7 @@ function designModeEnabled(env: NodeJS.ProcessEnv, bindHost?: string): boolean {
 function terminalEnabled(env: NodeJS.ProcessEnv, bindHost?: string): boolean {
   if (env.CEZ_TERMINAL === '1') return true;
   if (env.CEZ_TERMINAL === '0') return false;
-  return env.CEZ_REMOTE !== '1' && isLoopbackHost(bindHost);
+  return trustedOperator(env, bindHost);
 }
 
 /**
@@ -214,7 +214,24 @@ function terminalEnabled(env: NodeJS.ProcessEnv, bindHost?: string): boolean {
 function fileEditEnabled(env: NodeJS.ProcessEnv, bindHost?: string): boolean {
   if (env.CEZ_FILE_EDIT === '1') return true;
   if (env.CEZ_FILE_EDIT === '0') return false;
-  return env.CEZ_REMOTE !== '1' && isLoopbackHost(bindHost);
+  return trustedOperator(env, bindHost);
+}
+
+/**
+ * Whether whoever is calling may be handed the machine (spec `2026-10-12-cockpit-authentication.md`
+ * §7). `localHandoff` used to answer two questions at once; this is the second one.
+ *
+ *   - "is the viewer ON this machine?"  → `localHandoff`: open-in-editor, Finder, framing
+ *     `localhost` directly. A property of where the browser is; sign-in does not change it.
+ *   - "is the caller a trusted operator?" → this: a shell, a file write, an agent's config. True
+ *     locally, where the machine is the perimeter, and on a hosted cockpit that enforces its own
+ *     sign-in — the guard has already turned every request into the owner or a 401.
+ *
+ * False only for a hosted cockpit under `CEZ_AUTH=0`, where "anyone the proxy admits" is still
+ * the only identity there is, and the pre-auth gates stay exactly where they were.
+ */
+export function trustedOperator(env: NodeJS.ProcessEnv = process.env, bindHost?: string): boolean {
+  return (env.CEZ_REMOTE !== '1' && isLoopbackHost(bindHost)) || authEnforced(env, bindHost);
 }
 
 /**
@@ -233,7 +250,7 @@ export function authEnforced(env: NodeJS.ProcessEnv = process.env, bindHost?: st
 export function fileEditRefusal(env: NodeJS.ProcessEnv = process.env): string {
   return env.CEZ_FILE_EDIT === '0'
     ? 'file editing is disabled (CEZ_FILE_EDIT=0)'
-    : 'file editing is disabled — this cockpit runs in hosted mode (set CEZ_FILE_EDIT=1 to allow it)';
+    : 'file editing is disabled — this hosted cockpit runs without sign-in (CEZ_AUTH=0); set CEZ_FILE_EDIT=1 to allow it';
 }
 
 export function resolveCapabilities(env: NodeJS.ProcessEnv = process.env, bindHost?: string): Capabilities {

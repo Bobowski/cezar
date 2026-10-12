@@ -107,7 +107,9 @@ describe('the agent-config API', () => {
 
   // The regression test for the hooks RCE hole: a repo-LOCAL file must 409 in
   // hosted mode, not just a user-scope one. settings.json defines hooks.
-  it('hosted mode: EVERY write 409s — including a repo-local settings file', async () => {
+  // "Hosted" in this file is the pre-auth kind: the suite pins CEZ_AUTH=0, so the proxy owns
+  // identity and nobody is a trusted operator. A signed-in owner is `auth-guard.test.ts`.
+  it('hosted mode without sign-in: EVERY write 409s — including a repo-local settings file', async () => {
     process.env.CEZ_REMOTE = '1';
     const local = await put('claude.project.settings', {
       content: '{"hooks":{}}',

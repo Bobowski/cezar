@@ -253,7 +253,7 @@ import { ProjectContextError, ProjectContexts, type ProjectContext } from './pro
 import { reviewGateEnabled } from '../runs/review-gate.ts';
 import { readUiState, uiStatePath } from '../ui-state.ts';
 import { agentHomePaths, cezarHomeDir, expandTilde, isAbsolutePath } from '../paths.ts';
-import { authEnforced, fileEditRefusal, isLoopbackHostHeader, normalizeHostname, resolveCapabilities } from './capabilities.ts';
+import { authEnforced, fileEditRefusal, isLoopbackHostHeader, normalizeHostname, resolveCapabilities, trustedOperator } from './capabilities.ts';
 import { createAuthGuard, upgradeIsAuthenticated } from '../auth/guard.ts';
 import { ensureHostKey } from '../auth/host-key.ts';
 import { authRoutes } from '../auth/routes.ts';
@@ -7186,7 +7186,7 @@ export function createApp(deps: ServerDeps) {
   // so `AppType` carries it — see `healthRoutes`.
   const agentConfigRoutes = new Hono<ProjectApiEnv>()
     .get('/agent-config', async (c) => {
-      const editable = capabilities().localHandoff;
+      const editable = trustedOperator(process.env, bindHost);
       return c.json(await listAgentConfig(c.get('project').root, process.env, editable));
     })
 
@@ -7194,10 +7194,12 @@ export function createApp(deps: ServerDeps) {
       const id = c.req.param('id');
       const def = findConfigFile(id);
       if (!def) return c.json({ error: 'unknown config file' }, 404);
-      if (def.tracked === 'outside-repo' && !capabilities().localHandoff) {
+      // A home-directory file is host disclosure to anyone but a trusted operator (spec
+      // 2026-10-12-cockpit-authentication §7): served locally and to a signed-in hosted owner.
+      if (def.tracked === 'outside-repo' && !trustedOperator(process.env, bindHost)) {
         return c.json(
           {
-            error: 'this file lives in your home directory and is not served in hosted mode (CEZ_REMOTE)',
+            error: 'this file lives in the host\'s home directory and is not served by a hosted cockpit without sign-in (CEZ_AUTH=0)',
           },
           409,
         );
@@ -7209,13 +7211,14 @@ export function createApp(deps: ServerDeps) {
     })
 
     .put('/agent-config/:id', jsonZodValidator(setAgentConfigSchema), async (c) => {
-      // Config files may define hooks and MCP commands, so writes remain a
-      // local-machine capability and are re-gated on every request.
-      if (!capabilities().localHandoff) {
+      // Config files may define hooks and MCP commands, so a write is code execution on the
+      // host: a trusted-operator capability, re-gated on every request. Hosted, that means a
+      // signed-in owner; under CEZ_AUTH=0 it stays refused (the hooks RCE path this closed).
+      if (!trustedOperator(process.env, bindHost)) {
         return c.json(
           {
             error:
-              'editing agent config is disabled in hosted mode (CEZ_REMOTE) — edit it from the machine that owns the checkout',
+              'editing agent config is disabled on a hosted cockpit without sign-in (CEZ_AUTH=0) — edit it from the machine that owns the checkout',
           },
           409,
         );

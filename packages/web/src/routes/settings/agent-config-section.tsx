@@ -94,8 +94,8 @@ function AgentConfigView({ listing, installed }: { listing: AgentConfigListing; 
         <Alert data-slot="agent-config-readonly">
           <LockIcon aria-hidden="true" />
           <AlertDescription>
-            Read-only: agent config is edited from the machine that owns the checkout (this cockpit runs in hosted
-            mode). You can still see every file and which one wins.
+            Read-only: this hosted cockpit runs without its own sign-in, so agent config is edited from the machine
+            that owns the checkout. You can still see every file and which one wins.
           </AlertDescription>
         </Alert>
       )}

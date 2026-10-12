@@ -40,7 +40,16 @@ nothing), and:
    | macOS (arm64) | `cezar-macos-aarch64.dmg` |
    | macOS (x64) | `cezar-macos-x86_64.dmg` |
    | Windows | `cezar-windows-x86_64-setup.exe` (NSIS) |
-   | Linux | `cezar-linux-x86_64.AppImage` (+ `.deb` versioned) |
+   | Linux (any distribution) | `cezar-linux-x86_64.AppImage` |
+   | Debian, Ubuntu | `cezar-linux-x86_64.deb` |
+   | Arch Linux (Omarchy, Manjaro, EndeavourOS) | `cezar-linux-x86_64.pkg.tar.zst` — `sudo pacman -U <file>` |
+
+   The Arch package is its own job (`arch`): it repackages the `.deb`'s binary with
+   `packages/desktop/arch/PKGBUILD` inside an `archlinux` container, installs the result with
+   `pacman -U` and fails if `ldd` finds a library Arch does not provide. It runs against the
+   system's WebKitGTK, which the AppImage cannot. Two limits: the in-app shell updater only
+   replaces AppImages, so a pacman install is updated by installing the next package; and the
+   package is not in the AUR — publishing there needs an AUR account and is a follow-up.
 
    Stable names are the contract: `https://github.com/open-mercato/cezar/releases/download/desktop-latest/<asset>`
    always resolves to the newest shell, so the landing page and package-manager manifests never
@@ -51,7 +60,8 @@ nothing), and:
    the shells poll; namespaced so a future cezar manifest on the same page cannot collide),
    flips the draft to published with `--latest=false` (cezar's `v*` releases stay the repo's
    "latest"), copies the stable-named installers and `desktop-latest.json` onto the rolling
-   `desktop-latest` release (moving its tag to the released commit), and writes a summary with the stable links and loud warnings for anything unsigned.
+   `desktop-latest` release (its assets and title change; its tag stays where the first
+   release put it, because the workflow's token may not move a tag), and writes a summary with the stable links and loud warnings for anything unsigned.
 
 `createUpdaterArtifacts` is passed **only in CI** (`--config`), never in the checked-in
 config, so a local `tauri build` does not demand the signing key.

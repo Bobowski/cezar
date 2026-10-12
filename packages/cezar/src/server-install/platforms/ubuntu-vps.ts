@@ -367,7 +367,8 @@ export function certbotEdits(site: string): CertbotEdits | null {
  * parses.
  *
  * `certbot` is what certbot added to the site being replaced (`certbotEdits`): its lines take
- * the place of the plain `:80` listener, so a re-render never takes working HTTPS down.
+ * the place of the plain `:80` listener (kept when certbot left no `:80` block of its own), so a
+ * re-render never takes working HTTPS down.
  */
 export function nginxVhost(
   port: number,
@@ -412,7 +413,10 @@ export function nginxVhost(
     }
 `
     : '';
-  const listeners = certbot ? certbot.tls.join('\n') : '    listen 80;\n    listen [::]:80;';
+  const plain = '    listen 80;\n    listen [::]:80;';
+  // certbot without the redirect split leaves no :80 block behind — ours must keep answering there.
+  const redirected = /^\s*listen\s[^;#]*\b80\b/m.test(certbot?.trailer ?? '');
+  const listeners = certbot ? `${redirected ? '' : `${plain}\n`}${certbot.tls.join('\n')}` : plain;
   // certbot's own :80 block follows the domain, as its `server_name` always did on an SSL re-run.
   const trailer = certbot?.trailer
     ? `\n${certbot.trailer
@@ -498,12 +502,14 @@ async function readHostFile(ctx: InstallContext, path: string): Promise<string |
  * Install a site all-or-nothing: the new file is kept only when `nginx -t` accepts it. A rejected
  * one is replaced by what was there before (or removed), so a broken file is never left enabled
  * for the next nginx restart to trip over. The distro default goes only after the test passed.
+ * The mode is set explicitly: root's umask may be 027/077, and the installer reads the file back.
  */
 export function installSiteCmd(avail: string, enabled: string, content: string, dropDefault = false): string {
   const bak = `${avail}.cezar-bak`;
   const b64 = Buffer.from(content, 'utf8').toString('base64');
   const apply =
-    `printf %s ${shquote(b64)} | base64 --decode > ${shquote(avail)} && ln -sf ${avail} ${enabled} && nginx -t` +
+    `printf %s ${shquote(b64)} | base64 --decode > ${shquote(avail)} && chmod 0644 ${shquote(avail)} && ` +
+    `ln -sf ${avail} ${enabled} && nginx -t` +
     `${dropDefault ? ' && rm -f /etc/nginx/sites-enabled/default' : ''} && systemctl reload nginx`;
   const restore =
     `if [ -e ${bak} ]; then mv -f ${bak} ${avail}; else rm -f ${avail}; fi; [ "$L" = 1 ] || rm -f ${enabled}; ` +
@@ -1231,10 +1237,16 @@ async function readExecStart(ctx: InstallContext, scope: 'user' | 'system', unit
   return stdout;
 }
 
+/** A unit without its PATH line: that line follows the installer's own shell, not the install. */
+function unitBehaviour(unit: string): string {
+  return unit.split('\n').filter((l) => !l.startsWith('Environment=PATH=')).join('\n').trimEnd();
+}
+
 /**
  * Write this instance's unit from the recorded state, enable it, and make the RUNNING process
  * match it. `enable --now` only starts a stopped unit, so a unit whose content changed is
  * restarted — and the restart is proven by a changed PID, as `server-deploy` does (#912).
+ * A PATH-only difference is written but never restarts: it would kill running tasks unasked.
  * `always` restarts even an unchanged unit (the process is known not to match it).
  */
 async function applyServiceUnit(
@@ -1257,9 +1269,16 @@ async function applyServiceUnit(
   }
   const unit = systemdUnit(ctx.repoRoot, ctx.state.primaryPort, scope, execStart, ctx.state.bindHost, ctx.state.instanceId, ctx.state.signIn === 'proxy');
   const previous = userBus ? (existsSync(unitPath) ? readFileSync(unitPath, 'utf8') : null) : await readHostFile(ctx, unitPath);
-  const mustRestart = restart === 'always' || (previous !== null && previous.trimEnd() !== unit.trimEnd());
+  const differs = previous !== null && previous.trimEnd() !== unit.trimEnd();
+  const mustRestart = restart === 'always' || (previous !== null && unitBehaviour(previous) !== unitBehaviour(unit));
   const before = mustRestart ? await readServiceIdentity(ctx, scope, UNIT_NAME) : null;
   if (mustRestart) ctx.ui.info(`${UNIT_NAME} changed — restarting the service so the running cockpit picks it up.`);
+  else if (differs) {
+    ctx.ui.info(
+      `${UNIT_NAME}: only the PATH line differs (it follows the shell the installer runs in). The unit is updated, ` +
+        'but a running service is left alone so no task is interrupted — the new PATH applies on the next restart of the service.',
+    );
+  }
 
   if (userBus) {
     mkdirSync(dirname(unitPath), { recursive: true });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -341,6 +341,52 @@ describe('the service step applies a changed unit (finding 3)', () => {
     expect(host.systemctl.some((c) => c.includes('restart'))).toBe(false);
   });
 
+  it('a unit that differs only in the PATH of the installer\'s shell is written but does not restart the service', async () => {
+    const originalPath = process.env.PATH;
+    const said: string[] = [];
+    try {
+      process.env.PATH = '/opt/ssh-session/bin:/usr/bin';
+      const { host, runner } = fakeHost({ enforcing: true });
+      const first = ctxFor(runner, operatorUi('cezar'), { signIn: 'cezar', domain: DOMAIN });
+      await step(first, 'autostart').run(first);
+
+      host.systemctl.length = 0;
+      host.events.length = 0;
+      process.env.PATH = '/home/ops/.nvm/versions/node/v22/bin:/opt/tmux-session/bin:/usr/bin';
+      const second = ctxFor(runner, operatorUi('cezar', said), { signIn: 'cezar', domain: DOMAIN });
+      await step(second, 'autostart').run(second);
+
+      expect(host.systemctl.some((c) => c.includes('restart'))).toBe(false);
+      expect(host.events).not.toContain('restart');
+      const unit = readFileSync(join(home, '.config', 'systemd', 'user', 'cezar.service'), 'utf8');
+      expect(unit).toContain('/opt/tmux-session/bin');
+      expect(unit).not.toContain('/opt/ssh-session/bin');
+      expect(said.join('\n')).toMatch(/PATH.*next (time the service )?restart/i);
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it('system unit: a PATH-only difference does not put a restart in the privileged command', async () => {
+    const originalPath = process.env.PATH;
+    try {
+      process.env.PATH = '/opt/ssh-session/bin:/usr/bin';
+      const { host, runner } = fakeHost({ userBus: false, enforcing: true });
+      const first = ctxFor(runner, operatorUi('cezar'), { signIn: 'cezar', domain: DOMAIN });
+      await step(first, 'autostart').run(first);
+      host.sudo.length = 0;
+      process.env.PATH = '/opt/tmux-session/bin:/usr/bin';
+      const second = ctxFor(runner, operatorUi('cezar'), { signIn: 'cezar', domain: DOMAIN });
+      await step(second, 'autostart').run(second);
+      const cmd = host.sudo.find((c) => c.includes('/etc/systemd/system/cezar.service')) ?? '';
+      expect(cmd).toContain('systemctl enable --now cezar.service');
+      expect(cmd).not.toContain('restart');
+      expect(host.systemUnit).toContain('/opt/tmux-session/bin');
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
   it('system unit: the privileged command restarts when the unit on disk differs', async () => {
     const old = systemdUnit('/repo', PORT, 'system', '/usr/bin/node /x/dist/index.js', undefined, undefined, true);
     const { host, runner } = fakeHost({ userBus: false, systemUnit: old });
@@ -368,7 +414,7 @@ describe('the service step applies a changed unit (finding 3)', () => {
 
 describe('a site nginx rejects is not left in place (finding 4)', () => {
   /** A scratch root where the REAL generated command runs in bash, with nginx and systemctl shimmed. */
-  function sandbox(opts: { nginxRejects: boolean; existing?: string }) {
+  function sandbox(opts: { nginxRejects: boolean; existing?: string; umask?: string }) {
     const root = mkdtempSync(join(tmpdir(), 'cez-nginx-'));
     const etc = join(root, 'etc', 'nginx');
     const bin = join(root, 'bin');
@@ -405,7 +451,9 @@ describe('a site nginx rejects is not left in place (finding 4)', () => {
         if (program !== 'sudo') return 0;
         // The htpasswd write wants root-only chown; everything else runs for real.
         const cmd = here(String(args[2])).replace(/ && chown root:www-data \S+/, '');
-        return spawnSync('bash', ['-c', cmd], { env, input: o?.input ?? '', encoding: 'utf8' }).status ?? 1;
+        // `umask`: what a hardened root login shell (`sudo bash -lc`) starts the command with.
+        const script = opts.umask ? `umask ${opts.umask}; ${cmd}` : cmd;
+        return spawnSync('bash', ['-c', script], { env, input: o?.input ?? '', encoding: 'utf8' }).status ?? 1;
       },
     };
     const said: string[] = [];
@@ -457,6 +505,83 @@ describe('a site nginx rejects is not left in place (finding 4)', () => {
     } finally {
       s.cleanup();
     }
+  });
+
+  // The verify (`cmp`) runs unprivileged: a root-only file made an applied site report "not in place".
+  it('a root umask of 077 still leaves the new site 0644', async () => {
+    const s = sandbox({ nginxRejects: false, umask: '077' });
+    try {
+      await step(s.ctx, 'nginx-proxy').run(s.ctx);
+      expect(statSync(join(s.etc, 'sites-available', 'cezar')).mode & 0o777).toBe(0o644);
+    } finally {
+      s.cleanup();
+    }
+  });
+
+  it('a site an earlier run left root-only is opened up when it is rewritten', async () => {
+    const s = sandbox({ nginxRejects: false, existing: '# the site that was serving\n', umask: '027' });
+    try {
+      chmodSync(join(s.etc, 'sites-available', 'cezar'), 0o600);
+      await step(s.ctx, 'nginx-proxy').run(s.ctx);
+      expect(statSync(join(s.etc, 'sites-available', 'cezar')).mode & 0o777).toBe(0o644);
+    } finally {
+      s.cleanup();
+    }
+  });
+
+  it('guard: a rejected site puts the previous file back with the mode it had', async () => {
+    const s = sandbox({ nginxRejects: true, existing: '# the site that was serving\n', umask: '077' });
+    try {
+      chmodSync(join(s.etc, 'sites-available', 'cezar'), 0o644);
+      await expect(step(s.ctx, 'nginx-proxy').run(s.ctx)).rejects.toBeInstanceOf(StepAborted);
+      expect(readFileSync(join(s.etc, 'sites-available', 'cezar'), 'utf8')).toBe('# the site that was serving\n');
+      expect(statSync(join(s.etc, 'sites-available', 'cezar')).mode & 0o777).toBe(0o644);
+    } finally {
+      s.cleanup();
+    }
+  });
+});
+
+describe('a re-render over a TLS site keeps port 80', () => {
+  /** certbot installed the certificate WITHOUT the redirect split: one server block, both ports. */
+  function tlsSiteWithoutRedirect(): string {
+    return nginxVhost(PORT, DOMAIN, '/etc/cezar/htpasswd', '1.24.0').replace(
+      /\n}\n$/,
+      `\n
+    listen [::]:443 ssl ipv6only=on; # managed by Certbot
+    listen 443 ssl http2; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+}
+`,
+    );
+  }
+  const listens = (site: string | null) => (site ?? '').split('\n').filter((l) => /^\s*listen\s/.test(l)).map((l) => l.replace(/\s*#.*$/, '').trim());
+
+  it('no certbot redirect block: the :80 listeners stay beside the carried TLS lines', async () => {
+    const before = tlsSiteWithoutRedirect();
+    expect(listens(before)).toContain('listen 80;');
+    const { host, runner } = fakeHost({ site: before });
+    const ctx = ctxFor(runner, operatorUi('proxy'), { signIn: 'proxy', domain: DOMAIN, installed: true });
+    await step(ctx, 'nginx-proxy').run(ctx);
+    expect(listens(host.site).sort()).toEqual(
+      ['listen 80;', 'listen [::]:80;', 'listen [::]:443 ssl ipv6only=on;', 'listen 443 ssl http2;'].sort(),
+    );
+    expect(host.site).toContain('ssl_certificate_key');
+  });
+
+  it('guard: with the redirect block, :80 stays in that block only', async () => {
+    const before = certbotSite(nginxVhost(PORT, DOMAIN, '/etc/cezar/htpasswd', '1.24.0'));
+    const { host, runner } = fakeHost({ site: before });
+    const ctx = ctxFor(runner, operatorUi('proxy'), { signIn: 'proxy', domain: DOMAIN, installed: true });
+    await step(ctx, 'nginx-proxy').run(ctx);
+    expect(listens(host.site).filter((l) => l === 'listen 80;')).toHaveLength(1);
+    const once = host.site;
+    await step(ctx, 'nginx-proxy').run(ctx);
+    expect(host.site).toBe(once); // idempotent
   });
 });
 

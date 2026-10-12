@@ -64,8 +64,8 @@ node packages/cezar/dist/index.js server-install --platform ubuntu-vps
 |------|--------------|
 | **Dependencies** | Detects `claude` / `codex` / `opencode` / `gh` / `git`; offers to install the missing ones. At least one agent CLI is required. |
 | **Reverse proxy** | Installs **nginx**, asks **how people sign in** (below), writes an SSE- and WebSocket-safe proxy vhost (request bodies up to 32 MB, cezar's own limit), and — if `ufw` is active — allows `Nginx Full` (ports 80/443). With cezar's own sign-in it **starts the service first** and writes the site only once an anonymous request to it is refused (401). A site `nginx -t` rejects is not left in place: the previous one is put back and the step fails. |
-| **Domain + SSL** | Points the vhost's `server_name` at your domain, then runs `certbot --nginx` for a Let's Encrypt certificate with auto-redirect. On a re-run certbot's TLS lines are carried into the rewritten site, so HTTPS stays up. **Required** with cezar's own sign-in; optional (and skippable) with Basic-Auth. |
-| **Service** | Installs a **systemd** unit (rootless `--user` + linger where possible, else a system unit), **starts cezar now**, enables it on boot, and waits for it to answer on the loopback port. On a re-run a unit whose content changed is **restarted** (and the restart is proven by a new PID); an unchanged one is left running. |
+| **Domain + SSL** | Points the vhost's `server_name` at your domain, then runs `certbot --nginx` for a Let's Encrypt certificate with auto-redirect. On a re-run certbot's TLS lines are carried into the rewritten site, so HTTPS stays up (and port 80 keeps answering even when certbot added no redirect block). **Required** with cezar's own sign-in; optional (and skippable) with Basic-Auth. |
+| **Service** | Installs a **systemd** unit (rootless `--user` + linger where possible, else a system unit), **starts cezar now**, enables it on boot, and waits for it to answer on the loopback port. On a re-run a unit whose content changed is **restarted** (and the restart is proven by a new PID); an unchanged one is left running. A unit that differs only in its `PATH` line (the installer was run from another shell) is rewritten but **not** restarted — the new `PATH` applies on the next restart. |
 | **Verify** | Confirms an anonymous API request is refused (401) **and** that an authenticated one reaches *this* install — a real end-to-end check, not just "nginx is up". With cezar's own sign-in it then prints the **one-time link that creates your account**. |
 
 ### How people sign in
@@ -239,7 +239,8 @@ The installer is also **idempotent** if you need to change the setup itself:
 > Use `--reconfigure autostart` (not just `server-deploy`) when the **unit file
 > itself** changed — e.g. after upgrading the installer — since a restart alone
 > won't rewrite it. It rewrites the unit and, when the content changed, restarts
-> the service — running tasks are interrupted, as with `server-deploy`.
+> the service — running tasks are interrupted, as with `server-deploy`. A change to
+> the `PATH` line alone does not restart; run `server-deploy` to apply it.
 
 ---
 

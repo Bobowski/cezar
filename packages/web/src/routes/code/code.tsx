@@ -3,7 +3,7 @@ import {
   BotIcon, ColumnsIcon, EyeIcon, FilesIcon, GitBranchIcon, GitCompareArrowsIcon, GlobeIcon, Maximize2Icon, Minimize2Icon, PanelBottomIcon,
   SearchIcon, XIcon,
 } from 'lucide-react'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router'
 
 import { queryScope, type ApiRun, type ChangedFile } from '@open-mercato/cezar-api-client'
@@ -21,7 +21,15 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from '@/components/ui/breadcrumb'
 import { Button } from '@/components/ui/button'
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu'
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
+import { IconTooltip } from '@/components/ui/icon-tooltip'
+import { Kbd } from '@/components/ui/kbd'
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { SidebarContent, SidebarHeader, useSidebar } from '@/components/ui/sidebar'
 import { toast } from '@/components/ui/toaster'
@@ -33,14 +41,13 @@ import { Markdown } from '@/routes/task-thread/markdown'
 
 import { AgentPane, DEFAULT_AGENT_WORKFLOW } from './code-agent'
 import { CodeBrowserTab } from './code-browser'
-import { ContextMenu, menuAt, type MenuItem, type MenuRequest } from './code-menu'
+import { MenuItems, type MenuItem } from './code-menu'
 import { CommandPalette, FileDialog, QuickOpen, type CodeCommand, type FileAction } from './code-palette'
 import { CodePanelView } from './code-panel'
-import { Resizer } from './code-resizer'
-import { ExplorerView, ScmView, SearchView } from './code-sidebar'
+import { ExplorerView, ScmView, SearchView, type ExplorerTarget } from './code-sidebar'
 import {
-  browserId, bufferFrom, clamp, closeOthers, closeTab, diffTab, focusedGroup, isBrowserTab, isDiffTab, isDirty, isFileTab, keepTab,
-  languageOf, lineMarksFromPatch, loadDraft, loadLayout, openBrowser, openPaths, openTab, openToSide, pruneBrowsers, reconcile, resizeGroups,
+  browserId, bufferFrom, closeOthers, closeTab, diffTab, focusedGroup, isBrowserTab, isDiffTab, isDirty, isFileTab, keepTab,
+  languageOf, lineMarksFromPatch, loadDraft, loadLayout, MIN_GROUP_SIZE, openBrowser, openPaths, openTab, openToSide, pruneBrowsers, reconcile,
   resolveConflict, retargetTab, saveDraft, saveLayout, stepTab, tabFile, tabLabel, updateGroup, updateGroups, type Buffer, type CodeBrowser,
   type CodeLayout, type CodePanel, type CodeSidebar, type TabsState,
 } from './code-state'
@@ -114,14 +121,12 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
   const [quickOpen, setQuickOpen] = useState(false)
   const [palette, setPalette] = useState(false)
   const [discarding, setDiscarding] = useState<{ group: number; path: string } | null>(null)
-  const [menu, setMenu] = useState<MenuRequest | null>(null)
   const [rendered, setRendered] = useState<ReadonlySet<string>>(new Set())
   const [cursor, setCursor] = useState<CursorPosition | null>(null)
   const [searchFocus, setSearchFocus] = useState(0)
   const [gotoLine, setGotoLine] = useState({ group: 0, nonce: 0 })
   const [find, setFind] = useState({ group: 0, nonce: 0 })
   const [fullscreen, setFullscreen] = useState(false)
-  const groupsRow = useRef<HTMLDivElement>(null)
   const shell = useSidebar()
   const filesRef = useRef(files)
   filesRef.current = files
@@ -425,27 +430,31 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
     return () => window.removeEventListener('keydown', onKey)
   })
 
-  const explorerMenu = (event: React.MouseEvent, target: { kind: 'file' | 'dir'; path: string }) => {
-    const dir = target.kind === 'dir' ? target.path : dirOf(target.path)
+  /** The explorer's menu for a right click on `target` (`null`: the space under the tree). */
+  const explorerItems = (target: ExplorerTarget): MenuItem[] => {
+    const dir = target === null ? '' : target.kind === 'dir' ? target.path : dirOf(target.path)
     const items: MenuItem[] = []
-    if (target.kind === 'file') {
+    if (target?.kind === 'file') {
       items.push({ label: 'Open', run: () => open(target.path) }, { label: 'Open to the Side', run: () => open(target.path, { side: true }) })
       if (changedByPath.has(target.path)) items.push({ label: 'Open Changes', run: () => open(diffTab(target.path)) })
       items.push('separator')
     }
     if (fileEdit) {
-      items.push({ label: 'New File…', run: () => setDialog({ kind: 'create', dir }) }, { label: 'New Folder…', run: () => setDialog({ kind: 'folder', dir }) }, 'separator')
+      items.push({ label: 'New File…', run: () => setDialog({ kind: 'create', dir }) }, { label: 'New Folder…', run: () => setDialog({ kind: 'folder', dir }) })
     }
-    items.push({ label: 'Copy Path', run: () => copy(absolute(target.path)) }, { label: 'Copy Relative Path', run: () => copy(target.path) })
-    if (fileEdit && target.kind === 'file') {
+    if (target !== null) {
+      if (fileEdit) items.push('separator')
+      items.push({ label: 'Copy Path', run: () => copy(absolute(target.path)) }, { label: 'Copy Relative Path', run: () => copy(target.path) })
+    }
+    if (fileEdit && target?.kind === 'file') {
       items.push('separator', { label: 'Rename…', run: () => setDialog({ kind: 'rename', path: target.path }) }, { label: 'Delete', danger: true, run: () => setDialog({ kind: 'delete', path: target.path }) })
     }
-    setMenu(menuAt(event, items))
+    if (items.length === 0) items.push({ label: 'Refresh Explorer', run: revalidate })
+    return items
   }
 
-  const tabMenu = (event: React.MouseEvent, at: number, tab: string) => {
+  const tabItems = (at: number, tab: string): MenuItem[] => {
     const file = tabFile(tab)
-    const onDisk = !isBrowserTab(tab)
     const items: MenuItem[] = [
       { label: 'Close', shortcut: keys('Alt', 'W'), run: () => close(at, tab) },
       { label: 'Close Others', run: () => closeMany(at, (each) => closeOthers(each, tab)) },
@@ -454,8 +463,8 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
       { label: 'Split Right', shortcut: keys('Mod', '\\'), run: () => setLayout((state) => openToSide({ ...state, focused: at }, tab)) },
     ]
     if (changedByPath.has(file) && isFileTab(tab)) items.push({ label: 'Open Changes', run: () => open(diffTab(file)) })
-    if (onDisk) items.push('separator', { label: 'Copy Path', run: () => copy(absolute(file)) }, { label: 'Copy Relative Path', run: () => copy(file) })
-    setMenu(menuAt(event, items))
+    if (!isBrowserTab(tab)) items.push('separator', { label: 'Copy Path', run: () => copy(absolute(file)) }, { label: 'Copy Relative Path', run: () => copy(file) })
+    return items
   }
 
   const switchTree = (value: string) => navigate(value === 'main' ? '/code' : `/code?tree=${encodeURIComponent(value)}`)
@@ -479,23 +488,16 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
         {tree.kind === 'run' && !worktrees.some((each) => each.id === tree.runId) ? <NativeSelectOption value={tree.runId}>Task {tree.runId.slice(0, 8)}</NativeSelectOption> : null}
         {worktrees.map((each) => <NativeSelectOption key={each.id} value={each.id}>{runTitle(each)}</NativeSelectOption>)}
       </NativeSelect>
-      <div role="tablist" aria-label="Views" data-slot="code-views" className="flex items-center gap-1">
-        {VIEWS.map(({ view, label, icon: Icon, badge }) => (
-          <button
-            key={view}
-            type="button"
-            role="tab"
-            aria-label={label}
-            aria-selected={layout.sidebar === view}
-            title={label}
-            onClick={() => setLayout((state) => ({ ...state, sidebar: view }))}
-            className={cn('relative flex h-8 flex-1 items-center justify-center rounded-md', layout.sidebar === view ? 'bg-sidebar-accent text-foreground' : 'text-muted-foreground hover:text-foreground')}
-          >
-            <Icon aria-hidden="true" className="size-4" />
-            {badge ? <span data-slot="code-scm-count" className="absolute top-0.5 right-1.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-muted px-0.5 text-[9px] font-semibold text-foreground tabular-nums">{badge > 99 ? '99+' : badge}</span> : null}
-          </button>
-        ))}
-      </div>
+      <Tabs value={layout.sidebar} onValueChange={(view) => setLayout((state) => ({ ...state, sidebar: view as CodeSidebar }))}>
+        <TabsList aria-label="Views" data-slot="code-views" className="w-full">
+          {VIEWS.map(({ view, label, icon: Icon, badge }) => (
+            <TabsTrigger key={view} value={view} aria-label={label} title={label} className="relative min-w-0 flex-1">
+              <Icon aria-hidden="true" />
+              {badge ? <span data-slot="code-scm-count" className="font-mono text-[11px] tabular-nums">{badge > 99 ? '99+' : badge}</span> : null}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
     </div>
   )
   const sidebarView = layout.sidebar === 'explorer' ? (
@@ -508,7 +510,7 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
       canEdit={fileEdit}
       onSelect={(path) => open(path, { keep: false })}
       onOpen={(path) => open(path)}
-      onContextMenu={explorerMenu}
+      menuFor={explorerItems}
       onNewFile={() => setDialog({ kind: 'create', dir: here })}
       onNewFolder={() => setDialog({ kind: 'folder', dir: here })}
       onRefresh={revalidate}
@@ -525,12 +527,6 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
       onOpenFile={(path) => open(path)}
     />
   )
-
-  /** Pixels dragged on the border after group `index`, as a share of the row. */
-  const dragGroups = (index: number, pixels: number) => {
-    const width = groupsRow.current?.getBoundingClientRect().width ?? 0
-    if (width > 0) setLayout((state) => ({ ...state, sizes: resizeGroups(state.sizes, index, (pixels / width) * 100) }))
-  }
 
   return (
     <div
@@ -556,105 +552,125 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
           </aside>
         ) : null}
 
-        <main className="flex min-w-0 flex-1 flex-col">
-          <div ref={groupsRow} data-slot="code-groups" className="flex min-h-0 flex-1">
-            {layout.groups.map((each, at) => (
-              <div key={at} className="flex min-w-0" style={{ flexBasis: 0, flexGrow: layout.sizes[at] ?? 1 }}>
-                {at > 0 ? <Resizer axis="x" label={`Resize editor groups ${at} and ${at + 1}`} onDrag={(pixels) => dragGroups(at - 1, pixels)} /> : null}
-                <EditorGroup
-                  index={at}
-                  group={each}
-                  focused={at === layout.focused}
-                  split={layout.groups.length > 1}
-                  tree={tree}
-                  files={files}
-                  changed={changedByPath}
-                  lineMarks={lineMarks}
-                  browsers={layout.browsers}
-                  agentRun={agentRun}
-                  wrap={layout.wrap}
-                  fileEdit={fileEdit}
-                  rendered={rendered}
-                  reveal={reveal?.group === at ? reveal : null}
-                  gotoLine={gotoLine.group === at ? gotoLine.nonce : 0}
-                  find={find.group === at ? find.nonce : 0}
-                  onFocus={() => setLayout((state) => (state.focused === at || at >= state.groups.length ? state : { ...state, focused: at }))}
-                  onActivate={(tab) => setLayout((state) => updateGroup({ ...state, focused: Math.min(at, state.groups.length - 1) }, at, (tabs) => ({ ...tabs, active: tab })))}
-                  onKeep={(tab) => setLayout((state) => updateGroup(state, at, (tabs) => keepTab(tabs, tab)))}
-                  onClose={(tab) => close(at, tab)}
-                  onTabMenu={(event, tab) => tabMenu(event, at, tab)}
-                  onEdit={(path, text) => edit(at, path, text)}
-                  onCursor={(position) => { if (at === layoutRef.current.focused) setCursor(position) }}
-                  onSave={(path, overwrite) => void save(path, overwrite)}
-                  onReload={(path) => {
-                    setFile(path, (file) => (file?.status === 'ready' ? { ...file, buffer: resolveConflict(file.buffer, 'reload') } : file))
-                    saveDraft(storage(), projectId, key, path, undefined)
-                  }}
-                  onToggleRendered={toggleRendered}
-                  onSplit={(tab) => setLayout((state) => openToSide({ ...state, focused: at }, tab))}
-                  onBrowser={setBrowser}
-                  onStartTask={(message) => startTask({ task: message, workflow: DEFAULT_AGENT_WORKFLOW })}
-                  loadFileText={async (path) => {
-                    try {
-                      const entry = await getCodeFile(tree, path)
-                      return entry.type === 'file' ? entry.content ?? null : null
-                    } catch {
-                      return null
-                    }
-                  }}
-                />
-              </div>
-            ))}
-          </div>
-          {layout.panel !== null && terminalAllowed ? (
+        <ResizablePanelGroup direction="horizontal" className="min-w-0 flex-1" onLayout={(sizes) => { if (layout.agent && sizes[1] !== undefined) setLayout((state) => (state.agentSize === sizes[1] ? state : { ...state, agentSize: sizes[1] as number })) }}>
+          <ResizablePanel id="code-main" order={1} minSize={30} className="flex min-w-0 flex-col">
+            <ResizablePanelGroup direction="vertical" onLayout={(sizes) => { if (layout.panel !== null && sizes[1] !== undefined) setLayout((state) => (state.panelSize === sizes[1] ? state : { ...state, panelSize: sizes[1] as number })) }}>
+              <ResizablePanel id="code-editors" order={1} minSize={20} className="flex min-h-0">
+                <ResizablePanelGroup
+                  direction="horizontal"
+                  data-slot="code-groups"
+                  onLayout={(sizes) => setLayout((state) => (sizes.length !== state.groups.length || sizes.every((size, at) => size === state.sizes[at]) ? state : { ...state, sizes }))}
+                >
+                  {layout.groups.map((each, at) => (
+                    <Fragment key={at}>
+                      {at > 0 ? <ResizableHandle aria-label={`Resize editor groups ${at} and ${at + 1}`} /> : null}
+                      <ResizablePanel id={`code-group-${at}`} order={at + 1} defaultSize={layout.sizes[at] ?? 100 / layout.groups.length} minSize={MIN_GROUP_SIZE} className="flex min-w-0">
+                        <EditorGroup
+                          index={at}
+                          group={each}
+                          focused={at === layout.focused}
+                          split={layout.groups.length > 1}
+                          tree={tree}
+                          files={files}
+                          changed={changedByPath}
+                          lineMarks={lineMarks}
+                          browsers={layout.browsers}
+                          agentRun={agentRun}
+                          wrap={layout.wrap}
+                          fileEdit={fileEdit}
+                          rendered={rendered}
+                          reveal={reveal?.group === at ? reveal : null}
+                          gotoLine={gotoLine.group === at ? gotoLine.nonce : 0}
+                          find={find.group === at ? find.nonce : 0}
+                          menuFor={(tab) => tabItems(at, tab)}
+                          onFocus={() => setLayout((state) => (state.focused === at || at >= state.groups.length ? state : { ...state, focused: at }))}
+                          onActivate={(tab) => setLayout((state) => updateGroup({ ...state, focused: Math.min(at, state.groups.length - 1) }, at, (tabs) => ({ ...tabs, active: tab })))}
+                          onKeep={(tab) => setLayout((state) => updateGroup(state, at, (tabs) => keepTab(tabs, tab)))}
+                          onClose={(tab) => close(at, tab)}
+                          onEdit={(path, text) => edit(at, path, text)}
+                          onCursor={(position) => { if (at === layoutRef.current.focused) setCursor(position) }}
+                          onSave={(path, overwrite) => void save(path, overwrite)}
+                          onReload={(path) => {
+                            setFile(path, (file) => (file?.status === 'ready' ? { ...file, buffer: resolveConflict(file.buffer, 'reload') } : file))
+                            saveDraft(storage(), projectId, key, path, undefined)
+                          }}
+                          onToggleRendered={toggleRendered}
+                          onSplit={(tab) => setLayout((state) => openToSide({ ...state, focused: at }, tab))}
+                          onBrowser={setBrowser}
+                          onStartTask={(message) => startTask({ task: message, workflow: DEFAULT_AGENT_WORKFLOW })}
+                          loadFileText={async (path) => {
+                            try {
+                              const entry = await getCodeFile(tree, path)
+                              return entry.type === 'file' ? entry.content ?? null : null
+                            } catch {
+                              return null
+                            }
+                          }}
+                        />
+                      </ResizablePanel>
+                    </Fragment>
+                  ))}
+                </ResizablePanelGroup>
+              </ResizablePanel>
+              {layout.panel !== null && terminalAllowed ? (
+                <>
+                  <ResizableHandle aria-label="Resize panel" />
+                  <ResizablePanel id="code-panel" order={2} defaultSize={layout.panelSize} minSize={10} className="min-h-0">
+                    <CodePanelView tree={tree} panel={layout.panel} onPanel={togglePanel} />
+                  </ResizablePanel>
+                </>
+              ) : null}
+            </ResizablePanelGroup>
+          </ResizablePanel>
+          {layout.agent ? (
             <>
-              <Resizer axis="y" label="Resize panel" onDrag={(pixels) => setLayout((state) => ({ ...state, panelHeight: clamp(state.panelHeight - pixels, 120, 900) }))} />
-              <CodePanelView tree={tree} panel={layout.panel} height={layout.panelHeight} onPanel={togglePanel} />
+              <ResizableHandle aria-label="Resize agent pane" />
+              <ResizablePanel id="code-agent" order={2} defaultSize={layout.agentSize} minSize={15} className="min-w-0">
+                <AgentPane
+                  runs={runs.data ?? []}
+                  run={agentRun}
+                  activeFile={active}
+                  onSelect={(runId) => setLayout((state) => ({ ...state, agentRun: runId }))}
+                  onStart={startTask}
+                  onClose={toggleAgent}
+                />
+              </ResizablePanel>
             </>
           ) : null}
-        </main>
-
-        {layout.agent ? (
-          <>
-            <Resizer axis="x" label="Resize agent pane" onDrag={(pixels) => setLayout((state) => ({ ...state, agentWidth: clamp(state.agentWidth - pixels, 280, 900) }))} />
-            <div className="hidden shrink-0 lg:block" style={{ width: layout.agentWidth }}>
-              <AgentPane
-                runs={runs.data ?? []}
-                run={agentRun}
-                activeFile={active}
-                onSelect={(runId) => setLayout((state) => ({ ...state, agentRun: runId }))}
-                onStart={startTask}
-                onClose={toggleAgent}
-              />
-            </div>
-          </>
-        ) : null}
+        </ResizablePanelGroup>
       </div>
 
-      <footer data-slot="code-status" className="flex h-6 shrink-0 items-center gap-3 border-t border-border px-2 text-[11px] text-muted-foreground">
-        {branch ? <span className="flex shrink-0 items-center gap-1" title="Branch"><GitBranchIcon aria-hidden="true" className="size-3" />{branch}</span> : null}
-        <button type="button" className="shrink-0 hover:text-foreground" onClick={() => showSidebar('scm')}>{changed.length} change{changed.length === 1 ? '' : 's'}</button>
-        <span data-slot="code-save-state" className="ml-auto truncate">
+      <footer data-slot="code-status" className="flex h-7 shrink-0 items-center gap-1 border-t border-border px-2 text-[11px] text-muted-foreground">
+        {branch ? <span className="flex shrink-0 items-center gap-1 px-1" title="Branch"><GitBranchIcon aria-hidden="true" className="size-3" />{branch}</span> : null}
+        <Button variant="ghost" size="xs" className="h-5 px-1.5 text-[11px] font-normal" onClick={() => showSidebar('scm')}>{changed.length} change{changed.length === 1 ? '' : 's'}</Button>
+        <span data-slot="code-save-state" className="ml-auto truncate px-1">
           {!fileEdit ? 'Read-only: file editing is off on this cockpit'
             : current?.status === 'ready' && !current.editable ? `Read-only: ${current.reason ?? 'this file cannot be edited'}`
               : buffer && isDirty(buffer) ? 'Unsaved changes' : buffer ? 'Saved' : ''}
         </span>
         {current?.status === 'ready' && cursor ? (
-          <button type="button" data-slot="code-cursor" className="shrink-0 hover:text-foreground" title="Go to Line" onClick={askGotoLine}>
+          <Button variant="ghost" size="xs" data-slot="code-cursor" className="h-5 shrink-0 px-1.5 text-[11px] font-normal" title="Go to Line" onClick={askGotoLine}>
             Ln {cursor.line}, Col {cursor.column}{cursor.cursors > 1 ? ` (${cursor.cursors} cursors)` : cursor.selected > 0 ? ` (${cursor.selected} selected)` : ''}
-          </button>
+          </Button>
         ) : null}
-        {layout.wrap ? <span className="shrink-0">Wrap</span> : null}
-        {active ? <span data-slot="code-language" className="shrink-0">{languageOf(active)}</span> : null}
-        <button type="button" aria-label="Open browser" title="Open a browser tab" className="shrink-0 hover:text-foreground" onClick={() => openBrowserTab()}><GlobeIcon aria-hidden="true" className="size-3.5" /></button>
-        <button type="button" aria-label="Toggle panel" aria-pressed={layout.panel !== null} title={`Toggle panel (${keys('Mod', 'J')})`} disabled={!terminalAllowed} className="shrink-0 hover:text-foreground disabled:opacity-40" onClick={() => togglePanel(layout.panel === null ? 'terminal' : null)}><PanelBottomIcon aria-hidden="true" className="size-3.5" /></button>
-        <button type="button" aria-label="Toggle agent" aria-pressed={layout.agent} title={`Toggle agent (${keys('Mod', 'L')})`} className="shrink-0 hover:text-foreground" onClick={toggleAgent}><BotIcon aria-hidden="true" className="size-3.5" /></button>
-        <button type="button" aria-label="Toggle full screen" aria-pressed={fullscreen} title="Toggle full screen" className="shrink-0 hover:text-foreground" onClick={toggleFullscreen}>
-          {fullscreen ? <Minimize2Icon aria-hidden="true" className="size-3.5" /> : <Maximize2Icon aria-hidden="true" className="size-3.5" />}
-        </button>
+        {layout.wrap ? <span className="shrink-0 px-1">Wrap</span> : null}
+        {active ? <span data-slot="code-language" className="shrink-0 px-1">{languageOf(active)}</span> : null}
+        <IconTooltip label="Open a browser tab" side="top">
+          <Button variant="ghost" size="icon-xs" aria-label="Open browser" onClick={() => openBrowserTab()}><GlobeIcon aria-hidden="true" /></Button>
+        </IconTooltip>
+        <IconTooltip label={`Toggle panel (${keys('Mod', 'J')})`} side="top">
+          <Button variant="ghost" size="icon-xs" aria-label="Toggle panel" aria-pressed={layout.panel !== null} disabled={!terminalAllowed} onClick={() => togglePanel(layout.panel === null ? 'terminal' : null)}><PanelBottomIcon aria-hidden="true" /></Button>
+        </IconTooltip>
+        <IconTooltip label={`Toggle agent (${keys('Mod', 'L')})`} side="top">
+          <Button variant="ghost" size="icon-xs" aria-label="Toggle agent" aria-pressed={layout.agent} onClick={toggleAgent}><BotIcon aria-hidden="true" /></Button>
+        </IconTooltip>
+        <IconTooltip label="Toggle full screen" side="top">
+          <Button variant="ghost" size="icon-xs" aria-label="Toggle full screen" aria-pressed={fullscreen} onClick={toggleFullscreen}>
+            {fullscreen ? <Minimize2Icon aria-hidden="true" /> : <Maximize2Icon aria-hidden="true" />}
+          </Button>
+        </IconTooltip>
       </footer>
 
-      <ContextMenu request={menu} onClose={() => setMenu(null)} />
       <AlertDialog open={discarding !== null} onOpenChange={(next) => { if (!next) setDiscarding(null) }}>
         <AlertDialogContent data-slot="code-discard-dialog">
           <AlertDialogHeader>
@@ -687,7 +703,7 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
 /** One editor group: its tab strip, the path of the active file, and whatever that file is. */
 function EditorGroup({
   index, group, focused, split, tree, files, changed, lineMarks, browsers, agentRun, wrap, fileEdit, rendered, reveal, gotoLine, find,
-  onFocus, onActivate, onKeep, onClose, onTabMenu, onEdit, onCursor, onSave, onReload, onToggleRendered, onSplit, onBrowser, onStartTask,
+  menuFor, onFocus, onActivate, onKeep, onClose, onEdit, onCursor, onSave, onReload, onToggleRendered, onSplit, onBrowser, onStartTask,
   loadFileText,
 }: {
   index: number
@@ -707,11 +723,12 @@ function EditorGroup({
   reveal: { path: string; line: number; nonce: number } | null
   gotoLine: number
   find: number
+  /** The context menu of one of this group's tabs. */
+  menuFor: (tab: string) => MenuItem[]
   onFocus: () => void
   onActivate: (tab: string) => void
   onKeep: (tab: string) => void
   onClose: (tab: string) => void
-  onTabMenu: (event: React.MouseEvent, tab: string) => void
   onEdit: (path: string, text: string) => void
   onCursor: (position: CursorPosition) => void
   onSave: (path: string, overwrite: boolean) => void
@@ -735,64 +752,82 @@ function EditorGroup({
   useEffect(() => { if (!conflicted) setComparing(false) }, [conflicted])
 
   return (
-    <section
-      data-slot="code-group"
-      data-group={index}
-      data-focused={focused ? 'true' : undefined}
-      onPointerDownCapture={onFocus}
-      className="flex min-w-0 flex-1 flex-col"
-    >
-      <div
-        role="tablist"
-        aria-label={split ? `Open files, group ${index + 1}` : 'Open files'}
-        className={cn('flex h-9 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border px-1.5', split && focused && 'border-b-foreground/40')}
-      >
-        {group.tabs.map((each) => {
-          const opened = files[each.path]
-          const dirty = isFileTab(each.path) && opened?.status === 'ready' && isDirty(opened.buffer)
-          return (
-            <div
-              key={each.path}
-              role="tab"
-              aria-selected={each.path === tab}
-              data-dirty={dirty ? 'true' : undefined}
-              title={isBrowserTab(each.path) ? 'Browser' : tabFile(each.path)}
-              onContextMenu={(event) => onTabMenu(event, each.path)}
-              onAuxClick={(event) => { if (event.button === 1) onClose(each.path) }}
-              className={cn('group flex shrink-0 items-center gap-1 rounded-md py-1 pr-1 pl-2.5 text-xs', each.path === tab ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground')}
-            >
-              <button type="button" className={cn('max-w-56 truncate', each.preview && 'italic')} onClick={() => onActivate(each.path)} onDoubleClick={() => onKeep(each.path)}>
-                {tabLabel(each.path, browsers)}
-              </button>
-              {dirty ? <span aria-label="Unsaved changes" className="size-1.5 rounded-full bg-foreground" /> : null}
-              <button type="button" aria-label={`Close ${tabLabel(each.path, browsers)}`} className="rounded p-0.5 opacity-60 hover:bg-background hover:opacity-100" onClick={() => onClose(each.path)}>
-                <XIcon aria-hidden="true" className="size-3" />
-              </button>
-            </div>
-          )
-        })}
-      </div>
+    <section data-slot="code-group" data-group={index} data-focused={focused ? 'true' : undefined} onPointerDownCapture={onFocus} className="flex min-w-0 flex-1 flex-col">
+      <Tabs value={tab ?? ''} onValueChange={onActivate} className="shrink-0 gap-0">
+        <TabsList
+          variant="line"
+          aria-label={split ? `Open files, group ${index + 1}` : 'Open files'}
+          className={cn('h-9 w-full justify-start gap-0.5 overflow-x-auto border-b border-border px-1.5', split && focused && 'border-b-foreground/40')}
+        >
+          {group.tabs.map((each) => {
+            const opened = files[each.path]
+            const dirty = isFileTab(each.path) && opened?.status === 'ready' && isDirty(opened.buffer)
+            const label = tabLabel(each.path, browsers)
+            return (
+              <ContextMenu key={each.path}>
+                <ContextMenuTrigger asChild>
+                  <div
+                    data-slot="code-tab"
+                    data-active={each.path === tab ? 'true' : undefined}
+                    data-dirty={dirty ? 'true' : undefined}
+                    title={isBrowserTab(each.path) ? 'Browser' : tabFile(each.path)}
+                    onAuxClick={(event) => { if (event.button === 1) onClose(each.path) }}
+                    className={cn('flex shrink-0 items-center rounded-md pr-0.5', each.path === tab ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground')}
+                  >
+                    <TabsTrigger value={each.path} onDoubleClick={() => onKeep(each.path)} className={cn('h-7 max-w-56 flex-none gap-1.5 px-2 text-xs after:hidden data-[state=active]:bg-transparent data-[state=active]:shadow-none', each.preview && 'italic')}>
+                      <span className="truncate">{label}</span>
+                      {dirty ? <span aria-label="Unsaved changes" className="size-1.5 shrink-0 rounded-full bg-foreground" /> : null}
+                    </TabsTrigger>
+                    <Button variant="ghost" size="icon-xs" aria-label={`Close ${label}`} className="size-5 opacity-60 hover:opacity-100" onClick={() => onClose(each.path)}>
+                      <XIcon aria-hidden="true" />
+                    </Button>
+                  </div>
+                </ContextMenuTrigger>
+                <ContextMenuContent data-slot="code-context-menu"><MenuItems items={menuFor(each.path)} /></ContextMenuContent>
+              </ContextMenu>
+            )
+          })}
+        </TabsList>
+      </Tabs>
 
       {path !== null && tab !== null ? (
-        <div data-slot="code-breadcrumbs" className="flex h-7 shrink-0 items-center gap-1 border-b border-border px-3 text-[11px] text-muted-foreground">
-          <span className="min-w-0 truncate font-mono">{path.split('/').join('  ›  ')}{diff ? '  ·  changes since the last commit' : ''}</span>
+        <div data-slot="code-breadcrumbs" className="flex h-7 shrink-0 items-center gap-1 border-b border-border px-3">
+          <Breadcrumb className="min-w-0">
+            <BreadcrumbList className="flex-nowrap gap-1 font-mono text-[11px] sm:gap-1">
+              {path.split('/').map((segment, at, all) => (
+                <Fragment key={`${at}:${segment}`}>
+                  {at > 0 ? <BreadcrumbSeparator className="[&>svg]:size-3" /> : null}
+                  <BreadcrumbItem className="min-w-0">
+                    {at === all.length - 1 ? <BreadcrumbPage className="truncate">{segment}</BreadcrumbPage> : <span className="truncate">{segment}</span>}
+                  </BreadcrumbItem>
+                </Fragment>
+              ))}
+            </BreadcrumbList>
+          </Breadcrumb>
+          {diff ? <span className="shrink-0 text-[11px] text-muted-foreground">· changes since the last commit</span> : null}
           <span className="ml-auto flex shrink-0 items-center gap-0.5">
             {!diff && isMarkdown(path) ? (
-              <Button variant="ghost" size="icon-xs" aria-label="Toggle Markdown Preview" aria-pressed={rendered.has(path)} title="Toggle Markdown Preview" onClick={() => onToggleRendered(path)}><EyeIcon aria-hidden="true" /></Button>
+              <IconTooltip label="Toggle Markdown Preview">
+                <Button variant="ghost" size="icon-xs" aria-label="Toggle Markdown Preview" aria-pressed={rendered.has(path)} onClick={() => onToggleRendered(path)}><EyeIcon aria-hidden="true" /></Button>
+              </IconTooltip>
             ) : null}
-            <Button variant="ghost" size="icon-xs" aria-label="Split Editor Right" title="Split Editor Right" onClick={() => onSplit(tab)}><ColumnsIcon aria-hidden="true" /></Button>
+            <IconTooltip label="Split Editor Right">
+              <Button variant="ghost" size="icon-xs" aria-label="Split Editor Right" onClick={() => onSplit(tab)}><ColumnsIcon aria-hidden="true" /></Button>
+            </IconTooltip>
             {buffer && isDirty(buffer) && !readOnly ? <Button size="xs" onClick={() => onSave(path, false)}>Save</Button> : null}
           </span>
         </div>
       ) : null}
 
       {conflicted && path !== null ? (
-        <div role="alert" data-slot="code-conflict" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-danger/10 px-3 py-2 text-xs text-foreground">
-          <span className="mr-auto">This file changed on disk while you were editing it.</span>
-          <Button size="xs" variant="outline" onClick={() => setComparing((value) => !value)}>{comparing ? 'Hide comparison' : 'Compare'}</Button>
-          <Button size="xs" variant="outline" onClick={() => onReload(path)}>Reload from disk</Button>
-          <Button size="xs" variant="outline" onClick={() => onSave(path, true)}>Overwrite</Button>
-        </div>
+        <Alert variant="destructive" data-slot="code-conflict" className="shrink-0 rounded-none border-x-0 border-t-0 py-2">
+          <AlertDescription className="flex flex-wrap items-center gap-2 text-xs text-foreground">
+            <span className="mr-auto">This file changed on disk while you were editing it.</span>
+            <Button size="xs" variant="outline" onClick={() => setComparing((value) => !value)}>{comparing ? 'Hide comparison' : 'Compare'}</Button>
+            <Button size="xs" variant="outline" onClick={() => onReload(path)}>Reload from disk</Button>
+            <Button size="xs" variant="outline" onClick={() => onSave(path, true)}>Overwrite</Button>
+          </AlertDescription>
+        </Alert>
       ) : null}
 
       <div className="relative flex min-h-0 flex-1">
@@ -806,9 +841,14 @@ function EditorGroup({
             />
           </div>
         ) : path === null || tab === null ? (
-          <p className="m-auto max-w-sm px-4 text-center text-sm text-pretty text-muted-foreground">
-            Pick a file in the explorer, or press {keys('Mod', 'P')} to go to one by name. {keys('Mod', 'Shift', 'P')} lists every command.
-          </p>
+          <Empty className="border-0">
+            <EmptyHeader>
+              <EmptyTitle>No file open</EmptyTitle>
+              <EmptyDescription>
+                Pick a file in the explorer, or press <Kbd>{keys('Mod', 'P')}</Kbd> to go to one by name. <Kbd>{keys('Mod', 'Shift', 'P')}</Kbd> lists every command.
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         ) : diff ? (
           changed.has(path) ? (
             <div data-slot="code-diff" className="min-w-0 flex-1 overflow-auto p-3 [--diff-sticky-top:0rem]">

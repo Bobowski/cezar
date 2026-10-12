@@ -4,6 +4,9 @@ import { lazy, Suspense, useState } from 'react'
 import type { ApiRun } from '@open-mercato/cezar-api-client'
 import { useWorkflows } from '@/api/queries'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
+import { IconTooltip } from '@/components/ui/icon-tooltip'
+import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from '@/components/ui/toaster'
@@ -45,11 +48,15 @@ export function AgentPane({
         </NativeSelect>
         {run ? (
           <>
-            <Button variant="ghost" size="icon-xs" aria-label="New task" title="New task" onClick={() => onSelect(null)}><PlusIcon aria-hidden="true" /></Button>
+            <IconTooltip label="New task">
+              <Button variant="ghost" size="icon-xs" aria-label="New task" onClick={() => onSelect(null)}><PlusIcon aria-hidden="true" /></Button>
+            </IconTooltip>
             <Button variant="ghost" size="xs" asChild><Link to={`/tasks/${run.id}`}>Open</Link></Button>
           </>
         ) : null}
-        <Button variant="ghost" size="icon-xs" aria-label="Close agent" title="Close" onClick={onClose}><XIcon aria-hidden="true" /></Button>
+        <IconTooltip label="Close">
+          <Button variant="ghost" size="icon-xs" aria-label="Close agent" onClick={onClose}><XIcon aria-hidden="true" /></Button>
+        </IconTooltip>
       </header>
       <div className="relative flex min-h-0 flex-1 flex-col">
         {run ? (
@@ -98,10 +105,12 @@ function NewTask({ activeFile, onStart }: { activeFile: string | null; onStart: 
         className="min-h-32 resize-none text-[13px] md:text-[13px]"
       />
       {activeFile ? (
-        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-          <input type="checkbox" checked={withFile} onChange={(event) => setWithFile(event.target.checked)} />
-          <span className="min-w-0 truncate">Mention <code className="font-mono text-foreground">{activeFile}</code></span>
-        </label>
+        <div className="flex items-center gap-2">
+          <Checkbox id="code-agent-with-file" checked={withFile} onCheckedChange={(checked) => setWithFile(checked === true)} />
+          <Label htmlFor="code-agent-with-file" className="min-w-0 text-xs font-normal text-muted-foreground">
+            <span className="truncate">Mention <code className="font-mono text-foreground">{activeFile}</code></span>
+          </Label>
+        </div>
       ) : null}
       <div className="flex items-center gap-2">
         <NativeSelect aria-label="Workflow" value={workflow} onChange={(event) => setWorkflow(event.target.value)} className="h-8 min-w-0 flex-1 text-xs">

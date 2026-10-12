@@ -116,7 +116,7 @@ export interface CodeBrowser {
 
 /** As many groups as fit a screen; past this a split opens in the neighbour instead. */
 export const MAX_GROUPS = 4
-/** No group is dragged narrower than this share of the row, in percent. */
+/** No group is dragged narrower than this share of the row, in percent (the panel's `minSize`). */
 export const MIN_GROUP_SIZE = 12
 
 /**
@@ -131,11 +131,11 @@ export interface CodeLayout {
   focused: number
   sidebar: CodeSidebar
   panel: CodePanel | null
-  /** The bottom panel's height in pixels. */
-  panelHeight: number
-  /** The agent pane: open or not, how wide, and which task it shows (`null` = a new one). */
+  /** The bottom panel's share of the column, in percent. */
+  panelSize: number
+  /** The agent pane: open or not, its share of the row, and which task it shows (`null` = a new one). */
   agent: boolean
-  agentWidth: number
+  agentSize: number
   agentRun: string | null
   /** State of every open browser tab, by the id in its tab path. */
   browsers: Record<string, CodeBrowser>
@@ -143,8 +143,8 @@ export interface CodeLayout {
 }
 
 export const DEFAULT_LAYOUT: CodeLayout = {
-  groups: [EMPTY_TABS], sizes: [100], focused: 0, sidebar: 'explorer', panel: null, panelHeight: 288,
-  agent: false, agentWidth: 420, agentRun: null, browsers: {}, wrap: false,
+  groups: [EMPTY_TABS], sizes: [100], focused: 0, sidebar: 'explorer', panel: null, panelSize: 32,
+  agent: false, agentSize: 30, agentRun: null, browsers: {}, wrap: false,
 }
 
 export const focusedGroup = (layout: CodeLayout): TabsState => layout.groups[layout.focused] ?? layout.groups[0] ?? EMPTY_TABS
@@ -188,17 +188,6 @@ export function openToSide(layout: CodeLayout, path: string): CodeLayout {
   const groups = [...layout.groups.slice(0, from + 1), openTab(EMPTY_TABS, path, true), ...layout.groups.slice(from + 1)]
   const sizes = [...layout.sizes.slice(0, from), half, half, ...layout.sizes.slice(from + 1)]
   return { ...layout, groups, sizes, focused: from + 1 }
-}
-
-/** Drag the border after group `index` by `delta` percent of the row: one grows, its neighbour shrinks. */
-export function resizeGroups(sizes: readonly number[], index: number, delta: number): number[] {
-  const left = sizes[index]
-  const right = sizes[index + 1]
-  if (left === undefined || right === undefined) return [...sizes]
-  const pair = left + right
-  const floor = Math.min(MIN_GROUP_SIZE, pair / 2)
-  const nextLeft = Math.max(floor, Math.min(pair - floor, left + delta))
-  return sizes.map((size, at) => (at === index ? nextLeft : at === index + 1 ? pair - nextLeft : size))
 }
 
 export const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value))
@@ -293,9 +282,9 @@ export function loadLayout(storage: Storage | null, projectId: string, tree: str
       focused: typeof raw.focused === 'number' && raw.focused >= 0 && raw.focused < groups.length ? raw.focused : 0,
       sidebar: raw.sidebar === 'search' || raw.sidebar === 'scm' ? raw.sidebar : 'explorer',
       panel: raw.panel === 'terminal' || raw.panel === 'services' ? raw.panel : null,
-      panelHeight: number(raw.panelHeight, DEFAULT_LAYOUT.panelHeight, 120, 900),
+      panelSize: number(raw.panelSize, DEFAULT_LAYOUT.panelSize, 10, 80),
       agent: raw.agent === true,
-      agentWidth: number(raw.agentWidth, DEFAULT_LAYOUT.agentWidth, 280, 900),
+      agentSize: number(raw.agentSize, DEFAULT_LAYOUT.agentSize, 15, 70),
       agentRun: typeof raw.agentRun === 'string' && raw.agentRun !== '' ? raw.agentRun : null,
       browsers: reviveBrowsers(raw.browsers, open),
       wrap: raw.wrap === true,

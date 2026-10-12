@@ -98,7 +98,7 @@ describe('Code page (spec 2026-10-11-code-page)', () => {
     const { sent } = setup()
     await type('zero\n')
     await waitFor(() => expect(status()).toContain('Unsaved changes'))
-    expect(screen.getByRole('tab', { name: /app\.ts/ }).getAttribute('data-dirty')).toBe('true')
+    expect(document.querySelector('[data-slot="code-tab"]')?.getAttribute('data-dirty')).toBe('true')
     expect(sent.some((request) => request.method === 'PUT')).toBe(false)
     expect(window.localStorage.getItem(`cez:code:draft:${queryScope()}:main:src/app.ts`)).toContain('zero')
     fireEvent.keyDown(window, { key: 's', metaKey: true })
@@ -177,8 +177,9 @@ describe('Code page (spec 2026-10-11-code-page)', () => {
 
 describe('Code page as an editor (VS Code-like)', () => {
   const groups = () => [...document.querySelectorAll('[data-slot="code-group"]')]
-  // The group's OWN strip: a browser tab carries a tab strip of its own inside it.
-  const tabsOf = (index: number) => [...(groups()[index]?.querySelector(':scope > [role=tablist]')?.querySelectorAll('[role=tab]') ?? [])].map((tab) => tab.textContent)
+  const tabsOf = (index: number) => [...(groups()[index]?.querySelectorAll('[data-slot="code-tab"]') ?? [])].map((tab) => tab.textContent)
+  /** Radix tabs activate on mouse DOWN, as a real tab strip does. */
+  const pickTab = (name: string | RegExp) => fireEvent.mouseDown(screen.getByRole('tab', { name }))
   const menuItem = async (label: string) => waitFor(() => {
     const item = [...document.querySelectorAll('[data-slot="code-context-menu"] [role=menuitem]')].find((each) => each.textContent?.startsWith(label))
     expect(item, label).toBeTruthy()
@@ -204,7 +205,7 @@ describe('Code page as an editor (VS Code-like)', () => {
     const head = () => body.querySelector('[data-slot="code-sidebar"]')
     expect(head()?.getAttribute('data-view')).toBe('explorer')
     expect(body.querySelector('[data-slot="code-explorer"]')).not.toBeNull()
-    fireEvent.click(screen.getByRole('tab', { name: 'Source Control' }))
+    pickTab('Source Control')
     expect(head()?.getAttribute('data-view')).toBe('scm')
     await waitFor(() => expect(body.querySelector('[data-slot="code-scm-count"]')?.textContent).toBe('1'))
     fireEvent.keyDown(window, { key: 'f', metaKey: true, shiftKey: true })
@@ -216,7 +217,7 @@ describe('Code page as an editor (VS Code-like)', () => {
   it('opens a changed file\'s diff from Source Control, in a tab named after it', async () => {
     setup()
     await view()
-    fireEvent.click(screen.getByRole('tab', { name: 'Source Control' }))
+    pickTab('Source Control')
     fireEvent.click(await screen.findByTitle('src/app.ts — Modified'))
     await waitFor(() => expect(tabsOf(0)).toEqual(['app.ts', 'app.ts (Working Tree)']))
     expect(document.querySelector('[data-slot="code-breadcrumbs"]')?.textContent).toContain('changes since the last commit')
@@ -263,10 +264,9 @@ describe('Code page as an editor (VS Code-like)', () => {
     setup()
     await type('dirty ')
     await waitFor(() => expect(status()).toContain('Unsaved changes'))
-    // A tab's children are presentational to the accessibility tree, so its button is reached through it.
-    fireEvent.click(screen.getByRole('tab', { name: /README\.md/ }).querySelector('button')!)
+    pickTab(/README\.md/)
     await waitFor(() => expect(screen.getByRole('tab', { name: /README\.md/ }).getAttribute('aria-selected')).toBe('true'))
-    fireEvent.contextMenu(screen.getByRole('tab', { name: /README\.md/ }))
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /README\.md/ }).closest('[data-slot="code-tab"]')!)
     fireEvent.click(await menuItem('Close Others'))
     // `b.ts` goes; `app.ts` has unsaved edits and nothing asked, so it stays.
     await waitFor(() => expect(tabsOf(0)).toEqual(['README.md', 'app.ts']))
@@ -296,23 +296,17 @@ describe('Code page as an editor (VS Code-like)', () => {
     await waitFor(() => expect(document.querySelector('[data-slot="code-markdown"]')).toBeNull())
   })
 
-  it('resizes two editor groups by dragging the border between them', async () => {
+  it('puts a draggable border between editor groups and beside the agent pane', async () => {
     setup()
     await view()
+    expect(screen.queryAllByRole('separator')).toHaveLength(0)
     fireEvent.keyDown(window, { key: '\\', metaKey: true })
     await waitFor(() => expect(groups()).toHaveLength(2))
-    const row = document.querySelector('[data-slot="code-groups"]') as HTMLElement
-    row.getBoundingClientRect = () => ({ width: 1000, height: 600, top: 0, left: 0, right: 1000, bottom: 600, x: 0, y: 0, toJSON: () => ({}) })
-    const widths = () => [...row.children].map((child) => (child as HTMLElement).style.flexGrow)
-    expect(widths()).toEqual(['50', '50'])
-    const handle = screen.getByRole('separator', { name: 'Resize editor groups 1 and 2' })
-    fireEvent.pointerDown(handle, { clientX: 500, pointerId: 1 })
-    fireEvent.pointerMove(handle, { clientX: 700, pointerId: 1 })
-    fireEvent.pointerUp(handle, { clientX: 700, pointerId: 1 })
-    expect(widths()).toEqual(['70', '30'])
-    // And from the keyboard, a step at a time.
-    fireEvent.keyDown(handle, { key: 'ArrowLeft' })
-    expect(Number(widths()[0])).toBeCloseTo(68.8, 1)
+    expect(screen.getByRole('separator', { name: 'Resize editor groups 1 and 2' })).toBeTruthy()
+    // The library owns the drag; the page owns which panels exist.
+    expect(document.querySelectorAll('[data-panel-id^="code-group-"]')).toHaveLength(2)
+    fireEvent.keyDown(window, { key: 'l', metaKey: true })
+    expect(await screen.findByRole('separator', { name: 'Resize agent pane' })).toBeTruthy()
   })
 
   it('opens a browser as a tab beside the code, named after its address', async () => {
@@ -323,7 +317,7 @@ describe('Code page as an editor (VS Code-like)', () => {
     expect(document.querySelector('[data-slot="code-browser"]')).not.toBeNull()
     // The file's editor is gone from this group while the browser tab is the active one.
     expect(document.querySelector('[data-slot="code-cursor"]')).toBeNull()
-    fireEvent.click(screen.getByRole('tab', { name: /app\.ts/ }).querySelector('button')!)
+    pickTab(/app\.ts/)
     await view()
   })
 

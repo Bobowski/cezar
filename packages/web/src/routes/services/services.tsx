@@ -89,30 +89,25 @@ export function ServiceRow({
       data-status={service.status}
       className={cn('flex items-start gap-3 px-4 py-3', selected && 'bg-accent/50')}
     >
-      <button type="button" onClick={onSelect} aria-pressed={selected} className="min-w-0 flex-1 space-y-0.5 text-left">
-        <span className="flex items-center gap-2">
-          <StatusDot tone={serviceTone(service)} pulse={running} />
-          <span className="truncate text-[13.5px] font-medium text-foreground">{service.name}</span>
-        </span>
-        <code className="block truncate font-mono text-xs text-muted-foreground">
-          {service.command}{service.cwd ? `  ·  ${service.cwd}` : ''}
-        </code>
-        <span className={cn('block text-xs text-pretty', serviceTone(service) === 'danger' ? 'text-danger' : 'text-muted-foreground')}>
-          {serviceStateLabel(service)}
-        </span>
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <Button variant="ghost" onClick={onSelect} aria-pressed={selected} className="h-auto w-full flex-col items-start gap-0.5 p-0 text-left font-normal whitespace-normal hover:bg-transparent">
+          <span className="flex w-full items-center gap-2">
+            <StatusDot tone={serviceTone(service)} pulse={running} />
+            <span className="truncate text-[13.5px] font-medium text-foreground">{service.name}</span>
+          </span>
+          <code className="block w-full truncate font-mono text-xs text-muted-foreground">
+            {service.command}{service.cwd ? `  ·  ${service.cwd}` : ''}
+          </code>
+          <span className={cn('block text-xs text-pretty', serviceTone(service) === 'danger' ? 'text-danger' : 'text-muted-foreground')}>
+            {serviceStateLabel(service)}
+          </span>
+        </Button>
         {urls.map((entry) => (
-          <a
-            key={entry.url}
-            href={entry.url}
-            target="_blank"
-            rel="noreferrer"
-            onClick={(event) => event.stopPropagation()}
-            className="flex w-fit items-center gap-1 font-mono text-xs text-foreground underline-offset-2 hover:underline"
-          >
-            {entry.url} <ExternalLinkIcon aria-hidden="true" className="size-3" />
-          </a>
+          <Button key={entry.url} variant="link" size="xs" asChild className="h-auto p-0 font-mono">
+            <a href={entry.url} target="_blank" rel="noreferrer">{entry.url} <ExternalLinkIcon aria-hidden="true" /></a>
+          </Button>
         ))}
-      </button>
+      </div>
       <div className="flex shrink-0 items-center gap-1">
         {running ? (
           <>

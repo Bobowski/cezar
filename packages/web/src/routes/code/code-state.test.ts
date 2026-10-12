@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import {
   browserTab, bufferFrom, closeOthers, closeTab, DEFAULT_LAYOUT, diffTab, EMPTY_TABS, focusedGroup, isDiffTab, isDirty, isFileTab, keepTab,
-  languageOf, lineMarksFromPatch, loadDraft, loadLayout, MAX_GROUPS, MIN_GROUP_SIZE, openBrowser, openPaths, openTab, openToSide,
-  pruneBrowsers, reconcile, resizeGroups, resolveConflict, retargetTab, saveDraft, saveLayout, stepTab, tabFile, tabLabel, updateGroup,
+  languageOf, lineMarksFromPatch, loadDraft, loadLayout, MAX_GROUPS, openBrowser, openPaths, openTab, openToSide,
+  pruneBrowsers, reconcile, resolveConflict, retargetTab, saveDraft, saveLayout, stepTab, tabFile, tabLabel, updateGroup,
   updateGroups, type Buffer, type CodeLayout, type Storage,
 } from './code-state'
 
@@ -70,7 +70,7 @@ describe('what survives a reload', () => {
     expect(loadLayout(storage, 'p', 'main')).toEqual(DEFAULT_LAYOUT)
     const layout: CodeLayout = {
       groups: [{ tabs: [{ path: 'a.ts', preview: false }], active: 'a.ts' }, { tabs: [{ path: 'browser:b1', preview: false }], active: 'browser:b1' }],
-      sizes: [70, 30], focused: 1, sidebar: 'scm', panel: 'terminal', panelHeight: 400, agent: true, agentWidth: 500, agentRun: 'run-9',
+      sizes: [70, 30], focused: 1, sidebar: 'scm', panel: 'terminal', panelSize: 40, agent: true, agentSize: 35, agentRun: 'run-9',
       browsers: { b1: { tabs: ['http://localhost:3000/'], active: 0 } }, wrap: true,
     }
     saveLayout(storage, 'p', 'main', layout)
@@ -79,9 +79,9 @@ describe('what survives a reload', () => {
     expect(loadLayout(storage, 'p', 'run-1')).toEqual(DEFAULT_LAYOUT)
     storage.setItem('cez:code:layout:p:main', JSON.stringify({
       groups: [{ tabs: [{ path: 7 }, { path: 'b.ts' }], active: 'gone' }, { tabs: [] }], sizes: [10, 20], focused: 5, panel: 'nope', sidebar: null,
-      panelHeight: 5, agentWidth: 'wide', browsers: { orphan: { tabs: ['x'], active: 0 } },
+      panelSize: 2, agentSize: 'wide', browsers: { orphan: { tabs: ['x'], active: 0 } },
     }))
-    expect(loadLayout(storage, 'p', 'main')).toEqual({ ...DEFAULT_LAYOUT, groups: [{ tabs: [{ path: 'b.ts', preview: false }], active: 'b.ts' }], panelHeight: 120 })
+    expect(loadLayout(storage, 'p', 'main')).toEqual({ ...DEFAULT_LAYOUT, groups: [{ tabs: [{ path: 'b.ts', preview: false }], active: 'b.ts' }], panelSize: 10 })
     storage.setItem('cez:code:layout:p:main', '{ not json')
     expect(loadLayout(storage, 'p', 'main')).toEqual(DEFAULT_LAYOUT)
     expect(loadLayout(null, 'p', 'main')).toEqual(DEFAULT_LAYOUT)
@@ -138,13 +138,6 @@ describe('editor groups', () => {
     const first = updateGroup(split, 0, (group) => closeTab(group, 'a.ts'))
     expect(first.sizes).toEqual([80, 20])
     expect(updateGroup(one('a.ts'), 0, (group) => closeTab(group, 'a.ts')).groups).toEqual([EMPTY_TABS])
-  })
-
-  it('drags a border between two groups, never past the floor', () => {
-    expect(resizeGroups([50, 50], 0, 10)).toEqual([60, 40])
-    expect(resizeGroups([50, 50], 0, -100)).toEqual([MIN_GROUP_SIZE, 100 - MIN_GROUP_SIZE])
-    expect(resizeGroups([40, 30, 30], 1, 5)).toEqual([40, 35, 25])
-    expect(resizeGroups([100], 0, 10)).toEqual([100])
   })
 
   it('a rename or a delete reaches the file in every group', () => {

@@ -11,6 +11,8 @@ import {
 import { queryKeys } from '@/api/queries'
 import { useServices } from '@/api/services'
 import { Button } from '@/components/ui/button'
+import { IconTooltip } from '@/components/ui/icon-tooltip'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from '@/components/ui/toaster'
 import { cn } from '@/lib/utils'
 import { ServiceLog, ServiceRow } from '@/routes/services/services'
@@ -24,12 +26,10 @@ import type { CodePanel } from './code-state'
  * scrolling while the other is looked at. Search lives in the sidebar (`code-sidebar.tsx`).
  */
 export function CodePanelView({
-  tree, panel, height, onPanel,
+  tree, panel, onPanel,
 }: {
   tree: CodeTree
   panel: CodePanel
-  /** In pixels; the border above it is dragged by the page. */
-  height: number
   onPanel: (panel: CodePanel | null) => void
 }) {
   const [seen, setSeen] = useState<ReadonlySet<CodePanel>>(new Set([panel]))
@@ -38,34 +38,27 @@ export function CodePanelView({
   const tabs: CodePanel[] = tree.kind === 'main' ? ['terminal', 'services'] : ['terminal']
   const shown = tabs.includes(panel) ? panel : 'terminal'
   return (
-    <section data-slot="code-panel" style={{ height }} className="flex shrink-0 flex-col bg-card-2">
-      <div role="tablist" aria-label="Panel" className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1">
-        {tabs.map((tab) => (
-          <button
-            key={tab}
-            role="tab"
-            type="button"
-            aria-selected={shown === tab}
-            onClick={() => onPanel(tab)}
-            className={cn('rounded-md px-2.5 py-1 text-xs capitalize', shown === tab ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground hover:text-foreground')}
-          >
-            {tab}
-          </button>
-        ))}
-        <Button variant="ghost" size="icon-xs" className="ml-auto" aria-label="Close panel" onClick={() => onPanel(null)}>
-          <XIcon aria-hidden="true" />
-        </Button>
+    <Tabs data-slot="code-panel" value={shown} onValueChange={(value) => onPanel(value as CodePanel)} className="h-full gap-0 bg-card-2">
+      <div className="flex shrink-0 items-center border-b border-border px-2 py-1">
+        <TabsList aria-label="Panel" className="h-7">
+          {tabs.map((tab) => <TabsTrigger key={tab} value={tab} className="px-2.5 text-xs capitalize">{tab}</TabsTrigger>)}
+        </TabsList>
+        <IconTooltip label="Close panel">
+          <Button variant="ghost" size="icon-xs" className="ml-auto" aria-label="Close panel" onClick={() => onPanel(null)}>
+            <XIcon aria-hidden="true" />
+          </Button>
+        </IconTooltip>
       </div>
+      {/* Mounted once shown and kept: a build keeps scrolling while the other tab is looked at. */}
       <div className="relative min-h-0 flex-1">
-        {seen.has('terminal') && tabs.includes('terminal') ? <Layer active={shown === 'terminal'}><TerminalTab tree={tree} active={shown === 'terminal'} /></Layer> : null}
-        {seen.has('services') && tabs.includes('services') ? <Layer active={shown === 'services'}><ServicesTab active={shown === 'services'} /></Layer> : null}
+        {tabs.map((tab) => (seen.has(tab) ? (
+          <TabsContent key={tab} value={tab} forceMount className="absolute inset-0 data-[state=inactive]:invisible data-[state=inactive]:pointer-events-none">
+            {tab === 'terminal' ? <TerminalTab tree={tree} active={shown === 'terminal'} /> : <ServicesTab active={shown === 'services'} />}
+          </TabsContent>
+        ) : null))}
       </div>
-    </section>
+    </Tabs>
   )
-}
-
-function Layer({ active, children }: { active: boolean; children: React.ReactNode }) {
-  return <div className={cn('absolute inset-0', active ? 'visible' : 'invisible pointer-events-none')}>{children}</div>
 }
 
 function TerminalTab({ tree, active }: { tree: CodeTree; active: boolean }) {
@@ -101,11 +94,20 @@ function TerminalTab({ tree, active }: { tree: CodeTree; active: boolean }) {
       <div className="relative min-w-0 flex-1">
         {sessions.map((session) => <CheckoutTerminal key={session.id} tree={tree} session={session} active={active && shown?.id === session.id} />)}
       </div>
-      <ul aria-label="Terminals" className="flex w-40 shrink-0 flex-col gap-0.5 overflow-y-auto border-l border-border p-1 text-xs">
+      <ul aria-label="Terminals" className="flex w-44 shrink-0 flex-col gap-0.5 overflow-y-auto border-l border-border p-1">
         {sessions.map((session) => (
-          <li key={session.id} className={cn('flex items-center gap-1 rounded-md px-1.5 py-1', shown?.id === session.id ? 'bg-accent text-foreground' : 'text-muted-foreground')}>
-            <button type="button" className="min-w-0 flex-1 truncate text-left" title={session.label} onClick={() => setCurrent(session.id)}>{session.label}</button>
-            <button type="button" aria-label={`Close ${session.label}`} onClick={() => close.mutate(session.id)}><XIcon aria-hidden="true" className="size-3" /></button>
+          <li key={session.id} className="flex items-center gap-0.5">
+            <Button
+              variant="ghost"
+              size="xs"
+              aria-pressed={shown?.id === session.id}
+              title={session.label}
+              className={cn('min-w-0 flex-1 justify-start', shown?.id === session.id && 'bg-accent text-foreground')}
+              onClick={() => setCurrent(session.id)}
+            >
+              <span className="truncate">{session.label}</span>
+            </Button>
+            <Button variant="ghost" size="icon-xs" aria-label={`Close ${session.label}`} onClick={() => close.mutate(session.id)}><XIcon aria-hidden="true" /></Button>
           </li>
         ))}
         <li>

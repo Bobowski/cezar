@@ -223,20 +223,39 @@ fn unpack_tar_gz(archive: &Path, out: &Path) -> Result<(), String> {
         let mut entry = entry.map_err(broken)?;
         let path = entry.path().map_err(broken)?.into_owned();
         let Some(rel) = inside(&path) else { continue };
-        // A link may only point inside the release (npm's `bin/npm -> ../lib/…`), so no later
-        // entry can be written through it to somewhere else.
-        if let Some(target) = entry.link_name().map_err(broken)? {
-            if !link_stays_inside(&rel, &target) {
-                return Err(format!("the Node.js archive links {} outside itself", rel.display()));
-            }
+        // Each link checked alone is not enough: `a -> ..` then `a/b -> ../..` escapes.
+        if through_link(out, &rel) {
+            return Err(format!("the Node.js archive writes {} through a link", rel.display()));
         }
         let dest = out.join(&rel);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(broken)?;
         }
+        if entry.header().entry_type().is_hard_link() {
+            // Named from the archive's top folder; `Entry::unpack` would resolve it from the cwd.
+            let target = entry.link_name().map_err(broken)?.and_then(|target| inside(&target));
+            let target = target.filter(|target| !through_link(out, target)).ok_or_else(|| format!("the Node.js archive links {} outside itself", rel.display()))?;
+            std::fs::hard_link(out.join(target), &dest).map_err(broken)?;
+            continue;
+        }
+        // A link may only point inside the release (npm's `bin/npm -> ../lib/…`).
+        if let Some(target) = entry.link_name().map_err(broken)? {
+            if !link_stays_inside(&rel, &target) {
+                return Err(format!("the Node.js archive links {} outside itself", rel.display()));
+            }
+        }
         entry.unpack(&dest).map_err(broken)?;
     }
     Ok(())
+}
+
+/// Whether a folder on the way to `rel` under `out` is a link.
+fn through_link(out: &Path, rel: &Path) -> bool {
+    let mut at = out.to_path_buf();
+    rel.parent().into_iter().flat_map(Path::components).any(|component| {
+        at.push(component);
+        std::fs::symlink_metadata(&at).is_ok_and(|meta| meta.file_type().is_symlink())
+    })
 }
 
 fn link_stays_inside(link: &Path, target: &Path) -> bool {
@@ -505,6 +524,56 @@ mod tests {
         assert!(link_stays_inside(Path::new("bin/npm"), Path::new("../lib/node_modules/npm/bin/npm-cli.js")));
         assert!(!link_stays_inside(Path::new("bin/npm"), Path::new("../../x")));
         assert!(!link_stays_inside(Path::new("bin/npm"), Path::new("/usr/bin/node")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Each link stays inside on its own, but `l1/l2` really sits at the top folder (`l1 -> ..`),
+    /// so `l2 -> ../..` reaches `~/.cezar/node` — nothing may be written through a link.
+    #[cfg(unix)]
+    #[test]
+    fn a_chain_of_links_cannot_reach_outside_either() {
+        let root = scratch("chain");
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
+        let top = "node-v22.11.0-darwin-arm64";
+        for (path, target) in [(format!("{top}/d1/l1"), ".."), (format!("{top}/d1/l1/l2"), "../..")] {
+            let mut link = tar::Header::new_gnu();
+            link.set_entry_type(tar::EntryType::Symlink);
+            link.set_size(0);
+            builder.append_link(&mut link, path, target).unwrap();
+        }
+        let mut header = tar::Header::new_gnu();
+        header.set_size(1);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append_data(&mut header, format!("{top}/d1/l1/l2/escaped"), &b"x"[..]).unwrap();
+        let archive = builder.into_inner().unwrap().finish().unwrap();
+        let error = install(&root, "22.11.0", &mac(), &sha_hex(&archive), |file| file.write_all(&archive).map_err(|e| e.to_string()), |_| Ok(()))
+            .unwrap_err();
+        assert!(error.contains("through a link"), "{error}");
+        assert!(entries(&root).is_empty(), "{:?}", entries(&root));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A hard link names its target from the archive's top, not from where the link sits.
+    #[cfg(unix)]
+    #[test]
+    fn a_hard_link_points_at_its_file_inside_the_release() {
+        let root = scratch("hardlink");
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
+        let top = "node-v22.11.0-darwin-arm64";
+        let node = b"#!/bin/sh\necho 22.11.0\n";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(node.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder.append_data(&mut header, format!("{top}/bin/node"), &node[..]).unwrap();
+        let mut link = tar::Header::new_gnu();
+        link.set_entry_type(tar::EntryType::Link);
+        link.set_size(0);
+        builder.append_link(&mut link, format!("{top}/lib/node"), format!("{top}/bin/node")).unwrap();
+        let archive = builder.into_inner().unwrap().finish().unwrap();
+        let dir = install(&root, "22.11.0", &mac(), &sha_hex(&archive), |file| file.write_all(&archive).map_err(|e| e.to_string()), |_| Ok(())).unwrap();
+        assert_eq!(std::fs::read(dir.join("lib/node")).unwrap(), node);
         let _ = std::fs::remove_dir_all(&root);
     }
 

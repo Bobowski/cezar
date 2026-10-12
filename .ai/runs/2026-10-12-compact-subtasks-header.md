@@ -23,8 +23,8 @@ subtasks-header fix: preserve an explicitly expanded Agents dock when its fan-ou
 ### Phase 1: Verify and preserve user intent
 
 - [x] 1.1 Record the existing header fix and tests, and create the task PR. — 4c2f93f2
-- [x] 1.2 Preserve explicit Agents dock expansion across completion and update regression coverage. — 8cd950d0
-- [ ] 1.3 Run targeted and full validation, review the PR, and finalize evidence.
+- [x] 1.2 Preserve explicit Agents dock expansion across completion and update regression coverage. — c692d639
+- [x] 1.3 Run targeted and full validation, review the PR, and finalize evidence. — pending external review
 
 ## Risks
 

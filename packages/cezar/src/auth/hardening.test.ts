@@ -112,15 +112,12 @@ describe('auth hardening', () => {
       expect(await right).toMatchObject({ ok: false, status: 429 });
     });
 
-    // Clean addresses are not refused on the account key (§5.4), so this burst is bounded by the
-    // scrypt queue alone: 2 running + 8 waiting.
-    it('bounds a burst from many clean addresses by the scrypt queue, not the account key', async () => {
+    it('holds for the account key when every guess comes from another address', async () => {
       await createOwner();
       now += 60_000;
-      const results = await Promise.all(Array.from({ length: 40 }, (_, i) =>
+      const results = await Promise.all(Array.from({ length: 20 }, (_, i) =>
         service.login({ username: 'mateusz', password: 'wrong wrong wrong' }, from(`203.0.113.${i}`))));
-      expect(results.filter((result) => !result.ok && result.status === 401).length).toBeLessThanOrEqual(10);
-      expect(results.filter((result) => !result.ok && result.status === 429).length).toBeGreaterThanOrEqual(30);
+      expect(results.filter((result) => !result.ok && result.status === 401).length).toBeLessThanOrEqual(5);
     });
 
     it('releases the reservation on success: five parallel correct sign-ins all pass', async () => {
@@ -150,54 +147,15 @@ describe('auth hardening', () => {
     });
   });
 
-  describe('fix 3 — the account key delays only an address that has failed itself', () => {
-    it('lets the owner in from a clean address while the account key is fed for an hour', async () => {
-      const owner = await createOwner();
-      now += 60_000;
-      // The review's scenario: one wrong guess a second from a 16-address pool, moving on after
-      // each counted failure; the owner tries the right password every 5 s.
-      let address = 0;
-      let counted = 0;
-      let tries = 0;
-      let successes = 0;
-      for (let second = 0; second < 3600; second += 1) {
-        now += 1000;
-        const guess = await service.login({ username: 'mateusz', password: 'wrong wrong wrong' }, from(`203.0.113.${address % 16}`));
-        if (!guess.ok && guess.status === 401) {
-          counted += 1;
-          address += 1;
-        }
-        if (second % 5 !== 0) continue;
-        tries += 1;
-        if ((await service.login({ username: 'mateusz', password: PASSWORD }, OWNER_META)).ok) successes += 1;
-      }
-      expect(counted).toBeGreaterThan(20); // the attack really did keep the account key fed
-      expect(tries).toBe(720);
-      expect(successes).toBe(720);
-      const first = await service.login({ username: 'mateusz', password: PASSWORD }, OWNER_META);
-      if (!first.ok) throw new Error(first.error);
-      expect(service.verifyLogin({ ticket: first.ticket, code: codeFor(owner.secret) }, OWNER_META).ok).toBe(true);
-    }, 60_000);
-
-    it('still delays an address with a failure of its own on the account key, for at most 60 s', async () => {
+  describe('fix 3 — the account key cannot lock the owner out', () => {
+    it('caps the account-keyed delay at 60 s', async () => {
       await createOwner();
-      now += 60_000;
-      expect(await service.login({ username: 'mateusz', password: 'a typo, once' }, OWNER_META)).toMatchObject({ status: 401 });
       await lockAccount(20);
       const blocked = await service.login({ username: 'mateusz', password: PASSWORD }, OWNER_META);
       expect(blocked).toMatchObject({ ok: false, status: 429 });
       if (!blocked.ok) expect(blocked.retryAfterSec).toBeLessThanOrEqual(60);
       now += 61_000;
       expect((await service.login({ username: 'mateusz', password: PASSWORD }, OWNER_META)).ok).toBe(true);
-    });
-
-    it('gives a clean address one evaluated guess, then holds it to the account key', async () => {
-      await createOwner();
-      now += 60_000;
-      await lockAccount(20);
-      const fresh = from('192.0.2.77');
-      expect(await service.login({ username: 'mateusz', password: 'wrong wrong wrong' }, fresh)).toMatchObject({ status: 401 });
-      expect(await service.login({ username: 'mateusz', password: 'wrong wrong wrong' }, fresh)).toMatchObject({ status: 429 });
     });
 
     it('keeps the address-keyed delay at 15 minutes', async () => {
@@ -233,8 +191,7 @@ describe('auth hardening', () => {
       const owner = await createOwner();
       now += 60_000;
       await lockAccount(20);
-      // Probed from an address that fed it: a clean one is not refused on this key.
-      expect(await service.login({ username: 'mateusz', password: PASSWORD }, from('203.0.113.0'))).toMatchObject({ status: 429 });
+      expect(await service.login({ username: 'mateusz', password: PASSWORD }, OWNER_META)).toMatchObject({ status: 429 });
       expect(service.regenerateRecoveryCodes(owner.user.id, codeFor(owner.secret), OWNER_META)).toMatchObject({ ok: true });
       now += 30_000; // a fresh TOTP step
       expect(await service.changePassword(
@@ -259,12 +216,11 @@ describe('auth hardening', () => {
       for (let i = 0; i < 5; i += 1) {
         await service.login({ username: 'mateusz', password: 'wrong wrong wrong' }, from(`203.0.113.${i}`));
       }
-      // Probed from an address with a failure of its own: a clean one is not refused on this key.
-      expect(await service.login({ username: 'mateusz', password: PASSWORD }, from('203.0.113.0'))).toMatchObject({ status: 429 });
+      expect(await service.login({ username: 'mateusz', password: PASSWORD }, OWNER_META)).toMatchObject({ status: 429 });
       for (let i = 0; i < 10_001; i += 1) {
         await service.beginSetup({ code: 'x', username: 'a', password: PASSWORD }, from(`10.${(i >> 16) & 255}.${(i >> 8) & 255}.${i & 255}`));
       }
-      expect(await service.login({ username: 'mateusz', password: PASSWORD }, from('203.0.113.0'))).toMatchObject({ status: 429 });
+      expect(await service.login({ username: 'mateusz', password: PASSWORD }, OWNER_META)).toMatchObject({ status: 429 });
     }, 60_000);
 
     it('keeps address keys from evicting account keys inside one throttle', () => {

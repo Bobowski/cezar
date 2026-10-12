@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -308,12 +308,48 @@ async function confirmServiceRestarted(
   if (after.mainPid === before.mainPid && after.startedAt === before.startedAt) {
     const status = `systemctl${scope === 'user' ? ' --user' : ''} status ${unit}`;
     throw new StepAborted(
-      `${unit} did not actually restart — PID ${after.mainPid} has been serving since before this deploy, so the ` +
-        `cockpit is still running the OLD version and nothing was deployed.\n` +
+      `${unit} did not actually restart — PID ${after.mainPid} has been serving since before this restart, so the ` +
+        `cockpit is still the OLD process and nothing was applied.\n` +
         `Check \`${status}\`, then restart it by hand to see the real error.`,
     );
   }
   ctx.ui.success(`Service restarted (PID ${before.mainPid} → ${after.mainPid}).`);
+}
+
+/** Mirrors `GLOBAL_BODY_LIMIT` in `server/server.ts`; `ubuntu-vps-site.test.ts` pins the two together. */
+const NGINX_BODY_LIMIT = '32m';
+
+/** What certbot added to a site: its lines inside our server block, and the blocks it appended. */
+export interface CertbotEdits {
+  tls: string[];
+  trailer: string;
+}
+
+const CERTBOT_LINE = /^\s*(listen\s[^;#]*\b443\b|ssl_[a-z_]+\s|include\s+\/etc\/letsencrypt\/)/;
+
+/**
+ * Read certbot's edits back out of a site so a re-render can carry them: the TLS listener and
+ * certificate lines of the first `server` block, plus everything after it (the `:80` redirect).
+ * `null` when the site has no certificate — there is nothing to keep.
+ */
+export function certbotEdits(site: string): CertbotEdits | null {
+  const lines = site.split('\n');
+  const start = lines.findIndex((l) => /^\s*server\s*\{/.test(l));
+  if (start < 0) return null;
+  let depth = 0;
+  let end = -1;
+  for (let i = start; i < lines.length; i++) {
+    const code = (lines[i] ?? '').replace(/#.*$/, '');
+    depth += (code.match(/\{/g) ?? []).length - (code.match(/\}/g) ?? []).length;
+    if (depth === 0) {
+      end = i;
+      break;
+    }
+  }
+  if (end < 0) return null;
+  const tls = lines.slice(start + 1, end).filter((l) => CERTBOT_LINE.test(l));
+  if (!tls.some((l) => /^\s*ssl_certificate\s/.test(l)) || !tls.some((l) => /^\s*listen\s/.test(l))) return null;
+  return { tls, trailer: lines.slice(end + 1).join('\n').trim() };
 }
 
 /**
@@ -329,6 +365,9 @@ async function confirmServiceRestarted(
  * `nginxVersion` is the installed nginx (`detectNginxVersion`) and decides how
  * HTTP/2 is spelled; omitted, the output is the conservative one every nginx
  * parses.
+ *
+ * `certbot` is what certbot added to the site being replaced (`certbotEdits`): its lines take
+ * the place of the plain `:80` listener, so a re-render never takes working HTTPS down.
  */
 export function nginxVhost(
   port: number,
@@ -336,6 +375,7 @@ export function nginxVhost(
   htpasswd: string | null = '/etc/cezar/htpasswd',
   nginxVersion?: string | null,
   instance = 'default',
+  certbot?: CertbotEdits | null,
 ): string {
   // nginx variable and zone names: letters, digits, underscore.
   const id = instance.replace(/[^a-z0-9]+/gi, '_');
@@ -372,6 +412,13 @@ export function nginxVhost(
     }
 `
     : '';
+  const listeners = certbot ? certbot.tls.join('\n') : '    listen 80;\n    listen [::]:80;';
+  // certbot's own :80 block follows the domain, as its `server_name` always did on an SSL re-run.
+  const trailer = certbot?.trailer
+    ? `\n${certbot.trailer
+        .replace(/^(\s*server_name)\s[^;]*;/gm, `$1 ${serverName};`)
+        .replace(/(\$host\s*=\s*)[^\s)]+/g, `$1${serverName}`)}\n`
+    : '';
   return `# Managed by cezar server-install — do not edit by hand.
 
 # A WebSocket handshake (/api/v1/ws) is passed through as an upgrade. Every other request keeps
@@ -382,10 +429,13 @@ map $http_upgrade $cez_connection_${id} {
 }
 ${htpasswd === null ? `limit_req_zone $binary_remote_addr zone=${signInZone}:1m rate=20r/m;\n` : ''}
 server {
-    listen 80;
-    listen [::]:80;
+${listeners}
     server_name ${serverName};
 ${http2Block}${authBlock}
+    # cezar accepts bodies up to GLOBAL_BODY_LIMIT (32 MiB, server/server.ts) — pasted images.
+    # nginx's 1 MB default would answer 413 before cezar saw the request.
+    client_max_body_size ${NGINX_BODY_LIMIT};
+
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
@@ -402,7 +452,7 @@ ${http2Block}${authBlock}
         proxy_pass http://127.0.0.1:${port};
     }
 ${signInLimit}}
-`;
+${trailer}`;
 }
 
 /** Build a privileged command that writes file content atomically (base64 → no quoting hell). */
@@ -435,6 +485,139 @@ function writeFileStep(
     note: `This writes ${opts.path} with exactly this content:\n\n${opts.content}`,
     command: writeRootFileCmd(opts.path, opts.content, opts.extra),
     verify: opts.verify,
+  });
+}
+
+/** A world-readable root-owned file's content, or null when it is absent or unreadable. */
+async function readHostFile(ctx: InstallContext, path: string): Promise<string | null> {
+  const r = await ctx.runner.capture('cat', [path]);
+  return r.code === 0 ? r.stdout : null;
+}
+
+/**
+ * Install a site all-or-nothing: the new file is kept only when `nginx -t` accepts it. A rejected
+ * one is replaced by what was there before (or removed), so a broken file is never left enabled
+ * for the next nginx restart to trip over. The distro default goes only after the test passed.
+ */
+export function installSiteCmd(avail: string, enabled: string, content: string, dropDefault = false): string {
+  const bak = `${avail}.cezar-bak`;
+  const b64 = Buffer.from(content, 'utf8').toString('base64');
+  const apply =
+    `printf %s ${shquote(b64)} | base64 --decode > ${shquote(avail)} && ln -sf ${avail} ${enabled} && nginx -t` +
+    `${dropDefault ? ' && rm -f /etc/nginx/sites-enabled/default' : ''} && systemctl reload nginx`;
+  const restore =
+    `if [ -e ${bak} ]; then mv -f ${bak} ${avail}; else rm -f ${avail}; fi; [ "$L" = 1 ] || rm -f ${enabled}; ` +
+    `echo 'cezar: the new nginx site was not applied - the previous one was put back' >&2; exit 1`;
+  return (
+    `install -d -m 0755 /etc/nginx/sites-available && L=0 && { [ -L ${enabled} ] && L=1; ` +
+    `if [ -e ${avail} ]; then cp -p ${avail} ${bak}; else rm -f ${bak}; fi; } && ` +
+    `if ${apply}; then rm -f ${bak}; else ${restore}; fi`
+  );
+}
+
+/** The loopback status of an anonymous `GET /api/v1/health`: 401 is cezar's sign-in answering. */
+async function anonymousHealthCode(ctx: InstallContext): Promise<string> {
+  return curlCode(ctx, [`http://${upstreamHost(ctx)}:${ctx.state.primaryPort}/api/v1/health`]);
+}
+
+/**
+ * The gate in front of every site without `auth_basic`: the RUNNING service must already answer
+ * an anonymous request with 401. If it does not, the unit is brought in line and restarted first;
+ * if it still does not, this throws and the site is left exactly as it was — nginx never proxies
+ * the internet to a cezar with sign-in off (spec 2026-10-12-cockpit-authentication §9a).
+ */
+async function requireSignInEnforced(ctx: InstallContext, existingSite: string | null): Promise<void> {
+  if (ctx.dryRun) {
+    ctx.ui.info("DRY RUN — would confirm the service answers 401 to an anonymous request before nginx stops asking for a login.");
+    return;
+  }
+  let code = await anonymousHealthCode(ctx);
+  let why = '';
+  if (code !== '401') {
+    ctx.ui.info(
+      code === '000'
+        ? "cezar is not running yet — starting the service first, so nginx only ever fronts a cockpit that asks for sign-in."
+        : `The running cezar does not enforce its own sign-in yet (anonymous /api/v1/health answered "${code}") — updating and restarting the service before nginx stops asking for a login.`,
+    );
+    try {
+      const svc = await applyServiceUnit(ctx, code === '000' ? 'if-changed' : 'always');
+      // Recorded now so an uninstall after a failed run still finds the service.
+      const rec = ctx.state.steps['autostart'];
+      if (!rec?.created) {
+        ctx.state.steps['autostart'] = { status: rec?.status ?? 'pending', created: { artifacts: [svc.artifact] } };
+        await ctx.save();
+      }
+    } catch (err) {
+      if (!(err instanceof StepAborted)) throw err;
+      why = ` ${err.message}`;
+    }
+    // An npx-launched unit fetches the package on its first start — give it time.
+    for (let i = 0; i < 30; i++) {
+      code = await anonymousHealthCode(ctx);
+      if (code === '401') break;
+      if (i < 29) await ctx.runner.capture('sh', ['-c', 'sleep 1']);
+    }
+  }
+  if (code === '401') return;
+  const kept = existingSite?.includes('auth_basic')
+    ? 'The nginx site was NOT changed: its Basic-Auth login is still in force.'
+    : existingSite
+      ? 'The nginx site was NOT changed.'
+      : 'No nginx site was written.';
+  const unit = unitName(ctx);
+  throw new StepAborted(
+    `cezar on ${upstreamHost(ctx)}:${ctx.state.primaryPort} is not enforcing its own sign-in — an anonymous /api/v1/health ` +
+      `answered "${code}", not 401.${why}\n${kept}\n` +
+      `Check \`systemctl --user status ${unit}\` (or: sudo systemctl status ${unit}) and that the unit has no ` +
+      '`Environment=CEZ_AUTH=0`, then re-run.',
+  );
+}
+
+/**
+ * The ONE place the nginx site is rendered and written. Everything that decides its shape comes
+ * from the recorded state — who signs in, the instance, the port — so no caller can write a site
+ * for a different mode than the install is in (review finding: the SSL step used to).
+ */
+async function writeSite(
+  ctx: InstallContext,
+  opts: { description: string; serverName: string; dropDefault?: boolean },
+): Promise<void> {
+  const avail = vhostAvailable(ctx);
+  const enabled = vhostEnabled(ctx);
+  const htpasswd = ctx.state.signIn === 'cezar' ? null : htpasswdPath(ctx);
+  const existing = ctx.dryRun ? null : await readHostFile(ctx, avail);
+  if (htpasswd === null) await requireSignInEnforced(ctx, existing);
+  const certbot = existing ? certbotEdits(existing) : null;
+  if (existing?.includes('ssl_certificate') && !certbot) {
+    throw new StepAborted(
+      `${avail} has TLS configuration cezar cannot carry into a new file, so it was left as it is. ` +
+        'Move the certificate lines back inside the first server block (or remove the file), then re-run.',
+    );
+  }
+  const content = nginxVhost(
+    ctx.state.primaryPort,
+    opts.serverName,
+    htpasswd,
+    await detectNginxVersion(ctx),
+    inst(ctx),
+    certbot,
+  );
+  await sudoStep(ctx, {
+    description: opts.description,
+    note: `This writes ${avail} with exactly this content:\n\n${content}`,
+    command: installSiteCmd(avail, enabled, content, opts.dropDefault),
+    // The command puts the old file back when `nginx -t` rejects the new one, so "the new
+    // content is on disk" is the proof — a symlink existing proved nothing.
+    verify: async (c) =>
+      (await c.runner.capture('cmp', ['-s', '-', avail], { input: content })).code === 0 &&
+      (await nginxConfigTestFailure(c)) === undefined,
+    verifyFailure: async (c) =>
+      (await nginxConfigTestFailure(c)) ?? {
+        retryable: true,
+        message:
+          `The new site is not in place: the command did not run, or nginx -t rejected it (its error is above) ` +
+          `and the previous site was put back — nginx is still serving that one.`,
+      },
   });
 }
 
@@ -599,14 +782,10 @@ const nginxProxyStep: InstallStep = {
     //    very next command fail and takes the whole install down (#910).
     const vhostAvail = vhostAvailable(ctx);
     const vhostEnbl = vhostEnabled(ctx);
-    const nginxVersion = await detectNginxVersion(ctx);
-    const vhost = nginxVhost(ctx.state.primaryPort, ctx.state.domain ?? '_', htpasswd, nginxVersion, inst(ctx));
-    await writeFileStep(ctx, {
+    await writeSite(ctx, {
       description: 'Write the cezar nginx site, enable it, and reload nginx.',
-      path: vhostAvail,
-      content: vhost,
-      extra: `ln -sf ${vhostAvail} ${vhostEnbl} && rm -f /etc/nginx/sites-enabled/default && nginx -t && systemctl reload nginx`,
-      verify: (c) => verifyCommand(c, 'test', ['-f', vhostEnbl]),
+      serverName: ctx.state.domain ?? '_',
+      dropDefault: true,
     });
 
     // 5) firewall: if ufw is active, the cockpit is unreachable until 80/443 are
@@ -765,10 +944,8 @@ const sslStep: InstallStep = {
     //
     // On a RE-RUN (--reconfigure ssl / --reinstall / resume) the vhost may
     // already carry certbot's TLS edits (`listen 443 ssl`, `ssl_certificate`).
-    // Rewriting it with the plain-HTTP template would take working HTTPS down
-    // BEFORE certbot runs again — and leave it down if certbot then fails. So
-    // when TLS config is present, only the `server_name` lines are updated
-    // in place; the hostname regex bars every sed/shell metacharacter.
+    // `writeSite` carries them into the new file, so working HTTPS never goes
+    // down BEFORE certbot runs again — or stays down if certbot then fails.
     const trimmedDomain = String(domain).trim();
     // Record the domain on the instance record so a resume / redeploy / verify
     // (and the nginx server_name) all agree on it, even for the default instance
@@ -776,26 +953,11 @@ const sslStep: InstallStep = {
     ctx.state.domain = trimmedDomain;
     const vhostAvail = vhostAvailable(ctx);
     const vhostEnbl = vhostEnabled(ctx);
-    const vhostHasTls = await verifyCommand(ctx, 'sh', ['-c', `grep -qs ssl_certificate ${vhostAvail}`]);
     const nginxVersion = await detectNginxVersion(ctx);
-    if (vhostHasTls) {
-      await sudoStep(ctx, {
-        description: `Update server_name to ${trimmedDomain} in the existing TLS-enabled nginx site (certbot config preserved).`,
-        command: `sed -i 's/^\\([[:space:]]*\\)server_name .*;/\\1server_name ${trimmedDomain};/' ${vhostAvail} && nginx -t && systemctl reload nginx`,
-        verify: (c) =>
-          verifyCommand(c, 'sh', ['-c', `grep -qF ${shquote(`server_name ${trimmedDomain}`)} ${vhostAvail}`]),
-      });
-    } else {
-      const domainVhost = nginxVhost(ctx.state.primaryPort, trimmedDomain, htpasswdPath(ctx), nginxVersion);
-      await writeFileStep(ctx, {
-        description: `Point the nginx site at ${trimmedDomain} so certbot can configure TLS for it.`,
-        path: vhostAvail,
-        content: domainVhost,
-        extra: `ln -sf ${vhostAvail} ${vhostEnbl} && nginx -t && systemctl reload nginx`,
-        verify: (c) =>
-          verifyCommand(c, 'sh', ['-c', `grep -qF ${shquote(`server_name ${trimmedDomain}`)} ${vhostAvail}`]),
-      });
-    }
+    await writeSite(ctx, {
+      description: `Point the nginx site at ${trimmedDomain} so certbot can configure TLS for it.`,
+      serverName: trimmedDomain,
+    });
 
     // certbot can legitimately fail on external state (DNS not pointed yet, LE
     // rate limit). Route it through sudoStep so it honors the sudo/delegate
@@ -1069,6 +1231,72 @@ async function readExecStart(ctx: InstallContext, scope: 'user' | 'system', unit
   return stdout;
 }
 
+/**
+ * Write this instance's unit from the recorded state, enable it, and make the RUNNING process
+ * match it. `enable --now` only starts a stopped unit, so a unit whose content changed is
+ * restarted — and the restart is proven by a changed PID, as `server-deploy` does (#912).
+ * `always` restarts even an unchanged unit (the process is known not to match it).
+ */
+async function applyServiceUnit(
+  ctx: InstallContext,
+  restart: 'if-changed' | 'always' = 'if-changed',
+): Promise<{ scope: 'user' | 'system'; artifact: StepArtifact }> {
+  const UNIT_NAME = unitName(ctx);
+  const execStart = await resolveExecStart(ctx);
+  // Prefer a rootless `systemd --user` service + linger; fall back to a system
+  // unit (via sudoStep) when the user bus is not reachable. `show-environment`
+  // exits 0 iff the user manager is up — on a headless SSH box with no session
+  // it fails (exit 1, not 127), which the old `!== 127` test misread as "up".
+  const userBus = ctx.dryRun ? true : (await ctx.runner.capture('systemctl', ['--user', 'show-environment'])).code === 0;
+  const scope = userBus ? 'user' : 'system';
+  const unitPath = userBus ? join(homedir(), '.config', 'systemd', 'user', UNIT_NAME) : `/etc/systemd/system/${UNIT_NAME}`;
+  const artifact = owned('service', { name: UNIT_NAME, scope, path: unitPath });
+  if (ctx.dryRun) {
+    ctx.ui.info(`DRY RUN — would write ${unitPath} and enable it (systemctl --user enable --now cezar).`);
+    return { scope, artifact };
+  }
+  const unit = systemdUnit(ctx.repoRoot, ctx.state.primaryPort, scope, execStart, ctx.state.bindHost, ctx.state.instanceId, ctx.state.signIn === 'proxy');
+  const previous = userBus ? (existsSync(unitPath) ? readFileSync(unitPath, 'utf8') : null) : await readHostFile(ctx, unitPath);
+  const mustRestart = restart === 'always' || (previous !== null && previous.trimEnd() !== unit.trimEnd());
+  const before = mustRestart ? await readServiceIdentity(ctx, scope, UNIT_NAME) : null;
+  if (mustRestart) ctx.ui.info(`${UNIT_NAME} changed — restarting the service so the running cockpit picks it up.`);
+
+  if (userBus) {
+    mkdirSync(dirname(unitPath), { recursive: true });
+    writeFileSync(unitPath, unit, 'utf8');
+    await ctx.runner.interactive('systemctl', ['--user', 'daemon-reload']);
+    if (mustRestart) {
+      await ctx.runner.interactive('systemctl', ['--user', 'enable', UNIT_NAME]);
+      const code = await ctx.runner.interactive('systemctl', ['--user', 'restart', UNIT_NAME]);
+      if (code !== 0) {
+        throw new StepAborted(
+          `systemctl --user restart ${UNIT_NAME} exited ${code} — the service was NOT restarted, so the old process ` +
+            `is still serving with its old settings. Check \`systemctl --user status ${UNIT_NAME}\`.`,
+        );
+      }
+    } else {
+      await ctx.runner.interactive('systemctl', ['--user', 'enable', '--now', UNIT_NAME]);
+    }
+    if ((await ctx.runner.capture('systemctl', ['--user', 'is-enabled', UNIT_NAME])).code !== 0) {
+      ctx.ui.warn('The user service did not enable cleanly — check `systemctl --user status cezar`.');
+    }
+  } else {
+    await writeFileStep(ctx, {
+      description: mustRestart
+        ? 'Install the changed cezar systemd unit, enable it at boot, and restart the service.'
+        : 'Install the cezar systemd unit, start it now, and enable it at boot.',
+      path: unitPath,
+      content: unit,
+      extra: mustRestart
+        ? `systemctl daemon-reload && systemctl enable ${UNIT_NAME} && systemctl restart ${UNIT_NAME}`
+        : `systemctl daemon-reload && systemctl enable --now ${UNIT_NAME}`,
+      verify: (c) => verifyCommand(c, 'systemctl', ['is-enabled', UNIT_NAME]),
+    });
+  }
+  if (mustRestart) await confirmServiceRestarted(ctx, scope, UNIT_NAME, before);
+  return { scope, artifact };
+}
+
 const autostartStep: InstallStep = {
   id: 'autostart',
   // Required: after install the cockpit must actually be serving, so cezar runs
@@ -1079,68 +1307,36 @@ const autostartStep: InstallStep = {
     return false; // always (re)assert the service is installed and running
   },
   async run(ctx): Promise<{ artifacts: StepArtifact[] }> {
-    const UNIT_NAME = unitName(ctx);
     // An external-proxy install has no nginx step to ask in, and the unit written below is what
     // carries the answer.
     if (ctx.state.externalProxy && ctx.state.signIn === undefined) {
       await chooseSignIn(ctx, 'My reverse proxy authenticates (a Basic-Auth or SSO middleware)');
     }
-    const execStart = await resolveExecStart(ctx);
-    // Prefer a rootless `systemd --user` service + linger; fall back to a system
-    // unit (via sudoStep) when the user bus is not reachable. `show-environment`
-    // exits 0 iff the user manager is up — on a headless SSH box with no session
-    // it fails (exit 1, not 127), which the old `!== 127` test misread as "up".
-    const userBus = ctx.dryRun ? true : (await ctx.runner.capture('systemctl', ['--user', 'show-environment'])).code === 0;
-
-    if (userBus) {
-      const unitPath = join(homedir(), '.config', 'systemd', 'user', UNIT_NAME);
-      if (ctx.dryRun) {
-        ctx.ui.info(`DRY RUN — would write ${unitPath} and enable it (systemctl --user enable --now cezar).`);
-      } else {
-        mkdirSync(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });
-        writeFileSync(
-          unitPath,
-          systemdUnit(ctx.repoRoot, ctx.state.primaryPort, 'user', execStart, ctx.state.bindHost, ctx.state.instanceId, ctx.state.signIn === 'proxy'),
-          'utf8',
-        );
-        await ctx.runner.interactive('systemctl', ['--user', 'daemon-reload']);
-        await ctx.runner.interactive('systemctl', ['--user', 'enable', '--now', UNIT_NAME]);
-        if ((await ctx.runner.capture('systemctl', ['--user', 'is-enabled', UNIT_NAME])).code !== 0) {
-          ctx.ui.warn('The user service did not enable cleanly — check `systemctl --user status cezar`.');
-        }
-      }
-      // Linger lets the user service survive logout / start at boot — usually
-      // needs root. Record it as owned only when THIS run turned it on, so
-      // uninstall reverses exactly what install changed (a pre-existing linger
-      // may serve other user services).
-      const osUser = userInfo().username;
-      const lingerWasOn = await verifyCommand(ctx, 'loginctl', ['show-user', osUser, '-p', 'Linger'], (r) =>
-        r.stdout.includes('Linger=yes'),
-      );
-      await sudoStep(ctx, {
-        description: 'Enable linger so the cockpit starts at boot without a login session.',
-        command: `loginctl enable-linger ${shquote(osUser)}`,
-        verify: (c) =>
-          verifyCommand(c, 'loginctl', ['show-user', osUser, '-p', 'Linger'], (r) =>
-            r.stdout.includes('Linger=yes'),
-          ),
-      });
-      await confirmCezarRunning(ctx, 'systemctl --user status cezar', 'journalctl --user -u cezar -n 50 --no-pager');
-      const artifacts: StepArtifact[] = [owned('service', { name: UNIT_NAME, scope: 'user', path: unitPath })];
-      if (!lingerWasOn) artifacts.push(owned('linger', { name: osUser }));
-      return { artifacts };
+    const svc = await applyServiceUnit(ctx);
+    if (svc.scope === 'system') {
+      await confirmCezarRunning(ctx, 'sudo systemctl status cezar', 'sudo journalctl -u cezar -n 50 --no-pager');
+      return { artifacts: [svc.artifact] };
     }
-
-    // System unit fallback.
-    await writeFileStep(ctx, {
-      description: 'Install the cezar systemd unit, start it now, and enable it at boot.',
-      path: `/etc/systemd/system/${UNIT_NAME}`,
-      content: systemdUnit(ctx.repoRoot, ctx.state.primaryPort, 'system', execStart, ctx.state.bindHost, ctx.state.instanceId, ctx.state.signIn === 'proxy'),
-      extra: `systemctl daemon-reload && systemctl enable --now ${UNIT_NAME}`,
-      verify: (c) => verifyCommand(c, 'systemctl', ['is-enabled', UNIT_NAME]),
+    // Linger lets the user service survive logout / start at boot — usually
+    // needs root. Record it as owned only when THIS run turned it on, so
+    // uninstall reverses exactly what install changed (a pre-existing linger
+    // may serve other user services).
+    const osUser = userInfo().username;
+    const lingerWasOn = await verifyCommand(ctx, 'loginctl', ['show-user', osUser, '-p', 'Linger'], (r) =>
+      r.stdout.includes('Linger=yes'),
+    );
+    await sudoStep(ctx, {
+      description: 'Enable linger so the cockpit starts at boot without a login session.',
+      command: `loginctl enable-linger ${shquote(osUser)}`,
+      verify: (c) =>
+        verifyCommand(c, 'loginctl', ['show-user', osUser, '-p', 'Linger'], (r) =>
+          r.stdout.includes('Linger=yes'),
+        ),
     });
-    await confirmCezarRunning(ctx, 'sudo systemctl status cezar', 'sudo journalctl -u cezar -n 50 --no-pager');
-    return { artifacts: [owned('service', { name: UNIT_NAME, scope: 'system', path: `/etc/systemd/system/${UNIT_NAME}` })] };
+    await confirmCezarRunning(ctx, 'systemctl --user status cezar', 'journalctl --user -u cezar -n 50 --no-pager');
+    const artifacts: StepArtifact[] = [svc.artifact];
+    if (!lingerWasOn) artifacts.push(owned('linger', { name: osUser }));
+    return { artifacts };
   },
   async undo(ctx, created) {
     const UNIT_NAME = unitName(ctx);

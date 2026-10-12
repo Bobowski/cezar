@@ -63,9 +63,9 @@ node packages/cezar/dist/index.js server-install --platform ubuntu-vps
 | Step | What happens |
 |------|--------------|
 | **Dependencies** | Detects `claude` / `codex` / `opencode` / `gh` / `git`; offers to install the missing ones. At least one agent CLI is required. |
-| **Reverse proxy** | Installs **nginx**, asks **how people sign in** (below), writes an SSE- and WebSocket-safe proxy vhost, and — if `ufw` is active — allows `Nginx Full` (ports 80/443). |
-| **Domain + SSL** | Points the vhost's `server_name` at your domain, then runs `certbot --nginx` for a Let's Encrypt certificate with auto-redirect. **Required** with cezar's own sign-in; optional (and skippable) with Basic-Auth. |
-| **Service** | Installs a **systemd** unit (rootless `--user` + linger where possible, else a system unit), **starts cezar now**, enables it on boot, and waits for it to answer on the loopback port. |
+| **Reverse proxy** | Installs **nginx**, asks **how people sign in** (below), writes an SSE- and WebSocket-safe proxy vhost (request bodies up to 32 MB, cezar's own limit), and — if `ufw` is active — allows `Nginx Full` (ports 80/443). With cezar's own sign-in it **starts the service first** and writes the site only once an anonymous request to it is refused (401). A site `nginx -t` rejects is not left in place: the previous one is put back and the step fails. |
+| **Domain + SSL** | Points the vhost's `server_name` at your domain, then runs `certbot --nginx` for a Let's Encrypt certificate with auto-redirect. On a re-run certbot's TLS lines are carried into the rewritten site, so HTTPS stays up. **Required** with cezar's own sign-in; optional (and skippable) with Basic-Auth. |
+| **Service** | Installs a **systemd** unit (rootless `--user` + linger where possible, else a system unit), **starts cezar now**, enables it on boot, and waits for it to answer on the loopback port. On a re-run a unit whose content changed is **restarted** (and the restart is proven by a new PID); an unchanged one is left running. |
 | **Verify** | Confirms an anonymous API request is refused (401) **and** that an authenticated one reaches *this* install — a real end-to-end check, not just "nginx is up". With cezar's own sign-in it then prints the **one-time link that creates your account**. |
 
 ### How people sign in
@@ -81,6 +81,13 @@ The reverse-proxy step asks once and remembers the answer:
   `CEZ_AUTH=0`, and the terminal, file editing and agent-config writes stay off
   unless you opt in (`CEZ_TERMINAL=1`, `CEZ_FILE_EDIT=1`). `--yes` always takes
   this one, because it also skips the SSL step.
+
+Switching an existing install from Basic-Auth to cezar's sign-in
+(`--reconfigure nginx-proxy,ssl,autostart`) never leaves the cockpit without a
+login: the installer rewrites the unit and restarts the service first, checks
+that an anonymous `GET /api/v1/health` on loopback answers 401, and only then
+removes `auth_basic`. If that check fails the step stops and says so — the
+Basic-Auth site is still the one serving.
 
 ### Creating your account
 
@@ -231,7 +238,8 @@ The installer is also **idempotent** if you need to change the setup itself:
 
 > Use `--reconfigure autostart` (not just `server-deploy`) when the **unit file
 > itself** changed — e.g. after upgrading the installer — since a restart alone
-> won't rewrite it.
+> won't rewrite it. It rewrites the unit and, when the content changed, restarts
+> the service — running tasks are interrupted, as with `server-deploy`.
 
 ---
 
@@ -382,6 +390,8 @@ break other vhosts).
 | External-proxy install: proxy returns 502 | Traefik runs in a container and can't reach `127.0.0.1`. Reinstall with `--bind-host 172.17.0.1` (or your `docker0` address). |
 | `server-deploy` fails with `Failed to connect to bus: No medium found` | `systemctl --user` has no D-Bus session — the deploy ran through `sudo -u <user>`, cron or an SSH root script, which give no login session. Use `sudo -i -u <user> …` (or `machinectl shell <user>@`), or export `XDG_RUNTIME_DIR=/run/user/$(id -u <user>)` and `DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus` first. Until #912 this was only a warning and the deploy still reported success. |
 | `cezar.service did not actually restart — PID … is still serving` | The restart command returned but the process never changed, so the cockpit is still on the old code. `systemctl --user status cezar` / `journalctl --user -u cezar -n 50` shows why; restart it by hand to see the real error. |
+| `cezar on 127.0.0.1:<port> is not enforcing its own sign-in` | The installer refused to remove nginx's login because the running service answered an anonymous request. The site was not changed. Usually an `Environment=CEZ_AUTH=0` left in the unit by hand, or a service that failed to restart: `systemctl --user status cezar`, fix, re-run. |
+| `The new site is not in place … nginx -t rejected it` | nginx refused the generated site (its own error is printed above — often another site on the box using the same names). The previous site was put back and is still serving. |
 | Cockpit stuck on an old version after `server-deploy` | npx-based unit whose cache wasn't refreshed (fixed in #696 — `server-deploy` now clears it). Manual: `rm -rf ~/.npm/_npx` as the service user, then `sudo systemctl restart cezar-<instance>`. |
 
 ← Back to [Remote access overview](./README.md)

@@ -1039,18 +1039,24 @@ describe('ubuntu-vps review fixes (PR #423)', () => {
     expect(inputs[0]).toBe('user = "ops:my\\"pa\\\\ss1"\n');
   });
 
-  it('SSL re-run with TLS already configured updates server_name in place (no plain-HTTP rewrite)', async () => {
+  it('SSL re-run with TLS already configured carries certbot\u2019s edits into the rewritten site (no plain-HTTP rewrite)', async () => {
     const ui = {
       ...createAutoUi(),
       text: async (o: { message: string }) => (o.message.includes('Domain') ? 'cezar.example.com' : 'you@example.com'),
     } as Ui;
+    // The site as certbot left it for the OLD domain.
+    const live = nginxVhost(4321, 'old.example.com', '/etc/cezar/htpasswd', '1.24.0').replace(
+      '    listen 80;\n    listen [::]:80;\n',
+      '    listen 443 ssl http2; # managed by Certbot\n' +
+        '    ssl_certificate /etc/letsencrypt/live/old.example.com/fullchain.pem; # managed by Certbot\n' +
+        '    ssl_certificate_key /etc/letsencrypt/live/old.example.com/privkey.pem; # managed by Certbot\n',
+    ) + '\nserver {\n    if ($host = old.example.com) {\n        return 301 https://$host$request_uri;\n    } # managed by Certbot\n\n    listen 80;\n    server_name old.example.com;\n    return 404; # managed by Certbot\n}\n';
     const commands: string[] = [];
     const ctx = {
       ...ctxWith({ ui }),
       runner: {
-        capture: async (_p: string, args: string[]) => {
-          const joined = args.join(' ');
-          if (joined.includes('ssl_certificate')) return { code: 0, stdout: '', stderr: '' }; // TLS present
+        capture: async (p: string, args: string[]) => {
+          if (p === 'cat' && args[0] === '/etc/nginx/sites-available/cezar') return { code: 0, stdout: live, stderr: '' };
           return { code: 0, stdout: '', stderr: '' };
         },
         interactive: async (_p: string, args: string[]) => {
@@ -1061,9 +1067,16 @@ describe('ubuntu-vps review fixes (PR #423)', () => {
     } as InstallContext;
     await stepById('ssl').run(ctx);
     const rewrites = commands.filter((c) => c.includes('base64 --decode'));
-    const seds = commands.filter((c) => c.includes('sed -i') && c.includes('server_name'));
-    expect(rewrites).toHaveLength(0); // never wipes certbot's 443 config
-    expect(seds).toHaveLength(1);
+    expect(rewrites).toHaveLength(1);
+    const written = Buffer.from(/printf %s '([A-Za-z0-9+/=]+)'/.exec(rewrites[0] ?? '')?.[1] ?? '', 'base64').toString('utf8');
+    // never wipes certbot's 443 config…
+    expect(written).toContain('listen 443 ssl http2; # managed by Certbot');
+    expect(written).toContain('ssl_certificate_key /etc/letsencrypt/live/old.example.com/privkey.pem; # managed by Certbot');
+    expect(written).not.toMatch(/^    listen 80;\n    listen \[::\]:80;/m);
+    // …and every server_name (ours and certbot's redirect) follows the domain.
+    expect(written.match(/server_name cezar\.example\.com;/g)).toHaveLength(2);
+    expect(written).toContain('if ($host = cezar.example.com) {');
+    expect(written).not.toContain('server_name old.example.com');
   });
 
   it('uninstall reverses linger only when install recorded enabling it', async () => {

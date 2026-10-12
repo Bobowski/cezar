@@ -31,6 +31,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod disclaim;
+mod node_runtime;
 pub use disclaim::disclaim_exec_if_asked;
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -864,7 +865,8 @@ fn npm_program() -> &'static str {
 /// 1. the PATH the user's shell reports (cached from the first call);
 /// 2. that PATH resolved AGAIN — Node may have been installed since (the splash's "Try again");
 /// 3. the folders installers and version managers use, each `node` asked directly — a lazy nvm,
-///    an rc file a login shell skips, an old system Node shadowing a new one.
+///    an rc file a login shell skips, an old system Node shadowing a new one;
+/// 4. the managed runtime a previous launch downloaded (`~/.cezar/node`, #1403).
 fn check_node() -> Result<String, String> {
     let first = node_version(tool_command(&node_program(), &["-p", "process.versions.node"]));
     if first.is_ok() || std::env::var_os("CEZ_DESKTOP_NODE").is_some_and(|v| !v.is_empty()) {
@@ -875,7 +877,8 @@ fn check_node() -> Result<String, String> {
         return Ok(version);
     }
     let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
-    match find_node_in(&candidate_node_dirs(&env)) {
+    let managed = node_runtime::installed(&managed_node_root()).into_iter().map(|(_, dir)| node_runtime::bin_dir(&dir));
+    match find_node_in(&candidate_node_dirs(&env).into_iter().chain(managed).collect::<Vec<_>>()) {
         Some((dir, version)) => {
             let base = tool_path().base;
             set_tool_path(ToolPath { node_dir: Some(dir), base });
@@ -952,16 +955,99 @@ fn retry_start(app: AppHandle, window: WebviewWindow, shell: tauri::State<'_, Ar
     std::thread::spawn(move || supervise(app, shell));
 }
 
-/// Install from the shell needs Node too: check first and show the dedicated page instead of
-/// letting npm fail with a shell error.
+/// Install from the shell needs Node too: check first; with none anywhere, download the managed
+/// runtime; only when that fails too, show the dedicated page instead of letting npm fail with a
+/// shell error. `CEZ_DESKTOP_NODE` names the node to use, so it never triggers a download.
 fn require_node(window: &WebviewWindow) -> bool {
-    match check_node() {
-        Ok(_) => true,
-        Err(reason) => {
-            fail_needs_node(window, &reason);
+    let reason = match check_node() {
+        Ok(_) => {
+            update_managed_node_in_background();
+            return true;
+        }
+        Err(reason) => reason,
+    };
+    if std::env::var_os("CEZ_DESKTOP_NODE").is_some_and(|v| !v.is_empty()) {
+        fail_needs_node(window, &reason);
+        return false;
+    }
+    match install_managed_node(window) {
+        Ok(bin) => {
+            let base = tool_path().base;
+            set_tool_path(ToolPath { node_dir: Some(bin), base });
+            true
+        }
+        Err(error) => {
+            fail_needs_node(window, &format!("{reason} cezar could not download its own Node.js either: {error}"));
             false
         }
     }
+}
+
+fn managed_node_root() -> PathBuf {
+    cezar_home().join("node")
+}
+
+/// First launch without Node: the newest LTS for this platform into `~/.cezar/node`, with the
+/// download's progress on the splash. Returns the folder holding `node`.
+fn install_managed_node(window: &WebviewWindow) -> Result<PathBuf, String> {
+    let asset = node_runtime::current_asset().ok_or("nodejs.org has no build for this platform.")?;
+    let root = managed_node_root();
+    splash_reset(window, "Downloading Node.js…", "cezar runs on Node.js. None was found on this machine, so the app is getting its own.");
+    let (version, sha) = node_runtime::resolve_release(&asset, None)?;
+    splash_progress(window, 0.0, &format!("Node.js v{version} → {}", root.display()));
+    let mut last = Instant::now() - Duration::from_secs(1);
+    let dir = node_runtime::install(
+        &root,
+        &version,
+        &asset,
+        &sha,
+        |file| {
+            node_runtime::fetch_archive(&version, &asset, file, &mut |done, total| {
+                // One splash update every ~100ms, not one per network chunk.
+                if last.elapsed() < Duration::from_millis(100) && total != Some(done) {
+                    return;
+                }
+                last = Instant::now();
+                let mb = |bytes: u64| bytes as f64 / 1_048_576.0;
+                let (fraction, text) = match total {
+                    Some(total) if total > 0 => (done as f64 / total as f64, format!("Node.js v{version}: {:.1} of {:.1} MB", mb(done), mb(total))),
+                    _ => (-1.0, format!("Node.js v{version}: {:.1} MB", mb(done))),
+                };
+                splash_progress(window, fraction, &text);
+            })
+        },
+        |bin| {
+            splash_progress(window, 1.0, &format!("Checking Node.js v{version}…"));
+            find_node_in(&[bin.to_path_buf()]).map(|_| ()).ok_or_else(|| "the downloaded Node.js does not run on this machine.".into())
+        },
+    )?;
+    node_runtime::prune(&root, &dir);
+    Ok(node_runtime::bin_dir(&dir))
+}
+
+/// When the managed runtime is the one in use: install the newest release of its major line for
+/// the NEXT launch, and prune the rest. Silent — offline just means "not this time".
+fn update_managed_node_in_background() {
+    let root = managed_node_root();
+    let Some(in_use) = tool_path().node_dir.filter(|dir| dir.starts_with(&root)) else { return };
+    std::thread::spawn(move || {
+        let installed = node_runtime::installed(&root);
+        let Some((newest, _)) = installed.first() else { return };
+        let (Some(asset), Some(major)) = (node_runtime::current_asset(), parse_node_version(newest).map(|v| v.0)) else { return };
+        if let Ok((version, sha)) = node_runtime::resolve_release(&asset, Some(major)) {
+            if parse_node_version(&version) > parse_node_version(newest) {
+                let _ = node_runtime::install(
+                    &root,
+                    &version,
+                    &asset,
+                    &sha,
+                    |file| node_runtime::fetch_archive(&version, &asset, file, &mut |_, _| {}),
+                    |bin| find_node_in(&[bin.to_path_buf()]).map(|_| ()).ok_or_else(|| "does not run".into()),
+                );
+            }
+        }
+        node_runtime::prune(&root, &in_use);
+    });
 }
 
 // ---- installing / updating cezar from the shell ------------------------------------------
@@ -1778,6 +1864,11 @@ fn probe_ipc(window: &WebviewWindow) {
 
 fn splash_log(window: &WebviewWindow, line: &str) {
     let _ = window.eval(&format!("window.cezarSplash && window.cezarSplash.log({})", js_string(line)));
+}
+
+/// The splash's progress bar: `fraction` 0..=1, or negative when the total is unknown.
+fn splash_progress(window: &WebviewWindow, fraction: f64, text: &str) {
+    let _ = window.eval(&format!("window.cezarSplash && window.cezarSplash.progress && window.cezarSplash.progress({fraction:.4}, {})", js_string(text)));
 }
 
 /// Back to the splash from the cockpit (a different origin), then set the message.

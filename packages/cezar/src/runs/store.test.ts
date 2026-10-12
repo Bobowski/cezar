@@ -136,13 +136,15 @@ describe('RunStore — dispatch secondary indexes (#1216)', () => {
     store.updateRun(second.id, { dispatch: { rootRunId: root.id, parentRunId: root.id } });
     store.updateRun(unrelated.id, { dispatch: { rootRunId: unrelated.id } });
 
-    expect(store.listRunsByRoot(root.id).map((run) => run.id)).toEqual([second.id, first.id, root.id]);
-    expect(store.listRunsByParent(root.id).map((run) => run.id)).toEqual([second.id, first.id]);
+    const expectedTree = store.listRuns().filter((run) => run.dispatch?.rootRunId === root.id).map((run) => run.id);
+    const expectedChildren = store.listRuns().filter((run) => run.dispatch?.parentRunId === root.id).map((run) => run.id);
+    expect(store.listRunsByRoot(root.id).map((run) => run.id)).toEqual(expectedTree);
+    expect(store.listRunsByParent(root.id).map((run) => run.id)).toEqual(expectedChildren);
     store.flush();
 
     const reopened = RunStore.open(dataDir, { keepLive: true });
-    expect(reopened.listRunsByRoot(root.id).map((run) => run.id)).toEqual([second.id, first.id, root.id]);
-    expect(reopened.listRunsByParent(root.id).map((run) => run.id)).toEqual([second.id, first.id]);
+    expect(reopened.listRunsByRoot(root.id).map((run) => run.id)).toEqual(expectedTree);
+    expect(reopened.listRunsByParent(root.id).map((run) => run.id)).toEqual(expectedChildren);
   });
 
   it('reassigns and removes indexed records without leaving stale membership', () => {

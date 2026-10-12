@@ -22,12 +22,12 @@ Non-goals: automation or attachment routes, changes to `listInbox`, directory-mt
 
 ### Phase 1: Store indexes
 
-- [ ] 1.1 Add root/parent secondary indexes with stable existing ordering and lifecycle updates.
-- [ ] 1.2 Add regression tests for load, insertion, reassignment, removal/pruning, and ordering.
+- [x] 1.1 Add root/parent secondary indexes with stable existing ordering and lifecycle updates. — 7097e895
+- [x] 1.2 Add regression tests for load, insertion, reassignment, removal/pruning, and ordering. — 7097e895
 
 ### Phase 2: Dispatch consumers
 
-- [ ] 2.1 Replace dispatch wake, cap, budget, max-subtask, and cancellation scans with indexes.
+- [x] 2.1 Replace dispatch wake, cap, budget, max-subtask, and cancellation scans with indexes. — 7097e895
 - [ ] 2.2 Add/adjust dispatch regression coverage for tree isolation and preserved delivery behavior.
 
 ### Phase 3: Verification
@@ -46,12 +46,12 @@ new persisted format.
 
 ### Phase 1: Store indexes
 
-- [ ] 1.1 Add root/parent secondary indexes with stable existing ordering and lifecycle updates.
-- [ ] 1.2 Add regression tests for load, insertion, reassignment, removal/pruning, and ordering.
+- [x] 1.1 Add root/parent secondary indexes with stable existing ordering and lifecycle updates. — 7097e895
+- [x] 1.2 Add regression tests for load, insertion, reassignment, removal/pruning, and ordering. — 7097e895
 
 ### Phase 2: Dispatch consumers
 
-- [ ] 2.1 Replace dispatch wake, cap, budget, max-subtask, and cancellation scans with indexes.
+- [x] 2.1 Replace dispatch wake, cap, budget, max-subtask, and cancellation scans with indexes. — 7097e895
 - [ ] 2.2 Add/adjust dispatch regression coverage for tree isolation and preserved delivery behavior.
 
 ### Phase 3: Verification

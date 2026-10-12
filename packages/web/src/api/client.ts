@@ -411,11 +411,25 @@ async function unwrapValidated<R extends ClientResponse<unknown, number, Respons
  */
 async function fetchOrThrow(url: string, init?: RequestInit): Promise<Response> {
   try {
-    return await fetch(url, { ...init, credentials: 'include' })
+    const response = await fetch(url, { ...init, credentials: 'include' })
+    // A 401 from anything but the sign-in routes means the session ended under us (spec
+    // 2026-10-12-cockpit-authentication §8). Say so once, here, instead of in every caller.
+    if (response.status === 401 && !url.includes('/api/v1/auth/')) {
+      for (const listener of unauthorizedListeners) listener()
+    }
+    return response
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === 'AbortError') throw cause
     throw new ApiError(0, `cannot reach the cezar server (${url})`, { cause })
   }
+}
+
+const unauthorizedListeners = new Set<() => void>()
+
+/** Hear about a request the server refused for want of a session. Returns the unsubscribe. */
+export function onUnauthorized(listener: () => void): () => void {
+  unauthorizedListeners.add(listener)
+  return () => unauthorizedListeners.delete(listener)
 }
 
 async function send(path: string, init: RequestInit): Promise<Response> {

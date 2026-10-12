@@ -7,6 +7,7 @@ import { HostUsageProvider } from './api/host-usage'
 import { createQueryClient } from './api/query-client'
 import { AppShellContainer } from './components/app-shell-container'
 import { AppearanceProvider } from './components/appearance-provider'
+import { AuthGate } from './components/auth/auth-gate'
 import { LastLocationController } from './components/last-location-controller'
 import { ReferenceStatusRegistry } from './components/reference-status'
 import { RunNotifications } from './components/run-notifications'
@@ -35,6 +36,9 @@ export function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
+      {/* Above the stream and every query: a signed-out cockpit mounts none of them. One request
+          and no screen on a local cockpit (spec 2026-10-12-cockpit-authentication §8). */}
+      <AuthGate>
       <GlobalEventsProvider>
         {/* The machine-telemetry store, one per app: the sidebar widget and the Settings card are
             two readers of the same sample and the same 60 s ring, and exactly one writer (root,
@@ -72,6 +76,7 @@ export function App() {
           </ThemeProvider>
         </HostUsageProvider>
       </GlobalEventsProvider>
+      </AuthGate>
     </QueryClientProvider>
   )
 }

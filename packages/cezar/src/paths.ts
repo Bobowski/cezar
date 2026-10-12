@@ -219,3 +219,28 @@ export function claudeStateFilePath(claudeHome: string, env: NodeJS.ProcessEnv =
     || claudeHome !== join(env.HOME || env.USERPROFILE || homedir(), '.claude');
   return seesOverride ? join(claudeHome, '.claude.json') : join(dirname(claudeHome), '.claude.json');
 }
+
+/**
+ * Cockpit authentication state (spec `2026-10-12-cockpit-authentication.md` §5.5). Own files, on
+ * the `agent-accounts.json` argument: a cezar that has never heard of auth cannot drop them.
+ */
+export function authStorePath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(cezarHomeDir(env), 'auth.json');
+}
+
+/** Sessions are per PROCESS state on disk, so two cockpits on one host (`--domain`) each keep
+ *  their own file instead of rewriting each other's. */
+export function authSessionsPath(env: NodeJS.ProcessEnv = process.env): string {
+  const instance = instanceSlug(env.CEZ_INSTANCE_ID);
+  const name = instance === DEFAULT_SERVER_INSTANCE ? 'auth-sessions.json' : `auth-sessions-${instance}.json`;
+  return join(cezarHomeDir(env), name);
+}
+
+export function authAuditPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(cezarHomeDir(env), 'auth-audit.ndjson');
+}
+
+/** The credential a shell on this host presents to its own cockpit (`cezar runs list`). */
+export function authHostKeyPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(cezarHomeDir(env), 'auth-host.key');
+}

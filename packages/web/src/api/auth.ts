@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import type {
   AuthDevicesResponse,
@@ -9,7 +9,7 @@ import type {
   AuthSetupCompleteResponse,
   AuthVerifyResponse,
 } from '@open-mercato/cezar-api-client'
-import { cez, unwrap } from './client'
+import { ApiError, cez, unwrap } from './client'
 
 /**
  * The cockpit's half of sign-in (spec `2026-10-12-cockpit-authentication.md` §8). Workspace-level:
@@ -24,22 +24,48 @@ export const authQueryKeys = {
  *  server is the one enforcing, so assuming "no sign-in" here can only show its real error. */
 export const OPEN_SESSION: AuthSessionResponse = { enforced: false, authenticated: true, setupRequired: false }
 
-export async function fetchAuthSession(signal?: AbortSignal): Promise<AuthSessionResponse> {
+/**
+ * A session answer, or the stand-in for one that never came. `unanswered` counts the asks in a
+ * row that failed: the stand-in lets a LOCAL cockpit through at once (spec §8), but it is a guess
+ * and must not be cached as the answer — behind a proxy it hides Sign out from a signed-in owner.
+ */
+export type SessionAnswer = AuthSessionResponse & { unanswered?: number }
+
+export async function fetchAuthSession(signal?: AbortSignal, failedBefore = 0): Promise<SessionAnswer> {
   try {
     return await unwrap(await cez.api.v1.auth.session.$get({}, { init: { signal } }), '/auth/session')
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error
-    return OPEN_SESSION
+    // A 4xx is the considered answer of a server that has no such route. Anything else — a
+    // proxy's 502, no connection, a page of HTML — is no answer at all.
+    if (error instanceof ApiError && error.status >= 400 && error.status < 500) return OPEN_SESSION
+    return { ...OPEN_SESSION, unanswered: failedBefore + 1 }
   }
 }
 
-/** Fetched once and then kept true by sign-in, sign-out and the 401 listener in `AuthGate`. */
+/** Timer retries after a failed ask: 1s doubling to 30s, then none — focus and reconnect still ask. */
+const SESSION_RETRIES = 6
+
+function sessionRetryDelay(data: SessionAnswer | undefined): number | false {
+  const failed = data?.unanswered ?? 0
+  if (failed === 0 || failed > SESSION_RETRIES) return false
+  return Math.min(1000 * 2 ** (failed - 1), 30_000)
+}
+
+/** Fetched once and then kept true by sign-in, sign-out and the 401 listener in `AuthGate` — and
+ *  asked again, with a bounded backoff and on focus/reconnect, for as long as it went unanswered. */
 export function useAuthSession() {
+  const queryClient = useQueryClient()
   return useQuery({
     queryKey: authQueryKeys.session,
-    queryFn: ({ signal }) => fetchAuthSession(signal),
+    queryFn: ({ signal }) =>
+      fetchAuthSession(signal, queryClient.getQueryData<SessionAnswer>(authQueryKeys.session)?.unanswered),
     staleTime: Number.POSITIVE_INFINITY,
     retry: false,
+    refetchInterval: (query) => sessionRetryDelay(query.state.data),
+    // `always`: the stand-in is never stale by the clock. A real answer is left alone.
+    refetchOnWindowFocus: (query) => (query.state.data?.unanswered ? 'always' : false),
+    refetchOnReconnect: (query) => (query.state.data?.unanswered ? 'always' : false),
   })
 }
 

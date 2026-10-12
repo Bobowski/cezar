@@ -1,4 +1,5 @@
 import { REGEXP_ONLY_DIGITS } from 'input-otp'
+import { useLayoutEffect, useRef } from 'react'
 
 import { InputOTP, InputOTPGroup, InputOTPSeparator, InputOTPSlot } from '@/components/ui/input-otp'
 
@@ -23,8 +24,21 @@ export function CodeField({
   invalid?: boolean
   autoFocus?: boolean
 }) {
+  const input = useRef<HTMLInputElement>(null)
+  const hadFocus = useRef(false)
+  // A browser takes focus off a control that gets disabled and never hands it back, so after a
+  // rejected code the next digits went nowhere. Whoever was typing here is typing here again.
+  useLayoutEffect(() => {
+    if (disabled) hadFocus.current = document.activeElement === input.current
+    else if (hadFocus.current) {
+      hadFocus.current = false
+      input.current?.focus()
+    }
+  }, [disabled])
+
   return (
     <InputOTP
+      ref={input}
       id={id}
       maxLength={6}
       pattern={REGEXP_ONLY_DIGITS}

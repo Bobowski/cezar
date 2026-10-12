@@ -88,8 +88,15 @@ export function SetupScreen({ onDone }: { onDone: () => void }) {
         setRecoveryCodes(result.recoveryCodes)
       })
       .catch((cause: unknown) => {
-        setError(errorText(cause))
+        const message = errorText(cause)
         setCode('')
+        if (message.includes('expired')) {
+          // The ticket is gone (timed out, or burned by wrong codes) and its QR with it. The setup
+          // code is only spent on success, so step one can ask again — and if the link itself has
+          // lapsed, `beginSetup` is the one that says to run `cezar auth setup`.
+          setEnrolment(null)
+          setError(`${message}. Continue to get a new QR code — the one you scanned no longer works.`)
+        } else setError(message)
       })
       .finally(() => setBusy(false))
   }
@@ -173,6 +180,19 @@ export function SetupScreen({ onDone }: { onDone: () => void }) {
             <Button type="submit" size="lg" disabled={busy || code.length !== 6}>
               {busy ? <Spinner aria-hidden="true" /> : null}
               Verify and continue
+            </Button>
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              className="h-auto self-center px-0 text-muted-foreground"
+              onClick={() => {
+                setEnrolment(null)
+                setCode('')
+                setError(null)
+              }}
+            >
+              Start over
             </Button>
           </FieldGroup>
         </form>

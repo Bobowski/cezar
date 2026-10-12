@@ -115,7 +115,9 @@ the viewer's own machine — where plain HTTP is all there is.
 - Idle expiry 7 days (sliding), absolute 30 days. Each session records a device label, created
   and last-seen time. Settings → Security lists them and revokes one or all.
 - Changing the password, the second factor or the recovery codes requires a fresh second-factor
-  check and revokes every other session. Built for the password and the recovery codes;
+  check and revokes every other session. A password change and "sign out other devices" bump
+  the user's epoch in `auth.json`, so the sessions a sibling cockpit on the same host holds for
+  that user die too (its devices are still not LISTED here). Built for the password and the recovery codes;
   replacing the AUTHENTICATOR is deliberately host-only (`cezar auth reset`), so a hijacked
   session can never swap the second factor.
 
@@ -126,6 +128,18 @@ a hard lock (a lock is a denial of service against the only owner). Concurrent s
 verifications are capped. The client address is the last `X-Forwarded-For` hop — the one the
 front appended — and is trusted only because cezar binds loopback. State is in memory.
 
+As hardened after the 2026-10-12 review: an attempt is counted BEFORE its scrypt runs, so a
+parallel burst gets what the same guesses would get in sequence, and at most eight verifications
+wait for a slot — the next caller is answered `429` with `Retry-After`, never queued. An IPv6
+client is keyed on its /64. The 15-minute cap applies to the address key and to second-factor
+failures (which need the password); the key an anonymous caller can feed for someone else's
+account — the username at the password step — is capped at **60 seconds**, because one request
+per window would otherwise hold the only owner out for ever. Signed-in changes (password,
+recovery codes) are keyed on the user id of the session, so they are neither blocked by nor feed
+that anonymous key. Setup-code failures have a key space of their own and cannot evict the
+others. Not built: a per-device cookie that would let a known browser past the account key —
+without it a targeted attacker can still delay the owner's sign-in by up to a minute at a time.
+
 ### 5.5 Storage — new state, written, never required
 
 | File | Holds |
@@ -133,7 +147,7 @@ front appended — and is trusted only because cezar binds loopback. State is in
 | `~/.cezar/auth.json` | users: id, name, role, password hash, factors, recovery-code hashes |
 | `~/.cezar/auth-sessions.json` | session hashes and metadata; `auth-sessions-<instance>.json` for a `--domain` instance, so two cockpits on one host do not rewrite each other's |
 | `~/.cezar/auth-host.key` | the credential a shell on the host shows its own cockpit (§7) |
-| `~/.cezar/auth-audit.ndjson` | append-only: setup, login, failure, revoke, reset |
+| `~/.cezar/auth-audit.ndjson` | append-only: setup, login, failure, revoke, reset; rotated to a single `.1` at 4 MB |
 
 Own files for the reason `agent-accounts.json` has one: a cezar that has never heard of auth
 cannot drop them. Same house rules — `.catch` per field, `.passthrough()`, per-entry salvage,
@@ -154,6 +168,9 @@ sites by construction, not by memory:
 
 - the main HTTP app (all `/api/v1` and `/api/v1/p/:projectId` routes, SSE included);
 - `verifyWsUpgrade` → the session cookie is checked before the handshake;
+  A same-authority `Origin` is refused when the browser calls the handshake `cross-site`, or when
+  it is `http:` while `X-Forwarded-Proto` says `https` — `http://host` and `https://host` share an
+  authority, and the plain one is forgeable on-path;
 - the preview gateway listeners — keep their own ticket (§7);
 - the Design Mode proxy — loopback-only, unreachable in hosted mode; assert that.
 
@@ -162,6 +179,13 @@ every registered route answers 401 without a session and is not 401 with one; th
 WS handshake; and a test that fails when a new `createServer`/`on('upgrade')` appears outside an
 allowlist. Auth routes are chained into a family builder with schemas in `packages/contract`
 like every other route.
+
+**A stream ends with its session.** The guard runs once per request, and an SSE stream or a
+WebSocket is one request that never ends. So each remembers the session that opened it and
+re-asks `AuthService.sessionAlive` (read-only — it never slides the idle expiry) on its existing
+tick: the SSE keepalive ping (15 s) and the hub heartbeat (30 s). Signed out, revoked, reset or
+expired, the stream is closed and the socket terminated. Host-key and auth-off connections have no
+session and are untouched; a run token reaches neither (`auth-stream-revoke.test.ts`).
 
 ## 7. What the session changes elsewhere
 
@@ -210,6 +234,10 @@ session cookie to every preview port. The gateway must strip `__Host-cez_session
 app receives, exactly as it strips its own. The app's scripts still cannot use the session: the
 cookie is `HttpOnly`, the #426 guard rejects writes whose `Origin` authority differs from
 `Host`, CORS hides read responses, and `verifyWsUpgrade` rejects a foreign-authority WS.
+The same holds for what the app ANSWERS: the gateway drops `__Host-cez_session` / `cez_session`
+from its `Set-Cookie` (HTTP and the WebSocket handshake answer alike) and removes `"cookies"` from
+`Clear-Site-Data` (`"*"` narrows to cache, storage and execution contexts), so a previewed app
+cannot overwrite or delete the session and sign the owner out.
 
 **Agents calling the cockpit.** `cez task`, `cez tracker` and `cez automation` reach
 `CEZ_API_URL` on loopback with no credential, and so does any other local process. With auth
@@ -237,7 +265,9 @@ keeps working; its docs gain "or set `CEZ_AUTH=0` if your proxy authenticates".
   cockpit, so a signed-out tab opens no stream and collects no 401s. Sign-in and setup are
   screens, not routes: the URL is never touched, which is what "preserving the return path"
   comes to. A local cockpit pays one request and sees no screen; a server that cannot answer
-  the question is treated as "no sign-in", since the server is the one enforcing.
+  the question is treated as "no sign-in", since the server is the one enforcing. A question
+  that FAILED (5xx, no connection) is re-asked with backoff and on focus, so one blip at page
+  load does not hide Sign out and Security until a reload; a 4xx is a final answer.
 - Any `401` outside `/auth/*` is reported once by the shared `fetch` (`onUnauthorized`); the
   gate re-asks the session and the sign-in screen replaces the cockpit.
 - Setup is three steps — account, authenticator (QR, the key, a 6-digit field), recovery codes —
@@ -280,6 +310,21 @@ the previous behaviour exactly. Recorded in `BACKWARD_COMPATIBILITY.md` and the 
   proxy config has no auth middleware and the proxy is asked for TLS, `X-Forwarded-Proto` and
   WebSocket upgrades instead.
 - The verify step uses the host key through `curl -K -`, so it never appears in argv.
+- **One helper writes the site** (`writeSite`), from the recorded state: `signIn` decides
+  `auth_basic`, the instance decides the names. The SSL step used to render its own copy and put
+  `auth_basic` back on a `cezar` install.
+- **A site without `auth_basic` is written only after the running service answers an anonymous
+  `GET /api/v1/health` on loopback with 401.** When it does not, the unit is rewritten and the
+  service restarted first (this is also how a fresh `cezar` install starts its service, ahead
+  of the service step); when it still does not, the step aborts and the site is left as it was
+  — a Basic-Auth install switching over keeps its login. Step order is unchanged.
+- A re-render carries certbot's lines (the 443 listeners, the certificate, its `:80` redirect
+  block) into the new file, so `--reconfigure nginx-proxy` no longer takes HTTPS down.
+- The site is installed all-or-nothing: `nginx -t` rejecting it restores the previous file and
+  fails the step. The step verifies the file's content, not that a symlink exists.
+- The service step restarts a unit whose content changed, proven by a new PID (#912's check);
+  `enable --now` alone left the old process and its old `CEZ_AUTH` running.
+- Both sites set `client_max_body_size 32m`, cezar's `GLOBAL_BODY_LIMIT`.
 - `macosx-ngrok` sets `CEZ_AUTH=0`: ngrok's `--basic-auth` is that platform's login.
 - Cockpits on one host share accounts (one `auth.json` per OS user) and keep separate sessions.
 
@@ -333,9 +378,13 @@ manifest-walk test exists.
 - Live preview on a hosted cockpit still needs the preview gateway configured by hand
   (`CEZ_PREVIEW_PORTS` + the nginx port range); the installer does not do it.
 - Agent accounts are still read-only on a hosted cockpit (§7).
-- **Nothing in phase 4 has run on a real server.** The installer is tested against a stubbed
-  command runner; the generated nginx site has not been through `nginx -t`, certbot has not
-  edited it, and no browser has signed in through it. The first real install is the test.
+- **Nothing in phase 4 has run on a real server.** The installer's steps are tested against a
+  stubbed command runner. The generated site — both sign-in modes, and the re-render over a
+  certbot-edited file — passed `nginx -t` on nginx 1.24 (Ubuntu 24.04) and nginx 1.30, and
+  survived `certbot install --nginx --redirect` in a container with a self-signed certificate.
+  It has NOT run on a real server with a real Let's Encrypt certificate, systemd has not
+  restarted a real unit under it, and no browser has signed in through it. The first real
+  install is the test.
 - A container that binds a non-loopback host is "hosted", so it now asks for setup. That is the
   intended default, and a change for anyone already running one — `CEZ_AUTH=0` restores it.
 - The test suite pins `CEZ_AUTH=0` (`packages/cezar/vitest.setup.ts`) because dozens of suites

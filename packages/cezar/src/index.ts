@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
+import { authEnforced } from './server/capabilities.ts';
+import { hasCredentials, readAuthStore } from './auth/store.ts';
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:net';
 
@@ -65,6 +67,7 @@ Usage:
   cezar secrets <list|set NAME|unset NAME>  this project's secrets (--workspace: the user's)
                             (set reads the value from stdin; agents never receive them)
   cezar server-install      interactive wizard to host cezar on a server
+  cezar auth setup          mint the one-time link that creates a hosted cockpit's owner account
   cezar server-deploy       redeploy a new version (reload the service) + verify
   cezar server-uninstall    reverse a server-install
   cezar install             install THIS cezar permanently under ~/.cezar (a \`cezar\`
@@ -135,6 +138,12 @@ async function main(): Promise<void> {
   // `cez runs …` (#1080): the read-only twin for a person at a shell, same addressing.
   if (process.argv[2] === 'runs') {
     process.exitCode = await runRunsCommand(process.argv.slice(3));
+    return;
+  }
+  // `cezar auth …` (spec 2026-10-12-cockpit-authentication): accounts, from the host. Files only.
+  if (process.argv[2] === 'auth') {
+    const { runAuthCommand } = await import('./auth/cli.ts');
+    process.exitCode = await runAuthCommand(process.argv.slice(3));
     return;
   }
   const { values, positionals } = parseArgs({
@@ -330,12 +339,16 @@ async function serveCommand(
   // whatever can reach the interface, and cezar itself has NO auth — it is only
   // for a deliberate hosted setup where a reverse proxy in front provides TLS +
   // auth (see `server-install --external-proxy`). Say so, loudly, every start.
-  if (bindHost && !['127.0.0.1', 'localhost', '::1'].includes(bindHost)) {
+  if (bindHost && !['127.0.0.1', 'localhost', '::1'].includes(bindHost) && !authEnforced(process.env, bindHost)) {
     console.log(
-      `\n  ⚠ binding ${bindHost}:${port} — cezar has no built-in auth.\n` +
+      `\n  ⚠ binding ${bindHost}:${port} with CEZ_AUTH=0 — cezar's own login is off.\n` +
         `    Only do this behind a reverse proxy that enforces authentication,\n` +
         `    and make sure this interface is not reachable from the internet.\n`,
     );
+  }
+  // Spec 2026-10-12-cockpit-authentication §5.1: a hosted cockpit with no account serves only setup.
+  if (authEnforced(process.env, bindHost) && !readAuthStore().users.some(hasCredentials)) {
+    console.log('\n  🔒 this cockpit requires sign-in and has no account yet — run: cezar auth setup\n');
   }
   // Where a dispatched agent's `cez task` CLI reaches this cockpit (spec 2026-09-10-dispatch).
   // Set before the first run can start, read by every manager's `agentEnv` while dispatch is on.

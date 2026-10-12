@@ -1,6 +1,6 @@
 # Cockpit authentication — a login cezar owns
 
-> Status: phases 1 and 2 implemented (2026-10-12) on `brutus`; phases 3–4 open. The three
+> Status: phases 1–3 implemented (2026-10-12) on `brutus`; phase 4 open. The three
 > decisions in §12 were taken the same day. A hosted cockpit can be set up, signed in to and
 > managed from the browser; the hosted gates and the installer have not moved yet (§13).
 > Implementation: `packages/cezar/src/auth/` (`service.ts`, `store.ts`, `guard.ts`, `routes.ts`,
@@ -166,8 +166,9 @@ like every other route.
 **The two questions `localHandoff` conflates get separate names.** "Is the viewer on this
 machine?" stays `localHandoff` (open-in-editor, Finder, the bookmarklet, framing
 `localhost` directly). "Is the caller a trusted operator?" becomes `trustedOperator =
-localHandoff || authEnforced`. The hosted-mode checks in `server.ts` (28 references to `localHandoff`/`isHostedMode` today) are classified one by
-one into those two in the implementation PR. Expected outcome:
+localHandoff || authEnforced` (`trustedOperator()` in `capabilities.ts`). Every hosted-mode check
+in `server.ts` was classified into one of the two; the table is what moved, the list under it is
+what deliberately did not:
 
 | Gate | Today (hosted) | With auth enforced |
 | --- | --- | --- |
@@ -175,8 +176,29 @@ one into those two in the implementation PR. Expected outcome:
 | File edit (`CEZ_FILE_EDIT` unset) | off | on |
 | `PUT /agent-config/:id` | 409 | allowed |
 | Open in editor / Finder / terminal app | 409 | 409 — a machine property |
+| `GET /agent-config` `editable`, home-directory config files | false / 409 | true / served |
 | Preview | via gateway | via gateway, unchanged |
-| Browser WebSocket | not opened | opened; the cookie rides the upgrade |
+| Browser WebSocket | not opened | not opened yet — phase 4 |
+
+Left on `localHandoff`, on purpose:
+
+- **Open in editor / Finder / terminal app, provider "connect" in a host terminal** — there is
+  no such machine on the viewer's side.
+- **`/health` `repoRoot` and self-update paths trimmed to a basename** — a documented value in
+  BACKWARD_COMPATIBILITY.md §2; not worth a second meaning.
+- **The folder picker confined to `CEZ_BROWSE_ROOT`** — still the right default for a server.
+- **Self-update is forward-only** — more load-bearing than before: a downgrade to a build that
+  predates sign-in would remove it.
+- **Agent accounts (`/workspace/agent-profiles`)** — still withheld and read-only when hosted.
+  The family mixes trust with machine actions (open a file in an app, start a login in a host
+  terminal) and needs its own pass; a second agent login on a VPS is done from the cockpit
+  terminal meanwhile.
+
+**The WebSocket waits for phase 4**, and not for a security reason — the server already gates
+the handshake on the session. The stock nginx vhost does not forward upgrades (`Connection ''`),
+and an install that still has `auth_basic` in front would meet the three-second reconnect loop
+the cockpit avoids today. Both are the installer's to fix. Nothing depends on the socket in the
+meantime: the terminal polls its cursor over HTTP when there is none, by design.
 
 `=0` keeps meaning off everywhere for the two flags. With `CEZ_AUTH=0` nothing in this table
 moves.
@@ -257,9 +279,10 @@ Not built: more than one user, invitations, per-project roles, shared team state
 2. **Cockpit — DONE.** Login, setup, second factor, Settings → Security, 401 handling, and the
    three routes Security needed (`/auth/password`, `/auth/recovery-codes`,
    `/auth/sessions/revoke-others`).
-3. **Re-keying** — `trustedOperator`, every hosted-mode gate, gateway cookie stripping, WebSocket in
-   remote mode.
-4. **Installer and docs** — nginx without `auth_basic`, `server-deploy` migration,
+3. **Re-keying — DONE.** `trustedOperator`; terminal, file edit and agent-config moved; every
+   other hosted gate classified and left (§7).
+4. **Installer and docs** — nginx without `auth_basic` and WITH WebSocket upgrades, then the
+   browser WebSocket in remote mode, `server-deploy` migration,
    `.env.example`, `docs/reference.md`, `docs/server-install/*`, `BACKWARD_COMPATIBILITY.md`.
 5. **Later** — passkeys, more users, RBAC, teams, agent isolation.
 
@@ -280,9 +303,11 @@ manifest-walk test exists.
 
 - The sign-in flow was driven end to end in a browser over loopback (plain cookie). The
   `__Host-` cookie behind real TLS is covered by tests only, not by a live deployment.
-- The browser WebSocket is still not opened in remote mode (phase 3), so a hosted cockpit keeps
-  using HTTP long reads for now.
-- Terminal, file edit and agent-config writes are still keyed on `localHandoff` (phase 3).
+- The browser WebSocket is still not opened in remote mode (phase 4, §7), so a hosted cockpit
+  keeps using HTTP reads for now.
+- Live preview on a hosted cockpit still needs the preview gateway configured by hand
+  (`CEZ_PREVIEW_PORTS` + the nginx port range); the installer does not do it.
+- Agent accounts are still read-only on a hosted cockpit (§7).
 - `server-install` still writes `auth_basic`, and its end-to-end verify expects an authenticated
   2xx it will no longer get with auth on (phase 4).
 - A container that binds a non-loopback host is "hosted", so it now asks for setup. That is the

@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { assertCezarHomeWriteIsSandboxed, authHostKeyPath } from '../paths.ts';
 import { randomToken, sameHash, sha256 } from './store.ts';
@@ -24,13 +24,36 @@ export function readHostKey(path: string = authHostKeyPath()): string | undefine
   }
 }
 
+/** True when a file is there that can never be a key: too short, or not ours to read. */
+function invalidKeyFile(path: string): boolean {
+  try {
+    readFileSync(path, 'utf8');
+    return readHostKey(path) === undefined;
+  } catch (error) {
+    // Only "permission denied" — a transient read error must not cost a valid key.
+    return (error as NodeJS.ErrnoException).code === 'EACCES';
+  }
+}
+
 /** Create the key if it is not there. Best-effort: a read-only home just has no host CLI access. */
 export function ensureHostKey(path: string = authHostKeyPath()): void {
   if (readHostKey(path)) return;
+  const key = `${PREFIX}${randomToken()}\n`;
   try {
     assertCezarHomeWriteIsSandboxed(path);
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    writeFileSync(path, `${PREFIX}${randomToken()}\n`, { mode: 0o600, flag: 'wx' });
+    if (invalidKeyFile(path)) {
+      // `wx` would fail on it for ever (state may be written, never repaired by hand): replace it.
+      const tmp = `${path}.${process.pid}.tmp`;
+      try {
+        writeFileSync(tmp, key, { mode: 0o600, flag: 'wx' });
+        if (!readHostKey(path)) renameSync(tmp, path);
+      } finally {
+        rmSync(tmp, { force: true });
+      }
+      return;
+    }
+    writeFileSync(path, key, { mode: 0o600, flag: 'wx' });
     chmodSync(path, 0o600);
   } catch {
     // Lost a race with another cockpit on this host, or the home is read-only.

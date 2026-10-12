@@ -1,4 +1,4 @@
-import { appendFileSync, copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { appendFileSync, chmodSync, copyFileSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { dirname } from 'node:path';
 import { z } from 'zod';
@@ -18,13 +18,16 @@ import { atomicWriteJsonSync } from '../workspace/config.ts';
  */
 
 const SETUP_TTL_MS = 15 * 60_000;
+/** The audit log rotates to one `.1` here, so a caller who can append for free cannot fill the disk. */
+const AUDIT_MAX_BYTES = 4 * 1024 * 1024;
 
 const userSchema = z
   .object({
     id: z.string().min(1).max(64),
     name: z.string().regex(AUTH_USERNAME_RE),
     role: authRoleSchema.catch('owner'),
-    /** Bumped by a reset; a session minted under an older epoch is dead. */
+    /** Bumped by a reset, a password change and "sign out other devices"; a session minted under
+     *  an older epoch is dead, in every cockpit that shares this file. */
     epoch: z.number().int().min(0).catch(0),
     /** Absent after `cezar auth reset`, until setup is completed again. */
     password: z.string().max(512).optional().catch(undefined),
@@ -157,15 +160,27 @@ export function readAuthStore(path: string = authStorePath()): AuthStore {
 export function mutateAuthStore<T>(mutator: (store: AuthStore) => T, path: string = authStorePath()): T {
   assertCezarHomeWriteIsSandboxed(path);
   let store: AuthStore;
+  let salvaged = false;
   try {
-    store = storeSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
+    const raw: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    store = storeSchema.parse(raw);
+    const rows = (raw as { users?: unknown } | null)?.users;
+    salvaged = Array.isArray(rows) && rows.length !== store.users.length;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
       try { copyFileSync(path, `${path}.corrupt`); } catch { /* best effort */ }
     }
     store = emptyStore();
   }
+  const before = JSON.stringify(store);
   const result = mutator(store);
+  // A rejected code changes nothing: do not rewrite the file (or widen the unlocked
+  // read-to-rename window another process can lose a write in) for it.
+  if (JSON.stringify(store) === before) return result;
+  if (salvaged) {
+    // This write drops the rows that did not parse; keep what they were.
+    try { copyFileSync(path, `${path}.corrupt`); } catch { /* best effort */ }
+  }
   atomicWriteJsonSync(path, store);
   cached = undefined;
   return result;
@@ -242,6 +257,12 @@ export function appendAudit(entry: AuditEntry, now: number = Date.now(), path: s
   try {
     assertCezarHomeWriteIsSandboxed(path);
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    try {
+      if (statSync(path).size >= AUDIT_MAX_BYTES) {
+        chmodSync(path, 0o600);
+        renameSync(path, `${path}.1`);
+      }
+    } catch { /* no log yet, or it could not be rotated: append anyway */ }
     appendFileSync(path, `${JSON.stringify({ at: new Date(now).toISOString(), ...entry })}\n`, { mode: 0o600 });
   } catch {
     // non-fatal

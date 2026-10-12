@@ -16,7 +16,7 @@ import {
   type StoredSession,
   type StoredUser,
 } from './store.ts';
-import { LoginThrottle } from './throttle.ts';
+import { LoginThrottle, throttleAddress } from './throttle.ts';
 import { generateTotpSecret, otpauthUri, verifyTotp } from './totp.ts';
 
 /**
@@ -36,6 +36,9 @@ const TOUCH_PERSIST_MS = 5 * 60_000;
 const MAX_PENDING = 1_000;
 /** Concurrent scrypt verifications: each holds ~128 MB. */
 const SCRYPT_SLOTS = 2;
+/** Verifications allowed to WAIT for a slot; past it a caller is told to retry, not queued (§5.4). */
+const SCRYPT_WAITERS = 8;
+const BUSY = Symbol('busy');
 /** What an unknown username is verified against, so it costs the same as a real one. */
 const DECOY_PASSWORD = 'cezar-decoy-password';
 
@@ -83,6 +86,11 @@ const fail = (status: AuthFailure['status'], error: string, retryAfterSec?: numb
   error,
   ...(retryAfterSec !== undefined ? { retryAfterSec } : {}),
 });
+
+const tooMany = (waitMs: number): AuthFailure =>
+  fail(429, 'too many attempts — try again later', Math.ceil(waitMs / 1000));
+const busy = (): AuthFailure => fail(429, 'the cockpit is busy — try again in a moment', 2);
+const addressKey = (meta: RequestMeta): string => `ip:${throttleAddress(meta.address)}`;
 
 const publicUser = (user: StoredUser): AuthUser => ({ id: user.id, name: user.name, role: user.role });
 
@@ -149,8 +157,12 @@ export class AuthService {
     }
   }
 
-  private async withScryptSlot<T>(work: () => Promise<T>): Promise<T> {
-    if (this.scryptInFlight >= SCRYPT_SLOTS) await new Promise<void>((resolve) => this.scryptWaiters.push(resolve));
+  /** `BUSY` instead of an unbounded queue; `mustRun` is for a caller already past both factors. */
+  private async withScryptSlot<T>(work: () => Promise<T>, mustRun = false): Promise<T | typeof BUSY> {
+    if (this.scryptInFlight >= SCRYPT_SLOTS) {
+      if (!mustRun && this.scryptWaiters.length >= SCRYPT_WAITERS) return BUSY;
+      await new Promise<void>((resolve) => this.scryptWaiters.push(resolve));
+    }
     this.scryptInFlight += 1;
     try {
       return await work();
@@ -189,9 +201,10 @@ export class AuthService {
     meta: RequestMeta,
   ): Promise<AuthResult<{ ticket: string; secret: string; otpauthUri: string }>> {
     // Per address only: a global key would let anyone lock the owner out of their own setup.
-    const keys = [`ip:${meta.address}`];
+    // Its own kind of key: these failures are free to make and must not evict login's (§5.4).
+    const keys = [`setup:${throttleAddress(meta.address)}`];
     const wait = this.throttle.retryAfter(keys, this.now());
-    if (wait > 0) return fail(429, 'too many attempts — try again later', Math.ceil(wait / 1000));
+    if (wait > 0) return tooMany(wait);
     const codeHash = sha256(input.code.trim());
     const setup = this.validSetup(codeHash);
     if (!setup) {
@@ -202,6 +215,7 @@ export class AuthService {
     const taken = this.store().users.find((user) => user.name === input.username && user.id !== setup.userId);
     if (taken) return fail(409, 'that username is taken');
     const password = await this.withScryptSlot(() => hashPassword(input.password, this.scrypt));
+    if (password === BUSY) return busy();
     const secret = generateTotpSecret();
     const ticket = randomToken();
     this.prune(this.enrolments);
@@ -270,14 +284,21 @@ export class AuthService {
   /** Step one: the password. Never says whether the username exists. */
   async login(input: { username: string; password: string }, meta: RequestMeta): Promise<AuthResult<{ ticket: string }>> {
     const name = input.username.trim().toLowerCase();
-    const keys = [`ip:${meta.address}`, `user:${name}`];
-    const wait = this.throttle.retryAfter(keys, this.now());
-    if (wait > 0) return fail(429, 'too many attempts — try again later', Math.ceil(wait / 1000));
-    const user = this.store().users.find((entry) => entry.name === name && hasCredentials(entry));
-    const stored = user?.password ?? (await (this.decoy ??= hashPassword(DECOY_PASSWORD, this.scrypt)));
-    const matches = await this.withScryptSlot(() => verifyPassword(input.password, stored));
+    const keys = [addressKey(meta), `user:${name}`];
+    // Reserved BEFORE the scrypt await, or a parallel burst all passes the check (§5.4).
+    const wait = this.throttle.reserve(keys, this.now());
+    if (wait > 0) return tooMany(wait);
+    let matches: boolean | typeof BUSY = BUSY;
+    let user: StoredUser | undefined;
+    try {
+      user = this.store().users.find((entry) => entry.name === name && hasCredentials(entry));
+      const stored = user?.password ?? (await (this.decoy ??= hashPassword(DECOY_PASSWORD, this.scrypt)));
+      matches = await this.withScryptSlot(() => verifyPassword(input.password, stored));
+    } finally {
+      this.throttle.settle(keys, this.now(), matches !== BUSY && !(user && matches));
+    }
+    if (matches === BUSY) return busy();
     if (!user || !matches) {
-      this.throttle.fail(keys, this.now());
       appendAudit({ event: 'login-failed', user: name, address: meta.address, detail: 'password' }, this.now());
       return fail(401, 'wrong username or password');
     }
@@ -297,9 +318,10 @@ export class AuthService {
     }
     const now = this.now();
     const current = this.store().users.find((user) => user.id === ticket.userId);
-    const keys = [`ip:${meta.address}`, `user:${current?.name ?? ticket.userId}`];
+    // `2fa:` not `user:` — only someone holding the password can fail here, so it keeps the long cap.
+    const keys = [addressKey(meta), `2fa:${ticket.userId}`];
     const wait = this.throttle.retryAfter(keys, now);
-    if (wait > 0) return fail(429, 'too many attempts — try again later', Math.ceil(wait / 1000));
+    if (wait > 0) return tooMany(wait);
     const candidate = input.code.trim();
     const recoveryHash = sha256(normalizeRecovery(candidate));
     // Consumed under the write, against what is on disk: a code is accepted exactly once even if
@@ -326,6 +348,7 @@ export class AuthService {
     }
     this.tickets.delete(key);
     this.throttle.succeed(`user:${accepted.user.name}`);
+    this.throttle.succeed(`2fa:${accepted.user.id}`);
     appendAudit({ event: 'login', user: accepted.user.name, address: meta.address, detail: accepted.method }, now);
     return { ok: true, user: publicUser(accepted.user), token: this.createSession(accepted.user, meta) };
   }
@@ -371,6 +394,17 @@ export class AuthService {
     return { user: publicUser(user), sessionId: session.id };
   }
 
+  /**
+   * Whether a session id still stands, for a long-lived stream to re-check (§5.3). Read-only:
+   * it neither slides the idle expiry nor writes, so polling cannot keep a session alive.
+   */
+  sessionAlive(sessionId: string): boolean {
+    const session = [...this.sessionMap().values()].find((entry) => entry.id === sessionId);
+    if (!session || this.expiresAt(session) <= this.now()) return false;
+    const user = this.store().users.find((entry) => entry.id === session.userId);
+    return Boolean(user && hasCredentials(user) && user.epoch === session.epoch);
+  }
+
   logout(token: string | undefined): void {
     if (!token) return;
     const sessions = this.sessionMap();
@@ -399,14 +433,30 @@ export class AuthService {
   /** Sign every OTHER device out. Answers how many sessions that was. */
   revokeOtherSessions(userId: string, currentId: string): number {
     const sessions = this.sessionMap();
+    // The epoch is the one thing a sibling cockpit sharing auth.json sees (§5.5): bumping it kills
+    // this user's sessions in EVERY process, the way a reset does; this one is re-stamped.
+    let epoch: number | undefined;
+    try {
+      epoch = this.mutate((store) => {
+        const user = store.users.find((entry) => entry.id === userId);
+        if (user) user.epoch += 1;
+        return user?.epoch;
+      });
+    } catch (error) {
+      console.warn(`[cez] could not sign other cockpits out (${(error as Error).message})`);
+    }
     let revoked = 0;
     for (const [hash, session] of sessions) {
-      if (session.userId !== userId || session.id === currentId) continue;
+      if (session.userId !== userId) continue;
+      if (session.id === currentId) {
+        if (epoch !== undefined) session.epoch = epoch;
+        continue;
+      }
       sessions.delete(hash);
       revoked += 1;
     }
+    if (epoch !== undefined || revoked > 0) this.persistSessions();
     if (revoked > 0) {
-      this.persistSessions();
       appendAudit({ event: 'sessions-revoked', session: currentId, detail: String(revoked) }, this.now());
     }
     return revoked;
@@ -416,12 +466,20 @@ export class AuthService {
    * A fresh authenticator code from a signed-in user (§5.3): what a sensitive change asks for, so
    * an unattended session cannot make it. Consumes the time step like a sign-in does.
    */
+  /**
+   * A signed-in change is keyed on the user id, never on the `user:<name>` key an anonymous
+   * caller can fill: the owner must be able to change a password that is under attack (§5.4).
+   */
+  private signedInKeys(userId: string, meta: RequestMeta): string[] {
+    return [addressKey(meta), `session:${userId}`];
+  }
+
   private confirmSecondFactor(userId: string, code: string, meta: RequestMeta): AuthFailure | null {
     const name = this.store().users.find((user) => user.id === userId)?.name ?? userId;
-    const keys = [`ip:${meta.address}`, `user:${name}`];
+    const keys = this.signedInKeys(userId, meta);
     const now = this.now();
     const wait = this.throttle.retryAfter(keys, now);
-    if (wait > 0) return fail(429, 'too many attempts — try again later', Math.ceil(wait / 1000));
+    if (wait > 0) return tooMany(wait);
     const accepted = this.mutate((store) => {
       const user = store.users.find((entry) => entry.id === userId);
       if (!user?.totp) return false;
@@ -430,7 +488,10 @@ export class AuthService {
       user.totp.lastStep = step;
       return true;
     });
-    if (accepted) return null;
+    if (accepted) {
+      this.throttle.succeed(`session:${userId}`);
+      return null;
+    }
     this.throttle.fail(keys, now);
     appendAudit({ event: 'confirm-failed', user: name, address: meta.address }, now);
     return fail(401, 'that code is not valid — use the current code from your authenticator, not one you already used');
@@ -444,17 +505,23 @@ export class AuthService {
   ): Promise<AuthResult<{ revoked: number }>> {
     const user = this.store().users.find((entry) => entry.id === userId);
     if (!user?.password) return fail(401, 'not signed in');
-    const keys = [`ip:${meta.address}`, `user:${user.name}`];
-    const wait = this.throttle.retryAfter(keys, this.now());
-    if (wait > 0) return fail(429, 'too many attempts — try again later', Math.ceil(wait / 1000));
+    const keys = this.signedInKeys(userId, meta);
+    const wait = this.throttle.reserve(keys, this.now());
+    if (wait > 0) return tooMany(wait);
     const stored = user.password;
-    if (!(await this.withScryptSlot(() => verifyPassword(input.currentPassword, stored)))) {
-      this.throttle.fail(keys, this.now());
-      return fail(401, 'your current password is not right');
+    let matches: boolean | typeof BUSY = BUSY;
+    try {
+      matches = await this.withScryptSlot(() => verifyPassword(input.currentPassword, stored));
+    } finally {
+      this.throttle.settle(keys, this.now(), matches === false);
     }
+    if (matches === BUSY) return busy();
+    if (!matches) return fail(401, 'your current password is not right');
     const refused = this.confirmSecondFactor(userId, input.code, meta);
     if (refused) return refused;
-    const password = await this.withScryptSlot(() => hashPassword(input.newPassword, this.scrypt));
+    // The code is spent by now: this one waits for a slot rather than being shed.
+    const password = await this.withScryptSlot(() => hashPassword(input.newPassword, this.scrypt), true);
+    if (password === BUSY) return busy();
     this.mutate((store) => {
       const entry = store.users.find((candidate) => candidate.id === userId);
       if (entry) entry.password = password;

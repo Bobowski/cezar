@@ -76,6 +76,9 @@ const SCOPED: ReadonlyArray<readonly [string, RegExp]> = [
   ['DELETE', new RegExp(`^/automations/${SEGMENT}$`)],
   ['POST', new RegExp(`^/automations/${SEGMENT}/${SEGMENT}$`)],
   ['GET', /^\/tracker\/automation-options$/],
+  // `cez service` (spec 2026-10-11-project-services §4): status and logs, never a lifecycle route.
+  ['GET', /^\/services$/],
+  ['GET', new RegExp(`^/services/${SEGMENT}/logs$`)],
 ];
 
 /**

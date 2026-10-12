@@ -58,7 +58,7 @@ import {
   getSkills,
   getSkillsWhenReady,
   getTodos,
-  getTrackerAssociation, getTrackerConnection, getProjectSecrets, getWorkspaceSecrets, getEnvFiles, getE2eStatus,
+  getTrackerAssociation, getTrackerConnection, getProjectSecrets, getWorkspaceSecrets, getEnvFiles, getServices, getE2eStatus,
   getTrackerCandidates,
   getTrackerItem,
   getTrackerItems,
@@ -152,6 +152,10 @@ import { onSocketProbe, socketProbeResult, startSocketProbe, transportFor, wants
  * ever reach A's data. Call sites are unchanged — they keep writing `queryKeys.runs.list()`.
  */
 export const queryKeys = {
+  services: {
+    allFor: (projectId: string) => ['services', projectId] as const,
+    list: () => ['services', queryScope()] as const,
+  },
   envFiles: {
     allFor: (projectId: string) => ['env-files', projectId] as const,
     list: () => ['env-files', queryScope()] as const,

@@ -1,6 +1,21 @@
 # Project services — the project's stack, started and watched from the cockpit
 
-> Status: draft (2026-10-11), not implemented. Branch: `brutus`.
+> Status: implemented (2026-10-12). Branch: `brutus`.
+> Implementation: `packages/contract/src/services.ts`, `packages/cezar/src/services/`
+> (`discover.ts`, `store.ts`, `manager.ts`, `cli.ts`), the `servicesRoutes` family in
+> `server/server.ts`, `packages/web/src/routes/services/services.tsx`.
+> As built, where it differs from the text below:
+> - **States are `stopped | running | exited`.** `starting` and `stopping` are not observable: a
+>   spawn answers at once and a stop drops the session at once (the tree gets SIGHUP, then SIGKILL
+>   after 2 s, in the registry). A user's stop ends in `stopped`, not `exited`.
+> - **§5's owner is a key, not a union**: the registry keeps its one string field (`runId`) and a
+>   project or service session carries `project:<id>` / `service:<projectId>:<serviceId>` there.
+>   Every existing terminal case passes unchanged.
+> - **Discovery** walks three directories deep rather than reading declared workspaces (a repo
+>   whose app lives in `app/` declares none at its root), and also offers `Makefile` targets.
+> - **Routes added**: `POST /services/resume` (start exactly `lastRunning`).
+> - **Agents**: the read-only guarantee is the run token's allowlist (`auth/run-tokens.ts`) — two
+>   GETs and nothing else — plus a refusal on every lifecycle route for a run principal.
 > Sibling: `2026-10-11-code-page.md` (the Code page docks this panel and shares §5's session owner).
 > Builds on: `2026-10-07-task-workspace.md` §6 (PTY sessions), `2026-10-10-task-slots.md`,
 > `2026-10-10-preview-gateway.md`, `2026-10-10-cezar-in-a-container.md`.

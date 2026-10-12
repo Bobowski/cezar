@@ -8,10 +8,13 @@ import {
   trackerCredentialsSchema, trackerItemParamsSchema, trackerAssociationInputSchema, type TrackerChangedEvent,
   secretParamsSchema, secretValueInputSchema, type SecretsList, type SecretValueInput,
   envFileQuerySchema, setEnvFileSchema, type EnvFilesList,
+  serviceLogsQuerySchema, serviceParamsSchema, servicePatchSchema, servicePinInputSchema, type ServiceLogs, type ServicesState,
   e2eSetupInputSchema, type E2eStatus,
 } from '@open-mercato/cezar-contract';
 import { SecretStore, SecretsError, type SecretScopeRef } from '../workspace/secrets.ts';
 import { listEnvFiles, readEnvFile, removeEnvFile, writeEnvFile } from '../env-files.ts';
+import { discoverServiceCandidates } from '../services/discover.ts';
+import { ProjectServices, type ServiceProject } from '../services/manager.ts';
 import { E2E_SETUP_TASK, e2eCredentialsAmong, e2eSetupWorkflow, latestE2eSetupRun, readE2eStatus, setupInFlight } from '../e2e-setup.ts';
 import { createTrackerService } from './tracker/index.ts';
 import { TrackerWatches } from './tracker/watch.ts';
@@ -2870,6 +2873,7 @@ export function createApp(deps: ServerDeps) {
       // Its terminals live in the app-level registry, so nothing below reaches them — and once
       // the project is gone no route can (spec §6). No built context means no session was opened.
       for (const run of contexts.peek(id)?.store.listRuns() ?? []) stopTaskProcesses(run.id);
+      projectServices.stopProject(id);
       contexts.dispose(id);
       workspaceEvents.emit('project-removed', { id });
       const body: RemoveProjectResponse = { removed: true, id };
@@ -6525,6 +6529,168 @@ export function createApp(deps: ServerDeps) {
       return c.body(null, 204);
     });
 
+  // ---- chained family: project services -------------------------------------
+  // Spec 2026-10-11-project-services. Starting a pinned command is running a shell command, so
+  // every route follows the terminal's policy, re-checked per request, reads included. A task's
+  // own credential may read (status, logs) and nothing else: an agent never starts or stops.
+  const serviceVersions = new Map<string, { version: number; publish: Set<(payload: { version: number }) => void> }>();
+  const servicesTopic = (projectId: string) => `services:${projectId}`;
+  const serviceVersion = (projectId: string) => {
+    let entry = serviceVersions.get(projectId);
+    if (!entry) {
+      entry = { version: 0, publish: new Set() };
+      serviceVersions.set(projectId, entry);
+      const registered = entry;
+      // A bare counter: no names and no output ride the workspace-level bus (spec §5).
+      deps.socketHub?.registerTopic(servicesTopic(projectId), {
+        snapshot: async () => ({ version: registered.version }),
+        start: (publish) => {
+          registered.publish.add(publish);
+          return () => registered.publish.delete(publish);
+        },
+      });
+    }
+    return entry;
+  };
+  const projectServices = new ProjectServices(
+    terminalSessions,
+    detectedUrls,
+    (projectId) => {
+      const entry = serviceVersion(projectId);
+      entry.version += 1;
+      for (const publish of entry.publish) publish({ version: entry.version });
+    },
+    // The shared stack: slot keys present and empty, as for a worktree-off task (task-slots §2).
+    () => taskSlotEnv('', undefined),
+    (sessionId) => registerTerminalTopic(sessionId),
+  );
+  const serviceProject = (project: ProjectContext): ServiceProject => ({ id: project.id, root: project.root, dataDir: project.dataDir });
+  const servicesRefusal = (_c?: Context): string | null => {
+    const policy = terminalPolicyRefusal(capabilities());
+    return policy ? policy.replace('the terminal is', 'services are') : null;
+  };
+  const agentRefusal = (c: Context): string | null =>
+    principalOf(c)?.kind === 'run' ? 'a task may read a service\'s status and logs, not start, stop or change it' : null;
+  const servicesState = async (project: ProjectContext, c: Context): Promise<ServicesState> => {
+    const topic = servicesTopic(project.id);
+    serviceVersion(project.id);
+    const refusal = servicesRefusal(c);
+    if (refusal) return { available: false, reason: refusal, services: [], candidates: [], lastRunning: [], topic };
+    const binding = await loadPty();
+    const [{ services, lastRunning }, candidates] = await Promise.all([
+      projectServices.list(serviceProject(project)),
+      discoverServiceCandidates(project.root),
+    ]);
+    const pinned = new Set(services.map((service) => `${service.cwd}\n${service.command}`));
+    return {
+      available: binding.available,
+      reason: binding.available ? null : binding.reason,
+      services,
+      candidates: candidates.filter((candidate) => !pinned.has(`${candidate.cwd}\n${candidate.command}`)),
+      lastRunning,
+      topic,
+    };
+  };
+  const servicesRoutes = new Hono<ProjectApiEnv>()
+    .get('/services', async (c) => {
+      c.header('Cache-Control', 'no-store');
+      return c.json(await servicesState(c.get('project'), c), 200);
+    })
+    .post('/services', jsonZodValidator(servicePinInputSchema), async (c) => {
+      const refusal = servicesRefusal(c) ?? agentRefusal(c);
+      if (refusal) return c.json({ error: refusal }, 409);
+      return c.json(await projectServices.pin(serviceProject(c.get('project')), c.req.valid('json')), 201);
+    })
+    .post('/services/start-all', async (c) => {
+      const refusal = servicesRefusal(c) ?? agentRefusal(c);
+      if (refusal) return c.json({ error: refusal }, 409);
+      await projectServices.startAll(serviceProject(c.get('project')));
+      return c.json(await servicesState(c.get('project'), c), 200);
+    })
+    .post('/services/resume', async (c) => {
+      const refusal = servicesRefusal(c) ?? agentRefusal(c);
+      if (refusal) return c.json({ error: refusal }, 409);
+      const project = serviceProject(c.get('project'));
+      await projectServices.startAll(project, (await projectServices.pins(project)).lastRunning);
+      return c.json(await servicesState(c.get('project'), c), 200);
+    })
+    // Not policy-gated, like closing a terminal: stopping is the one action that reduces exposure.
+    .post('/services/stop-all', async (c) => {
+      const refusal = agentRefusal(c);
+      if (refusal) return c.json({ error: refusal }, 409);
+      await projectServices.stopAll(serviceProject(c.get('project')));
+      return c.json(await servicesState(c.get('project'), c), 200);
+    })
+    .patch('/services/:id', paramZodValidator(serviceParamsSchema), jsonZodValidator(servicePatchSchema), async (c) => {
+      const refusal = servicesRefusal(c) ?? agentRefusal(c);
+      if (refusal) return c.json({ error: refusal }, 409);
+      const out = await projectServices.patch(serviceProject(c.get('project')), c.req.valid('param').id, c.req.valid('json'));
+      if (!out.ok) return c.json({ error: out.error }, out.status);
+      return c.json(out.value, 200);
+    })
+    .delete('/services/:id', paramZodValidator(serviceParamsSchema), async (c) => {
+      const refusal = agentRefusal(c);
+      if (refusal) return c.json({ error: refusal }, 409);
+      const out = await projectServices.unpin(serviceProject(c.get('project')), c.req.valid('param').id);
+      if (!out.ok) return c.json({ error: out.error }, out.status);
+      return c.body(null, 204);
+    })
+    .post('/services/:id/start', paramZodValidator(serviceParamsSchema), async (c) => {
+      const refusal = servicesRefusal(c) ?? agentRefusal(c);
+      if (refusal) return c.json({ error: refusal }, 409);
+      const out = await projectServices.start(serviceProject(c.get('project')), c.req.valid('param').id);
+      if (!out.ok) return c.json({ error: out.error }, out.status);
+      return c.body(null, 204);
+    })
+    .post('/services/:id/restart', paramZodValidator(serviceParamsSchema), async (c) => {
+      const refusal = servicesRefusal(c) ?? agentRefusal(c);
+      if (refusal) return c.json({ error: refusal }, 409);
+      const out = await projectServices.restart(serviceProject(c.get('project')), c.req.valid('param').id);
+      if (!out.ok) return c.json({ error: out.error }, out.status);
+      return c.body(null, 204);
+    })
+    .post('/services/:id/stop', paramZodValidator(serviceParamsSchema), async (c) => {
+      const refusal = agentRefusal(c);
+      if (refusal) return c.json({ error: refusal }, 409);
+      const out = await projectServices.stop(serviceProject(c.get('project')), c.req.valid('param').id);
+      if (!out.ok) return c.json({ error: out.error }, out.status);
+      return c.body(null, 204);
+    })
+    .get('/services/:id/output', paramZodValidator(serviceParamsSchema), queryZodValidator(terminalOutputQuerySchema), async (c) => {
+      const refusal = servicesRefusal(c);
+      if (refusal) return c.json({ error: refusal }, 409);
+      const read = projectServices.read(serviceProject(c.get('project')), c.req.valid('param').id, c.req.valid('query').cursor ?? 0);
+      if (!read) return c.json({ error: 'service output not found' }, 404);
+      c.header('Cache-Control', 'no-store');
+      return c.json(terminalOutputSchema.parse(read), 200);
+    })
+    .post('/services/:id/input', paramZodValidator(serviceParamsSchema), jsonZodValidator(terminalInputSchema), async (c) => {
+      const refusal = servicesRefusal(c) ?? agentRefusal(c);
+      if (refusal) return c.json({ error: refusal }, 409);
+      return c.json({ delivered: projectServices.write(serviceProject(c.get('project')), c.req.valid('param').id, c.req.valid('json').data) }, 200);
+    })
+    .post('/services/:id/resize', paramZodValidator(serviceParamsSchema), jsonZodValidator(terminalResizeSchema), async (c) => {
+      const refusal = servicesRefusal(c) ?? agentRefusal(c);
+      if (refusal) return c.json({ error: refusal }, 409);
+      const { cols, rows } = c.req.valid('json');
+      return c.json({ resized: projectServices.resize(serviceProject(c.get('project')), c.req.valid('param').id, cols, rows) }, 200);
+    })
+    .get('/services/:id/logs', paramZodValidator(serviceParamsSchema), queryZodValidator(serviceLogsQuerySchema), async (c) => {
+      const refusal = servicesRefusal(c);
+      if (refusal) return c.json({ error: refusal }, 409);
+      const project = serviceProject(c.get('project'));
+      const { id } = c.req.valid('param');
+      const pin = (await projectServices.pins(project)).services.find((other) => other.id === id || other.name === id);
+      if (!pin) return c.json({ error: 'no such service' }, 404);
+      const logs: ServiceLogs = {
+        name: pin.name,
+        ...projectServices.status(project, pin.id),
+        logs: projectServices.logs(project, pin.id, c.req.valid('query').tail ?? 200),
+      };
+      c.header('Cache-Control', 'no-store');
+      return c.json(logs, 200);
+    });
+
   // ---- chained family: one-click e2e setup ----------------------------------
   // Spec 2026-10-10-e2e-one-click-setup. `GET /e2e` says what the project has; `POST /e2e/setup`
   // stores the model key (when given) as a `checks` secret and starts the setup as an ordinary
@@ -7420,6 +7586,7 @@ export function createApp(deps: ServerDeps) {
     .route('/', trackerRoutes)
     .route('/', secretsRoutes)
     .route('/', envFilesRoutes)
+    .route('/', servicesRoutes)
     .route('/', e2eRoutes)
     .route('/', repoRoutes)
     .route('/', configRoutes)

@@ -33,5 +33,6 @@ export * from './star-count.ts';
 export * from './preview.ts';
 export * from './secrets.ts';
 export * from './env-files.ts';
+export * from './services.ts';
 export * from './e2e.ts';
 export * from './auth.ts';

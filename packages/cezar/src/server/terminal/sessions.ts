@@ -34,12 +34,23 @@ export const SCROLLBACK_LIMIT = 256_000;
  *  client cannot fork shells until the host dies. */
 export const MAX_SESSIONS = 32;
 
+/** Service sessions (spec `2026-10-11-project-services` §5) are counted apart, so a full stack
+ *  cannot lock the user out of a terminal — and a wall of terminals cannot stop the stack. */
+export const MAX_SERVICE_SESSIONS = 24;
+
+/** The owner key of a project's own terminals (the Code page) — never a run id, which is a UUID. */
+export const projectTerminalOwner = (projectId: string): string => `project:${projectId}`;
+/** The owner key of one pinned service's session. */
+export const serviceTerminalOwner = (projectId: string, serviceId: string): string => `service:${projectId}:${serviceId}`;
+
 /** How long a session that has EXITED is kept so its last output and exit code can still be read
  *  (a client that was mid-poll, or a drawer reopened a moment later). */
 const EXITED_RETENTION_MS = 60_000;
 
 export interface TerminalSessionInfo {
   id: string;
+  /** The session's OWNER: a run id for a task's terminal, or a `projectTerminalOwner` /
+   *  `serviceTerminalOwner` key (services spec §5). Named for its first owner; the wire keeps it. */
   runId: string;
   cwd: string;
   shell: string;
@@ -91,6 +102,10 @@ interface Entry {
   /** The tail of the previous chunk, re-scanned with the next one so an address split across two
    *  PTY writes is still found whole. */
   scanTail: string;
+  /** Counted against `MAX_SERVICE_SESSIONS` rather than `MAX_SESSIONS`. */
+  service: boolean;
+  /** `label` was given at creation and is not the process table's to change. */
+  fixedLabel: boolean;
   reap?: ReturnType<typeof setTimeout>;
 }
 
@@ -102,6 +117,11 @@ export interface CreateSessionInput {
   /** One of the host's discovered shells (`discoverShells()`). Anything else is refused rather
    *  than spawned — see the allowlist reasoning in `shells.ts`. */
   shell?: string;
+  /** Run this one command instead of an interactive shell (a pinned service). Server-chosen —
+   *  no route passes a request's text here except the service's own stored command. */
+  command?: string;
+  /** A fixed tab name. With it, the process table never renames the session. */
+  label?: string;
   /** Layered over the server's own environment — what this task's shell is told that another
    *  task's is not (its slot). Chosen by the server, never read from a request. */
   env?: Record<string, string>;
@@ -146,8 +166,15 @@ export class TerminalSessions {
   async create(input: CreateSessionInput): Promise<CreateSessionResult> {
     const pty = await this.binding();
     if (!pty.available) return { ok: false, reason: pty.reason };
-    if (this.entries.size >= MAX_SESSIONS) {
-      return { ok: false, reason: `Too many terminal sessions (${MAX_SESSIONS}). Close one and retry.` };
+    const service = input.command !== undefined;
+    const pooled = [...this.entries.values()].filter((entry) => entry.service === service).length;
+    if (service ? pooled >= MAX_SERVICE_SESSIONS : pooled >= MAX_SESSIONS) {
+      return {
+        ok: false,
+        reason: service
+          ? `Too many running services (${MAX_SERVICE_SESSIONS}). Stop one and retry.`
+          : `Too many terminal sessions (${MAX_SESSIONS}). Close one and retry.`,
+      };
     }
 
     const cols = clampDimension(input.cols, 80);
@@ -159,7 +186,7 @@ export class TerminalSessions {
     }
     let child: PtyProcess;
     try {
-      child = pty.module.spawn(shell, [], {
+      child = pty.module.spawn(shell, input.command === undefined ? [] : commandArgs(shell, input.command), {
         name: 'xterm-256color',
         cols,
         rows,
@@ -183,10 +210,12 @@ export class TerminalSessions {
         rows,
         startedAt: new Date().toISOString(),
         exitCode: null,
-        label: `Terminal ${ordinal}`,
+        label: input.label ?? `Terminal ${ordinal}`,
         busy: false,
       },
       ordinal,
+      service,
+      fixedLabel: input.label !== undefined,
       pty: child,
       buffer: '',
       dropped: 0,
@@ -236,7 +265,7 @@ export class TerminalSessions {
       entry.info.busy = hasForeground(rows, entry.pty.pid);
       const running = foregroundCommand(rows, entry.pty.pid);
       // Only a command REPLACES the label; going idle keeps the last one (spec §6).
-      if (running) entry.info.label = running;
+      if (running && !entry.fixedLabel) entry.info.label = running;
     }
   }
 
@@ -441,6 +470,14 @@ function signalTree(pty: PtyProcess, groups: readonly number[] | null, signal: N
   } catch {
     // Already reaped.
   }
+}
+
+/** How `shell` is asked to run one command line and exit with its status. */
+function commandArgs(shell: string, command: string): string[] {
+  const name = shell.replace(/\\/g, '/').split('/').pop()?.toLowerCase() ?? '';
+  if (name === 'cmd.exe' || name === 'cmd') return ['/d', '/s', '/c', command];
+  if (name.startsWith('powershell') || name.startsWith('pwsh')) return ['-NoLogo', '-Command', command];
+  return ['-c', command];
 }
 
 /** The child's environment: the server's own, plus a TERM the emulator understands.

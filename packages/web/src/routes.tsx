@@ -77,6 +77,9 @@ const RepoGitRoute = lazyRoute('repo-git', () =>
 const GithubRoute = lazyRoute('github', () =>
   import('./routes/github/github').then((m) => ({ default: m.GithubRoute })),
 )
+const ServicesRoute = lazyRoute('services', () =>
+  import('./routes/services/services').then((m) => ({ default: m.ServicesRoute })),
+)
 const TrackerRoute = lazyRoute('tracker', () =>
   import('./routes/tracker/tracker').then((m) => ({ default: m.TrackerRoute })),
 )
@@ -309,6 +312,7 @@ const PAGE_TITLE_ROUTES = [
   { pattern: '/compare/:groupId', pageLabel: 'Compare' },
   { pattern: '/git/*', pageLabel: 'Git' },
   { pattern: '/github/*', pageLabel: 'GitHub' },
+  { pattern: '/services', pageLabel: 'Services' },
   { pattern: '/tracker/*', pageLabel: 'Tracker' },
   { pattern: '/automations/*', pageLabel: 'Automations' },
   { pattern: '/skills', pageLabel: 'Skills' },
@@ -495,6 +499,10 @@ export const AppRoutes = memo(function AppRoutes() {
               <GithubRoute view="issues" index />
             </Suspense>
           }
+        />
+        <Route
+          path="services"
+          element={<Suspense fallback={<ScopeResolving />}><ServicesRoute /></Suspense>}
         />
         <Route
           path="tracker"

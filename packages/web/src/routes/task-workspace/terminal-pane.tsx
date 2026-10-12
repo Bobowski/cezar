@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { readRunTerminal, resizeRunTerminal, writeRunTerminal } from '@/api/client'
 import { useHostTransport } from '@/api/host-usage'
 import { subscribeTopic } from '@/api/ws'
-import type { TerminalSession } from '@open-mercato/cezar-api-client'
+import type { TerminalOutput, TerminalSession } from '@open-mercato/cezar-api-client'
 import { cn } from '@/lib/utils'
 
 import '@xterm/xterm/css/xterm.css'
@@ -55,16 +55,39 @@ function terminalTheme() {
   }
 }
 
+/**
+ * Where a pane's bytes go. A task's terminal is the default; a project service and the Code
+ * page's terminal are the same screen over other routes (services spec §5).
+ */
+export interface TerminalIo {
+  read(cursor: number): Promise<TerminalOutput>
+  write(data: string): Promise<void>
+  resize(cols: number, rows: number): Promise<void>
+}
+
+/** What a pane needs to know about its session. `topic: null` is a session that will produce
+ *  nothing more (a stopped service's kept output): it is read once and never polled. */
+export type TerminalPaneSession = Pick<TerminalSession, 'id' | 'exitCode'> & { topic: string | null }
+
 export function TerminalPane({
   runId,
   session,
   active,
+  io,
 }: {
   runId: string
-  session: TerminalSession
+  session: TerminalPaneSession
   active: boolean
+  /** Omit for a task's terminal. Must be stable for a given `session.id`. */
+  io?: TerminalIo
 }) {
   const transport = useHostTransport()
+  const ioRef = useRef<TerminalIo>(null as unknown as TerminalIo)
+  ioRef.current = io ?? {
+    read: (cursor) => readRunTerminal(runId, session.id, cursor),
+    write: (data) => writeRunTerminal(runId, session.id, data),
+    resize: (cols, rows) => resizeRunTerminal(runId, session.id, cols, rows),
+  }
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<{ write(data: string): void } | null>(null)
   const themeWatchRef = useRef<MutationObserver | null>(null)
@@ -178,11 +201,11 @@ export function TerminalPane({
       // computes the same dimensions emits no event. The explicit send covers the mirror case,
       // where the first fit really is a no-op because the drawer happens to measure 80x24.
       const pushSize = ({ cols, rows }: { cols: number; rows: number }) => {
-        void resizeRunTerminal(runId, session.id, cols, rows).catch(() => {})
+        void ioRef.current.resize(cols, rows).catch(() => {})
       }
       term.onResize(pushSize)
       term.onData((data) => {
-        void writeRunTerminal(runId, session.id, data).catch(() => {})
+        void ioRef.current.write(data).catch(() => {})
       })
 
       fitRef.current()
@@ -244,7 +267,7 @@ export function TerminalPane({
     try {
       do {
         again.current = false
-        const read = await readRunTerminal(runId, session.id, cursorRef.current)
+        const read = await ioRef.current.read(cursorRef.current)
         cursorRef.current = read.cursor
         // Say so rather than splicing a gap into the screen silently.
         if (read.truncated) termRef.current?.write(TRUNCATION_NOTICE)
@@ -263,9 +286,11 @@ export function TerminalPane({
     }
     safePull()
 
+    const topic = session.topic
+    if (topic === null) return () => { running = false }
     if (transport === 'local' && !socketRefused) {
       // The topic carries a cursor and nothing else; this is the "there is more" bell.
-      const release = subscribeTopic(session.topic, safePull, () => setSocketRefused(true))
+      const release = subscribeTopic(topic, safePull, () => setSocketRefused(true))
       return () => {
         running = false
         release()

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { PtyBinding, PtyProcess, PtySpawnOptions } from './pty-module.ts';
-import { MAX_SESSIONS, SCROLLBACK_LIMIT, TerminalSessions } from './sessions.ts';
+import { MAX_SERVICE_SESSIONS, MAX_SESSIONS, SCROLLBACK_LIMIT, TerminalSessions } from './sessions.ts';
 
 /** A PTY that records what it was told, so no test forks a real shell. */
 class FakePty implements PtyProcess {
@@ -364,5 +364,30 @@ describe('a host that cannot read its process table', () => {
     sessions.observe([]);
 
     expect(sessions.get(session.id)?.busy).toBe(false);
+  });
+});
+
+describe('service sessions (spec 2026-10-11-project-services §5)', () => {
+  it('runs one command instead of an interactive shell, under a name the process table cannot change', async () => {
+    const { sessions, spawn } = harness();
+    const created = await sessions.create({ runId: 'service:p:api', cwd: '/tmp/wt', command: 'yarn run dev', label: 'api' });
+    if (!created.ok) throw new Error(created.reason);
+    const [, args] = spawn.mock.calls[0]!;
+    expect(args.at(-1)).toBe('yarn run dev');
+    expect(args.length).toBeGreaterThan(1);
+    sessions.observe([{ pid: 9, ppid: 4242, command: 'node server.js' }] as never);
+    expect(sessions.get(created.session.id)?.label).toBe('api');
+    expect(sessions.listFor('service:p:api')).toHaveLength(1);
+  });
+
+  it('counts services apart, so a full stack cannot lock the user out of a terminal', async () => {
+    const { sessions } = harness();
+    for (let i = 0; i < MAX_SERVICE_SESSIONS; i += 1) {
+      expect((await sessions.create({ runId: `service:p:${i}`, cwd: '/tmp', command: 'x' })).ok).toBe(true);
+    }
+    expect(await sessions.create({ runId: 'service:p:more', cwd: '/tmp', command: 'x' })).toMatchObject({ ok: false });
+    expect((await sessions.create({ runId: 'run-1', cwd: '/tmp' })).ok).toBe(true);
+    for (let i = 1; i < MAX_SESSIONS; i += 1) await sessions.create({ runId: 'run-1', cwd: '/tmp' });
+    expect(await sessions.create({ runId: 'run-1', cwd: '/tmp' })).toMatchObject({ ok: false });
   });
 });

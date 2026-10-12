@@ -48,6 +48,7 @@ import { flushTelemetry, initTelemetry, installCrashReporter, registerTelemetryC
 import { runTaskCommand } from './dispatch/task-cli.ts';
 import { runAutomationCommand } from './automations/automation-cli.ts';
 import { runTrackerCommand } from './tracker-cli.ts';
+import { runServiceCommand } from './services/cli.ts';
 import { runTelemetryCommand } from './telemetry-cli.ts';
 import { runRunsCommand } from './runs/runs-cli.ts';
 
@@ -136,6 +137,11 @@ async function main(): Promise<void> {
   // `cez tracker …` (spec 2026-10-11-tracker-ticket-context): the linked ticket, through the cockpit.
   if (process.argv[2] === 'tracker') {
     process.exitCode = await runTrackerCommand(process.argv.slice(3));
+    return;
+  }
+  // `cez service …` (spec 2026-10-11-project-services §4): a task reads the project's services.
+  if (process.argv[2] === 'service') {
+    process.exitCode = await runServiceCommand(process.argv.slice(3));
     return;
   }
   // Opt-in telemetry's terminal switch (docs/telemetry.md): no server, no repo needed.

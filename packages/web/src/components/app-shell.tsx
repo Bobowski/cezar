@@ -1,3 +1,4 @@
+import type { ServicesBadge } from '@/api/services'
 import {
   ArrowUpCircleIcon,
   CheckIcon,
@@ -107,6 +108,8 @@ export type AppShellProps = {
   inboxCount?: number | null
   unreadCount?: number | null
   skillsUpdateAvailable?: boolean
+  /** Running services of the nav's project; `null` while unknown. */
+  servicesBadge?: ServicesBadge | null
   version?: string | null
   latestVersion?: string | null
   /** cezar's own GitHub star count; `null` renders no ask at all. */
@@ -410,14 +413,37 @@ function AreaBadge({
   inboxCount,
   unreadCount,
   skillsUpdateAvailable,
+  servicesBadge = null,
   className,
 }: {
   item: NavItem
   inboxCount: number | null
   unreadCount: number | null
   skillsUpdateAvailable: boolean
+  servicesBadge?: ServicesBadge | null
   className?: string
 }) {
+  // Not violet: a running stack is a state, not something waiting for the user. A service that
+  // fell over is — it wears the danger dot instead of the count.
+  if (item.badge === 'services' && servicesBadge && (servicesBadge.failed || servicesBadge.running > 0)) {
+    return servicesBadge.failed ? (
+      <span data-slot="nav-services-failed" className={cn('pointer-events-none flex', className)}>
+        <span className="size-2 rounded-full bg-danger ring-2 ring-sidebar" aria-hidden="true" />
+        <span className="sr-only">A service exited with an error</span>
+      </span>
+    ) : (
+      <span
+        data-slot="nav-services-running"
+        title={`${servicesBadge.running} running`}
+        className={cn(
+          'pointer-events-none flex h-4 min-w-4 items-center justify-center rounded-full bg-success px-1 text-[10px] font-semibold text-background tabular-nums',
+          className,
+        )}
+      >
+        {servicesBadge.running}
+      </span>
+    )
+  }
   const count =
     item.badge === 'inbox-count' ? inboxCount : item.badge === 'tasks-unread' ? unreadCount : null
   if (count) {
@@ -458,6 +484,7 @@ function AppRail(props: RailProps) {
     inboxCount = null,
     unreadCount = null,
     skillsUpdateAvailable = false,
+    servicesBadge = null,
     version = null,
     latestVersion = null,
     starCount = null,
@@ -575,6 +602,7 @@ function AppRail(props: RailProps) {
                     inboxCount={inboxAvailable ? inboxCount : null}
                     unreadCount={unreadCount}
                     skillsUpdateAvailable={skillsUpdateAvailable}
+                    servicesBadge={servicesBadge}
                     className="absolute -top-1 -right-1"
                   />
                 </SidebarMenuItem>
@@ -621,7 +649,7 @@ function AppRail(props: RailProps) {
  * sidebar's sheet. Hidden from `md` up, where the rail itself is on screen.
  */
 function MobileAreas(props: RailProps) {
-  const { inboxCount = null, unreadCount = null, skillsUpdateAvailable = false, inboxAvailable = true } = props
+  const { inboxCount = null, unreadCount = null, skillsUpdateAvailable = false, servicesBadge = null, inboxAvailable = true } = props
   const { pathname, navProjectId, activeTo, items } = useAreas(props)
   const { isMobile, setOpenMobile } = useSidebar()
   const close = React.useCallback(() => setOpenMobile(false), [setOpenMobile])
@@ -698,6 +726,7 @@ function MobileAreas(props: RailProps) {
                     inboxCount={inboxAvailable ? inboxCount : null}
                     unreadCount={unreadCount}
                     skillsUpdateAvailable={skillsUpdateAvailable}
+                    servicesBadge={servicesBadge}
                     className="absolute top-2 right-2"
                   />
                 </SidebarMenuItem>

@@ -158,6 +158,7 @@ import type {
   TrackerItemsResponse,
   TrackerKind, TrackerCredentials, TrackerConnectionResponse,
   SecretsList, SecretValueInput, EnvFileContent, EnvFilesList, SetEnvFileInput,
+  ServicePatch, ServicePin, ServicePinInput, ServicesState,
   E2eStatus, E2eSetupInput, E2eSetupResponse,
 } from '@open-mercato/cezar-api-client'
 import { parseProviderStatusResponse } from '@/lib/provider-status'
@@ -964,6 +965,40 @@ export async function saveEnvFile(input: SetEnvFileInput): Promise<EnvFileConten
 export async function removeEnvFile(path: string): Promise<void> {
   await expectNoContent(await cez.api.v1.p[':projectId']['env-files'].$delete(
     { param: { projectId: queryScope() }, query: { path } }))
+}
+
+// ---- project services (spec 2026-10-11-project-services) ----
+
+const servicesApi = () => cez.api.v1.p[':projectId'].services
+const scopeParam = () => ({ projectId: queryScope() })
+
+/** `projectId` names a project explicitly for a caller that sits above the routed scope (the shell). */
+export async function getServices(opts?: ReadOptions, projectId: string = queryScope()): Promise<ServicesState> {
+  return unwrap(await servicesApi().$get({ param: { projectId } }, init(opts)), '/services')
+}
+export async function pinService(input: ServicePinInput): Promise<ServicePin> {
+  return unwrap(await servicesApi().$post({ param: scopeParam(), json: input }), '/services')
+}
+export async function patchService(id: string, patch: ServicePatch): Promise<ServicePin> {
+  return unwrap(await servicesApi()[':id'].$patch({ param: { ...scopeParam(), id }, json: patch }), `/services/${id}`)
+}
+export async function unpinService(id: string): Promise<void> {
+  await expectNoContent(await servicesApi()[':id'].$delete({ param: { ...scopeParam(), id } }))
+}
+export async function serviceAction(id: string, action: 'start' | 'stop' | 'restart'): Promise<void> {
+  await expectNoContent(await servicesApi()[':id'][action].$post({ param: { ...scopeParam(), id } }))
+}
+export async function servicesAction(action: 'start-all' | 'stop-all' | 'resume'): Promise<ServicesState> {
+  return unwrap(await servicesApi()[action].$post({ param: scopeParam() }), `/services/${action}`)
+}
+export async function readServiceOutput(id: string, cursor: number): Promise<TerminalOutput> {
+  return unwrap(await servicesApi()[':id'].output.$get({ param: { ...scopeParam(), id }, query: { cursor: String(cursor) } }), `/services/${id}/output`)
+}
+export async function writeServiceInput(id: string, data: string): Promise<void> {
+  await unwrap(await servicesApi()[':id'].input.$post({ param: { ...scopeParam(), id }, json: { data } }), `/services/${id}/input`)
+}
+export async function resizeService(id: string, cols: number, rows: number): Promise<void> {
+  await unwrap(await servicesApi()[':id'].resize.$post({ param: { ...scopeParam(), id }, json: { cols, rows } }), `/services/${id}/resize`)
 }
 
 /** Every write answers 204, which has no body for `unwrap` to parse — only the status matters. */

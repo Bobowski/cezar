@@ -1,3 +1,4 @@
+import { ensureDataGitignore } from '../data-gitignore.ts';
 import { join } from 'node:path';
 import { AutomationStore } from '../automations/store.ts';
 import { reconcileAutomationReceipts } from '../automations/task-template.ts';
@@ -208,6 +209,9 @@ export class ProjectContexts {
     if (project.status === 'missing') throw new ProjectContextError('missing-root', projectId);
 
     const dataDir = join(project.root, '.ai/cezar');
+    // As `serve` does for the boot repo: without it a project opened only through the registry
+    // shows cezar's state files (`services.json`, `layouts/`) in its own `git status`.
+    ensureDataGitignore(project.root);
     // keepLive + recover() (#367), same as serveCommand: runs that were live
     // when this project's context last existed are re-queued or resumed.
     const store = RunStore.open(dataDir, { keepLive: true });

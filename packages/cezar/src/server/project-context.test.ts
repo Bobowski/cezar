@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -54,6 +54,13 @@ describe('ProjectContexts', () => {
 
     const second = await contexts.context('a');
     expect(second).toBe(first);
+  });
+
+  it('keeps cezar\'s state files out of the project\'s git status, as serve does for the boot repo', async () => {
+    const contexts = makeContexts([{ id: 'a', root: rootA, status: 'not-git' }]);
+    await contexts.context('a');
+    const ignore = readFileSync(join(rootA, '.ai/cezar/.gitignore'), 'utf8').split('\n');
+    for (const entry of ['runs.json', 'services.json', 'layouts/']) expect(ignore, entry).toContain(entry);
   });
 
   it('dedupes concurrent builds of the same project into one instance', async () => {

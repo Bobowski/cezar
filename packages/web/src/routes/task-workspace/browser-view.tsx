@@ -71,6 +71,7 @@ export function BrowserView({
   designMarks,
   renderDesignNote,
   onDesignEscape,
+  singleTab = false,
 }: {
   state: BrowserState
   /** Persisted into the column (spec §7). Called only for changes worth keeping — a successful
@@ -97,6 +98,9 @@ export function BrowserView({
   /** Esc was pressed in the page while the note for `mark` was open. The view closes the popup;
    *  the host decides what else that means (a draft is discarded). */
   onDesignEscape?: (mark: string) => void
+  /** One page, no tab strip: the host already gives every browser a tab of its own (the Code
+   *  page), and a second strip under it would say the same thing twice. */
+  singleTab?: boolean
 }) {
   const tabs = state.tabs.length > 0 ? state.tabs : ['']
   const active = Math.min(state.active, tabs.length - 1)
@@ -497,6 +501,7 @@ export function BrowserView({
 
   return (
     <div data-slot="browser-view" className="flex h-full min-h-0 flex-col">
+      {singleTab ? null : (
       <Tabs
         value={String(active)}
         onValueChange={(value) => onChange({ ...state, active: Number(value) })}
@@ -560,8 +565,9 @@ export function BrowserView({
         <FullViewExit className="sticky right-0 ml-auto" />
       </TabsList>
       </Tabs>
+      )}
 
-      <div className="flex shrink-0 items-center gap-1 border-b border-border/70 px-3 pb-2">
+      <div className={cn('flex shrink-0 items-center gap-1 border-b border-border/70 px-3 pb-2', singleTab && 'pt-2')}>
         {/* Back and Forward walk this view's OWN per-tab stack — see `navByTab`. They can
             therefore be disabled truthfully, which reaching into the frame could never do. */}
         <ToolbarButton

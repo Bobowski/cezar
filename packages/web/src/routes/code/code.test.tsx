@@ -357,4 +357,64 @@ describe('Code page as an editor (VS Code-like)', () => {
     expect(document.querySelector('[data-route="code"]')?.getAttribute('data-fullscreen')).toBeNull()
     expect(body.querySelector('[data-slot="code-explorer"]')).not.toBeNull()
   })
+
+  it('hides and shows its sidebar in full screen, where the shell\'s own is covered', async () => {
+    document.documentElement.requestFullscreen = vi.fn(async () => {})
+    setup()
+    await view()
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle full screen' }))
+    const inline = () => document.querySelector('[data-route="code"] [data-slot="code-explorer"]')
+    expect(inline()).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle sidebar' }))
+    expect(inline()).toBeNull()
+    fireEvent.keyDown(window, { key: 'b', metaKey: true })
+    expect(inline()).not.toBeNull()
+    // Asking for a view brings a hidden sidebar back with it.
+    fireEvent.keyDown(window, { key: 'b', metaKey: true })
+    fireEvent.keyDown(window, { key: 'f', metaKey: true, shiftKey: true })
+    expect(document.querySelector('[data-route="code"] [data-slot="code-search"]')).not.toBeNull()
+  })
+
+  it('gives a browser tab no tab strip of its own: one tab, one page', async () => {
+    setup()
+    await view()
+    fireEvent.click(screen.getByRole('button', { name: 'Open browser' }))
+    await waitFor(() => expect(document.querySelector('[data-slot="code-browser"] [data-slot="browser-view"]')).not.toBeNull())
+    expect(document.querySelector('[data-slot="code-browser"] [data-slot="browser-tab"]')).toBeNull()
+    // A second page is a second browser tab beside it.
+    fireEvent.click(screen.getByRole('button', { name: 'Open browser' }))
+    await waitFor(() => expect(tabsOf(0)).toEqual(['app.ts', 'Browser', 'Browser']))
+  })
+
+  const drag = (types: Record<string, string>) => ({ dataTransfer: { types: Object.keys(types), getData: (type: string) => types[type] ?? '', setData: vi.fn(), dropEffect: 'none', effectAllowed: 'all' } })
+
+  it('moves a file dragged onto a folder, after asking', async () => {
+    const { sent } = setup({ at: '/code' })
+    const row = await waitFor(() => {
+      const found = document.querySelector('[data-slot="repo-files-file"][data-path="README.md"]')
+      expect(found).not.toBeNull()
+      return found as HTMLElement
+    })
+    expect(row.getAttribute('draggable')).toBe('true')
+    const folder = document.querySelector('[data-slot="repo-files-dir"][data-path="src"]') as HTMLElement
+    const carried = drag({ 'application/x-cezar-file': 'README.md' })
+    fireEvent.dragOver(folder, carried)
+    expect(folder.getAttribute('data-drop-target')).toBe('true')
+    fireEvent.drop(folder, carried)
+    expect(sent.some((request) => request.method === 'POST')).toBe(false)
+    fireEvent.click(await screen.findByRole('button', { name: 'Move' }))
+    await waitFor(() => expect(sent.find((request) => request.path === '/api/v1/repo/files/rename')?.body).toEqual({ from: 'README.md', to: 'src/README.md' }))
+  })
+
+  it('opens a file dropped on an editor group, and moves a tab dropped from another group', async () => {
+    setup()
+    await view()
+    fireEvent.keyDown(window, { key: '\\', metaKey: true })
+    await waitFor(() => expect(groups()).toHaveLength(2))
+    fireEvent.drop(groups()[0]!, drag({ 'application/x-cezar-file': 'README.md' }))
+    await waitFor(() => expect(tabsOf(0)).toEqual(['app.ts', 'README.md']))
+    fireEvent.drop(groups()[1]!, drag({ 'application/x-cezar-tab': JSON.stringify({ tab: 'README.md', from: 0 }) }))
+    await waitFor(() => expect(tabsOf(1)).toEqual(['app.ts', 'README.md']))
+    expect(tabsOf(0)).toEqual(['app.ts'])
+  })
 })

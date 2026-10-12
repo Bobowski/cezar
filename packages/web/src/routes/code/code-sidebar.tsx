@@ -37,7 +37,7 @@ function HeaderAction({ label, onClick, children }: { label: string; onClick: ()
 }
 
 export function ExplorerView({
-  paths, loading, error, selected, marks, canEdit, onSelect, onOpen, menuFor, onNewFile, onNewFolder, onRefresh,
+  paths, loading, error, selected, marks, canEdit, onSelect, onOpen, menuFor, onNewFile, onNewFolder, onRefresh, onMoveFile,
 }: {
   paths: readonly string[]
   loading: boolean
@@ -52,6 +52,8 @@ export function ExplorerView({
   onNewFile: () => void
   onNewFolder: () => void
   onRefresh: () => void
+  /** A file dragged onto a folder (`''` is the root). Absent where files cannot be edited. */
+  onMoveFile?: (from: string, toDir: string) => void
 }) {
   const [collapse, setCollapse] = useState(0)
   const [target, setTarget] = useState<ExplorerTarget>(null)
@@ -87,6 +89,7 @@ export function ExplorerView({
                   onSelect={onSelect}
                   onOpen={onOpen}
                   onContextMenu={(_event, hit) => setTarget(hit)}
+                  {...(onMoveFile ? { onMoveFile } : {})}
                 />
               </div>
             </ContextMenuTrigger>

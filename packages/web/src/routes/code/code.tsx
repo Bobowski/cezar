@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   BotIcon, ColumnsIcon, EyeIcon, FilesIcon, GitBranchIcon, GitCompareArrowsIcon, GlobeIcon, Maximize2Icon, Minimize2Icon, PanelBottomIcon,
-  SearchIcon, XIcon,
+  PanelLeftIcon, SearchIcon, XIcon,
 } from 'lucide-react'
 import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router'
@@ -9,7 +9,7 @@ import { useParams, useSearchParams } from 'react-router'
 import { queryScope, type ApiRun, type ChangedFile } from '@open-mercato/cezar-api-client'
 import { ApiError, createRun } from '@/api/client'
 import {
-  codeFileRawUrl, getCodeChanges, getCodeFile, getCodeTree, getCodeWatch, saveCodeFile, treeKey, type CodeTree,
+  codeFileRawUrl, getCodeChanges, getCodeFile, getCodeTree, getCodeWatch, renameCodeFile, saveCodeFile, treeKey, type CodeTree,
 } from '@/api/code'
 import { useHostTransport } from '@/api/host-usage'
 import { queryKeys, useHealth, useRepo, useRuns } from '@/api/queries'
@@ -36,6 +36,7 @@ import { toast } from '@/components/ui/toaster'
 import { useNavigate } from '@/lib/project-router'
 import { runTitle } from '@/lib/task-groups'
 import { cn } from '@/lib/utils'
+import { FILE_DRAG_TYPE } from '@/routes/repo-git/repo-files'
 import { isImagePath } from '@/routes/task-git/worktree-files'
 import { Markdown } from '@/routes/task-thread/markdown'
 
@@ -62,6 +63,8 @@ type OpenFile =
   | { status: 'unsupported'; reason: string }
   | { status: 'ready'; buffer: Buffer; editable: boolean; reason: string | null }
 
+/** What a dragged editor tab carries: its path and the group it came from. */
+const TAB_DRAG_TYPE = 'application/x-cezar-tab'
 const STATUS_LETTER: Record<string, string> = { added: 'A', modified: 'M', deleted: 'D', renamed: 'R', copied: 'C' }
 const MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
 const KEY_NAMES: Record<string, [mac: string, other: string]> = { Mod: ['⌘', 'Ctrl'], Shift: ['⇧', 'Shift'], Alt: ['⌥', 'Alt'], Ctrl: ['⌃', 'Ctrl'] }
@@ -127,6 +130,9 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
   const [gotoLine, setGotoLine] = useState({ group: 0, nonce: 0 })
   const [find, setFind] = useState({ group: 0, nonce: 0 })
   const [fullscreen, setFullscreen] = useState(false)
+  // Full screen draws the sidebar itself, so hiding it is the page's to do as well.
+  const [sidebarHidden, setSidebarHidden] = useState(false)
+  const [moving, setMoving] = useState<{ from: string; to: string } | null>(null)
   const shell = useSidebar()
   const filesRef = useRef(files)
   filesRef.current = files
@@ -303,9 +309,11 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
   /** Show a sidebar view — and the contextual sidebar itself, if the shell has it folded away. */
   const showSidebar = (view: CodeSidebar) => {
     setLayout((state) => ({ ...state, sidebar: view }))
+    setSidebarHidden(false)
     if (shell.isMobile) shell.setOpenMobile(true)
     else if (!shell.open) shell.setOpen(true)
   }
+  const toggleSidebar = () => (fullscreen ? setSidebarHidden((hidden) => !hidden) : shell.toggleSidebar())
   const openBrowserTab = (url?: string) => setLayout((state) => openBrowser(state, Math.random().toString(36).slice(2, 10), url))
   const setBrowser = (id: string, next: CodeBrowser) => setLayout((state) => ({ ...state, browsers: { ...state.browsers, [id]: next } }))
   const toggleAgent = () => setLayout((state) => ({ ...state, agent: !state.agent }))
@@ -371,7 +379,7 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
     { id: 'search.files', title: 'Search: Find in Files', shortcut: keys('Mod', 'Shift', 'F'), run: () => { showSidebar('search'); setSearchFocus((value) => value + 1) } },
     { id: 'view.explorer', title: 'View: Show Explorer', shortcut: keys('Mod', 'Shift', 'E'), run: () => showSidebar('explorer') },
     { id: 'view.scm', title: 'View: Show Source Control', shortcut: keys('Ctrl', 'Shift', 'G'), run: () => showSidebar('scm') },
-    { id: 'view.sidebar', title: 'View: Toggle Sidebar', shortcut: keys('Mod', 'B'), run: () => shell.toggleSidebar() },
+    { id: 'view.sidebar', title: 'View: Toggle Sidebar', shortcut: keys('Mod', 'B'), run: toggleSidebar },
     { id: 'view.panel', title: 'View: Toggle Panel', shortcut: keys('Mod', 'J'), disabled: !terminalAllowed, run: () => togglePanel(layout.panel === null ? 'terminal' : null) },
     { id: 'view.terminal', title: 'View: Toggle Terminal', shortcut: keys('Ctrl', '`'), disabled: !terminalAllowed, run: () => togglePanel(layout.panel === 'terminal' ? null : 'terminal') },
     { id: 'view.services', title: 'View: Show Services', disabled: !terminalAllowed || tree.kind !== 'main', run: () => togglePanel('services') },
@@ -429,6 +437,34 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   })
+
+  /** A file dropped on a folder: ask, because a move rewrites imports nobody is looking at. */
+  const askMove = (from: string, toDir: string) => {
+    const to = toDir === '' ? from.slice(from.lastIndexOf('/') + 1) : `${toDir}/${from.slice(from.lastIndexOf('/') + 1)}`
+    if (to !== from) setMoving({ from, to })
+  }
+  const move = async () => {
+    if (!moving) return
+    const { from, to } = moving
+    setMoving(null)
+    try {
+      await renameCodeFile(tree, { from, to })
+      afterFileOp(from, to)
+    } catch (error) {
+      toast((error as Error).message, { tone: 'danger' })
+    }
+  }
+  /** A tab dragged onto a group moves there; a file dragged from the explorer opens there. */
+  const dropOnGroup = (at: number, drop: { file: string } | { tab: string; from: number }) => {
+    if ('file' in drop) return setLayout((state) => updateGroup({ ...state, focused: Math.min(at, state.groups.length - 1) }, at, (each) => openTab(each, drop.file, true)))
+    if (drop.from === at) return
+    setLayout((state) => {
+      const opened = updateGroup({ ...state, focused: at }, at, (each) => openTab(each, drop.tab, true))
+      const closed = updateGroup(opened, drop.from, (each) => closeTab(each, drop.tab))
+      // The source group may have closed and shifted the target one place left.
+      return { ...closed, focused: closed.groups.length < opened.groups.length && drop.from < at ? at - 1 : Math.min(at, closed.groups.length - 1) }
+    })
+  }
 
   /** The explorer's menu for a right click on `target` (`null`: the space under the tree). */
   const explorerItems = (target: ExplorerTarget): MenuItem[] => {
@@ -514,6 +550,7 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
       onNewFile={() => setDialog({ kind: 'create', dir: here })}
       onNewFolder={() => setDialog({ kind: 'folder', dir: here })}
       onRefresh={revalidate}
+      {...(fileEdit ? { onMoveFile: askMove } : {})}
     />
   ) : layout.sidebar === 'search' ? (
     <SearchView tree={tree} focus={searchFocus} onOpen={(path, line) => open(path, { line })} />
@@ -545,7 +582,7 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
       )}
 
       <div className="flex min-h-0 flex-1">
-        {fullscreen ? (
+        {fullscreen && !sidebarHidden ? (
           <aside data-slot="code-sidebar" data-view={layout.sidebar} className="hidden w-72 shrink-0 flex-col border-r border-border md:flex">
             <div className="shrink-0 p-3">{sidebarHead}</div>
             <div className="min-h-0 flex-1">{sidebarView}</div>
@@ -583,6 +620,7 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
                           gotoLine={gotoLine.group === at ? gotoLine.nonce : 0}
                           find={find.group === at ? find.nonce : 0}
                           menuFor={(tab) => tabItems(at, tab)}
+                          onDrop={(drop) => dropOnGroup(at, drop)}
                           onFocus={() => setLayout((state) => (state.focused === at || at >= state.groups.length ? state : { ...state, focused: at }))}
                           onActivate={(tab) => setLayout((state) => updateGroup({ ...state, focused: Math.min(at, state.groups.length - 1) }, at, (tabs) => ({ ...tabs, active: tab })))}
                           onKeep={(tab) => setLayout((state) => updateGroup(state, at, (tabs) => keepTab(tabs, tab)))}
@@ -641,6 +679,9 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
       </div>
 
       <footer data-slot="code-status" className="flex h-7 shrink-0 items-center gap-1 border-t border-border px-2 text-[11px] text-muted-foreground">
+        <IconTooltip label={`Toggle sidebar (${keys('Mod', 'B')})`} side="top">
+          <Button variant="ghost" size="icon-xs" aria-label="Toggle sidebar" onClick={toggleSidebar}><PanelLeftIcon aria-hidden="true" /></Button>
+        </IconTooltip>
         {branch ? <span className="flex shrink-0 items-center gap-1 px-1" title="Branch"><GitBranchIcon aria-hidden="true" className="size-3" />{branch}</span> : null}
         <Button variant="ghost" size="xs" className="h-5 px-1.5 text-[11px] font-normal" onClick={() => showSidebar('scm')}>{changed.length} change{changed.length === 1 ? '' : 's'}</Button>
         <span data-slot="code-save-state" className="ml-auto truncate px-1">
@@ -685,6 +726,20 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <AlertDialog open={moving !== null} onOpenChange={(next) => { if (!next) setMoving(null) }}>
+        <AlertDialogContent data-slot="code-move-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Move this file?</AlertDialogTitle>
+            <AlertDialogDescription>
+              <code className="font-mono text-xs text-foreground">{moving?.from}</code> becomes <code className="font-mono text-xs text-foreground">{moving?.to}</code>. Nothing that imports it is rewritten.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void move()}>Move</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <QuickOpen open={quickOpen} paths={paths} recent={recent} onClose={() => setQuickOpen(false)} onPick={(path) => open(path)} />
       <CommandPalette open={palette} commands={commands} onClose={() => setPalette(false)} />
       <FileDialog
@@ -703,7 +758,7 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
 /** One editor group: its tab strip, the path of the active file, and whatever that file is. */
 function EditorGroup({
   index, group, focused, split, tree, files, changed, lineMarks, browsers, agentRun, wrap, fileEdit, rendered, reveal, gotoLine, find,
-  menuFor, onFocus, onActivate, onKeep, onClose, onEdit, onCursor, onSave, onReload, onToggleRendered, onSplit, onBrowser, onStartTask,
+  menuFor, onDrop, onFocus, onActivate, onKeep, onClose, onEdit, onCursor, onSave, onReload, onToggleRendered, onSplit, onBrowser, onStartTask,
   loadFileText,
 }: {
   index: number
@@ -725,6 +780,8 @@ function EditorGroup({
   find: number
   /** The context menu of one of this group's tabs. */
   menuFor: (tab: string) => MenuItem[]
+  /** A file from the explorer, or a tab from a group, let go over this group. */
+  onDrop: (drop: { file: string } | { tab: string; from: number }) => void
   onFocus: () => void
   onActivate: (tab: string) => void
   onKeep: (tab: string) => void
@@ -750,9 +807,41 @@ function EditorGroup({
   const readOnly = !fileEdit || (file?.status === 'ready' && !file.editable)
   const marksOfFile = path !== null ? lineMarks.get(path) : undefined
   useEffect(() => { if (!conflicted) setComparing(false) }, [conflicted])
+  const [over, setOver] = useState(false)
+  const carries = (event: React.DragEvent) => event.dataTransfer.types.includes(FILE_DRAG_TYPE) || event.dataTransfer.types.includes(TAB_DRAG_TYPE)
 
   return (
-    <section data-slot="code-group" data-group={index} data-focused={focused ? 'true' : undefined} onPointerDownCapture={onFocus} className="flex min-w-0 flex-1 flex-col">
+    <section
+      data-slot="code-group"
+      data-group={index}
+      data-focused={focused ? 'true' : undefined}
+      data-drop-target={over ? 'true' : undefined}
+      onPointerDownCapture={onFocus}
+      onDragOver={(event) => {
+        if (!carries(event)) return
+        event.preventDefault()
+        setOver(true)
+      }}
+      onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOver(false) }}
+      onDrop={(event) => {
+        setOver(false)
+        const moved = event.dataTransfer.getData(TAB_DRAG_TYPE)
+        const dropped = event.dataTransfer.getData(FILE_DRAG_TYPE)
+        if (!moved && !dropped) return
+        event.preventDefault()
+        if (moved) {
+          try {
+            const parsed = JSON.parse(moved) as { tab?: unknown; from?: unknown }
+            if (typeof parsed.tab === 'string' && typeof parsed.from === 'number') onDrop({ tab: parsed.tab, from: parsed.from })
+          } catch {
+            // Not ours.
+          }
+        } else {
+          onDrop({ file: dropped })
+        }
+      }}
+      className={cn('flex min-w-0 flex-1 flex-col', over && 'ring-2 ring-ring ring-inset')}
+    >
       <Tabs value={tab ?? ''} onValueChange={onActivate} className="shrink-0 gap-0">
         <TabsList
           variant="line"
@@ -772,6 +861,11 @@ function EditorGroup({
                     data-dirty={dirty ? 'true' : undefined}
                     title={isBrowserTab(each.path) ? 'Browser' : tabFile(each.path)}
                     onAuxClick={(event) => { if (event.button === 1) onClose(each.path) }}
+                    draggable
+                    onDragStart={(event) => {
+                      event.dataTransfer.setData(TAB_DRAG_TYPE, JSON.stringify({ tab: each.path, from: index }))
+                      event.dataTransfer.effectAllowed = 'move'
+                    }}
                     className={cn('flex shrink-0 items-center rounded-md pr-0.5', each.path === tab ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground')}
                   >
                     <TabsTrigger value={each.path} onDoubleClick={() => onKeep(each.path)} className={cn('h-7 max-w-56 flex-none gap-1.5 px-2 text-xs after:hidden data-[state=active]:bg-transparent data-[state=active]:shadow-none', each.preview && 'italic')}>

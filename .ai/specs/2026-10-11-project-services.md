@@ -14,6 +14,9 @@
 > - **Discovery** walks three directories deep rather than reading declared workspaces (a repo
 >   whose app lives in `app/` declares none at its root), and also offers `Makefile` targets.
 > - **Routes added**: `POST /services/resume` (start exactly `lastRunning`).
+> - **§4's page is master–detail in the shell** (owner, 2026-10-12): pins, candidates, Resume
+>   and "Add a command" are the screen's list and render in the contextual sidebar; the main
+>   area is the selected service — its command, state, addresses, actions — and its log.
 > - **Agents**: the read-only guarantee is the run token's allowlist (`auth/run-tokens.ts`) — two
 >   GETs and nothing else — plus a refusal on every lifecycle route for a run principal.
 > Sibling: `2026-10-11-code-page.md` (the Code page docks this panel and shares §5's session owner).

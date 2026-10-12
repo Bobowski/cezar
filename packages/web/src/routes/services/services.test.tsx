@@ -1,9 +1,11 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { setApiScope, type Service, type ServicesState } from '@open-mercato/cezar-api-client'
 import { createQueryClient } from '@/api/query-client'
+import { ShellWithSidebar } from '@/test/shell-with-sidebar'
 import { ServicesRoute, serviceStateLabel, serviceTone } from './services'
 
 afterEach(() => { cleanup(); setApiScope(null); vi.unstubAllGlobals() })
@@ -36,7 +38,15 @@ function setup(state: ServicesState = STATE) {
     if (method === 'POST' && url.endsWith('/services')) return new Response(JSON.stringify({ id: 'x', name: 'x', command: 'x', cwd: '' }), { status: 201 })
     return new Response(null, { status: 204 })
   }))
-  render(<QueryClientProvider client={createQueryClient()}><ServicesRoute /></QueryClientProvider>)
+  // Radix parts in the sidebar (tooltips on the menu buttons) measure with a ResizeObserver.
+  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
+  render(
+    <QueryClientProvider client={createQueryClient()}>
+      <MemoryRouter>
+        <ShellWithSidebar><ServicesRoute /></ShellWithSidebar>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  )
   return calls
 }
 const sent = (calls: { method: string; url: string }[]) => calls.filter((c) => c.method !== 'GET').map((c) => `${c.method} ${c.url.replace(/^.*\/services/, '/services')}`)
@@ -53,7 +63,7 @@ describe('Services page (spec 2026-10-11-project-services §4)', () => {
 
   it('lists pins with their state and starts one', async () => {
     const calls = setup()
-    await screen.findByText('api')
+    await screen.findByRole('button', { name: 'Start api' })
     expect(screen.getByText('Exited with code 1')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Start api' }))
     await waitFor(() => expect(sent(calls)).toEqual(['POST /services/api-1/start']))
@@ -73,7 +83,7 @@ describe('Services page (spec 2026-10-11-project-services §4)', () => {
 
   it('adds a custom command, named after itself when no name is given', async () => {
     const calls = setup()
-    await screen.findByText('api')
+    await screen.findByRole('button', { name: 'Start api' })
     fireEvent.change(screen.getByLabelText('Command'), { target: { value: 'stripe listen --forward-to localhost:9000' } })
     fireEvent.change(screen.getByLabelText('Directory'), { target: { value: '/app/' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
@@ -92,5 +102,22 @@ describe('Services page (spec 2026-10-11-project-services §4)', () => {
     setup({ available: false, reason: 'services are disabled on this cockpit — it is off in hosted mode unless CEZ_TERMINAL=1', services: [], candidates: [], lastRunning: [], topic: 'services:p' })
     expect((await screen.findByRole('note')).textContent).toContain('services are disabled')
     expect(screen.queryByLabelText('Command')).toBeNull()
+  })
+
+  it('keeps the lists in the contextual sidebar and the selected service in the main area', async () => {
+    setup()
+    await screen.findByText('cms: dev')
+    const sidebar = document.querySelector('[data-slot="context-sidebar-body"]') as HTMLElement
+    expect(sidebar.querySelector('[aria-label="Pinned services"]')).not.toBeNull()
+    expect(sidebar.querySelector('[data-slot="services-candidates"]')).not.toBeNull()
+    expect(sidebar.querySelector('[aria-label="Command"]')).not.toBeNull()
+    expect(sidebar.querySelector('[data-slot="service-log"]')).toBeNull()
+    // The first pin is selected: its name, command and state head the main area.
+    const detail = document.querySelector('[data-slot="service-detail"]') as HTMLElement
+    expect(detail.textContent).toContain('api')
+    expect(detail.textContent).toContain('yarn run dev')
+    // Picking another one in the sidebar changes what the main area is about.
+    fireEvent.click(screen.getByText('web'))
+    await waitFor(() => expect(document.querySelector('[data-slot="service-detail"]')?.textContent).toContain('Exited with code 1'))
   })
 })

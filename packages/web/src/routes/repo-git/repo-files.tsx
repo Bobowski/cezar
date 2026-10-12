@@ -181,6 +181,7 @@ export function RepoFileBrowser({
   marks,
   onContextMenu,
   collapseSignal = 0,
+  onMoveFile,
 }: {
   paths: readonly string[]
   selected: string | null
@@ -193,6 +194,9 @@ export function RepoFileBrowser({
   onContextMenu?: (event: React.MouseEvent, target: { kind: 'file' | 'dir'; path: string }) => void
   /** Bump to close every folder ("Collapse Folders"). */
   collapseSignal?: number
+  /** Given, a file row can be dragged — onto a folder (or the empty space, for the root) to move
+   *  it, or out of the tree, where `FILE_DRAG_TYPE` names what is being carried. */
+  onMoveFile?: (from: string, toDir: string) => void
 }) {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set(ancestorsOf(selected)))
@@ -215,6 +219,30 @@ export function RepoFileBrowser({
   useEffect(() => {
     if (collapseSignal > 0) setOpen(new Set())
   }, [collapseSignal])
+
+  // The folder a dragged file is over (`''` is the root); `null` while nothing is being dragged in.
+  const [dropDir, setDropDir] = useState<string | null>(null)
+  const dropProps = (dir: string) =>
+    onMoveFile
+      ? {
+          onDragOver: (event: React.DragEvent) => {
+            if (!event.dataTransfer.types.includes(FILE_DRAG_TYPE)) return
+            event.preventDefault()
+            event.stopPropagation()
+            event.dataTransfer.dropEffect = 'move'
+            setDropDir(dir)
+          },
+          onDragLeave: () => setDropDir((current) => (current === dir ? null : current)),
+          onDrop: (event: React.DragEvent) => {
+            const from = event.dataTransfer.getData(FILE_DRAG_TYPE)
+            setDropDir(null)
+            if (!from) return
+            event.preventDefault()
+            event.stopPropagation()
+            onMoveFile(from, dir)
+          },
+        }
+      : {}
 
   const filtering = query.trim() !== ''
   const matches = useMemo(() => matchPaths(paths, query, MATCH_LIMIT), [paths, query])
@@ -343,7 +371,9 @@ export function RepoFileBrowser({
           aria-label="Repository files"
           aria-activedescendant={activeRow ? rowId(activeRow.path) : undefined}
           onKeyDown={onKeyDown}
-          className="min-w-0 text-[13px]"
+          data-drop-target={dropDir === '' ? 'true' : undefined}
+          {...dropProps('')}
+          className={cn('min-h-16 min-w-0 rounded-md text-[13px]', dropDir === '' && 'bg-sidebar-accent/60')}
         >
           {rows.map((row) =>
             row.kind === 'dir' ? (
@@ -351,6 +381,8 @@ export function RepoFileBrowser({
                 key={row.path}
                 row={row}
                 focused={row.path === activeRow?.path}
+                dropTarget={dropDir === row.path}
+                drop={dropProps(row.path)}
                 onContextMenu={onContextMenu ? (event) => onContextMenu(event, { kind: 'dir', path: row.path }) : undefined}
                 onToggle={() => {
                   setActive(row.path)
@@ -364,6 +396,8 @@ export function RepoFileBrowser({
                 active={row.path === selected}
                 focused={row.path === activeRow?.path}
                 mark={marks?.get(row.path)}
+                draggable={onMoveFile !== undefined}
+                drop={dropProps(row.path.includes('/') ? row.path.slice(0, row.path.lastIndexOf('/')) : '')}
                 onContextMenu={onContextMenu ? (event) => onContextMenu(event, { kind: 'file', path: row.path }) : undefined}
                 onOpen={onOpen ? () => onOpen(row.path) : undefined}
                 onSelect={() => {
@@ -385,6 +419,9 @@ export function RepoFileBrowser({
   )
 }
 
+/** What a dragged file row carries: its repo-relative path. */
+export const FILE_DRAG_TYPE = 'application/x-cezar-file'
+
 /** Stable per-path row id, for `aria-activedescendant`. */
 const rowId = (path: string) => `repo-file-row-${path}`
 
@@ -396,11 +433,15 @@ function DirRow({
   focused,
   onToggle,
   onContextMenu,
+  dropTarget = false,
+  drop,
 }: {
   row: Extract<Row, { kind: 'dir' }>
   focused: boolean
   onToggle: () => void
   onContextMenu?: (event: React.MouseEvent) => void
+  dropTarget?: boolean
+  drop?: React.HTMLAttributes<HTMLDivElement>
 }) {
   return (
     <div
@@ -414,7 +455,9 @@ function DirRow({
       tabIndex={focused ? 0 : -1}
       onClick={onToggle}
       onContextMenu={onContextMenu}
-      className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-muted-foreground hover:bg-sidebar-accent hover:text-foreground focus:bg-muted focus:outline-none"
+      data-drop-target={dropTarget ? 'true' : undefined}
+      {...drop}
+      className={cn('flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-muted-foreground hover:bg-sidebar-accent hover:text-foreground focus:bg-muted focus:outline-none', dropTarget && 'bg-sidebar-accent text-foreground ring-1 ring-ring')}
       style={indent(row.level, 6)}
     >
       <ChevronRightIcon
@@ -435,6 +478,8 @@ function FileRow({
   onOpen,
   mark,
   onContextMenu,
+  draggable = false,
+  drop,
 }: {
   row: Extract<Row, { kind: 'file' }>
   active: boolean
@@ -443,6 +488,9 @@ function FileRow({
   onOpen?: () => void
   mark?: string
   onContextMenu?: (event: React.MouseEvent) => void
+  draggable?: boolean
+  /** A file dropped on a FILE lands in that file's folder. */
+  drop?: React.HTMLAttributes<HTMLDivElement>
 }) {
   const Icon = isImagePath(row.path) ? ImageIcon : FileIcon
   return (
@@ -458,6 +506,13 @@ function FileRow({
       onClick={onSelect}
       onDoubleClick={onOpen}
       onContextMenu={onContextMenu}
+      draggable={draggable}
+      onDragStart={draggable ? (event) => {
+        event.dataTransfer.setData(FILE_DRAG_TYPE, row.path)
+        event.dataTransfer.setData('text/plain', row.path)
+        event.dataTransfer.effectAllowed = 'copyMove'
+      } : undefined}
+      {...drop}
       className={cn(
         'flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-sidebar-accent focus:outline-none',
         active ? 'bg-sidebar-accent font-medium text-foreground' : 'text-muted-foreground hover:text-foreground',

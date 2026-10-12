@@ -8,11 +8,16 @@ import {
 } from '@/api/client'
 import { queryKeys } from '@/api/queries'
 import { useServices } from '@/api/services'
-import { Page, PageBody, PageHeader } from '@/components/page'
+import { ContextSidebar } from '@/components/context-sidebar'
+import { Page, PageBody } from '@/components/page'
 import { StatusDot, type StatusDotTone } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
+import {
+  SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInput, SidebarMenu, SidebarMenuAction,
+  SidebarMenuButton, SidebarMenuItem,
+} from '@/components/ui/sidebar'
 import { toast } from '@/components/ui/toaster'
 import { cn } from '@/lib/utils'
 import { TerminalPane, type TerminalIo } from '@/routes/task-workspace/terminal-pane'
@@ -141,40 +146,37 @@ function Candidates({ candidates, busy, onPin }: { candidates: ServiceCandidate[
   const shown = all ? candidates : primary
   if (candidates.length === 0) return null
   return (
-    <section className="flex flex-col gap-2" aria-label="Suggested services">
-      <h2 className="text-[13px] font-semibold text-foreground">From this repository</h2>
-      {shown.length > 0 ? (
-        <Card flush>
-          <ul className="divide-y divide-border">
-            {shown.map((candidate) => (
-              <li key={`${candidate.cwd}\n${candidate.command}`} className="flex items-center gap-3 px-4 py-2.5">
-                <div className="min-w-0 flex-1 space-y-0.5">
-                  <span className="block truncate text-[13px] text-foreground">{candidate.name}</span>
-                  <code className="block truncate font-mono text-xs text-muted-foreground" title={candidate.detail ?? undefined}>
-                    {candidate.command}  ·  {candidate.source}
-                  </code>
-                  {candidate.unavailable ? <span className="block text-xs text-danger">{candidate.unavailable}</span> : null}
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  aria-label={`Pin ${candidate.name}`}
-                  disabled={busy || candidate.unavailable !== null}
-                  onClick={() => onPin(candidate)}
-                >
-                  <PlusIcon aria-hidden="true" /> Pin
-                </Button>
-              </li>
-            ))}
-          </ul>
-        </Card>
-      ) : null}
-      {candidates.length > primary.length ? (
-        <Button variant="ghost" size="sm" className="self-start" onClick={() => setAll((value) => !value)}>
-          {all ? 'Show long-running scripts only' : `Show all scripts (${candidates.length})`}
-        </Button>
-      ) : null}
-    </section>
+    <SidebarGroup data-slot="services-candidates">
+      <SidebarGroupLabel>From this repository</SidebarGroupLabel>
+      <SidebarGroupContent>
+        <SidebarMenu aria-label="Suggested services">
+          {shown.map((candidate) => (
+            <SidebarMenuItem key={`${candidate.cwd}\n${candidate.command}`}>
+              <SidebarMenuButton
+                size="lg"
+                className="h-auto py-1.5"
+                title={candidate.detail ?? candidate.command}
+                aria-label={`Pin ${candidate.name}`}
+                disabled={busy || candidate.unavailable !== null}
+                onClick={() => onPin(candidate)}
+              >
+                <PlusIcon aria-hidden="true" />
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate text-[13px] text-foreground">{candidate.name}</span>
+                  <span className="truncate font-mono text-[11px] text-muted-foreground">{candidate.command} · {candidate.source}</span>
+                  {candidate.unavailable ? <span className="truncate text-[11px] text-danger">{candidate.unavailable}</span> : null}
+                </span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          ))}
+        </SidebarMenu>
+        {candidates.length > primary.length ? (
+          <Button variant="ghost" size="sm" className="mt-1 w-full justify-start" onClick={() => setAll((value) => !value)}>
+            {all ? 'Show long-running scripts only' : `Show all scripts (${candidates.length})`}
+          </Button>
+        ) : null}
+      </SidebarGroupContent>
+    </SidebarGroup>
   )
 }
 
@@ -183,28 +185,34 @@ function AddCommand({ busy, onAdd }: { busy: boolean; onAdd: (input: { name: str
   const [command, setCommand] = useState('')
   const [cwd, setCwd] = useState('')
   return (
-    <form
-      className="flex flex-col gap-2"
-      aria-label="Add a command"
-      onSubmit={(event) => {
-        event.preventDefault()
-        if (command.trim() === '') return
-        onAdd({ name: name.trim() || command.trim().split(/\s+/).slice(0, 2).join(' '), command: command.trim(), cwd: cwd.trim().replace(/^\/+|\/+$/g, '') })
-        setName(''); setCommand(''); setCwd('')
-      }}
-    >
-      <h2 className="text-[13px] font-semibold text-foreground">Add a command</h2>
-      <Input aria-label="Command" value={command} onChange={(event) => setCommand(event.target.value)} placeholder="stripe listen --forward-to localhost:9000/hooks" spellCheck={false} autoComplete="off" className="font-mono" />
-      <div className="flex gap-2">
-        <Input aria-label="Name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Name (optional)" autoComplete="off" />
-        <Input aria-label="Directory" value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder="Directory (repo root)" spellCheck={false} autoComplete="off" className="font-mono" />
-        <Button type="submit" variant="outline" disabled={busy || command.trim() === ''}>Add</Button>
-      </div>
-    </form>
+    <SidebarGroup>
+      <SidebarGroupLabel>Add a command</SidebarGroupLabel>
+      <SidebarGroupContent>
+        <form
+          className="flex flex-col gap-1.5 px-2"
+          aria-label="Add a command"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (command.trim() === '') return
+            onAdd({ name: name.trim() || command.trim().split(/\s+/).slice(0, 2).join(' '), command: command.trim(), cwd: cwd.trim().replace(/^\/+|\/+$/g, '') })
+            setName(''); setCommand(''); setCwd('')
+          }}
+        >
+          <SidebarInput aria-label="Command" value={command} onChange={(event) => setCommand(event.target.value)} placeholder="stripe listen --forward-to …" spellCheck={false} autoComplete="off" className="font-mono text-xs" />
+          <SidebarInput aria-label="Name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Name (optional)" autoComplete="off" className="text-xs" />
+          <SidebarInput aria-label="Directory" value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder="Directory (repo root)" spellCheck={false} autoComplete="off" className="font-mono text-xs" />
+          <Button type="submit" variant="outline" size="sm" disabled={busy || command.trim() === ''}>Add</Button>
+        </form>
+      </SidebarGroupContent>
+    </SidebarGroup>
   )
 }
 
-/** `/p/:projectId/services` — the project's stack: what is pinned, what runs, what it prints. */
+/**
+ * `/p/:projectId/services` — the project's stack. What is pinned, what the repository suggests
+ * and the form to add a command are this screen's LIST, so they live in the contextual sidebar;
+ * the main area is the selected service and what it prints.
+ */
 export function ServicesRoute() {
   const state = useServices({ live: true })
   const { act, all, pin, unpin } = useServiceMutations()
@@ -215,78 +223,131 @@ export function ServicesRoute() {
   const selected = services.find((service) => service.id === selectedId) ?? services[0] ?? null
   const anyRunning = services.some((service) => service.status === 'running')
   const resumable = state.data?.lastRunning.length ?? 0
+  const available = state.data?.available === true
+  const running = selected?.status === 'running'
+  const urls = selected?.urls.filter((entry) => entry.running !== false) ?? []
 
   return (
-    <Page width="wide" data-route="services">
-      <PageHeader
-        title="Services"
-        description="The long-running commands that make up this project’s stack. They run the main checkout’s code and stop when cezar does."
-        actions={services.length > 0 ? (
-          <>
-            <Button variant="outline" disabled={busy || !anyRunning} onClick={() => all.mutate('stop-all')}>Stop all</Button>
-            <Button disabled={busy || services.every((service) => service.status === 'running')} onClick={() => all.mutate('start-all')}>Start all</Button>
-          </>
-        ) : undefined}
-      />
-      <PageBody className="flex flex-col gap-6">
-        {state.isPending ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
+    <Page width="full" data-route="services" className="h-full">
+      <ContextSidebar>
+        <SidebarHeader data-slot="services-header" className="gap-3 p-3">
+          <h2 className="px-1 text-[15px] font-semibold text-foreground">Services</h2>
+          {available && services.length > 0 ? (
+            <div className="flex gap-2">
+              <Button size="sm" className="flex-1" disabled={busy || services.every((service) => service.status === 'running')} onClick={() => all.mutate('start-all')}>Start all</Button>
+              <Button size="sm" variant="outline" className="flex-1" disabled={busy || !anyRunning} onClick={() => all.mutate('stop-all')}>Stop all</Button>
+            </div>
+          ) : null}
+        </SidebarHeader>
+        <SidebarContent>
+          {state.isPending ? <p className="px-4 text-xs text-muted-foreground">Loading…</p> : null}
+          {available ? (
+            <>
+              {resumable > 0 ? (
+                <SidebarGroup data-slot="services-resume">
+                  <SidebarGroupContent className="flex flex-col gap-2 px-2">
+                    <p className="text-xs text-pretty text-foreground">
+                      {resumable} {resumable === 1 ? 'service was' : 'services were'} running when cezar last stopped.
+                    </p>
+                    <Button size="sm" disabled={busy} onClick={() => all.mutate('resume')}>Resume</Button>
+                  </SidebarGroupContent>
+                </SidebarGroup>
+              ) : null}
+              <SidebarGroup>
+                <SidebarGroupLabel className="justify-between">
+                  Pinned
+                  {services.length > 0 ? <span className="font-mono tabular-nums">{services.length}</span> : null}
+                </SidebarGroupLabel>
+                <SidebarGroupContent>
+                  {services.length === 0 ? (
+                    <p className="px-2 text-xs text-pretty text-muted-foreground">Nothing is pinned yet. Pin the commands you start every time you work on this project.</p>
+                  ) : null}
+                  <SidebarMenu aria-label="Pinned services">
+                    {services.map((service) => {
+                      const up = service.status === 'running'
+                      return (
+                        <SidebarMenuItem key={service.id} data-slot="service-row" data-status={service.status}>
+                          <SidebarMenuButton size="lg" className="h-auto py-1.5" isActive={selected?.id === service.id} onClick={() => setSelectedId(service.id)}>
+                            <StatusDot tone={serviceTone(service)} pulse={up} />
+                            <span className="flex min-w-0 flex-col">
+                              <span className="truncate text-[13px] font-medium text-foreground">{service.name}</span>
+                              <span className={cn('truncate text-[11px]', serviceTone(service) === 'danger' ? 'text-danger' : 'text-muted-foreground')}>{serviceStateLabel(service)}</span>
+                            </span>
+                          </SidebarMenuButton>
+                          <SidebarMenuAction
+                            aria-label={`${up ? 'Stop' : 'Start'} ${service.name}`}
+                            title={up ? 'Stop' : 'Start'}
+                            disabled={busy}
+                            onClick={() => { setSelectedId(service.id); act.mutate({ id: service.id, action: up ? 'stop' : 'start' }) }}
+                          >
+                            {up ? <SquareIcon aria-hidden="true" /> : <PlayIcon aria-hidden="true" />}
+                          </SidebarMenuAction>
+                        </SidebarMenuItem>
+                      )
+                    })}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+              <Candidates candidates={state.data?.candidates ?? []} busy={busy} onPin={(candidate) => pin.mutate({ name: candidate.name, command: candidate.command, cwd: candidate.cwd })} />
+              <AddCommand busy={busy} onAdd={(input) => pin.mutate(input)} />
+            </>
+          ) : null}
+        </SidebarContent>
+      </ContextSidebar>
+
+      <PageBody className="flex min-h-0 flex-col gap-3 pt-4">
         {state.isError ? <p role="alert" className="text-sm text-danger">{state.error.message}</p> : null}
         {state.data && !state.data.available ? (
           <p role="note" data-slot="services-unavailable" className="text-sm text-pretty text-muted-foreground">
             {state.data.reason ?? 'Services are unavailable on this cockpit.'}
           </p>
         ) : null}
-        {state.data?.available ? (
-          <div className="grid min-h-0 flex-1 gap-6 lg:grid-cols-[minmax(0,26rem)_minmax(0,1fr)]">
-            <div className="flex min-w-0 flex-col gap-6">
-              {resumable > 0 ? (
-                <Card data-slot="services-resume" className="flex flex-row items-center justify-between gap-3 px-4 py-3">
-                  <span className="text-[13px] text-foreground">
-                    {resumable} {resumable === 1 ? 'service was' : 'services were'} running when cezar last stopped.
-                  </span>
-                  <Button size="sm" disabled={busy} onClick={() => all.mutate('resume')}>Resume</Button>
-                </Card>
-              ) : null}
-              {services.length > 0 ? (
-                <Card flush>
-                  <ul className="divide-y divide-border" aria-label="Pinned services">
-                    {services.map((service) => (
-                      <ServiceRow
-                        key={service.id}
-                        service={service}
-                        selected={selected?.id === service.id}
-                        onSelect={() => setSelectedId(service.id)}
-                        busy={busy}
-                        onAct={(action) => { setSelectedId(service.id); act.mutate({ id: service.id, action }) }}
-                        onRemove={() => unpin.mutate(service.id)}
-                      />
-                    ))}
-                  </ul>
-                </Card>
-              ) : (
-                <p className="text-sm text-pretty text-muted-foreground">
-                  Nothing is pinned yet. Pin the commands you start every time you work on this project.
-                </p>
-              )}
-              <Candidates
-                candidates={state.data.candidates}
-                busy={busy}
-                onPin={(candidate) => pin.mutate({ name: candidate.name, command: candidate.command, cwd: candidate.cwd })}
-              />
-              <AddCommand busy={busy} onAdd={(input) => pin.mutate(input)} />
-            </div>
-            <Card flush data-slot="service-log" className="relative min-h-[26rem] overflow-hidden bg-card-2 lg:min-h-[32rem]">
-              {selected ? (
-                selected.status === 'stopped' && selected.startedAt === null ? (
-                  <p className="p-4 text-sm text-muted-foreground">{selected.name} has not been started.</p>
+        {available && selected ? (
+          <>
+            <header data-slot="service-detail" className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 space-y-1">
+                <h1 className="flex items-center gap-2 text-[17px] font-semibold text-foreground">
+                  <StatusDot tone={serviceTone(selected)} pulse={running} />
+                  <span className="truncate">{selected.name}</span>
+                </h1>
+                <code className="block truncate font-mono text-xs text-muted-foreground">{selected.command}{selected.cwd ? `  ·  ${selected.cwd}` : ''}</code>
+                <p className={cn('text-xs text-pretty', serviceTone(selected) === 'danger' ? 'text-danger' : 'text-muted-foreground')}>{serviceStateLabel(selected)}</p>
+                {urls.map((entry) => (
+                  <Button key={entry.url} variant="link" size="xs" asChild className="h-auto p-0 font-mono">
+                    <a href={entry.url} target="_blank" rel="noreferrer">{entry.url} <ExternalLinkIcon aria-hidden="true" /></a>
+                  </Button>
+                ))}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {running ? (
+                  <>
+                    <Button variant="outline" size="sm" disabled={busy} onClick={() => act.mutate({ id: selected.id, action: 'restart' })}><RotateCwIcon aria-hidden="true" /> Restart</Button>
+                    <Button variant="outline" size="sm" disabled={busy} onClick={() => act.mutate({ id: selected.id, action: 'stop' })}><SquareIcon aria-hidden="true" /> Stop</Button>
+                  </>
                 ) : (
-                  <ServiceLog service={selected} />
-                )
+                  <>
+                    <Button size="sm" disabled={busy} onClick={() => act.mutate({ id: selected.id, action: 'start' })}><PlayIcon aria-hidden="true" /> Start</Button>
+                    <Button variant="outline" size="sm" aria-label={`Remove ${selected.name}`} disabled={busy} onClick={() => unpin.mutate(selected.id)}><Trash2Icon aria-hidden="true" /> Remove</Button>
+                  </>
+                )}
+              </div>
+            </header>
+            <Card flush data-slot="service-log" className="relative min-h-[24rem] flex-1 overflow-hidden bg-card-2">
+              {selected.status === 'stopped' && selected.startedAt === null ? (
+                <p className="p-4 text-sm text-muted-foreground">{selected.name} has not been started.</p>
               ) : (
-                <p className="p-4 text-sm text-muted-foreground">Select a service to see its output.</p>
+                <ServiceLog service={selected} />
               )}
             </Card>
-          </div>
+          </>
+        ) : null}
+        {available && !selected ? (
+          <Empty className="border-0">
+            <EmptyHeader>
+              <EmptyTitle>No services yet</EmptyTitle>
+              <EmptyDescription>Pin a command from the list beside this, or add your own. Its output shows here.</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         ) : null}
       </PageBody>
     </Page>

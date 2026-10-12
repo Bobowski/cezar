@@ -37,6 +37,7 @@ function TaskBrowser({ state, onChange, run }: { state: CodeBrowser; onChange: (
   const escape = useCallback((mark: string) => { if (noteFor(mark)?.phase === 'draft') discard(mark) }, [discard, noteFor])
   return (
     <BrowserView
+      singleTab
       state={state}
       onChange={onChange}
       onPickElement={addDraft}
@@ -82,6 +83,7 @@ function NewTaskBrowser({ state, onChange, onStartTask }: { state: CodeBrowser; 
 
   return (
     <BrowserView
+      singleTab
       state={state}
       onChange={onChange}
       onPickElement={add}

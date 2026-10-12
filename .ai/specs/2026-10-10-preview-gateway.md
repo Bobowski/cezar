@@ -56,10 +56,19 @@ the gateway authenticates every request itself, and the front forwards the pool 
 
 1. The cockpit — already behind the front's login — asks the route for a preview and receives
    the gateway origin and a **ticket**: 32 random bytes, single use, valid for a minute.
-2. The first page load carries the ticket in the query. The gateway spends it, sets a cookie
-   (`HttpOnly`, `SameSite=Lax`, `Secure` over https) and redirects to the same address without it.
+2. A page load carries the ticket in the query. The gateway spends it and redirects to the same
+   address without it — on EVERY load, since the cockpit asks for a ticket before each one: a
+   browser that already holds the cookie has its ticket spent and stripped all the same, so a
+   ticket never reaches the app (not in the query, not in a `Referer`). A browser without a
+   live cookie is given one (`HttpOnly`, `SameSite=Lax`, `Secure` over https).
 3. Every later request, and every WebSocket upgrade, needs the cookie. Without it: `401`, and
    the app is never reached.
+4. The cookie is a **session of its own per browser** — 32 random bytes minted when a ticket is
+   redeemed, never a value the listener shares. It ends after thirty minutes without a request,
+   after eight hours whatever its use, when the listener closes, or when it is the oldest of
+   more than 32. A cockpit sign-out does not reach the gateway (the auth service knows nothing
+   of it); the idle window is what ends a signed-out browser's preview, and the next load from
+   a signed-in cockpit re-tickets it.
 
 Details that are load-bearing:
 
@@ -68,7 +77,8 @@ Details that are load-bearing:
 - **The gateway's cookie is stripped** from what the app receives; the app's own cookies pass.
 - **Same site, different origin.** The frame and the cockpit share a hostname, so the cookie is
   sent inside the frame; they differ by port, so neither can read the other.
-- **A ticket in a URL** reaches the front's access log. It is spent by the request that logs it.
+- **A ticket in a URL** reaches the front's access log. It is spent by the request that logs
+  it, with or without a cookie.
 
 ## 5. What it will and will not forward
 

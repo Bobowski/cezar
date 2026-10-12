@@ -35,11 +35,61 @@ import { parseDesignTarget } from './design-proxy.ts';
 /** Hop-by-hop headers: they describe one connection and must not be copied onto the next. */
 const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'te', 'trailer', 'upgrade']);
 
+/** A handshake answer's head is small; one that never ends is not relayed unread. */
+const UPGRADE_HEAD_CAP = 64 * 1024;
+
+/**
+ * One header of the app's ANSWER, as the browser may have it. Cookies ignore the port, so an app
+ * could otherwise set, replace or delete the cockpit's session cookie on this hostname (spec
+ * 2026-10-12-cockpit-authentication §7). `undefined` drops the header; anything else is verbatim.
+ */
+function answerHeader(name: string, value: string | string[]): string | string[] | undefined {
+  if (name === 'set-cookie') {
+    const kept = (Array.isArray(value) ? value : [value]).filter((cookie) => {
+      // A leading `=` is a nameless cookie, which a browser sends back as its bare value.
+      const cookieName = cookie.replace(/^[\s=]+/, '').split('=')[0]!.trim();
+      return cookieName !== SECURE_SESSION_COOKIE && cookieName !== PLAIN_SESSION_COOKIE;
+    });
+    if (kept.length === 0) return undefined;
+    return Array.isArray(value) ? (kept.length === value.length ? value : kept) : value;
+  }
+  if (name === 'clear-site-data') {
+    const joined = Array.isArray(value) ? value.join(', ') : value;
+    if (!/"(cookies|\*)"/i.test(joined)) return value;
+    // `"cookies"` clears the whole host's; `"*"` is narrowed to what is scoped to this origin.
+    const kept = joined.split(',').map((directive) => directive.trim()).flatMap((directive) => {
+      const lower = directive.toLowerCase();
+      if (lower === '"cookies"') return [];
+      return lower === '"*"' ? ['"cache"', '"storage"', '"executionContexts"'] : [directive];
+    });
+    return kept.length > 0 ? kept.join(', ') : undefined;
+  }
+  return value;
+}
+
 /** The query parameter a ticket rides in on. Stripped by the redirect that follows. */
 export const TICKET_PARAM = '__cez_preview';
 const TICKET_TTL_MS = 60_000;
 /** Outstanding tickets per app. A cockpit asks before every load, so this only bounds abuse. */
 const MAX_TICKETS = 32;
+// A cookie is one browser's session, not the listener's secret (spec 2026-10-10-preview-gateway
+// §4). Nothing tells the gateway about a cockpit sign-out, so an unused session ends by itself.
+const SESSION_IDLE_MS = 30 * 60_000;
+const SESSION_MAX_MS = 8 * 60 * 60_000;
+const MAX_SESSIONS = 32;
+
+/** `url` without the ticket parameter, or null when it carries none (or is not a URL). */
+function withoutTicket(url: string): URL | null {
+  if (!url.includes(TICKET_PARAM)) return null;
+  try {
+    const parsed = new URL(url);
+    if (!parsed.searchParams.has(TICKET_PARAM)) return null;
+    parsed.searchParams.delete(TICKET_PARAM);
+    return parsed;
+  } catch {
+    return null;
+  }
+}
 
 export type PreviewGatewayResult =
   | { ok: true; origin: string; ticket: string }
@@ -65,8 +115,9 @@ interface Entry {
   publicOrigin: string;
   server: Server;
   port: number;
-  secret: string;
   tickets: Map<string, number>;
+  /** Session value → when it was minted and last used. Oldest first. */
+  sessions: Map<string, { born: number; used: number }>;
   lastUsed: number;
   sockets: Set<Duplex>;
 }
@@ -247,8 +298,8 @@ export class PreviewGateways {
         publicOrigin: `${parent.protocol}//${parent.hostname}:${this.publicPorts[this.ports.indexOf(port)] ?? port}`,
         server,
         port,
-        secret: randomBytes(32).toString('base64url'),
         tickets: new Map(),
+        sessions: new Map(),
         lastUsed: Date.now(),
         sockets: new Set(),
       };
@@ -288,7 +339,7 @@ export class PreviewGateways {
       const eq = trimmed.indexOf('=');
       const cookie = eq === -1 ? trimmed : trimmed.slice(0, eq);
       if (cookie.startsWith('__cez_pv_')) {
-        if (cookie === name && sameSecret(trimmed.slice(eq + 1), entry.secret)) authorized = true;
+        if (cookie === name && this.liveSession(entry, trimmed.slice(eq + 1))) authorized = true;
         continue;
       }
       // Cookies ignore the port, so the browser sends the cockpit's own session here too. The
@@ -299,16 +350,40 @@ export class PreviewGateways {
     return { authorized, forwarded: kept.length > 0 ? kept.join('; ') : undefined };
   }
 
-  /** Spend a ticket from the request's query. Answers the URL without it, or null. */
-  private redeem(entry: Entry, req: IncomingMessage): string | null {
+  /** Whether `value` is a session still inside both of its windows; using it slides the idle one. */
+  private liveSession(entry: Entry, value: string): boolean {
+    const now = Date.now();
+    let live = false;
+    for (const [session, times] of entry.sessions) {
+      if (now - times.used > SESSION_IDLE_MS || now - times.born > SESSION_MAX_MS) {
+        entry.sessions.delete(session);
+      } else if (sameSecret(session, value)) {
+        times.used = now;
+        live = true;
+      }
+    }
+    return live;
+  }
+
+  private mintSession(entry: Entry): string {
+    while (entry.sessions.size >= MAX_SESSIONS) entry.sessions.delete(entry.sessions.keys().next().value as string);
+    const session = randomBytes(32).toString('base64url');
+    entry.sessions.set(session, { born: Date.now(), used: Date.now() });
+    return session;
+  }
+
+  /**
+   * Spend the ticket in the request's query, whoever presents it. Null when there is none; else
+   * the URL without it and whether the ticket was good.
+   */
+  private redeem(entry: Entry, req: IncomingMessage): { path: string; valid: boolean } | null {
     const url = new URL(req.url ?? '/', 'http://gateway');
     const ticket = url.searchParams.get(TICKET_PARAM);
     if (ticket === null) return null;
     const expires = entry.tickets.get(ticket);
     entry.tickets.delete(ticket);
-    if (expires === undefined || expires < Date.now()) return null;
     url.searchParams.delete(TICKET_PARAM);
-    return url.pathname + url.search;
+    return { path: url.pathname + url.search, valid: expires !== undefined && expires >= Date.now() };
   }
 
   /** The request's headers as the app should see them. */
@@ -323,34 +398,38 @@ export class PreviewGateways {
     // Only a request from the gateway's OWN pages is presented as same-origin. A foreign origin
     // is passed through untouched so the app's CORS and CSRF checks judge it as they always would.
     if (headers.origin === entry.publicOrigin) headers.origin = entry.upstream.origin;
-    if (typeof headers.referer === 'string' && headers.referer.startsWith(`${entry.publicOrigin}/`)) {
-      headers.referer = entry.upstream.origin + headers.referer.slice(entry.publicOrigin.length);
+    if (typeof headers.referer === 'string') {
+      // A ticket is the gateway's, like its cookie: the app never reads one, spent or not.
+      headers.referer = withoutTicket(headers.referer)?.href ?? headers.referer;
+      if (headers.referer.startsWith(`${entry.publicOrigin}/`)) {
+        headers.referer = entry.upstream.origin + headers.referer.slice(entry.publicOrigin.length);
+      }
     }
     return headers;
   }
 
   private handle(entry: Entry, req: IncomingMessage, res: ServerResponse): void {
     const { authorized, forwarded } = this.readCookies(entry, req);
-    if (!authorized) {
-      const location = this.redeem(entry, req);
-      if (location === null) {
-        res
-          .writeHead(401, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
-          .end('This preview is opened from the cezar cockpit. Reload it there.');
-        return;
-      }
-      entry.lastUsed = Date.now();
-      const secure = entry.publicOrigin.startsWith('https:') ? '; Secure' : '';
+    // A ticket is spent and stripped whenever it is presented — the cockpit sends one with every
+    // load, cookie or not — so it never reaches the app (spec 2026-10-10-preview-gateway §4).
+    const ticket = this.redeem(entry, req);
+    if (!authorized && !ticket?.valid) {
       res
-        .writeHead(302, {
-          location,
-          'set-cookie': `${this.cookieName(entry)}=${entry.secret}; Path=/; HttpOnly; SameSite=Lax${secure}`,
-          'cache-control': 'no-store',
-        })
-        .end();
+        .writeHead(401, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
+        .end('This preview is opened from the cezar cockpit. Reload it there.');
       return;
     }
     entry.lastUsed = Date.now();
+    if (ticket) {
+      const headers: Record<string, string> = { location: ticket.path, 'cache-control': 'no-store' };
+      // A browser that already holds a live session keeps it: one session per browser.
+      if (!authorized) {
+        const secure = entry.publicOrigin.startsWith('https:') ? '; Secure' : '';
+        headers['set-cookie'] = `${this.cookieName(entry)}=${this.mintSession(entry)}; Path=/; HttpOnly; SameSite=Lax${secure}`;
+      }
+      res.writeHead(302, headers).end();
+      return;
+    }
 
     const outgoing = httpRequest(
       {
@@ -364,11 +443,14 @@ export class PreviewGateways {
         const answer: Record<string, string | string[]> = {};
         for (const [name, value] of Object.entries(incoming.headers)) {
           if (value === undefined || HOP_BY_HOP.has(name)) continue;
-          answer[name] = value;
+          const allowed = answerHeader(name, value);
+          if (allowed !== undefined) answer[name] = allowed;
         }
         // A redirect to the app's own origin stays inside the gateway; one that leaves it, leaves.
-        if (typeof answer.location === 'string' && answer.location.startsWith(entry.upstream.origin)) {
-          answer.location = entry.publicOrigin + answer.location.slice(entry.upstream.origin.length);
+        // Origins are compared parsed: as a string prefix `:3000` also matches `:30001`.
+        if (typeof answer.location === 'string' && URL.canParse(answer.location)) {
+          const to = new URL(answer.location);
+          if (to.origin === entry.upstream.origin) answer.location = entry.publicOrigin + to.pathname + to.search + to.hash;
         }
         res.writeHead(incoming.statusCode ?? 502, answer);
         incoming.pipe(res);
@@ -396,6 +478,8 @@ export class PreviewGateways {
       return;
     }
     entry.lastUsed = Date.now();
+    // An upgrade cannot be redirected, so a ticket on it is spent and cut from the path here.
+    const path = this.redeem(entry, req)?.path ?? req.url;
     const headers = this.forwardHeaders(entry, req, forwarded);
     // `forwardHeaders` drops hop-by-hop headers, and an upgrade is made of exactly two of them.
     headers.connection = 'Upgrade';
@@ -410,14 +494,34 @@ export class PreviewGateways {
     };
     entry.sockets.add(socket);
     upstream.on('connect', () => {
-      const lines = [`${req.method} ${req.url} HTTP/1.1`];
+      const lines = [`${req.method} ${path} HTTP/1.1`];
       for (const [name, value] of Object.entries(headers)) {
         for (const single of Array.isArray(value) ? value : [value]) lines.push(`${name}: ${single}`);
       }
       upstream.write(`${lines.join('\r\n')}\r\n\r\n`);
       if (head.length > 0) upstream.write(head);
       socket.pipe(upstream);
-      upstream.pipe(socket);
+      // Spliced byte for byte AFTER the handshake answer's head, whose cookies a browser honours too.
+      let head101 = Buffer.alloc(0);
+      const onHead = (chunk: Buffer) => {
+        head101 = Buffer.concat([head101, chunk]);
+        const end = head101.indexOf('\r\n\r\n');
+        if (end === -1) {
+          if (head101.length > UPGRADE_HEAD_CAP) release();
+          return;
+        }
+        upstream.off('data', onHead);
+        const lines = head101.subarray(0, end).toString('latin1').split('\r\n').flatMap((line, index) => {
+          const colon = line.indexOf(':');
+          if (index === 0 || colon === -1) return [line];
+          const allowed = answerHeader(line.slice(0, colon).trim().toLowerCase(), line.slice(colon + 1).trim());
+          if (allowed === undefined) return [];
+          return allowed === line.slice(colon + 1).trim() ? [line] : [`${line.slice(0, colon)}: ${String(allowed)}`];
+        });
+        socket.write(Buffer.concat([Buffer.from(`${lines.join('\r\n')}\r\n\r\n`, 'latin1'), head101.subarray(end + 4)]));
+        upstream.pipe(socket);
+      };
+      upstream.on('data', onHead);
     });
     upstream.on('error', release);
     upstream.on('close', release);

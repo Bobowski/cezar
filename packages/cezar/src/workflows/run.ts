@@ -6409,8 +6409,10 @@ export class RunManager {
     this.recordUsageUiEvent(runId, state, event);
     sink.handle(event);
     // Work observed ends the rest, whoever started the turn: a parked Claude session wakes itself
-    // when its background work finishes, and a queued prompt must not land mid-turn (§8).
-    if (event.type === 'turn.started' || event.type === 'item.started') state.promptRest = false;
+    // when its background work finishes, and a queued prompt must not land mid-turn (§8). Only
+    // the session's OWN work: no turn-end follows a sub-agent's item to restore the rest (#600).
+    const ownItem = event.type === 'item.started' && event.item.parentItemId === undefined;
+    if (event.type === 'turn.started' || ownItem) state.promptRest = false;
     if (event.type !== 'ask.requested' || state.cancelled) return;
     // A question is open: a queued prompt delivered now would be read as its answer.
     state.promptRest = false;

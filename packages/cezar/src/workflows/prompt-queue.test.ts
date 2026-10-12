@@ -272,6 +272,32 @@ describe('the session prompt queue', () => {
     expect(store.getRun(record.id)?.promptQueue).toBeUndefined();
   }, 60_000);
 
+  it('keeps a resting session at rest through a sub-agent item that no turn of its own follows', async () => {
+    const record = manager.startRun(SINGLE_STEP, { task: 'just do the thing', worktree: false });
+    currentId = record.id;
+    await waitFor(record.id, (r) => r?.status === 'waiting');
+    // Codex forwards a child thread's ITEMS and drops its turn lifecycle (#600), so nothing ends
+    // the turn this would otherwise be taken for — the rest would have no exit.
+    const sink = { handle: () => undefined };
+    const onUi = (manager as unknown as { handleRunnerUiEvent(id: string, state: unknown, sink: unknown, event: unknown): void })
+      .handleRunnerUiEvent.bind(manager);
+    onUi(record.id, live(record.id), sink, {
+      type: 'item.started',
+      item: { kind: 'tool', id: 'child-1', name: 'commandExecution', toolKind: 'execute', title: 'Ran ls', status: 'running', parentItemId: 'spawn-1' },
+    });
+
+    expect(manager.enqueuePrompt(record.id, 'after the sub-agent item')).toMatchObject({ ok: true, delivered: true });
+    await waitFor(record.id, () => userMessages(record.id).includes('after the sub-agent item'));
+
+    // The session's own item still ends the rest, with or without a turn.started before it.
+    await waitFor(record.id, (r) => r?.status === 'waiting');
+    onUi(record.id, live(record.id), sink, {
+      type: 'item.started',
+      item: { kind: 'tool', id: 'own-1', name: 'commandExecution', toolKind: 'execute', title: 'Ran ls', status: 'running' },
+    });
+    expect(manager.enqueuePrompt(record.id, 'held behind the session\'s own work')).toMatchObject({ ok: true, delivered: false });
+  }, 60_000);
+
   it('does not walk an over-budget run past its brake on a CEZ:DONE turn', async () => {
     const record = manager.startRun(SINGLE_STEP, { task: 'mock:pause mock:done the first goal', worktree: false });
     currentId = record.id;

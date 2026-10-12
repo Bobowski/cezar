@@ -257,7 +257,7 @@ import { reviewGateEnabled } from '../runs/review-gate.ts';
 import { readUiState, uiStatePath } from '../ui-state.ts';
 import { agentHomePaths, cezarHomeDir, expandTilde, isAbsolutePath } from '../paths.ts';
 import { authEnforced, fileEditRefusal, isLoopbackHostHeader, normalizeHostname, resolveCapabilities, trustedOperator } from './capabilities.ts';
-import { createAuthGuard, upgradeIsAuthenticated } from '../auth/guard.ts';
+import { createAuthGuard, principalOf, upgradeIsAuthenticated, upgradeSessionId } from '../auth/guard.ts';
 import { ensureHostKey } from '../auth/host-key.ts';
 import { authRoutes } from '../auth/routes.ts';
 import { enableRunTokens } from '../auth/run-tokens.ts';
@@ -325,6 +325,8 @@ export interface ServerDeps {
   /** Accounts and sessions (spec 2026-10-12-cockpit-authentication). `startServer` shares ONE
    *  instance between the route guard and the WebSocket upgrade; tests inject a cheap-scrypt one. */
   auth?: AuthService;
+  /** SSE keepalive cadence, which is also how often a stream re-checks its session. Tests shorten it. */
+  ssePingMs?: number;
   /** Workspace-registry id of the boot project (multi-project spec) — plumbed
    *  from `initWorkspace` in src/index.ts. Optional: legacy callers/tests get
    *  a lazy registry lookup by `repoRoot`, falling back to the repo's slug. */
@@ -1704,6 +1706,14 @@ export function createApp(deps: ServerDeps) {
       return contexts.peek(projectId)?.manager.isActive(runId) ?? false;
     },
   }) as unknown as MiddlewareHandler);
+  // An SSE stream is authenticated once, when it opens; each keepalive tick re-asks whether the
+  // session behind it still stands (spec 2026-10-12-cockpit-authentication §6). Host-key and
+  // auth-off principals have no session, so nothing changes for them.
+  const ssePingMs = deps.ssePingMs ?? 15_000;
+  const sseSessionEnded = (c: Context): boolean => {
+    const principal = principalOf(c);
+    return principal?.kind === 'user' && authIsEnforced() && !auth.sessionAlive(principal.sessionId);
+  };
 
   // The mirrored project-route table (spec "API Contracts → Project-scoped").
   // Every route below registers ONCE on this sub-app; `createApp` mounts it
@@ -6012,8 +6022,12 @@ export function createApp(deps: ServerDeps) {
         if (run) await stream.writeSSE({ event: 'run', data: JSON.stringify(run) });
 
         while (!stream.aborted) {
+          if (sseSessionEnded(c)) {
+            stream.abort(); // runs the onAbort cleanup above; the response then closes
+            break;
+          }
           await stream.writeSSE({ event: 'ping', data: '' });
-          await stream.sleep(15_000);
+          await stream.sleep(ssePingMs);
         }
       });
     },
@@ -6065,8 +6079,12 @@ export function createApp(deps: ServerDeps) {
           offUsage();
         });
         while (!stream.aborted) {
+          if (sseSessionEnded(c)) {
+            stream.abort(); // runs the onAbort cleanup above; the response then closes
+            break;
+          }
           await stream.writeSSE({ event: 'ping', data: '' });
-          await stream.sleep(15_000);
+          await stream.sleep(ssePingMs);
         }
       });
     });
@@ -6181,8 +6199,12 @@ export function createApp(deps: ServerDeps) {
         });
 
         while (!stream.aborted) {
+          if (sseSessionEnded(c)) {
+            stream.abort(); // runs the onAbort cleanup above; the response then closes
+            break;
+          }
           await stream.writeSSE({ event: 'ping', data: '' });
-          await stream.sleep(15_000);
+          await stream.sleep(ssePingMs);
         }
       });
     });
@@ -7836,9 +7858,24 @@ export function startServer(deps: ServerDeps, port: number): ServerType {
     }).catch(() => undefined);
   });
   server.once('close', () => { for (const cleanup of appCleanups) cleanup(); unsubscribe(); coordinator.stop(); automationScheduler.stop(); });
-  socketHub.attach(server, (req) =>
-    upgradeIsAuthenticated(req, { service: auth, enforced: authIsEnforced }) && verifyWsUpgrade(req, deps.bindHost));
+  socketHub.attach(server, wsUpgradeVerifier(auth, authIsEnforced, deps.bindHost));
   return server;
+}
+
+/**
+ * What `startServer` hands the hub: authentication, then the origin guard. A session-cookie
+ * connection also carries `alive`, so the hub's heartbeat ends it with its session (spec
+ * 2026-10-12-cockpit-authentication §6).
+ */
+export function wsUpgradeVerifier(auth: AuthService, enforced: () => boolean, bindHost?: string): (req: IncomingMessage) => WsUpgradeVerdict {
+  return (req) => {
+    const options = { service: auth, enforced };
+    if (!upgradeIsAuthenticated(req, options)) return false;
+    const verdict = verifyWsUpgrade(req, bindHost);
+    const sessionId = verdict ? upgradeSessionId(req, options) : undefined;
+    if (!verdict || sessionId === undefined) return verdict;
+    return { ...verdict, alive: () => !enforced() || auth.sessionAlive(sessionId) };
+  };
 }
 
 /**
@@ -7888,11 +7925,19 @@ export function verifyWsUpgrade(req: IncomingMessage, bindHost?: string): WsUpgr
   const originAuthority = authorityOfOrigin(origin);
   const originHost = hostnameOfOrigin(origin);
   if (originAuthority === null || !originHost) return false;
-  if (originAuthority === authorityOfHost(host)) return { trusted: true }; // the cockpit itself
+  const fetchSite = req.headers['sec-fetch-site'];
+  if (originAuthority === authorityOfHost(host)) {
+    // `http://host` and `https://host` are one authority. Behind TLS the plain-HTTP one is forgeable
+    // on-path, so it is not the cockpit: refuse what the browser calls cross-site (it is schemeful),
+    // and an `http:` Origin on a handshake the proxy took over TLS (spec 2026-10-12 §6).
+    if (fetchSite === 'cross-site') return false;
+    const forwardedProto = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0]!.trim().toLowerCase();
+    if (forwardedProto === 'https' && origin.trim().toLowerCase().startsWith('http:')) return false;
+    return { trusted: true }; // the cockpit itself
+  }
   // The dev-proxy fallback. An explicit `cross-site`/`same-site` is an attacker
   // page on another local port and is refused even though both ends are
   // loopback; anything else needs loopback on both ends to get in at all.
-  const fetchSite = req.headers['sec-fetch-site'];
   if (fetchSite !== undefined && fetchSite !== 'same-origin') return false;
   if (!isLoopbackHostHeader(originHost) || !isLoopbackHostHeader(hostName)) return false;
   // Loopback on both ends, admitted. If the browser vouches it is same-origin

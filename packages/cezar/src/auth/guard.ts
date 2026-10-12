@@ -109,3 +109,11 @@ export function upgradeIsAuthenticated(req: IncomingMessage, options: Pick<AuthG
   if (bearer !== undefined && isHostKey(bearer)) return verifyHostKey(bearer);
   return options.service.authenticate(sessionTokenOf(req.headers.cookie, req.headers.host)) !== null;
 }
+
+/** The session an admitted upgrade rides, for the hub to re-check (§6). None for a host key or with auth off. */
+export function upgradeSessionId(req: IncomingMessage, options: Pick<AuthGuardOptions, 'service' | 'enforced'>): string | undefined {
+  if (!options.enforced()) return undefined;
+  const bearer = bearerOf(req.headers.authorization);
+  if (bearer !== undefined && isHostKey(bearer)) return undefined;
+  return options.service.authenticate(sessionTokenOf(req.headers.cookie, req.headers.host))?.sessionId;
+}

@@ -77,8 +77,12 @@ export interface TopicOptions {
  * on a browser that ships no `Sec-Fetch` metadata, where the dev proxy and a
  * foreign page on another local port are indistinguishable at the handshake: it
  * may subscribe ONLY to topics a publisher flagged `loopbackReadable`.
+ *
+ * `alive`, when the guard supplies it, is re-asked on every heartbeat: `false` terminates the
+ * socket. It is how a connection ends with the sign-in session that opened it (spec
+ * `2026-10-12-cockpit-authentication` §6) without the hub knowing what a session is.
  */
-export type WsUpgradeVerdict = false | { trusted: boolean };
+export type WsUpgradeVerdict = false | { trusted: boolean; alive?: () => boolean };
 
 /** The minimal server surface `attach` needs — satisfied by the `http.Server`
  *  that `@hono/node-server`'s `serve()` returns. */
@@ -119,6 +123,8 @@ interface ClientState {
   /** The upgrade verdict's trust flag (see `WsUpgradeVerdict`). An untrusted
    *  connection may subscribe only to `loopbackReadable` topics. */
   trusted: boolean;
+  /** `WsUpgradeVerdict.alive` — absent for a connection nothing can revoke. */
+  stillAllowed?: () => boolean;
 }
 
 export interface SocketHubOptions {
@@ -192,10 +198,10 @@ export function createSocketHub(options: SocketHubOptions = {}): SocketHub {
     clients.delete(ws);
   };
 
-  wss.on('connection', (ws: WebSocket, _req: IncomingMessage, trusted?: boolean) => {
+  wss.on('connection', (ws: WebSocket, _req: IncomingMessage, trusted?: boolean, stillAllowed?: () => boolean) => {
     // `trusted` is emitted by `attach` from the upgrade verdict; default false is
     // the safe read for any path that reaches here without one.
-    const client: ClientState = { alive: true, topics: new Set(), trusted: trusted === true };
+    const client: ClientState = { alive: true, topics: new Set(), trusted: trusted === true, stillAllowed };
     clients.set(ws, client);
     ws.on('pong', () => {
       client.alive = true;
@@ -266,13 +272,13 @@ export function createSocketHub(options: SocketHubOptions = {}): SocketHub {
         }
         // Carry the verdict's trust flag onto the connection — `subscribe` reads
         // it to gate non-`loopbackReadable` topics.
-        wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, verdict.trusted));
+        wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, verdict.trusted, verdict.alive));
       });
       server.on('close', () => hub.close());
       heartbeat = setInterval(() => {
         for (const [ws, client] of clients) {
-          if (!client.alive) {
-            // Missed the previous beat's pong — the peer is gone. Terminate (not
+          if (!client.alive || client.stillAllowed?.() === false) {
+            // Missed the previous beat's pong — the peer is gone — or its session ended. Terminate (not
             // a polite close, there is nobody to handshake with); 'close' fires
             // synchronously and dropClient releases its topics.
             ws.terminate();

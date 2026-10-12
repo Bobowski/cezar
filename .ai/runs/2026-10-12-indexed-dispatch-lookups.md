@@ -28,11 +28,23 @@ Non-goals: automation or attachment routes, changes to `listInbox`, directory-mt
 ### Phase 2: Dispatch consumers
 
 - [x] 2.1 Replace dispatch wake, cap, budget, max-subtask, and cancellation scans with indexes. — 7097e895
-- [x] 2.2 Add/adjust dispatch regression coverage for tree isolation and preserved delivery behavior. — 46c71b81
+- [x] 2.2 Add/adjust dispatch regression coverage for tree isolation and preserved delivery behavior. — 46c71b81, e44774c6
 
 ### Phase 3: Verification
 
 - [ ] 3.1 Run the configured full validation gate and authoritative PR review.
+
+### Verification evidence
+
+- Workflow boundary coverage: `dispatch-engine.test.ts` now pins same-tree indexed wake selection,
+  writer/waiting/closed-session exclusion, watermark advancement, unchanged-file suppression,
+  in-place rewrite delivery, child cap/budget lookup, and recursive cancellation lookup.
+- Source-off proof: temporarily restored the pre-index `listRuns()` wake caller; the new wake test
+  failed because `listRuns` was called (exit 1). Restored `run.ts` byte-for-byte before commit.
+- Gate: `npm run typecheck`, `npm run test:unit`, `npm run build`, and `npm run test:package` pass.
+  `npm test` passes 557 files / 9467 tests with an external `/tmp` temp root and task-only
+  `CEZ_API_URL`/`CEZ_BIN` unset. The default dispatched temp root produced 13 environment-sensitive
+  failures because non-repository fixtures resolved through the worktree's repo-relative temp path.
 
 ## Risks
 

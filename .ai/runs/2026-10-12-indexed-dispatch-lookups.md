@@ -28,7 +28,7 @@ Non-goals: automation or attachment routes, changes to `listInbox`, directory-mt
 ### Phase 2: Dispatch consumers
 
 - [x] 2.1 Replace dispatch wake, cap, budget, max-subtask, and cancellation scans with indexes. — 7097e895
-- [ ] 2.2 Add/adjust dispatch regression coverage for tree isolation and preserved delivery behavior.
+- [x] 2.2 Add/adjust dispatch regression coverage for tree isolation and preserved delivery behavior. — 46c71b81
 
 ### Phase 3: Verification
 
@@ -52,7 +52,7 @@ new persisted format.
 ### Phase 2: Dispatch consumers
 
 - [x] 2.1 Replace dispatch wake, cap, budget, max-subtask, and cancellation scans with indexes. — 7097e895
-- [ ] 2.2 Add/adjust dispatch regression coverage for tree isolation and preserved delivery behavior.
+- [x] 2.2 Add/adjust dispatch regression coverage for tree isolation and preserved delivery behavior. — 46c71b81
 
 ### Phase 3: Verification
 

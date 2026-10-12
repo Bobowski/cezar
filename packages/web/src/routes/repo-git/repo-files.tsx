@@ -173,14 +173,20 @@ function flatten(dir: PathTreeDir<RepoFileLeaf>, open: ReadonlySet<string>, leve
   return rows
 }
 
-function RepoFileBrowser({
+export function RepoFileBrowser({
   paths,
   selected,
   onSelect,
+  onOpen,
+  marks,
 }: {
   paths: readonly string[]
   selected: string | null
   onSelect: (path: string) => void
+  /** A double click: the Code page keeps the tab instead of previewing it. */
+  onOpen?: (path: string) => void
+  /** A status letter per changed path (`M`, `A`, `D`, `U`), shown after the name. */
+  marks?: ReadonlyMap<string, string>
 }) {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set(ancestorsOf(selected)))
@@ -346,6 +352,8 @@ function RepoFileBrowser({
                 row={row}
                 active={row.path === selected}
                 focused={row.path === activeRow?.path}
+                mark={marks?.get(row.path)}
+                onOpen={onOpen ? () => onOpen(row.path) : undefined}
                 onSelect={() => {
                   setActive(row.path)
                   onSelect(row.path)
@@ -409,11 +417,15 @@ function FileRow({
   active,
   focused,
   onSelect,
+  onOpen,
+  mark,
 }: {
   row: Extract<Row, { kind: 'file' }>
   active: boolean
   focused: boolean
   onSelect: () => void
+  onOpen?: () => void
+  mark?: string
 }) {
   const Icon = isImagePath(row.path) ? ImageIcon : FileIcon
   return (
@@ -427,6 +439,7 @@ function FileRow({
       data-path={row.path}
       tabIndex={focused ? 0 : -1}
       onClick={onSelect}
+      onDoubleClick={onOpen}
       className={cn(
         'flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-sidebar-accent focus:outline-none',
         active ? 'bg-sidebar-accent font-medium text-foreground' : 'text-muted-foreground hover:text-foreground',
@@ -438,6 +451,11 @@ function FileRow({
       <span className="min-w-0 truncate" title={row.label}>
         {row.label}
       </span>
+      {mark ? (
+        <span data-slot="repo-files-mark" className="ml-auto shrink-0 pl-1 font-mono text-[11px] text-pending-strong" title="Changed">
+          {mark}
+        </span>
+      ) : null}
     </div>
   )
 }

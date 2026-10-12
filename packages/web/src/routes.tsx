@@ -77,6 +77,9 @@ const RepoGitRoute = lazyRoute('repo-git', () =>
 const GithubRoute = lazyRoute('github', () =>
   import('./routes/github/github').then((m) => ({ default: m.GithubRoute })),
 )
+const CodeRoute = lazyRoute('code', () =>
+  import('./routes/code/code').then((m) => ({ default: m.CodeRoute })),
+)
 const ServicesRoute = lazyRoute('services', () =>
   import('./routes/services/services').then((m) => ({ default: m.ServicesRoute })),
 )
@@ -312,6 +315,7 @@ const PAGE_TITLE_ROUTES = [
   { pattern: '/compare/:groupId', pageLabel: 'Compare' },
   { pattern: '/git/*', pageLabel: 'Git' },
   { pattern: '/github/*', pageLabel: 'GitHub' },
+  { pattern: '/code/*', pageLabel: 'Code' },
   { pattern: '/services', pageLabel: 'Services' },
   { pattern: '/tracker/*', pageLabel: 'Tracker' },
   { pattern: '/automations/*', pageLabel: 'Automations' },
@@ -500,6 +504,8 @@ export const AppRoutes = memo(function AppRoutes() {
             </Suspense>
           }
         />
+        <Route path="code" element={<Suspense fallback={<ScopeResolving />}><CodeRoute /></Suspense>} />
+        <Route path="code/*" element={<Suspense fallback={<ScopeResolving />}><CodeRoute /></Suspense>} />
         <Route
           path="services"
           element={<Suspense fallback={<ScopeResolving />}><ServicesRoute /></Suspense>}

@@ -8,12 +8,17 @@ import {
   trackerCredentialsSchema, trackerItemParamsSchema, trackerAssociationInputSchema, type TrackerChangedEvent,
   secretParamsSchema, secretValueInputSchema, type SecretsList, type SecretValueInput,
   envFileQuerySchema, setEnvFileSchema, type EnvFilesList,
+  codeSearchQuerySchema, codeWatchQuerySchema, repoFilePathQuerySchema, type CodeWatch,
   serviceLogsQuerySchema, serviceParamsSchema, servicePatchSchema, servicePinInputSchema, type ServiceLogs, type ServicesState,
   e2eSetupInputSchema, type E2eStatus,
 } from '@open-mercato/cezar-contract';
 import { SecretStore, SecretsError, type SecretScopeRef } from '../workspace/secrets.ts';
 import { listEnvFiles, readEnvFile, removeEnvFile, writeEnvFile } from '../env-files.ts';
 import { discoverServiceCandidates } from '../services/discover.ts';
+import { searchCheckout } from './code-search.ts';
+import { checkoutWatchSupported, watchCheckout } from './checkout-watch.ts';
+import { ignoredAmong } from '../worktree-env.ts';
+import { projectTerminalOwner } from './terminal/sessions.ts';
 import { ProjectServices, type ServiceProject } from '../services/manager.ts';
 import { E2E_SETUP_TASK, e2eCredentialsAmong, e2eSetupWorkflow, latestE2eSetupRun, readE2eStatus, setupInFlight } from '../e2e-setup.ts';
 import { createTrackerService } from './tracker/index.ts';
@@ -6444,8 +6449,6 @@ export function createApp(deps: ServerDeps) {
       return c.json({ stopped: true });
     });
 
-  /** Why a file read through the repository browser cannot be saved. Always a reason today. */
-  const repoBrowserEditRefusal = (): string | null => 'the repository browser is read-only — edit files from a task';
 
   // ---- chained family: project secrets ------------------------------------
   // Spec 2026-10-10-project-secrets-vault-options. Write-only values: GET answers names and
@@ -7257,7 +7260,7 @@ export function createApp(deps: ServerDeps) {
           });
         }
       }
-      const refusal = repoBrowserEditRefusal();
+      const refusal = editRefusal(result);
       return c.json({
         // `as const` or Hono's inference widens the literal to `string` and the consumer's
         // discriminated narrowing collapses to `never` — the same trap `/runs/:id/files` documents.
@@ -7268,9 +7271,9 @@ export function createApp(deps: ServerDeps) {
         tooLarge: result.tooLarge,
         ...(result.content !== undefined ? { content: result.content } : {}),
         ...(result.hash !== undefined ? { hash: result.hash } : {}),
-        // The repository browser has no write route: the main checkout is read here, never edited
-        // (spec `2026-07-20-worktree-file-editing` scopes saving to a task's own tree). Shaped
-        // like `/runs/:id/files` so the two answers stay one contract member.
+        // The FILE's answer, as on `/runs/:id/files`. Whether this cockpit may write the main
+        // checkout at all is `fileEdit`, checked by the write routes (spec 2026-10-11-code-page
+        // §6); `/git/files` stays a viewer by rendering no save affordance.
         editable: refusal === null,
         ...(refusal !== null ? { editableReason: refusal } : {}),
       });
@@ -7546,6 +7549,190 @@ export function createApp(deps: ServerDeps) {
       return c.json(out.read);
     });
 
+  // ---- chained family: the Code page ----------------------------------------
+  // Spec 2026-10-11-code-page. Writing the MAIN checkout is what the file-editing spec refused;
+  // §6 names what that refusal protected and what replaces each part:
+  //   - `fileEdit` gates every write, as it does a task's (off hosted without sign-in);
+  //   - an ignored file stays unreachable: a write targets a path in the index, or a NEW path
+  //     git does not ignore — with one wording for "ignored" and "missing", as the read has;
+  //   - git is the undo: a delete answers with the blob that holds the bytes.
+  const notInIndex = (path: string) => `path is not in the repository index: ${path}`;
+  const repoWriteTarget = async (project: ProjectContext, path: string, mode: 'existing' | 'new') => {
+    if (!capabilities().fileEdit) return { ok: false as const, error: fileEditRefusal() };
+    const info = await getRepoInfo(project.root);
+    if (!info) return { ok: false as const, error: 'not a git repository' };
+    if (mode === 'existing') {
+      const index = await repoIndexContains(info.root, path);
+      if (!index.ok) return { ok: false as const, error: index.error };
+      if (!index.indexed) return { ok: false as const, error: notInIndex(path) };
+    } else if ((await ignoredAmong(info.root, [path])).length > 0) {
+      return { ok: false as const, error: notInIndex(path) };
+    }
+    return { ok: true as const, root: info.root };
+  };
+  /** The checkout a `tree`-scoped read addresses: a task's working directory. */
+  const runCheckout = (project: ProjectContext, runId: string) => {
+    const run = project.store.getRun(runId);
+    if (!run) return { ok: false as const, status: 404 as const, error: 'not found' };
+    const cwd = workingDirectoryOf(run, project.root);
+    if (!cwd) return { ok: false as const, status: 409 as const, error: NO_WORKTREE };
+    return { ok: true as const, cwd };
+  };
+  const searchInput = (query: { q: string; regex?: '0' | '1'; case?: '0' | '1'; glob?: string }) => ({
+    q: query.q, regex: query.regex === '1', caseSensitive: query.case === '1', ...(query.glob ? { glob: query.glob } : {}),
+  });
+  const codeWatchTopics = new Set<string>();
+  /** Register (once) the bell for one checkout. The watcher lives only while it has a subscriber. */
+  const codeWatchTopic = (projectId: string, tree: string, root: string): string | null => {
+    if (!deps.socketHub || !checkoutWatchSupported()) return null;
+    const topic = `code:${projectId}:${tree}`;
+    if (!codeWatchTopics.has(topic)) {
+      codeWatchTopics.add(topic);
+      let version = 0;
+      deps.socketHub.registerTopic(topic, {
+        snapshot: async () => ({ version }),
+        start: (publish) => watchCheckout(root, () => publish({ version: (version += 1) })),
+      });
+    }
+    return topic;
+  };
+  const projectTerminalFor = (project: ProjectContext, sessionId: string): TerminalSessionInfo | null => {
+    const session = terminalSessions.get(sessionId);
+    return session && session.runId === projectTerminalOwner(project.id) ? session : null;
+  };
+  const codeRoutes = new Hono<ProjectApiEnv>()
+    .use('/repo/files', bodyLimit({ maxSize: FILE_WRITE_BODY_LIMIT }))
+    .put('/repo/files', queryZodValidator(repoFilePathQuerySchema), jsonZodValidator(runFileWriteSchema), async (c) => {
+      const { path } = c.req.valid('query');
+      const target = await repoWriteTarget(c.get('project'), path, 'existing');
+      if (!target.ok) return c.json({ error: target.error }, 409);
+      const { content, baseHash } = c.req.valid('json');
+      const result = await writeWorktreeFile(target.root, path, content, baseHash);
+      if (!result.ok) return c.json({ error: result.error }, result.kind === 'failed' ? 500 : 409);
+      return c.json({ path: result.path, size: result.size, hash: result.hash }, 200);
+    })
+    .post('/repo/files', queryZodValidator(repoFilePathQuerySchema), jsonZodValidator(runFileCreateSchema), async (c) => {
+      const { path } = c.req.valid('query');
+      const target = await repoWriteTarget(c.get('project'), path, 'new');
+      if (!target.ok) return c.json({ error: target.error }, 409);
+      const result = await createWorktreeFile(target.root, path, c.req.valid('json').content);
+      if (!result.ok) return c.json({ error: result.error }, result.kind === 'failed' ? 500 : 409);
+      return c.json({ path: result.path, size: result.size, hash: result.hash }, 201);
+    })
+    .delete('/repo/files', queryZodValidator(repoFilePathQuerySchema), async (c) => {
+      const { path } = c.req.valid('query');
+      const target = await repoWriteTarget(c.get('project'), path, 'existing');
+      if (!target.ok) return c.json({ error: target.error }, 409);
+      const result = await deleteWorktreeFile(target.root, path);
+      if (!result.ok) return c.json({ error: result.error }, result.kind === 'failed' ? 500 : 409);
+      return c.json({ path: result.path, ...(result.blob ? { blob: result.blob } : {}) }, 200);
+    })
+    .post('/repo/files/rename', jsonZodValidator(runFileRenameSchema), async (c) => {
+      const { from, to } = c.req.valid('json');
+      const source = await repoWriteTarget(c.get('project'), from, 'existing');
+      if (!source.ok) return c.json({ error: source.error }, 409);
+      const destination = await repoWriteTarget(c.get('project'), to, 'new');
+      if (!destination.ok) return c.json({ error: destination.error }, 409);
+      const result = await renameWorktreeFile(source.root, from, to);
+      if (!result.ok) return c.json({ error: result.error }, result.kind === 'failed' ? 500 : 409);
+      return c.json({ from: result.from, to: result.to }, 200);
+    })
+    .get('/repo/search', queryZodValidator(codeSearchQuerySchema), async (c) => {
+      const info = await getRepoInfo(c.get('project').root);
+      if (!info) return c.json({ error: 'not a git repository' }, 409);
+      const answer = await searchCheckout(info.root, searchInput(c.req.valid('query')), c.req.raw.signal);
+      if (!answer.ok) return c.json({ error: answer.error }, 409);
+      return c.json(answer.result, 200);
+    })
+    .get('/repo/watch', queryZodValidator(codeWatchQuerySchema), async (c) => {
+      const project = c.get('project');
+      const { tree } = c.req.valid('query');
+      const none: CodeWatch = { topic: null };
+      if (tree === undefined) {
+        const info = await getRepoInfo(project.root);
+        const watch: CodeWatch = { topic: info ? codeWatchTopic(project.id, 'main', info.root) : null };
+        return c.json(watch, 200);
+      }
+      const checkout = runCheckout(project, tree);
+      const watch: CodeWatch = checkout.ok ? { topic: codeWatchTopic(project.id, tree, checkout.cwd) } : none;
+      return c.json(watch, 200);
+    })
+    // The same two reads for a task's worktree; its file read/write/rename/delete already exist.
+    .get('/runs/:id/tree', async (c) => {
+      const checkout = runCheckout(c.get('project'), c.req.param('id'));
+      if (!checkout.ok) return c.json({ error: checkout.error }, checkout.status);
+      const result = await listRepoPaths(checkout.cwd);
+      if (!result.ok) return c.json({ error: result.error }, 409);
+      return c.json({ paths: result.paths, truncated: result.truncated }, 200);
+    })
+    .get('/runs/:id/search', queryZodValidator(codeSearchQuerySchema), async (c) => {
+      const checkout = runCheckout(c.get('project'), c.req.param('id'));
+      if (!checkout.ok) return c.json({ error: checkout.error }, checkout.status);
+      const answer = await searchCheckout(checkout.cwd, searchInput(c.req.valid('query')), c.req.raw.signal);
+      if (!answer.ok) return c.json({ error: answer.error }, 409);
+      return c.json(answer.result, 200);
+    })
+    // The project's own terminals (services spec §5): the task family's shapes, owned by the
+    // project and opened in the main checkout. Same policy, re-checked on every request.
+    .get('/repo/terminal', async (c) => {
+      const refusal = terminalPolicyRefusal(capabilities());
+      if (refusal) return c.json(terminalStateSchema.parse({ available: false, reason: refusal, sessions: [] }), 200);
+      const binding = await loadPty();
+      terminalSessions.observe(await processSnapshot());
+      return c.json(terminalStateSchema.parse({
+        available: binding.available,
+        ...(binding.available ? {} : { reason: binding.reason }),
+        sessions: terminalSessions.listFor(projectTerminalOwner(c.get('project').id)).map(withTopic),
+        ...(binding.available ? { shells: discoverShells() } : {}),
+      }), 200);
+    })
+    .post('/repo/terminal', jsonZodValidator(terminalCreateSchema), async (c) => {
+      const project = c.get('project');
+      const refusal = terminalPolicyRefusal(capabilities());
+      if (refusal) return c.json({ error: refusal }, 409);
+      const created = await terminalSessions.create({
+        runId: projectTerminalOwner(project.id),
+        cwd: project.root,
+        ...c.req.valid('json'),
+        env: taskSlotEnv('', undefined),
+      });
+      if (!created.ok) return c.json({ error: created.reason }, 409);
+      registerTerminalTopic(created.session.id);
+      return c.json(terminalSessionSchema.parse(withTopic(created.session)), 201);
+    })
+    .get('/repo/terminal/:sessionId/output', queryZodValidator(terminalOutputQuerySchema), async (c) => {
+      const session = projectTerminalFor(c.get('project'), c.req.param('sessionId'));
+      if (!session) return c.json({ error: 'terminal session not found' }, 404);
+      const refusal = terminalPolicyRefusal(capabilities());
+      if (refusal) return c.json({ error: refusal }, 409);
+      const read = terminalSessions.read(session.id, c.req.valid('query').cursor ?? 0);
+      if (!read) return c.json({ error: 'terminal session not found' }, 404);
+      c.header('Cache-Control', 'no-store');
+      return c.json(terminalOutputSchema.parse(read), 200);
+    })
+    .post('/repo/terminal/:sessionId/input', jsonZodValidator(terminalInputSchema), async (c) => {
+      const session = projectTerminalFor(c.get('project'), c.req.param('sessionId'));
+      if (!session) return c.json({ error: 'terminal session not found' }, 404);
+      const refusal = terminalPolicyRefusal(capabilities());
+      if (refusal) return c.json({ error: refusal }, 409);
+      return c.json({ delivered: terminalSessions.write(session.id, c.req.valid('json').data) }, 200);
+    })
+    .post('/repo/terminal/:sessionId/resize', jsonZodValidator(terminalResizeSchema), async (c) => {
+      const session = projectTerminalFor(c.get('project'), c.req.param('sessionId'));
+      if (!session) return c.json({ error: 'terminal session not found' }, 404);
+      const refusal = terminalPolicyRefusal(capabilities());
+      if (refusal) return c.json({ error: refusal }, 409);
+      const { cols, rows } = c.req.valid('json');
+      return c.json({ resized: terminalSessions.resize(session.id, cols, rows) }, 200);
+    })
+    // Not policy-gated, like a task's: stopping a shell only ever reduces exposure.
+    .delete('/repo/terminal/:sessionId', async (c) => {
+      const session = projectTerminalFor(c.get('project'), c.req.param('sessionId'));
+      if (!session) return c.json({ error: 'terminal session not found' }, 404);
+      terminalSessions.kill(session.id);
+      return c.json({ stopped: true }, 200);
+    });
+
   // Repo view branch actions: switch to an existing branch, or create one
   // (from `from` or HEAD) and switch. Predictable git failures — invalid
   // name, unknown `from`, dirty-tree checkout conflict — are 409 + reason.
@@ -7589,6 +7776,7 @@ export function createApp(deps: ServerDeps) {
     .route('/', servicesRoutes)
     .route('/', e2eRoutes)
     .route('/', repoRoutes)
+    .route('/', codeRoutes)
     .route('/', configRoutes)
     .route('/', agentConfigRoutes);
 

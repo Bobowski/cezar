@@ -127,6 +127,8 @@ export interface CodeMirrorEditorProps {
   /** Bump to open the find panel — for a button, since Ctrl/Cmd+F only works with the editor
    *  focused, is taken by some embedding shells, and does not exist on a touch screen. */
   findRequest?: number
+  /** Scroll to and select this 1-based line. `nonce` makes a repeat of the same line a new ask. */
+  revealLine?: { line: number; nonce: number }
   className?: string
   'aria-label'?: string
 }
@@ -138,6 +140,7 @@ export default function CodeMirrorEditor({
   readOnly = false,
   wrap = false,
   findRequest = 0,
+  revealLine,
   className,
   'aria-label': ariaLabel,
 }: CodeMirrorEditorProps) {
@@ -219,6 +222,16 @@ export default function CodeMirrorEditor({
   useEffect(() => {
     if (findRequest > 0 && viewRef.current) openSearchPanel(viewRef.current)
   }, [findRequest])
+
+  const revealNonce = revealLine?.nonce
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view || !revealLine) return
+    const line = view.state.doc.line(Math.max(1, Math.min(revealLine.line, view.state.doc.lines)))
+    view.dispatch({ selection: { anchor: line.from, head: line.to }, effects: EditorView.scrollIntoView(line.from, { y: 'center' }) })
+    view.focus()
+    // `value` too: a line asked for before the file's text arrived is revealed once it has.
+  }, [revealNonce, value])
 
   // No grammar for this name is not an error: the file is plain text and exactly as editable.
   useEffect(() => {

@@ -236,6 +236,47 @@ export const repoFileQuerySchema = z.object({
 export type RepoFileQuery = z.infer<typeof repoFileQuerySchema>;
 
 /**
+ * The Code page (spec `2026-10-11-code-page`). The main checkout is written through the same
+ * shapes a task's worktree uses (`runFileWriteSchema`, `runFileCreateSchema`,
+ * `runFileRenameSchema`); what is new is the path query, content search and the change bell.
+ */
+export const repoFilePathQuerySchema = z.object({ path: z.string().min(1) });
+export type RepoFilePathQuery = z.infer<typeof repoFilePathQuerySchema>;
+
+/** `GET /repo/search` and `GET /runs/:id/search`. Fixed-string and case-insensitive unless asked. */
+export const codeSearchQuerySchema = z.object({
+  q: z.string().min(1).max(500),
+  regex: z.enum(['0', '1']).optional(),
+  case: z.enum(['0', '1']).optional(),
+  // One pathspec glob (e.g. every .ts file under src), matched from the checkout root.
+  glob: z.string().max(300).optional(),
+});
+export type CodeSearchQuery = z.infer<typeof codeSearchQuerySchema>;
+
+export const codeSearchMatchSchema = z.object({
+  path: z.string(),
+  /** 1-based. */
+  line: z.number().int(),
+  /** The matching line, cut at 250 characters. */
+  text: z.string(),
+});
+export type CodeSearchMatch = z.infer<typeof codeSearchMatchSchema>;
+
+/** `truncated` is required for the reason `repoTreeSchema`'s is: a partial answer must say so. */
+export const codeSearchResultSchema = z.object({
+  matches: z.array(codeSearchMatchSchema),
+  truncated: z.boolean(),
+});
+export type CodeSearchResult = z.infer<typeof codeSearchResultSchema>;
+
+/** `GET /repo/watch`: the topic that rings (a bare counter) when the checkout changes on disk,
+ *  or `null` where this host cannot watch a tree — the client then revalidates on focus. */
+export const codeWatchQuerySchema = z.object({ tree: z.string().min(1).max(64).optional() });
+export type CodeWatchQuery = z.infer<typeof codeWatchQuerySchema>;
+export const codeWatchSchema = z.object({ topic: z.string().nullable() });
+export type CodeWatch = z.infer<typeof codeWatchSchema>;
+
+/**
  * The lifecycle states a task can be in. Declared here (module-local, not exported) only because
  * `GET /api/v1/worktrees` echoes a run's `status` verbatim and the runs family's own contract
  * module does not exist yet — replace with that module's `runStatusSchema` when it lands.

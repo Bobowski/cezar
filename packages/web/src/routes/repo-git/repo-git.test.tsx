@@ -616,6 +616,18 @@ describe('the repo view Files segment', () => {
     expect(document.querySelector('[data-slot="repo-files-truncated"]')).toBeNull()
   })
 
+  // Guard (spec 2026-10-11-code-page §6): the main checkout is writable from the Code page, and
+  // `/repo/files` now says a file is editable — this viewer still offers no way to save one.
+  it('stays a viewer: no Edit affordance even for a file the server calls editable', async () => {
+    const sent = stubFetch({
+      [`GET ${filePath('README.md')}`]: () => jsonResponse({ ...fileEntry('README.md', 'hello\n'), editable: true, editableReason: undefined, hash: 'h1' }),
+    })
+    renderAt('/git/files/README.md')
+    await waitFor(() => expect(document.querySelector('[data-slot="file-preview"]')?.textContent).toContain('hello'))
+    expect(screen.queryByRole('button', { name: /^(Edit|Save)$/ })).toBeNull()
+    expect(sent.some((request) => request.method !== 'GET')).toBe(false)
+  })
+
   it('expanding a folder costs no request and reveals its children', async () => {
     const sent = stubFetch()
     renderAt('/git/files')

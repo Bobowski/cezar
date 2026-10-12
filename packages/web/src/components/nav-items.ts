@@ -8,6 +8,7 @@ import {
   ZapIcon,
   TicketIcon,
   ServerIcon,
+  Code2Icon,
 } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 import type { TrackerKind } from '@open-mercato/cezar-api-client'
@@ -50,6 +51,7 @@ export const NAV_ITEMS: NavItem[] = [
   { to: '/', label: 'Tasks', icon: ListChecksIcon, match: ['/', '/tasks', '/compare'], badge: 'tasks-unread' },
   { to: '/inbox', label: 'Inbox', icon: InboxIcon, match: ['/inbox'], badge: 'inbox-count', inbox: true },
   { to: '/git', label: 'Git', icon: GitBranchIcon, match: ['/git'] },
+  { to: '/code', label: 'Code', icon: Code2Icon, match: ['/code'] },
   { to: '/services', label: 'Services', icon: ServerIcon, match: ['/services'], badge: 'services' },
   { to: '/github', label: 'GitHub', icon: GithubIcon, match: ['/github'], forge: true },
   { to: '/tracker', label: 'Tracker', icon: TicketIcon, match: ['/tracker'], tracker: true },

@@ -284,9 +284,13 @@ export class AuthService {
   /** Step one: the password. Never says whether the username exists. */
   async login(input: { username: string; password: string }, meta: RequestMeta): Promise<AuthResult<{ ticket: string }>> {
     const name = input.username.trim().toLowerCase();
-    const keys = [addressKey(meta), `user:${name}`];
+    const address = addressKey(meta);
+    const keys = [address, `user:${name}`];
+    // Anyone can feed `user:` from other addresses, so it only gates a caller whose own address
+    // has already failed — refusing a clean one is how the owner was held out (§5.4).
+    const gate = this.throttle.clean(address, this.now()) ? [address] : keys;
     // Reserved BEFORE the scrypt await, or a parallel burst all passes the check (§5.4).
-    const wait = this.throttle.reserve(keys, this.now());
+    const wait = this.throttle.reserve(gate, this.now());
     if (wait > 0) return tooMany(wait);
     let matches: boolean | typeof BUSY = BUSY;
     let user: StoredUser | undefined;
@@ -295,7 +299,9 @@ export class AuthService {
       const stored = user?.password ?? (await (this.decoy ??= hashPassword(DECOY_PASSWORD, this.scrypt)));
       matches = await this.withScryptSlot(() => verifyPassword(input.password, stored));
     } finally {
-      this.throttle.settle(keys, this.now(), matches !== BUSY && !(user && matches));
+      this.throttle.settle(gate, this.now(), false);
+      // A wrong guess is charged to BOTH keys, whichever gated it.
+      if (matches !== BUSY && !(user && matches)) this.throttle.fail(keys, this.now());
     }
     if (matches === BUSY) return busy();
     if (!user || !matches) {

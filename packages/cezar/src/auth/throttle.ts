@@ -13,7 +13,7 @@ const BASE_DELAY_MS = 1_000;
 const MAX_DELAY_MS = 15 * 60_000;
 /**
  * `user:` is the one key an anonymous caller can feed for someone else's account from any
- * address, so its delay stays short: it slows guessing without denying the owner (§5.4).
+ * address, so its delay stays short, and login() does not apply it to a clean address (§5.4).
  */
 const ACCOUNT_MAX_DELAY_MS = 60_000;
 /** A key with no failure for this long starts over. */
@@ -69,6 +69,13 @@ export class LoginThrottle {
       if (entry) wait = Math.max(wait, entry.blockedUntil - now);
     }
     return Math.max(0, wait);
+  }
+
+  /** No live failure and no attempt in flight: this caller has not guessed wrong yet. */
+  clean(key: string, now: number): boolean {
+    if ((this.pending.get(key) ?? 0) > 0) return false;
+    const entry = this.entry(key);
+    return !entry || now - entry.lastFailure >= FORGET_AFTER_MS;
   }
 
   /**

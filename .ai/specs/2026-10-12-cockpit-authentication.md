@@ -137,8 +137,23 @@ account — the username at the password step — is capped at **60 seconds**, b
 per window would otherwise hold the only owner out for ever. Signed-in changes (password,
 recovery codes) are keyed on the user id of the session, so they are neither blocked by nor feed
 that anonymous key. Setup-code failures have a key space of their own and cannot evict the
-others. Not built: a per-device cookie that would let a known browser past the account key —
-without it a targeted attacker can still delay the owner's sign-in by up to a minute at a time.
+others.
+
+The 60-second cap alone did not end the lockout (review of 6e4fd643): one wrong guess each time
+the window opened, from ~16 rotating addresses, kept a correct password from a clean address out
+indefinitely. So the account key now gates only a caller whose OWN address already has a failure,
+recorded or in flight; a clean address is evaluated, and a wrong guess is still charged to both
+keys. What the account key bounds: an address after its first wrong guess (it then shares one
+60-second window with every other such address). What it no longer bounds: the first guess of
+each clean address, once per address per hour (the forget window). Distributed guessing is
+therefore limited by that one free guess per address, by the scrypt cap (2 running + 8 waiting,
+about 10 evaluations a second measured on the dev Mac, fewer on a small VPS) and by nginx
+`limit_req` per address, with the mandatory second factor behind the password. This deliberately
+trades distributed-guess throttling for the owner's availability. Residuals: an owner who mistypes
+once while the account is under attack is held to the 60-second windows until their address is
+forgotten (an hour) or they sign in from another one, and a flood that fills the scrypt queue is
+still answered `429` for everyone. Not built: a per-device cookie that would let a known browser
+past the account key.
 
 ### 5.5 Storage — new state, written, never required
 

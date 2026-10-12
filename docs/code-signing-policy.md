@@ -1,8 +1,7 @@
 # Code signing policy
 
-> **Draft.** This page is a requirement of the SignPath Foundation programme and is written
-> ahead of the application. The wording SignPath requires, and the people named under Roles,
-> must be confirmed before the application is sent.
+> **Draft.** This page is a requirement of the SignPath Foundation programme. The people
+> named under Roles must be confirmed before the page is treated as final.
 
 Free code signing provided by [SignPath.io](https://signpath.io), certificate by
 [SignPath Foundation](https://signpath.org).
@@ -23,8 +22,11 @@ developer's machine is ever signed.
 | Committers and reviewers | [Members of the open-mercato organization with write access](https://github.com/orgs/open-mercato/people) |
 | Approvers | [@pat-lewczuk](https://github.com/pat-lewczuk), [@patzick](https://github.com/patzick) |
 
-Every change reaches `main` through a pull request. A release is started by hand by an
-approver; nothing is signed on a push.
+Every change reaches `main` through a pull request. A desktop release is started either by an
+approver running the **Desktop release** workflow from GitHub Actions or by pushing a
+`desktop-v*` tag whose version matches the checked-in desktop version. In both cases the
+installer is signed only inside that GitHub Actions release workflow, and SignPath may enforce
+its own manual approval before it completes the signing request.
 
 ## Privacy policy
 
@@ -36,8 +38,9 @@ It does talk to the network, and only for what you can see it doing:
 - **npm registry** (`registry.npmjs.org`) — the desktop app installs cezar from it, and both
   the app and the cockpit ask it which version is newest. The request names the package and
   nothing about you.
-- **GitHub releases** (`github.com`) — the desktop app asks whether a newer app version exists
-  and downloads it when you accept.
+- **GitHub releases** (`github.com`) — the desktop app checks whether a newer app version exists
+  at launch and downloads and installs shell updates automatically. The new shell takes effect
+  the next time you open the app.
 - **GitHub, through your own `gh`** — issues, pull requests and checks of the repository you
   opened, with the credentials you already gave `gh`.
 - **The coding agents you run** — Claude Code, Codex and OpenCode talk to their own vendors

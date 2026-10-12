@@ -270,7 +270,7 @@ jobs:
           test -f "signed/$NAME" || { echo "::error::SignPath returned no $NAME"; ls -R signed; exit 1; }
           cp "signed/$NAME" "$INSTALLER"
           # Proof, not trust: the file must carry an Authenticode signature now.
-          powershell -NoProfile -Command "\$s = Get-AuthenticodeSignature '$INSTALLER'; \$s | Format-List Status, SignerCertificate; if (\$s.Status -ne 'Valid') { exit 1 }"
+          powershell -NoProfile -Command "\$signature = Get-AuthenticodeSignature '$INSTALLER'; \$signature | Format-List Status, SignerCertificate; if (\$signature.Status -ne 'Valid') { exit 1 }"
           if [ "$HAS_UPDATER_KEY" = "true" ]; then
             rm -f "$INSTALLER.sig"
             npx tauri signer sign "$INSTALLER"
@@ -467,18 +467,7 @@ jobs:
             # manifest still carries the one made for the unsigned file. Every platform entry
             # takes the signature of the `.sig` asset that belongs to its own download.
             mkdir sigs && gh release download "$TAG" --repo "$REPO" --pattern '*.sig' --dir sigs
-            node -e '
-              const fs = require("fs"), path = require("path");
-              const manifest = JSON.parse(fs.readFileSync("desktop-latest.json", "utf8"));
-              for (const [platform, entry] of Object.entries(manifest.platforms ?? {})) {
-                const file = path.join("sigs", decodeURIComponent(path.basename(new URL(entry.url).pathname)) + ".sig");
-                if (!fs.existsSync(file)) continue;
-                const signature = fs.readFileSync(file, "utf8").trim();
-                if (signature !== entry.signature) console.log("updater signature refreshed for " + platform);
-                entry.signature = signature;
-              }
-              fs.writeFileSync("desktop-latest.json", JSON.stringify(manifest, null, 2) + "\n");
-            '
+            node packages/desktop/scripts/refresh-updater-manifest.mjs desktop-latest.json sigs
             gh release upload "$TAG" desktop-latest.json --clobber --repo "$REPO"
             gh release delete-asset "$TAG" latest.json --yes --repo "$REPO" || true
             echo "updater manifest published"

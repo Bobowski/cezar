@@ -1,3 +1,4 @@
+import { EditorState } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -68,5 +69,38 @@ describe('CodeMirrorEditor', () => {
     rerender(<CodeMirrorEditor value="a" path="a.txt" readOnly wrap />)
     expect(view().state.readOnly).toBe(true)
     expect(view().contentDOM.classList.contains('cm-lineWrapping')).toBe(true)
+  })
+})
+
+describe('CodeMirrorEditor as an editor (Code page)', () => {
+  it('reports the cursor: line, column, and how much several cursors select', () => {
+    const onCursor = vi.fn()
+    render(<CodeMirrorEditor value={'abc\ndef\n'} path="a.txt" onCursor={onCursor} />)
+    expect(onCursor).toHaveBeenLastCalledWith({ line: 1, column: 1, cursors: 1, selected: 0 })
+    act(() => view().dispatch({ selection: { anchor: 5, head: 7 } }))
+    expect(onCursor).toHaveBeenLastCalledWith({ line: 2, column: 4, cursors: 1, selected: 2 })
+  })
+
+  it('allows several cursors at once', () => {
+    render(<CodeMirrorEditor value={'abc\ndef\n'} path="a.txt" />)
+    expect(view().state.facet(EditorState.allowMultipleSelections)).toBe(true)
+  })
+
+  it('draws a change strip for the marked lines and follows the marks', () => {
+    const { rerender } = render(<CodeMirrorEditor value={'a\nb\nc\n'} path="a.txt" lineMarks={new Map([[2, 'add'], [9, 'mod']])} />)
+    const marks = () => [...document.querySelectorAll('.cm-change-mark')].map((el) => (el as HTMLElement).dataset.mark)
+    // Line 9 is past the end of the document: skipped, not thrown.
+    expect(marks()).toEqual(['add'])
+    rerender(<CodeMirrorEditor value={'a\nb\nc\n'} path="a.txt" lineMarks={new Map([[1, 'mod'], [3, 'del']])} />)
+    expect(marks()).toEqual(['mod', 'del'])
+    rerender(<CodeMirrorEditor value={'a\nb\nc\n'} path="a.txt" />)
+    expect(marks()).toEqual([])
+  })
+
+  it('opens the go-to-line prompt when asked to', () => {
+    const { rerender } = render(<CodeMirrorEditor value={'a\nb\n'} path="a.txt" />)
+    expect(document.querySelector('.cm-panels input')).toBeNull()
+    rerender(<CodeMirrorEditor value={'a\nb\n'} path="a.txt" gotoLineRequest={1} />)
+    expect(document.querySelector('.cm-panels input')).not.toBeNull()
   })
 })

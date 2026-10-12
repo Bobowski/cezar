@@ -9,15 +9,19 @@ import {
   syntaxHighlighting,
 } from '@codemirror/language'
 import { languages } from '@codemirror/language-data'
-import { highlightSelectionMatches, openSearchPanel, search, searchKeymap } from '@codemirror/search'
-import { Annotation, Compartment, EditorState } from '@codemirror/state'
+import { gotoLine, highlightSelectionMatches, openSearchPanel, search, searchKeymap } from '@codemirror/search'
+import { Annotation, Compartment, EditorState, RangeSetBuilder } from '@codemirror/state'
 import {
+  crosshairCursor,
   drawSelection,
   EditorView,
+  gutter,
+  GutterMarker,
   highlightActiveLine,
   highlightActiveLineGutter,
   keymap,
   lineNumbers,
+  rectangularSelection,
 } from '@codemirror/view'
 import { tags as t } from '@lezer/highlight'
 import { useEffect, useMemo, useRef } from 'react'
@@ -38,6 +42,49 @@ import { cn } from '@/lib/utils'
  * `--syn-*` variables Shiki paints the preview with, so view mode and edit mode agree and a
  * theme switch repaints both with no work here.
  */
+
+/** How a line differs from the committed version — the strip beside the line numbers. */
+export type LineMark = 'add' | 'mod' | 'del'
+
+class ChangeMarker extends GutterMarker {
+  constructor(readonly kind: LineMark) {
+    super()
+  }
+  override eq(other: ChangeMarker) {
+    return other.kind === this.kind
+  }
+  override toDOM() {
+    const element = document.createElement('div')
+    element.dataset.mark = this.kind
+    element.className = 'cm-change-mark'
+    return element
+  }
+}
+const MARKERS: Record<LineMark, ChangeMarker> = { add: new ChangeMarker('add'), mod: new ChangeMarker('mod'), del: new ChangeMarker('del') }
+
+/** The change strip for `marks` (1-based line → kind), skipping lines the document no longer has. */
+function changeGutter(marks: ReadonlyMap<number, LineMark> | undefined) {
+  if (!marks || marks.size === 0) return []
+  return gutter({
+    class: 'cm-change-gutter',
+    markers: (view) => {
+      const builder = new RangeSetBuilder<GutterMarker>()
+      for (const line of [...marks.keys()].sort((a, b) => a - b)) {
+        if (line < 1 || line > view.state.doc.lines) continue
+        builder.add(view.state.doc.line(line).from, view.state.doc.line(line).from, MARKERS[marks.get(line) as LineMark])
+      }
+      return builder.finish()
+    },
+  })
+}
+
+export interface CursorPosition {
+  line: number
+  column: number
+  /** How many cursors, and how many characters they select in total. */
+  cursors: number
+  selected: number
+}
 
 /** Marks a transaction that mirrors the `value` prop, so it is not reported back as an edit. */
 const External = Annotation.define<boolean>()
@@ -72,6 +119,11 @@ const surface = EditorView.theme({
   '.cm-lineNumbers .cm-gutterElement': { padding: '0 0.75rem 0 1rem', minWidth: '2.5rem' },
   '.cm-activeLine': { backgroundColor: tint('--muted', 55) },
   '.cm-activeLineGutter': { backgroundColor: 'transparent', color: 'var(--foreground)' },
+  '.cm-change-gutter': { width: '3px', marginRight: '2px' },
+  '.cm-change-mark': { width: '3px', height: '100%' },
+  '.cm-change-mark[data-mark=add]': { backgroundColor: 'var(--success)' },
+  '.cm-change-mark[data-mark=mod]': { backgroundColor: 'var(--pending)' },
+  '.cm-change-mark[data-mark=del]': { backgroundColor: 'var(--danger)', height: '3px', marginTop: '-1px' },
   '&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground': {
     backgroundColor: tint('--primary', 30),
   },
@@ -129,6 +181,14 @@ export interface CodeMirrorEditorProps {
   findRequest?: number
   /** Scroll to and select this 1-based line. `nonce` makes a repeat of the same line a new ask. */
   revealLine?: { line: number; nonce: number }
+  /** Bump to open the go-to-line prompt (Ctrl+G does the same with the editor focused). */
+  gotoLineRequest?: number
+  /** Lines that differ from the committed version, 1-based. */
+  lineMarks?: ReadonlyMap<number, LineMark>
+  /** Where the main cursor is, on every move. */
+  onCursor?: (position: CursorPosition) => void
+  /** The editor took focus — which of two editor groups the keyboard now belongs to. */
+  onFocus?: () => void
   className?: string
   'aria-label'?: string
 }
@@ -141,6 +201,10 @@ export default function CodeMirrorEditor({
   wrap = false,
   findRequest = 0,
   revealLine,
+  gotoLineRequest = 0,
+  lineMarks,
+  onCursor,
+  onFocus,
   className,
   'aria-label': ariaLabel,
 }: CodeMirrorEditorProps) {
@@ -150,7 +214,21 @@ export default function CodeMirrorEditor({
   // on its LATEST render — its closure carries the edit the next keystroke is merged into.
   const onChangeRef = useRef(onChange)
   onChangeRef.current = onChange
-  const slots = useMemo(() => ({ language: new Compartment(), readOnly: new Compartment(), wrap: new Compartment() }), [])
+  const onCursorRef = useRef(onCursor)
+  onCursorRef.current = onCursor
+  const onFocusRef = useRef(onFocus)
+  onFocusRef.current = onFocus
+  const slots = useMemo(() => ({ language: new Compartment(), readOnly: new Compartment(), wrap: new Compartment(), marks: new Compartment() }), [])
+  const reportCursor = (state: EditorState) => {
+    const head = state.selection.main.head
+    const line = state.doc.lineAt(head)
+    onCursorRef.current?.({
+      line: line.number,
+      column: head - line.from + 1,
+      cursors: state.selection.ranges.length,
+      selected: state.selection.ranges.reduce((sum, range) => sum + (range.to - range.from), 0),
+    })
+  }
 
   useEffect(() => {
     const view = new EditorView({
@@ -159,7 +237,13 @@ export default function CodeMirrorEditor({
         doc: value,
         extensions: [
           EditorState.lineSeparator.of(lineSeparatorOf(value)),
+          slots.marks.of(changeGutter(lineMarks)),
           lineNumbers(),
+          // Several cursors, as an editor has them: Alt-click adds one, Alt-drag selects a column,
+          // Mod-D takes the next occurrence (`searchKeymap`).
+          EditorState.allowMultipleSelections.of(true),
+          rectangularSelection(),
+          crosshairCursor(),
           highlightActiveLine(),
           highlightActiveLineGutter(),
           drawSelection(),
@@ -173,7 +257,8 @@ export default function CodeMirrorEditor({
           EditorState.tabSize.of(2),
           // Tab indents here — this is a code editor. Escape, then Tab, leaves it by keyboard
           // (CodeMirror's own escape hatch); the overlay editor in Settings still never traps it.
-          keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
+          keymap.of([{ key: 'Ctrl-g', run: gotoLine }, ...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
+          EditorView.domEventHandlers({ focus: () => { onFocusRef.current?.() } }),
           syntaxHighlighting(syntax),
           surface,
           slots.language.of([]),
@@ -181,6 +266,7 @@ export default function CodeMirrorEditor({
           slots.wrap.of(wrap ? EditorView.lineWrapping : []),
           EditorView.contentAttributes.of(ariaLabel ? { 'aria-label': ariaLabel } : {}),
           EditorView.updateListener.of((update) => {
+            if (update.selectionSet || update.docChanged) reportCursor(update.state)
             if (!update.docChanged) return
             if (update.transactions.some((tr) => tr.annotation(External))) return
             onChangeRef.current?.(update.state.sliceDoc())
@@ -189,6 +275,7 @@ export default function CodeMirrorEditor({
       }),
     })
     viewRef.current = view
+    reportCursor(view.state)
     return () => {
       view.destroy()
       viewRef.current = null
@@ -222,6 +309,17 @@ export default function CodeMirrorEditor({
   useEffect(() => {
     if (findRequest > 0 && viewRef.current) openSearchPanel(viewRef.current)
   }, [findRequest])
+
+  useEffect(() => {
+    if (gotoLineRequest > 0 && viewRef.current) {
+      viewRef.current.focus()
+      gotoLine(viewRef.current)
+    }
+  }, [gotoLineRequest])
+
+  useEffect(() => {
+    viewRef.current?.dispatch({ effects: slots.marks.reconfigure(changeGutter(lineMarks)) })
+  }, [lineMarks, slots])
 
   const revealNonce = revealLine?.nonce
   useEffect(() => {

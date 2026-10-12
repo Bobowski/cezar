@@ -105,26 +105,93 @@ export interface Storage {
 const layoutKey = (projectId: string, tree: string) => `cez:code:layout:${projectId}:${tree}`
 const draftKey = (projectId: string, tree: string, path: string) => `cez:code:draft:${projectId}:${tree}:${path}`
 
-export type CodePanel = 'terminal' | 'services' | 'search'
+export type CodePanel = 'terminal' | 'services'
+export type CodeSidebar = 'explorer' | 'search' | 'scm'
 
-export interface CodeLayout extends TabsState {
+/**
+ * The page's shape: one or two editor groups side by side, which sidebar view is open, which
+ * panel. `focused` is the group the keyboard and the tree act on.
+ */
+export interface CodeLayout {
+  groups: TabsState[]
+  focused: number
+  sidebar: CodeSidebar | null
   panel: CodePanel | null
   preview: boolean
+  wrap: boolean
 }
 
-export const DEFAULT_LAYOUT: CodeLayout = { ...EMPTY_TABS, panel: null, preview: false }
+export const DEFAULT_LAYOUT: CodeLayout = { groups: [EMPTY_TABS], focused: 0, sidebar: 'explorer', panel: null, preview: false, wrap: false }
+
+export const focusedGroup = (layout: CodeLayout): TabsState => layout.groups[layout.focused] ?? layout.groups[0] ?? EMPTY_TABS
+
+/** Every path open in any group, each once. */
+export const openPaths = (layout: CodeLayout): string[] => [...new Set(layout.groups.flatMap((group) => group.tabs.map((tab) => tab.path)))]
+
+/** Apply `change` to one group. A second group left without tabs closes; the first never does. */
+export function updateGroup(layout: CodeLayout, index: number, change: (group: TabsState) => TabsState): CodeLayout {
+  const groups = layout.groups.map((group, at) => (at === index ? change(group) : group))
+  const kept = groups.filter((group, at) => at === 0 || group.tabs.length > 0)
+  if (kept.length === groups.length) return { ...layout, groups }
+  return { ...layout, groups: kept, focused: Math.min(layout.focused, kept.length - 1) }
+}
+
+/** Apply `change` to every group — a rename or a delete reaches a file wherever it is open. */
+export function updateGroups(layout: CodeLayout, change: (group: TabsState) => TabsState): CodeLayout {
+  return layout.groups.reduce((next, _group, index) => updateGroup(next, Math.min(index, next.groups.length - 1), change), layout)
+}
+
+/** Open `path` in the group beside the focused one, creating it if there is only one. */
+export function openToSide(layout: CodeLayout, path: string): CodeLayout {
+  const target = layout.groups.length < 2 ? 1 : layout.focused === 0 ? 1 : 0
+  const groups = layout.groups.length < 2 ? [...layout.groups, EMPTY_TABS] : layout.groups
+  return updateGroup({ ...layout, groups, focused: target }, target, (group) => openTab(group, path, true))
+}
+
+/** The other tabs of `path`'s group, closed. `keep` decides which survive besides `path`. */
+export function closeOthers(group: TabsState, path: string, keep: (tab: CodeTab) => boolean = () => false): TabsState {
+  return { tabs: group.tabs.filter((tab) => tab.path === path || keep(tab)), active: path }
+}
+
+const DIFF_PREFIX = 'diff:'
+/** A tab that shows a file's changes instead of the file. Its path is not a path on disk. */
+export const diffTab = (path: string): string => `${DIFF_PREFIX}${path}`
+export const isDiffTab = (path: string): boolean => path.startsWith(DIFF_PREFIX)
+export const tabFile = (path: string): string => (isDiffTab(path) ? path.slice(DIFF_PREFIX.length) : path)
+export const tabLabel = (path: string): string => {
+  const file = tabFile(path)
+  const name = file.slice(file.lastIndexOf('/') + 1)
+  return isDiffTab(path) ? `${name} (Working Tree)` : name
+}
+
+function reviveGroup(raw: unknown): TabsState | null {
+  const value = raw as Partial<TabsState> | null
+  if (!value || !Array.isArray(value.tabs)) return null
+  const tabs = value.tabs
+    .filter((tab): tab is CodeTab => typeof tab?.path === 'string' && tab.path !== '')
+    .slice(0, 40)
+    .map((tab) => ({ path: tab.path, preview: tab.preview === true }))
+  const active = typeof value.active === 'string' && tabs.some((tab) => tab.path === value.active) ? value.active : tabs[0]?.path ?? null
+  return { tabs, active }
+}
 
 export function loadLayout(storage: Storage | null, projectId: string, tree: string): CodeLayout {
   try {
-    const raw = JSON.parse(storage?.getItem(layoutKey(projectId, tree)) ?? 'null') as Partial<CodeLayout> | null
-    if (!raw || !Array.isArray(raw.tabs)) return DEFAULT_LAYOUT
-    const tabs = raw.tabs
-      .filter((tab): tab is CodeTab => typeof tab?.path === 'string' && tab.path !== '')
-      .slice(0, 40)
-      .map((tab) => ({ path: tab.path, preview: tab.preview === true }))
-    const active = typeof raw.active === 'string' && tabs.some((tab) => tab.path === raw.active) ? raw.active : tabs[0]?.path ?? null
-    const panel = raw.panel === 'terminal' || raw.panel === 'services' || raw.panel === 'search' ? raw.panel : null
-    return { tabs, active, panel, preview: raw.preview === true }
+    const raw = JSON.parse(storage?.getItem(layoutKey(projectId, tree)) ?? 'null') as (Partial<CodeLayout> & Partial<TabsState>) | null
+    if (!raw) return DEFAULT_LAYOUT
+    // The first shape this page stored had one group, as `tabs` and `active` at the top level.
+    const stored = Array.isArray(raw.groups) ? raw.groups.map(reviveGroup) : [reviveGroup(raw)]
+    const groups = stored.filter((group): group is TabsState => group !== null).filter((group, at) => at === 0 || group.tabs.length > 0).slice(0, 2)
+    if (groups.length === 0) return DEFAULT_LAYOUT
+    const sidebar = raw.sidebar === null ? null : raw.sidebar === 'search' || raw.sidebar === 'scm' ? raw.sidebar : 'explorer'
+    return {
+      groups,
+      focused: typeof raw.focused === 'number' && raw.focused >= 0 && raw.focused < groups.length ? raw.focused : 0,
+      sidebar,
+      panel: raw.panel === 'terminal' || raw.panel === 'services' ? raw.panel : null,
+      preview: raw.preview === true,
+      wrap: raw.wrap === true,
+    }
   } catch {
     return DEFAULT_LAYOUT
   }
@@ -165,4 +232,58 @@ export function bufferFrom(disk: { content: string; hash: string }, draft: { bas
   if (draft.baseHash === disk.hash) return { ...clean, draft: draft.content }
   // Typed against an older version: keep the typing, and say the file moved on.
   return { content: disk.content, hash: draft.baseHash, draft: draft.content, conflict: { diskHash: disk.hash, diskContent: disk.content } }
+}
+
+// ---- what a file's diff says about its lines ---------------------------------------------------
+
+/**
+ * Which lines of the working copy differ from the committed version, from the file's unified
+ * diff: an added run is `add`, an added run that replaces deleted lines is `mod`, and lines
+ * removed with nothing in their place leave a `del` tick on the line that now follows them.
+ */
+export function lineMarksFromPatch(patch: string): Map<number, 'add' | 'mod' | 'del'> {
+  const marks = new Map<number, 'add' | 'mod' | 'del'>()
+  let next = 0
+  let deleted = 0
+  let run: number[] = []
+  const flush = () => {
+    if (run.length > 0) for (const line of run) marks.set(line, deleted > 0 ? 'mod' : 'add')
+    else if (deleted > 0 && next > 0 && !marks.has(next)) marks.set(next, 'del')
+    deleted = 0
+    run = []
+  }
+  for (const line of patch.split('\n')) {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
+    if (hunk) {
+      flush()
+      next = Number(hunk[1])
+      continue
+    }
+    if (next === 0 || line.startsWith('\\')) continue
+    if (line.startsWith('+')) {
+      run.push(next)
+      next += 1
+    } else if (line.startsWith('-')) {
+      deleted += 1
+    } else {
+      flush()
+      next += 1
+    }
+  }
+  flush()
+  return marks
+}
+
+const LANGUAGES: Record<string, string> = {
+  ts: 'TypeScript', tsx: 'TypeScript JSX', js: 'JavaScript', jsx: 'JavaScript JSX', mjs: 'JavaScript', cjs: 'JavaScript', json: 'JSON',
+  md: 'Markdown', mdx: 'MDX', css: 'CSS', scss: 'SCSS', html: 'HTML', yml: 'YAML', yaml: 'YAML', toml: 'TOML', py: 'Python', rb: 'Ruby',
+  go: 'Go', rs: 'Rust', java: 'Java', kt: 'Kotlin', swift: 'Swift', php: 'PHP', sh: 'Shell Script', sql: 'SQL', xml: 'XML', svg: 'SVG',
+  c: 'C', h: 'C', cpp: 'C++', cs: 'C#', vue: 'Vue', svelte: 'Svelte', graphql: 'GraphQL', prisma: 'Prisma', dockerfile: 'Dockerfile',
+}
+/** The status bar's language name: by extension, by a few well-known names, else plain text. */
+export function languageOf(path: string): string {
+  const name = path.slice(path.lastIndexOf('/') + 1).toLowerCase()
+  if (name === 'dockerfile' || name === 'makefile') return name === 'dockerfile' ? 'Dockerfile' : 'Makefile'
+  if (name.startsWith('.env')) return 'Environment'
+  return LANGUAGES[name.slice(name.lastIndexOf('.') + 1)] ?? 'Plain Text'
 }

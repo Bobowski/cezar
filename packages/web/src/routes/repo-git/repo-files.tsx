@@ -179,6 +179,8 @@ export function RepoFileBrowser({
   onSelect,
   onOpen,
   marks,
+  onContextMenu,
+  collapseSignal = 0,
 }: {
   paths: readonly string[]
   selected: string | null
@@ -187,6 +189,10 @@ export function RepoFileBrowser({
   onOpen?: (path: string) => void
   /** A status letter per changed path (`M`, `A`, `D`, `U`), shown after the name. */
   marks?: ReadonlyMap<string, string>
+  /** A right click (or the menu key) on a row: the Code page's explorer menu. */
+  onContextMenu?: (event: React.MouseEvent, target: { kind: 'file' | 'dir'; path: string }) => void
+  /** Bump to close every folder ("Collapse Folders"). */
+  collapseSignal?: number
 }) {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set(ancestorsOf(selected)))
@@ -205,6 +211,10 @@ export function RepoFileBrowser({
       return next
     })
   }, [selected])
+
+  useEffect(() => {
+    if (collapseSignal > 0) setOpen(new Set())
+  }, [collapseSignal])
 
   const filtering = query.trim() !== ''
   const matches = useMemo(() => matchPaths(paths, query, MATCH_LIMIT), [paths, query])
@@ -341,6 +351,7 @@ export function RepoFileBrowser({
                 key={row.path}
                 row={row}
                 focused={row.path === activeRow?.path}
+                onContextMenu={onContextMenu ? (event) => onContextMenu(event, { kind: 'dir', path: row.path }) : undefined}
                 onToggle={() => {
                   setActive(row.path)
                   toggle(row.path)
@@ -353,6 +364,7 @@ export function RepoFileBrowser({
                 active={row.path === selected}
                 focused={row.path === activeRow?.path}
                 mark={marks?.get(row.path)}
+                onContextMenu={onContextMenu ? (event) => onContextMenu(event, { kind: 'file', path: row.path }) : undefined}
                 onOpen={onOpen ? () => onOpen(row.path) : undefined}
                 onSelect={() => {
                   setActive(row.path)
@@ -383,10 +395,12 @@ function DirRow({
   row,
   focused,
   onToggle,
+  onContextMenu,
 }: {
   row: Extract<Row, { kind: 'dir' }>
   focused: boolean
   onToggle: () => void
+  onContextMenu?: (event: React.MouseEvent) => void
 }) {
   return (
     <div
@@ -399,6 +413,7 @@ function DirRow({
       data-state={row.open ? 'open' : 'closed'}
       tabIndex={focused ? 0 : -1}
       onClick={onToggle}
+      onContextMenu={onContextMenu}
       className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-muted-foreground hover:bg-sidebar-accent hover:text-foreground focus:bg-muted focus:outline-none"
       style={indent(row.level, 6)}
     >
@@ -419,6 +434,7 @@ function FileRow({
   onSelect,
   onOpen,
   mark,
+  onContextMenu,
 }: {
   row: Extract<Row, { kind: 'file' }>
   active: boolean
@@ -426,6 +442,7 @@ function FileRow({
   onSelect: () => void
   onOpen?: () => void
   mark?: string
+  onContextMenu?: (event: React.MouseEvent) => void
 }) {
   const Icon = isImagePath(row.path) ? ImageIcon : FileIcon
   return (
@@ -440,6 +457,7 @@ function FileRow({
       tabIndex={focused ? 0 : -1}
       onClick={onSelect}
       onDoubleClick={onOpen}
+      onContextMenu={onContextMenu}
       className={cn(
         'flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-sidebar-accent focus:outline-none',
         active ? 'bg-sidebar-accent font-medium text-foreground' : 'text-muted-foreground hover:text-foreground',

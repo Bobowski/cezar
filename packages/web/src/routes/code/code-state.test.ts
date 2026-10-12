@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  bufferFrom, closeTab, DEFAULT_LAYOUT, EMPTY_TABS, isDirty, keepTab, loadDraft, loadLayout, openTab, reconcile, resolveConflict,
-  retargetTab, saveDraft, saveLayout, stepTab, type Buffer, type Storage,
+  bufferFrom, closeOthers, closeTab, DEFAULT_LAYOUT, diffTab, EMPTY_TABS, focusedGroup, isDiffTab, isDirty, keepTab, languageOf,
+  lineMarksFromPatch, loadDraft, loadLayout, openPaths, openTab, openToSide, reconcile, resolveConflict, retargetTab, saveDraft, saveLayout,
+  stepTab, tabFile, tabLabel, updateGroup, updateGroups, type Buffer, type CodeLayout, type Storage,
 } from './code-state'
 
 const memory = (): Storage & { map: Map<string, string> } => {
@@ -63,18 +64,25 @@ describe('a buffer against the other writer (spec §4)', () => {
 })
 
 describe('what survives a reload', () => {
-  it('restores tabs, the active one and the panel — and survives garbage', () => {
+  it('restores groups, the focused one, the sidebar and the panel — and survives garbage', () => {
     const storage = memory()
     expect(loadLayout(storage, 'p', 'main')).toEqual(DEFAULT_LAYOUT)
-    saveLayout(storage, 'p', 'main', { tabs: [{ path: 'a.ts', preview: false }], active: 'a.ts', panel: 'search', preview: true })
-    expect(loadLayout(storage, 'p', 'main')).toEqual({ tabs: [{ path: 'a.ts', preview: false }], active: 'a.ts', panel: 'search', preview: true })
+    const layout = { groups: [{ tabs: [{ path: 'a.ts', preview: false }], active: 'a.ts' }, { tabs: [{ path: 'b.ts', preview: true }], active: 'b.ts' }], focused: 1, sidebar: 'scm' as const, panel: 'terminal' as const, preview: true, wrap: true }
+    saveLayout(storage, 'p', 'main', layout)
+    expect(loadLayout(storage, 'p', 'main')).toEqual(layout)
     // Another checkout of the same project has its own layout.
     expect(loadLayout(storage, 'p', 'run-1')).toEqual(DEFAULT_LAYOUT)
-    storage.setItem('cez:code:layout:p:main', '{"tabs":[{"path":7},{"path":"b.ts"}],"active":"gone","panel":"nope"}')
-    expect(loadLayout(storage, 'p', 'main')).toEqual({ tabs: [{ path: 'b.ts', preview: false }], active: 'b.ts', panel: null, preview: false })
+    storage.setItem('cez:code:layout:p:main', '{"groups":[{"tabs":[{"path":7},{"path":"b.ts"}],"active":"gone"},{"tabs":[]}],"focused":5,"panel":"nope","sidebar":null}')
+    expect(loadLayout(storage, 'p', 'main')).toEqual({ groups: [{ tabs: [{ path: 'b.ts', preview: false }], active: 'b.ts' }], focused: 0, sidebar: null, panel: null, preview: false, wrap: false })
     storage.setItem('cez:code:layout:p:main', '{ not json')
     expect(loadLayout(storage, 'p', 'main')).toEqual(DEFAULT_LAYOUT)
     expect(loadLayout(null, 'p', 'main')).toEqual(DEFAULT_LAYOUT)
+  })
+
+  it('reads the single-group layout this page first stored', () => {
+    const storage = memory()
+    storage.setItem('cez:code:layout:p:main', '{"tabs":[{"path":"a.ts","preview":false}],"active":"a.ts","panel":"search","preview":false}')
+    expect(loadLayout(storage, 'p', 'main')).toMatchObject({ groups: [{ tabs: [{ path: 'a.ts', preview: false }], active: 'a.ts' }], focused: 0, sidebar: 'explorer', panel: null })
   })
 
   it('keeps typing across a reload, and flags a draft typed against an older version', () => {
@@ -88,5 +96,67 @@ describe('what survives a reload', () => {
     // A saved buffer leaves no draft behind.
     saveDraft(storage, 'p', 'main', 'a.ts', clean('mine', 'h3'))
     expect(storage.map.size).toBe(0)
+  })
+})
+
+describe('editor groups', () => {
+  const one = (...paths: string[]): CodeLayout => ({ ...DEFAULT_LAYOUT, groups: [{ tabs: paths.map((path) => ({ path, preview: false })), active: paths[0] ?? null }] })
+
+  it('opens a file to the side in a second group, then alternates between the two', () => {
+    let layout = openToSide(one('a.ts'), 'a.ts')
+    expect(layout.groups.map((group) => group.tabs.map((tab) => tab.path))).toEqual([['a.ts'], ['a.ts']])
+    expect(layout.focused).toBe(1)
+    expect(focusedGroup(layout).active).toBe('a.ts')
+    layout = openToSide(layout, 'b.ts')
+    expect(layout.focused).toBe(0)
+    expect(layout.groups[0]?.tabs.map((tab) => tab.path)).toEqual(['a.ts', 'b.ts'])
+    expect(openPaths(layout)).toEqual(['a.ts', 'b.ts'])
+  })
+
+  it('a second group left empty closes; the first stays, even empty', () => {
+    const split = openToSide(one('a.ts'), 'b.ts')
+    const closed = updateGroup(split, 1, (group) => closeTab(group, 'b.ts'))
+    expect(closed.groups).toHaveLength(1)
+    expect(closed.focused).toBe(0)
+    expect(updateGroup(one('a.ts'), 0, (group) => closeTab(group, 'a.ts')).groups).toEqual([EMPTY_TABS])
+  })
+
+  it('a rename or a delete reaches the file in every group', () => {
+    const split = openToSide(one('a.ts', 'c.ts'), 'a.ts')
+    expect(updateGroups(split, (group) => retargetTab(group, 'a.ts', 'z.ts')).groups.map((group) => group.tabs.map((tab) => tab.path))).toEqual([['z.ts', 'c.ts'], ['z.ts']])
+    // Deleting the only tab of the second group closes that group.
+    expect(updateGroups(split, (group) => retargetTab(group, 'a.ts', null)).groups.map((group) => group.tabs.map((tab) => tab.path))).toEqual([['c.ts']])
+  })
+
+  it('closes the other tabs, keeping the ones asked for', () => {
+    const group = one('a', 'b', 'c').groups[0]!
+    expect(closeOthers(group, 'b').tabs.map((tab) => tab.path)).toEqual(['b'])
+    expect(closeOthers(group, 'b', (tab) => tab.path === 'c')).toEqual({ tabs: [{ path: 'b', preview: false }, { path: 'c', preview: false }], active: 'b' })
+  })
+
+  it('names a diff tab after its file', () => {
+    expect(isDiffTab(diffTab('src/app.ts'))).toBe(true)
+    expect(tabFile(diffTab('src/app.ts'))).toBe('src/app.ts')
+    expect(tabLabel(diffTab('src/app.ts'))).toBe('app.ts (Working Tree)')
+    expect(tabLabel('src/app.ts')).toBe('app.ts')
+  })
+})
+
+describe('what a diff says about lines', () => {
+  it('marks added runs, replaced runs and the line after a pure deletion', () => {
+    const patch = [
+      'diff --git a/a.ts b/a.ts', '--- a/a.ts', '+++ b/a.ts',
+      '@@ -1,6 +1,6 @@', ' one', '-two', '+TWO', ' three', '-four', ' five', '+six', ' seven',
+      '@@ -20,2 +20,3 @@', ' x', '+y', '+z', '\\ No newline at end of file',
+    ].join('\n')
+    expect([...lineMarksFromPatch(patch)]).toEqual([[2, 'mod'], [4, 'del'], [5, 'add'], [21, 'add'], [22, 'add']])
+    expect(lineMarksFromPatch('').size).toBe(0)
+  })
+
+  it('names a language for the status bar', () => {
+    expect(languageOf('src/app.tsx')).toBe('TypeScript JSX')
+    expect(languageOf('Dockerfile')).toBe('Dockerfile')
+    expect(languageOf('apps/api/.env.local')).toBe('Environment')
+    expect(languageOf('LICENSE')).toBe('Plain Text')
   })
 })

@@ -2,16 +2,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { PlusIcon, XIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { queryScope, type CodeSearchMatch, type TerminalSession } from '@open-mercato/cezar-api-client'
+import { queryScope, type TerminalSession } from '@open-mercato/cezar-api-client'
 import { serviceAction } from '@/api/client'
 import {
-  createCodeTerminal, getCodeTerminal, readCodeTerminal, resizeCodeTerminal, searchCode, stopCodeTerminal, treeKey, writeCodeTerminal,
+  createCodeTerminal, getCodeTerminal, readCodeTerminal, resizeCodeTerminal, stopCodeTerminal, treeKey, writeCodeTerminal,
   type CodeTree,
 } from '@/api/code'
 import { queryKeys } from '@/api/queries'
 import { useServices } from '@/api/services'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { toast } from '@/components/ui/toaster'
 import { cn } from '@/lib/utils'
 import { ServiceLog, ServiceRow } from '@/routes/services/services'
@@ -20,26 +19,22 @@ import { TerminalPane, type TerminalIo } from '@/routes/task-workspace/terminal-
 import type { CodePanel } from './code-state'
 
 /**
- * The Code page's bottom panel (spec 2026-10-11-code-page §3): a terminal in the checkout, the
- * project's services, and search across its files. Each tab mounts when first shown and stays
- * mounted, so a build keeps scrolling while the user reads search results.
+ * The Code page's bottom panel (spec 2026-10-11-code-page §3): a terminal in the checkout and
+ * the project's services. Each tab mounts when first shown and stays mounted, so a build keeps
+ * scrolling while the other is looked at. Search lives in the sidebar (`code-sidebar.tsx`).
  */
 export function CodePanelView({
-  tree, panel, onPanel, onOpen, terminalAllowed, searchFocus,
+  tree, panel, onPanel,
 }: {
   tree: CodeTree
   panel: CodePanel
   onPanel: (panel: CodePanel | null) => void
-  onOpen: (path: string, line?: number) => void
-  terminalAllowed: boolean
-  /** Bumped by the search shortcut to focus the query box. */
-  searchFocus: number
 }) {
   const [seen, setSeen] = useState<ReadonlySet<CodePanel>>(new Set([panel]))
   useEffect(() => setSeen((current) => (current.has(panel) ? current : new Set([...current, panel]))), [panel])
   // Services are the project's and run the main checkout: a task's tree has none of its own.
-  const tabs: CodePanel[] = [...(terminalAllowed ? (['terminal', ...(tree.kind === 'main' ? ['services'] : [])] as CodePanel[]) : []), 'search']
-  const shown = tabs.includes(panel) ? panel : 'search'
+  const tabs: CodePanel[] = tree.kind === 'main' ? ['terminal', 'services'] : ['terminal']
+  const shown = tabs.includes(panel) ? panel : 'terminal'
   return (
     <section data-slot="code-panel" className="flex h-72 shrink-0 flex-col border-t border-border bg-card-2">
       <div role="tablist" aria-label="Panel" className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1">
@@ -62,7 +57,6 @@ export function CodePanelView({
       <div className="relative min-h-0 flex-1">
         {seen.has('terminal') && tabs.includes('terminal') ? <Layer active={shown === 'terminal'}><TerminalTab tree={tree} active={shown === 'terminal'} /></Layer> : null}
         {seen.has('services') && tabs.includes('services') ? <Layer active={shown === 'services'}><ServicesTab active={shown === 'services'} /></Layer> : null}
-        {seen.has('search') ? <Layer active={shown === 'search'}><SearchTab tree={tree} onOpen={onOpen} focus={searchFocus} /></Layer> : null}
       </div>
     </section>
   )
@@ -162,72 +156,6 @@ function ServicesTab({ active }: { active: boolean }) {
       </ul>
       <div className="relative min-w-0 flex-1">
         {selected && (selected.status !== 'stopped' || selected.startedAt !== null) ? <ServiceLog service={selected} active={active} /> : null}
-      </div>
-    </div>
-  )
-}
-
-/** Results grouped by file, in the order the server found them. */
-export function groupMatches(matches: readonly CodeSearchMatch[]): Array<{ path: string; matches: CodeSearchMatch[] }> {
-  const groups = new Map<string, CodeSearchMatch[]>()
-  for (const match of matches) groups.set(match.path, [...(groups.get(match.path) ?? []), match])
-  return [...groups].map(([path, found]) => ({ path, matches: found }))
-}
-
-function SearchTab({ tree, onOpen, focus }: { tree: CodeTree; onOpen: (path: string, line?: number) => void; focus: number }) {
-  const [text, setText] = useState('')
-  const [glob, setGlob] = useState('')
-  const [regex, setRegex] = useState(false)
-  const [caseSensitive, setCaseSensitive] = useState(false)
-  const [asked, setAsked] = useState<{ q: string; glob: string; regex: boolean; caseSensitive: boolean } | null>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
-  useEffect(() => { if (focus > 0) inputRef.current?.focus() }, [focus])
-  const result = useQuery({
-    queryKey: ['code', 'search', queryScope(), treeKey(tree), asked],
-    queryFn: ({ signal }) => searchCode(tree, asked?.q ?? '', { regex: asked?.regex ?? false, caseSensitive: asked?.caseSensitive ?? false, glob: asked?.glob ?? '' }, { signal }),
-    enabled: asked !== null,
-    staleTime: 0,
-  })
-  const groups = useMemo(() => groupMatches(result.data?.matches ?? []), [result.data])
-  const toggle = (on: boolean) => cn('rounded-md px-2 py-1 font-mono text-xs', on ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground')
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <form
-        role="search"
-        className="flex shrink-0 flex-wrap items-center gap-2 p-2"
-        onSubmit={(event) => { event.preventDefault(); if (text.trim() !== '') setAsked({ q: text, glob, regex, caseSensitive }) }}
-      >
-        <Input ref={inputRef} aria-label="Search in files" value={text} onChange={(event) => setText(event.target.value)} placeholder="Search in files" spellCheck={false} autoComplete="off" className="h-8 min-w-48 flex-1 font-mono text-xs" />
-        <Input aria-label="Files to include" value={glob} onChange={(event) => setGlob(event.target.value)} placeholder="src/**/*.ts" spellCheck={false} autoComplete="off" className="h-8 w-44 font-mono text-xs" />
-        <button type="button" aria-pressed={caseSensitive} title="Match case" className={toggle(caseSensitive)} onClick={() => setCaseSensitive((value) => !value)}>Aa</button>
-        <button type="button" aria-pressed={regex} title="Regular expression" className={toggle(regex)} onClick={() => setRegex((value) => !value)}>.*</button>
-        <Button type="submit" size="sm" variant="outline" disabled={text.trim() === ''}>Search</Button>
-      </form>
-      <div data-slot="code-search-results" className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 text-xs">
-        {result.isFetching ? <p className="px-1 text-muted-foreground">Searching…</p> : null}
-        {result.isError ? <p role="alert" className="px-1 text-danger">{result.error.message}</p> : null}
-        {result.data && !result.isFetching ? (
-          <p role="status" className="px-1 pb-1 text-muted-foreground">
-            {result.data.matches.length === 0 ? 'No results.' : `${result.data.matches.length} result${result.data.matches.length === 1 ? '' : 's'} in ${groups.length} file${groups.length === 1 ? '' : 's'}`}
-            {result.data.truncated ? ' — more exist; narrow the search.' : ''}
-          </p>
-        ) : null}
-        {groups.map((group) => (
-          <div key={group.path} className="pb-1">
-            <button type="button" className="w-full truncate rounded-md px-1 py-0.5 text-left font-medium text-foreground hover:bg-accent" onClick={() => onOpen(group.path)}>{group.path}</button>
-            {group.matches.map((match) => (
-              <button
-                key={`${match.line}:${match.text}`}
-                type="button"
-                className="flex w-full gap-2 rounded-md px-1 py-0.5 text-left font-mono text-muted-foreground hover:bg-accent hover:text-foreground"
-                onClick={() => onOpen(match.path, match.line)}
-              >
-                <span className="w-10 shrink-0 text-right tabular-nums text-soft-foreground">{match.line}</span>
-                <span className="min-w-0 truncate whitespace-pre">{match.text}</span>
-              </button>
-            ))}
-          </div>
-        ))}
       </div>
     </div>
   )

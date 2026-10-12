@@ -12,14 +12,13 @@ import {
   MailIcon,
   PencilIcon,
   PinIcon,
-  PlayIcon,
   SquareTerminalIcon,
   Trash2Icon,
 } from 'lucide-react'
 import { Fragment, memo, useEffect, useId, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
 import { Link, useNavigate } from '@/lib/project-router'
 
-import { ApiError, archiveRun, cancelRun, continueRun, deleteRun, openRunIn, openRunInCli } from '@/api/client'
+import { ApiError, archiveRun, cancelRun, deleteRun, openRunIn, openRunInCli } from '@/api/client'
 import {
   queryKeys,
   useHealth,
@@ -76,7 +75,6 @@ import { usageMetricVisibility } from '@/lib/token-metrics'
 import { isHttpUrl } from '@/lib/utils'
 
 import { Markdown } from './markdown'
-import { useContinuationProvider } from './continuation-provider'
 import { cliTargetResumes, cliTargetRunner, finishTitle, resumeHint, runActionFlags } from './run-actions'
 import { cn } from '@/lib/utils'
 import { GIT_ACTION_ICONS, GitActions } from '../task-git/git-toolbar'
@@ -373,38 +371,16 @@ function RunActionButtons({
 }) {
   const flags = runActionFlags(run)
   const git = useRunGitStep(run)
-  // ONE primary action, picked by what the run's state calls for; the rest is quieter.
-  const primary: 'continue' | 'finish' | 'stop' | null = flags.continueRun
-    ? 'continue'
-    : flags.finish
-      ? 'finish'
-      : flags.cancel
-        ? 'stop'
-        : null
+  // ONE primary action, picked by what the run's state calls for. Continue is not among them:
+  // it is the composer's send, which carries the prompt and the engine picks (#1337).
+  const primary: 'finish' | 'stop' | null = flags.finish ? 'finish' : flags.cancel ? 'stop' : null
   return (
     <>
       <div data-slot="run-actions" className="hidden items-center gap-1.5 md:flex @max-4xl/strip:hidden">
         <OpenInMenuForRun run={run} canResume={flags.terminal} onResume={() => actions.terminal.mutate()} />
         {/* The run's one next git step (Commit, Push, Create PR, Update branch, …), or nothing. */}
         <GitActions action={git.action} onAction={git.onAction} />
-        {flags.finish && primary !== 'finish' ? (
-          <Button variant="outline" size="sm" title={finishTitle(run.status)} onClick={() => actions.finish.mutate()}>
-            <CheckIcon aria-hidden="true" />
-            Finish
-          </Button>
-        ) : null}
-        {primary === 'continue' ? (
-          <Button
-            variant="default"
-            size="sm"
-            title={actions.continuation.reason ?? 'Reopen the session'}
-            disabled={actions.continueRun.isPending || !actions.continuation.canContinue}
-            onClick={() => actions.continueRun.mutate()}
-          >
-            <PlayIcon aria-hidden="true" />
-            Continue
-          </Button>
-        ) : primary === 'finish' ? (
+        {primary === 'finish' ? (
           <Button variant="default" size="sm" title={finishTitle(run.status)} onClick={() => actions.finish.mutate()}>
             <CheckIcon aria-hidden="true" />
             Finish
@@ -539,17 +515,6 @@ function useRunActions(run: ApiRun, onMarkedUnread?: () => void) {
   // Shared with the review panel's ✓ Accept (use-finish-run.ts) — the review-accept semantics
   // must be ONE implementation, not two buttons that happen to agree today.
   const finish = useFinishRun(run.id)
-  const continuation = useContinuationProvider(run)
-  const continueMutation = useMutation({
-    mutationFn: async () => {
-      if (!continuation.canContinue) return null
-      return continueRun(run.id, { runner: continuation.runnerOverride })
-    },
-    onSuccess: (result) => {
-      if (result !== null) invalidate()
-    },
-    onError,
-  })
   const archive = useMutation({
     mutationFn: () => archiveRun(run.id, !run.archived),
     onSuccess: invalidate,
@@ -616,8 +581,6 @@ function useRunActions(run: ApiRun, onMarkedUnread?: () => void) {
 
   return {
     finish,
-    continuation,
-    continueRun: continueMutation,
     archive,
     pin,
     markUnread,
@@ -1356,15 +1319,6 @@ function MoreMenu({
           // out of room, at any window size, and this menu is where they are found then.
           <DropdownMenuItem onSelect={() => actions.finish.mutate()}>
             <CheckIcon aria-hidden="true" /> Finish
-          </DropdownMenuItem>
-        ) : null}
-        {flags.continueRun ? (
-          <DropdownMenuItem
-            disabled={!actions.continuation.canContinue || actions.continueRun.isPending}
-            title={actions.continuation.reason}
-            onSelect={() => actions.continueRun.mutate()}
-          >
-            <PlayIcon aria-hidden="true" /> Continue
           </DropdownMenuItem>
         ) : null}
         {flags.terminal ? (

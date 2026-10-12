@@ -129,7 +129,7 @@ function renderHeader(
   )
 }
 
-/** The button row: the run's ONE primary action, plus Open in… and (beside Continue) Finish. */
+/** The button row: the run's ONE primary action, plus Open in…. */
 const actionBar = () => within(document.querySelector('[data-slot="run-actions"]') as HTMLElement)
 /** The header above a tab other than the Session one. */
 const renderGitTab = (record: ApiRun) => renderHeader(record, undefined, undefined, undefined, 'changes')
@@ -334,19 +334,19 @@ describe('action bar visibility per status (the legacy rules, rendered)', () => 
   // so it is offered whatever the run is doing — only archiving takes it away.
   //
   // The same rules, on the redesigned surface: `bar` is the button row — ONE primary action picked
-  // by the run's state (Continue, else Finish, else Stop), with Open in… and a quieter Finish beside
-  // a primary Continue — and `menu` is "More actions", which holds every action at every width (the
+  // by the run's state (Finish, else Stop; Continue is the composer's send), with Open in… beside
+  // it — and `menu` is "More actions", which holds every action at every width (the
   // strip drops the row whenever it runs out of room). Cancel reads "Stop" now.
-  const closed = ['Continue', 'Resume in terminal', 'Notes', 'Pin', 'Archive', 'Copy take-over command', 'Delete']
+  const closed = ['Resume in terminal', 'Notes', 'Pin', 'Archive', 'Copy take-over command', 'Delete']
   const matrix: Array<{ status: RunStatus; bar: string[]; menu: string[] }> = [
     { status: 'queued', bar: ['Stop'], menu: ['Notes', 'Pin', 'Stop'] },
     { status: 'running', bar: ['Stop'], menu: ['Notes', 'Pin', 'Stop'] },
     { status: 'waiting', bar: ['Finish'], menu: ['Finish', 'Notes', 'Pin', 'Stop'] },
     // Terminal folded into the Open in… menu — it shows whenever the session can be resumed.
-    { status: 'review', bar: ['Open in…', 'Finish', 'Continue'], menu: ['Finish', ...closed] },
-    { status: 'done', bar: ['Open in…', 'Continue'], menu: closed },
-    { status: 'failed', bar: ['Open in…', 'Continue'], menu: closed },
-    { status: 'cancelled', bar: ['Open in…', 'Continue'], menu: closed },
+    { status: 'review', bar: ['Open in…', 'Finish'], menu: ['Finish', ...closed] },
+    { status: 'done', bar: ['Open in…'], menu: closed },
+    { status: 'failed', bar: ['Open in…'], menu: closed },
+    { status: 'cancelled', bar: ['Open in…'], menu: closed },
   ]
 
   it.each(matrix)('$status → bar $bar, menu $menu', async ({ status, bar, menu }) => {
@@ -542,7 +542,6 @@ describe('action bar visibility per status (the legacy rules, rendered)', () => 
     { status: 'queued', bar: 'Stop' },
     { status: 'waiting', bar: 'Finish' },
     { status: 'review', bar: 'Finish' },
-    { status: 'done', bar: 'Continue' },
   ] as const)('$status: the bar can be hidden, and its $bar is then unconditionally in More', async ({ status, bar }) => {
     stubFetch()
     renderHeader(run(status))
@@ -565,7 +564,6 @@ describe('Mark unread (#775)', () => {
     stubFetch()
     renderHeader(readDone())
     expect(itemNames(await openMoreMenu())).toEqual([
-      'Continue',
       'Resume in terminal',
       'Notes',
       'Mark unread',
@@ -712,108 +710,15 @@ describe('actions hit their endpoints', () => {
     })
   })
 
-  it('Continue → POST /continue', async () => {
-    const sent = stubFetch()
-    renderHeader(run('done'))
-    const button = actionBar().getByRole<HTMLButtonElement>('button', { name: 'Continue' })
-    await waitFor(() => expect(button.disabled).toBe(false))
-    fireEvent.click(button)
-    await waitFor(() => {
-      expect(sent.some((r) => r.method === 'POST' && r.path === '/api/v1/runs/r1/continue')).toBe(true)
-    })
-  })
-
-  it('a refused Continue refetches the record it was drawn from', async () => {
-    // The drift case: the record says `done`, the run is running again (a lost workspace-stream
-    // frame — run-reconcile.ts). Nothing else refetches a run record here, so without this the bar
-    // would keep offering a Continue the server keeps refusing.
-    const sent = stubFetch({
-      '/api/v1/runs/r1/continue': () => jsonResponse({ error: 'run is still active' }, 409),
-    })
-    renderHeader(run('done'))
-    const button = actionBar().getByRole<HTMLButtonElement>('button', { name: 'Continue' })
-    await waitFor(() => expect(button.disabled).toBe(false))
-    const listReadsBefore = sent.filter((r) => r.method === 'GET' && r.path === '/api/v1/runs').length
-
-    fireEvent.click(button)
-
-    await waitFor(() => expect(screen.getByText('run is still active')).not.toBeNull())
-    await waitFor(() =>
-      expect(sent.filter((r) => r.method === 'GET' && r.path === '/api/v1/runs').length).toBeGreaterThan(
-        listReadsBefore,
-      ),
-    )
-  })
-
-  it('disables desktop Continue and its mutation guard blocks a forced click without a provider', async () => {
-    const sent = stubFetch({
-      '/api/v1/providers/status': () =>
-        jsonResponse({
-          providers: [
-            { provider: 'claude', status: 'disconnected', enabled: true },
-            { provider: 'codex', status: 'unknown', enabled: true },
-            { provider: 'opencode', status: 'not-installed', enabled: true },
-          { provider: 'cursor', status: 'not-installed', enabled: true },
-          ],
-        }),
-    })
-    renderHeader(run('done', { runner: 'claude' }))
-
-    const button = actionBar().getByRole<HTMLButtonElement>('button', { name: 'Continue' })
-    await waitFor(() => expect(button.disabled).toBe(true))
-    button.removeAttribute('disabled')
-    fireEvent.click(button)
-    await act(() => Promise.resolve())
-
-    expect(sent.some((request) => request.path === '/api/v1/runs/r1/continue')).toBe(false)
-  })
-
-  it('disables the menu Continue and does not post when its menu item is selected', async () => {
-    const sent = stubFetch({
-      '/api/v1/providers/status': () =>
-        jsonResponse({
-          providers: [
-            { provider: 'claude', status: 'disconnected', enabled: true },
-            { provider: 'codex', status: 'unknown', enabled: true },
-            { provider: 'opencode', status: 'not-installed', enabled: true },
-          { provider: 'cursor', status: 'not-installed', enabled: true },
-          ],
-        }),
-    })
-    renderHeader(run('done', { runner: 'claude' }))
-
-    const item = (await openMoreMenu()).getByRole('menuitem', { name: 'Continue' })
-    await waitFor(() => expect(item.getAttribute('data-disabled')).not.toBeNull())
-    fireEvent.click(item)
-    await act(() => Promise.resolve())
-
-    expect(sent.some((request) => request.path === '/api/v1/runs/r1/continue')).toBe(false)
-  })
-
-  it('sends a connected fallback runner when the run provider is disconnected', async () => {
-    const sent = stubFetch({
-      '/api/v1/providers/status': () =>
-        jsonResponse({
-          providers: [
-            { provider: 'claude', status: 'disconnected', enabled: true },
-            { provider: 'codex', status: 'connected', enabled: true },
-            { provider: 'opencode', status: 'not-installed', enabled: true },
-          { provider: 'cursor', status: 'not-installed', enabled: true },
-          ],
-        }),
-    })
-    renderHeader(run('done', { runner: 'claude' }))
-
-    const button = actionBar().getByRole<HTMLButtonElement>('button', { name: 'Continue' })
-    await waitFor(() => expect(button.disabled).toBe(false))
-    fireEvent.click(button)
-
-    await waitFor(() =>
-      expect(sent.find((request) => request.path === '/api/v1/runs/r1/continue')?.body).toEqual({
-        runner: 'codex',
-      }),
-    )
-  })
+  it.each(['review', 'done', 'failed', 'cancelled'] as const)(
+    '%s: no Continue in the bar or the menu — the composer\'s send is the one Continue (#1337)',
+    async (status) => {
+      stubFetch()
+      renderHeader(run(status))
+      expect(actionBar().queryByRole('button', { name: 'Continue' })).toBeNull()
+      expect((await openMoreMenu()).queryByRole('menuitem', { name: 'Continue' })).toBeNull()
+    },
+  )
 
   it('Archive → POST /archive with the flipped flag', async () => {
     const sent = stubFetch()
@@ -944,18 +849,6 @@ describe('actions hit their endpoints', () => {
         listReadsBefore,
       ),
     )
-  })
-
-  it('a mutation failure surfaces the server message as a danger toast', async () => {
-    stubFetch({
-      '/api/v1/runs/r1/continue': () => jsonResponse({ error: 'no agent session to resume' }, 409),
-    })
-    renderHeader(run('done'))
-    const button = actionBar().getByRole<HTMLButtonElement>('button', { name: 'Continue' })
-    await waitFor(() => expect(button.disabled).toBe(false))
-    fireEvent.click(button)
-    await waitFor(() => expect(toastText()).toBe('no agent session to resume'))
-    expect(toastTone()).toBe('danger')
   })
 })
 

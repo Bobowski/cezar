@@ -39,6 +39,18 @@ const pinAutonameOff = (): void => {
 beforeEach(pinAutonameOff)
 afterEach(pinAutonameOff)
 
+// Cockpit auth is ON by default for a hosted cockpit (spec 2026-10-12-cockpit-authentication §4),
+// and dozens of suites flip `CEZ_REMOTE=1` to exercise a hosted gate — every one of them would
+// meet a 401 before the behaviour it tests. Off for the suite; the auth suites delete the pin to
+// test the real default. Re-pinned around every case for the same reason as the two above.
+const pinAuthOff = (): void => {
+  if (process.env.CEZ_AUTH === undefined) process.env.CEZ_AUTH = '0'
+}
+
+pinAuthOff()
+beforeEach(pinAuthOff)
+afterEach(pinAuthOff)
+
 const sandboxHome = mkdtempSync(join(realpathSync(tmpdir()), 'cez-vitest-home-'))
 
 const pinSandboxHome = (): void => {

@@ -217,6 +217,18 @@ function fileEditEnabled(env: NodeJS.ProcessEnv, bindHost?: string): boolean {
   return env.CEZ_REMOTE !== '1' && isLoopbackHost(bindHost);
 }
 
+/**
+ * Whether cezar's own login guards this cockpit (spec `2026-10-12-cockpit-authentication.md` §4).
+ * A tri-state like `terminalEnabled`, pointing the other way: unset, it is ON for a hosted
+ * cockpit — the safe default is not a flag — and off locally, where the machine is the perimeter.
+ * `CEZ_AUTH=0` hands authentication back to the reverse proxy, which is what hosted meant before.
+ */
+export function authEnforced(env: NodeJS.ProcessEnv = process.env, bindHost?: string): boolean {
+  if (env.CEZ_AUTH === '1') return true;
+  if (env.CEZ_AUTH === '0') return false;
+  return env.CEZ_REMOTE === '1' || !isLoopbackHost(bindHost);
+}
+
 /** The 409 a write answers when `fileEdit` is off — which of the two reasons it is. */
 export function fileEditRefusal(env: NodeJS.ProcessEnv = process.env): string {
   return env.CEZ_FILE_EDIT === '0'

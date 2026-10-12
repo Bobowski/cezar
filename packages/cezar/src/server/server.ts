@@ -50,7 +50,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Hono, type Context } from 'hono';
-import type { Next } from 'hono';
+import type { MiddlewareHandler, Next } from 'hono';
 import { serve, type ServerType } from '@hono/node-server';
 import { bodyLimit } from 'hono/body-limit';
 import { streamSSE } from 'hono/streaming';
@@ -253,7 +253,12 @@ import { ProjectContextError, ProjectContexts, type ProjectContext } from './pro
 import { reviewGateEnabled } from '../runs/review-gate.ts';
 import { readUiState, uiStatePath } from '../ui-state.ts';
 import { agentHomePaths, cezarHomeDir, expandTilde, isAbsolutePath } from '../paths.ts';
-import { fileEditRefusal, isLoopbackHostHeader, normalizeHostname, resolveCapabilities } from './capabilities.ts';
+import { authEnforced, fileEditRefusal, isLoopbackHostHeader, normalizeHostname, resolveCapabilities } from './capabilities.ts';
+import { createAuthGuard, upgradeIsAuthenticated } from '../auth/guard.ts';
+import { ensureHostKey } from '../auth/host-key.ts';
+import { authRoutes } from '../auth/routes.ts';
+import { enableRunTokens } from '../auth/run-tokens.ts';
+import { AuthService } from '../auth/service.ts';
 import { createSocketHub, type SocketHub, type WsUpgradeVerdict } from './ws.ts';
 import { browseDirectory, isInsideBrowseRoot, isLexicallyInsideBrowseRoot, resolveBrowseRoot } from './fs-browse.ts';
 import { parseRemote, resolveForge, type ForgeAvailability } from './forge/index.ts';
@@ -297,6 +302,9 @@ export interface ServerDeps {
   /** Host the HTTP server binds (default 127.0.0.1). A non-loopback host
    *  implies hosted mode — `capabilities.localHandoff:false`. */
   bindHost?: string;
+  /** Accounts and sessions (spec 2026-10-12-cockpit-authentication). `startServer` shares ONE
+   *  instance between the route guard and the WebSocket upgrade; tests inject a cheap-scrypt one. */
+  auth?: AuthService;
   /** Workspace-registry id of the boot project (multi-project spec) — plumbed
    *  from `initWorkspace` in src/index.ts. Optional: legacy callers/tests get
    *  a lazy registry lookup by `repoRoot`, falling back to the repo's slug. */
@@ -1642,6 +1650,22 @@ export function createApp(deps: ServerDeps) {
     }
     return next();
   });
+
+  // ---- authentication (spec 2026-10-12-cockpit-authentication §6) ------------
+  // After the origin guard, before every route: a request is a principal or a 401. Off on a
+  // local cockpit, where this only stamps the `host` principal.
+  const auth = deps.auth ?? new AuthService();
+  const authIsEnforced = () => authEnforced(process.env, bindHost);
+  app.use('/api/*', createAuthGuard({
+    service: auth,
+    enforced: authIsEnforced,
+    isRunLive: async ({ runId, projectId }) => {
+      if (projectId === undefined || projectId === 'default' || projectId === (await resolveBootProject())) {
+        return deps.manager.isActive(runId);
+      }
+      return contexts.peek(projectId)?.manager.isActive(runId) ?? false;
+    },
+  }) as unknown as MiddlewareHandler);
 
   // The mirrored project-route table (spec "API Contracts → Project-scoped").
   // Every route below registers ONCE on this sub-app; `createApp` mounts it
@@ -7452,6 +7476,7 @@ export function createApp(deps: ServerDeps) {
   // project-scoped spelling, which would be a second surface to protect with no consumer.
   const workspaceV1 = new Hono()
     .route('/', healthRoutes)
+    .route('/', authRoutes({ service: auth, enforced: authIsEnforced }))
     .route('/', modelsRoutes)
     .route('/', providersRoutes)
     .route('/', projectsRoutes)
@@ -7525,8 +7550,18 @@ export function startServer(deps: ServerDeps, port: number): ServerType {
   const automationsEnabled = () => resolveCapabilities(process.env, deps.bindHost).automations;
   let rescheduleAutomations = () => {};
   const appCleanups: Array<() => void> = [];
+  // One instance for the route guard and the upgrade hook, so a session revoked through one is
+  // gone for the other.
+  const auth = deps.auth ?? new AuthService();
+  const authIsEnforced = () => authEnforced(process.env, deps.bindHost);
+  if (authIsEnforced()) {
+    // Boot-time, like dispatch: a token is composed into a run's environment when it starts.
+    enableRunTokens();
+    ensureHostKey();
+  }
   const app = createApp({
     ...deps,
+    auth,
     onDispose: (cleanup) => { appCleanups.push(cleanup); deps.onDispose?.(cleanup); },
     contexts: sharedContexts,
     automationStore: bootAutomationStore,
@@ -7644,7 +7679,8 @@ export function startServer(deps: ServerDeps, port: number): ServerType {
     }).catch(() => undefined);
   });
   server.once('close', () => { for (const cleanup of appCleanups) cleanup(); unsubscribe(); coordinator.stop(); automationScheduler.stop(); });
-  socketHub.attach(server, (req) => verifyWsUpgrade(req, deps.bindHost));
+  socketHub.attach(server, (req) =>
+    upgradeIsAuthenticated(req, { service: auth, enforced: authIsEnforced }) && verifyWsUpgrade(req, deps.bindHost));
   return server;
 }
 

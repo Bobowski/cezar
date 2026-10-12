@@ -1,6 +1,8 @@
 # Cockpit authentication — a login cezar owns
 
-> Status: phases 1–3 implemented (2026-10-12) on `brutus`; phase 4 open. The three
+> Status: all four phases implemented (2026-10-12) on `brutus`. NOT yet run on a real VPS: the
+> installer changes are covered by unit tests against a stubbed runner, and the nginx site was
+> never passed through `nginx -t` (§13). The three
 > decisions in §12 were taken the same day. A hosted cockpit can be set up, signed in to and
 > managed from the browser; the hosted gates and the installer have not moved yet (§13).
 > Implementation: `packages/cezar/src/auth/` (`service.ts`, `store.ts`, `guard.ts`, `routes.ts`,
@@ -178,7 +180,7 @@ what deliberately did not:
 | Open in editor / Finder / terminal app | 409 | 409 — a machine property |
 | `GET /agent-config` `editable`, home-directory config files | false / 409 | true / served |
 | Preview | via gateway | via gateway, unchanged |
-| Browser WebSocket | not opened | not opened yet — phase 4 |
+| Browser WebSocket | not opened | opened once the proxy is proven to pass upgrades |
 
 Left on `localHandoff`, on purpose:
 
@@ -194,14 +196,14 @@ Left on `localHandoff`, on purpose:
   terminal) and needs its own pass; a second agent login on a VPS is done from the cockpit
   terminal meanwhile.
 
-**The WebSocket waits for phase 4**, and not for a security reason — the server already gates
-the handshake on the session. The stock nginx vhost does not forward upgrades (`Connection ''`),
-and an install that still has `auth_basic` in front would meet the three-second reconnect loop
-the cockpit avoids today. Both are the installer's to fix. Nothing depends on the socket in the
-meantime: the terminal polls its cursor over HTTP when there is none, by design.
-
-`=0` keeps meaning off everywhere for the two flags. With `CEZ_AUTH=0` nothing in this table
-moves.
+**The browser WebSocket** (built in phase 4). The server gates the handshake on the session, and
+the cookie rides it, so a signed-in hosted cockpit can have the socket — if its proxy passes
+upgrades, which is not cezar's to know. The cockpit therefore asks once per page
+(`probeSocket`, `packages/web/src/api/socket-transport.ts`): one handshake, closed at once. Yes →
+health, host usage, the tracker watch and the terminal bell move to the socket. No, or no answer
+in five seconds → they stay on the HTTP reads they have always had in hosted mode, and nothing
+retries. A cockpit behind Basic-Auth never asks. Without the probe a proxy that drops upgrades
+would leave the terminal waiting on a bell that cannot ring.
 
 **Preview gateway.** Cookies are scoped by host, not port, so the browser sends the cockpit's
 session cookie to every preview port. The gateway must strip `__Host-cez_session` from what the
@@ -257,6 +259,30 @@ still there — but the cockpit is unusable until that step. `server-deploy` det
 prints the link, and offers to remove `auth_basic` once an owner exists. `CEZ_AUTH=0` restores
 the previous behaviour exactly. Recorded in `BACKWARD_COMPATIBILITY.md` and the CHANGELOG.
 
+## 9a. The installer, as built
+
+`ubuntu-vps` asks one new question — who signs people in — and records it as `signIn` in
+`server.json`:
+
+| `signIn` | nginx site | SSL step | unit | last step |
+| --- | --- | --- | --- | --- |
+| `cezar` (default for a person) | no `auth_basic`; `limit_req` on `/auth/(login\|setup)` | **required** | unchanged | verifies 401 for anonymous, 200 for the host key against THIS install, then prints the setup link |
+| `proxy` (and always under `--yes`) | `auth_basic` + htpasswd, as before | optional | `Environment=CEZ_AUTH=0` | the Basic-Auth verify, unchanged |
+| absent (a record from before) | untouched | — | untouched | `server-deploy` explains the double login and changes nothing |
+
+- Both sites now pass WebSocket upgrades through a `map` on `$http_upgrade` that leaves the
+  empty `Connection` header in place for everything else, so SSE keep-alive is as it was. The
+  `map` and the rate-limit zone are named after the instance: two cockpits can share one nginx.
+- `--yes` keeps `proxy` because it also skips the SSL step, and cezar's sign-in cannot work
+  over plain HTTP — the non-interactive install is byte-for-byte what it was, plus the
+  explicit `CEZ_AUTH=0`.
+- `--external-proxy` asks the same question in the service step. With `cezar` the printed
+  proxy config has no auth middleware and the proxy is asked for TLS, `X-Forwarded-Proto` and
+  WebSocket upgrades instead.
+- The verify step uses the host key through `curl -K -`, so it never appears in argv.
+- `macosx-ngrok` sets `CEZ_AUTH=0`: ngrok's `--basic-auth` is that platform's login.
+- Cockpits on one host share accounts (one `auth.json` per OS user) and keep separate sessions.
+
 ## 10. Room for RBAC and teams
 
 Built now because retrofitting it is the expensive part:
@@ -281,8 +307,8 @@ Not built: more than one user, invitations, per-project roles, shared team state
    `/auth/sessions/revoke-others`).
 3. **Re-keying — DONE.** `trustedOperator`; terminal, file edit and agent-config moved; every
    other hosted gate classified and left (§7).
-4. **Installer and docs** — nginx without `auth_basic` and WITH WebSocket upgrades, then the
-   browser WebSocket in remote mode, `server-deploy` migration,
+4. **Installer, WebSocket and docs — DONE** (§9a). nginx without `auth_basic` and WITH
+   WebSocket upgrades, the probed browser socket, `server-deploy` migration,
    `.env.example`, `docs/reference.md`, `docs/server-install/*`, `BACKWARD_COMPATIBILITY.md`.
 5. **Later** — passkeys, more users, RBAC, teams, agent isolation.
 
@@ -299,17 +325,17 @@ manifest-walk test exists.
    that changes, this needs ratification there: it reverses "cezar has no authentication" and,
    in phase 3, the agent-config 409.
 
-## 13. Known gaps after phase 2
+## 13. Known gaps
 
 - The sign-in flow was driven end to end in a browser over loopback (plain cookie). The
   `__Host-` cookie behind real TLS is covered by tests only, not by a live deployment.
-- The browser WebSocket is still not opened in remote mode (phase 4, §7), so a hosted cockpit
-  keeps using HTTP reads for now.
+- The hosted WebSocket was exercised through the Vite dev proxy only, not through nginx.
 - Live preview on a hosted cockpit still needs the preview gateway configured by hand
   (`CEZ_PREVIEW_PORTS` + the nginx port range); the installer does not do it.
 - Agent accounts are still read-only on a hosted cockpit (§7).
-- `server-install` still writes `auth_basic`, and its end-to-end verify expects an authenticated
-  2xx it will no longer get with auth on (phase 4).
+- **Nothing in phase 4 has run on a real server.** The installer is tested against a stubbed
+  command runner; the generated nginx site has not been through `nginx -t`, certbot has not
+  edited it, and no browser has signed in through it. The first real install is the test.
 - A container that binds a non-loopback host is "hosted", so it now asks for setup. That is the
   intended default, and a change for anyone already running one — `CEZ_AUTH=0` restores it.
 - The test suite pins `CEZ_AUTH=0` (`packages/cezar/vitest.setup.ts`) because dozens of suites

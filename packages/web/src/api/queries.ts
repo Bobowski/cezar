@@ -129,6 +129,9 @@ import type {
   UpdateChannel,
 } from '@open-mercato/cezar-api-client'
 import { subscribeTopic } from './ws'
+import { authQueryKeys } from './auth'
+import type { AuthSessionResponse } from '@open-mercato/cezar-api-client'
+import { onSocketProbe, socketProbeResult, startSocketProbe, transportFor, wantsSocketProbe } from './socket-transport'
 
 /**
  * Query keys, in one place and exported, because they are a contract rather than an
@@ -888,7 +891,12 @@ export function useHealthSubscription(): void {
 
     const syncTransport = (): void => {
       const health = queryClient.getQueryData<HealthResponse>(queryKeys.health)
-      const local = health?.capabilities?.localHandoff === true
+      // A signed-in hosted cockpit gets the socket once its proxy is proven to pass upgrades
+      // (`socket-transport.ts`); until then, and for a Basic-Auth front, it stays on HTTP.
+      const session = queryClient.getQueryData<AuthSessionResponse>(authQueryKeys.session)
+      const signedIn = session?.enforced === true && session.authenticated
+      if (wantsSocketProbe(health, signedIn)) startSocketProbe()
+      const local = transportFor(health, signedIn, socketProbeResult()) === 'local'
       if (local && releaseTopic === undefined) {
         releaseTopic = subscribeTopic('health', (data) => {
           queryClient.setQueryData(queryKeys.health, data as HealthResponse)
@@ -905,8 +913,10 @@ export function useHealthSubscription(): void {
     // Local cockpits opt in after health arrives; remote/failed bootstraps fail closed to HTTP.
     syncTransport()
     const releaseCache = queryClient.getQueryCache().subscribe(syncTransport)
+    const releaseProbe = onSocketProbe(syncTransport)
     return () => {
       releaseCache()
+      releaseProbe()
       releaseTopic?.()
     }
   }, [queryClient])

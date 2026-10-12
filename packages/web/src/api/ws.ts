@@ -197,6 +197,44 @@ export function createTopicSocket(url?: string): TopicSocket {
   }
 }
 
+/**
+ * Can a WebSocket to this cockpit open at all? One attempt, closed at once.
+ *
+ * A hosted cockpit sits behind a proxy cezar did not necessarily write, and `subscribeTopic`
+ * reconnects forever — right for a socket that worked, wrong for one a proxy will never upgrade,
+ * where every consumer would wait on a bell that cannot ring. `socket-transport.ts` asks here
+ * first and stays on HTTP when the answer is no.
+ */
+export function probeSocket(timeoutMs = 5_000): Promise<boolean> {
+  const Ctor = globalThis.WebSocket
+  if (typeof Ctor !== 'function') return Promise.resolve(false)
+  return new Promise((resolve) => {
+    let settled = false
+    let ws: WebSocket | undefined
+    const settle = (ok: boolean): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(ok)
+      try {
+        ws?.close()
+      } catch {
+        // already closed
+      }
+    }
+    const timer = setTimeout(() => settle(false), timeoutMs)
+    try {
+      ws = new Ctor(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${WS_PATH}`)
+    } catch {
+      settle(false)
+      return
+    }
+    ws.addEventListener('open', () => settle(true))
+    ws.addEventListener('close', () => settle(false))
+    ws.addEventListener('error', () => settle(false))
+  })
+}
+
 /** The app-wide socket every hook shares. Lazy so importing this module (tests, storybooks)
  *  never opens a connection — the first real `subscribeTopic` does. */
 let shared: TopicSocket | null = null

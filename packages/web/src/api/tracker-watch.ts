@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useTransportFor } from './socket-transport'
 import { useQueryClient, type InfiniteData, type QueryKey } from '@tanstack/react-query'
 import { queryScope, trackerWatchSignalSchema, type TrackerItemsResponse, type TrackerItemsSuccess, type TrackerWatchInput, type TrackerWatchSnapshot } from '@open-mercato/cezar-api-client'
 import { openTrackerWatch, readTrackerWatch, refreshTrackerWatch } from './client'
@@ -16,7 +17,7 @@ export function useTrackerWatch(input: TrackerWatchInput, queryKey: QueryKey, en
   const identity = JSON.stringify([project, input, queryKey])
   const [view, setView] = useState<{ identity: string; snapshot: TrackerWatchSnapshot | null; error: string | null; pending: TrackerItemsSuccess | null }>({ identity, snapshot: null, error: null, pending: null })
   const actions = useRef({ refresh: async () => {}, applyChanges: async () => {} })
-  const mode = health.data ? (health.data.capabilities.localHandoff ? 'local' : 'remote') : null
+  const mode = useTransportFor(health.data) ?? null
 
   useEffect(() => {
     setView({ identity, snapshot: null, error: null, pending: null })

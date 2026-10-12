@@ -12,12 +12,11 @@ import '@xterm/xterm/css/xterm.css'
  * One terminal tab's screen: an emulator bound to one PTY session (spec
  * `.ai/specs/2026-10-07-task-workspace.md` §6).
  *
- * TRANSPORT. Output is never pushed over the socket. On a local cockpit the session's topic
- * wakes us with a cursor and the bytes come back over authenticated HTTP; on a hosted one there
- * is no socket at all — a browser WebSocket cannot carry reverse-proxy credentials, which is why
- * every WS consumer in this cockpit is gated on `localHandoff` — so the same read is polled. The
- * socket is only ever the bell; losing it costs latency and nothing else, which is what makes
- * the fallback below safe.
+ * TRANSPORT. Output is never pushed over the socket. Where the cockpit has one — locally, and on
+ * a signed-in hosted cockpit whose proxy passes upgrades (`api/socket-transport.ts`) — the
+ * session's topic wakes us with a cursor and the bytes come back over authenticated HTTP.
+ * Everywhere else the same read is polled. The socket is only ever the bell; losing it costs
+ * latency and nothing else, which is what makes the fallback below safe.
  *
  * A pane stays mounted while its tab is in the background, but it stops READING. The cursor is
  * what makes that free: on reactivation one read returns everything that accumulated, because

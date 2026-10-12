@@ -7,6 +7,7 @@ import { useHealth, workspaceQueryKeys } from './queries'
 import { effectiveHostView } from '@/lib/host-effective'
 import { useIsDesktop } from '@/lib/use-desktop'
 import { subscribeTopic } from './ws'
+import { useTransportFor } from './socket-transport'
 
 /**
  * The Machine card's and the sidebar widget's data layer (spec
@@ -77,9 +78,9 @@ export async function readWorkspaceHostUsage(
  * deployment mode is known (the same rule `useHealthSubscription` follows).
  */
 export function useHostTransport(): 'local' | 'remote' | undefined {
-  const health = useHealth().data
-  if (health === undefined) return undefined
-  return health.capabilities?.localHandoff === true ? 'local' : 'remote'
+  // `local` now means "the socket bus is usable here", which a signed-in hosted cockpit may be
+  // too — see `socket-transport.ts`.
+  return useTransportFor(useHealth().data)
 }
 
 // ---- the store ---------------------------------------------------------------------------

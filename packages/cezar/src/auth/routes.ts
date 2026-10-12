@@ -1,7 +1,9 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import {
+  authConfirmBodySchema,
   authLoginBodySchema,
+  authPasswordBodySchema,
   authSetupBeginBodySchema,
   authSetupCompleteBodySchema,
   authVerifyBodySchema,
@@ -134,6 +136,26 @@ export function authRoutes(deps: { service: AuthService; enforced: () => boolean
       const principal = c.get('principal');
       if (principal?.kind !== 'user') return c.json({ error: 'only a signed-in user has sessions' }, 403);
       return c.json({ sessions: service.listSessions(principal.user.id, principal.sessionId) });
+    })
+    .post('/auth/sessions/revoke-others', (c) => {
+      const principal = c.get('principal');
+      if (principal?.kind !== 'user') return c.json({ error: 'only a signed-in user has sessions' }, 403);
+      return c.json({ revoked: service.revokeOtherSessions(principal.user.id, principal.sessionId) });
+    })
+    .post('/auth/password', jsonZodValidator(authPasswordBodySchema), async (c) => {
+      const principal = c.get('principal');
+      if (principal?.kind !== 'user') return c.json({ error: 'only a signed-in user has a password' }, 403);
+      const result = await service.changePassword(principal.user.id, principal.sessionId, c.req.valid('json'), metaOf(c));
+      if (!result.ok) return failure(c, result);
+      return c.json({ revoked: result.revoked });
+    })
+    .post('/auth/recovery-codes', jsonZodValidator(authConfirmBodySchema), (c) => {
+      const principal = c.get('principal');
+      if (principal?.kind !== 'user') return c.json({ error: 'only a signed-in user has recovery codes' }, 403);
+      const result = service.regenerateRecoveryCodes(principal.user.id, c.req.valid('json').code, metaOf(c));
+      if (!result.ok) return failure(c, result);
+      c.header('cache-control', 'no-store');
+      return c.json({ recoveryCodes: result.recoveryCodes });
     })
     .delete('/auth/sessions/:id', paramZodValidator(z.object({ id: z.string().min(1).max(64) })), (c) => {
       const principal = c.get('principal');

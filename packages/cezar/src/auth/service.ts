@@ -396,6 +396,86 @@ export class AuthService {
       }));
   }
 
+  /** Sign every OTHER device out. Answers how many sessions that was. */
+  revokeOtherSessions(userId: string, currentId: string): number {
+    const sessions = this.sessionMap();
+    let revoked = 0;
+    for (const [hash, session] of sessions) {
+      if (session.userId !== userId || session.id === currentId) continue;
+      sessions.delete(hash);
+      revoked += 1;
+    }
+    if (revoked > 0) {
+      this.persistSessions();
+      appendAudit({ event: 'sessions-revoked', session: currentId, detail: String(revoked) }, this.now());
+    }
+    return revoked;
+  }
+
+  /**
+   * A fresh authenticator code from a signed-in user (§5.3): what a sensitive change asks for, so
+   * an unattended session cannot make it. Consumes the time step like a sign-in does.
+   */
+  private confirmSecondFactor(userId: string, code: string, meta: RequestMeta): AuthFailure | null {
+    const name = this.store().users.find((user) => user.id === userId)?.name ?? userId;
+    const keys = [`ip:${meta.address}`, `user:${name}`];
+    const now = this.now();
+    const wait = this.throttle.retryAfter(keys, now);
+    if (wait > 0) return fail(429, 'too many attempts — try again later', Math.ceil(wait / 1000));
+    const accepted = this.mutate((store) => {
+      const user = store.users.find((entry) => entry.id === userId);
+      if (!user?.totp) return false;
+      const step = verifyTotp(user.totp.secret, code, now, user.totp.lastStep);
+      if (step === null) return false;
+      user.totp.lastStep = step;
+      return true;
+    });
+    if (accepted) return null;
+    this.throttle.fail(keys, now);
+    appendAudit({ event: 'confirm-failed', user: name, address: meta.address }, now);
+    return fail(401, 'that code is not valid — use the current code from your authenticator, not one you already used');
+  }
+
+  async changePassword(
+    userId: string,
+    currentSessionId: string,
+    input: { currentPassword: string; code: string; newPassword: string },
+    meta: RequestMeta,
+  ): Promise<AuthResult<{ revoked: number }>> {
+    const user = this.store().users.find((entry) => entry.id === userId);
+    if (!user?.password) return fail(401, 'not signed in');
+    const keys = [`ip:${meta.address}`, `user:${user.name}`];
+    const wait = this.throttle.retryAfter(keys, this.now());
+    if (wait > 0) return fail(429, 'too many attempts — try again later', Math.ceil(wait / 1000));
+    const stored = user.password;
+    if (!(await this.withScryptSlot(() => verifyPassword(input.currentPassword, stored)))) {
+      this.throttle.fail(keys, this.now());
+      return fail(401, 'your current password is not right');
+    }
+    const refused = this.confirmSecondFactor(userId, input.code, meta);
+    if (refused) return refused;
+    const password = await this.withScryptSlot(() => hashPassword(input.newPassword, this.scrypt));
+    this.mutate((store) => {
+      const entry = store.users.find((candidate) => candidate.id === userId);
+      if (entry) entry.password = password;
+    });
+    appendAudit({ event: 'password-changed', user: user.name, address: meta.address }, this.now());
+    return { ok: true, revoked: this.revokeOtherSessions(userId, currentSessionId) };
+  }
+
+  /** Replaces ALL recovery codes: the old set stops working the moment the new one is shown. */
+  regenerateRecoveryCodes(userId: string, code: string, meta: RequestMeta): AuthResult<{ recoveryCodes: string[] }> {
+    const refused = this.confirmSecondFactor(userId, code, meta);
+    if (refused) return refused;
+    const recoveryCodes = Array.from({ length: RECOVERY_CODES }, newRecoveryCode);
+    this.mutate((store) => {
+      const entry = store.users.find((candidate) => candidate.id === userId);
+      if (entry) entry.recovery = recoveryCodes.map((value) => sha256(value));
+    });
+    appendAudit({ event: 'recovery-regenerated', user: userId, address: meta.address }, this.now());
+    return { ok: true, recoveryCodes };
+  }
+
   /** False when the id is not one of this user's sessions — the route answers 404. */
   revokeSession(userId: string, sessionId: string): boolean {
     const sessions = this.sessionMap();

@@ -254,3 +254,84 @@ describe('AuthService', () => {
     expect((readAuthStore(storePath) as Record<string, unknown>).futureKey).toEqual({ kept: true });
   });
 });
+
+describe('AuthService — changes a signed-in user makes', () => {
+  let dir: string;
+  let now: number;
+  let service: AuthService;
+  const FAST_PARAMS = { N: 2 ** 10, r: 8, p: 1 };
+  const codeAt = (secret: string, offset = 0) => hotp(base32Decode(secret)!, totpStep(now) + offset);
+
+  async function owner() {
+    const storePath = join(dir, 'auth.json');
+    const issued = issueSetupCode({ path: storePath, now });
+    if (!issued.ok) throw new Error('refused');
+    const begun = await service.beginSetup({ code: issued.setup.code, username: 'mateusz', password: PASSWORD }, META);
+    if (!begun.ok) throw new Error(begun.error);
+    const done = service.completeSetup({ ticket: begun.ticket, code: codeAt(begun.secret) }, META);
+    if (!done.ok) throw new Error(done.error);
+    return { ...done, secret: begun.secret, sessionId: service.authenticate(done.token)!.sessionId };
+  }
+
+  async function secondDevice(secret: string) {
+    now += 60_000;
+    const first = await service.login({ username: 'mateusz', password: PASSWORD }, META);
+    if (!first.ok) throw new Error(first.error);
+    const result = service.verifyLogin({ ticket: first.ticket, code: codeAt(secret) }, META);
+    if (!result.ok) throw new Error(result.error);
+    return result.token;
+  }
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cez-auth-change-'));
+    process.env.CEZ_HOME = dir;
+    now = Date.UTC(2026, 9, 12, 12, 0, 0);
+    service = new AuthService({
+      storePath: join(dir, 'auth.json'), sessionsPath: join(dir, 'auth-sessions.json'), scrypt: FAST_PARAMS, now: () => now,
+    });
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('changes the password only with the old one AND a fresh code, and signs other devices out', async () => {
+    const me = await owner();
+    const other = await secondDevice(me.secret);
+    now += 60_000;
+    const input = { currentPassword: PASSWORD, code: codeAt(me.secret), newPassword: 'an entirely new password' };
+    expect(await service.changePassword(me.user.id, me.sessionId, { ...input, currentPassword: 'wrong wrong wrong' }, META))
+      .toMatchObject({ ok: false, status: 401 });
+    expect(await service.changePassword(me.user.id, me.sessionId, { ...input, code: '000000' }, META))
+      .toMatchObject({ ok: false, status: 401 });
+    expect(await service.changePassword(me.user.id, me.sessionId, input, META)).toEqual({ ok: true, revoked: 1 });
+    expect(service.authenticate(other)).toBeNull();
+    expect(service.authenticate(me.token)).not.toBeNull();
+    expect(await service.login({ username: 'mateusz', password: PASSWORD }, META)).toMatchObject({ ok: false });
+    expect((await service.login({ username: 'mateusz', password: 'an entirely new password' }, META)).ok).toBe(true);
+  });
+
+  it('replaces every recovery code, and will not do it on a replayed authenticator code', async () => {
+    const me = await owner();
+    now += 60_000;
+    const code = codeAt(me.secret);
+    const fresh = service.regenerateRecoveryCodes(me.user.id, code, META);
+    if (!fresh.ok) throw new Error(fresh.error);
+    expect(fresh.recoveryCodes).toHaveLength(10);
+    expect(fresh.recoveryCodes).not.toEqual(me.recoveryCodes);
+    expect(service.regenerateRecoveryCodes(me.user.id, code, META)).toMatchObject({ ok: false, status: 401 });
+
+    const first = await service.login({ username: 'mateusz', password: PASSWORD }, META);
+    if (!first.ok) throw new Error(first.error);
+    expect(service.verifyLogin({ ticket: first.ticket, code: me.recoveryCodes[0]! }, META)).toMatchObject({ ok: false });
+    const again = await service.login({ username: 'mateusz', password: PASSWORD }, META);
+    if (!again.ok) throw new Error(again.error);
+    expect(service.verifyLogin({ ticket: again.ticket, code: fresh.recoveryCodes[0]! }, META).ok).toBe(true);
+  });
+
+  it('signs out every other device and leaves this one', async () => {
+    const me = await owner();
+    const other = await secondDevice(me.secret);
+    expect(service.revokeOtherSessions(me.user.id, me.sessionId)).toBe(1);
+    expect(service.revokeOtherSessions(me.user.id, me.sessionId)).toBe(0);
+    expect(service.authenticate(other)).toBeNull();
+    expect(service.authenticate(me.token)).not.toBeNull();
+  });
+});

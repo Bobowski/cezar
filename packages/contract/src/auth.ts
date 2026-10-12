@@ -95,5 +95,23 @@ export type AuthDevice = z.infer<typeof authDeviceSchema>;
 export const authDevicesResponseSchema = z.object({ sessions: z.array(authDeviceSchema) });
 export type AuthDevicesResponse = z.infer<typeof authDevicesResponseSchema>;
 
+/** Changing the password needs BOTH current factors, and signs every other device out. */
+export const authPasswordBodySchema = z.object({
+  currentPassword: z.string().min(1).max(1024),
+  code: z.string().min(1).max(16),
+  newPassword: z.string().min(AUTH_PASSWORD_MIN, `at least ${AUTH_PASSWORD_MIN} characters`).max(1024),
+});
+export type AuthPasswordBody = z.infer<typeof authPasswordBodySchema>;
+
+/** A fresh authenticator code, for an action that must not ride on an unattended session. */
+export const authConfirmBodySchema = z.object({ code: z.string().min(1).max(16) });
+export type AuthConfirmBody = z.infer<typeof authConfirmBodySchema>;
+
+export const authRecoveryCodesResponseSchema = z.object({ recoveryCodes: z.array(z.string()) });
+export type AuthRecoveryCodesResponse = z.infer<typeof authRecoveryCodesResponseSchema>;
+
+export const authRevokeOthersResponseSchema = z.object({ revoked: z.number() });
+export type AuthRevokeOthersResponse = z.infer<typeof authRevokeOthersResponseSchema>;
+
 export const authOkResponseSchema = z.object({ ok: z.literal(true) });
 export type AuthOkResponse = z.infer<typeof authOkResponseSchema>;

@@ -161,6 +161,16 @@ describe('PreviewGateways', () => {
     expect(seen[0]!.cookie).toBe('session=abc');
   });
 
+
+  it('never hands the app the cockpit\u2019s own session cookie', async () => {
+    // Cookies ignore the port, so the browser sends it here (spec 2026-10-12-cockpit-authentication §7).
+    const { origin, cookie } = await enter();
+    seen.length = 0;
+    await fetch(`${origin}/`, {
+      headers: { cookie: `__Host-cez_session=s3cret; session=abc; cez_session=plain; ${cookie}`, origin },
+    });
+    expect(seen[0]!.cookie).toBe('session=abc');
+  });
   it('leaves a foreign Origin exactly as the browser sent it', async () => {
     const { origin, cookie } = await enter();
     await fetch(`${origin}/`, { headers: { cookie, origin: 'https://evil.example' } });

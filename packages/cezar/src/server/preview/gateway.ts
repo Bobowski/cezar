@@ -3,6 +3,7 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import { connect, type Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 
+import { PLAIN_SESSION_COOKIE, SECURE_SESSION_COOKIE } from '../../auth/guard.ts';
 import { parseDesignTarget } from './design-proxy.ts';
 
 /**
@@ -290,6 +291,9 @@ export class PreviewGateways {
         if (cookie === name && sameSecret(trimmed.slice(eq + 1), entry.secret)) authorized = true;
         continue;
       }
+      // Cookies ignore the port, so the browser sends the cockpit's own session here too. The
+      // previewed app must never see it (spec 2026-10-12-cockpit-authentication §7).
+      if (cookie === SECURE_SESSION_COOKIE || cookie === PLAIN_SESSION_COOKIE) continue;
       kept.push(trimmed);
     }
     return { authorized, forwarded: kept.length > 0 ? kept.join('; ') : undefined };

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chmod, lstat, mkdir, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { FILE_CONTENT_CAP, fileHash, readWorktreePath, type FilesResult } from './git-changes.ts';
 
@@ -165,6 +165,9 @@ export function recordEditBlob(cwd: string, bytes: Uint8Array): Promise<string |
 
 // ---- create, delete, rename (spec §Revision 2026-10-10, step 3) -------------------------------
 
+/** The largest file a delete keeps a recovery blob for. */
+export const DELETE_BLOB_CAP = 32 * 1024 * 1024;
+
 type Refusal = { ok: false; kind: 'refused' | 'failed'; error: string };
 const refused = (error: string): Refusal => ({ ok: false, kind: 'refused', error });
 const failed = (err: unknown): Refusal => ({
@@ -173,6 +176,21 @@ const failed = (err: unknown): Refusal => ({
   error: err instanceof Error ? err.message : String(err),
 });
 const exists = (path: string) => lstat(path).then(() => true, () => false);
+
+/**
+ * Is `to` just another spelling of `from`'s own directory entry — a case-only rename on a
+ * case-insensitive volume? Same dev+ino, and the directory lists no entry spelled `to`; the
+ * second half is what tells it from a hard link, which rename(2) would silently leave in place.
+ */
+async function sameDirectoryEntry(from: string, to: string): Promise<boolean> {
+  try {
+    const [a, b] = await Promise.all([lstat(from, { bigint: true }), lstat(to, { bigint: true })]);
+    if (a.dev !== b.dev || a.ino !== b.ino) return false;
+    return !(await readdir(dirname(to))).includes(basename(to));
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Resolve a path that must NOT exist yet — a file about to be created, or a rename's destination.
@@ -184,6 +202,7 @@ const exists = (path: string) => lstat(path).then(() => true, () => false);
 async function resolveNewPath(
   root: string,
   relPath: string,
+  renamedFrom?: string,
 ): Promise<{ ok: true; abs: string; path: string } | Refusal> {
   if (relPath.includes('\0')) return refused('invalid path');
   const rootAbs = resolve(root);
@@ -192,7 +211,9 @@ async function resolveNewPath(
   const path = abs.slice(rootAbs.length + 1).split(sep).join('/');
   const denied = deniedReason(path);
   if (denied) return refused(denied);
-  if (await exists(abs)) return refused(`already exists: ${path}`);
+  if ((await exists(abs)) && !(renamedFrom && (await sameDirectoryEntry(renamedFrom, abs)))) {
+    return refused(`already exists: ${path}`);
+  }
 
   let ancestor = dirname(abs);
   while (ancestor !== rootAbs && !(await exists(ancestor))) ancestor = dirname(ancestor);
@@ -253,15 +274,19 @@ async function resolveExistingFile(
  * Delete one file. Its bytes are stored as a git blob FIRST (`blob`, null outside a repository),
  * because a delete from a browser has no trash to fall back on and an untracked or ignored file
  * has no commit either — `git cat-file -p <blob>` is the way back.
+ *
+ * Above `blobCap` there is no blob: buffering the file would cost the server its size in memory,
+ * and past 2 GiB `readFile` refuses outright, so the file could never be deleted at all.
  */
 export async function deleteWorktreeFile(
   root: string,
   relPath: string,
+  blobCap = DELETE_BLOB_CAP,
 ): Promise<{ ok: true; path: string; blob: string | null } | Refusal> {
   const target = await resolveExistingFile(root, relPath);
   if (!target.ok) return target;
   try {
-    const blob = await recordEditBlob(root, await readFile(target.abs));
+    const blob = (await lstat(target.abs)).size > blobCap ? null : await recordEditBlob(root, await readFile(target.abs));
     await unlink(target.abs);
     return { ok: true, path: target.path, blob };
   } catch (err) {
@@ -279,7 +304,7 @@ export async function renameWorktreeFile(
 ): Promise<{ ok: true; from: string; to: string } | Refusal> {
   const source = await resolveExistingFile(root, from);
   if (!source.ok) return source;
-  const target = await resolveNewPath(root, to);
+  const target = await resolveNewPath(root, to, source.abs);
   if (!target.ok) return target;
   try {
     await mkdir(dirname(target.abs), { recursive: true });

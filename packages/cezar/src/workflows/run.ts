@@ -488,7 +488,8 @@ interface ActiveRun {
    * court — the one state in which a prompt lined up in the PROMPT QUEUE may go straight in.
    * Not derivable from `status: 'waiting'`: a native backend ask parks `waiting` MID-turn
    * (`handleRunnerUiEvent`), and a prompt delivered there would be taken as its answer. Set by
-   * both turn-end park blocks, cleared by every delivery and by a native ask. A runtime fact
+   * both turn-end park blocks, cleared by every delivery, by a native ask and by the first sign
+   * of a turn cezar did not send (`handleRunnerUiEvent`). A runtime fact
    * only — never constructed, so the two `ActiveRun` literals have nothing to keep in step.
    */
   promptRest?: boolean;
@@ -2248,9 +2249,19 @@ export class RunManager {
     const dispatched = Boolean(ctx.state.dispatchedThisTurn);
     ctx.state.dispatchedThisTurn = false;
     if (!dispatch) return idle;
-    if (ctx.done) return { hasDispatch: true, dispatched: false, overBudget: false, rePrompted: false };
     const note = (message: string, tone?: 'danger') =>
       this.store.appendEvent(runId, { type: 'note', stepId: ctx.stepId, message, ...(tone ? { tone } : {}) });
+    if (ctx.done) {
+      // A done turn closes the session, so there was nothing to brake — unless a queued prompt
+      // would carry it on (spec 2026-10-09-design-mode §8): then the release needs the real facts.
+      const queued = Boolean(this.store.getRun(runId)?.promptQueue?.length);
+      return {
+        hasDispatch: true,
+        dispatched: queued && dispatched,
+        overBudget: queued && this.enforceDispatchBudget(runId, note),
+        rePrompted: false,
+      };
+    }
     const overBudget = this.enforceDispatchBudget(runId, note);
     const rePrompted = !dispatched && !overBudget && this.deliverOwnInbox(runId, ctx.state, ctx.stepId, turnText);
     // The filesystem channel's SIGNAL: this turn may have written into a sibling's or the root's
@@ -3621,7 +3632,9 @@ export class RunManager {
       return false;
     }
     const [next, ...rest] = queue as [QueuedMessage, ...QueuedMessage[]];
-    if (!this.deliverMessage(runId, [{ type: 'text', text: next.text }], true)) return false;
+    // Through `sendMessage`, not `deliverMessage`: a queued prompt is real user input, so it
+    // resets the monitoring wake budget like one (spec 2026-07-24-monitoring-session-auto-wake).
+    if (!this.sendMessage(runId, [{ type: 'text', text: next.text }])) return false;
     this.store.updateRun(runId, { promptQueue: rest.length ? rest : undefined });
     return true;
   }
@@ -6395,6 +6408,9 @@ export class RunManager {
     if (state.cancelled || (this.active.has(runId) && this.active.get(runId) !== state)) return;
     this.recordUsageUiEvent(runId, state, event);
     sink.handle(event);
+    // Work observed ends the rest, whoever started the turn: a parked Claude session wakes itself
+    // when its background work finishes, and a queued prompt must not land mid-turn (§8).
+    if (event.type === 'turn.started' || event.type === 'item.started') state.promptRest = false;
     if (event.type !== 'ask.requested' || state.cancelled) return;
     // A question is open: a queued prompt delivered now would be read as its answer.
     state.promptRest = false;

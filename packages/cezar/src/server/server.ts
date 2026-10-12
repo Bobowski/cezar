@@ -4895,6 +4895,7 @@ export function createApp(deps: ServerDeps) {
       // neither the autonomous nudge nor a wake timer ever causes a vendor read. Bounded, and a
       // read that fails or is slow adds nothing and blocks nothing.
       let ticketNote: string | undefined;
+      let toldLink: TrackerLink | undefined;
       const ownLink = run.trackerLinks?.[0];
       if (ownLink) {
         try {
@@ -4913,7 +4914,7 @@ export function createApp(deps: ServerDeps) {
           if (read) {
             const change = ticketChangeSince(ownLink, read);
             ticketNote = change.note;
-            store.updateRun(id, { trackerLinks: [change.link, ...run.trackerLinks!.slice(1)] });
+            toldLink = change.link;
           }
         } catch {
           // No note. The Continue itself must not depend on the tracker.
@@ -4927,6 +4928,8 @@ export function createApp(deps: ServerDeps) {
         agentProfile: parsed.data.agentProfile,
       });
       if (!result.ok) return c.json({ error: result.error }, 409);
+      // Recorded as told only now: a refused Continue told the task nothing (spec § Phase 4).
+      if (toldLink) store.updateRun(id, { trackerLinks: [toldLink, ...(store.getRun(id)?.trackerLinks ?? []).slice(1)] });
       return c.json({ continued: true });
     })
 

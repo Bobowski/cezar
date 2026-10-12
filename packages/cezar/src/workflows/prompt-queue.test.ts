@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { PROMPT_QUEUE_MAX } from '@open-mercato/cezar-contract';
 import { RunStore, type RunRecord } from '../runs/store.ts';
-import { RunManager } from './run.ts';
+import { MAX_AUTO_CONTINUES, RunManager } from './run.ts';
 import type { WorkflowDef } from './types.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 
@@ -243,5 +243,57 @@ describe('the session prompt queue', () => {
       error: `prompt queue is full — ${PROMPT_QUEUE_MAX} prompts at most`,
     });
     expect(queued(record.id)).toHaveLength(PROMPT_QUEUE_MAX);
+  }, 60_000);
+
+  // ---- review findings (run-lifecycle 0–2) -------------------------------------------------
+
+  const eventCount = (id: string, type: string): number => {
+    const path = join(repoRoot, '.ai/cezar/runs', `${id}.ndjson`);
+    if (!existsSync(path)) return 0;
+    return readFileSync(path, 'utf8').split('\n').filter((line) => line.includes(`"type":"${type}"`)).length;
+  };
+  type Live = { monitoringWakeups?: number; session?: { sendMessage(content: { type: 'text'; text: string }[]): boolean } };
+  const live = (id: string) => (manager as unknown as { active: Map<string, Live> }).active.get(id)!;
+
+  it('holds a prompt queued while a resting session works on a turn cezar did not send', async () => {
+    const record = manager.startRun(SINGLE_STEP, { task: 'just do the thing', worktree: false });
+    currentId = record.id;
+    await waitFor(record.id, (r) => r?.status === 'waiting');
+    // Claude Code re-invokes the model itself when its background work finishes; writing straight
+    // into the session reproduces that (`deliverMessage`, which ends the rest, never runs).
+    const turnsBefore = eventCount(record.id, 'turn.started');
+    expect(live(record.id).session!.sendMessage([{ type: 'text', text: 'mock:pause background work finished' }])).toBe(true);
+    await waitFor(record.id, () => eventCount(record.id, 'turn.started') > turnsBefore);
+
+    // Never mid-turn (§8): held, and released by the end of the turn it waited behind.
+    expect(manager.enqueuePrompt(record.id, 'after the background work')).toMatchObject({ ok: true, delivered: false });
+    expect(userMessages(record.id)).not.toContain('after the background work');
+    await waitFor(record.id, () => userMessages(record.id).includes('after the background work'));
+    expect(store.getRun(record.id)?.promptQueue).toBeUndefined();
+  }, 60_000);
+
+  it('does not walk an over-budget run past its brake on a CEZ:DONE turn', async () => {
+    const record = manager.startRun(SINGLE_STEP, { task: 'mock:pause mock:done the first goal', worktree: false });
+    currentId = record.id;
+    store.updateRun(record.id, { dispatch: { rootRunId: record.id, budgetUsd: 0 } });
+    await waitFor(record.id, (r) => r?.status === 'running' && manager.enqueuePrompt(record.id, 'the second goal').ok);
+
+    // The done turn closes the session as it always did; the prompt stays, undelivered.
+    await waitFor(record.id, (r) => r?.status === 'done' || r?.status === 'review');
+    expect(queued(record.id)).toEqual(['the second goal']);
+    expect(userMessages(record.id)).not.toContain('the second goal');
+    expect(store.getRun(record.id)?.dispatch?.overBudget).toBe(true);
+  }, 60_000);
+
+  it('gives a released prompt the fresh monitoring wake budget a sent message gets', async () => {
+    const record = manager.startRun(SINGLE_STEP, { task: 'just do the thing', worktree: false });
+    currentId = record.id;
+    await waitFor(record.id, (r) => r?.status === 'waiting');
+    live(record.id).monitoringWakeups = MAX_AUTO_CONTINUES; // the automatic wake-ups are spent
+
+    expect(manager.enqueuePrompt(record.id, 'mock:pause mock:monitoring keep watching')).toEqual({ ok: true, delivered: true });
+    await waitFor(record.id, (r) => r?.activity === 'monitoring');
+    expect(store.getRun(record.id)?.monitoringWakeAt).toBeDefined();
+    expect(store.getRun(record.id)?.monitoringWakeCapReached).toBeUndefined();
   }, 60_000);
 });

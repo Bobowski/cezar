@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   MAX_WORKSPACE_LAYOUTS,
@@ -105,8 +105,11 @@ export function deleteRunLayouts(dataDir: string, runId: string): void {
  * cockpit, and this catches the files left by a run record removed some other way (a hand-edited
  * `runs.json`, a restored backup). Bounded by `MAX_WORKSPACE_LAYOUTS` per file, so the store
  * cannot grow without one.
+ *
+ * `minAgeMs` spares a file written that recently: the caller's index may be a moment behind a
+ * run another process just created, and a layout for a run that exists must never go.
  */
-export function pruneOrphanLayouts(dataDir: string, knownRunIds: ReadonlySet<string>): number {
+export function pruneOrphanLayouts(dataDir: string, knownRunIds: ReadonlySet<string>, minAgeMs = 0): number {
   const root = layoutsRoot(dataDir);
   if (!existsSync(root)) return 0;
   let removed = 0;
@@ -115,6 +118,7 @@ export function pruneOrphanLayouts(dataDir: string, knownRunIds: ReadonlySet<str
       if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
       const runId = entry.name.slice(0, -'.json'.length);
       if (knownRunIds.has(runId)) continue;
+      if (minAgeMs > 0 && Date.now() - statSync(join(root, entry.name)).mtimeMs < minAgeMs) continue;
       deleteRunLayouts(dataDir, runId);
       removed += 1;
     }

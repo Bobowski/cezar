@@ -25,8 +25,13 @@ describe('POST /runs ticket link', () => {
 
   const create = (task: string) => store.createRun({ title: task, workflow: 'quick-task', task, steps: [{ id: 'work', name: 'work', kind: 'agent' }] });
   const continued: Array<{ id: string; text?: string }> = [];
+  let refuseNext = false;
   const manager = {
-    continueRun: (id: string, input: { text?: string }) => { continued.push({ id, text: input.text }); return { ok: true }; },
+    continueRun: (id: string, input: { text?: string }) => {
+      if (refuseNext) { refuseNext = false; return { ok: false, error: 'run is still active' }; }
+      continued.push({ id, text: input.text });
+      return { ok: true };
+    },
     startRun: (_workflow: unknown, input: { task: string }) => create(input.task),
     startVariants: (_workflow: unknown, input: { task: string }, count: number) => Array.from({ length: count }, () => create(input.task)),
   } as unknown as RunManager;
@@ -211,6 +216,18 @@ describe('POST /runs ticket link', () => {
       await resume(instance, run.id);
       expect(continued.at(-1)).toEqual({ id: run.id, text: 'Carry on.' });
       expect(store.getRun(run.id)!.trackerLinks![0]).toMatchObject({ noted: { status: 'In Review' }, snapshot: { status: 'To Do' } });
+    });
+
+    it('keeps the note for the Continue that is accepted when one before it was refused', async () => {
+      const instance = app();
+      const { association, run } = await linkedRun(instance);
+      await apiRequest(instance, '/api/v1/tracker/DEMO51-2/transition', json('POST', { expectedScope: trackerReadScope(association), toStatusId: 'dry-review', expectedStatusId: 'dry-todo' }));
+      refuseNext = true;
+      expect((await resume(instance, run.id)).status).toBe(409);
+      // A refused Continue told the task nothing, so nothing is recorded as told.
+      expect(store.getRun(run.id)!.trackerLinks![0]!.noted).toBeUndefined();
+      expect((await resume(instance, run.id)).status).toBe(200);
+      expect(continued.at(-1)!.text).toContain('[cezar] The tracker ticket DEMO51-2');
     });
 
     it('carries the note alone when the user sent no text', async () => {

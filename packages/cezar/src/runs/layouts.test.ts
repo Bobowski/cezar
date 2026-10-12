@@ -1,8 +1,9 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { RunStore } from './store.ts';
 import {
   deleteRunLayouts,
   layoutsRoot,
@@ -99,5 +100,46 @@ describe('the per-run layout store', () => {
     expect(pruneOrphanLayouts(dataDir, new Set(['run-2']))).toBe(1);
     expect(readRunLayouts(dataDir, 'run-1')).toBeNull();
     expect(readRunLayouts(dataDir, 'run-2')).toEqual(ONE);
+  });
+});
+
+/** Layouts die with their task on EVERY path a task leaves the store by — retention included. */
+describe('layouts and the run store', () => {
+  const input = (n: number) => ({ title: `t${n}`, workflow: 'quick-task', task: `t${n}`, steps: [{ id: 'work', name: 'work', kind: 'agent' as const }] });
+  const file = (id: string) => join(layoutsRoot(dataDir), `${id}.json`);
+  const age = (id: string) => utimesSync(file(id), new Date(Date.now() - 3_600_000), new Date(Date.now() - 3_600_000));
+
+  it('removes the layouts of a run retention forgets', () => {
+    const store = RunStore.open(dataDir);
+    const first = store.createRun(input(0));
+    writeRunLayouts(dataDir, first.id, ONE);
+    for (let n = 1; n <= 320; n++) store.createRun(input(n));
+    store.flush();
+    expect(store.getRun(first.id)).toBeUndefined();
+    expect(existsSync(file(first.id))).toBe(false);
+  });
+
+  it('sweeps orphaned layouts when the store opens, and never those of a run it still has', () => {
+    const store = RunStore.open(dataDir);
+    const kept = store.createRun(input(0));
+    store.flush();
+    writeRunLayouts(dataDir, kept.id, ONE);
+    writeRunLayouts(dataDir, 'gone-long-ago', ONE);
+    writeRunLayouts(dataDir, 'just-written', ONE);
+    age(kept.id);
+    age('gone-long-ago');
+    RunStore.open(dataDir);
+    expect(existsSync(file('gone-long-ago'))).toBe(false);
+    expect(readRunLayouts(dataDir, kept.id)).toEqual(ONE);
+    // A run another process created moments ago may not be in the index this open read.
+    expect(existsSync(file('just-written'))).toBe(true);
+  });
+
+  it('sweeps nothing when the index could not be read — every run may still exist', () => {
+    writeRunLayouts(dataDir, 'run-1', ONE);
+    age('run-1');
+    writeFileSync(join(dataDir, 'runs.json'), '{ not json');
+    RunStore.open(dataDir);
+    expect(existsSync(file('run-1'))).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -244,6 +244,24 @@ describe('create, delete and rename', () => {
     expect(read('src/a.ts')).toBe('export const a = 1\n');
     expect(read('src/b.ts')).toBe('b\n');
     expect(there('sub')).toBe(false);
+  });
+
+  it('deletes a file above the blob cap without buffering it — no recovery blob, the file still goes', async () => {
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    expect(await deleteWorktreeFile(dir, 'src/a.ts', 4)).toEqual({ ok: true, path: 'src/a.ts', blob: null });
+    expect(there('src/a.ts')).toBe(false);
+  });
+
+  it('renames a file to a name that differs only in case', async () => {
+    // On a case-insensitive volume the destination "exists" — it is the source's own entry.
+    expect(await renameWorktreeFile(dir, 'src/a.ts', 'src/A.ts')).toEqual({ ok: true, from: 'src/a.ts', to: 'src/A.ts' });
+    expect(readdirSync(join(dir, 'src'))).toEqual(['A.ts']);
+  });
+
+  it('still refuses a rename onto a hard link of the same file — same inode, a different entry', async () => {
+    linkSync(join(dir, 'src', 'a.ts'), join(dir, 'src', 'b.ts'));
+    expect(await renameWorktreeFile(dir, 'src/a.ts', 'src/b.ts')).toMatchObject({ ok: false, kind: 'refused' });
+    expect(readdirSync(join(dir, 'src')).sort()).toEqual(['a.ts', 'b.ts']);
   });
 
   it('refuses to rename a directory or a file out of node_modules', async () => {

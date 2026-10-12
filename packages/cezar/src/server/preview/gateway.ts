@@ -78,6 +78,13 @@ const SESSION_IDLE_MS = 30 * 60_000;
 const SESSION_MAX_MS = 8 * 60 * 60_000;
 const MAX_SESSIONS = 32;
 
+/** One browser's session. `sockets` are the upgrades it authorised that are still open. */
+interface Session {
+  born: number;
+  used: number;
+  sockets: Set<Duplex>;
+}
+
 /** `url` without the ticket parameter, or null when it carries none (or is not a URL). */
 function withoutTicket(url: string): URL | null {
   if (!url.includes(TICKET_PARAM)) return null;
@@ -117,7 +124,7 @@ interface Entry {
   port: number;
   tickets: Map<string, number>;
   /** Session value → when it was minted and last used. Oldest first. */
-  sessions: Map<string, { born: number; used: number }>;
+  sessions: Map<string, Session>;
   lastUsed: number;
   sockets: Set<Duplex>;
 }
@@ -264,6 +271,8 @@ export class PreviewGateways {
     this.sweeper = setInterval(() => {
       const cutoff = Date.now() - this.idleMs;
       for (const [key, entry] of [...this.entries]) {
+        // The cap must not wait for a request to notice it: it closes sockets (§4.4).
+        this.purgeSessions(entry);
         if (entry.sockets.size === 0 && entry.lastUsed < cutoff) this.close(key, entry);
       }
     }, Math.max(1_000, Math.min(60_000, this.idleMs)));
@@ -329,9 +338,9 @@ export class PreviewGateways {
   }
 
   /** The request's cookies with the gateway's own removed, and whether that one was valid. */
-  private readCookies(entry: Entry, req: IncomingMessage): { authorized: boolean; forwarded: string | undefined } {
+  private readCookies(entry: Entry, req: IncomingMessage): { session: Session | null; forwarded: string | undefined } {
     const name = this.cookieName(entry);
-    let authorized = false;
+    let session: Session | null = null;
     const kept: string[] = [];
     for (const pair of (req.headers.cookie ?? '').split(';')) {
       const trimmed = pair.trim();
@@ -339,7 +348,7 @@ export class PreviewGateways {
       const eq = trimmed.indexOf('=');
       const cookie = eq === -1 ? trimmed : trimmed.slice(0, eq);
       if (cookie.startsWith('__cez_pv_')) {
-        if (cookie === name && this.liveSession(entry, trimmed.slice(eq + 1))) authorized = true;
+        if (cookie === name) session = this.liveSession(entry, trimmed.slice(eq + 1)) ?? session;
         continue;
       }
       // Cookies ignore the port, so the browser sends the cockpit's own session here too. The
@@ -347,29 +356,49 @@ export class PreviewGateways {
       if (cookie === SECURE_SESSION_COOKIE || cookie === PLAIN_SESSION_COOKIE) continue;
       kept.push(trimmed);
     }
-    return { authorized, forwarded: kept.length > 0 ? kept.join('; ') : undefined };
+    return { session, forwarded: kept.length > 0 ? kept.join('; ') : undefined };
   }
 
-  /** Whether `value` is a session still inside both of its windows; using it slides the idle one. */
-  private liveSession(entry: Entry, value: string): boolean {
+  /** End a session, and with it every socket it authorised. */
+  private endSession(entry: Entry, key: string): void {
+    const session = entry.sessions.get(key);
+    entry.sessions.delete(key);
+    for (const socket of session?.sockets ?? []) socket.destroy();
+  }
+
+  /** Drop the sessions past a window. An open socket is use, so it holds off the idle one only. */
+  private purgeSessions(entry: Entry): void {
     const now = Date.now();
-    let live = false;
-    for (const [session, times] of entry.sessions) {
-      if (now - times.used > SESSION_IDLE_MS || now - times.born > SESSION_MAX_MS) {
-        entry.sessions.delete(session);
-      } else if (sameSecret(session, value)) {
-        times.used = now;
-        live = true;
-      }
+    for (const [key, session] of entry.sessions) {
+      const idle = session.sockets.size === 0 && now - session.used > SESSION_IDLE_MS;
+      if (idle || now - session.born > SESSION_MAX_MS) this.endSession(entry, key);
     }
+  }
+
+  /** The live session `value` names, if any; using it slides the idle window. */
+  private liveSession(entry: Entry, value: string): Session | null {
+    this.purgeSessions(entry);
+    let live: Session | null = null;
+    // Every candidate is compared: the lookup must not tell a near miss from a far one.
+    for (const [key, session] of entry.sessions) {
+      if (sameSecret(key, value)) live = session;
+    }
+    if (live) live.used = Date.now();
     return live;
   }
 
   private mintSession(entry: Entry): string {
-    while (entry.sessions.size >= MAX_SESSIONS) entry.sessions.delete(entry.sessions.keys().next().value as string);
-    const session = randomBytes(32).toString('base64url');
-    entry.sessions.set(session, { born: Date.now(), used: Date.now() });
-    return session;
+    this.purgeSessions(entry);
+    while (entry.sessions.size >= MAX_SESSIONS) {
+      // Least recently used goes; one holding an open socket only when nothing else can.
+      const [victim] = [...entry.sessions].sort(
+        ([, a], [, b]) => Math.sign(a.sockets.size) - Math.sign(b.sockets.size) || a.used - b.used,
+      );
+      this.endSession(entry, victim![0]);
+    }
+    const key = randomBytes(32).toString('base64url');
+    entry.sessions.set(key, { born: Date.now(), used: Date.now(), sockets: new Set() });
+    return key;
   }
 
   /**
@@ -409,7 +438,8 @@ export class PreviewGateways {
   }
 
   private handle(entry: Entry, req: IncomingMessage, res: ServerResponse): void {
-    const { authorized, forwarded } = this.readCookies(entry, req);
+    const { session, forwarded } = this.readCookies(entry, req);
+    const authorized = session !== null;
     // A ticket is spent and stripped whenever it is presented — the cockpit sends one with every
     // load, cookie or not — so it never reaches the app (spec 2026-10-10-preview-gateway §4).
     const ticket = this.redeem(entry, req);
@@ -472,8 +502,8 @@ export class PreviewGateways {
 
   /** WebSocket upgrades (a dev server's hot reload) are spliced through byte for byte. */
   private upgrade(entry: Entry, req: IncomingMessage, socket: Duplex, head: Buffer): void {
-    const { authorized, forwarded } = this.readCookies(entry, req);
-    if (!authorized) {
+    const { session, forwarded } = this.readCookies(entry, req);
+    if (!session) {
       socket.destroy();
       return;
     }
@@ -487,12 +517,15 @@ export class PreviewGateways {
 
     const upstream: Socket = connect(portOf(entry.upstream), socketHost(entry.upstream));
     const release = () => {
+      // The idle window starts when the socket that held it off closes (§4.4).
+      if (session.sockets.delete(socket)) session.used = Date.now();
       entry.sockets.delete(socket);
       entry.lastUsed = Date.now();
       socket.destroy();
       upstream.destroy();
     };
     entry.sockets.add(socket);
+    session.sockets.add(socket);
     upstream.on('connect', () => {
       const lines = [`${req.method} ${path} HTTP/1.1`];
       for (const [name, value] of Object.entries(headers)) {

@@ -64,9 +64,15 @@ the gateway authenticates every request itself, and the front forwards the pool 
 3. Every later request, and every WebSocket upgrade, needs the cookie. Without it: `401`, and
    the app is never reached.
 4. The cookie is a **session of its own per browser** — 32 random bytes minted when a ticket is
-   redeemed, never a value the listener shares. It ends after thirty minutes without a request,
-   after eight hours whatever its use, when the listener closes, or when it is the oldest of
-   more than 32. A cockpit sign-out does not reach the gateway (the auth service knows nothing
+   redeemed, never a value the listener shares. It ends after thirty minutes out of use,
+   after eight hours whatever its use, when the listener closes, or when it is the least
+   recently used of more than 32. A WebSocket it authorised counts as use for as long as it is
+   open — a preview whose only traffic is its hot-reload socket stays signed in — and the
+   thirty minutes start when that socket closes. The eight-hour cap is absolute: the session
+   ends there and the sockets it authorised are closed with it, so the open preview needs a
+   Reload from the cockpit. Room for a 33rd session is made from expired sessions first, and a
+   session holding an open socket is evicted (its sockets closed) only when every other one
+   holds one too. A cockpit sign-out does not reach the gateway (the auth service knows nothing
    of it); the idle window is what ends a signed-out browser's preview, and the next load from
    a signed-in cockpit re-tickets it.
 

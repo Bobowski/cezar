@@ -1437,7 +1437,8 @@ export class RunStore extends EventEmitter {
    */
   private janitorSettled(run: RunRecord): boolean {
     return (
-      run.pullRequestUrl !== undefined &&
+      (run.pullRequestUrl !== undefined ||
+        (run.referencedPrCandidates?.length ?? 0) >= MAX_PR_CANDIDATES) &&
       (run.referencedIssueCandidates?.length ?? 0) >= MAX_PR_CANDIDATES &&
       !(run.markerRefs?.issue === undefined && run.referencedIssueUrl && run.issueNumber === undefined)
     );

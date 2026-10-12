@@ -72,6 +72,9 @@ describe('macosx-ngrok', () => {
     expect(p).toContain('<string>4321</string>');
     expect(p).toContain('<string>/repo</string>');
     expect(p).toContain('<key>CEZ_REMOTE</key>');
+    // ngrok's --basic-auth is this platform's login; cezar's own sign-in would stack a second one
+    // behind it with no setup link ever printed (spec 2026-10-12-cockpit-authentication §7).
+    expect(p).toContain('<key>CEZ_AUTH</key>\n      <string>0</string>');
     expect(p).toContain('<string>ai.cezar.cockpit</string>');
   });
 

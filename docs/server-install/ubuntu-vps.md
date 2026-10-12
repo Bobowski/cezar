@@ -1,17 +1,21 @@
 # Remote access — Ubuntu / Debian VPS
 
 Host the cezar cockpit on a bare Ubuntu/Debian server, reachable over the
-internet, behind a login and (optionally) HTTPS.
+internet over HTTPS, behind cezar's own sign-in.
 
 **How it's wired:** cezar itself stays **loopback-bound** (`127.0.0.1:4321`,
-`CEZ_REMOTE=1`). **nginx** is the only public surface — it terminates TLS,
-challenges every request with HTTP Basic-Auth, and proxies to cezar. A systemd
-service keeps cezar running and restarts it on boot.
+`CEZ_REMOTE=1`). **nginx** is the only public surface — it terminates TLS and
+proxies to cezar, WebSocket upgrades included. **cezar signs you in itself**: a
+password plus a code from an authenticator app, one session per device. A
+systemd service keeps cezar running and restarts it on boot.
 
 ```
   internet ──HTTPS──► nginx (:443)  ──proxy──►  cezar (127.0.0.1:4321)
-                      basic-auth + Let's Encrypt         systemd service
+                      Let's Encrypt              sign-in + sessions, systemd service
 ```
+
+Signed in, you have the whole cockpit — the terminal, file editing and agent
+config included (spec `.ai/specs/2026-10-12-cockpit-authentication.md`).
 
 The wizard never escalates silently: **every privileged command is printed**,
 and you choose to run it via `sudo` or paste it into a root shell yourself. Each
@@ -25,7 +29,9 @@ command is verified before the installer moves on.
 - A **normal, sudo-capable user** (the wizard refuses to run as root).
 - At least one logged-in agent CLI on that user — `claude`, `codex`, or
   OpenCode (experimental). (The installer can install `gh` and the npm-based CLIs for you.)
-- For HTTPS: a domain with a DNS `A`/`AAAA` record pointing at the box.
+- A **domain** with a DNS `A`/`AAAA` record pointing at the box. cezar's sign-in needs HTTPS, so
+  with it the domain is required, not optional.
+- An **authenticator app** on your phone (1Password, Google Authenticator, Authy…).
 - **Ports 80/443 free.** If another reverse proxy already owns them (Dokploy,
   Coolify, Caddy…), don't run the default install — see
   [The box already has a reverse proxy](#the-box-already-has-a-reverse-proxy-dokploy-coolify-caddy).
@@ -57,17 +63,48 @@ node packages/cezar/dist/index.js server-install --platform ubuntu-vps
 | Step | What happens |
 |------|--------------|
 | **Dependencies** | Detects `claude` / `codex` / `opencode` / `gh` / `git`; offers to install the missing ones. At least one agent CLI is required. |
-| **Reverse proxy** | Installs **nginx**, writes an `auth_basic` + SSE-safe proxy vhost, creates the **htpasswd** identity file, and — if `ufw` is active — allows `Nginx Full` (ports 80/443). |
-| **Domain + SSL** *(optional)* | Points the vhost's `server_name` at your domain, then runs `certbot --nginx` for a Let's Encrypt certificate with auto-redirect. Skippable — you can add it later. |
+| **Reverse proxy** | Installs **nginx**, asks **how people sign in** (below), writes an SSE- and WebSocket-safe proxy vhost, and — if `ufw` is active — allows `Nginx Full` (ports 80/443). |
+| **Domain + SSL** | Points the vhost's `server_name` at your domain, then runs `certbot --nginx` for a Let's Encrypt certificate with auto-redirect. **Required** with cezar's own sign-in; optional (and skippable) with Basic-Auth. |
 | **Service** | Installs a **systemd** unit (rootless `--user` + linger where possible, else a system unit), **starts cezar now**, enables it on boot, and waits for it to answer on the loopback port. |
-| **Verify** | Confirms an anonymous request is challenged (401) **and** that an authenticated request actually reaches cezar (2xx/3xx) — a real end-to-end check, not just "nginx is up". |
+| **Verify** | Confirms an anonymous API request is refused (401) **and** that an authenticated one reaches *this* install — a real end-to-end check, not just "nginx is up". With cezar's own sign-in it then prints the **one-time link that creates your account**. |
 
-### Setting the cockpit login
+### How people sign in
 
-During the reverse-proxy step you pick the **username** (defaults to your OS
-user) and a **password** — either type your own or let the installer **generate
-a strong one** (shown once, so save it). This is the HTTP Basic-Auth credential
-you enter in the browser over HTTPS. cezar stores only a hash.
+The reverse-proxy step asks once and remembers the answer:
+
+- **cezar's own sign-in** (the default) — a password and an authenticator code,
+  a session per device, and a device list you can sign out from. nginx
+  authenticates nobody; it only rate-limits the sign-in routes. Needs the domain
+  and SSL step.
+- **HTTP Basic-Auth in nginx** — one shared password in an `htpasswd` file, as
+  before this choice existed. Works without a domain. The service then runs with
+  `CEZ_AUTH=0`, and the terminal, file editing and agent-config writes stay off
+  unless you opt in (`CEZ_TERMINAL=1`, `CEZ_FILE_EDIT=1`). `--yes` always takes
+  this one, because it also skips the SSL step.
+
+### Creating your account
+
+With cezar's own sign-in the install ends with a link:
+
+```
+https://agents.example.dev/setup#code=…
+```
+
+Open it within 15 minutes. You choose a username and password, scan a QR code
+with your authenticator app, and save ten recovery codes. That account is the
+owner. After that, every device signs in with the password and a code.
+
+On the server, later:
+
+```bash
+cezar auth status          # who exists
+cezar auth setup           # a fresh link, while no account exists yet
+cezar auth reset <user>    # lost the password or the authenticator: sign that user out
+                           # everywhere and print a link to set both again
+```
+
+There is no email recovery and no way to replace the authenticator from the
+browser — both go through SSH on purpose.
 
 ### The privileged-command prompt
 
@@ -95,17 +132,23 @@ npx cezar-run server-install --platform ubuntu-vps \
 ```
 
 That installs **the service only** — no nginx, no certbot. Steps run:
-`deps → autostart → identity`. Your proxy terminates TLS and enforces auth.
+`deps → autostart → identity`. Your proxy terminates TLS; the installer asks
+whether cezar signs people in (the default) or your proxy does.
 
 ```
 internet ──HTTPS──► your proxy (Traefik/Caddy/nginx) ──► cezar (172.17.0.1:4321)
-                    TLS + auth are YOURS to configure          systemd service
+                    TLS is YOURS to configure                  sign-in, systemd service
 ```
 
-> ⚠️ **cezar has no built-in authentication.** In the default install nginx's
-> basic-auth is that gate; with `--external-proxy` there is none, and anyone who
-> can reach the bound host:port can run agents on your box. Put auth on the proxy
-> and keep the port off the public internet (ufw / cloud firewall).
+With cezar's own sign-in the proxy needs no auth middleware. It does need to
+terminate TLS, send `X-Forwarded-Proto: https` with the original `Host`, and
+pass WebSocket upgrades for `/api/v1/ws` — Traefik and Caddy do all three by
+default.
+
+> ⚠️ **If you choose "my reverse proxy authenticates"**, the service runs with
+> `CEZ_AUTH=0` and cezar authenticates nobody: anyone who can reach the bound
+> host:port can run agents on your box. Put auth on the proxy. In either mode,
+> keep the port off the public internet (ufw / cloud firewall).
 
 ### Which `--bind-host`?
 
@@ -127,18 +170,17 @@ http:
     cezar:
       rule: "Host(`cezar.example.com`)"
       entryPoints: [websecure]
-      middlewares: [cezar-auth]
       service: cezar
       tls: { certResolver: letsencrypt }
   services:
     cezar:
       loadBalancer:
         servers: [{ url: "http://172.17.0.1:4321" }]
-  middlewares:
-    cezar-auth:
-      basicAuth:
-        users: ["me:$$apr1$$...."]   # htpasswd -nb me 'pass' — double every $
 ```
+
+That is the whole config with cezar's own sign-in. If you chose to let the proxy
+authenticate instead, add a `basicAuth` (or SSO) middleware to the router — the
+installer prints that variant when you pick it.
 
 `server-deploy` and `server-uninstall` work the same in this mode (uninstall
 only removes the service — it never touches the proxy it doesn't own).
@@ -149,6 +191,13 @@ only removes the service — it never touches the proxy it doesn't own).
 
 Once a new cezar is available (a fresh local build, or a newly published
 release), reload the running service with one standardized command:
+
+> **Upgrading an install made before cezar had its own sign-in?** Its nginx still
+> asks for the Basic-Auth password, and the cezar it restarts into now asks for
+> an account as well. `server-deploy` says so and changes nothing. Either run
+> `cezar auth setup` and then drop the proxy login with
+> `server-install --platform ubuntu-vps --reconfigure nginx-proxy,ssl,autostart`,
+> or add `Environment=CEZ_AUTH=0` to the service to keep only Basic-Auth.
 
 ```bash
 npx cezar-run server-deploy --platform ubuntu-vps
@@ -216,8 +265,10 @@ What differs per instance:
 - **Port** — a new instance auto-picks the next free loopback port (`4321`,
   `4322`, …). Override with `--port <n>`. Each cockpit still serves loopback-only;
   nginx is the single public surface for all of them.
-- **Login** — each instance has its own htpasswd, so every cockpit can have a
-  different username/password.
+- **Login** — with cezar's own sign-in, the cockpits on one host share their
+  **accounts** (`~/.cezar/auth.json` belongs to the OS user) and keep separate
+  **sessions**: one account, signed in per domain. With Basic-Auth each instance
+  has its own htpasswd, so every cockpit can have a different password.
 - **Deploy / uninstall** — pass the same `--domain` to target that instance:
 
   ```bash

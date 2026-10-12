@@ -15,6 +15,7 @@ import {
   CANCEL,
   PreflightError,
   type InstallContext,
+  type InstallStep,
   type PlatformStrategy,
   type Runner,
   type ServerState,
@@ -77,6 +78,11 @@ export interface RunResult {
  * successful run. Only a successful `run()` (which re-creates or supersedes
  * them) may replace `created`.
  */
+/** `optional` may depend on an earlier answer (see `InstallStep.optional`). */
+function isOptional(step: InstallStep, ctx: InstallContext): boolean {
+  return typeof step.optional === 'function' ? step.optional(ctx) : step.optional === true;
+}
+
 function recordOutcome(state: ServerState, id: string, status: StepOutcome['status']): void {
   state.steps[id] = { status, created: state.steps[id]?.created ?? null };
 }
@@ -247,7 +253,7 @@ export async function runInstall(strategy: PlatformStrategy, opts: RunOptions): 
         continue;
       }
 
-      if (step.optional) {
+      if (isOptional(step, ctx)) {
         // `--yes` = accept safe defaults, and the safe default for an optional
         // step (SSL against a real domain, autostart) is to SKIP it — never run
         // it non-interactively against placeholder input.
@@ -303,7 +309,7 @@ export async function runInstall(strategy: PlatformStrategy, opts: RunOptions): 
     }
 
     const requiredAllDone = steps
-      .filter((s) => !s.optional)
+      .filter((s) => !isOptional(s, ctx))
       .every((s) => state.steps[s.id]?.status === 'done');
     state.installed = requiredAllDone;
     state.updatedAt = opts.now;

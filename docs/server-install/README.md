@@ -21,7 +21,7 @@ npx cezar-run server-uninstall --platform <id>   # reverse it
 
 | Provider | `--platform` | Public front | Identity | Autostart | Guide |
 |----------|--------------|--------------|----------|-----------|-------|
-| **Ubuntu / Debian VPS** | `ubuntu-vps` | nginx + Let's Encrypt (HTTPS) | HTTP Basic-Auth (htpasswd) | systemd | [Step-by-step →](./ubuntu-vps.md) |
+| **Ubuntu / Debian VPS** | `ubuntu-vps` | nginx + Let's Encrypt (HTTPS) | cezar's own sign-in — password + authenticator app (or HTTP Basic-Auth) | systemd | [Step-by-step →](./ubuntu-vps.md) |
 | **macOS + ngrok** | `macosx-ngrok` | ngrok tunnel (HTTPS) | ngrok `--basic-auth` | launchd | [Step-by-step →](./macosx-ngrok.md) |
 
 Same engine, different steps — each strategy is a small registry entry, so new

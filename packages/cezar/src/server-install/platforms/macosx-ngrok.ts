@@ -247,6 +247,8 @@ ${argXml}
     <dict>
       <key>CEZ_REMOTE</key>
       <string>1</string>
+      <key>CEZ_AUTH</key>
+      <string>0</string>
 ${instanceId ? `      <key>CEZ_INSTANCE_ID</key>\n      <string>${escapeXml(instanceId)}</string>\n` : ''}      <key>PATH</key>
       <string>${escapeXml(pathDirs.join(':'))}</string>
     </dict>

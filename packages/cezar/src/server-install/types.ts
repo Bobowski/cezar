@@ -95,6 +95,15 @@ export const serverStateSchema = z
      * bridge `172.17.0.1` when the proxy runs in a container).
      */
     bindHost: z.string().optional().catch(undefined),
+    /**
+     * Who authenticates the cockpit (spec 2026-10-12-cockpit-authentication §7):
+     * `cezar` — its own sign-in, the front only terminates TLS; `proxy` — the
+     * front does (nginx Basic-Auth, or an external proxy's middleware) and the
+     * service runs with `CEZ_AUTH=0`. ABSENT on a record written before the
+     * choice existed: that install has proxy auth and a unit without the
+     * variable, which `redeploy` explains rather than rewrites.
+     */
+    signIn: z.enum(['cezar', 'proxy']).optional().catch(undefined),
     /** Flips true only when every required step is `done`. */
     installed: z.boolean().default(false).catch(false),
     /** True when this record was written by a CEZ_DRY_RUN preview — a real
@@ -253,7 +262,9 @@ export interface InstallStep {
   id: string;
   title: string;
   /** Optional steps (SSL, autostart) can be skipped without failing install. */
-  optional?: boolean;
+  /** A function when it depends on an earlier answer — SSL stops being optional once the
+   *  operator chose cezar's own sign-in, which cannot work over plain HTTP. */
+  optional?: boolean | ((ctx: InstallContext) => boolean);
   /** True ⇒ already satisfied, engine skips (unless `--reconfigure` names it). */
   check(ctx: InstallContext): Promise<boolean>;
   /** Do it, interactively. Return what was created (or null). */

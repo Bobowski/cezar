@@ -136,7 +136,7 @@ describe('ubuntu-vps dry-run', () => {
       // while the third differs is this bug.
       const recorded = loadServerState('b-example-com').primaryPort;
       expect(recorded).toBe(port);
-      expect(vhost).toBe(nginxVhost(recorded, 'b.example.com', '/etc/cezar/htpasswd-b-example-com'));
+      expect(vhost).toBe(nginxVhost(recorded, 'b.example.com', '/etc/cezar/htpasswd-b-example-com', undefined, 'b-example-com'));
       expect(systemdUnit('/repo', recorded, 'user', '/usr/local/bin/cezar')).toContain(`--port ${port}`);
     } finally {
       await new Promise<void>((closed) => firstInstance.close(() => closed()));

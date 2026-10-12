@@ -122,7 +122,11 @@ describe('ubuntu-vps ssl step', () => {
   it('orders the steps and only SSL is optional (the service must run)', () => {
     const ids = ubuntuVps.steps(ctxWith({})).map((s) => s.id);
     expect(ids).toEqual(['deps', 'nginx-proxy', 'ssl', 'autostart', 'identity']);
-    expect(stepById('ssl').optional).toBe(true);
+    const sslOptional = stepById('ssl').optional as (ctx: InstallContext) => boolean;
+    expect(sslOptional(ctxWith({}))).toBe(true);
+    expect(sslOptional(ctxWith({ state: { signIn: 'proxy' } }))).toBe(true);
+    // cezar's own sign-in cannot set a session over plain HTTP, so there TLS is not optional.
+    expect(sslOptional(ctxWith({ state: { signIn: 'cezar' } }))).toBe(false);
     // The service step is required now — after install cezar must actually run.
     expect(stepById('autostart').optional).toBeFalsy();
     expect(stepById('identity').optional).toBeFalsy();
@@ -461,8 +465,10 @@ describe('ubuntu-vps nginx-proxy identity (interactive, dry-run)', () => {
       ...createAutoUi(),
       // username: echo back the suggested (initialValue) default
       text: async (o: { initialValue?: string }) => o.initialValue ?? 'x',
-      // credential prompt: pick the first option ("Generate a strong password for me")
-      select: async (o: { options: Array<{ value: string }> }) => o.options[0]?.value,
+      // sign-in: Basic-Auth in nginx; then the credential prompt's first option
+      // ("Generate a strong password for me")
+      select: async (o: { message: string; options: Array<{ value: string }> }) =>
+        o.message.startsWith('How do people sign in') ? 'proxy' : o.options[0]?.value,
       password,
       note: (m: string) => { notes.push(m); },
     } as unknown as Ui;
@@ -475,6 +481,86 @@ describe('ubuntu-vps nginx-proxy identity (interactive, dry-run)', () => {
     const htp = created?.artifacts.find((a) => a.type === 'htpasswd');
     expect(htp?.kind).toBe('owned');
     expect(htp?.name).toBeTruthy(); // the suggested current-user default (issue #2)
+    expect(ctx.state.signIn).toBe('proxy');
+  });
+
+  it("cezar's own sign-in is the default for a person: no password asked, no htpasswd, no auth_basic", async () => {
+    const messages: string[] = [];
+    const text = vi.fn(async () => 'should-not-be-asked');
+    const password = vi.fn(async () => 'should-not-be-asked');
+    const ui = {
+      ...createAutoUi({}, (m) => messages.push(m)),
+      // Accept whatever each prompt proposes — the sign-in question proposes `cezar`.
+      select: async (o: { initialValue?: string }) => o.initialValue,
+      text,
+      password,
+    } as unknown as Ui;
+    const ctx = { ...ctxWith({ dryRun: true, ui, state: { domain: 'agents.example.dev' } }), assumeYes: false } as InstallContext;
+    const created = await stepById('nginx-proxy').run(ctx);
+
+    expect(ctx.state.signIn).toBe('cezar');
+    expect(text).not.toHaveBeenCalled();
+    expect(password).not.toHaveBeenCalled();
+    expect(ctx.prefs.cockpit).toBeUndefined();
+    expect(created?.artifacts.some((a) => a.type === 'htpasswd')).toBe(false);
+    // The site travels base64-encoded inside the write command; read it back out.
+    const payload = /printf %s '\\''([A-Za-z0-9+/=]+)'\\''/.exec(messages.find((m) => m.includes('sites-available/cezar')) ?? '')?.[1];
+    const written = Buffer.from(payload ?? '', 'base64').toString('utf8');
+    expect(written).toContain('server_name agents.example.dev;');
+    expect(written).not.toContain('auth_basic');
+  });
+
+  it('--yes keeps the proxy signing users in — the non-interactive install is what it was', async () => {
+    const ctx = ctxWith({ dryRun: true, ui: { ...createAutoUi(), text: async () => 'ops', password: async () => 'longenough' } as Ui });
+    await stepById('nginx-proxy').run(ctx);
+    expect(ctx.state.signIn).toBe('proxy');
+  });
+
+  it('an external-proxy install asks the same question where it writes the unit', async () => {
+    const ui = { ...createAutoUi(), select: async (o: { initialValue?: string }) => o.initialValue } as unknown as Ui;
+    const ctx = { ...ctxWith({ dryRun: true, ui, state: { externalProxy: true } }), assumeYes: false } as InstallContext;
+    await stepById('autostart').run(ctx);
+    expect(ctx.state.signIn).toBe('cezar');
+  });
+});
+
+describe('nginxVhost — who signs users in', () => {
+  it('with Basic-Auth it challenges; with cezar it authenticates nobody and rate-limits sign-in', () => {
+    const basic = nginxVhost(4321, 'a.example.com');
+    expect(basic).toContain('auth_basic_user_file /etc/cezar/htpasswd;');
+    expect(basic).not.toContain('limit_req');
+
+    const own = nginxVhost(4321, 'a.example.com', null);
+    expect(own).not.toContain('auth_basic');
+    expect(own).toContain('limit_req_zone $binary_remote_addr zone=cez_signin_default:1m rate=20r/m;');
+    expect(own).toMatch(/location ~ \^\/api\/v1\/auth\/\(login\|setup\) \{\s+limit_req zone=cez_signin_default burst=10 nodelay;\s+limit_req_status 429;\s+proxy_pass http:\/\/127\.0\.0\.1:4321;/);
+  });
+
+  it('passes WebSocket upgrades in both modes without touching the SSE keep-alive header', () => {
+    for (const vhost of [nginxVhost(4321), nginxVhost(4321, '_', null)]) {
+      expect(vhost).toMatch(/map \$http_upgrade \$cez_connection_default \{\s+default upgrade;\s+''\s+'';\s+\}/);
+      expect(vhost).toContain('proxy_set_header Upgrade $http_upgrade;');
+      expect(vhost).toContain('proxy_set_header Connection $cez_connection_default;');
+      expect(vhost).toContain('proxy_buffering off;');
+      expect(vhost).toContain('proxy_set_header X-Forwarded-Proto $scheme;');
+    }
+  });
+
+  it('names its http-level map and zone after the instance, so two cockpits can share one nginx', () => {
+    const shop = nginxVhost(4322, 'shop.example.com', null, undefined, 'shop-example-com');
+    expect(shop).toContain('$cez_connection_shop_example_com');
+    expect(shop).toContain('zone=cez_signin_shop_example_com');
+    expect(shop).not.toContain('_default');
+  });
+});
+
+describe('systemdUnit — sign-in', () => {
+  it('turns cezar\u2019s sign-in off only when the proxy was chosen to authenticate', () => {
+    const base = systemdUnit('/srv/app', 4321, 'user', '/usr/local/bin/cezar');
+    expect(base).not.toContain('CEZ_AUTH');
+    expect(systemdUnit('/srv/app', 4321, 'user', '/usr/local/bin/cezar', undefined, undefined, false)).toBe(base);
+    expect(systemdUnit('/srv/app', 4321, 'user', '/usr/local/bin/cezar', undefined, undefined, true))
+      .toContain('Environment=CEZ_REMOTE=1\nEnvironment=CEZ_AUTH=0\n');
   });
 });
 
@@ -1016,5 +1102,107 @@ describe('ubuntu-vps review fixes (PR #423)', () => {
       if (oldPath === undefined) delete process.env.PATH;
       else process.env.PATH = oldPath;
     }
+  });
+});
+
+describe("ubuntu-vps identity step — cezar's own sign-in", () => {
+  let home: string;
+  const savedHome = process.env.CEZ_HOME;
+
+  beforeEach(async () => {
+    home = mkdtempSync(join(tmpdir(), 'cez-install-signin-'));
+    process.env.CEZ_HOME = home;
+    const { ensureHostKey } = await import('../../auth/host-key.ts');
+    ensureHostKey(); // what the service does the first time it boots with sign-in on
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+    if (savedHome === undefined) delete process.env.CEZ_HOME;
+    else process.env.CEZ_HOME = savedHome;
+  });
+
+  /** curl as a hosted cockpit with sign-in answers it; `over` bends one answer per case. */
+  function signInRunner(over: { anon?: string; session?: string; authed?: string } = {}) {
+    const inputs: Array<{ argv: string; stdin: string }> = [];
+    const runner: Runner = {
+      interactive: async () => 0,
+      capture: async (program, args, opts) => {
+        if (program !== 'curl') return { code: 0, stdout: '', stderr: '' };
+        // Not the last argument: a body-capturing call appends its `-w` format after the URL.
+        const target = args.find((arg) => /^https?:\/\//.test(arg)) ?? '';
+        if (opts?.input) {
+          inputs.push({ argv: args.join(' '), stdin: opts.input });
+          return { code: 0, stdout: over.authed ?? '{"instanceId":"this-install"}\n200', stderr: '' };
+        }
+        if (target.endsWith('/api/v1/auth/session')) return { code: 0, stdout: over.session ?? '{"enforced":true,"authenticated":false,"setupRequired":true}\n200', stderr: '' };
+        if (target.endsWith('/api/v1/health')) return { code: 0, stdout: over.anon ?? '401', stderr: '' };
+        return { code: 0, stdout: '200', stderr: '' }; // the upstream answers
+      },
+    };
+    return { runner, inputs };
+  }
+
+  function signInCtx(runner: Runner, state: Partial<InstallContext['state']> = {}) {
+    const out: string[] = [];
+    const push = (m: string) => { out.push(m); };
+    const ui = { ...createAutoUi(), success: push, error: push, info: push, note: push, message: push, warn: push } as unknown as Ui;
+    const ctx = ctxWith({
+      runner,
+      ui,
+      state: { signIn: 'cezar', domain: 'agents.example.dev', publicUrl: 'https://agents.example.dev', instanceId: 'this-install', ...state },
+    });
+    return { ctx, out };
+  }
+
+  it('proves the API is guarded and an owner request reaches THIS install, then prints a one-time setup link', async () => {
+    const { runner, inputs } = signInRunner();
+    const { ctx, out } = signInCtx(runner);
+    await expect(stepById('identity').run(ctx)).resolves.toBeTruthy();
+    const text = out.join('\n');
+    const link = /https:\/\/agents\.example\.dev\/setup#code=(\S+)/.exec(text);
+    expect(link).not.toBeNull();
+    // The link is real: its code is the one now pending in this host's store.
+    const { readAuthStore, sha256 } = await import('../../auth/store.ts');
+    expect(readAuthStore().setup?.codeHash).toBe(sha256(link![1]!));
+    // The host key went to curl on stdin, never in argv.
+    expect(inputs).toHaveLength(1);
+    const { argv, stdin } = inputs[0]!;
+    expect(stdin).toMatch(/^header = "Authorization: Bearer cezhost_/);
+    expect(argv).not.toContain('cezhost_');
+    expect(argv).toContain('Host: agents.example.dev');
+  });
+
+  it('says "sign in" instead of minting a link once an account exists', async () => {
+    const { mutateAuthStore } = await import('../../auth/store.ts');
+    mutateAuthStore((store) => {
+      store.users.push({ id: 'u1', name: 'mateusz', role: 'owner', epoch: 0, password: 'scrypt$x', totp: { secret: 'A'.repeat(32), lastStep: -1 }, recovery: [], createdAt: '' });
+    });
+    const { ctx, out } = signInCtx(signInRunner().runner);
+    await stepById('identity').run(ctx);
+    expect(out.join('\n')).toContain('An account already exists');
+    expect(out.join('\n')).not.toContain('/setup#code=');
+  });
+
+  it.each([
+    ['no HTTPS', {}, { publicUrl: undefined }, 'no HTTPS yet'],
+    ['an API that answers anonymously', { anon: '200' }, {}, 'is CEZ_AUTH=0 set on the service?'],
+    ['sign-in not enforced', { session: '{"enforced":false}\n200' }, {}, 'did not report sign-in as enforced'],
+    ['an owner request that does not arrive', { authed: '\n502' }, {}, 'did not reach cezar'],
+    ['another install answering', { authed: '{"instanceId":"other"}\n200' }, {}, 'serving another install'],
+  ] as const)('fails the install on %s', async (_label, answers, state, expected) => {
+    const { ctx, out } = signInCtx(signInRunner(answers).runner, state);
+    await expect(stepById('identity').run(ctx)).rejects.toBeInstanceOf(StepAborted);
+    expect(out.join('\n')).toContain(expected);
+    expect(out.join('\n')).not.toContain('/setup#code=');
+  });
+
+  it('behind an external proxy it verifies the upstream and asks the proxy for TLS, not for a login', async () => {
+    const { ctx, out } = signInCtx(signInRunner().runner, { externalProxy: true, bindHost: '172.17.0.1', publicUrl: undefined });
+    await expect(stepById('identity').run(ctx)).resolves.toBeTruthy();
+    const text = out.join('\n');
+    expect(text).toContain('No auth middleware is needed');
+    expect(text).toContain('X-Forwarded-Proto: https');
+    expect(text).toContain('https://agents.example.dev/setup#code=');
+    expect(text).not.toContain('basicAuth');
   });
 });

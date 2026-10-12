@@ -2,6 +2,8 @@ import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } f
 import { homedir, userInfo } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readHostKey } from '../../auth/host-key.ts';
+import { issueSetupCode } from '../../auth/store.ts';
 import { CANCEL, PreflightError, type InstallContext, type InstallStep, type PlatformStrategy, type StepArtifact } from '../types.ts';
 import {
   depCheckStep,
@@ -315,7 +317,12 @@ async function confirmServiceRestarted(
 }
 
 /**
- * The nginx server block: auth_basic identity + SSE-safe proxy to loopback.
+ * The nginx site: TLS front + SSE- and WebSocket-safe proxy to loopback.
+ *
+ * `htpasswd` is the Basic-Auth file, or `null` when cezar signs users in itself (spec
+ * 2026-10-12-cockpit-authentication §7) — then nginx authenticates nobody and only rate-limits
+ * the sign-in routes. `instance` keeps the two http-level names unique when several cockpits
+ * share one nginx.
  * `serverName` defaults to the catch-all `_`; the SSL step rewrites it to the
  * real domain so the `certbot --nginx` plugin can find this vhost to edit.
  *
@@ -326,9 +333,12 @@ async function confirmServiceRestarted(
 export function nginxVhost(
   port: number,
   serverName = '_',
-  htpasswd = '/etc/cezar/htpasswd',
+  htpasswd: string | null = '/etc/cezar/htpasswd',
   nginxVersion?: string | null,
+  instance = 'default',
 ): string {
+  // nginx variable and zone names: letters, digits, underscore.
+  const id = instance.replace(/[^a-z0-9]+/gi, '_');
   // HTTP/2 multiplexes every request over ONE TCP connection. Without it the
   // browser's ~6-connections-per-origin HTTP/1.1 cap is exhausted by cezar's
   // long-lived SSE run streams, and further requests block until tabs close.
@@ -347,29 +357,51 @@ export function nginxVhost(
       '    # directive). nginx >= 1.25.1 only — older nginx rejects it outright.\n' +
       '    http2 on;\n'
     : '';
+  const signInZone = `cez_signin_${id}`;
+  const authBlock = htpasswd === null
+    ? ''
+    : `\n    auth_basic "cezar";\n    auth_basic_user_file ${htpasswd};\n`;
+  const signInLimit = htpasswd === null
+    ? `
+    # Sign-in and setup are the only writes an anonymous caller can make. cezar backs off per
+    # account and per address itself; this caps the rate before a request gets that far.
+    location ~ ^/api/v1/auth/(login|setup) {
+        limit_req zone=${signInZone} burst=10 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:${port};
+    }
+`
+    : '';
   return `# Managed by cezar server-install — do not edit by hand.
+
+# A WebSocket handshake (/api/v1/ws) is passed through as an upgrade. Every other request keeps
+# the empty Connection header cezar's SSE streams rely on for upstream keep-alive.
+map $http_upgrade $cez_connection_${id} {
+    default upgrade;
+    ''      '';
+}
+${htpasswd === null ? `limit_req_zone $binary_remote_addr zone=${signInZone}:1m rate=20r/m;\n` : ''}
 server {
     listen 80;
     listen [::]:80;
     server_name ${serverName};
-${http2Block}
-    auth_basic "cezar";
-    auth_basic_user_file ${htpasswd};
+${http2Block}${authBlock}
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $cez_connection_${id};
+
+    # cezar streams SSE (run events). Never buffer it, or the cockpit goes mute.
+    proxy_buffering off;
+    proxy_read_timeout 3600s;
 
     location / {
         proxy_pass http://127.0.0.1:${port};
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        # cezar streams SSE (run events). Never buffer it, or the cockpit goes mute.
-        proxy_buffering off;
-        proxy_read_timeout 3600s;
-        proxy_set_header Connection '';
     }
-}
+${signInLimit}}
 `;
 }
 
@@ -406,9 +438,37 @@ function writeFileStep(
   });
 }
 
+/**
+ * Who signs users in (spec 2026-10-12-cockpit-authentication §7), asked once and remembered in
+ * `server.json`. cezar's own sign-in is the default for a person at the keyboard; `--yes` keeps
+ * the proxy doing it, because that mode also skips the SSL step and cezar's sign-in cannot work
+ * over plain HTTP — the non-interactive install stays exactly what it was.
+ */
+async function chooseSignIn(ctx: InstallContext, proxyLabel: string): Promise<'cezar' | 'proxy'> {
+  if (ctx.assumeYes) {
+    ctx.state.signIn = ctx.state.signIn ?? 'proxy';
+    return ctx.state.signIn;
+  }
+  const answer = await ctx.ui.select<'cezar' | 'proxy'>({
+    message: 'How do people sign in to this cockpit?',
+    options: [
+      {
+        value: 'cezar',
+        label: "cezar's own sign-in (recommended)",
+        hint: 'password + authenticator app, a session per device — needs a domain with HTTPS',
+      },
+      { value: 'proxy', label: proxyLabel, hint: 'one shared password, no second factor' },
+    ],
+    initialValue: ctx.state.signIn ?? 'cezar',
+  });
+  if (answer === CANCEL) throw new StepCancelled();
+  ctx.state.signIn = answer;
+  return answer;
+}
+
 const nginxProxyStep: InstallStep = {
   id: 'nginx-proxy',
-  title: 'Reverse proxy (nginx + htpasswd)',
+  title: 'Reverse proxy (nginx)',
   async check(ctx) {
     if (ctx.dryRun) return false;
     const nginxOk = await verifyCommand(ctx, 'nginx', ['-v']);
@@ -421,101 +481,110 @@ const nginxProxyStep: InstallStep = {
     //    claiming a pre-existing nginx.
     const nginxWasPresent = await verifyCommand(ctx, 'nginx', ['-v']);
     await sudoStep(ctx, {
-      description: 'Install nginx (the public TLS + auth front for cezar).',
+      description: 'Install nginx (the public TLS front for cezar).',
       command: 'apt-get update && apt-get install -y nginx',
       verify: (c) => verifyCommand(c, 'nginx', ['-v']),
     });
 
-    // 2) identity credentials. This is the HTTP Basic-Auth login nginx will
-    //    challenge for over HTTPS — i.e. what you type in the browser to reach
-    //    the cockpit. Suggest the current OS user as a sensible default.
-    const suggestedUser = currentUsername();
-    const userAnswer = await ctx.ui.text({
-      message: 'Cockpit login username (HTTPS Basic-Auth — you type this in the browser to reach the cockpit)',
-      placeholder: suggestedUser,
-      initialValue: suggestedUser,
-      // htpasswd's line format is `user:hash` — a ":" in the username would
-      // silently corrupt it into a login that can never succeed.
-      validate: (v) => {
-        if (!v.trim()) return 'username is required';
-        if (/[:\s]/.test(v.trim())) return 'no ":" or whitespace — htpasswd uses ":" as its separator';
-        return undefined;
-      },
-    });
-    if (userAnswer === CANCEL) throw new StepCancelled();
-    const user = String(userAnswer).trim();
+    // 2) who signs users in. With cezar's own sign-in nginx authenticates nobody: no htpasswd,
+    //    no password to pick here — the account is created in the browser from the one-time
+    //    link the last step prints.
+    const signIn = await chooseSignIn(ctx, 'HTTP Basic-Auth in nginx (works without a domain)');
+    let user = '';
+    let htpasswd: string | null = null;
+    if (signIn === 'proxy') {
+      // 2) identity credentials. This is the HTTP Basic-Auth login nginx will
+      //    challenge for over HTTPS — i.e. what you type in the browser to reach
+      //    the cockpit. Suggest the current OS user as a sensible default.
+      const suggestedUser = currentUsername();
+      const userAnswer = await ctx.ui.text({
+        message: 'Cockpit login username (HTTPS Basic-Auth — you type this in the browser to reach the cockpit)',
+        placeholder: suggestedUser,
+        initialValue: suggestedUser,
+        // htpasswd's line format is `user:hash` — a ":" in the username would
+        // silently corrupt it into a login that can never succeed.
+        validate: (v) => {
+          if (!v.trim()) return 'username is required';
+          if (/[:\s]/.test(v.trim())) return 'no ":" or whitespace — htpasswd uses ":" as its separator';
+          return undefined;
+        },
+      });
+      if (userAnswer === CANCEL) throw new StepCancelled();
+      user = String(userAnswer).trim();
 
-    // Set the cockpit password. Interactive operators may auto-generate a strong
-    // one (shown once) or type their own. Under `--yes` (no human) there is no
-    // menu — the password comes straight from the UI, and the length backstop
-    // below refuses an empty one rather than standing up an open cockpit (H1).
-    let password: string;
-    if (ctx.assumeYes) {
-      const typed = await ctx.ui.password({
-        message: `Set the HTTPS cockpit password for "${user}"`,
-        validate: (v) => (v.length >= 6 ? undefined : 'use at least 6 characters'),
-      });
-      if (typed === CANCEL) throw new StepCancelled();
-      password = String(typed);
-    } else {
-      const how = await ctx.ui.select<'generate' | 'manual'>({
-        message: `Cockpit password for "${user}" (used with the username to log in over HTTPS)`,
-        options: [
-          { value: 'generate', label: 'Generate a strong password for me', hint: 'shown once — save it now' },
-          { value: 'manual', label: 'Type my own password' },
-        ],
-        initialValue: 'generate',
-      });
-      if (how === CANCEL) throw new StepCancelled();
-      if (how === 'generate') {
-        password = generatePassword();
-        ctx.ui.note(
-          `Username: ${user}\nPassword: ${password}\n\nSave these now — this is your cockpit login. cezar stores only a hash; the plaintext is not written anywhere and cannot be recovered.`,
-          'Generated cockpit credentials',
-        );
-      } else {
+      // Set the cockpit password. Interactive operators may auto-generate a strong
+      // one (shown once) or type their own. Under `--yes` (no human) there is no
+      // menu — the password comes straight from the UI, and the length backstop
+      // below refuses an empty one rather than standing up an open cockpit (H1).
+      let password: string;
+      if (ctx.assumeYes) {
         const typed = await ctx.ui.password({
           message: `Set the HTTPS cockpit password for "${user}"`,
           validate: (v) => (v.length >= 6 ? undefined : 'use at least 6 characters'),
         });
         if (typed === CANCEL) throw new StepCancelled();
         password = String(typed);
+      } else {
+        const how = await ctx.ui.select<'generate' | 'manual'>({
+          message: `Cockpit password for "${user}" (used with the username to log in over HTTPS)`,
+          options: [
+            { value: 'generate', label: 'Generate a strong password for me', hint: 'shown once — save it now' },
+            { value: 'manual', label: 'Type my own password' },
+          ],
+          initialValue: 'generate',
+        });
+        if (how === CANCEL) throw new StepCancelled();
+        if (how === 'generate') {
+          password = generatePassword();
+          ctx.ui.note(
+            `Username: ${user}\nPassword: ${password}\n\nSave these now — this is your cockpit login. cezar stores only a hash; the plaintext is not written anywhere and cannot be recovered.`,
+            'Generated cockpit credentials',
+          );
+        } else {
+          const typed = await ctx.ui.password({
+            message: `Set the HTTPS cockpit password for "${user}"`,
+            validate: (v) => (v.length >= 6 ? undefined : 'use at least 6 characters'),
+          });
+          if (typed === CANCEL) throw new StepCancelled();
+          password = String(typed);
+        }
       }
-    }
-    // The non-interactive UI (`--yes`) cannot invent a password and does not run
-    // validators — refuse rather than write an empty-password htpasswd (a public
-    // cockpit anyone can open). A real install must set a password interactively.
-    if (!ctx.dryRun && String(password).length < 6) {
-      throw new StepAborted('a cockpit password (≥6 chars) is required — run server-install without --yes to set one');
-    }
-    // Keep the credentials in memory (never persisted) so the final verify step
-    // can prove an authenticated request actually reaches cezar over the proxy.
-    ctx.prefs.cockpit = { user, password };
+      // The non-interactive UI (`--yes`) cannot invent a password and does not run
+      // validators — refuse rather than write an empty-password htpasswd (a public
+      // cockpit anyone can open). A real install must set a password interactively.
+      if (!ctx.dryRun && String(password).length < 6) {
+        throw new StepAborted('a cockpit password (≥6 chars) is required — run server-install without --yes to set one');
+      }
+      // Keep the credentials in memory (never persisted) so the final verify step
+      // can prove an authenticated request actually reaches cezar over the proxy.
+      ctx.prefs.cockpit = { user, password };
 
-    // 3) htpasswd file. The hash (not the plaintext) is embedded in the write
-    //    command; the plaintext is fed to openssl via stdin so it never appears
-    //    in the process argv (visible to other users via `ps`). apr1 is what
-    //    nginx's auth_basic expects.
-    let hash = '<dry-run-hash>';
-    if (!ctx.dryRun) {
-      const out = await ctx.runner.capture('openssl', ['passwd', '-apr1', '-stdin'], { input: `${String(password)}\n` });
-      hash = out.stdout.trim();
-      if (out.code !== 0 || !hash) throw new StepAborted('failed to hash the password (openssl) — cannot write htpasswd');
+      // 3) htpasswd file. The hash (not the plaintext) is embedded in the write
+      //    command; the plaintext is fed to openssl via stdin so it never appears
+      //    in the process argv (visible to other users via `ps`). apr1 is what
+      //    nginx's auth_basic expects.
+      let hash = '<dry-run-hash>';
+      if (!ctx.dryRun) {
+        const out = await ctx.runner.capture('openssl', ['passwd', '-apr1', '-stdin'], { input: `${String(password)}\n` });
+        hash = out.stdout.trim();
+        if (out.code !== 0 || !hash) throw new StepAborted('failed to hash the password (openssl) — cannot write htpasswd');
+      }
+      // nginx workers run as www-data and read auth_basic_user_file per request,
+      // so the file must be group-readable by www-data — 0640 root:root would make
+      // every request 500. 0640 root:www-data: readable by nginx, not by others.
+      // The credential line travels on STDIN (`cat > file`), never in argv — the
+      // apr1 hash is offline-crackable, and argv is world-readable via `ps`.
+      const file = htpasswdPath(ctx);
+      htpasswd = file;
+      await sudoStep(ctx, {
+        description: 'Write the htpasswd identity file that nginx checks on every request.',
+        note: `${file}\n\n${user}:<apr1 hash of your password>`,
+        command: `install -d -m 0755 /etc/cezar && cat > ${file} && chown root:www-data ${file} && chmod 0640 ${file}`,
+        input: `${user}:${hash}\n`,
+        inputLabel: 'credential line (username:hash)',
+        verify: (c) => verifyCommand(c, 'test', ['-f', file]),
+      });
     }
-    // nginx workers run as www-data and read auth_basic_user_file per request,
-    // so the file must be group-readable by www-data — 0640 root:root would make
-    // every request 500. 0640 root:www-data: readable by nginx, not by others.
-    // The credential line travels on STDIN (`cat > file`), never in argv — the
-    // apr1 hash is offline-crackable, and argv is world-readable via `ps`.
-    const htpasswd = htpasswdPath(ctx);
-    await sudoStep(ctx, {
-      description: 'Write the htpasswd identity file that nginx checks on every request.',
-      note: `${htpasswd}\n\n${user}:<apr1 hash of your password>`,
-      command: `install -d -m 0755 /etc/cezar && cat > ${htpasswd} && chown root:www-data ${htpasswd} && chmod 0640 ${htpasswd}`,
-      input: `${user}:${hash}\n`,
-      inputLabel: 'credential line (username:hash)',
-      verify: (c) => verifyCommand(c, 'test', ['-f', htpasswd]),
-    });
 
     // Record whether the distro's default site was enabled *before* we disable
     // it, so undo only re-enables it if we were the one who removed it.
@@ -531,7 +600,7 @@ const nginxProxyStep: InstallStep = {
     const vhostAvail = vhostAvailable(ctx);
     const vhostEnbl = vhostEnabled(ctx);
     const nginxVersion = await detectNginxVersion(ctx);
-    const vhost = nginxVhost(ctx.state.primaryPort, ctx.state.domain ?? '_', htpasswd, nginxVersion);
+    const vhost = nginxVhost(ctx.state.primaryPort, ctx.state.domain ?? '_', htpasswd, nginxVersion, inst(ctx));
     await writeFileStep(ctx, {
       description: 'Write the cezar nginx site, enable it, and reload nginx.',
       path: vhostAvail,
@@ -583,8 +652,8 @@ const nginxProxyStep: InstallStep = {
     const artifacts: StepArtifact[] = [
       owned('file', { path: vhostAvail }),
       owned('symlink', { path: vhostEnbl }),
-      owned('htpasswd', { path: htpasswd, name: user }),
     ];
+    if (htpasswd !== null) artifacts.push(owned('htpasswd', { path: htpasswd, name: user }));
     if (defaultWasEnabled) artifacts.push(owned('nginx-default', { path: '/etc/nginx/sites-enabled/default' }));
     if (!nginxWasPresent) {
       artifacts.push(shared('package', { name: 'nginx', removeHint: 'sudo apt-get remove -y nginx' }));
@@ -655,7 +724,9 @@ export async function nginxConfigTestFailure(ctx: InstallContext): Promise<Verif
 const sslStep: InstallStep = {
   id: 'ssl',
   title: 'Domain + SSL (Let’s Encrypt)',
-  optional: true,
+  // cezar's own sign-in refuses to set a session cookie over plain HTTP, so with it this step is
+  // not a nicety — skipping it would leave a cockpit nobody can sign in to.
+  optional: (ctx) => ctx.state.signIn !== 'cezar',
   async check() {
     return false; // optional — the engine gates it with a confirm; certbot is idempotent
   },
@@ -822,6 +893,9 @@ export function systemdUnit(
   execStart: string,
   bindHost?: string,
   instanceId?: string,
+  /** The front authenticates (`signIn: 'proxy'`): cezar's own sign-in is switched off. Absent
+   *  for cezar's sign-in AND for a record that predates the choice, whose unit stays as it was. */
+  proxyAuth = false,
 ): string {
   const userLine = scope === 'system' ? `User=${userInfo().username}\n` : '';
   const installTarget = scope === 'system' ? 'multi-user.target' : 'default.target';
@@ -847,7 +921,7 @@ Wants=network-online.target
 Type=simple
 ${userLine}WorkingDirectory=${repoRoot}
 Environment=CEZ_REMOTE=1
-${instanceId ? `Environment=CEZ_INSTANCE_ID=${sysd(instanceId)}\n` : ''}Environment=PATH=${sysd(pathDirs.join(':'))}
+${proxyAuth ? 'Environment=CEZ_AUTH=0\n' : ''}${instanceId ? `Environment=CEZ_INSTANCE_ID=${sysd(instanceId)}\n` : ''}Environment=PATH=${sysd(pathDirs.join(':'))}
 ExecStart=${sysd(execStart)} serve --no-open --port ${port}${sysd(bind)}
 Restart=on-failure
 RestartSec=5
@@ -1006,6 +1080,11 @@ const autostartStep: InstallStep = {
   },
   async run(ctx): Promise<{ artifacts: StepArtifact[] }> {
     const UNIT_NAME = unitName(ctx);
+    // An external-proxy install has no nginx step to ask in, and the unit written below is what
+    // carries the answer.
+    if (ctx.state.externalProxy && ctx.state.signIn === undefined) {
+      await chooseSignIn(ctx, 'My reverse proxy authenticates (a Basic-Auth or SSO middleware)');
+    }
     const execStart = await resolveExecStart(ctx);
     // Prefer a rootless `systemd --user` service + linger; fall back to a system
     // unit (via sudoStep) when the user bus is not reachable. `show-environment`
@@ -1021,7 +1100,7 @@ const autostartStep: InstallStep = {
         mkdirSync(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });
         writeFileSync(
           unitPath,
-          systemdUnit(ctx.repoRoot, ctx.state.primaryPort, 'user', execStart, ctx.state.bindHost, ctx.state.instanceId),
+          systemdUnit(ctx.repoRoot, ctx.state.primaryPort, 'user', execStart, ctx.state.bindHost, ctx.state.instanceId, ctx.state.signIn === 'proxy'),
           'utf8',
         );
         await ctx.runner.interactive('systemctl', ['--user', 'daemon-reload']);
@@ -1056,7 +1135,7 @@ const autostartStep: InstallStep = {
     await writeFileStep(ctx, {
       description: 'Install the cezar systemd unit, start it now, and enable it at boot.',
       path: `/etc/systemd/system/${UNIT_NAME}`,
-      content: systemdUnit(ctx.repoRoot, ctx.state.primaryPort, 'system', execStart, ctx.state.bindHost, ctx.state.instanceId),
+      content: systemdUnit(ctx.repoRoot, ctx.state.primaryPort, 'system', execStart, ctx.state.bindHost, ctx.state.instanceId, ctx.state.signIn === 'proxy'),
       extra: `systemctl daemon-reload && systemctl enable --now ${UNIT_NAME}`,
       verify: (c) => verifyCommand(c, 'systemctl', ['is-enabled', UNIT_NAME]),
     });
@@ -1127,9 +1206,31 @@ async function verifyBehindExternalProxy(ctx: InstallContext): Promise<{ artifac
     throw new StepAborted('cockpit verification failed — see the diagnostics above');
   }
 
+  if (ctx.state.signIn === 'cezar') {
+    const problems = await verifyCezarSignIn(ctx, { base: `${target}/`, args: [], through: target });
+    if (problems.length > 0) {
+      ctx.ui.error(`The cockpit is NOT fully working yet:\n` + problems.map((p) => `  • ${p}`).join('\n'));
+      throw new StepAborted('cockpit verification failed — see the diagnostics above');
+    }
+    ctx.ui.success(`Cockpit is up on ${target}, and cezar's own sign-in guards it.`);
+    ctx.ui.message(
+      [
+        `Point your existing proxy at ${target} for ${domain}. It needs to do three things:`,
+        `  • terminate TLS — cezar's sign-in refuses to set a session over plain HTTP`,
+        `  • send X-Forwarded-Proto: https and the original Host (Traefik and Caddy do by default)`,
+        `  • pass WebSocket upgrades for /api/v1/ws (also their default)`,
+        ``,
+        `No auth middleware is needed: cezar asks for a password and an authenticator code itself.`,
+        `Keep ${host}:${port} off the public internet (ufw / cloud firewall) all the same.`,
+      ].join('\n'),
+    );
+    announceSignIn(ctx, ctx.state.domain ? `https://${ctx.state.domain}` : '<your cockpit address>');
+    return { artifacts: [] };
+  }
+
   ctx.ui.success(`Cockpit is up and listening on ${target}.`);
   ctx.ui.warn(
-    'cezar has NO built-in authentication in this mode — your reverse proxy MUST enforce it. ' +
+    "cezar's own sign-in is OFF in this mode (CEZ_AUTH=0) — your reverse proxy MUST enforce authentication. " +
       'Anyone who can reach ' + target + ' can run agents on this box.',
   );
   ctx.ui.message(
@@ -1161,9 +1262,82 @@ async function verifyBehindExternalProxy(ctx: InstallContext): Promise<{ artifac
   return { artifacts: [] };
 }
 
+/**
+ * A host-key request through `curl -K -`, so the key never lands in argv. `null` when this host
+ * has no key yet (the service has not booted with sign-in on).
+ */
+async function hostKeyResponse(ctx: InstallContext, args: string[]): Promise<{ code: string; body: string } | null> {
+  const key = readHostKey();
+  if (!key) return null;
+  return curlResponse(ctx, [...args.slice(0, -1), '-K', '-', args.at(-1)!], {
+    input: `header = "Authorization: Bearer ${key}"\n`,
+  });
+}
+
+/**
+ * The last thing an install with cezar's own sign-in does: say how to get in. No account yet →
+ * mint the one-time setup link (the installer runs as the user the service runs as, so it can);
+ * an account already exists → say so, and how to reset it.
+ */
+function announceSignIn(ctx: InstallContext, url: string): void {
+  const issued = issueSetupCode();
+  if (issued.ok) {
+    ctx.ui.note(
+      `${url}/setup#code=${issued.setup.code}\n\n` +
+        'Open it within 15 minutes to create the owner account: a password, then an authenticator app.\n' +
+        'It works once. For a fresh link later: cezar auth setup',
+      'Create your account',
+    );
+    return;
+  }
+  ctx.ui.info(`An account already exists — sign in at ${url}. Lost access? Run: cezar auth reset <user>`);
+}
+
+/**
+ * The end-to-end check when cezar signs users in itself (spec 2026-10-12-cockpit-authentication
+ * §7). Different proof from the Basic-Auth path, same standard: "complete" must mean it works.
+ * `base` is where the probe goes — the nginx front, or the upstream behind an external proxy.
+ */
+async function verifyCezarSignIn(
+  ctx: InstallContext,
+  probe: { base: string; args: string[]; through: string },
+): Promise<string[]> {
+  const problems: string[] = [];
+  const anon = await curlCode(ctx, [...probe.args, `${probe.base}api/v1/health`]);
+  if (anon !== '401') {
+    problems.push(
+      `an anonymous request for /api/v1/health through ${probe.through} got "${anon}", not 401 — cezar's sign-in is not guarding the API` +
+        (anon === '200' ? ' (is CEZ_AUTH=0 set on the service?)' : ''),
+    );
+  }
+  const session = await curlResponse(ctx, [...probe.args, `${probe.base}api/v1/auth/session`]);
+  try {
+    if ((JSON.parse(session.body) as { enforced?: unknown }).enforced !== true) throw new Error('not enforced');
+  } catch {
+    problems.push(`/api/v1/auth/session through ${probe.through} did not report sign-in as enforced (got "${session.code}")`);
+  }
+  // The owner's view of the same route proves a credentialed request reaches THIS install.
+  const authed = await hostKeyResponse(ctx, [...probe.args, `${probe.base}api/v1/health`]);
+  if (authed === null) {
+    problems.push('this host has no cockpit key yet (~/.cezar/auth-host.key) — the service has not started with sign-in on');
+  } else if (!/^2\d\d$/.test(authed.code)) {
+    problems.push(`an authenticated request through ${probe.through} got "${authed.code}" — it did not reach cezar`);
+  } else if (ctx.state.instanceId) {
+    try {
+      const served = (JSON.parse(authed.body) as { instanceId?: unknown }).instanceId;
+      if (typeof served === 'string' && served !== ctx.state.instanceId) {
+        problems.push(`the cockpit answering through ${probe.through} is serving another install, not this one`);
+      }
+    } catch {
+      // An unreadable body leaves identity inconclusive, as it always has.
+    }
+  }
+  return problems;
+}
+
 const identityStep: InstallStep = {
   id: 'identity',
-  title: 'Verify the cockpit end-to-end (auth + HTTPS reach cezar)',
+  title: 'Verify the cockpit end-to-end (sign-in + HTTPS reach cezar)',
   async check() {
     return false; // always re-verify; it creates nothing
   },
@@ -1189,6 +1363,33 @@ const identityStep: InstallStep = {
     //    auth *before* proxying, so an anonymous 401 alone does NOT prove the
     //    backend is up — check the upstream directly.
     const upstreamUp = await isCezarUp(ctx, port);
+
+    if (ctx.state.signIn === 'cezar') {
+      const problems: string[] = [];
+      if (!upstreamUp) problems.push(`cezar is not listening on 127.0.0.1:${port} — the service is down, so nginx returns 502`);
+      if (!https) {
+        problems.push(
+          "this cockpit has no HTTPS yet, and cezar's sign-in refuses to set a session over plain HTTP — " +
+            're-run: cezar server-install --platform ubuntu-vps --reconfigure ssl',
+        );
+      }
+      if (upstreamUp && https) problems.push(...(await verifyCezarSignIn(ctx, { base, args: [...tls, ...host], through: 'nginx' })));
+      if (problems.length === 0) {
+        const url = ctx.state.publicUrl!;
+        ctx.ui.success(`Cockpit is live at ${url} — cezar's sign-in guards it, and an authenticated request reached this install.`);
+        announceSignIn(ctx, url);
+        return { artifacts: [] };
+      }
+      ctx.ui.error(
+        `The cockpit is NOT fully working yet:\n` +
+          problems.map((p) => `  • ${p}`).join('\n') +
+          `\n\nDiagnostics on the server:\n` +
+          `  • systemctl --user status cezar   (or: sudo systemctl status cezar)\n` +
+          `  • sudo systemctl status nginx && sudo nginx -t\n` +
+          `  • sudo ss -ltnp | grep -E ':80|:443|:${port}'`,
+      );
+      throw new StepAborted('cockpit verification failed — see the diagnostics above');
+    }
 
     // 2) An anonymous request through nginx must be challenged (auth is active).
     const anonCode = await curlCode(ctx, [...tls, ...host, base]);
@@ -1268,6 +1469,33 @@ const identityStep: InstallStep = {
     // nothing created
   },
 };
+
+/**
+ * A record written before the sign-in choice existed (`signIn` absent) describes an install whose
+ * FRONT authenticates and whose unit says nothing about `CEZ_AUTH`. The cezar it just restarted
+ * into turns its own sign-in on for a hosted cockpit, so that install now has both. Nothing is
+ * exposed that was not — the front still asks first — but the operator has to be told, because
+ * the cockpit will greet them with a setup screen. Never rewrites anything (spec §9).
+ */
+async function explainLegacySignIn(ctx: InstallContext): Promise<void> {
+  if (ctx.state.signIn !== undefined) return;
+  const session = await curlResponse(ctx, [`http://${upstreamHost(ctx)}:${ctx.state.primaryPort}/api/v1/auth/session`]);
+  let enforced = false;
+  try {
+    enforced = (JSON.parse(session.body) as { enforced?: unknown }).enforced === true;
+  } catch {
+    return; // an older cezar, or not answering — nothing to explain
+  }
+  if (!enforced) return;
+  const reconfigure = ctx.state.externalProxy ? 'autostart' : 'nginx-proxy,ssl,autostart';
+  ctx.ui.warn(
+    "This version of cezar has its own sign-in, and it is now ON for this cockpit — behind your proxy's login, which is still there.\n" +
+      'Pick one:\n' +
+      `  • use cezar's sign-in (password + authenticator app): run \`cezar auth setup\` and open the link;\n` +
+      `    then drop the proxy login with: cezar server-install --platform ubuntu-vps --reconfigure ${reconfigure}\n` +
+      '  • keep only the proxy login: add `Environment=CEZ_AUTH=0` to the cezar service and restart it.',
+  );
+}
 
 export const ubuntuVps: PlatformStrategy = {
   id: 'ubuntu-vps',
@@ -1375,5 +1603,6 @@ export const ubuntuVps: PlatformStrategy = {
       scope === 'user' ? 'journalctl --user -u cezar -n 50 --no-pager' : 'sudo journalctl -u cezar -n 50 --no-pager',
     );
     await identityStep.run(ctx); // throws StepAborted if the cockpit isn't fully working
+    await explainLegacySignIn(ctx);
   },
 };

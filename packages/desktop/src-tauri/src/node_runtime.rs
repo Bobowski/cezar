@@ -234,7 +234,9 @@ fn unpack_tar_gz(archive: &Path, out: &Path) -> Result<(), String> {
         if entry.header().entry_type().is_hard_link() {
             // Named from the archive's top folder; `Entry::unpack` would resolve it from the cwd.
             let target = entry.link_name().map_err(broken)?.and_then(|target| inside(&target));
-            let target = target.filter(|target| !through_link(out, target)).ok_or_else(|| format!("the Node.js archive links {} outside itself", rel.display()))?;
+            // A regular file only: a hard link to a symlink would move it to another depth.
+            let regular = |target: &PathBuf| std::fs::symlink_metadata(out.join(target)).is_ok_and(|meta| meta.file_type().is_file());
+            let target = target.filter(|target| !through_link(out, target) && regular(target)).ok_or_else(|| format!("the Node.js archive links {} outside itself", rel.display()))?;
             std::fs::hard_link(out.join(target), &dest).map_err(broken)?;
             continue;
         }
@@ -262,12 +264,18 @@ fn link_stays_inside(link: &Path, target: &Path) -> bool {
     if target.is_absolute() {
         return false;
     }
+    // `..` only as a leading prefix: after a Normal step the kernel may have followed a link,
+    // so a later `..` no longer means what the text says (`x -> ..`, then `x/d/../..`).
     let mut depth: i32 = link.components().count() as i32 - 1;
+    let mut climbing = true;
     for component in target.components() {
         match component {
-            Component::Normal(_) => depth += 1,
+            Component::Normal(_) => {
+                climbing = false;
+                depth += 1
+            }
             Component::CurDir => {}
-            Component::ParentDir => depth -= 1,
+            Component::ParentDir if climbing => depth -= 1,
             _ => return false,
         }
         if depth < 0 {
@@ -524,6 +532,32 @@ mod tests {
         assert!(link_stays_inside(Path::new("bin/npm"), Path::new("../lib/node_modules/npm/bin/npm-cli.js")));
         assert!(!link_stays_inside(Path::new("bin/npm"), Path::new("../../x")));
         assert!(!link_stays_inside(Path::new("bin/npm"), Path::new("/usr/bin/node")));
+        assert!(link_stays_inside(Path::new("bin/npm"), Path::new("./../lib/npm")));
+        // With `d/x -> ..` unpacked, `x/d/x/..` is not `x/d`: the text cannot be trusted.
+        assert!(!link_stays_inside(Path::new("d/y"), Path::new("x/d/x/d/x/../../..")));
+        assert!(!link_stays_inside(Path::new("d/y"), Path::new("x/..")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hard_link_to_a_link_is_refused() {
+        let root = scratch("hardlink-to-link");
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
+        let top = "node-v22.11.0-darwin-arm64";
+        let mut link = tar::Header::new_gnu();
+        link.set_entry_type(tar::EntryType::Symlink);
+        link.set_size(0);
+        builder.append_link(&mut link, format!("{top}/a/b/s"), "../../x").unwrap();
+        let mut hard = tar::Header::new_gnu();
+        hard.set_entry_type(tar::EntryType::Link);
+        hard.set_size(0);
+        builder.append_link(&mut hard, format!("{top}/s2"), format!("{top}/a/b/s")).unwrap();
+        let archive = builder.into_inner().unwrap().finish().unwrap();
+        let error = install(&root, "22.11.0", &mac(), &sha_hex(&archive), |file| file.write_all(&archive).map_err(|e| e.to_string()), |_| Ok(()))
+            .unwrap_err();
+        assert!(error.contains("outside itself"), "{error}");
+        assert!(entries(&root).is_empty(), "{:?}", entries(&root));
         let _ = std::fs::remove_dir_all(&root);
     }
 

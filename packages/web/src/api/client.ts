@@ -157,7 +157,7 @@ import type {
   TrackerTransitionsResponse,
   TrackerItemsResponse,
   TrackerKind, TrackerCredentials, TrackerConnectionResponse,
-  SecretsList, SecretValueInput,
+  SecretsList, SecretValueInput, EnvFileContent, EnvFilesList, SetEnvFileInput,
   E2eStatus, E2eSetupInput, E2eSetupResponse,
 } from '@open-mercato/cezar-api-client'
 import { parseProviderStatusResponse } from '@/lib/provider-status'
@@ -947,6 +947,25 @@ export async function getProjectSecrets(opts?: ReadOptions): Promise<SecretsList
 export async function getWorkspaceSecrets(opts?: ReadOptions): Promise<SecretsList> {
   return unwrap(await cez.api.v1.workspace.secrets.$get({}, init(opts)), '/workspace/secrets')
 }
+// ---- project env files (the listing is names only; contents are read on demand, never cached) ----
+
+export async function getEnvFiles(opts?: ReadOptions): Promise<EnvFilesList> {
+  return unwrap(await cez.api.v1.p[':projectId']['env-files'].$get(
+    { param: { projectId: queryScope() } }, init(opts)), '/env-files')
+}
+export async function getEnvFileContent(path: string): Promise<EnvFileContent> {
+  return unwrap(await cez.api.v1.p[':projectId']['env-files'].content.$get(
+    { param: { projectId: queryScope() }, query: { path } }), '/env-files/content')
+}
+export async function saveEnvFile(input: SetEnvFileInput): Promise<EnvFileContent> {
+  return unwrap(await cez.api.v1.p[':projectId']['env-files'].$put(
+    { param: { projectId: queryScope() }, json: input }), '/env-files')
+}
+export async function removeEnvFile(path: string): Promise<void> {
+  await expectNoContent(await cez.api.v1.p[':projectId']['env-files'].$delete(
+    { param: { projectId: queryScope() }, query: { path } }))
+}
+
 /** Every write answers 204, which has no body for `unwrap` to parse — only the status matters. */
 async function expectNoContent(res: Response): Promise<void> {
   if (!res.ok) throw errorFor(res.status, res.statusText, await res.text())

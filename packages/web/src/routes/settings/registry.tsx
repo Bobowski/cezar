@@ -15,6 +15,7 @@ import {
   BlocksIcon,
   ShieldCheckIcon,
   TicketIcon,
+  FileKeyIcon,
 } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 
@@ -35,6 +36,7 @@ import { SkillsSection } from './skills-section'
 import { WorktreesSection } from './worktrees-section'
 import { TrackerSection } from './tracker-section'
 import { ProjectSecretsSection, WorkspaceSecretsSection } from './secrets-section'
+import { EnvFilesSection } from './env-files-section'
 import { IntegrationsSection } from './integrations-section'
 
 /**
@@ -68,6 +70,7 @@ export type SettingsSectionId =
   | 'skills'
   | 'tracker'
   | 'secrets'
+  | 'environment'
   | 'integrations'
   | 'workspace-secrets'
   | 'security'
@@ -120,6 +123,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description: 'Encrypted values for this project’s check steps and cezar — never for agents.',
     icon: KeyRoundIcon,
     component: ProjectSecretsSection,
+    scope: 'project',
+  },
+  {
+    id: 'environment',
+    title: 'Environment',
+    description: 'This project’s .env files, one per service — copied into every new task’s worktree.',
+    icon: FileKeyIcon,
+    component: EnvFilesSection,
     scope: 'project',
   },
   {

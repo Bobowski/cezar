@@ -58,7 +58,7 @@ import {
   getSkills,
   getSkillsWhenReady,
   getTodos,
-  getTrackerAssociation, getTrackerConnection, getProjectSecrets, getWorkspaceSecrets, getE2eStatus,
+  getTrackerAssociation, getTrackerConnection, getProjectSecrets, getWorkspaceSecrets, getEnvFiles, getE2eStatus,
   getTrackerCandidates,
   getTrackerItem,
   getTrackerItems,
@@ -152,6 +152,10 @@ import { onSocketProbe, socketProbeResult, startSocketProbe, transportFor, wants
  * ever reach A's data. Call sites are unchanged — they keep writing `queryKeys.runs.list()`.
  */
 export const queryKeys = {
+  envFiles: {
+    allFor: (projectId: string) => ['env-files', projectId] as const,
+    list: () => ['env-files', queryScope()] as const,
+  },
   secrets: {
     allFor: (projectId: string) => ['secrets', projectId] as const,
     list: () => ['secrets', queryScope()] as const,
@@ -294,6 +298,10 @@ export const queryKeys = {
 
 export const TRACKER_STALE_TIME = 60_000
 
+/** The project's env files (spec 2026-10-12-project-env-files): paths and variable names, never values. */
+export function useEnvFiles() {
+  return useQuery({ queryKey: queryKeys.envFiles.list(), queryFn: ({ signal }) => getEnvFiles({ signal }) })
+}
 export function useProjectSecrets() {
   return useQuery({ queryKey: queryKeys.secrets.list(), queryFn: ({ signal }) => getProjectSecrets({ signal }) })
 }

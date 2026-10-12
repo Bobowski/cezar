@@ -7,9 +7,11 @@ import {
   trackerCandidatesQuerySchema, trackerListQuerySchema, trackerSearchQuerySchema, trackerItemQuerySchema, trackerReadScope, trackerRunLinkInputSchema, trackerRunIssueQuerySchema, trackerTransitionInputSchema,
   trackerCredentialsSchema, trackerItemParamsSchema, trackerAssociationInputSchema, type TrackerChangedEvent,
   secretParamsSchema, secretValueInputSchema, type SecretsList, type SecretValueInput,
+  envFileQuerySchema, setEnvFileSchema, type EnvFilesList,
   e2eSetupInputSchema, type E2eStatus,
 } from '@open-mercato/cezar-contract';
 import { SecretStore, SecretsError, type SecretScopeRef } from '../workspace/secrets.ts';
+import { listEnvFiles, readEnvFile, removeEnvFile, writeEnvFile } from '../env-files.ts';
 import { E2E_SETUP_TASK, e2eCredentialsAmong, e2eSetupWorkflow, latestE2eSetupRun, readE2eStatus, setupInFlight } from '../e2e-setup.ts';
 import { createTrackerService } from './tracker/index.ts';
 import { TrackerWatches } from './tracker/watch.ts';
@@ -6493,6 +6495,36 @@ export function createApp(deps: ServerDeps) {
       return c.body(null, 204);
     });
 
+  // ---- chained family: project env files -----------------------------------
+  // Spec 2026-10-12-project-env-files. The listing speaks paths and variable NAMES; contents are
+  // read and written only for a trusted operator, the same line as the terminal — a shell in the
+  // checkout already reads these files, and nothing less than that should.
+  const envFilesRefusal = { error: 'env files are not served by a hosted cockpit without sign-in (CEZ_AUTH=0) — edit them on the machine that owns the checkout' };
+  const envFilesRoutes = new Hono<ProjectApiEnv>()
+    .get('/env-files', async (c) => {
+      const list: EnvFilesList = await listEnvFiles(c.get('project').root, trustedOperator(process.env, bindHost));
+      return c.json(list, 200);
+    })
+    .get('/env-files/content', queryZodValidator(envFileQuerySchema), async (c) => {
+      if (!trustedOperator(process.env, bindHost)) return c.json(envFilesRefusal, 409);
+      const read = await readEnvFile(c.get('project').root, c.req.valid('query').path);
+      if (!read.ok) return c.json({ error: read.error }, read.status);
+      return c.json(read.value, 200);
+    })
+    .put('/env-files', jsonZodValidator(setEnvFileSchema), async (c) => {
+      if (!trustedOperator(process.env, bindHost)) return c.json(envFilesRefusal, 409);
+      const { path, content, version } = c.req.valid('json');
+      const written = await writeEnvFile(c.get('project').root, path, content, version);
+      if (!written.ok) return c.json({ error: written.error }, written.status);
+      return c.json(written.value, 200);
+    })
+    .delete('/env-files', queryZodValidator(envFileQuerySchema), async (c) => {
+      if (!trustedOperator(process.env, bindHost)) return c.json(envFilesRefusal, 409);
+      const removed = await removeEnvFile(c.get('project').root, c.req.valid('query').path);
+      if (!removed.ok) return c.json({ error: removed.error }, removed.status);
+      return c.body(null, 204);
+    });
+
   // ---- chained family: one-click e2e setup ----------------------------------
   // Spec 2026-10-10-e2e-one-click-setup. `GET /e2e` says what the project has; `POST /e2e/setup`
   // stores the model key (when given) as a `checks` secret and starts the setup as an ordinary
@@ -7387,6 +7419,7 @@ export function createApp(deps: ServerDeps) {
     .route('/', layoutRoutes)
     .route('/', trackerRoutes)
     .route('/', secretsRoutes)
+    .route('/', envFilesRoutes)
     .route('/', e2eRoutes)
     .route('/', repoRoutes)
     .route('/', configRoutes)

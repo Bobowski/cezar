@@ -108,45 +108,100 @@ const draftKey = (projectId: string, tree: string, path: string) => `cez:code:dr
 export type CodePanel = 'terminal' | 'services'
 export type CodeSidebar = 'explorer' | 'search' | 'scm'
 
+/** A browser tab's own tabs and which is showing — the task workspace's `BrowserState`. */
+export interface CodeBrowser {
+  tabs: string[]
+  active: number
+}
+
+/** As many groups as fit a screen; past this a split opens in the neighbour instead. */
+export const MAX_GROUPS = 4
+/** No group is dragged narrower than this share of the row, in percent. */
+export const MIN_GROUP_SIZE = 12
+
 /**
- * The page's shape: one or two editor groups side by side, which sidebar view is open, which
- * panel. `focused` is the group the keyboard and the tree act on.
+ * The page's shape: editor groups side by side with their widths, which sidebar view is open,
+ * the bottom panel and the agent pane with their sizes. `focused` is the group the keyboard and
+ * the explorer act on.
  */
 export interface CodeLayout {
   groups: TabsState[]
+  /** Each group's share of the row, in percent; always sums to 100. */
+  sizes: number[]
   focused: number
-  sidebar: CodeSidebar | null
+  sidebar: CodeSidebar
   panel: CodePanel | null
-  preview: boolean
+  /** The bottom panel's height in pixels. */
+  panelHeight: number
+  /** The agent pane: open or not, how wide, and which task it shows (`null` = a new one). */
+  agent: boolean
+  agentWidth: number
+  agentRun: string | null
+  /** State of every open browser tab, by the id in its tab path. */
+  browsers: Record<string, CodeBrowser>
   wrap: boolean
 }
 
-export const DEFAULT_LAYOUT: CodeLayout = { groups: [EMPTY_TABS], focused: 0, sidebar: 'explorer', panel: null, preview: false, wrap: false }
+export const DEFAULT_LAYOUT: CodeLayout = {
+  groups: [EMPTY_TABS], sizes: [100], focused: 0, sidebar: 'explorer', panel: null, panelHeight: 288,
+  agent: false, agentWidth: 420, agentRun: null, browsers: {}, wrap: false,
+}
 
 export const focusedGroup = (layout: CodeLayout): TabsState => layout.groups[layout.focused] ?? layout.groups[0] ?? EMPTY_TABS
 
 /** Every path open in any group, each once. */
 export const openPaths = (layout: CodeLayout): string[] => [...new Set(layout.groups.flatMap((group) => group.tabs.map((tab) => tab.path)))]
 
-/** Apply `change` to one group. A second group left without tabs closes; the first never does. */
+const equalSizes = (count: number): number[] => Array.from({ length: count }, () => 100 / count)
+
+/** Apply `change` to one group. A group left without tabs closes — unless it is the only one. */
 export function updateGroup(layout: CodeLayout, index: number, change: (group: TabsState) => TabsState): CodeLayout {
   const groups = layout.groups.map((group, at) => (at === index ? change(group) : group))
-  const kept = groups.filter((group, at) => at === 0 || group.tabs.length > 0)
-  if (kept.length === groups.length) return { ...layout, groups }
-  return { ...layout, groups: kept, focused: Math.min(layout.focused, kept.length - 1) }
+  const emptied = groups.findIndex((group, at) => at === index && group.tabs.length === 0)
+  if (emptied === -1 || groups.length === 1) return { ...layout, groups }
+  // The closed group's width goes to its left neighbour (the right one for the first group).
+  const heir = emptied === 0 ? 1 : emptied - 1
+  const sizes = layout.sizes.map((size, at) => (at === heir ? size + (layout.sizes[emptied] ?? 0) : size)).filter((_size, at) => at !== emptied)
+  const focused = layout.focused > emptied ? layout.focused - 1 : Math.min(layout.focused, groups.length - 2)
+  return { ...layout, groups: groups.filter((_group, at) => at !== emptied), sizes, focused }
 }
 
 /** Apply `change` to every group — a rename or a delete reaches a file wherever it is open. */
 export function updateGroups(layout: CodeLayout, change: (group: TabsState) => TabsState): CodeLayout {
-  return layout.groups.reduce((next, _group, index) => updateGroup(next, Math.min(index, next.groups.length - 1), change), layout)
+  let next = layout
+  // Right to left, so a group that closes does not shift the ones still to visit.
+  for (let index = layout.groups.length - 1; index >= 0; index -= 1) next = updateGroup(next, index, change)
+  return next
 }
 
-/** Open `path` in the group beside the focused one, creating it if there is only one. */
+/**
+ * Open `path` beside the focused group: in a NEW group to its right while there is room for
+ * one, else in the group already there. The new group takes half of the focused one's width.
+ */
 export function openToSide(layout: CodeLayout, path: string): CodeLayout {
-  const target = layout.groups.length < 2 ? 1 : layout.focused === 0 ? 1 : 0
-  const groups = layout.groups.length < 2 ? [...layout.groups, EMPTY_TABS] : layout.groups
-  return updateGroup({ ...layout, groups, focused: target }, target, (group) => openTab(group, path, true))
+  const from = Math.min(layout.focused, layout.groups.length - 1)
+  if (layout.groups.length >= MAX_GROUPS) {
+    const target = from === layout.groups.length - 1 ? from - 1 : from + 1
+    return updateGroup({ ...layout, focused: target }, target, (group) => openTab(group, path, true))
+  }
+  const half = (layout.sizes[from] ?? 100) / 2
+  const groups = [...layout.groups.slice(0, from + 1), openTab(EMPTY_TABS, path, true), ...layout.groups.slice(from + 1)]
+  const sizes = [...layout.sizes.slice(0, from), half, half, ...layout.sizes.slice(from + 1)]
+  return { ...layout, groups, sizes, focused: from + 1 }
 }
+
+/** Drag the border after group `index` by `delta` percent of the row: one grows, its neighbour shrinks. */
+export function resizeGroups(sizes: readonly number[], index: number, delta: number): number[] {
+  const left = sizes[index]
+  const right = sizes[index + 1]
+  if (left === undefined || right === undefined) return [...sizes]
+  const pair = left + right
+  const floor = Math.min(MIN_GROUP_SIZE, pair / 2)
+  const nextLeft = Math.max(floor, Math.min(pair - floor, left + delta))
+  return sizes.map((size, at) => (at === index ? nextLeft : at === index + 1 ? pair - nextLeft : size))
+}
+
+export const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value))
 
 /** The other tabs of `path`'s group, closed. `keep` decides which survive besides `path`. */
 export function closeOthers(group: TabsState, path: string, keep: (tab: CodeTab) => boolean = () => false): TabsState {
@@ -154,14 +209,43 @@ export function closeOthers(group: TabsState, path: string, keep: (tab: CodeTab)
 }
 
 const DIFF_PREFIX = 'diff:'
+const BROWSER_PREFIX = 'browser:'
 /** A tab that shows a file's changes instead of the file. Its path is not a path on disk. */
 export const diffTab = (path: string): string => `${DIFF_PREFIX}${path}`
 export const isDiffTab = (path: string): boolean => path.startsWith(DIFF_PREFIX)
+/** A tab that is a browser: the app the project serves, beside its code. */
+export const browserTab = (id: string): string => `${BROWSER_PREFIX}${id}`
+export const isBrowserTab = (path: string): boolean => path.startsWith(BROWSER_PREFIX)
+export const browserId = (path: string): string => path.slice(BROWSER_PREFIX.length)
+/** A tab that IS a file in the editor — the only kind with a buffer, a path and a draft. */
+export const isFileTab = (path: string): boolean => !isDiffTab(path) && !isBrowserTab(path)
 export const tabFile = (path: string): string => (isDiffTab(path) ? path.slice(DIFF_PREFIX.length) : path)
-export const tabLabel = (path: string): string => {
+export const tabLabel = (path: string, browsers: Record<string, CodeBrowser> = {}): string => {
+  if (isBrowserTab(path)) {
+    const browser = browsers[browserId(path)]
+    const url = browser?.tabs[browser.active] ?? ''
+    try {
+      return url ? new URL(url).host : 'Browser'
+    } catch {
+      return 'Browser'
+    }
+  }
   const file = tabFile(path)
   const name = file.slice(file.lastIndexOf('/') + 1)
   return isDiffTab(path) ? `${name} (Working Tree)` : name
+}
+
+/** A new browser tab in the focused group, optionally already at `url`. */
+export function openBrowser(layout: CodeLayout, id: string, url?: string): CodeLayout {
+  const browsers = { ...layout.browsers, [id]: { tabs: [url ?? ''], active: 0 } }
+  return updateGroup({ ...layout, browsers }, layout.focused, (group) => openTab(group, browserTab(id), true))
+}
+
+/** Forget the state of browser tabs no group shows any more. */
+export function pruneBrowsers(layout: CodeLayout): CodeLayout {
+  const open = new Set(openPaths(layout).filter(isBrowserTab).map(browserId))
+  const kept = Object.fromEntries(Object.entries(layout.browsers).filter(([id]) => open.has(id)))
+  return Object.keys(kept).length === Object.keys(layout.browsers).length ? layout : { ...layout, browsers: kept }
 }
 
 function reviveGroup(raw: unknown): TabsState | null {
@@ -175,21 +259,45 @@ function reviveGroup(raw: unknown): TabsState | null {
   return { tabs, active }
 }
 
+function reviveBrowsers(raw: unknown, open: ReadonlySet<string>): Record<string, CodeBrowser> {
+  const out: Record<string, CodeBrowser> = {}
+  if (!raw || typeof raw !== 'object') return out
+  for (const [id, value] of Object.entries(raw as Record<string, Partial<CodeBrowser> | null>)) {
+    if (!open.has(id) || !value || !Array.isArray(value.tabs)) continue
+    const tabs = value.tabs.filter((url): url is string => typeof url === 'string').slice(0, 12)
+    if (tabs.length === 0) continue
+    out[id] = { tabs, active: typeof value.active === 'number' && value.active >= 0 && value.active < tabs.length ? value.active : 0 }
+  }
+  return out
+}
+
+const number = (raw: unknown, fallback: number, min: number, max: number): number =>
+  typeof raw === 'number' && Number.isFinite(raw) ? clamp(raw, min, max) : fallback
+
 export function loadLayout(storage: Storage | null, projectId: string, tree: string): CodeLayout {
   try {
     const raw = JSON.parse(storage?.getItem(layoutKey(projectId, tree)) ?? 'null') as (Partial<CodeLayout> & Partial<TabsState>) | null
     if (!raw) return DEFAULT_LAYOUT
     // The first shape this page stored had one group, as `tabs` and `active` at the top level.
     const stored = Array.isArray(raw.groups) ? raw.groups.map(reviveGroup) : [reviveGroup(raw)]
-    const groups = stored.filter((group): group is TabsState => group !== null).filter((group, at) => at === 0 || group.tabs.length > 0).slice(0, 2)
+    const groups = stored.filter((group): group is TabsState => group !== null).filter((group, at) => at === 0 || group.tabs.length > 0).slice(0, MAX_GROUPS)
     if (groups.length === 0) return DEFAULT_LAYOUT
-    const sidebar = raw.sidebar === null ? null : raw.sidebar === 'search' || raw.sidebar === 'scm' ? raw.sidebar : 'explorer'
+    const sizes = Array.isArray(raw.sizes) && raw.sizes.length === groups.length && raw.sizes.every((size) => typeof size === 'number' && size >= 1)
+      && Math.abs(raw.sizes.reduce((sum, size) => sum + size, 0) - 100) < 0.5
+      ? raw.sizes
+      : equalSizes(groups.length)
+    const open = new Set(groups.flatMap((group) => group.tabs.map((tab) => tab.path)).filter(isBrowserTab).map(browserId))
     return {
       groups,
+      sizes,
       focused: typeof raw.focused === 'number' && raw.focused >= 0 && raw.focused < groups.length ? raw.focused : 0,
-      sidebar,
+      sidebar: raw.sidebar === 'search' || raw.sidebar === 'scm' ? raw.sidebar : 'explorer',
       panel: raw.panel === 'terminal' || raw.panel === 'services' ? raw.panel : null,
-      preview: raw.preview === true,
+      panelHeight: number(raw.panelHeight, DEFAULT_LAYOUT.panelHeight, 120, 900),
+      agent: raw.agent === true,
+      agentWidth: number(raw.agentWidth, DEFAULT_LAYOUT.agentWidth, 280, 900),
+      agentRun: typeof raw.agentRun === 'string' && raw.agentRun !== '' ? raw.agentRun : null,
+      browsers: reviveBrowsers(raw.browsers, open),
       wrap: raw.wrap === true,
     }
   } catch {

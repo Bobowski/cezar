@@ -745,7 +745,7 @@ function WorkspaceView({
  * Two Czat columns each get their own history state, which is what makes their scroll positions
  * and "load older" pages independent, as two windows onto one transcript should be.
  */
-function ConversationColumn({
+export function ConversationColumn({
   run,
   onMarkedUnread,
   onOpenReference,

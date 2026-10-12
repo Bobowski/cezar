@@ -1,19 +1,21 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  ColumnsIcon, EyeIcon, FilesIcon, GitBranchIcon, GitCompareArrowsIcon, GlobeIcon, PanelBottomIcon, SearchIcon, XIcon,
+  BotIcon, ColumnsIcon, EyeIcon, FilesIcon, GitBranchIcon, GitCompareArrowsIcon, GlobeIcon, Maximize2Icon, Minimize2Icon, PanelBottomIcon,
+  SearchIcon, XIcon,
 } from 'lucide-react'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router'
 
 import { queryScope, type ApiRun, type ChangedFile } from '@open-mercato/cezar-api-client'
-import { ApiError } from '@/api/client'
+import { ApiError, createRun } from '@/api/client'
 import {
   codeFileRawUrl, getCodeChanges, getCodeFile, getCodeTree, getCodeWatch, saveCodeFile, treeKey, type CodeTree,
 } from '@/api/code'
 import { useHostTransport } from '@/api/host-usage'
-import { useHealth, useRepo, useRuns } from '@/api/queries'
+import { queryKeys, useHealth, useRepo, useRuns } from '@/api/queries'
 import { subscribeTopic } from '@/api/ws'
 import type { CursorPosition, LineMark } from '@/components/code-mirror-editor'
+import { ContextSidebar } from '@/components/context-sidebar'
 import { Diff } from '@/components/diff'
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
@@ -21,23 +23,26 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import { SidebarContent, SidebarHeader, useSidebar } from '@/components/ui/sidebar'
 import { toast } from '@/components/ui/toaster'
 import { useNavigate } from '@/lib/project-router'
 import { runTitle } from '@/lib/task-groups'
 import { cn } from '@/lib/utils'
 import { isImagePath } from '@/routes/task-git/worktree-files'
 import { Markdown } from '@/routes/task-thread/markdown'
-import { BrowserView } from '@/routes/task-workspace/browser-view'
-import { emptyBrowserState, type BrowserState } from '@/routes/task-workspace/layout-state'
 
+import { AgentPane, DEFAULT_AGENT_WORKFLOW } from './code-agent'
+import { CodeBrowserTab } from './code-browser'
 import { ContextMenu, menuAt, type MenuItem, type MenuRequest } from './code-menu'
 import { CommandPalette, FileDialog, QuickOpen, type CodeCommand, type FileAction } from './code-palette'
 import { CodePanelView } from './code-panel'
+import { Resizer } from './code-resizer'
 import { ExplorerView, ScmView, SearchView } from './code-sidebar'
 import {
-  bufferFrom, closeOthers, closeTab, diffTab, focusedGroup, isDiffTab, isDirty, keepTab, languageOf, lineMarksFromPatch, loadDraft,
-  loadLayout, openPaths, openTab, openToSide, reconcile, resolveConflict, retargetTab, saveDraft, saveLayout, stepTab, tabFile, tabLabel,
-  updateGroup, updateGroups, type Buffer, type CodeLayout, type CodePanel, type CodeSidebar, type TabsState,
+  browserId, bufferFrom, clamp, closeOthers, closeTab, diffTab, focusedGroup, isBrowserTab, isDiffTab, isDirty, isFileTab, keepTab,
+  languageOf, lineMarksFromPatch, loadDraft, loadLayout, openBrowser, openPaths, openTab, openToSide, pruneBrowsers, reconcile, resizeGroups,
+  resolveConflict, retargetTab, saveDraft, saveLayout, stepTab, tabFile, tabLabel, updateGroup, updateGroups, type Buffer, type CodeBrowser,
+  type CodeLayout, type CodePanel, type CodeSidebar, type TabsState,
 } from './code-state'
 
 const CodeMirrorEditor = lazy(() => import('@/components/code-mirror-editor'))
@@ -115,7 +120,9 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
   const [searchFocus, setSearchFocus] = useState(0)
   const [gotoLine, setGotoLine] = useState({ group: 0, nonce: 0 })
   const [find, setFind] = useState({ group: 0, nonce: 0 })
-  const [browser, setBrowser] = useState<BrowserState>(emptyBrowserState)
+  const [fullscreen, setFullscreen] = useState(false)
+  const groupsRow = useRef<HTMLDivElement>(null)
+  const shell = useSidebar()
   const filesRef = useRef(files)
   filesRef.current = files
   const layoutRef = useRef(layout)
@@ -123,8 +130,9 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
 
   const group = focusedGroup(layout)
   const activeTab = group.active
-  const active = activeTab === null ? null : tabFile(activeTab)
-  const current = active !== null && activeTab !== null && !isDiffTab(activeTab) ? files[active] : undefined
+  // The file the focused tab is about: itself, or the file a diff tab compares. A browser has none.
+  const active = activeTab === null || isBrowserTab(activeTab) ? null : tabFile(activeTab)
+  const current = active !== null && activeTab !== null && isFileTab(activeTab) ? files[active] : undefined
 
   const treeQuery = useQuery({ queryKey: ['code', 'tree', projectId, key], queryFn: ({ signal }) => getCodeTree(tree, { signal }) })
   const changes = useQuery({ queryKey: ['code', 'changes', projectId, key], queryFn: ({ signal }) => getCodeChanges(tree, { signal }) })
@@ -141,7 +149,7 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
   const root = tree.kind === 'main' ? repo.data?.info?.root : run?.worktreePath
   const branch = tree.kind === 'main' ? repo.data?.info?.branch : run?.branch
 
-  useEffect(() => saveLayout(storage(), projectId, key, layout), [layout, projectId, key])
+  useEffect(() => saveLayout(storage(), projectId, key, pruneBrowsers(layout)), [layout, projectId, key])
 
   // The focused file's path IS the page's address, replaced rather than pushed (as `/git/files`).
   useEffect(() => {
@@ -186,7 +194,7 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
   // Every group's active file is loaded; a diff tab reads the changes, not the file.
   useEffect(() => {
     for (const each of layout.groups) {
-      if (each.active === null || isDiffTab(each.active) || files[each.active] !== undefined) continue
+      if (each.active === null || !isFileTab(each.active) || files[each.active] !== undefined) continue
       setFile(each.active, { status: 'loading' })
       void load(each.active)
     }
@@ -259,7 +267,7 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
 
   /** Forget a file no tab shows any more. */
   const dropIfClosed = (next: CodeLayout, tab: string) => {
-    if (isDiffTab(tab) || openPaths(next).includes(tab)) return
+    if (!isFileTab(tab) || openPaths(next).includes(tab)) return
     saveDraft(storage(), projectId, key, tab, undefined)
     setFile(tab, () => undefined)
   }
@@ -267,7 +275,7 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
   const close = (at: number, tab: string, discard = false) => {
     const file = files[tab]
     const elsewhere = layout.groups.some((each, index) => index !== at && each.tabs.some((other) => other.path === tab))
-    if (!discard && !elsewhere && !isDiffTab(tab) && file?.status === 'ready' && isDirty(file.buffer)) return setDiscarding({ group: at, path: tab })
+    if (!discard && !elsewhere && isFileTab(tab) && file?.status === 'ready' && isDirty(file.buffer)) return setDiscarding({ group: at, path: tab })
     setDiscarding(null)
     const next = updateGroup(layout, at, (each) => closeTab(each, tab))
     dropIfClosed(next, tab)
@@ -287,7 +295,41 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
   }
 
   const togglePanel = useCallback((panel: CodePanel | null) => setLayout((state) => ({ ...state, panel })), [])
-  const showSidebar = useCallback((view: CodeSidebar | null) => setLayout((state) => ({ ...state, sidebar: view })), [])
+  /** Show a sidebar view — and the contextual sidebar itself, if the shell has it folded away. */
+  const showSidebar = (view: CodeSidebar) => {
+    setLayout((state) => ({ ...state, sidebar: view }))
+    if (shell.isMobile) shell.setOpenMobile(true)
+    else if (!shell.open) shell.setOpen(true)
+  }
+  const openBrowserTab = (url?: string) => setLayout((state) => openBrowser(state, Math.random().toString(36).slice(2, 10), url))
+  const setBrowser = (id: string, next: CodeBrowser) => setLayout((state) => ({ ...state, browsers: { ...state.browsers, [id]: next } }))
+  const toggleAgent = () => setLayout((state) => ({ ...state, agent: !state.agent }))
+
+  // Full screen: the page takes the window, and the window takes the display where the browser
+  // allows it. Leaving either way (the button, or the browser's own Esc) leaves both.
+  const toggleFullscreen = () => {
+    const next = !fullscreen
+    setFullscreen(next)
+    if (next) void document.documentElement.requestFullscreen?.().catch(() => {})
+    else if (document.fullscreenElement) void document.exitFullscreen?.().catch(() => {})
+  }
+  useEffect(() => {
+    const onChange = () => { if (!document.fullscreenElement) setFullscreen(false) }
+    document.addEventListener('fullscreenchange', onChange)
+    return () => document.removeEventListener('fullscreenchange', onChange)
+  }, [])
+
+  /** Start a task and make it the one the agent pane shows. */
+  const startTask = async (input: { task: string; workflow: string }) => {
+    const created = await createRun({ workflow: input.workflow, task: input.task })
+    const started = 'runs' in created ? created.runs[0] : created
+    if (!started) throw new Error('The task was not created.')
+    void queryClient.invalidateQueries({ queryKey: queryKeys.runs.list() })
+    setLayout((state) => ({ ...state, agent: true, agentRun: started.id }))
+  }
+  // The task the pane shows: the one picked, else — in a task's own worktree — that task.
+  const agentRunId = layout.agentRun ?? (tree.kind === 'run' ? tree.runId : null)
+  const agentRun = agentRunId === null ? null : runs.data?.find((candidate) => candidate.id === agentRunId) ?? null
   const toggleRendered = (path: string) => setRendered((set) => {
     const next = new Set(set)
     if (!next.delete(path)) next.add(path)
@@ -324,14 +366,17 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
     { id: 'search.files', title: 'Search: Find in Files', shortcut: keys('Mod', 'Shift', 'F'), run: () => { showSidebar('search'); setSearchFocus((value) => value + 1) } },
     { id: 'view.explorer', title: 'View: Show Explorer', shortcut: keys('Mod', 'Shift', 'E'), run: () => showSidebar('explorer') },
     { id: 'view.scm', title: 'View: Show Source Control', shortcut: keys('Ctrl', 'Shift', 'G'), run: () => showSidebar('scm') },
-    { id: 'view.sidebar', title: 'View: Toggle Sidebar', shortcut: keys('Mod', 'B'), run: () => showSidebar(layout.sidebar === null ? 'explorer' : null) },
+    { id: 'view.sidebar', title: 'View: Toggle Sidebar', shortcut: keys('Mod', 'B'), run: () => shell.toggleSidebar() },
     { id: 'view.panel', title: 'View: Toggle Panel', shortcut: keys('Mod', 'J'), disabled: !terminalAllowed, run: () => togglePanel(layout.panel === null ? 'terminal' : null) },
     { id: 'view.terminal', title: 'View: Toggle Terminal', shortcut: keys('Ctrl', '`'), disabled: !terminalAllowed, run: () => togglePanel(layout.panel === 'terminal' ? null : 'terminal') },
     { id: 'view.services', title: 'View: Show Services', disabled: !terminalAllowed || tree.kind !== 'main', run: () => togglePanel('services') },
     { id: 'view.wrap', title: 'View: Toggle Word Wrap', shortcut: keys('Alt', 'Z'), run: () => setLayout((state) => ({ ...state, wrap: !state.wrap })) },
     { id: 'view.split', title: 'View: Split Editor Right', shortcut: keys('Mod', '\\'), disabled: !activeTab, run: () => { if (activeTab) setLayout((state) => openToSide(state, activeTab)) } },
     { id: 'view.markdown', title: 'Markdown: Toggle Preview', shortcut: keys('Mod', 'Shift', 'V'), disabled: !active || !isMarkdown(active), run: () => { if (active) toggleRendered(active) } },
-    { id: 'view.browser', title: 'View: Toggle Browser Preview', run: () => setLayout((state) => ({ ...state, preview: !state.preview })) },
+    { id: 'view.browser', title: 'Browser: Open in a New Tab', run: () => openBrowserTab() },
+    { id: 'view.agent', title: 'Agent: Toggle Agent Pane', shortcut: keys('Mod', 'L'), run: toggleAgent },
+    { id: 'view.agentNew', title: 'Agent: New Task', run: () => setLayout((state) => ({ ...state, agent: true, agentRun: null })) },
+    { id: 'view.fullscreen', title: 'View: Toggle Full Screen', shortcut: MAC ? keys('Ctrl', 'Mod', 'F') : 'F11', run: toggleFullscreen },
     { id: 'view.diff', title: 'Source Control: Open Changes of Active File', disabled: !active || !changedByPath.has(active), run: () => { if (active) open(diffTab(active)) } },
     { id: 'tabs.close', title: 'View: Close Editor', shortcut: keys('Alt', 'W'), disabled: !activeTab, run: () => { if (activeTab) close(layout.focused, activeTab) } },
     { id: 'tabs.closeOthers', title: 'View: Close Other Editors', disabled: !activeTab, run: () => { if (activeTab) closeMany(layout.focused, (each) => closeOthers(each, activeTab)) } },
@@ -357,6 +402,8 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
       else if (plain && letter === 'p') hit('go.file')
       else if (plain && letter === 'b') hit('view.sidebar')
       else if (plain && letter === 'j') hit('view.panel')
+      else if (plain && letter === 'l') hit('view.agent')
+      else if (event.key === 'F11' || (event.ctrlKey && event.metaKey && letter === 'f')) hit('view.fullscreen')
       else if (plain && event.key === '\\') hit('view.split')
       else if (mod && event.shiftKey && letter === 'f') hit('search.files')
       else if (mod && event.shiftKey && letter === 'e') hit('view.explorer')
@@ -369,7 +416,7 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
       else if (event.altKey && !mod && (event.key === 'ArrowRight' || event.key === 'ArrowLeft')) {
         event.preventDefault()
         setLayout((state) => updateGroup(state, state.focused, (each) => stepTab(each, event.key === 'ArrowRight' ? 1 : -1)))
-      } else if (plain && (event.key === '1' || event.key === '2') && layout.groups.length > Number(event.key) - 1) {
+      } else if (plain && /^[1-4]$/.test(event.key) && layout.groups.length > Number(event.key) - 1) {
         event.preventDefault()
         setLayout((state) => ({ ...state, focused: Number(event.key) - 1 }))
       }
@@ -398,6 +445,7 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
 
   const tabMenu = (event: React.MouseEvent, at: number, tab: string) => {
     const file = tabFile(tab)
+    const onDisk = !isBrowserTab(tab)
     const items: MenuItem[] = [
       { label: 'Close', shortcut: keys('Alt', 'W'), run: () => close(at, tab) },
       { label: 'Close Others', run: () => closeMany(at, (each) => closeOthers(each, tab)) },
@@ -405,8 +453,8 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
       'separator',
       { label: 'Split Right', shortcut: keys('Mod', '\\'), run: () => setLayout((state) => openToSide({ ...state, focused: at }, tab)) },
     ]
-    if (changedByPath.has(file) && !isDiffTab(tab)) items.push({ label: 'Open Changes', run: () => open(diffTab(file)) })
-    items.push('separator', { label: 'Copy Path', run: () => copy(absolute(file)) }, { label: 'Copy Relative Path', run: () => copy(file) })
+    if (changedByPath.has(file) && isFileTab(tab)) items.push({ label: 'Open Changes', run: () => open(diffTab(file)) })
+    if (onDisk) items.push('separator', { label: 'Copy Path', run: () => copy(absolute(file)) }, { label: 'Copy Relative Path', run: () => copy(file) })
     setMenu(menuAt(event, items))
   }
 
@@ -415,126 +463,171 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
   const dialogPath = dialog !== null && (dialog.kind === 'rename' || dialog.kind === 'delete') ? dialog.path : null
   const dialogFile = dialogPath !== null ? files[dialogPath] : undefined
   const buffer = current?.status === 'ready' ? current.buffer : null
-  const recent = useMemo(() => [...new Set(layout.groups.flatMap((each) => each.tabs.map((tab) => tabFile(tab.path))))], [layout.groups])
+  const recent = useMemo(() => [...new Set(layout.groups.flatMap((each) => each.tabs.filter((tab) => !isBrowserTab(tab.path)).map((tab) => tabFile(tab.path))))], [layout.groups])
 
-  const ACTIVITY: Array<{ view: CodeSidebar; label: string; icon: typeof FilesIcon; badge?: number }> = [
+  const VIEWS: Array<{ view: CodeSidebar; label: string; icon: typeof FilesIcon; badge?: number }> = [
     { view: 'explorer', label: 'Explorer', icon: FilesIcon },
     { view: 'search', label: 'Search', icon: SearchIcon },
     { view: 'scm', label: 'Source Control', icon: GitCompareArrowsIcon, badge: changed.length },
   ]
 
-  return (
-    <div data-route="code" data-tree={key} className="flex h-full min-h-0 flex-col">
-      <div className="flex min-h-0 flex-1">
-        <nav aria-label="Views" data-slot="code-activity-bar" className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-border py-2">
-          {ACTIVITY.map(({ view, label, icon: Icon, badge }) => (
-            <button
-              key={view}
-              type="button"
-              aria-label={label}
-              aria-pressed={layout.sidebar === view}
-              title={label}
-              onClick={() => showSidebar(layout.sidebar === view ? null : view)}
-              className={cn('relative flex size-9 items-center justify-center rounded-md', layout.sidebar === view ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground')}
-            >
-              <Icon aria-hidden="true" className="size-[18px]" />
-              {badge ? <span data-slot="code-scm-count" className="absolute top-0.5 right-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-muted px-0.5 text-[9px] font-semibold text-foreground tabular-nums">{badge > 99 ? '99+' : badge}</span> : null}
-            </button>
-          ))}
-        </nav>
+  /** What the sidebar holds: the checkout, the view switch, the view. One body, two homes. */
+  const sidebarHead = (
+    <div data-slot="code-sidebar-head" className="flex flex-col gap-2">
+      <NativeSelect aria-label="Checkout" value={key} onChange={(event) => switchTree(event.target.value)} className="h-8 w-full text-[13px]">
+        <NativeSelectOption value="main">Main checkout</NativeSelectOption>
+        {tree.kind === 'run' && !worktrees.some((each) => each.id === tree.runId) ? <NativeSelectOption value={tree.runId}>Task {tree.runId.slice(0, 8)}</NativeSelectOption> : null}
+        {worktrees.map((each) => <NativeSelectOption key={each.id} value={each.id}>{runTitle(each)}</NativeSelectOption>)}
+      </NativeSelect>
+      <div role="tablist" aria-label="Views" data-slot="code-views" className="flex items-center gap-1">
+        {VIEWS.map(({ view, label, icon: Icon, badge }) => (
+          <button
+            key={view}
+            type="button"
+            role="tab"
+            aria-label={label}
+            aria-selected={layout.sidebar === view}
+            title={label}
+            onClick={() => setLayout((state) => ({ ...state, sidebar: view }))}
+            className={cn('relative flex h-8 flex-1 items-center justify-center rounded-md', layout.sidebar === view ? 'bg-sidebar-accent text-foreground' : 'text-muted-foreground hover:text-foreground')}
+          >
+            <Icon aria-hidden="true" className="size-4" />
+            {badge ? <span data-slot="code-scm-count" className="absolute top-0.5 right-1.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-muted px-0.5 text-[9px] font-semibold text-foreground tabular-nums">{badge > 99 ? '99+' : badge}</span> : null}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+  const sidebarView = layout.sidebar === 'explorer' ? (
+    <ExplorerView
+      paths={paths}
+      loading={treeQuery.isPending}
+      error={treeQuery.isError ? treeQuery.error.message : null}
+      selected={active}
+      marks={marks}
+      canEdit={fileEdit}
+      onSelect={(path) => open(path, { keep: false })}
+      onOpen={(path) => open(path)}
+      onContextMenu={explorerMenu}
+      onNewFile={() => setDialog({ kind: 'create', dir: here })}
+      onNewFolder={() => setDialog({ kind: 'folder', dir: here })}
+      onRefresh={revalidate}
+    />
+  ) : layout.sidebar === 'search' ? (
+    <SearchView tree={tree} focus={searchFocus} onOpen={(path, line) => open(path, { line })} />
+  ) : (
+    <ScmView
+      tree={tree}
+      files={changed}
+      loading={changes.isPending}
+      error={changes.isError ? changes.error.message : null}
+      onOpenDiff={(path) => open(diffTab(path))}
+      onOpenFile={(path) => open(path)}
+    />
+  )
 
-        {layout.sidebar !== null ? (
-          <aside data-slot="code-sidebar" data-view={layout.sidebar} className="hidden w-64 shrink-0 flex-col border-r border-border md:flex">
-            <div className="shrink-0 border-b border-border p-2">
-              <NativeSelect aria-label="Checkout" value={key} onChange={(event) => switchTree(event.target.value)} className="h-8 w-full text-[13px]">
-                <NativeSelectOption value="main">Main checkout</NativeSelectOption>
-                {tree.kind === 'run' && !worktrees.some((each) => each.id === tree.runId) ? <NativeSelectOption value={tree.runId}>Task {tree.runId.slice(0, 8)}</NativeSelectOption> : null}
-                {worktrees.map((each) => <NativeSelectOption key={each.id} value={each.id}>{runTitle(each)}</NativeSelectOption>)}
-              </NativeSelect>
-            </div>
-            <div className="min-h-0 flex-1">
-              {layout.sidebar === 'explorer' ? (
-                <ExplorerView
-                  paths={paths}
-                  loading={treeQuery.isPending}
-                  error={treeQuery.isError ? treeQuery.error.message : null}
-                  selected={active}
-                  marks={marks}
-                  canEdit={fileEdit}
-                  onSelect={(path) => open(path, { keep: false })}
-                  onOpen={(path) => open(path)}
-                  onContextMenu={explorerMenu}
-                  onNewFile={() => setDialog({ kind: 'create', dir: here })}
-                  onNewFolder={() => setDialog({ kind: 'folder', dir: here })}
-                  onRefresh={revalidate}
-                />
-              ) : layout.sidebar === 'search' ? (
-                <SearchView tree={tree} focus={searchFocus} onOpen={(path, line) => open(path, { line })} />
-              ) : (
-                <ScmView
-                  tree={tree}
-                  files={changed}
-                  loading={changes.isPending}
-                  error={changes.isError ? changes.error.message : null}
-                  onOpenDiff={(path) => open(diffTab(path))}
-                  onOpenFile={(path) => open(path)}
-                />
-              )}
-            </div>
+  /** Pixels dragged on the border after group `index`, as a share of the row. */
+  const dragGroups = (index: number, pixels: number) => {
+    const width = groupsRow.current?.getBoundingClientRect().width ?? 0
+    if (width > 0) setLayout((state) => ({ ...state, sizes: resizeGroups(state.sizes, index, (pixels / width) * 100) }))
+  }
+
+  return (
+    <div
+      data-route="code"
+      data-tree={key}
+      data-fullscreen={fullscreen ? 'true' : undefined}
+      className={cn('flex h-full min-h-0 flex-col bg-background', fullscreen && 'fixed inset-0 z-40')}
+    >
+      {/* The explorer, search and source control are this SCREEN's list, so they live in the
+          shell's contextual sidebar. In full screen the shell is covered, and they come along. */}
+      {fullscreen ? null : (
+        <ContextSidebar>
+          <SidebarHeader data-slot="code-sidebar" data-view={layout.sidebar} className="gap-2 p-3">{sidebarHead}</SidebarHeader>
+          <SidebarContent>{sidebarView}</SidebarContent>
+        </ContextSidebar>
+      )}
+
+      <div className="flex min-h-0 flex-1">
+        {fullscreen ? (
+          <aside data-slot="code-sidebar" data-view={layout.sidebar} className="hidden w-72 shrink-0 flex-col border-r border-border md:flex">
+            <div className="shrink-0 p-3">{sidebarHead}</div>
+            <div className="min-h-0 flex-1">{sidebarView}</div>
           </aside>
         ) : null}
 
         <main className="flex min-w-0 flex-1 flex-col">
-          <div className="flex min-h-0 flex-1">
+          <div ref={groupsRow} data-slot="code-groups" className="flex min-h-0 flex-1">
             {layout.groups.map((each, at) => (
-              <EditorGroup
-                key={at}
-                index={at}
-                group={each}
-                focused={at === layout.focused}
-                split={layout.groups.length > 1}
-                tree={tree}
-                files={files}
-                changed={changedByPath}
-                lineMarks={lineMarks}
-                wrap={layout.wrap}
-                fileEdit={fileEdit}
-                rendered={rendered}
-                reveal={reveal?.group === at ? reveal : null}
-                gotoLine={gotoLine.group === at ? gotoLine.nonce : 0}
-                find={find.group === at ? find.nonce : 0}
-                onFocus={() => setLayout((state) => (state.focused === at || at >= state.groups.length ? state : { ...state, focused: at }))}
-                onActivate={(tab) => setLayout((state) => updateGroup({ ...state, focused: Math.min(at, state.groups.length - 1) }, at, (tabs) => ({ ...tabs, active: tab })))}
-                onKeep={(tab) => setLayout((state) => updateGroup(state, at, (tabs) => keepTab(tabs, tab)))}
-                onClose={(tab) => close(at, tab)}
-                onTabMenu={(event, tab) => tabMenu(event, at, tab)}
-                onEdit={(path, text) => edit(at, path, text)}
-                onCursor={(position) => { if (at === layoutRef.current.focused) setCursor(position) }}
-                onSave={(path, overwrite) => void save(path, overwrite)}
-                onReload={(path) => {
-                  setFile(path, (file) => (file?.status === 'ready' ? { ...file, buffer: resolveConflict(file.buffer, 'reload') } : file))
-                  saveDraft(storage(), projectId, key, path, undefined)
-                }}
-                onToggleRendered={toggleRendered}
-                onSplit={(tab) => setLayout((state) => openToSide({ ...state, focused: at }, tab))}
-                loadFileText={async (path) => {
-                  try {
-                    const entry = await getCodeFile(tree, path)
-                    return entry.type === 'file' ? entry.content ?? null : null
-                  } catch {
-                    return null
-                  }
-                }}
-              />
+              <div key={at} className="flex min-w-0" style={{ flexBasis: 0, flexGrow: layout.sizes[at] ?? 1 }}>
+                {at > 0 ? <Resizer axis="x" label={`Resize editor groups ${at} and ${at + 1}`} onDrag={(pixels) => dragGroups(at - 1, pixels)} /> : null}
+                <EditorGroup
+                  index={at}
+                  group={each}
+                  focused={at === layout.focused}
+                  split={layout.groups.length > 1}
+                  tree={tree}
+                  files={files}
+                  changed={changedByPath}
+                  lineMarks={lineMarks}
+                  browsers={layout.browsers}
+                  agentRun={agentRun}
+                  wrap={layout.wrap}
+                  fileEdit={fileEdit}
+                  rendered={rendered}
+                  reveal={reveal?.group === at ? reveal : null}
+                  gotoLine={gotoLine.group === at ? gotoLine.nonce : 0}
+                  find={find.group === at ? find.nonce : 0}
+                  onFocus={() => setLayout((state) => (state.focused === at || at >= state.groups.length ? state : { ...state, focused: at }))}
+                  onActivate={(tab) => setLayout((state) => updateGroup({ ...state, focused: Math.min(at, state.groups.length - 1) }, at, (tabs) => ({ ...tabs, active: tab })))}
+                  onKeep={(tab) => setLayout((state) => updateGroup(state, at, (tabs) => keepTab(tabs, tab)))}
+                  onClose={(tab) => close(at, tab)}
+                  onTabMenu={(event, tab) => tabMenu(event, at, tab)}
+                  onEdit={(path, text) => edit(at, path, text)}
+                  onCursor={(position) => { if (at === layoutRef.current.focused) setCursor(position) }}
+                  onSave={(path, overwrite) => void save(path, overwrite)}
+                  onReload={(path) => {
+                    setFile(path, (file) => (file?.status === 'ready' ? { ...file, buffer: resolveConflict(file.buffer, 'reload') } : file))
+                    saveDraft(storage(), projectId, key, path, undefined)
+                  }}
+                  onToggleRendered={toggleRendered}
+                  onSplit={(tab) => setLayout((state) => openToSide({ ...state, focused: at }, tab))}
+                  onBrowser={setBrowser}
+                  onStartTask={(message) => startTask({ task: message, workflow: DEFAULT_AGENT_WORKFLOW })}
+                  loadFileText={async (path) => {
+                    try {
+                      const entry = await getCodeFile(tree, path)
+                      return entry.type === 'file' ? entry.content ?? null : null
+                    } catch {
+                      return null
+                    }
+                  }}
+                />
+              </div>
             ))}
           </div>
-          {layout.panel !== null && terminalAllowed ? <CodePanelView tree={tree} panel={layout.panel} onPanel={togglePanel} /> : null}
+          {layout.panel !== null && terminalAllowed ? (
+            <>
+              <Resizer axis="y" label="Resize panel" onDrag={(pixels) => setLayout((state) => ({ ...state, panelHeight: clamp(state.panelHeight - pixels, 120, 900) }))} />
+              <CodePanelView tree={tree} panel={layout.panel} height={layout.panelHeight} onPanel={togglePanel} />
+            </>
+          ) : null}
         </main>
 
-        {layout.preview ? (
-          <aside data-slot="code-preview" className="hidden w-[38%] min-w-80 shrink-0 flex-col border-l border-border lg:flex">
-            <BrowserView state={browser} onChange={setBrowser} />
-          </aside>
+        {layout.agent ? (
+          <>
+            <Resizer axis="x" label="Resize agent pane" onDrag={(pixels) => setLayout((state) => ({ ...state, agentWidth: clamp(state.agentWidth - pixels, 280, 900) }))} />
+            <div className="hidden shrink-0 lg:block" style={{ width: layout.agentWidth }}>
+              <AgentPane
+                runs={runs.data ?? []}
+                run={agentRun}
+                activeFile={active}
+                onSelect={(runId) => setLayout((state) => ({ ...state, agentRun: runId }))}
+                onStart={startTask}
+                onClose={toggleAgent}
+              />
+            </div>
+          </>
         ) : null}
       </div>
 
@@ -553,8 +646,12 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
         ) : null}
         {layout.wrap ? <span className="shrink-0">Wrap</span> : null}
         {active ? <span data-slot="code-language" className="shrink-0">{languageOf(active)}</span> : null}
-        <button type="button" aria-label="Toggle panel" aria-pressed={layout.panel !== null} disabled={!terminalAllowed} className="shrink-0 hover:text-foreground disabled:opacity-40" onClick={() => togglePanel(layout.panel === null ? 'terminal' : null)}><PanelBottomIcon aria-hidden="true" className="size-3.5" /></button>
-        <button type="button" aria-label="Toggle preview" aria-pressed={layout.preview} className="shrink-0 hover:text-foreground" onClick={() => setLayout((state) => ({ ...state, preview: !state.preview }))}><GlobeIcon aria-hidden="true" className="size-3.5" /></button>
+        <button type="button" aria-label="Open browser" title="Open a browser tab" className="shrink-0 hover:text-foreground" onClick={() => openBrowserTab()}><GlobeIcon aria-hidden="true" className="size-3.5" /></button>
+        <button type="button" aria-label="Toggle panel" aria-pressed={layout.panel !== null} title={`Toggle panel (${keys('Mod', 'J')})`} disabled={!terminalAllowed} className="shrink-0 hover:text-foreground disabled:opacity-40" onClick={() => togglePanel(layout.panel === null ? 'terminal' : null)}><PanelBottomIcon aria-hidden="true" className="size-3.5" /></button>
+        <button type="button" aria-label="Toggle agent" aria-pressed={layout.agent} title={`Toggle agent (${keys('Mod', 'L')})`} className="shrink-0 hover:text-foreground" onClick={toggleAgent}><BotIcon aria-hidden="true" className="size-3.5" /></button>
+        <button type="button" aria-label="Toggle full screen" aria-pressed={fullscreen} title="Toggle full screen" className="shrink-0 hover:text-foreground" onClick={toggleFullscreen}>
+          {fullscreen ? <Minimize2Icon aria-hidden="true" className="size-3.5" /> : <Maximize2Icon aria-hidden="true" className="size-3.5" />}
+        </button>
       </footer>
 
       <ContextMenu request={menu} onClose={() => setMenu(null)} />
@@ -589,8 +686,9 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
 
 /** One editor group: its tab strip, the path of the active file, and whatever that file is. */
 function EditorGroup({
-  index, group, focused, split, tree, files, changed, lineMarks, wrap, fileEdit, rendered, reveal, gotoLine, find,
-  onFocus, onActivate, onKeep, onClose, onTabMenu, onEdit, onCursor, onSave, onReload, onToggleRendered, onSplit, loadFileText,
+  index, group, focused, split, tree, files, changed, lineMarks, browsers, agentRun, wrap, fileEdit, rendered, reveal, gotoLine, find,
+  onFocus, onActivate, onKeep, onClose, onTabMenu, onEdit, onCursor, onSave, onReload, onToggleRendered, onSplit, onBrowser, onStartTask,
+  loadFileText,
 }: {
   index: number
   group: TabsState
@@ -600,6 +698,9 @@ function EditorGroup({
   files: Record<string, OpenFile>
   changed: ReadonlyMap<string, ChangedFile>
   lineMarks: ReadonlyMap<string, ReadonlyMap<number, LineMark>>
+  browsers: Record<string, CodeBrowser>
+  /** The task the agent pane shows — where a browser tab's Design Mode notes go. */
+  agentRun: ApiRun | null
   wrap: boolean
   fileEdit: boolean
   rendered: ReadonlySet<string>
@@ -617,11 +718,14 @@ function EditorGroup({
   onReload: (path: string) => void
   onToggleRendered: (path: string) => void
   onSplit: (tab: string) => void
+  onBrowser: (id: string, state: CodeBrowser) => void
+  onStartTask: (message: string) => Promise<void>
   loadFileText: (path: string) => Promise<string | null>
 }) {
   const [comparing, setComparing] = useState(false)
   const tab = group.active
-  const path = tab === null ? null : tabFile(tab)
+  const browser = tab !== null && isBrowserTab(tab)
+  const path = tab === null || browser ? null : tabFile(tab)
   const diff = tab !== null && isDiffTab(tab)
   const file = path !== null && !diff ? files[path] : undefined
   const buffer = file?.status === 'ready' ? file.buffer : null
@@ -636,7 +740,7 @@ function EditorGroup({
       data-group={index}
       data-focused={focused ? 'true' : undefined}
       onPointerDownCapture={onFocus}
-      className={cn('flex min-w-0 flex-1 flex-col', index > 0 && 'border-l border-border')}
+      className="flex min-w-0 flex-1 flex-col"
     >
       <div
         role="tablist"
@@ -645,23 +749,23 @@ function EditorGroup({
       >
         {group.tabs.map((each) => {
           const opened = files[each.path]
-          const dirty = !isDiffTab(each.path) && opened?.status === 'ready' && isDirty(opened.buffer)
+          const dirty = isFileTab(each.path) && opened?.status === 'ready' && isDirty(opened.buffer)
           return (
             <div
               key={each.path}
               role="tab"
               aria-selected={each.path === tab}
               data-dirty={dirty ? 'true' : undefined}
-              title={tabFile(each.path)}
+              title={isBrowserTab(each.path) ? 'Browser' : tabFile(each.path)}
               onContextMenu={(event) => onTabMenu(event, each.path)}
               onAuxClick={(event) => { if (event.button === 1) onClose(each.path) }}
               className={cn('group flex shrink-0 items-center gap-1 rounded-md py-1 pr-1 pl-2.5 text-xs', each.path === tab ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground')}
             >
               <button type="button" className={cn('max-w-56 truncate', each.preview && 'italic')} onClick={() => onActivate(each.path)} onDoubleClick={() => onKeep(each.path)}>
-                {tabLabel(each.path)}
+                {tabLabel(each.path, browsers)}
               </button>
               {dirty ? <span aria-label="Unsaved changes" className="size-1.5 rounded-full bg-foreground" /> : null}
-              <button type="button" aria-label={`Close ${tabLabel(each.path)}`} className="rounded p-0.5 opacity-60 hover:bg-background hover:opacity-100" onClick={() => onClose(each.path)}>
+              <button type="button" aria-label={`Close ${tabLabel(each.path, browsers)}`} className="rounded p-0.5 opacity-60 hover:bg-background hover:opacity-100" onClick={() => onClose(each.path)}>
                 <XIcon aria-hidden="true" className="size-3" />
               </button>
             </div>
@@ -692,7 +796,16 @@ function EditorGroup({
       ) : null}
 
       <div className="relative flex min-h-0 flex-1">
-        {path === null || tab === null ? (
+        {tab !== null && browser ? (
+          <div data-slot="code-browser" className="flex min-w-0 flex-1 flex-col">
+            <CodeBrowserTab
+              state={browsers[browserId(tab)] ?? { tabs: [''], active: 0 }}
+              onChange={(state) => onBrowser(browserId(tab), state)}
+              run={agentRun}
+              onStartTask={onStartTask}
+            />
+          </div>
+        ) : path === null || tab === null ? (
           <p className="m-auto max-w-sm px-4 text-center text-sm text-pretty text-muted-foreground">
             Pick a file in the explorer, or press {keys('Mod', 'P')} to go to one by name. {keys('Mod', 'Shift', 'P')} lists every command.
           </p>

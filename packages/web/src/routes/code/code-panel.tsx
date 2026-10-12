@@ -24,10 +24,12 @@ import type { CodePanel } from './code-state'
  * scrolling while the other is looked at. Search lives in the sidebar (`code-sidebar.tsx`).
  */
 export function CodePanelView({
-  tree, panel, onPanel,
+  tree, panel, height, onPanel,
 }: {
   tree: CodeTree
   panel: CodePanel
+  /** In pixels; the border above it is dragged by the page. */
+  height: number
   onPanel: (panel: CodePanel | null) => void
 }) {
   const [seen, setSeen] = useState<ReadonlySet<CodePanel>>(new Set([panel]))
@@ -36,7 +38,7 @@ export function CodePanelView({
   const tabs: CodePanel[] = tree.kind === 'main' ? ['terminal', 'services'] : ['terminal']
   const shown = tabs.includes(panel) ? panel : 'terminal'
   return (
-    <section data-slot="code-panel" className="flex h-72 shrink-0 flex-col border-t border-border bg-card-2">
+    <section data-slot="code-panel" style={{ height }} className="flex shrink-0 flex-col bg-card-2">
       <div role="tablist" aria-label="Panel" className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1">
         {tabs.map((tab) => (
           <button

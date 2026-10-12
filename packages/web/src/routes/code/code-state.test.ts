@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  bufferFrom, closeOthers, closeTab, DEFAULT_LAYOUT, diffTab, EMPTY_TABS, focusedGroup, isDiffTab, isDirty, keepTab, languageOf,
-  lineMarksFromPatch, loadDraft, loadLayout, openPaths, openTab, openToSide, reconcile, resolveConflict, retargetTab, saveDraft, saveLayout,
-  stepTab, tabFile, tabLabel, updateGroup, updateGroups, type Buffer, type CodeLayout, type Storage,
+  browserTab, bufferFrom, closeOthers, closeTab, DEFAULT_LAYOUT, diffTab, EMPTY_TABS, focusedGroup, isDiffTab, isDirty, isFileTab, keepTab,
+  languageOf, lineMarksFromPatch, loadDraft, loadLayout, MAX_GROUPS, MIN_GROUP_SIZE, openBrowser, openPaths, openTab, openToSide,
+  pruneBrowsers, reconcile, resizeGroups, resolveConflict, retargetTab, saveDraft, saveLayout, stepTab, tabFile, tabLabel, updateGroup,
+  updateGroups, type Buffer, type CodeLayout, type Storage,
 } from './code-state'
 
 const memory = (): Storage & { map: Map<string, string> } => {
@@ -64,16 +65,23 @@ describe('a buffer against the other writer (spec §4)', () => {
 })
 
 describe('what survives a reload', () => {
-  it('restores groups, the focused one, the sidebar and the panel — and survives garbage', () => {
+  it('restores groups with their widths, the panes and browser tabs — and survives garbage', () => {
     const storage = memory()
     expect(loadLayout(storage, 'p', 'main')).toEqual(DEFAULT_LAYOUT)
-    const layout = { groups: [{ tabs: [{ path: 'a.ts', preview: false }], active: 'a.ts' }, { tabs: [{ path: 'b.ts', preview: true }], active: 'b.ts' }], focused: 1, sidebar: 'scm' as const, panel: 'terminal' as const, preview: true, wrap: true }
+    const layout: CodeLayout = {
+      groups: [{ tabs: [{ path: 'a.ts', preview: false }], active: 'a.ts' }, { tabs: [{ path: 'browser:b1', preview: false }], active: 'browser:b1' }],
+      sizes: [70, 30], focused: 1, sidebar: 'scm', panel: 'terminal', panelHeight: 400, agent: true, agentWidth: 500, agentRun: 'run-9',
+      browsers: { b1: { tabs: ['http://localhost:3000/'], active: 0 } }, wrap: true,
+    }
     saveLayout(storage, 'p', 'main', layout)
     expect(loadLayout(storage, 'p', 'main')).toEqual(layout)
     // Another checkout of the same project has its own layout.
     expect(loadLayout(storage, 'p', 'run-1')).toEqual(DEFAULT_LAYOUT)
-    storage.setItem('cez:code:layout:p:main', '{"groups":[{"tabs":[{"path":7},{"path":"b.ts"}],"active":"gone"},{"tabs":[]}],"focused":5,"panel":"nope","sidebar":null}')
-    expect(loadLayout(storage, 'p', 'main')).toEqual({ groups: [{ tabs: [{ path: 'b.ts', preview: false }], active: 'b.ts' }], focused: 0, sidebar: null, panel: null, preview: false, wrap: false })
+    storage.setItem('cez:code:layout:p:main', JSON.stringify({
+      groups: [{ tabs: [{ path: 7 }, { path: 'b.ts' }], active: 'gone' }, { tabs: [] }], sizes: [10, 20], focused: 5, panel: 'nope', sidebar: null,
+      panelHeight: 5, agentWidth: 'wide', browsers: { orphan: { tabs: ['x'], active: 0 } },
+    }))
+    expect(loadLayout(storage, 'p', 'main')).toEqual({ ...DEFAULT_LAYOUT, groups: [{ tabs: [{ path: 'b.ts', preview: false }], active: 'b.ts' }], panelHeight: 120 })
     storage.setItem('cez:code:layout:p:main', '{ not json')
     expect(loadLayout(storage, 'p', 'main')).toEqual(DEFAULT_LAYOUT)
     expect(loadLayout(null, 'p', 'main')).toEqual(DEFAULT_LAYOUT)
@@ -82,7 +90,7 @@ describe('what survives a reload', () => {
   it('reads the single-group layout this page first stored', () => {
     const storage = memory()
     storage.setItem('cez:code:layout:p:main', '{"tabs":[{"path":"a.ts","preview":false}],"active":"a.ts","panel":"search","preview":false}')
-    expect(loadLayout(storage, 'p', 'main')).toMatchObject({ groups: [{ tabs: [{ path: 'a.ts', preview: false }], active: 'a.ts' }], focused: 0, sidebar: 'explorer', panel: null })
+    expect(loadLayout(storage, 'p', 'main')).toMatchObject({ groups: [{ tabs: [{ path: 'a.ts', preview: false }], active: 'a.ts' }], sizes: [100], focused: 0, sidebar: 'explorer', panel: null })
   })
 
   it('keeps typing across a reload, and flags a draft typed against an older version', () => {
@@ -101,31 +109,49 @@ describe('what survives a reload', () => {
 
 describe('editor groups', () => {
   const one = (...paths: string[]): CodeLayout => ({ ...DEFAULT_LAYOUT, groups: [{ tabs: paths.map((path) => ({ path, preview: false })), active: paths[0] ?? null }] })
+  const shape = (layout: CodeLayout) => layout.groups.map((group) => group.tabs.map((tab) => tab.path))
 
-  it('opens a file to the side in a second group, then alternates between the two', () => {
+  it('splits to the right of the focused group, halving its width, up to the cap', () => {
     let layout = openToSide(one('a.ts'), 'a.ts')
-    expect(layout.groups.map((group) => group.tabs.map((tab) => tab.path))).toEqual([['a.ts'], ['a.ts']])
+    expect(shape(layout)).toEqual([['a.ts'], ['a.ts']])
+    expect(layout.sizes).toEqual([50, 50])
     expect(layout.focused).toBe(1)
     expect(focusedGroup(layout).active).toBe('a.ts')
-    layout = openToSide(layout, 'b.ts')
-    expect(layout.focused).toBe(0)
-    expect(layout.groups[0]?.tabs.map((tab) => tab.path)).toEqual(['a.ts', 'b.ts'])
-    expect(openPaths(layout)).toEqual(['a.ts', 'b.ts'])
+    // From the FIRST group: the new one lands between the two.
+    layout = openToSide({ ...layout, focused: 0 }, 'b.ts')
+    expect(shape(layout)).toEqual([['a.ts'], ['b.ts'], ['a.ts']])
+    expect(layout.sizes).toEqual([25, 25, 50])
+    layout = openToSide(layout, 'c.ts')
+    expect(layout.groups).toHaveLength(MAX_GROUPS)
+    // At the cap a split opens in the neighbour instead of a fifth group.
+    const full = openToSide(layout, 'd.ts')
+    expect(full.groups).toHaveLength(MAX_GROUPS)
+    expect(openPaths(full)).toContain('d.ts')
   })
 
-  it('a second group left empty closes; the first stays, even empty', () => {
-    const split = openToSide(one('a.ts'), 'b.ts')
+  it('a group left empty closes and hands its width to a neighbour; the last one stays', () => {
+    const split = { ...openToSide(openToSide(one('a.ts'), 'b.ts'), 'c.ts'), sizes: [50, 30, 20] }
     const closed = updateGroup(split, 1, (group) => closeTab(group, 'b.ts'))
-    expect(closed.groups).toHaveLength(1)
-    expect(closed.focused).toBe(0)
+    expect(shape(closed)).toEqual([['a.ts'], ['c.ts']])
+    expect(closed.sizes).toEqual([80, 20])
+    expect(closed.focused).toBe(1)
+    const first = updateGroup(split, 0, (group) => closeTab(group, 'a.ts'))
+    expect(first.sizes).toEqual([80, 20])
     expect(updateGroup(one('a.ts'), 0, (group) => closeTab(group, 'a.ts')).groups).toEqual([EMPTY_TABS])
+  })
+
+  it('drags a border between two groups, never past the floor', () => {
+    expect(resizeGroups([50, 50], 0, 10)).toEqual([60, 40])
+    expect(resizeGroups([50, 50], 0, -100)).toEqual([MIN_GROUP_SIZE, 100 - MIN_GROUP_SIZE])
+    expect(resizeGroups([40, 30, 30], 1, 5)).toEqual([40, 35, 25])
+    expect(resizeGroups([100], 0, 10)).toEqual([100])
   })
 
   it('a rename or a delete reaches the file in every group', () => {
     const split = openToSide(one('a.ts', 'c.ts'), 'a.ts')
-    expect(updateGroups(split, (group) => retargetTab(group, 'a.ts', 'z.ts')).groups.map((group) => group.tabs.map((tab) => tab.path))).toEqual([['z.ts', 'c.ts'], ['z.ts']])
+    expect(shape(updateGroups(split, (group) => retargetTab(group, 'a.ts', 'z.ts')))).toEqual([['z.ts', 'c.ts'], ['z.ts']])
     // Deleting the only tab of the second group closes that group.
-    expect(updateGroups(split, (group) => retargetTab(group, 'a.ts', null)).groups.map((group) => group.tabs.map((tab) => tab.path))).toEqual([['c.ts']])
+    expect(shape(updateGroups(split, (group) => retargetTab(group, 'a.ts', null)))).toEqual([['c.ts']])
   })
 
   it('closes the other tabs, keeping the ones asked for', () => {
@@ -134,11 +160,24 @@ describe('editor groups', () => {
     expect(closeOthers(group, 'b', (tab) => tab.path === 'c')).toEqual({ tabs: [{ path: 'b', preview: false }, { path: 'c', preview: false }], active: 'b' })
   })
 
-  it('names a diff tab after its file', () => {
+  it('names a diff tab after its file and a browser tab after its address', () => {
     expect(isDiffTab(diffTab('src/app.ts'))).toBe(true)
     expect(tabFile(diffTab('src/app.ts'))).toBe('src/app.ts')
     expect(tabLabel(diffTab('src/app.ts'))).toBe('app.ts (Working Tree)')
     expect(tabLabel('src/app.ts')).toBe('app.ts')
+    expect(isFileTab('src/app.ts')).toBe(true)
+    expect(isFileTab(diffTab('src/app.ts')) || isFileTab(browserTab('b1'))).toBe(false)
+    expect(tabLabel(browserTab('b1'), { b1: { tabs: ['http://localhost:3000/eu'], active: 0 } })).toBe('localhost:3000')
+    expect(tabLabel(browserTab('b1'), { b1: { tabs: [''], active: 0 } })).toBe('Browser')
+  })
+
+  it('opens a browser as a tab of the focused group and forgets its state when it closes', () => {
+    const opened = openBrowser(one('a.ts'), 'b1', 'http://localhost:3000/')
+    expect(shape(opened)).toEqual([['a.ts', 'browser:b1']])
+    expect(opened.groups[0]?.active).toBe('browser:b1')
+    expect(opened.browsers).toEqual({ b1: { tabs: ['http://localhost:3000/'], active: 0 } })
+    expect(pruneBrowsers(opened)).toBe(opened)
+    expect(pruneBrowsers(updateGroup(opened, 0, (group) => closeTab(group, 'browser:b1'))).browsers).toEqual({})
   })
 })
 

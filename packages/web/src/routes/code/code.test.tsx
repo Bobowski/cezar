@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { queryScope, type ApiRun, type CodeSearchMatch, type HealthResponse, type WorktreeEntry } from '@open-mercato/cezar-api-client'
 import { createQueryClient } from '@/api/query-client'
 import { Toaster, resetToasts } from '@/components/ui/toaster'
+import { ShellWithSidebar } from '@/test/shell-with-sidebar'
 
 import { checkoutRuns, CodeRoute } from './code'
 import { groupMatches } from './code-sidebar'
@@ -35,7 +36,9 @@ const PATCH = 'diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src
 
 interface Sent { method: string; path: string; body?: unknown }
 
-function setup(options: { fileEdit?: boolean; at?: string; disk?: { content: string; hash: string }; putStatus?: number } = {}) {
+const RUN = { id: 'run-1', task: 'Fix the header', title: 'Fix the header', status: 'done', archived: false, createdAt: '2026-10-12T10:00:00Z', worktreePath: '/w/run-1', workflow: 'quick-task' } as unknown as ApiRun
+
+function setup(options: { fileEdit?: boolean; at?: string; disk?: { content: string; hash: string }; putStatus?: number; runs?: ApiRun[] } = {}) {
   const disk = options.disk ?? { content: 'one\n', hash: 'h1' }
   const sent: Sent[] = []
   const state = { disk, putStatus: options.putStatus ?? 200 }
@@ -48,7 +51,9 @@ function setup(options: { fileEdit?: boolean; at?: string; disk?: { content: str
     if (path === '/api/v1/repo/changes') return json({ files: [{ path: 'src/app.ts', status: 'modified', adds: 1, dels: 0, binary: false, patch: PATCH }], stat: { files: 1, adds: 1, dels: 0 } })
     if (path === '/api/v1/repo') return json({ info: { root: '/repo', branch: 'main' }, status: [], log: [], branches: ['main'], baseBranch: null })
     if (path === '/api/v1/repo/watch') return json({ topic: null })
-    if (path === '/api/v1/runs') return json([])
+    if (method === 'GET' && path === '/api/v1/runs') return json(options.runs ?? [])
+    if (method === 'POST' && path === '/api/v1/runs') return json({ ...RUN, id: 'new-run', task: (JSON.parse(String(init.body)) as { task: string }).task }, 201)
+    if (path === '/api/v1/workflows') return json({ workflows: [], issues: [] })
     if (method === 'GET' && path.startsWith('/api/v1/repo/files?path=')) return json(entry('src/app.ts', state.disk.content, state.disk.hash))
     if (method === 'PUT' && path.startsWith('/api/v1/repo/files?path=')) {
       if (state.putStatus !== 200) return json({ error: 'file changed on disk since it was read' }, state.putStatus)
@@ -59,10 +64,12 @@ function setup(options: { fileEdit?: boolean; at?: string; disk?: { content: str
   render(
     <QueryClientProvider client={createQueryClient()}>
       <MemoryRouter initialEntries={[options.at ?? '/code/src/app.ts']}>
-        <Routes>
-          <Route path="/code" element={<CodeRoute />} />
-          <Route path="/code/*" element={<CodeRoute />} />
-        </Routes>
+        <ShellWithSidebar>
+          <Routes>
+            <Route path="/code" element={<CodeRoute />} />
+            <Route path="/code/*" element={<CodeRoute />} />
+          </Routes>
+        </ShellWithSidebar>
         <Toaster />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -170,7 +177,8 @@ describe('Code page (spec 2026-10-11-code-page)', () => {
 
 describe('Code page as an editor (VS Code-like)', () => {
   const groups = () => [...document.querySelectorAll('[data-slot="code-group"]')]
-  const tabsOf = (index: number) => [...(groups()[index]?.querySelectorAll('[role=tab]') ?? [])].map((tab) => tab.textContent)
+  // The group's OWN strip: a browser tab carries a tab strip of its own inside it.
+  const tabsOf = (index: number) => [...(groups()[index]?.querySelector(':scope > [role=tablist]')?.querySelectorAll('[role=tab]') ?? [])].map((tab) => tab.textContent)
   const menuItem = async (label: string) => waitFor(() => {
     const item = [...document.querySelectorAll('[data-slot="code-context-menu"] [role=menuitem]')].find((each) => each.textContent?.startsWith(label))
     expect(item, label).toBeTruthy()
@@ -189,23 +197,26 @@ describe('Code page as an editor (VS Code-like)', () => {
     await waitFor(() => expect((document.querySelector('.cm-change-mark') as HTMLElement | null)?.dataset.mark).toBe('mod'))
   })
 
-  it('switches sidebar views from the activity bar and hides the sidebar with Ctrl/Cmd+B', async () => {
+  it('puts the explorer, search and source control in the screen\'s contextual sidebar', async () => {
     setup()
     await view()
-    expect(document.querySelector('[data-slot="code-sidebar"]')?.getAttribute('data-view')).toBe('explorer')
-    fireEvent.click(screen.getByRole('button', { name: 'Source Control' }))
-    expect(document.querySelector('[data-slot="code-sidebar"]')?.getAttribute('data-view')).toBe('scm')
-    await waitFor(() => expect(document.querySelector('[data-slot="code-scm-count"]')?.textContent).toBe('1'))
-    fireEvent.keyDown(window, { key: 'b', metaKey: true })
-    expect(document.querySelector('[data-slot="code-sidebar"]')).toBeNull()
+    const body = document.querySelector('[data-slot="context-sidebar-body"]') as HTMLElement
+    const head = () => body.querySelector('[data-slot="code-sidebar"]')
+    expect(head()?.getAttribute('data-view')).toBe('explorer')
+    expect(body.querySelector('[data-slot="code-explorer"]')).not.toBeNull()
+    fireEvent.click(screen.getByRole('tab', { name: 'Source Control' }))
+    expect(head()?.getAttribute('data-view')).toBe('scm')
+    await waitFor(() => expect(body.querySelector('[data-slot="code-scm-count"]')?.textContent).toBe('1'))
+    fireEvent.keyDown(window, { key: 'f', metaKey: true, shiftKey: true })
+    expect(body.querySelector('[data-slot="code-search"]')).not.toBeNull()
     fireEvent.keyDown(window, { key: 'e', metaKey: true, shiftKey: true })
-    expect(document.querySelector('[data-slot="code-sidebar"]')?.getAttribute('data-view')).toBe('explorer')
+    expect(head()?.getAttribute('data-view')).toBe('explorer')
   })
 
   it('opens a changed file\'s diff from Source Control, in a tab named after it', async () => {
     setup()
     await view()
-    fireEvent.click(screen.getByRole('button', { name: 'Source Control' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Source Control' }))
     fireEvent.click(await screen.findByTitle('src/app.ts — Modified'))
     await waitFor(() => expect(tabsOf(0)).toEqual(['app.ts', 'app.ts (Working Tree)']))
     expect(document.querySelector('[data-slot="code-breadcrumbs"]')?.textContent).toContain('changes since the last commit')
@@ -283,5 +294,73 @@ describe('Code page as an editor (VS Code-like)', () => {
     await waitFor(() => expect(document.querySelector('[data-slot="code-markdown"]')).not.toBeNull())
     fireEvent.keyDown(window, { key: 'v', metaKey: true, shiftKey: true })
     await waitFor(() => expect(document.querySelector('[data-slot="code-markdown"]')).toBeNull())
+  })
+
+  it('resizes two editor groups by dragging the border between them', async () => {
+    setup()
+    await view()
+    fireEvent.keyDown(window, { key: '\\', metaKey: true })
+    await waitFor(() => expect(groups()).toHaveLength(2))
+    const row = document.querySelector('[data-slot="code-groups"]') as HTMLElement
+    row.getBoundingClientRect = () => ({ width: 1000, height: 600, top: 0, left: 0, right: 1000, bottom: 600, x: 0, y: 0, toJSON: () => ({}) })
+    const widths = () => [...row.children].map((child) => (child as HTMLElement).style.flexGrow)
+    expect(widths()).toEqual(['50', '50'])
+    const handle = screen.getByRole('separator', { name: 'Resize editor groups 1 and 2' })
+    fireEvent.pointerDown(handle, { clientX: 500, pointerId: 1 })
+    fireEvent.pointerMove(handle, { clientX: 700, pointerId: 1 })
+    fireEvent.pointerUp(handle, { clientX: 700, pointerId: 1 })
+    expect(widths()).toEqual(['70', '30'])
+    // And from the keyboard, a step at a time.
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' })
+    expect(Number(widths()[0])).toBeCloseTo(68.8, 1)
+  })
+
+  it('opens a browser as a tab beside the code, named after its address', async () => {
+    setup()
+    await view()
+    fireEvent.click(screen.getByRole('button', { name: 'Open browser' }))
+    await waitFor(() => expect(tabsOf(0)).toEqual(['app.ts', 'Browser']))
+    expect(document.querySelector('[data-slot="code-browser"]')).not.toBeNull()
+    // The file's editor is gone from this group while the browser tab is the active one.
+    expect(document.querySelector('[data-slot="code-cursor"]')).toBeNull()
+    fireEvent.click(screen.getByRole('tab', { name: /app\.ts/ }).querySelector('button')!)
+    await view()
+  })
+
+  it('opens the agent pane, starts a task from it with the open file as context, and shows that task', async () => {
+    const { sent } = setup({ runs: [RUN] })
+    await view()
+    expect(document.querySelector('[data-slot="code-agent"]')).toBeNull()
+    fireEvent.keyDown(window, { key: 'l', metaKey: true })
+    const pane = await waitFor(() => {
+      const found = document.querySelector('[data-slot="code-agent"]')
+      expect(found).not.toBeNull()
+      return found as HTMLElement
+    })
+    // Existing tasks are one pick away.
+    await waitFor(() => expect([...pane.querySelectorAll('select[aria-label="Task"] option')].map((option) => option.textContent)).toEqual(['New task…', 'Fix the header']))
+    fireEvent.change(pane.querySelector('textarea')!, { target: { value: 'Rename the greeting' } })
+    fireEvent.click(pane.querySelector('button[type=submit]')!)
+    await waitFor(() => expect(sent.find((request) => request.method === 'POST' && request.path === '/api/v1/runs')?.body).toEqual({
+      workflow: 'quick-task',
+      task: 'Rename the greeting\n\nThe file open in my editor: src/app.ts',
+    }))
+  })
+
+  it('goes full screen with its sidebar, and back', async () => {
+    const request = vi.fn(async () => {})
+    document.documentElement.requestFullscreen = request
+    setup()
+    await view()
+    const body = document.querySelector('[data-slot="context-sidebar-body"]') as HTMLElement
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle full screen' }))
+    expect(document.querySelector('[data-route="code"]')?.getAttribute('data-fullscreen')).toBe('true')
+    expect(request).toHaveBeenCalled()
+    // The shell is covered, so the explorer moves into the page.
+    expect(body.querySelector('[data-slot="code-explorer"]')).toBeNull()
+    expect(document.querySelector('[data-route="code"] [data-slot="code-explorer"]')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle full screen' }))
+    expect(document.querySelector('[data-route="code"]')?.getAttribute('data-fullscreen')).toBeNull()
+    expect(body.querySelector('[data-slot="code-explorer"]')).not.toBeNull()
   })
 })

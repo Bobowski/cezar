@@ -43,13 +43,15 @@ export function AgentsDock({
   const [open, setOpen] = useState(() => openByRun.get(runId) ?? DEFAULT_OPEN)
   const allSettled = agents.every((agent) => agent.status !== 'pending' && agent.status !== 'running')
   const wasSettled = useRef(allSettled)
+  const explicitlyOpened = useRef(false)
   // Completion is a transition, not an initial-state rule: opening a historical run that is
   // already settled must respect its remembered choice. Once an active fan-out settles, reclaim
-  // the transcript space, while the unchanged toggle still lets the reader reopen it manually.
+  // the transcript space unless the reader explicitly opened it, while the unchanged toggle still
+  // lets the reader reopen it manually.
   useEffect(() => {
     if (!wasSettled.current && allSettled) {
       setOpen((value) => {
-        if (!value) return value
+        if (!value || explicitlyOpened.current) return value
         openByRun.set(runId, false)
         return false
       })
@@ -64,6 +66,7 @@ export function AgentsDock({
   const active = activeSubagent(agents)
   const toggle = () =>
     setOpen((value) => {
+      if (!value) explicitlyOpened.current = true
       openByRun.set(runId, !value)
       return !value
     })

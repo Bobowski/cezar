@@ -191,7 +191,7 @@ describe('AgentsDock — row interaction', () => {
 })
 
 describe('AgentsDock — collapse memory', () => {
-  it('collapses an explicitly open dock when the fan-out settles, but allows reopening it', async () => {
+  it('preserves an explicitly open dock when the fan-out settles', async () => {
     const { rerender } = render(<AgentsDock runId="run-completion" agents={[agent()]} />)
     fireEvent.click(head())
     expect(head().getAttribute('aria-expanded')).toBe('true')
@@ -202,11 +202,7 @@ describe('AgentsDock — collapse memory', () => {
         agents={[agent({ status: 'completed' })]}
       />,
     )
-    await waitFor(() => expect(head().getAttribute('aria-expanded')).toBe('false'))
-    expect(rows()).toHaveLength(0)
-
-    fireEvent.click(head())
-    expect(head().getAttribute('aria-expanded')).toBe('true')
+    await waitFor(() => expect(head().getAttribute('aria-expanded')).toBe('true'))
     expect(rows()).toHaveLength(1)
   })
 

@@ -27,7 +27,10 @@ import {
   useRepoFile,
   useRepoTree,
   useRunChanges,
+  useRunFileOps,
+  useRunGitStatus,
   useRuns,
+  useSaveRunFile,
   useSkills,
   useSkillsUpdate,
   useStarCount,
@@ -1022,6 +1025,37 @@ describe('useRunChanges', () => {
     expect(options?.staleTime).toBe(0)
     // …but an inactive run still must not poll.
     expect(options?.refetchInterval).toBe(false)
+  })
+})
+
+describe('worktree file mutations and the header\'s git step', () => {
+  // A finished run does not poll /git/status, so a Code-view write is the only thing that can
+  // tell the header its worktree is dirty now.
+  it.each(['save', 'create', 'remove', 'rename'] as const)('%s refetches /git/status', async (kind) => {
+    let statusReads = 0
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.includes('/git/status')) {
+        statusReads += 1
+        return json({ uncommitted: statusReads - 1, unpushed: 0, behind: 0 })
+      }
+      if (url.includes('/files/rename')) return json({ from: 'a.ts', to: 'b.ts' })
+      if (url.includes('/files') && init?.method === 'DELETE') return json({ path: 'a.ts' })
+      if (url.includes('/files')) return json({ path: 'a.ts', size: 1, hash: 'h2' })
+      return json({ files: [], stat: { adds: 0, dels: 0, files: 0 } })
+    })
+    const { result } = renderHook(
+      () => ({ status: useRunGitStatus('run-1', true, false), save: useSaveRunFile('run-1'), ops: useRunFileOps('run-1') }),
+      { wrapper: wrapper() },
+    )
+    await waitFor(() => expect(result.current.status.data?.uncommitted).toBe(0))
+
+    await act(async () => {
+      if (kind === 'save') await result.current.save.mutateAsync({ path: 'a.ts', content: 'x', baseHash: 'h1' })
+      else if (kind === 'rename') await result.current.ops.rename.mutateAsync({ from: 'a.ts', to: 'b.ts' })
+      else await result.current.ops[kind].mutateAsync('a.ts')
+    })
+    await waitFor(() => expect(result.current.status.data?.uncommitted).toBe(1))
   })
 })
 

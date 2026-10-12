@@ -1181,6 +1181,8 @@ export function useSaveRunFile(id: string) {
         cached?.type === 'file' ? { ...cached, content, size: saved.size, hash: saved.hash } : cached,
       )
       void queryClient.invalidateQueries({ queryKey: queryKeys.runs.changes(id) })
+      // A finished run does not poll its git status; the header's git step reads it.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runs.gitStatus(id) })
     },
   })
 }
@@ -1195,6 +1197,7 @@ export function useRunFileOps(id: string) {
   const onSuccess = () => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.runs.file(id, '').slice(0, 4) })
     void queryClient.invalidateQueries({ queryKey: queryKeys.runs.changes(id) })
+    void queryClient.invalidateQueries({ queryKey: queryKeys.runs.gitStatus(id) })
   }
   return {
     create: useMutation({ mutationFn: (path: string) => createRunFile(id, path, ''), onSuccess }),

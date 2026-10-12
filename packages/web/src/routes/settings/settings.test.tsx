@@ -10,6 +10,7 @@ import { ContextSidebarContext } from '@/components/context-sidebar'
 import { ListViewProvider } from '@/components/list-view'
 import { GlobalSettingsDialog } from '@/components/global-settings-dialog'
 import { ThemeProvider } from '@/components/theme-provider'
+import { Telemetry } from '@/lib/telemetry'
 import { AppRoutes } from '@/routes'
 import { ShellProviders } from '@/test/shell-providers'
 import { SETTINGS_SECTIONS, visibleSettingsSections } from './registry'
@@ -113,6 +114,8 @@ function renderAt(entry: string, { singleProject = false }: { singleProject?: bo
         <AppearanceProvider>
           <MemoryRouter initialEntries={[entry]}>
             <ShellProviders dialog={<GlobalSettingsDialog />}>
+              {/* Silent in test mode; the page-view cases below switch it on. */}
+              <Telemetry />
               <ContextSidebarContext.Provider value={{ node: sidebar, register: NO_REGISTRATION }}>
                 {/* A global deep link hands the URL to the project home, which reads the list view. */}
                 <ListViewProvider>
@@ -190,6 +193,34 @@ describe('the section registry', () => {
     ])
     expect(visibleSettingsSections('global', { singleProject: false }).map((s) => s.id)).toEqual(GLOBAL_SECTIONS)
     expect(visibleSettingsSections('global').map((s) => s.id)).toEqual(GLOBAL_SECTIONS)
+  })
+})
+
+describe('global settings page views', () => {
+  beforeEach(() => vi.stubEnv('MODE', 'production'))
+  afterEach(() => vi.unstubAllEnvs())
+  const settingsPages = () =>
+    requests
+      .filter((r) => r.url === '/api/v1/telemetry/page')
+      .map((r) => (r.body as { route: string }).route)
+      .filter((route) => route.startsWith('/settings'))
+
+  it('records the section the dialog shows — once per section, and never the deep link itself', async () => {
+    // The bare deep link is a URL no page renders at: only the section the dialog opens on counts.
+    renderAt('/settings/global')
+    await waitFor(() => expect(globalDialog()?.getAttribute('data-section')).toBe('appearance'))
+    await waitFor(() => expect(settingsPages()).toEqual(['/settings/global/appearance']))
+    fireEvent.click(globalDialog()!.querySelector('button[data-section="notifications"]')!)
+    await waitFor(() =>
+      expect(settingsPages()).toEqual(['/settings/global/appearance', '/settings/global/notifications']),
+    )
+  })
+
+  it('a section deep link is one view, not a phantom page plus the dialog\'s', async () => {
+    renderAt('/settings/global/resources')
+    await waitFor(() => expect(globalDialog()?.getAttribute('data-section')).toBe('resources'))
+    await waitFor(() => expect(settingsPages()).toContain('/settings/global/resources'))
+    expect(settingsPages()).toEqual(['/settings/global/resources'])
   })
 })
 

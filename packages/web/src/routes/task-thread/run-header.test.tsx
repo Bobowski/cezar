@@ -531,8 +531,26 @@ describe('action bar visibility per status (the legacy rules, rendered)', () => 
     renderHeader(run('running'))
     expect(screen.getByRole('button', { name: 'More actions' })).not.toBeNull()
     // The bar's primary Stop is repeated in the menu for the widths that drop the bar.
-    const stop = (await openMoreMenu()).getByRole('menuitem', { name: 'Stop' })
-    expect(stop.className).toContain('md:hidden')
+    expect((await openMoreMenu()).getByRole('menuitem', { name: 'Stop' })).not.toBeNull()
+  })
+
+  // The bar hides on the STRIP's width (a container query) as well as the window's, so a menu item
+  // hidden on any breakpoint of its own can be gone at the same width as its button — jsdom
+  // evaluates neither query, hence the class check.
+  it.each([
+    { status: 'running', bar: 'Stop' },
+    { status: 'queued', bar: 'Stop' },
+    { status: 'waiting', bar: 'Finish' },
+    { status: 'review', bar: 'Finish' },
+    { status: 'done', bar: 'Continue' },
+  ] as const)('$status: the bar can be hidden, and its $bar is then unconditionally in More', async ({ status, bar }) => {
+    stubFetch()
+    renderHeader(run(status))
+    const actions = document.querySelector('[data-slot="run-actions"]') as HTMLElement
+    expect(actions.className).toContain('@max-4xl/strip:hidden')
+    expect(within(actions).getByRole('button', { name: bar })).not.toBeNull()
+    const item = (await openMoreMenu()).getByRole('menuitem', { name: bar })
+    expect(item.className.split(/\s+/).filter((c) => c === 'hidden' || c.endsWith(':hidden'))).toEqual([])
   })
 })
 

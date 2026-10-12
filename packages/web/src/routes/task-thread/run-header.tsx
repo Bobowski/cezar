@@ -421,7 +421,6 @@ function RunActionButtons({
         actions={actions}
         git={git}
         hint={hint}
-        stopInMenu={primary !== 'stop'}
         onOpenNotes={onOpenNotes}
       />
       {/* Outside the menu: a dialog mounted in a dropdown's content closes with it. */}
@@ -1306,22 +1305,19 @@ function CopyValue({ value, label, done, slot }: { value: string; label: string;
   )
 }
 
-/** "More": every action that is not the run's one primary button — and, under `md` where the
- *  button row is hidden, those too — in one menu. Destructive items last. */
+/** "More": every action that is not the run's one primary button — and those too, since the
+ *  button row hides under `md` and whenever the strip runs out of room. Destructive items last. */
 function MoreMenu({
   run,
   actions,
   git,
   hint,
-  stopInMenu,
   onOpenNotes,
 }: {
   run: ApiRun
   actions: RunActions
   git: RunGitStep
   hint?: string
-  /** Stop is the header's primary button on a run with nothing else to offer; otherwise it lives here. */
-  stopInMenu: boolean
   onOpenNotes: () => void
 }) {
   const flags = runActionFlags(run)
@@ -1439,11 +1435,9 @@ function MoreMenu({
         ) : null}
         {flags.cancel || flags.deleteRun ? <DropdownMenuSeparator /> : null}
         {flags.cancel ? (
-          <DropdownMenuItem
-            variant="destructive"
-            className={stopInMenu ? undefined : 'md:hidden'}
-            onSelect={() => actions.setConfirming('cancel')}
-          >
+          // Unconditional, like Finish and Continue above: the bar hides on the strip's container
+          // width, so a window-breakpoint hide here left Stop in neither place.
+          <DropdownMenuItem variant="destructive" onSelect={() => actions.setConfirming('cancel')}>
             <CircleStopIcon aria-hidden="true" /> Stop
           </DropdownMenuItem>
         ) : null}

@@ -53,15 +53,10 @@ export function trackDiffCommentAdded(kind: 'single_line' | 'multi_line'): void 
 
 /** Whether a pathname is a page the user actually sees. Everything else outside these roots is
  *  a legacy flat URL that redirects into a project (`/` → `/p/<boot>/`) — counting it would put
- *  a phantom step before every real one. */
+ *  a phantom step before every real one. `/settings/global[/…]` is such a redirect too: global
+ *  settings are a dialog, which reports its own views (`trackSettingsSection`). */
 export function isCanonicalRoute(pathname: string): boolean {
-  return (
-    pathname.startsWith('/p/') ||
-    pathname === '/tasks' ||
-    pathname === '/dashboard' ||
-    pathname === '/settings/global' ||
-    pathname.startsWith('/settings/global/')
-  )
+  return pathname.startsWith('/p/') || pathname === '/tasks' || pathname === '/dashboard'
 }
 
 /** One `page_viewed` per navigation, labelled with the route's shape (see `routeShape`). */
@@ -81,6 +76,12 @@ export function routeShape(pathname: string): string {
     .map((segment) => (ROUTE_SEGMENTS.has(segment) ? segment : ':param'))
     .join('/')
   return `/${shape}`
+}
+
+/** A global settings section the dialog is showing — the `page_viewed` its old page URL earned,
+ *  now that opening it changes no pathname. The underlying page stays the session's route. */
+export function trackSettingsSection(section: string): void {
+  trackPage(routeShape(`/settings/global/${section}`))
 }
 
 function engine(ua: string): string {

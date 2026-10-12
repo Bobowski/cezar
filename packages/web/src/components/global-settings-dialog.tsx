@@ -1,5 +1,5 @@
 import { useSignedInUser } from '@/api/auth'
-import type { CSSProperties } from 'react'
+import { useEffect, type CSSProperties } from 'react'
 
 import { useHealth } from '@/api/queries'
 import { useGlobalSettings } from '@/components/global-settings'
@@ -23,6 +23,7 @@ import {
   SidebarMenuItem,
   SidebarProvider,
 } from '@/components/ui/sidebar'
+import { trackSettingsSection } from '@/lib/telemetry'
 import { visibleSettingsSections, type SettingsSectionId } from '@/routes/settings/registry'
 
 /**
@@ -48,6 +49,11 @@ export function GlobalSettingsDialog() {
   const sections = visibleSettingsSections('global', capabilities, { signedIn })
   // An unknown or capability-hidden id (a stale deep link) falls back to the first section.
   const active = sections.find((entry) => entry.id === section) ?? sections[0]
+  // One view per section actually shown: on open, and on each switch while open.
+  const shown = isOpen ? active?.id : undefined
+  useEffect(() => {
+    if (shown) trackSettingsSection(shown)
+  }, [shown])
 
   return (
     <Dialog open={isOpen} onOpenChange={(next) => (next ? undefined : close())}>

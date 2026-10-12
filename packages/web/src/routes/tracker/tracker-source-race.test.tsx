@@ -92,7 +92,10 @@ it.each([true, false])('blocks handoff during metadata reconciliation (source ch
   // A changed source remounts the browser for the new scope, which takes the open composer with
   // it; the same source keeps it open. Either way the assertions below read the composer.
   if (changed) {
-    expect(await screen.findByText('B description')).toBeTruthy()
+    // Settled, B's description is on its card AND in the open issue, so a single-match query only
+    // held mid-render. The issue body is what must be B's — and nothing of A may remain.
+    await waitFor(() => expect(document.querySelector('[data-slot="tracker-body"]')?.textContent).toContain('B description'))
+    expect(screen.queryByText('A description')).toBeNull()
     await openHand()
   }
   await waitFor(() => expect((screen.getByLabelText('Custom instruction') as HTMLTextAreaElement).value).toBe(changed ? '' : 'A-only instruction'))

@@ -32,13 +32,24 @@ import { ensureExcluded, resolveCommonGitDir } from './agent-config/seed.ts';
 
 /** Directories never descended into: dependency and build trees, where a `.env` is a package's
  *  fixture rather than the project's configuration, and where the walk would spend its budget. */
-const SKIP_DIRS = new Set([
-  '.git', 'node_modules', '.yarn', '.pnpm-store', 'vendor', 'dist', 'build', 'out', 'target',
+export const ENV_WALK_SKIP_DIRS = new Set([
+  '.git', 'node_modules', '.yarn', '.pnpm-store', 'dist', 'build', 'out', 'target',
   'coverage', '.next', '.nuxt', '.turbo', '.cache', '.venv', 'venv', '__pycache__',
 ]);
 
+/** A directory holding one of these is a service of the project. */
+export const SERVICE_MANIFESTS = new Set(['package.json', 'pyproject.toml', 'go.mod', 'Cargo.toml', 'composer.json', 'Gemfile']);
+
+/**
+ * `vendor/` is a dependency tree in PHP and Go — and an app's own name in a marketplace
+ * (`apps/vendor`, the Mercur vendor panel). A manifest of its own is what tells them apart.
+ */
+export function isDependencyVendorDir(rel: string, entryNames: string[]): boolean {
+  return rel.split('/').pop() === 'vendor' && !entryNames.some((name) => SERVICE_MANIFESTS.has(name));
+}
+
 /** Deep enough for `apps/<app>/.env` and `packages/<pkg>/.env` with room to spare. */
-const MAX_DEPTH = 6;
+export const ENV_WALK_MAX_DEPTH = 6;
 /** A walk that has opened this many directories is in a tree it was not meant for. */
 const MAX_DIRS = 4000;
 const MAX_FILES = 64;
@@ -84,11 +95,12 @@ async function findEnvFiles(root: string): Promise<string[]> {
     // A directory with its own `.git` is another checkout — a nested repository, or one of
     // cezar's own task worktrees under `.ai/cezar/worktrees`. Its env files are that tree's.
     if (rel !== '' && entries.some((entry) => entry.name === '.git')) return;
+    if (isDependencyVendorDir(rel, entries.map((entry) => entry.name))) return;
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       const path = rel === '' ? entry.name : `${rel}/${entry.name}`;
       if (entry.isFile()) {
         if (isEnvFile(entry.name) && found.length < MAX_FILES) found.push(path);
-      } else if (entry.isDirectory() && depth < MAX_DEPTH && !SKIP_DIRS.has(entry.name)) {
+      } else if (entry.isDirectory() && depth < ENV_WALK_MAX_DEPTH && !ENV_WALK_SKIP_DIRS.has(entry.name)) {
         await walk(path, depth + 1);
       }
     }
@@ -99,7 +111,7 @@ async function findEnvFiles(root: string): Promise<string[]> {
 
 /** The subset git ignores in `cwd`. Tracked files are never reported — they are not subject to
  *  ignore rules — which is the property the seed relies on. */
-async function ignoredAmong(cwd: string, paths: string[]): Promise<string[]> {
+export async function ignoredAmong(cwd: string, paths: string[]): Promise<string[]> {
   if (paths.length === 0) return [];
   // Exit 1 means "none of them", which is an answer rather than a failure; stdout says which.
   const result = await git(cwd, ['check-ignore', '-z', '--stdin'], `${paths.join('\0')}\0`);

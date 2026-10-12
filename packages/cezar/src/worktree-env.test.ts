@@ -91,6 +91,16 @@ describe('seedWorktreeEnvFiles', () => {
     expect(await seedWorktreeEnvFiles(repo, wt, {})).toEqual([]);
   });
 
+  it('seeds an app that is NAMED vendor, and still skips a vendored dependency tree', async () => {
+    put(repo, 'apps/vendor/package.json', '{}');
+    put(repo, 'apps/vendor/.env', 'VITE_BACKEND=1');
+    put(repo, 'php/vendor/autoload.php', '<?php');
+    put(repo, 'php/vendor/pkg/.env', 'FIXTURE=1');
+    makeWorktree();
+
+    expect(await seedWorktreeEnvFiles(repo, wt, {})).toEqual(['apps/vendor/.env']);
+  });
+
   it('excludes a copy the worktree’s own branch would not ignore', async () => {
     put(repo, '.env', 'SECRET=1');
     // The commit before `.gitignore` existed: in this tree nothing says `.env` is ignored.

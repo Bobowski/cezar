@@ -3,7 +3,9 @@ import { useLocation } from 'react-router'
 
 import { useHealth, useProjectRuns, useProjects, useRunsForProject, useSkillsUpdate, useStarCount, useTodos, useWorkspaceConfig } from '@/api/queries'
 import type { HealthResponse, SkillsUpdateState } from '@open-mercato/cezar-api-client'
+import { useSignedInUser } from '@/api/auth'
 import { AppShell, type Crumb, type RepoChip } from '@/components/app-shell'
+import { useSignOut } from '@/components/auth/use-sign-out'
 import { CommandPalette } from '@/components/command-palette'
 import { GlobalSettingsProvider } from '@/components/global-settings'
 import { GlobalSettingsDialog } from '@/components/global-settings-dialog'
@@ -61,6 +63,9 @@ export const AppShellContainer = memo(function AppShellContainer({ children }: {
   const { pathname } = useLocation()
   const projectId = useActiveProjectId()
   const health = useHealth()
+  const signedIn = useSignedInUser()
+  const signOut = useSignOut()
+  const account = useMemo(() => (signedIn ? { name: signedIn.name, onSignOut: signOut } : null), [signedIn, signOut])
   const workspaceConfig = useWorkspaceConfig()
   const branding = workspaceConfig.data?.branding
   const customBranding = branding !== undefined && (
@@ -167,6 +172,7 @@ export const AppShellContainer = memo(function AppShellContainer({ children }: {
         // a rate-limited IP, or promos silenced with `CEZ_NO_BANNER=1` — is `null` here, and
         // AppShell renders no chip for it rather than a button that cannot count.
         starCount={!customBranding && starCount.data?.available ? (starCount.data.count ?? null) : null}
+        account={account}
         // `?? null` rather than `?? 0`: no badge while the inbox is unknown, and no badge when it
         // is known to be empty — AppShell renders neither for a falsy count.
         inboxCount={todos.data?.length ?? null}

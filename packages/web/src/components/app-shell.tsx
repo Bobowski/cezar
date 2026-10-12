@@ -14,6 +14,8 @@ import {
   SettingsIcon,
   StarIcon,
   SunIcon,
+  LogOutIcon,
+  ShieldCheckIcon,
 } from 'lucide-react'
 import * as React from 'react'
 import type { ReactNode } from 'react'
@@ -109,6 +111,8 @@ export type AppShellProps = {
   latestVersion?: string | null
   /** cezar's own GitHub star count; `null` renders no ask at all. */
   starCount?: number | null
+  /** The signed-in user, on a cockpit with sign-in. Absent: no account entries in the menu. */
+  account?: ShellAccount | null
   /** The active project's task list (Needs you / Working / Recent). */
   taskQuickList?: ReactNode
   /** The machine glance (CPU / RAM), shown above the footer menu while the sidebar is open. */
@@ -452,6 +456,7 @@ function AppRail(props: RailProps) {
     version = null,
     latestVersion = null,
     starCount = null,
+    account = null,
     hostWidget,
     inboxAvailable = true,
     singleProject = false,
@@ -473,6 +478,7 @@ function AppRail(props: RailProps) {
           version={version}
           latestVersion={latestVersion}
           starCount={starCount}
+          account={account}
           brandName={brandName}
           brandLogoUrl={brandLogoUrl}
           hostWidget={hostWidget}
@@ -654,6 +660,7 @@ function MobileAreas(props: RailProps) {
           version={props.version ?? null}
           latestVersion={props.latestVersion ?? null}
           starCount={props.starCount ?? null}
+          account={props.account ?? null}
           brandName={props.brandName ?? 'cezar'}
           brandLogoUrl={props.brandLogoUrl ?? null}
           hostWidget={props.hostWidget}
@@ -840,6 +847,12 @@ const THEME_OPTIONS: ReadonlyArray<{ value: Theme; label: string; icon: typeof S
   { value: 'system', label: 'System', icon: MonitorIcon },
 ]
 
+/** What the cockpit menu needs to offer Security and Sign out. */
+export interface ShellAccount {
+  name: string
+  onSignOut: () => void
+}
+
 /**
  * The rail's head: everything about the cockpit itself rather than about a project — its
  * version and updates, the machine glance, global settings (a dialog, so you keep your place),
@@ -849,6 +862,7 @@ function FooterMenu({
   version,
   latestVersion,
   starCount,
+  account,
   brandName,
   brandLogoUrl,
   hostWidget,
@@ -856,6 +870,7 @@ function FooterMenu({
   version: string | null
   latestVersion: string | null
   starCount: number | null
+  account: ShellAccount | null
   brandName: string
   brandLogoUrl: string | null
   /** The machine glance (CPU / RAM), shown at the top of the menu. */
@@ -951,6 +966,22 @@ function FooterMenu({
                 </DropdownMenuRadioItem>
               ))}
             </DropdownMenuRadioGroup>
+            {account ? (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
+                  Signed in as <span className="font-medium text-foreground">{account.name}</span>
+                </DropdownMenuLabel>
+                <DropdownMenuItem data-slot="security-settings-link" onSelect={() => globalSettings.open('security')}>
+                  <ShieldCheckIcon aria-hidden="true" />
+                  Security
+                </DropdownMenuItem>
+                <DropdownMenuItem data-slot="sign-out" onSelect={account.onSignOut}>
+                  <LogOutIcon aria-hidden="true" />
+                  Sign out
+                </DropdownMenuItem>
+              </>
+            ) : null}
           </DropdownMenuContent>
         </DropdownMenu>
         {updating ? (

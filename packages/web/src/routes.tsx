@@ -1,4 +1,5 @@
 import { lazy, memo, Suspense, useEffect } from 'react'
+import { useSignedInUser } from './api/auth'
 import {
   matchPath,
   Navigate,
@@ -334,6 +335,7 @@ export function pageTitleContext(pathname: string): PageTitleContext {
  */
 export const AppRoutes = memo(function AppRoutes() {
   const capabilities = useHealth().data?.capabilities
+  const signedIn = useSignedInUser() !== null
   return (
     <Routes>
       <Route path="/p/:projectId" element={<ProjectScopeRoute />}>
@@ -636,7 +638,7 @@ export const AppRoutes = memo(function AppRoutes() {
           Static segments outrank the `*` legacy redirect below in React Router's ranking, so
           these win regardless of order — listed here for readability. */}
       <Route path="/settings/global" element={<GlobalSettingsDeepLink />} />
-      {visibleSettingsSections('global', capabilities).map((section) => (
+      {visibleSettingsSections('global', capabilities, { signedIn }).map((section) => (
         <Route
           key={section.id}
           path={settingsSectionPath('global', section.id)}

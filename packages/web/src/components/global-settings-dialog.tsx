@@ -1,3 +1,4 @@
+import { useSignedInUser } from '@/api/auth'
 import type { CSSProperties } from 'react'
 
 import { useHealth } from '@/api/queries'
@@ -43,7 +44,8 @@ const NOOP = () => {}
 export function GlobalSettingsDialog() {
   const { isOpen, close, section, setSection } = useGlobalSettings()
   const capabilities = useHealth().data?.capabilities
-  const sections = visibleSettingsSections('global', capabilities)
+  const signedIn = useSignedInUser() !== null
+  const sections = visibleSettingsSections('global', capabilities, { signedIn })
   // An unknown or capability-hidden id (a stale deep link) falls back to the first section.
   const active = sections.find((entry) => entry.id === section) ?? sections[0]
 

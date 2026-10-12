@@ -13,6 +13,7 @@ import {
   PaletteIcon,
   KeyRoundIcon,
   BlocksIcon,
+  ShieldCheckIcon,
   TicketIcon,
 } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
@@ -28,6 +29,7 @@ import { NotificationsSection } from './notifications-section'
 import { ProjectsSection } from './projects-section'
 import { PromptTemplatesSection } from './prompt-templates-section'
 import { ResourcesSection } from './resources-section'
+import { SecuritySection } from './security-section'
 import { SkillsSection } from './skills-section'
 import { WorktreesSection } from './worktrees-section'
 import { TrackerSection } from './tracker-section'
@@ -67,6 +69,7 @@ export type SettingsSectionId =
   | 'secrets'
   | 'integrations'
   | 'workspace-secrets'
+  | 'security'
 
 /** Which settings area a section belongs to — and therefore which store it writes. */
 export type SettingsScope = 'project' | 'global'
@@ -207,6 +210,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     scope: 'global',
   },
   {
+    id: 'security',
+    title: 'Security',
+    description: 'Your password, recovery codes and signed-in devices.',
+    icon: ShieldCheckIcon,
+    component: SecuritySection,
+    scope: 'global',
+  },
+  {
     id: 'accounts',
     title: 'Agent accounts',
     description: 'Second logins, and the agent and models a project uses when it has chosen none.',
@@ -241,11 +252,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
 export function visibleSettingsSections(
   scope: SettingsScope,
   capabilities?: Partial<Pick<Capabilities, 'singleProject'>>,
+  /** `signedIn`: this cockpit has sign-in and someone is. Without it there is no account to show. */
+  options: { signedIn?: boolean } = {},
 ): SettingsSection[] {
   return SETTINGS_SECTIONS.filter(
     (section) =>
       !section.hidden &&
       section.scope === scope &&
-      !(capabilities?.singleProject === true && section.id === 'projects'),
+      !(capabilities?.singleProject === true && section.id === 'projects') &&
+      !(section.id === 'security' && options.signedIn !== true),
   )
 }

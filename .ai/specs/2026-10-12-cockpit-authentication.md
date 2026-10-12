@@ -1,12 +1,14 @@
 # Cockpit authentication — a login cezar owns
 
-> Status: phase 1 implemented (2026-10-12) on `brutus`; phases 2–4 open. The three decisions in
-> §12 were taken the same day. Until phase 2 lands a hosted cockpit with auth on has no login
-> SCREEN — the API is complete, the cockpit does not yet drive it.
+> Status: phases 1 and 2 implemented (2026-10-12) on `brutus`; phases 3–4 open. The three
+> decisions in §12 were taken the same day. A hosted cockpit can be set up, signed in to and
+> managed from the browser; the hosted gates and the installer have not moved yet (§13).
 > Implementation: `packages/cezar/src/auth/` (`service.ts`, `store.ts`, `guard.ts`, `routes.ts`,
 > `password.ts`, `totp.ts`, `run-tokens.ts`, `host-key.ts`, `cli.ts`), the guard and the upgrade
 > hook in `server/server.ts`, `authEnforced` in `server/capabilities.ts`,
 > `packages/contract/src/auth.ts`. Proof: `server/auth-guard.test.ts`.
+> Cockpit: `packages/web/src/components/auth/` (`auth-gate.tsx`, `login-screen.tsx`,
+> `setup-screen.tsx`), `src/api/auth.ts`, `src/routes/settings/security-section.tsx`.
 
 ## 1. Problem
 
@@ -111,7 +113,9 @@ the viewer's own machine — where plain HTTP is all there is.
 - Idle expiry 7 days (sliding), absolute 30 days. Each session records a device label, created
   and last-seen time. Settings → Security lists them and revokes one or all.
 - Changing the password, the second factor or the recovery codes requires a fresh second-factor
-  check and revokes every other session. (Phase 2; today `cezar auth reset` is the only way.)
+  check and revokes every other session. Built for the password and the recovery codes;
+  replacing the AUTHENTICATOR is deliberately host-only (`cezar auth reset`), so a hijacked
+  session can never swap the second factor.
 
 ### 5.4 Throttling
 
@@ -204,11 +208,22 @@ keeps working; its docs gain "or set `CEZ_AUTH=0` if your proxy authenticates".
 
 ## 8. Cockpit
 
-- `/login`, `/setup` and the second-factor step are routes outside the project scope. Any `401`
-  from the API client clears the query cache and routes to `/login`, preserving the return path.
-- Settings (global) → Security: change password, re-enrol second factor, regenerate recovery
-  codes, device list with revoke, sign out everywhere.
-- A sign-out control in the shell. Nothing renders in a local cockpit with auth off.
+- `AuthGate` wraps the app ABOVE the event stream and every query. It asks
+  `GET /auth/session` once; signed out, it renders sign-in or setup and mounts nothing of the
+  cockpit, so a signed-out tab opens no stream and collects no 401s. Sign-in and setup are
+  screens, not routes: the URL is never touched, which is what "preserving the return path"
+  comes to. A local cockpit pays one request and sees no screen; a server that cannot answer
+  the question is treated as "no sign-in", since the server is the one enforcing.
+- Any `401` outside `/auth/*` is reported once by the shared `fetch` (`onUnauthorized`); the
+  gate re-asks the session and the sign-in screen replaces the cockpit.
+- Setup is three steps — account, authenticator (QR, the key, a 6-digit field), recovery codes —
+  and the cockpit opens only after the user confirms they saved the codes.
+- Settings (global) → Security, listed only when someone is signed in: change password,
+  regenerate recovery codes, the device list with per-device and all-others sign-out.
+- The cockpit menu gains "Signed in as …", Security and Sign out. Nothing renders in a local
+  cockpit with auth off.
+- Two cockpit dependencies: `input-otp` (shadcn's InputOTP) and `uqr` (the QR matrix, drawn as
+  one SVG path — no HTML is injected).
 
 ## 9. Upgrading an existing hosted install
 
@@ -239,7 +254,9 @@ Not built: more than one user, invitations, per-project roles, shared team state
    contract, `cezar auth setup|reset|status`, run tokens, the host key, the WebSocket gate,
    gateway cookie stripping (pulled forward from phase 3: without it phase 1 would have handed
    the session to every previewed app), the manifest-walk tests.
-2. **Cockpit** — login, setup, second factor, Settings → Security, 401 handling.
+2. **Cockpit — DONE.** Login, setup, second factor, Settings → Security, 401 handling, and the
+   three routes Security needed (`/auth/password`, `/auth/recovery-codes`,
+   `/auth/sessions/revoke-others`).
 3. **Re-keying** — `trustedOperator`, every hosted-mode gate, gateway cookie stripping, WebSocket in
    remote mode.
 4. **Installer and docs** — nginx without `auth_basic`, `server-deploy` migration,
@@ -259,10 +276,12 @@ manifest-walk test exists.
    that changes, this needs ratification there: it reverses "cezar has no authentication" and,
    in phase 3, the agent-config 409.
 
-## 13. Known gaps after phase 1
+## 13. Known gaps after phase 2
 
-- No login screen (phase 2). A hosted cockpit with auth on answers 401 to its own shell's API
-  calls until then; `CEZ_AUTH=0` is the way to run hosted in the meantime.
+- The sign-in flow was driven end to end in a browser over loopback (plain cookie). The
+  `__Host-` cookie behind real TLS is covered by tests only, not by a live deployment.
+- The browser WebSocket is still not opened in remote mode (phase 3), so a hosted cockpit keeps
+  using HTTP long reads for now.
 - Terminal, file edit and agent-config writes are still keyed on `localHandoff` (phase 3).
 - `server-install` still writes `auth_basic`, and its end-to-end verify expects an authenticated
   2xx it will no longer get with auth on (phase 4).

@@ -982,4 +982,25 @@ describe('a failed read of the saved layouts, through the route', () => {
     await waitFor(() => expect(activeCard()).toBe('Changes'))
     await waitFor(() => expect(savedNames('r1')).toEqual(['Chat', 'Moje', 'Changes']))
   })
+
+  it('leaves the card picked during the outage alone when the host says the task was never opened', async () => {
+    let reads = 0
+    stubFetch({
+      'GET /api/v1/runs/r1/layouts': () => {
+        reads += 1
+        return reads === 1 ? jsonResponse({ error: 'bad gateway' }, 502) : jsonResponse({ layouts: null })
+      },
+    })
+    renderWorkspace('changes')
+    await waitFor(() => expect(document.querySelector('[data-slot="layouts-unloaded"]')).not.toBeNull())
+    await waitFor(() => expect(activeCard()).toBe('Changes'))
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }))
+    await waitFor(() => expect(activeCard()).toBe('Chat'))
+
+    await waitFor(() => expect(document.querySelector('[data-slot="layouts-unloaded"]')).toBeNull(), { timeout: 6000 })
+    // Nothing replaced the stand-in, so the deep link has no reason to be applied again.
+    await waitFor(() => expect(savedLayouts('r1').active).toBeDefined(), { timeout: 3000 })
+    expect(activeCard()).toBe('Chat')
+    expect(savedLayouts('r1').active).toBe('Chat')
+  })
 })

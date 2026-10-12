@@ -55,6 +55,9 @@ export interface WorkspaceLayouts {
   /** The host has not ANSWERED for this task's layouts yet (the read failed and is being retried).
    *  The workspace runs on a stand-in default meanwhile and nothing is saved over the host's copy. */
   loadFailed: boolean
+  /** How many times a late answer from the host REPLACED the stand-in for this task. A late
+   *  "never opened" keeps what the user built and does not count. */
+  replaced: number
   /** The selected card, or `undefined` while the workspace is intentionally empty. */
   layout: WorkspaceLayout | undefined
   addLayout: (view?: ViewId) => void
@@ -99,6 +102,7 @@ export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
    *  §2 asks that a degraded capability produce a CLEAR state, not an invisible one. */
   const [saveFailed, setSaveFailed] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
+  const [replaced, setReplaced] = useState(0)
   /** The task whose layouts the host has actually ANSWERED for. Saving is allowed for that task
    *  only: a write after a failed read would put a fabricated default over the saved layouts. A
    *  task id rather than a flag, so task A's leave-time flush still goes out after the id changed. */
@@ -116,6 +120,7 @@ export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
     // Task A's "could not save" is not a fact about task B — the banner goes with the task.
     setSaveFailed(false)
     setLoadFailed(false)
+    setReplaced(0)
   }
 
   useEffect(() => {
@@ -151,6 +156,10 @@ export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
       }
       if (cancelled) return
       answered.current = taskId
+      // A debounce armed on the stand-in must not outlive the answer: it could fire before React
+      // commits it and PUT the stand-in over the saved layouts. The save effect re-arms if needed.
+      if (pending.current) clearTimeout(pending.current)
+      pending.current = null
       setLoadFailed(false)
       // Never opened, answered late: what was built on the stand-in meanwhile is this task's first
       // workspace. `loaded` keeps the stand-in, so the save effect sees the difference and sends it.
@@ -160,6 +169,7 @@ export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
       // The emptiness that DOES survive is a card with no columns (§10), which is a layout and
       // revives as one. `reviveState` repairs anything malformed rather than failing.
       adopt(answer.layouts === null ? defaultState() : reviveState(answer.layouts))
+      if (failures > 0) setReplaced((count) => count + 1)
     }
     void read(0)
     return () => {
@@ -298,6 +308,7 @@ export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
     ready,
     saveFailed,
     loadFailed,
+    replaced,
     layout: activeLayoutOf(state),
     addLayout: useCallback((view?: ViewId) => setState((current) => addLayoutTo(current, view)), []),
     closeLayout: useCallback((name: string) => setState((current) => closeLayoutOf(current, name)), []),

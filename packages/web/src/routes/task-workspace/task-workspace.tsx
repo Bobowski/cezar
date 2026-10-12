@@ -228,9 +228,10 @@ function WorkspaceView({
     }
     // `layouts.state.active` is deliberately NOT a dependency: this runs on a navigation, and
     // re-running it whenever the user picks another card would drag them back to the old one.
-    // `loadFailed` re-applies the link when a late answer from the host replaces the stand-in.
+    // `replaced` re-applies the link when a late answer from the host replaces the stand-in — not
+    // on a late "never opened", which keeps the card the user picked meanwhile.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deepLinkView, layouts.ready, layouts.loadFailed, navigationType, openDeepLink, run.id, selectLayout])
+  }, [deepLinkView, layouts.ready, layouts.replaced, navigationType, openDeepLink, run.id, selectLayout])
 
   // Record the card the hop produced, once the transition has landed. Recognised by shape — a
   // one-column layout of exactly this view — so the OLD active can never be mistaken for it in

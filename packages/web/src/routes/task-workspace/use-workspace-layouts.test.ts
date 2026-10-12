@@ -221,6 +221,56 @@ describe('a failed read of the saved layouts', () => {
   })
 })
 
+describe('a late answer, against a debounce armed on the stand-in', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    putRunLayouts.mockReset()
+    putRunLayouts.mockResolvedValue(undefined)
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('does not let that timer PUT the stand-in between the answer and its commit', async () => {
+    let answer!: (value: { layouts: unknown }) => void
+    getRunLayouts
+      .mockRejectedValueOnce(new Error('502'))
+      .mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)))
+    const { result } = await mounted()
+    // The retry is out and unanswered; a change on the stand-in arms the debounce.
+    await tick(2000)
+    expect(getRunLayouts).toHaveBeenCalledTimes(2)
+    act(() => result.current.selectLayout('Changes'))
+
+    // The host answers. Outside `act`, so the fetch continuation runs and React has NOT committed.
+    answer({ layouts: SAVED })
+    for (let turn = 0; turn < 5; turn += 1) await Promise.resolve()
+    expect(result.current.state.active).toBe('Changes')
+    // …and the debounce comes due in exactly that gap.
+    vi.advanceTimersByTime(400)
+    expect(putRunLayouts).not.toHaveBeenCalled()
+
+    await tick(1000)
+    expect(result.current.state).toEqual(SAVED)
+    expect(putRunLayouts).not.toHaveBeenCalled()
+  })
+
+  it('counts a replaced stand-in, and only that', async () => {
+    getRunLayouts.mockRejectedValueOnce(new Error('502')).mockResolvedValue({ layouts: null })
+    const kept = await mounted()
+    await tick(3000)
+    expect(kept.result.current.loadFailed).toBe(false)
+    expect(kept.result.current.replaced).toBe(0)
+    kept.unmount()
+
+    getRunLayouts.mockReset()
+    getRunLayouts.mockRejectedValueOnce(new Error('502')).mockResolvedValue({ layouts: SAVED })
+    const swapped = await mounted()
+    await tick(3000)
+    expect(swapped.result.current.replaced).toBe(1)
+  })
+})
+
 describe('the contract bounds, client-side', () => {
   beforeEach(() => {
     vi.useFakeTimers()

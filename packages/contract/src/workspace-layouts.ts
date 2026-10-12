@@ -16,11 +16,18 @@ import { z } from 'zod';
 export const workspaceViewSchema = z.enum(['session', 'changes', 'commits', 'files', 'browser', 'graph']);
 export type WorkspaceView = z.infer<typeof workspaceViewSchema>;
 
+/** The bounds, exported so the cockpit enforces the SAME ones where state grows: the whole
+ *  document is validated per PUT, so one over-limit value fails every later save. */
+export const MAX_WORKSPACE_COLUMNS = 3;
+export const MAX_WORKSPACE_BROWSER_TABS = 12;
+export const MAX_WORKSPACE_TAB_URL_LENGTH = 2048;
+export const MAX_WORKSPACE_LAYOUT_NAME_LENGTH = 80;
+
 /** A Browser column's own tabs (§7). Only successfully loaded addresses are stored, so these are
  *  plain strings; an empty string IS a blank tab. */
 export const workspaceBrowserSchema = z.object({
-  tabs: z.array(z.string().max(2048)).max(12),
-  active: z.number().int().min(0).max(11),
+  tabs: z.array(z.string().max(MAX_WORKSPACE_TAB_URL_LENGTH)).max(MAX_WORKSPACE_BROWSER_TABS),
+  active: z.number().int().min(0).max(MAX_WORKSPACE_BROWSER_TABS - 1),
 });
 export type WorkspaceBrowserState = z.infer<typeof workspaceBrowserSchema>;
 
@@ -36,8 +43,8 @@ export type WorkspaceColumnState = z.infer<typeof workspaceColumnSchema>;
 /** A layout holds ZERO to three columns — zero because §10 says "A saved layout may
  *  intentionally have no columns", which is the shape closing the last column leaves behind. */
 export const workspaceLayoutSchema = z.object({
-  name: z.string().min(1).max(80),
-  columns: z.array(workspaceColumnSchema).max(3),
+  name: z.string().min(1).max(MAX_WORKSPACE_LAYOUT_NAME_LENGTH),
+  columns: z.array(workspaceColumnSchema).max(MAX_WORKSPACE_COLUMNS),
 });
 export type WorkspaceLayoutState = z.infer<typeof workspaceLayoutSchema>;
 
@@ -49,7 +56,7 @@ export const workspaceLayoutsSchema = z.object({
   layouts: z.array(workspaceLayoutSchema).max(MAX_WORKSPACE_LAYOUTS),
   /** The active card's name. May name a layout that is gone — the cockpit recovers rather than
    *  failing, so this is not cross-validated here. */
-  active: z.string().max(80),
+  active: z.string().max(MAX_WORKSPACE_LAYOUT_NAME_LENGTH),
 });
 export type WorkspaceLayouts = z.infer<typeof workspaceLayoutsSchema>;
 

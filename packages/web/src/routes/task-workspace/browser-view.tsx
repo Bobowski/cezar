@@ -25,6 +25,7 @@ import { FullViewExit } from './maximize'
 
 import {
   MAX_BROWSER_TABS,
+  MAX_TAB_URL_LENGTH,
   emptyBrowserState,
   type BrowserState,
 } from './layout-state'
@@ -453,7 +454,9 @@ export function BrowserView({
   const onLoaded = useCallback(() => {
     if (target === '') return
     setStatus('idle')
-    if (tabs[active] !== target) {
+    // An address past the host's cap is shown but not kept: storing it would fail every later
+    // save of this task's layouts.
+    if (tabs[active] !== target && target.length <= MAX_TAB_URL_LENGTH) {
       echo.current = { index: active, url: target }
       onChange({ ...state, tabs: tabs.map((tab, index) => (index === active ? target : tab)) })
     }

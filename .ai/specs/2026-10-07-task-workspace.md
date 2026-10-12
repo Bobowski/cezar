@@ -320,6 +320,14 @@ list as a shortcut.
 > high-frequency divider movement into the URL. A future shareable layout can be designed
 > separately"). Recorded rather than resolved.
 
+> **Implementation notes (pre-deploy review, 2026-10-12).** A failed read of the saved layouts is
+> never followed by a write: the workspace opens on a stand-in that is not persisted and retries
+> the read, so an error is a third state beside `null` and `[]`. The client enforces the contract's
+> bounds where state grows, so a save is never rejected into a silent loss; a rejected save shows
+> at once. Two tabs or devices on one task are last-writer-wins on the whole document — recorded,
+> not resolved. "Open in Browser" from a fixed card opens the `<View> + Browser` pair layout
+> instead of adding a column to the fixed card.
+
 ### 5.4 Run lifecycle interactions
 
 - Conversation's existing read receipt, transcript hydration, queued-message editing, composer,

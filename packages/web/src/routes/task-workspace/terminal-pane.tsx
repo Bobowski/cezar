@@ -159,17 +159,10 @@ export function TerminalPane({
           return false
         }
         if (key === 'v') {
-          void navigator.clipboard
-            ?.readText()
-            .then((text) => {
-              // Straight to the PTY, not through `onData`: the shell is what interprets a paste,
-              // including a multi-line one, exactly as it would from any other terminal.
-              if (text) return writeRunTerminal(runId, session.id, text)
-              return undefined
-            })
-            // A browser that refuses clipboard read (no permission, an insecure origin) leaves
-            // the user their own Cmd-V through the textarea; nothing to report.
-            .catch(() => {})
+          // Paste is the BROWSER's: `false` keeps xterm from typing the chord and prevents
+          // nothing, so the native paste lands in xterm's textarea and its own `paste` listener
+          // sends it through `onData` (bracketed when the shell asks). Reading the clipboard
+          // here as well delivered every paste twice wherever that read was permitted.
           return false
         }
         return true

@@ -27,11 +27,12 @@ import { CenteredState } from '@/components/centered-state'
 import { Button } from '@/components/ui/button'
 import { Link } from '@/lib/project-router'
 import { isUnread } from '@/lib/read-state'
-import { rememberViewState } from '@/lib/view-memory'
+import { recallViewState, rememberViewState } from '@/lib/view-memory'
 import { isEditableTarget } from '@/lib/use-command-shortcut'
 
 import { ChangesView } from '../task-git/task-changes'
 import { CommitsView } from '../task-git/task-commits'
+import { isDirty, type FileEdit } from '../task-git/file-preview'
 import { FilesView } from '../task-git/task-files'
 import { GitTabLoading } from '../task-git/git-tab-loading'
 import { RunHeader } from '../task-thread/run-header'
@@ -88,6 +89,12 @@ export function TaskWorkspaceRoute({ view }: { view?: ViewId }) {
   // that for the rest of the visit. It lives at the route, not in a column, because it is a
   // property of VISITING the task — a workspace with no Czat column still opens the mail.
   const suppressAutoRead = useRef<string | undefined>(undefined)
+  // Leaving ends the visit, and has to be said: /tasks/A → /tasks/B → /tasks/A reuses this route
+  // element, so the ref outlived the round trip and A stayed unread forever (main #1337).
+  // Declared BEFORE the receipt effect: effects run in order.
+  useEffect(() => {
+    if (suppressAutoRead.current !== id) suppressAutoRead.current = undefined
+  }, [id])
   const suppressAutoReadFor = useCallback((runId: string) => {
     suppressAutoRead.current = runId
   }, [])
@@ -103,6 +110,8 @@ export function TaskWorkspaceRoute({ view }: { view?: ViewId }) {
     run.data?.finishedAt,
     run.data?.seenAt,
     run.data?.archived,
+    // Coming back to a run whose cached record is unchanged must still re-run the receipt.
+    id,
   ])
 
   // The skeleton the URL asked for, not the workspace's own: a `/changes` deep link that says
@@ -219,8 +228,9 @@ function WorkspaceView({
     }
     // `layouts.state.active` is deliberately NOT a dependency: this runs on a navigation, and
     // re-running it whenever the user picks another card would drag them back to the old one.
+    // `loadFailed` re-applies the link when a late answer from the host replaces the stand-in.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deepLinkView, layouts.ready, navigationType, openDeepLink, run.id, selectLayout])
+  }, [deepLinkView, layouts.ready, layouts.loadFailed, navigationType, openDeepLink, run.id, selectLayout])
 
   // Record the card the hop produced, once the transition has landed. Recognised by shape — a
   // one-column layout of exactly this view — so the OLD active can never be mistaken for it in
@@ -492,11 +502,20 @@ function WorkspaceView({
   // A file or commit named in the chat: put its view beside the chat, then tell THAT window —
   // by the same key it remembers its selection under — what to show.
   const openBeside = layouts.openBeside
+  // The Code window's own rule (`FilesView.select`): an unsaved edit is not dropped by a click.
+  // Writing the selection from here goes around that view, so the question is asked here.
+  const [pendingFile, setPendingFile] = useState<{ key: string; path: string; editing: string } | null>(null)
   const openReference = useCallback(
     (reference: ThreadReference) => {
       const placed = openBeside(reference.view)
       if (!placed) return
-      rememberViewState(`${run.id}:${placed.name}:${placed.index}:${reference.view}`, reference.value)
+      const key = `${run.id}:${placed.name}:${placed.index}:${reference.view}`
+      const edit = reference.view === 'files' ? ((recallViewState(`${key}:edit`) ?? null) as FileEdit | null) : null
+      if (edit && isDirty(edit) && recallViewState(key) !== reference.value) {
+        setPendingFile({ key, path: reference.value, editing: edit.path })
+        return
+      }
+      rememberViewState(key, reference.value)
     },
     [openBeside, run.id],
   )
@@ -573,6 +592,18 @@ function WorkspaceView({
         mode="strip"
         bareStrip={overview}
       />
+      {layouts.loadFailed ? (
+        // Same clear-state rule as below, for the read: nothing is written over the host's copy
+        // until it has answered, so what is built meanwhile may be replaced by what was saved.
+        <div
+          data-slot="layouts-unloaded"
+          role="status"
+          className="shrink-0 border-b border-border bg-muted/40 px-4 py-1.5 text-xs text-muted-foreground sm:px-6"
+        >
+          This task's saved layouts could not be loaded yet — retrying. Changes made meanwhile are
+          not saved.
+        </div>
+      ) : null}
       {layouts.saveFailed ? (
         // Spec §2: a capability that cannot work degrades to a CLEAR state. The workspace still
         // works from memory for the rest of the visit — what is lost is only the remembering —
@@ -660,6 +691,31 @@ function WorkspaceView({
               }}
             >
               Change anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={pendingFile !== null} onOpenChange={(open) => !open && setPendingFile(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle>
+            <AlertDialogDescription>
+              <span className="font-mono text-foreground">{pendingFile?.editing}</span> has edits that were not
+              saved. Opening another file drops them.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep editing</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (pendingFile) {
+                  rememberViewState(`${pendingFile.key}:edit`, null)
+                  rememberViewState(pendingFile.key, pendingFile.path)
+                }
+                setPendingFile(null)
+              }}
+            >
+              Discard
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

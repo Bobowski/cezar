@@ -11,6 +11,7 @@ import {
   closeLayout as closeLayoutOf,
   moveColumn as moveColumnOf,
   openDeepLink as openDeepLinkOn,
+  openInBrowser as openInBrowserOn,
   defaultState,
   renameLayout as renameLayoutOf,
   resizeColumns as resizeColumnsOf,
@@ -51,6 +52,9 @@ export interface WorkspaceLayouts {
   /** The owning host could not store the last change. The workspace keeps working from memory;
    *  the route says so rather than letting the user find out on the next reload. */
   saveFailed: boolean
+  /** The host has not ANSWERED for this task's layouts yet (the read failed and is being retried).
+   *  The workspace runs on a stand-in default meanwhile and nothing is saved over the host's copy. */
+  loadFailed: boolean
   /** The selected card, or `undefined` while the workspace is intentionally empty. */
   layout: WorkspaceLayout | undefined
   addLayout: (view?: ViewId) => void
@@ -64,9 +68,9 @@ export interface WorkspaceLayouts {
   moveColumn: (from: number, to: number) => void
   setColumnBrowser: (index: number, browser: BrowserState) => void
   /** Open an address in a Browser column of the active layout — the terminal's detected-URL
-   *  list is the only caller (spec §7, `Otwórz w Przeglądarce`). Reuses a Browser column when the
-   *  layout has one and adds one otherwise; returns false when there was no room, so the caller
-   *  can say so rather than appearing to do nothing. */
+   *  list is the only caller (spec §7, `Otwórz w Przeglądarce`). Placement is `openInBrowser` in
+   *  `layout-state.ts`; returns false when there was no room, so the caller can say so rather
+   *  than appearing to do nothing. */
   openInBrowser: (url: string) => boolean
   /** Show `view` beside what is on screen (see `openBeside`), and say where it landed so the
    *  caller can tell that window what to show. `null` before the layouts have loaded. */
@@ -84,12 +88,21 @@ const SAVE_DEBOUNCE_MS = 400
 /** How long after a refused save the one retry goes out. */
 const SAVE_RETRY_MS = 1500
 
+/** How long after a failed READ the next one goes out, doubling up to the cap. */
+const LOAD_RETRY_MS = 2000
+const LOAD_RETRY_MAX_MS = 30_000
+
 export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
   const [state, setState] = useState<WorkspaceState>(defaultState)
   const [ready, setReady] = useState(false)
   /** The host refused the last save (a read-only home, a full disk). Surfaced, never swallowed:
    *  §2 asks that a degraded capability produce a CLEAR state, not an invisible one. */
   const [saveFailed, setSaveFailed] = useState(false)
+  const [loadFailed, setLoadFailed] = useState(false)
+  /** The task whose layouts the host has actually ANSWERED for. Saving is allowed for that task
+   *  only: a write after a failed read would put a fabricated default over the saved layouts. A
+   *  task id rather than a flag, so task A's leave-time flush still goes out after the id changed. */
+  const answered = useRef<string | null>(null)
   // Which task `state` belongs to, and the exact object the host gave us for it. The first tells
   // us when to re-read; the second keeps the arrival from being written straight back, so merely
   // VISITING a task never writes to the host.
@@ -102,33 +115,56 @@ export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
     setReady(false)
     // Task A's "could not save" is not a fact about task B — the banner goes with the task.
     setSaveFailed(false)
+    setLoadFailed(false)
   }
 
   useEffect(() => {
     let cancelled = false
-    void (async () => {
-      let next: WorkspaceState
-      try {
-        const answer = await getRunLayouts(taskId)
-        // Both `null` and an empty list open a fresh `Czat`, which is what §5.3 asks for: "If the
-        // user deleted all layouts … reopening that task creates a fresh default `Czat` layout."
-        // The emptiness that DOES survive is a card with no columns (§10), which is a layout and
-        // revives as one. `reviveState` repairs anything malformed rather than failing.
-        next = answer.layouts === null ? defaultState() : reviveState(answer.layouts)
-      } catch {
-        // An unreachable host is not a reason to refuse the task its workspace.
-        next = defaultState()
-      }
-      if (cancelled) return
+    let retry: ReturnType<typeof setTimeout> | null = null
+    // An answer from an earlier visit says nothing about the host's copy now. Safe here: the
+    // previous task's leave-time flush ran in the cleanup phase, before any setup.
+    answered.current = null
+    const adopt = (next: WorkspaceState) => {
       loaded.current = { taskId, state: next }
       // What the host just gave us needs no saving back.
       sent.current = next
       latest.current = { taskId, state: next }
       setState(next)
       setReady(true)
-    })()
+    }
+    const read = async (failures: number): Promise<void> => {
+      let answer: Awaited<ReturnType<typeof getRunLayouts>>
+      try {
+        answer = await getRunLayouts(taskId)
+      } catch {
+        if (cancelled) return
+        // An unreachable host is not a reason to refuse the task its workspace — but a FAILED read
+        // is not "nothing saved" either. The default below is a stand-in that is never written
+        // (`answered` stays unset), and the read is retried until the host answers.
+        if (failures === 0) adopt(defaultState())
+        setLoadFailed(true)
+        retry = setTimeout(
+          () => void read(failures + 1),
+          Math.min(LOAD_RETRY_MAX_MS, LOAD_RETRY_MS * 2 ** failures),
+        )
+        return
+      }
+      if (cancelled) return
+      answered.current = taskId
+      setLoadFailed(false)
+      // Never opened, answered late: what was built on the stand-in meanwhile is this task's first
+      // workspace. `loaded` keeps the stand-in, so the save effect sees the difference and sends it.
+      if (failures > 0 && answer.layouts === null) return
+      // Both `null` and an empty list open a fresh `Czat`, which is what §5.3 asks for: "If the
+      // user deleted all layouts … reopening that task creates a fresh default `Czat` layout."
+      // The emptiness that DOES survive is a card with no columns (§10), which is a layout and
+      // revives as one. `reviveState` repairs anything malformed rather than failing.
+      adopt(answer.layouts === null ? defaultState() : reviveState(answer.layouts))
+    }
+    void read(0)
     return () => {
       cancelled = true
+      if (retry) clearTimeout(retry)
     }
   }, [taskId])
 
@@ -155,18 +191,25 @@ export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
   /** The last state a PUT was issued for. What makes a flush idempotent and a drop impossible. */
   const sent = useRef<WorkspaceState | null>(null)
 
-  const save = useCallback((forTask: string, value: WorkspaceState) => {
+  const save = useCallback((forTask: string, value: WorkspaceState, keepalive = false) => {
+    // No write without a read: see `answered`.
+    if (answered.current !== forTask) return
     sent.current = value
     const ticket = (seq.current += 1)
+    // The outcome is a fact about `forTask`; said only while that task is the one on screen, or
+    // task A's failed leave-time save raises the banner over task B.
+    const report = (failed: boolean) => {
+      if (ticket === seq.current && loaded.current.taskId === forTask) setSaveFailed(failed)
+    }
     const attempt = (retriesLeft: number): void => {
-      void putRunLayouts(forTask, value)
-        .then(() => {
-          if (ticket === seq.current) setSaveFailed(false)
-        })
-        .catch(() => {
+      void (keepalive ? putRunLayouts(forTask, value, { keepalive }) : putRunLayouts(forTask, value))
+        .then(() => report(false))
+        .catch((error: unknown) => {
           // Only the newest save speaks: an older one failing says nothing about what is stored,
           // and a newer one is already carrying everything this one held.
           if (ticket !== seq.current) return
+          // A 400 is the host refusing THIS document; sending it again cannot go differently.
+          if ((error as { status?: number } | null)?.status === 400) return report(true)
           // One refusal is not yet a fact about the host: a save that lands while the server is
           // restarting, or loses a rename to another cezar on the same repo, succeeds a moment
           // later. Without the second try that blip left "could not be saved" on screen — and the
@@ -177,7 +220,7 @@ export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
             }, SAVE_RETRY_MS)
             return
           }
-          setSaveFailed(true)
+          report(true)
         })
     }
     attempt(1)
@@ -191,12 +234,12 @@ export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
    * runs; a flush that asked "is a timer pending?" therefore always answered no on the way out,
    * and silently dropped the user's last change. `sent` is the only thing that knows.
    */
-  const flush = useCallback(() => {
+  const flush = useCallback((keepalive = false) => {
     const due = latest.current
     if (!due || due.state === sent.current) return
     if (pending.current) clearTimeout(pending.current)
     pending.current = null
-    save(due.taskId, due.state)
+    save(due.taskId, due.state, keepalive)
   }, [save])
 
   useEffect(() => {
@@ -215,7 +258,9 @@ export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
       if (pending.current) clearTimeout(pending.current)
       pending.current = null
     }
-  }, [ready, save, taskId, state])
+    // `loadFailed` is a dependency for its falling edge: a change made before the host answered
+    // is sent once it has.
+  }, [ready, save, taskId, state, loadFailed])
 
   /**
    * Leaving must not drop the last change.
@@ -228,7 +273,9 @@ export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
    * `pagehide` covers the other exit, closing the tab or reloading, which React never sees.
    */
   useEffect(() => {
-    const onHide = () => flush()
+    // `keepalive`: a fetch first issued while the document is being torn down is otherwise
+    // aborted with it.
+    const onHide = () => flush(true)
     window.addEventListener('pagehide', onHide)
     return () => {
       window.removeEventListener('pagehide', onHide)
@@ -250,6 +297,7 @@ export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
     state,
     ready,
     saveFailed,
+    loadFailed,
     layout: activeLayoutOf(state),
     addLayout: useCallback((view?: ViewId) => setState((current) => addLayoutTo(current, view)), []),
     closeLayout: useCallback((name: string) => setState((current) => closeLayoutOf(current, name)), []),
@@ -296,31 +344,12 @@ export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
        * had just opened.
        *
        * `latest.current` is the state React has committed, which is also the workspace the user
-       * was looking at when they clicked. The cap is read by asking `addColumn` rather than by
-       * restating the rule here, so the two cannot drift.
+       * was looking at when they clicked. Both halves ask the one pure transition, so the answer
+       * and the change cannot drift.
        */
       const committed = latest.current?.state
-      const layout = committed ? activeLayoutOf(committed) : undefined
-      if (!committed || !layout) return false
-      const index = layout.columns.findIndex((column) => column.view === 'browser')
-      if (index < 0 && addColumnTo(committed, layout.name, 'browser') === committed) return false
-
-      setState((current) => {
-        const active = activeLayoutOf(current)
-        if (!active) return current
-        const position = active.columns.findIndex((column) => column.view === 'browser')
-        if (position >= 0) {
-          // An existing Browser column gets the address as a new tab, activated.
-          const browser = active.columns[position]!.browser ?? { tabs: [''], active: 0 }
-          // A blank tab is a slot, not a tab worth keeping beside the new one.
-          const tabs = browser.tabs.filter((tab) => tab !== '')
-          return setColumnBrowserOf(current, active.name, position, { tabs: [...tabs, url], active: tabs.length })
-        }
-        const added = addColumnTo(current, active.name, 'browser')
-        if (added === current) return current
-        const grown = activeLayoutOf(added)!
-        return setColumnBrowserOf(added, grown.name, grown.columns.length - 1, { tabs: [url], active: 0 })
-      })
+      if (!committed || openInBrowserOn(committed, url) === null) return false
+      setState((current) => openInBrowserOn(current, url) ?? current)
       return true
     }, []),
     openBeside: useCallback((view: ViewId) => {
@@ -328,7 +357,8 @@ export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
       const committed = latest.current?.state ?? loaded.current.state
       if (!committed) return null
       const placed = openBesideOf(committed, view)
-      setState((current) => openBesideOf(current, view).state)
+      if (!placed) return null
+      setState((current) => openBesideOf(current, view)?.state ?? current)
       return { name: placed.name, index: placed.index }
     }, []),
   }

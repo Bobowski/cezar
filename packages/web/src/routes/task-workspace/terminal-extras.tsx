@@ -108,7 +108,7 @@ export function DetectedUrlsStrip({
       ))}
       {noRoom ? (
         <span className="text-xs text-muted-foreground">
-          This layout already has three columns — close one to open the Browser.
+          No room to open it here — this layout has three columns, or its Browser is out of tabs.
         </span>
       ) : null}
     </div>

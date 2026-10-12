@@ -1,8 +1,10 @@
-import { act, renderHook, waitFor } from '@testing-library/react'
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { workspaceLayoutsSchema } from '@open-mercato/cezar-api-client'
+
 import { useWorkspaceLayouts } from './use-workspace-layouts'
-import type { WorkspaceState } from './layout-state'
+import { fixedViewOf, type WorkspaceState } from './layout-state'
 
 /**
  * `openInBrowser`'s ANSWER (spec §7: the detected-URL strip's `Otwórz w Przeglądarce`).
@@ -46,6 +48,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  // Unmount, or a hook left over from one case answers the next case's `pagehide`.
+  cleanup()
   vi.clearAllMocks()
 })
 
@@ -134,5 +138,199 @@ describe('openInBrowser', () => {
 
     expect(answer).toBe(true)
     expect(result.current.layout!.columns.map((column) => column.view)).toEqual(['session', 'browser'])
+  })
+})
+
+/* ── Review findings, 2026-10-12 ─────────────────────────────────────────────────────────────── */
+
+/** Fake clock for the save/retry timers; `waitFor` is avoided because it polls on real time. */
+const tick = (ms: number) =>
+  act(async () => {
+    await vi.advanceTimersByTimeAsync(ms)
+  })
+
+async function mounted(id = 'r1') {
+  const hook = renderHook(({ id }: { id: string }) => useWorkspaceLayouts(id), { initialProps: { id } })
+  await tick(0)
+  expect(hook.result.current.ready).toBe(true)
+  return hook
+}
+
+const SAVED: WorkspaceState = {
+  layouts: [
+    { name: 'Chat', columns: [{ view: 'session', width: 100 }] },
+    { name: 'Moje', columns: [{ view: 'session', width: 50 }, { view: 'files', width: 50 }] },
+  ],
+  active: 'Moje',
+}
+
+describe('a failed read of the saved layouts', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    putRunLayouts.mockReset()
+    putRunLayouts.mockResolvedValue(undefined)
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('is never followed by a write: the host copy survives a change made meanwhile', async () => {
+    getRunLayouts.mockRejectedValueOnce(new Error('502')).mockResolvedValue({ layouts: SAVED })
+    const { result } = await mounted()
+
+    // The workspace is usable from memory…
+    act(() => result.current.selectLayout('Changes'))
+    expect(result.current.state.active).toBe('Changes')
+    await tick(1000)
+    // …but the fabricated default must not replace what the host holds.
+    expect(putRunLayouts).not.toHaveBeenCalled()
+    expect(result.current.loadFailed).toBe(true)
+
+    // The read is retried, and its answer is the workspace.
+    await tick(5000)
+    expect(getRunLayouts).toHaveBeenCalledTimes(2)
+    expect(result.current.state).toEqual(SAVED)
+    await tick(1000)
+    expect(putRunLayouts).not.toHaveBeenCalled()
+  })
+
+  it('does not write on the way out either', async () => {
+    getRunLayouts.mockRejectedValue(new Error('offline'))
+    const { result, unmount } = await mounted()
+    act(() => result.current.selectLayout('Changes'))
+    act(() => {
+      window.dispatchEvent(new Event('pagehide'))
+    })
+    unmount()
+    await tick(1000)
+    expect(putRunLayouts).not.toHaveBeenCalled()
+  })
+
+  it('keeps what was built meanwhile once the host says the task was never opened', async () => {
+    getRunLayouts.mockRejectedValueOnce(new Error('502')).mockResolvedValue({ layouts: null })
+    const { result } = await mounted()
+    act(() => result.current.selectLayout('Changes'))
+    await tick(3000)
+    expect(result.current.loadFailed).toBe(false)
+    expect(putRunLayouts).not.toHaveBeenCalled()
+    // The debounce is armed by the render that learns the host answered.
+    await tick(1000)
+    expect(result.current.state.active).toBe('Changes')
+    expect(putRunLayouts).toHaveBeenCalledTimes(1)
+    expect((putRunLayouts.mock.calls[0] as unknown[])[1]).toMatchObject({ active: 'Changes' })
+  })
+})
+
+describe('the contract bounds, client-side', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    putRunLayouts.mockReset()
+    putRunLayouts.mockResolvedValue(undefined)
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const twelve = Array.from({ length: 12 }, (_, index) => `http://localhost:${3000 + index}/`)
+
+  it('Open in Browser refuses a thirteenth tab instead of minting an unsaveable document', async () => {
+    getRunLayouts.mockResolvedValue({
+      layouts: {
+        layouts: [{ name: 'Jeden', columns: [{ view: 'browser', width: 100, browser: { tabs: twelve, active: 0 } }] }],
+        active: 'Jeden',
+      },
+    })
+    const { result } = await mounted()
+
+    let answer: boolean | undefined
+    act(() => {
+      answer = result.current.openInBrowser('http://localhost:9999/')
+    })
+    expect(answer).toBe(false)
+    expect(result.current.layout!.columns[0]!.browser!.tabs).toHaveLength(12)
+    expect(workspaceLayoutsSchema.safeParse(result.current.state).success).toBe(true)
+  })
+
+  it('a long rename still produces a document the host accepts', async () => {
+    getRunLayouts.mockResolvedValue({ layouts: SAVED })
+    const { result } = await mounted()
+    act(() => result.current.renameLayout('Moje', 'x'.repeat(200)))
+    await tick(1000)
+    expect(putRunLayouts).toHaveBeenCalledTimes(1)
+    expect(workspaceLayoutsSchema.safeParse((putRunLayouts.mock.calls[0] as unknown[])[1]).success).toBe(true)
+  })
+
+  it('a save the host REFUSES (400) is reported at once, not sent again', async () => {
+    getRunLayouts.mockResolvedValue({ layouts: SAVED })
+    putRunLayouts.mockRejectedValue(Object.assign(new Error('bad body'), { status: 400 }))
+    const { result } = await mounted()
+    act(() => result.current.selectLayout('Chat'))
+    await tick(500)
+    expect(result.current.saveFailed).toBe(true)
+    await tick(5000)
+    expect(putRunLayouts).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Open in Browser on a fixed card', () => {
+  it('opens the pair layout and leaves the fixed card the one view it stands for', async () => {
+    // `null` is a task never opened: the six born cards, Chat active.
+    getRunLayouts.mockResolvedValue({ layouts: null })
+    const hook = renderHook(() => useWorkspaceLayouts('r1'))
+    await waitFor(() => expect(hook.result.current.ready).toBe(true))
+    const { result } = hook
+
+    let answer: boolean | undefined
+    act(() => {
+      answer = result.current.openInBrowser('http://localhost:3000/')
+    })
+    expect(answer).toBe(true)
+    expect(result.current.layout!.name).toBe('Chat + Browser')
+    expect(result.current.layout!.columns.map((column) => column.view)).toEqual(['session', 'browser'])
+    expect(result.current.layout!.columns[1]!.browser).toEqual({ tabs: ['http://localhost:3000/'], active: 0 })
+    const chat = result.current.state.layouts.find((layout) => layout.name === 'Chat')!
+    expect(fixedViewOf(chat)).toBe('session')
+
+    // The fixed Chat card still leads home, and mints nothing.
+    act(() => result.current.openDeepLink('session'))
+    expect(result.current.state.active).toBe('Chat')
+    expect(result.current.state.layouts.map((layout) => layout.name)).not.toContain('Chat 2')
+  })
+})
+
+describe('leaving', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    putRunLayouts.mockReset()
+    putRunLayouts.mockResolvedValue(undefined)
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('sends the pagehide flush keepalive, so the browser may finish it after the page is gone', async () => {
+    getRunLayouts.mockResolvedValue({ layouts: SAVED })
+    const { result } = await mounted()
+    act(() => result.current.selectLayout('Chat'))
+    act(() => {
+      window.dispatchEvent(new Event('pagehide'))
+    })
+    expect(putRunLayouts).toHaveBeenCalledTimes(1)
+    expect((putRunLayouts.mock.calls[0] as unknown[])[2]).toEqual({ keepalive: true })
+  })
+
+  it("does not raise task A's failed leave-time save on task B", async () => {
+    getRunLayouts.mockResolvedValue({ layouts: SAVED })
+    putRunLayouts.mockImplementation(async (...args: unknown[]) => {
+      if (args[0] === 'A') throw new Error('read-only home')
+      return undefined
+    })
+    const hook = await mounted('A')
+    act(() => hook.result.current.selectLayout('Chat'))
+    hook.rerender({ id: 'B' })
+    await tick(0)
+    expect(putRunLayouts).toHaveBeenCalledTimes(1)
+    await tick(4000)
+    expect(hook.result.current.saveFailed).toBe(false)
   })
 })

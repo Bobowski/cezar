@@ -10,6 +10,14 @@
  * this build can paint.
  */
 
+import {
+  MAX_WORKSPACE_BROWSER_TABS,
+  MAX_WORKSPACE_COLUMNS,
+  MAX_WORKSPACE_LAYOUT_NAME_LENGTH,
+  MAX_WORKSPACE_LAYOUTS,
+  MAX_WORKSPACE_TAB_URL_LENGTH,
+} from '@open-mercato/cezar-api-client'
+
 import { drawerStorageKey } from './drawer-state'
 
 /** The surfaces a column can show. `terminal` is deliberately absent — it is the bottom drawer,
@@ -112,7 +120,12 @@ export function reviveBrowserState(raw: unknown): BrowserState {
   if (typeof raw !== 'object' || raw === null) return emptyBrowserState()
   const source = raw as { tabs?: unknown; active?: unknown }
   if (!Array.isArray(source.tabs)) return emptyBrowserState()
-  const tabs = source.tabs.filter((tab): tab is string => typeof tab === 'string').slice(0, MAX_BROWSER_TABS)
+  const tabs = source.tabs
+    .filter((tab): tab is string => typeof tab === 'string')
+    .slice(0, MAX_BROWSER_TABS)
+    // Blank, not truncated: a cut address is a different address, and §7 already says a tab with
+    // nothing worth keeping comes back blank.
+    .map((tab) => (tab.length > MAX_TAB_URL_LENGTH ? '' : tab))
   if (tabs.length === 0) return emptyBrowserState()
   const active = typeof source.active === 'number' && Number.isFinite(source.active)
     ? Math.min(tabs.length - 1, Math.max(0, Math.trunc(source.active)))
@@ -121,8 +134,12 @@ export function reviveBrowserState(raw: unknown): BrowserState {
 }
 
 /** A bound on tabs per Browser column — enough for any real comparison, few enough that a
- *  hand-edited file cannot make the strip unusable. */
-export const MAX_BROWSER_TABS = 12
+ *  hand-edited file cannot make the strip unusable. The host's own bound, like every cap below:
+ *  it validates the whole document per save, so a client that outgrows one can never save again. */
+export const MAX_BROWSER_TABS = MAX_WORKSPACE_BROWSER_TABS
+export const MAX_TAB_URL_LENGTH = MAX_WORKSPACE_TAB_URL_LENGTH
+export const MAX_LAYOUTS = MAX_WORKSPACE_LAYOUTS
+export const MAX_LAYOUT_NAME_LENGTH = MAX_WORKSPACE_LAYOUT_NAME_LENGTH
 
 export interface WorkspaceLayout {
   /** Unique within the task, and the card's label. Renameable (spec §5.2). */
@@ -137,7 +154,7 @@ export interface WorkspaceState {
 }
 
 /** A layout holds one to three side-by-side columns — no rows, no nesting (spec §5.2). */
-export const MAX_COLUMNS = 3
+export const MAX_COLUMNS = MAX_WORKSPACE_COLUMNS
 
 /** The narrowest a column may be dragged, in percent. Three columns at the floor still leave a
  *  readable remainder for the one being widened, and nothing can be dragged to a sliver. */
@@ -277,6 +294,7 @@ export function reviveState(parsed: unknown): WorkspaceState {
 
   const layouts: WorkspaceLayout[] = []
   for (const entry of source.layouts) {
+    if (layouts.length >= MAX_LAYOUTS) break
     const layout = reviveLayout(entry, layouts)
     if (layout) layouts.push(layout)
   }
@@ -369,15 +387,20 @@ export function preferredActive(layouts: readonly WorkspaceLayout[]): string {
 
 /** `name`, or `name 2` / `name 3` … when it is already taken (spec §5.2 — "If the entered name
  *  already exists, append the next available number"). */
-export function uniqueName(name: string, layouts: readonly WorkspaceLayout[], ignore?: string): string {
+export function uniqueName(requested: string, layouts: readonly WorkspaceLayout[], ignore?: string): string {
   const isTaken = (candidate: string) =>
     layouts.some((layout) => layout.name === candidate && layout.name !== ignore)
+  // Every name passes through here, so this is where the host's length cap is held — the suffix
+  // included, which is why the base gives way to it.
+  const fit = (suffix: string) =>
+    `${requested.slice(0, MAX_LAYOUT_NAME_LENGTH - suffix.length).trimEnd()}${suffix}`
+  const name = fit('')
   if (!isTaken(name)) return name
   for (let suffix = 2; suffix < 1000; suffix += 1) {
-    const candidate = `${name} ${suffix}`
+    const candidate = fit(` ${suffix}`)
     if (!isTaken(candidate)) return candidate
   }
-  return `${name} ${layouts.length + 1}`
+  return fit(` ${layouts.length + 1}`)
 }
 
 export function findLayout(state: WorkspaceState, name = state.active): WorkspaceLayout | undefined {
@@ -414,6 +437,8 @@ export function nextAutomaticName(layouts: readonly WorkspaceLayout[]): string {
  *  `name` defaults to the next automatic `Layout N` (spec §5.2); a deep link passes the view's own
  *  label instead (§5.3). */
 export function addLayout(state: WorkspaceState, view?: ViewId, name?: string): WorkspaceState {
+  // A no-op at the host's card cap, like `addColumn` at its own.
+  if (state.layouts.length >= MAX_LAYOUTS) return state
   const chosen = name === undefined ? nextAutomaticName(state.layouts) : uniqueName(name, state.layouts)
   const columns = view === undefined ? [] : [{ ...newColumn(view), width: 100 }]
   return { layouts: [...state.layouts, { name: chosen, columns }], active: chosen }
@@ -487,12 +512,45 @@ export function setColumnBrowser(
   const layout = findLayout(state, name)
   const column = layout?.columns[index]
   if (!layout || !column || column.view !== 'browser') return state
+  // The backstop for every writer of tabs: whatever arrives is stored inside the host's bounds.
+  const bounded = reviveBrowserState(browser)
   return replaceLayout(state, name, {
     ...layout,
     columns: layout.columns.map((entry, position) =>
-      position === index ? { ...entry, browser } : entry,
+      position === index ? { ...entry, browser: bounded } : entry,
     ),
   })
+}
+
+/**
+ * Open an address in a Browser tab of the active layout (spec §7, the terminal's detected-URL
+ * list). `null` when there is no room — a full layout, a full tab strip, an address the host would
+ * refuse — so the caller can say so.
+ *
+ * A layout with a Browser column gets a tab there; one the user built gets a Browser column. A
+ * FIXED card stays the one view it stands for, so it goes to its pair layout (`Chat + Browser`),
+ * exactly as `openBeside` places a file: adding a column to it made `Chat` a stray custom card.
+ */
+export function openInBrowser(state: WorkspaceState, url: string): WorkspaceState | null {
+  const active = activeLayout(state)
+  if (!active || url.length > MAX_TAB_URL_LENGTH) return null
+  let next = state
+  let name = active.name
+  let index = active.columns.findIndex((column) => column.view === 'browser')
+  if (index < 0 && fixedViewOf(active) !== null) {
+    const placed = openBeside(state, 'browser')
+    if (!placed) return null
+    ;({ state: next, name, index } = placed)
+  } else if (index < 0) {
+    next = addColumn(state, name, 'browser')
+    if (next === state) return null
+    index = active.columns.length
+  }
+  const browser = findLayout(next, name)?.columns[index]?.browser ?? emptyBrowserState()
+  // A blank tab is a slot, not a tab worth keeping beside the new one.
+  const tabs = browser.tabs.filter((tab) => tab !== '')
+  if (tabs.length >= MAX_BROWSER_TABS) return null
+  return setColumnBrowser(next, name, index, { tabs: [...tabs, url], active: tabs.length })
 }
 
 /**
@@ -649,7 +707,7 @@ export function openDeepLink(state: WorkspaceState, view: ViewId): WorkspaceStat
 export function openBeside(
   state: WorkspaceState,
   view: ViewId,
-): { state: WorkspaceState; name: string; index: number } {
+): { state: WorkspaceState; name: string; index: number } | null {
   const current = activeLayout(state)
   if (current) {
     const existing = current.columns.findIndex((column) => column.view === view)
@@ -663,6 +721,8 @@ export function openBeside(
   const pair = findLayout(state, name)
   const index = pair ? pair.columns.findIndex((column) => column.view === view) : -1
   if (pair && index >= 0) return { state: selectLayout(state, name), name, index }
+  // The pair would be one card past the host's cap: nowhere to put it.
+  if (state.layouts.length >= MAX_LAYOUTS) return null
   const made = uniqueName(name, state.layouts)
   return {
     state: {

@@ -8,6 +8,8 @@ import { createQueryClient } from '@/api/query-client'
 import { ShellProviders } from '@/test/shell-providers'
 import type { ApiRun, HealthResponse } from '@open-mercato/cezar-api-client'
 
+import { rememberViewState, resetViewMemory } from '@/lib/view-memory'
+
 import { reviveState, type ViewId, type WorkspaceState } from './layout-state'
 
 // The Graph column lazily pulls `@xyflow/react` and its layout engine. This suite is about the
@@ -36,6 +38,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
   localStorage.clear()
   hostLayouts = {}
+  resetViewMemory()
 })
 
 const RUN: ApiRun = {
@@ -827,5 +830,156 @@ describe('the task workspace', () => {
     expect(savedNames('r2')).toEqual(BORN)
     // …and r1 still has what it had.
     expect(savedNames('r1')).toEqual(['Tylko r1'])
+  })
+})
+
+describe('a file named in the chat, with unsaved edits in the Code window', () => {
+  const KEY = 'r1:Chat + Code:1:files'
+
+  /** Click an inline-code span of the conversation, the way a path in an answer is clicked. The
+   *  handler is delegated on the span the markdown renders, so a span is all it takes. */
+  async function clickPath(path: string) {
+    const thread = await waitFor(() => {
+      const found = document.querySelector('[data-view="session"] div.contents')
+      expect(found).not.toBeNull()
+      return found!
+    }, { timeout: 5000 })
+    const code = document.createElement('code')
+    code.setAttribute('data-streamdown', 'inline-code')
+    code.textContent = path
+    thread.appendChild(code)
+    fireEvent.click(code)
+  }
+
+  const fetched = (path: string) =>
+    vi.mocked(fetch).mock.calls.some(([input]) => decodeURIComponent(String(input)).includes(`files?path=${path}`))
+
+  it('asks before dropping them, and keeps them when the answer is no', async () => {
+    stubFetch()
+    seedLayouts('r1', {
+      layouts: [{ name: 'Chat + Code', columns: [{ view: 'session', width: 50 }, { view: 'files', width: 50 }] }],
+      active: 'Chat + Code',
+    })
+    // File A is open in the Code window with an edit that was never saved.
+    rememberViewState(KEY, 'src/a.ts')
+    rememberViewState(`${KEY}:edit`, { path: 'src/a.ts', draft: 'UNSAVED WORK', baseHash: 'h', baseContent: 'on disk' })
+    renderWorkspace()
+    await ready()
+    await waitFor(() => expect(fetched('src/a.ts')).toBe(true))
+
+    await clickPath('src/b.ts')
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog.textContent).toContain('Discard unsaved changes?')
+    expect(fetched('src/b.ts')).toBe(false)
+
+    // No: the edit and the selection stand.
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(fetched('src/b.ts')).toBe(false)
+
+    // Yes: only now does the window move to the file that was clicked.
+    await clickPath('src/b.ts')
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+    await waitFor(() => expect(fetched('src/b.ts')).toBe(true))
+  })
+
+  it('opens the file straight away when nothing is unsaved', async () => {
+    stubFetch()
+    seedLayouts('r1', {
+      layouts: [{ name: 'Chat + Code', columns: [{ view: 'session', width: 50 }, { view: 'files', width: 50 }] }],
+      active: 'Chat + Code',
+    })
+    rememberViewState(KEY, 'src/a.ts')
+    renderWorkspace()
+    await ready()
+
+    await clickPath('src/b.ts')
+    await waitFor(() => expect(fetched('src/b.ts')).toBe(true))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+  })
+})
+
+describe('the read receipt across tasks (#775, main #1337)', () => {
+  it('going to another task and back marks a task read again after Mark unread', async () => {
+    // /tasks/A → /tasks/B → /tasks/A reuses this route element, so a suppression that only reset
+    // on remount survived the round trip and the task stayed unread however often it was reopened.
+    let current: ApiRun = { ...RUN, status: 'done', finishedAt: '2026-07-15T08:30:00.000Z' }
+    let reads = 0
+    stubFetch({
+      'GET /api/v1/runs/r1': () => jsonResponse(current),
+      'POST /api/v1/runs/r1/unread': () => {
+        const { seenAt: _cleared, ...rest } = current
+        current = rest as ApiRun
+        return jsonResponse(current)
+      },
+      'POST /api/v1/runs/r1/read': () => {
+        reads += 1
+        current = { ...current, seenAt: '2026-07-15T10:00:00.000Z' }
+        return jsonResponse(current)
+      },
+      // The neighbour is already read, so it never posts a receipt of its own.
+      'GET /api/v1/runs/r2': () => jsonResponse({ ...RUN, id: 'r2' }),
+    })
+    render(
+      <Providers>
+        <MemoryRouter initialEntries={['/tasks/r1']}>
+          <Routes>
+            <Route path="/tasks/:id" element={<TaskWorkspaceRoute />} />
+          </Routes>
+          <HistoryProbe />
+        </MemoryRouter>
+      </Providers>,
+    )
+    await ready()
+
+    const markUnread = await waitFor(() => {
+      if (screen.queryByRole('menu') === null) {
+        fireEvent.pointerDown(screen.getAllByRole('button', { name: 'More actions' })[0]!)
+      }
+      return screen.getByRole('menuitem', { name: 'Mark unread' })
+    })
+    fireEvent.click(markUnread)
+    await waitFor(() => expect(current.seenAt).toBeUndefined())
+    // Still on the task: the suppression holds for this visit.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(reads).toBe(0)
+
+    fireEvent.click(screen.getByRole('button', { name: 'go-r2' }))
+    await waitFor(() =>
+      expect(document.querySelector('[data-route="task-workspace"]')?.getAttribute('data-run-id')).toBe('r2'),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'back' }))
+    await waitFor(() => expect(reads).toBe(1))
+    expect(current.seenAt).toBe('2026-07-15T10:00:00.000Z')
+  })
+})
+
+describe('a failed read of the saved layouts, through the route', () => {
+  it('says so, writes nothing over the host copy, and applies the deep link once the host answers', async () => {
+    const mine = {
+      layouts: [
+        { name: 'Chat', columns: [{ view: 'session', width: 100 }] },
+        { name: 'Moje', columns: [{ view: 'session', width: 50 }, { view: 'files', width: 50 }] },
+      ],
+      active: 'Moje',
+    }
+    seedLayouts('r1', mine)
+    let reads = 0
+    stubFetch({
+      // A proxy answering for a cezar that is restarting, once.
+      'GET /api/v1/runs/r1/layouts': () => {
+        reads += 1
+        return reads === 1 ? jsonResponse({ error: 'bad gateway' }, 502) : jsonResponse({ layouts: hostLayouts.r1 })
+      },
+    })
+    // The deep link changes state by itself as soon as the workspace is ready — no click needed.
+    renderWorkspace('changes')
+    await waitFor(() => expect(document.querySelector('[data-slot="layouts-unloaded"]')).not.toBeNull())
+    await new Promise((resolve) => setTimeout(resolve, 700))
+    expect(hostLayouts.r1).toEqual(mine)
+
+    await waitFor(() => expect(document.querySelector('[data-slot="layouts-unloaded"]')).toBeNull(), { timeout: 6000 })
+    await waitFor(() => expect(activeCard()).toBe('Changes'))
+    await waitFor(() => expect(savedNames('r1')).toEqual(['Chat', 'Moje', 'Changes']))
   })
 })

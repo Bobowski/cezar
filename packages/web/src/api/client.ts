@@ -1938,12 +1938,23 @@ export async function getRunLayouts(id: string): Promise<WorkspaceLayoutsRespons
   )
 }
 
-export async function putRunLayouts(id: string, body: WorkspaceLayouts): Promise<WorkspaceLayoutsResponse> {
+export async function putRunLayouts(
+  id: string,
+  body: WorkspaceLayouts,
+  // The pagehide flush, as for `putRunDraft` — and with the same fallback: a body over the
+  // keepalive allowance is REJECTED by the browser, so it goes as an ordinary request instead.
+  opts?: { keepalive?: boolean },
+): Promise<WorkspaceLayoutsResponse> {
+  const keepalive =
+    opts?.keepalive === true && new TextEncoder().encode(JSON.stringify(body)).length <= KEEPALIVE_BODY_MAX
   return unwrap(
-    await cez.api.v1.p[':projectId'].runs[':id'].layouts.$put({
-      param: { projectId: queryScope(), id: encodeURIComponent(id) },
-      json: body,
-    }),
+    await cez.api.v1.p[':projectId'].runs[':id'].layouts.$put(
+      {
+        param: { projectId: queryScope(), id: encodeURIComponent(id) },
+        json: body,
+      },
+      { init: { keepalive } },
+    ),
     runPath(id, '/layouts'),
   )
 }

@@ -17,10 +17,12 @@
 import { parseArgs } from 'node:util';
 import { z } from 'zod';
 import { runRecordSchema, runStatusSchema, type RunStatus } from '@open-mercato/cezar-contract';
-import { missingCockpitMessage } from '../cockpit-address.ts';
+import { missingCockpitMessage, withCockpitAuth } from '../cockpit-address.ts';
 
 export interface RunsCliEnv {
   CEZ_API_URL?: string;
+  /** The credential for a cockpit that enforces auth; set by the cockpit inside a task. */
+  CEZ_API_TOKEN?: string;
   CEZ_PROJECT_ID?: string;
   CEZ_TASK_ID?: string;
 }
@@ -111,6 +113,7 @@ export async function runRunsCommand(
   env: RunsCliEnv = process.env,
   io: RunsCliIo = { fetch, log: console.log, error: console.error },
 ): Promise<number> {
+  io = withCockpitAuth(io, env);
   const [command, ...rest] = args;
   if (!command || command === 'help' || command === '--help') {
     io.log(USAGE);

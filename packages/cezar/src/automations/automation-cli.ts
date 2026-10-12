@@ -17,12 +17,14 @@
 import { readFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { trackerAutomationOptionsSchema, SCHEDULE_TYPES, parseCron, scheduleLabel, type AutomationSchedule } from '@open-mercato/cezar-contract';
-import { missingCockpitMessage } from '../cockpit-address.ts';
+import { missingCockpitMessage, withCockpitAuth } from '../cockpit-address.ts';
 import { RUNNER_IDS } from '../core/agent-runner.ts';
 import { AUTOMATION_SCHEMA_REFERENCE } from './prompts.ts';
 
 export interface AutomationCliEnv {
   CEZ_API_URL?: string;
+  /** The credential for a cockpit that enforces auth; set by the cockpit inside a task. */
+  CEZ_API_TOKEN?: string;
   CEZ_PROJECT_ID?: string;
   /** Set for every agent by the engine; only read to pick who the missing-address message is for. */
   CEZ_TASK_ID?: string;
@@ -210,6 +212,7 @@ export async function runAutomationCommand(
   env: AutomationCliEnv = process.env,
   io: AutomationCliIo = { fetch, log: console.log, error: console.error },
 ): Promise<number> {
+  io = withCockpitAuth(io, env);
   const [command, ...rest] = args;
   if (!command || command === 'help' || command === '--help') {
     io.log(USAGE);

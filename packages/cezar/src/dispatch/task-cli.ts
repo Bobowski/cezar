@@ -9,11 +9,13 @@
  * worded for whoever is asking) and exits 2.
  */
 import { parseArgs } from 'node:util';
-import { missingCockpitMessage } from '../cockpit-address.ts';
+import { missingCockpitMessage, withCockpitAuth } from '../cockpit-address.ts';
 import { RUNNER_IDS } from '../core/agent-runner.ts';
 
 export interface TaskCliEnv {
   CEZ_API_URL?: string;
+  /** The credential for a cockpit that enforces auth; set by the cockpit inside a task. */
+  CEZ_API_TOKEN?: string;
   CEZ_PROJECT_ID?: string;
   CEZ_TASK_ID?: string;
 }
@@ -64,6 +66,7 @@ export async function runTaskCommand(
   env: TaskCliEnv = process.env,
   io: TaskCliIo = { fetch, log: console.log, error: console.error },
 ): Promise<number> {
+  io = withCockpitAuth(io, env);
   const [command, ...rest] = args;
   if (!command || command === 'help' || command === '--help') {
     io.log(USAGE);

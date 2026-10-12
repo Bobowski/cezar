@@ -41,6 +41,7 @@ import {
   readHandoff,
   seedHandoffFile,
 } from '../handoff.ts';
+import { mintRunToken } from '../auth/run-tokens.ts';
 import { todosPath } from '../todos.ts';
 // Contract VALUES, like `workspaceUiStateSchema` in workspace/migrations.ts: the attachment
 // vocabulary the routes validate with is the same one the engine stores and re-reads by, so the
@@ -1349,6 +1350,7 @@ export class RunManager {
     // The same ONE gate the dispatch prompt uses, so an agent is never told about a CLI whose
     // address it was not given (and never given an address it was not told about).
     const apiUrl = this.dispatchReachable() ? process.env.CEZ_API_URL : undefined;
+    const runToken = apiUrl ? mintRunToken(runId, this.projectId) : undefined;
     return {
       CEZ_HANDOFF_FILE: handoffPath(this.dataDir, runId),
       CEZ_TASK_ID: runId,
@@ -1362,6 +1364,9 @@ export class RunManager {
       // is byte-for-byte as before.
       ...(apiUrl ? { CEZ_API_URL: apiUrl } : {}),
       ...(apiUrl && this.projectId ? { CEZ_PROJECT_ID: this.projectId } : {}),
+      // What those CLIs show a cockpit that enforces auth (spec 2026-10-12-cockpit-authentication
+      // §7). Absent while auth is off.
+      ...(apiUrl && runToken ? { CEZ_API_TOKEN: runToken } : {}),
       // The cockpit's OWN entrypoint, so an agent runs `node "$CEZ_BIN" task …` and never an older
       // `cez` that happens to be on its PATH without the command (observed on the first live run).
       ...(apiUrl && process.env.CEZ_BIN ? { CEZ_BIN: process.env.CEZ_BIN } : {}),

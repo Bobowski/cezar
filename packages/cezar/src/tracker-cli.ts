@@ -7,11 +7,14 @@
  * read with the project's stored credentials, so no tracker token has to be in the caller's
  * environment for this command to work. Read-only: there is no write subcommand.
  */
+import { withCockpitAuth } from './cockpit-address.ts';
 import { parseArgs } from 'node:util';
 import { renderTrackerContext, trackerRunIssueResponseSchema } from '@open-mercato/cezar-contract';
 
 export interface TrackerCliEnv {
   CEZ_API_URL?: string;
+  /** The credential for a cockpit that enforces auth; set by the cockpit inside a task. */
+  CEZ_API_TOKEN?: string;
   CEZ_PROJECT_ID?: string;
   CEZ_TASK_ID?: string;
 }
@@ -36,6 +39,7 @@ export async function runTrackerCommand(
   env: TrackerCliEnv = process.env,
   io: TrackerCliIo = { fetch, log: console.log, error: console.error },
 ): Promise<number> {
+  io = withCockpitAuth(io, env);
   const [command, ...rest] = args;
   if (!command || command === 'help' || command === '--help' || rest.includes('--help') || rest.includes('-h')) {
     io.log(USAGE);

@@ -53,6 +53,7 @@ import { Hono, type Context } from 'hono';
 import type { MiddlewareHandler, Next } from 'hono';
 import { serve, type ServerType } from '@hono/node-server';
 import { bodyLimit } from 'hono/body-limit';
+import { HTTPException } from 'hono/http-exception';
 import { streamSSE } from 'hono/streaming';
 import { jsonZodValidator, multipartZodValidator, paramZodValidator, queryZodValidator } from './validators.ts';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
@@ -145,6 +146,7 @@ import {
   deriveRunContextEvents,
   readEventsAfterLiveCursor,
   readRunHistoryPage,
+  streamRunEvents,
   validateLiveCursor,
 } from '../runs/event-history.ts';
 import { readRunIndexFromDisk } from '../runs/run-index.ts';
@@ -185,6 +187,7 @@ import {
   isOsOpenableImage,
   listRepoPaths,
   pushCurrentBranch,
+  worktreeGitStatus,
   readWorktreePath,
   FILE_CONTENT_CAP,
   repoIndexContains,
@@ -273,6 +276,23 @@ import {
   withResolvedClaudeBin,
 } from './open-in-app.ts';
 import { createDraftPr } from './pr.ts';
+import {
+  DEFAULT_TELEMETRY_URL,
+  TELEMETRY_POLICY_VERSION,
+  deviceSid,
+  loadTelemetryConsent,
+  reportError,
+  setTelemetryConsent,
+  telemetryBlockedBy,
+  track,
+} from '../telemetry.ts';
+import {
+  setTelemetryConsentInputSchema,
+  telemetryErrorInputSchema,
+  telemetryEventInputSchema,
+  telemetryPageInputSchema,
+  type TelemetryConsentPayload,
+} from '@open-mercato/cezar-contract';
 import { ProviderRuntimeAuthObserver } from './provider-auth-runtime.ts';
 import {
   providerForActiveRun,
@@ -372,7 +392,7 @@ export interface ServerDeps {
    *  bare `createApp` callers, where the family answers a read-only "not available" status. */
   selfUpdate?: SelfUpdateService;
   /** cezar's own GitHub star count behind `GET /api/v1/star-count` (the cockpit's ⭐ ask).
-   *  Defaults to a reader that asks github.com at most once per six hours and caches the answer
+   *  Defaults to a reader that asks github.com at most once per ten seconds, paced to GitHub's rate limit, and caches the answer
    *  under `~/.cache/cez/`; tests inject their own so no suite ever reaches the network. */
   starCount?: { read(): Promise<StarCountPayload> };
   /** The Design Mode proxies behind `POST /api/v1/preview/design-proxy` (src/server/preview/).
@@ -920,6 +940,11 @@ const patchRunSchema = z.object({
   title: z.string().trim().min(1).max(300).optional(),
   task: z.string().trim().min(1).max(100_000).optional(),
 });
+
+// `POST /runs/:id/pr`: `draft` defaults to true — a bodyless POST still opens the draft PR every
+// caller got before the flag existed (the review gate's Draft PR); the run header's Create PR asks
+// for a ready-for-review one with `draft: false`.
+const createPrSchema = z.object({ draft: z.boolean().optional() });
 
 // Session commit (redesign R5 — §"Git/session API additions").
 const gitCommitSchema = z.object({
@@ -1543,6 +1568,19 @@ export function createApp(deps: ServerDeps) {
   contexts.onContextBuilt((ctx) => providerRuntimeAuth.watch(ctx.store));
 
   const app = new Hono();
+
+  // Hono's default 500, plus an error report (a no-op until the user opted in).
+  app.onError((err, c) => {
+    if (err instanceof HTTPException) return err.getResponse();
+    console.error(err);
+    reportError(err, {
+      source: 'server',
+      'http.method': c.req.method,
+      'http.route': c.req.routePath,
+      'http.project_scoped': c.req.path.startsWith('/api/v1/p/'),
+    }, { code: 'http_handler_failed', sid: deviceSid(c.req.header('x-cezar-sid')) });
+    return c.text('Internal Server Error', 500);
+  });
 
   // Reject oversized request bodies before they reach any handler (#429). GETs
   // and SSE carry no body, so this only ever gates the mutating routes.
@@ -2749,6 +2787,8 @@ export function createApp(deps: ServerDeps) {
       const parsed = { data: c.req.valid('json') };
       const registered = await registerFolder(parsed.data.root, 'local');
       if (registered.status !== 200) return c.json(registered.body, registered.status);
+      // Only a genuinely new project: a re-add answers 409 above and is not an event.
+      track('project_added', { label: 'local' }, { sid: deviceSid(c.req.header('x-cezar-sid')) });
       return c.json(registered.body, 200);
     })
 
@@ -2938,6 +2978,8 @@ export function createApp(deps: ServerDeps) {
         const error = 'error' in body && body.error ? body.error : 'could not register the checkout';
         return c.json({ error: `${error} (the clone is at ${result.target})` }, registered.status);
       }
+      // The checkout dialog only clones GitHub repositories (`checkoutSchema`).
+      track('project_added', { label: 'github' }, { sid: deviceSid(c.req.header('x-cezar-sid')) });
       return c.json(registered.body, 200);
     });
 
@@ -4357,7 +4399,12 @@ export function createApp(deps: ServerDeps) {
 
     // Registered before the `/:id/...` routes so "archive-finished" and "read-all"
     // never match as a run id.
-    .post('/runs/archive-finished', (c) => c.json({ archived: c.get('project').store.archiveFinished() }))
+    .post('/runs/archive-finished', (c) => {
+      const archived = c.get('project').store.archiveFinished();
+      // One event for the sweep, `value` = how many it archived (summed on the dashboard).
+      if (archived > 0) track('task_archived', { label: 'bulk', value: archived }, { sid: deviceSid(c.req.header('x-cezar-sid')) });
+      return c.json({ archived });
+    })
 
     // The read-receipt sweep (#unread-done-items) — the mark-read twin of the archive
     // sweep above, and under the same registration-order guard.
@@ -4381,6 +4428,8 @@ export function createApp(deps: ServerDeps) {
       // the spec keeps them for the unarchive. Unarchiving starts nothing — the drawer comes
       // back hidden with no tabs, which is what `listFor` returning empty produces.
       if (run && archived) stopTaskProcesses(id);
+      // Labelled with the task's outcome: which results get kept, which get put away.
+      if (run) track(parsed.data.archived !== false ? 'task_archived' : 'task_unarchived', { label: run.status }, { sid: deviceSid(c.req.header('x-cezar-sid')) });
       return run ? c.json(run) : c.json({ error: 'not found' }, 404);
     })
 
@@ -4390,7 +4439,9 @@ export function createApp(deps: ServerDeps) {
     // event and no new response shape.
     .post('/runs/:id/pin', jsonZodValidator(pinSchema, { absent: ({}) }), (c) => {
       const { store } = c.get('project');
-      const run = store.setPinned(c.req.param('id'), c.req.valid('json').pinned !== false);
+      const pinned = c.req.valid('json').pinned !== false;
+      const run = store.setPinned(c.req.param('id'), pinned);
+      if (run) track(pinned ? 'task_pinned' : 'task_unpinned', { label: run.status }, { sid: deviceSid(c.req.header('x-cezar-sid')) });
       return run ? c.json(run) : c.json({ error: 'not found' }, 404);
     })
 
@@ -4498,6 +4549,7 @@ export function createApp(deps: ServerDeps) {
         // CEZ_TODOS_FILE alike (RunManager.agentEnv).
         generateFollowups: capabilities().followups ? parsed.data.generateFollowups : false,
         ...(parsed.data.dispatch && capabilities().dispatch ? { dispatchIntent: parsed.data.dispatch } : {}),
+        deviceSid: deviceSid(c.req.header('x-cezar-sid')),
       };
       if (variants > 1) {
         const started = manager.startVariants(workflow, input, variants);
@@ -4901,6 +4953,7 @@ export function createApp(deps: ServerDeps) {
       if (!opened) {
         return c.json({ error: 'no terminal emulator found', command: fallback }, 409);
       }
+      track('open_in', { label: 'resume_in_terminal' }, { sid: deviceSid(c.req.header('x-cezar-sid')) });
       return c.json({ opened: true, command });
     })
 
@@ -4922,6 +4975,9 @@ export function createApp(deps: ServerDeps) {
       // injection guard, this just validates the shape.
       const parsedBody = { data: c.req.valid('json') };
       const { target, path: relPath } = parsedBody.data;
+      // Telemetry counts an `open_in` only once it opened: `target` is free client text until
+      // `openApp`/`agentCliRunner` matched it, and labels must stay a closed set.
+      const trackOpened = (label: string) => track('open_in', { label }, { sid: deviceSid(c.req.header('x-cezar-sid')) });
       const dir = run.worktreePath && existsSync(run.worktreePath) ? run.worktreePath : repoRoot;
 
       // Diff pane "open in OS default app" (#365): one worktree file, opened with the platform's
@@ -4967,6 +5023,7 @@ export function createApp(deps: ServerDeps) {
         const filePath = join(run.worktreePath, result.path);
         const opened = await openFile(filePath);
         if (!opened) return c.json({ error: `could not open ${result.path}`, path: filePath }, 409);
+        trackOpened('default');
         return c.json({ opened: true, path: filePath });
       }
 
@@ -5012,11 +5069,13 @@ export function createApp(deps: ServerDeps) {
         if (!opened) {
           return c.json({ error: 'no terminal emulator found', command: fallback }, 409);
         }
+        trackOpened(`cli:${cliRunner}`);
         return c.json({ opened: true, path: dir, command });
       }
 
       const opened = await openApp(target, dir);
       if (!opened) return c.json({ error: `could not open ${target}`, path: dir }, 409);
+      trackOpened(target);
       return c.json({ opened: true, path: dir });
     })
 
@@ -5309,12 +5368,26 @@ export function createApp(deps: ServerDeps) {
       });
     })
 
+    // What the worktree holds that has not left it, and what its base has that it lacks — drives
+    // the header's one git button (Commit and push, Push, Update branch). Read-only.
+    .get('/runs/:id/git/status', async (c) => {
+      const { store } = c.get('project');
+      const run = store.getRun(c.req.param('id'));
+      if (!run) return c.json({ error: 'not found' }, 404);
+      const worktree = worktreeOf(run);
+      if (!worktree) return c.json({ error: NO_WORKTREE }, 409);
+      const result = await worktreeGitStatus(worktree, run.baseBranch);
+      if (!result.ok) return c.json({ error: result.error }, 409);
+      return c.json({ uncommitted: result.uncommitted, unpushed: result.unpushed, behind: result.behind });
+    })
+
     // Draft PR from the review gate (spec 009): final autosave → push →
     // `gh pr create --draft`; on success the run completes as done with the PR
     // badge. Failures come back as 409 with a `manual` merge command the GUI
     // shows next to the toast. CEZ_DRY_RUN=1 fakes the URL (no push, no gh).
-    .post('/runs/:id/pr', async (c) => {
+    .post('/runs/:id/pr', jsonZodValidator(createPrSchema, { absent: ({}) }), async (c) => {
       const { root: repoRoot, dataDir, store, manager } = c.get('project');
+      const draft = c.req.valid('json').draft ?? true;
       const id = c.req.param('id');
       const run = store.getRun(id);
       if (!run) return c.json({ error: 'not found' }, 404);
@@ -5340,6 +5413,7 @@ export function createApp(deps: ServerDeps) {
         repoRoot,
         run,
         handoffText: readHandoff(dataDir, id),
+        draft,
       });
       if (!outcome.ok) {
         return c.json({ error: outcome.error, manual: `git merge ${run.branch}` }, 409);
@@ -5356,7 +5430,7 @@ export function createApp(deps: ServerDeps) {
       });
       store.appendEvent(id, {
         type: 'note',
-        message: `draft PR created: ${outcome.url}${outcome.dryRun ? ' (dry run — no real PR)' : ''}`,
+        message: `${draft ? 'draft PR' : 'PR'} created: ${outcome.url}${outcome.dryRun ? ' (dry run — no real PR)' : ''}`,
       });
       return c.json({ url: outcome.url, dryRun: outcome.dryRun }, 201);
     })
@@ -5391,7 +5465,9 @@ export function createApp(deps: ServerDeps) {
       const deleted = store.deleteRun(id);
       // The run's `refs/cezar/pr/<n>` goes with the last run that needed it (Phase 3).
       if (deleted && run.prHead) await manager.sweepPrHeadRefs();
-      return deleted ? c.json({ deleted: true }) : c.json({ error: 'not found' }, 404);
+      if (!deleted) return c.json({ error: 'not found' }, 404);
+      track('task_deleted', { label: run.status }, { sid: deviceSid(c.req.header('x-cezar-sid')) });
+      return c.json({ deleted: true });
     });
 
   // ---- chained family: in-task drafts (project-scoped) ----------------------
@@ -5670,6 +5746,8 @@ export function createApp(deps: ServerDeps) {
       }
       const opened = await openApp(target, root);
       if (!opened) return c.json({ error: `could not open ${target}`, path: root }, 409);
+      // After the allowlist and the open: a closed label set (see the run route above).
+      track('open_in', { label: `project:${target}` }, { sid: deviceSid(c.req.header('x-cezar-sid')) });
       return c.json({ opened: true as const, path: root });
     });
 
@@ -5918,9 +5996,10 @@ export function createApp(deps: ServerDeps) {
 
         const replay = query.cursor
           ? await readEventsAfterLiveCursor(eventsPath, query.cursor)
-          : { events: store.readEvents(id), boundarySeq: 0 };
+          : { events: streamRunEvents(eventsPath), boundarySeq: 0 };
         maxSeq = Math.max(maxSeq, replay.boundarySeq);
-        for (const event of replay.events) {
+        for await (const event of replay.events) {
+          if (stream.aborted) break;
           if (event.seq <= maxSeq) continue;
           await writeEvent(event);
           maxSeq = event.seq;
@@ -7475,6 +7554,80 @@ export function createApp(deps: ServerDeps) {
   });
   deps.onDispose?.(() => { offDashboardRegistry(); dashboard.dispose(); });
 
+  // The server's half of a cockpit error: is the bundle that page runs still the one being
+  // served? A page kept open across a rebuild or self-update asks for chunks that no longer
+  // exist — the stale-shell failure a WebKit "Importing a module script failed" usually is.
+  const servedBuildContext = (entry: unknown): Record<string, string | boolean> => {
+    const ctx: Record<string, string | boolean> = { 'server.version': version };
+    if (typeof entry !== 'string' || !isSafeAssetFilename(entry)) return ctx;
+    try {
+      ctx['build.entry_served'] = readFileSync(join(distDir, 'index.html'), 'utf8').includes(`/assets/${entry}`);
+      ctx['build.entry_exists'] = existsSync(join(distDir, 'assets', entry));
+    } catch {
+      ctx['build.entry_served'] = false; // no web/dist at all
+    }
+    return ctx;
+  };
+
+  // Cockpit telemetry (opt-in, docs/telemetry.md). The telemetry worker sends no CORS headers, so
+  // the browser reports through here; the relays answer 204 whether or not the user opted in, and
+  // only a closed set of page names is forwarded.
+  const telemetryConsentBody = (consent: TelemetryConsentPayload['consent']): TelemetryConsentPayload => ({
+    consent,
+    policyVersion: TELEMETRY_POLICY_VERSION,
+    blockedBy: telemetryBlockedBy(),
+    endpoint: (process.env.CEZ_TELEMETRY_URL || DEFAULT_TELEMETRY_URL).replace(/\/+$/, ''),
+  });
+  const telemetryRoutes = new Hono()
+    .get('/telemetry/consent', async (c) => c.json(telemetryConsentBody(await loadTelemetryConsent())))
+    .put(
+      '/telemetry/consent',
+      jsonZodValidator(setTelemetryConsentInputSchema, { message: 'consent must be granted or denied' }),
+      async (c) => {
+        const consent = await setTelemetryConsent(c.req.valid('json').consent);
+        return c.json(telemetryConsentBody(consent));
+      },
+    )
+    .post(
+      '/telemetry/page',
+      jsonZodValidator(telemetryPageInputSchema, { message: 'invalid route' }),
+      (c) => {
+        track('page_viewed', { label: c.req.valid('json').route }, { sid: deviceSid(c.req.header('x-cezar-sid')) });
+        return c.body(null, 204);
+      },
+    )
+    .post(
+      '/telemetry/event',
+      jsonZodValidator(telemetryEventInputSchema, { message: 'invalid event' }),
+      (c) => {
+        const { event, label } = c.req.valid('json');
+        track(event, { label }, { sid: deviceSid(c.req.header('x-cezar-sid')) });
+        return c.body(null, 204);
+      },
+    )
+    .use('/telemetry/error', bodyLimit({ maxSize: 32 * 1024 }))
+    .post(
+      '/telemetry/error',
+      jsonZodValidator(telemetryErrorInputSchema, { message: 'invalid error report' }),
+      (c) => {
+        const body = c.req.valid('json');
+        const err = new Error(body.message);
+        err.name = body.type;
+        err.stack = body.stack;
+        reportError(
+          err,
+          {
+            ...body.context,
+            source: 'cockpit',
+            handler: body.handler,
+            ...servedBuildContext(body.context?.['build.entry']),
+          },
+          { code: body.code, fingerprint: body.fingerprint, sid: deviceSid(c.req.header('x-cezar-sid')) },
+        );
+        return c.body(null, 204);
+      },
+    );
+
   // Workspace-level families answer for the whole workspace, so they are single-mount: never a
   // project-scoped spelling, which would be a second surface to protect with no consumer.
   const workspaceV1 = new Hono()
@@ -7494,7 +7647,8 @@ export function createApp(deps: ServerDeps) {
     .route('/', automationChecksRoutes)
     .route('/', runsIndexRoutes)
     .route('/', dashboardRoutes(dashboard, () => ({ tokens: capabilities().tokenUsageMetrics, cost: capabilities().costMetrics }), () => capabilities().automations))
-    .route('/', workspaceEventsRoutes);
+    .route('/', workspaceEventsRoutes)
+    .route('/', telemetryRoutes);
 
   // ---- mount ---------------------------------------------------------------
   // Scoped first, then the unscoped alias bound to the boot project. The paths are disjoint (no

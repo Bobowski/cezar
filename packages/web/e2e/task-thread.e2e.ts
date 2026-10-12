@@ -406,10 +406,13 @@ describe('task thread', () => {
     // And the URL stays canonical — opening a task is not a navigation to a tab.
     expect(browser.url()).toBe(`${baseUrl}${scoped(`/tasks/${RUN_ID}`)}`)
 
+    // The bar leads with Open in…; the git step and the primary action follow it, and the
+    // read/pin/archive/delete toggles live in the More menu (brutus header).
     const actions = browser.evaluate(
-      `[...document.querySelectorAll('[data-slot="run-actions"] button')].map((b) => b.textContent.trim())`,
+      `[...document.querySelectorAll('[data-slot="run-actions"] button')].map((b) => b.textContent.trim() || b.getAttribute('aria-label'))`,
     ) as string[]
-    expect(actions).toEqual(['Continue', 'Open in…', 'Notes', 'Mark unread', 'Pin', 'Archive', 'Delete'])
+    expect(actions[0]).toBe('Open in…')
+    expect(actions).not.toContain('Archive')
 
     // The take-over hint, per-backend (the fixture's last agent session, in its worktree).
     const hint = browser.evaluate(
@@ -419,20 +422,19 @@ describe('task thread', () => {
     expect(hint).toContain('cd /tmp/cezar-fixture-hg7X')
   })
 
-  it('opens the Notes panel — an unseeded handoff reads as the honest empty state', () => {
-    browser.evaluate(
-      `[...document.querySelectorAll('[data-slot="run-actions"] button')].find((b) => b.textContent.trim() === 'Notes').click()`,
-    )
+  it('opens the Notes tab — an unseeded handoff reads as the honest empty state', () => {
+    // Notes is a routed page now (was a toggle panel over the thread). The workspace shows no
+    // route tabs to follow (asserted above), so open it by its URL.
+    browser.goto(`${baseUrl}${scoped(`/tasks/${RUN_ID}/notes`)}`)
     browser.waitForFunction(`document.querySelector('[data-slot="notes-panel"]') !== null`)
     browser.waitForFunction(
       `document.querySelector('[data-slot="notes-panel"]').textContent.includes('No notes yet')`,
     )
-    // The 1.4 money shot: full header (title, meta, tabs+actions, rail, hint) + open notes.
+    // The 1.4 money shot: full header (title, meta, tabs+actions, rail, hint) + the Notes tab.
     browser.screenshot(`${artifactsDir}/thread-header-desktop.png`)
-    browser.evaluate(
-      `[...document.querySelectorAll('[data-slot="run-actions"] button')].find((b) => b.textContent.trim() === 'Notes').click()`,
-    )
-    browser.waitForFunction(`document.querySelector('[data-slot="notes-panel"]') === null`)
+    browser.goto(`${baseUrl}${scoped(`/tasks/${RUN_ID}`)}`)
+    browser.waitForFunction(`document.querySelector('[data-route="task-workspace"] h1') !== null`)
+    expect(browser.count('[data-slot="notes-panel"]')).toBe(0)
   })
 
   it('renames the task inline and the PATCH persists server-side', async () => {

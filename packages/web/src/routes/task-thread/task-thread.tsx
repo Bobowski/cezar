@@ -26,6 +26,7 @@ import { taskIssueUrl, taskPrUrl } from '@/lib/tasks-table'
 import { cn, isHttpUrl } from '@/lib/utils'
 
 import { AutoResumeHint } from './auto-resume-hint'
+import { useFinishRun } from './use-finish-run'
 import { E2eSetupVerdict } from './e2e-setup-verdict'
 import { useDraft } from './thread-draft'
 import { useDiffComments } from './diff-comments'
@@ -100,11 +101,18 @@ export function TaskThreadRoute() {
   // The one exception is "Mark unread" from this very thread (#775): clearing the receipt makes
   // `isUnread` true again, which without a guard this effect would immediately undo — the action
   // would look broken in exactly the place a user reaches for it. `suppressAutoRead` is that
-  // guard, and it holds the run id rather than a bare boolean so the reset is implicit: it only
-  // suppresses the run it was set for, and the FIRST render of a later visit (a fresh mount, or
-  // navigating to another task and back) starts from an empty ref and auto-reads normally. That
-  // is the email grammar this is modelled on — reopening the mail marks it read again.
+  // guard, and it holds the run id rather than a bare boolean: it only suppresses the run it was
+  // set for, for as long as that run stays on screen. Leaving it ends the visit — and that has to
+  // be cleared EXPLICITLY, because /tasks/A → /tasks/B → /tasks/A reuses this route element
+  // (React reconciles it, it does not remount), so a ref that only reset on mount survived the
+  // round trip and the task stayed unread however often it was reopened. That is the email
+  // grammar this is modelled on — reopening the mail marks it read again.
   const suppressAutoRead = useRef<string | undefined>(undefined)
+  // Declared BEFORE the receipt effect below on purpose: effects run in order, so arriving on a
+  // run clears another run's suppression before the receipt decides whether to fire.
+  useEffect(() => {
+    if (suppressAutoRead.current !== id) suppressAutoRead.current = undefined
+  }, [id])
   const suppressAutoReadFor = useCallback((runId: string) => {
     suppressAutoRead.current = runId
   }, [])
@@ -122,6 +130,9 @@ export function TaskThreadRoute() {
     // `isUnread` reads `archived` too, so it belongs here: un-archiving an open thread makes the
     // run unread again, and without this dep the effect would never fire to clear it.
     run.data?.archived,
+    // The route's id, not just the record's: coming back to a run whose cached record is
+    // unchanged must still re-run the receipt once the suppression above has been lifted.
+    id,
   ])
   // The two feeds can drift: a record update lost on the workspace stream leaves the thread
   // showing Working… over a "run finished" transcript. The transcript is live here, so it
@@ -472,6 +483,12 @@ export function ThreadView({
           >
             <StatusDot tone="pending" pulse />
             Budget reached — spent ${budget.spent.toFixed(2)} of ${budget.ceiling.toFixed(2)}; send a message to continue.
+            {run.status === 'waiting' ? (
+              <>
+                <span aria-hidden="true">·</span>
+                <EndSessionButton runId={run.id} />
+              </>
+            ) : null}
           </div>
         ) : run.status === 'waiting' ? (
           <div
@@ -480,6 +497,10 @@ export function ThreadView({
           >
             <StatusDot tone="pending" pulse />
             The agent is paused, waiting for your reply
+            {/* The other answer to "your turn": not replying at all. It sits beside the hint
+                because that is the moment the choice is made — reply below, or end it here. */}
+            <span aria-hidden="true">·</span>
+            <EndSessionButton runId={run.id} />
           </div>
         ) : null}
 
@@ -540,6 +561,25 @@ function FooterLinks({ prUrl, issueUrl }: { prUrl?: string; issueUrl?: string })
         </a>
       ) : null}
     </>
+  )
+}
+
+/** Ends a waiting session (`POST /finish`): the run completes as done, or parks at review when
+ *  the worktree holds changes. A text button, like the footer's Continue — part of the hint line
+ *  it answers, not a toolbar control. */
+function EndSessionButton({ runId }: { runId: string }) {
+  const finish = useFinishRun(runId)
+  return (
+    <button
+      type="button"
+      data-slot="end-session"
+      title="Close the session — the task finishes (or goes to review if it changed files)"
+      disabled={finish.isPending}
+      onClick={() => finish.mutate()}
+      className="rounded-sm font-medium text-foreground underline-offset-2 hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none disabled:opacity-60"
+    >
+      End session
+    </button>
   )
 }
 

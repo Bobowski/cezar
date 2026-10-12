@@ -815,6 +815,13 @@ describe('AppShell', () => {
   })
 
   describe('banner slot', () => {
+    // The telemetry consent bar's home (docs/telemetry.md): the composer row, not the sidebar,
+    // so it shows on a phone too.
+    it('renders the footer banner in the composer row', () => {
+      renderShell('/', { footerBanner: <p>footer content</p> })
+      expect(within(slot('composer') as HTMLElement).getByText('footer content')).toBeTruthy()
+    })
+
     it('renders the banner when one is passed', () => {
       renderShell('/', { banner: <p>banner content</p> })
       const banner = slot('banner-slot') as HTMLElement

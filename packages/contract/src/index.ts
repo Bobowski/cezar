@@ -28,6 +28,7 @@ export * from './workspace-layouts.ts';
 export * from './tracker.ts';
 export * from './tracker-context.ts';
 export * from './self-update.ts';
+export * from './telemetry.ts';
 export * from './star-count.ts';
 export * from './preview.ts';
 export * from './secrets.ts';

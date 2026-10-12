@@ -44,9 +44,11 @@ import { initWorkspace } from './workspace/boot.ts';
 import { loadWorkspaceConfig } from './workspace/config.ts';
 import { runProjectsCommand } from './workspace/projects-cli.ts';
 import { WorkspaceSemaphore } from './workspace/semaphore.ts';
+import { flushTelemetry, initTelemetry, installCrashReporter, registerTelemetryContext, startDailyPing, track } from './telemetry.ts';
 import { runTaskCommand } from './dispatch/task-cli.ts';
 import { runAutomationCommand } from './automations/automation-cli.ts';
 import { runTrackerCommand } from './tracker-cli.ts';
+import { runTelemetryCommand } from './telemetry-cli.ts';
 import { runRunsCommand } from './runs/runs-cli.ts';
 
 import { runTrackerConnectionsCommand } from './server/tracker/connections-cli.ts';
@@ -66,6 +68,7 @@ Usage:
   cezar tracker-connections <list|remove ID>  inspect or delete local project credentials
   cezar secrets <list|set NAME|unset NAME>  this project's secrets (--workspace: the user's)
                             (set reads the value from stdin; agents never receive them)
+  cezar telemetry [status|enable|disable|inspect]  opt-in usage data (off until you enable it)
   cezar server-install      interactive wizard to host cezar on a server
   cezar auth setup          mint the one-time link that creates a hosted cockpit's owner account
   cezar server-deploy       redeploy a new version (reload the service) + verify
@@ -133,6 +136,11 @@ async function main(): Promise<void> {
   // `cez tracker …` (spec 2026-10-11-tracker-ticket-context): the linked ticket, through the cockpit.
   if (process.argv[2] === 'tracker') {
     process.exitCode = await runTrackerCommand(process.argv.slice(3));
+    return;
+  }
+  // Opt-in telemetry's terminal switch (docs/telemetry.md): no server, no repo needed.
+  if (process.argv[2] === 'telemetry') {
+    process.exitCode = await runTelemetryCommand(process.argv.slice(3));
     return;
   }
   // `cez runs …` (#1080): the read-only twin for a person at a shell, same addressing.
@@ -207,7 +215,9 @@ async function main(): Promise<void> {
       const bootProjectId = process.env.CEZ_SINGLE_PROJECT === '1' && isList
         ? await initWorkspace(repoRoot)
         : undefined;
+      await initTelemetry({ version: readOwnVersion() });
       process.exitCode = await runProjectsCommand(projectArgs, { defaultRoot: repoRoot, bootProjectId });
+      await flushTelemetry(); // `projects add` reports a new project
       return;
     case 'server-install':
       await serverCommand('install', repoRoot, values.platform, {
@@ -279,6 +289,11 @@ async function serveCommand(
     workspaceEvents.emit('provider-status', status);
   });
   const version = readOwnVersion();
+  // Opt-in telemetry: every send below is a no-op until the user agreed (docs/telemetry.md).
+  await initTelemetry({ version });
+  installCrashReporter();
+  track('app_start');
+  startDailyPing();
 
   const checks = await detectEnvironment();
   const repo = await getRepoInfo(repoRoot);
@@ -325,7 +340,12 @@ async function serveCommand(
     // mode through `resolveCapabilities`, and the two must never disagree (they did, on 127.0.0.2).
     trimPaths: () => !resolveCapabilities(process.env, bindHost).localHandoff,
     restart: () => {
-      store.flush();
+      store.flush({ pretty: true });
+      // The old process stops here, so it reports its own stop before handing over (bounded).
+      track('app_stop', { reason: 'restart' });
+      void flushTelemetry(1_000).finally(() =>
+        restartProcess({ server: httpServer, args: process.argv.slice(2), port, supervised: isSupervised() }),
+      );
       restartProcess({ server: httpServer, args: process.argv.slice(2), port, supervised: isSupervised() });
     },
   });
@@ -334,6 +354,18 @@ async function serveCommand(
     update.latest = latest;
     const how = selfUpdate.installKind === 'managed' ? 'update from the cockpit or: cezar update' : `restart with: npx ${pkgName}@latest`;
     console.log(`\n  ⬆ cezar ${latest} is available (running ${version}) — ${how}\n`);
+  });
+  // What the process is doing, on every error report (a wide event, not a bare message).
+  registerTelemetryContext(() => {
+    const runs = store.listRuns();
+    const count = (status: string) => runs.filter((r) => r.status === status).length;
+    return {
+      'app.install_kind': selfUpdate.installKind,
+      'runs.running': count('running'),
+      'runs.waiting': count('waiting'),
+      'runs.queued': count('queued'),
+      'runs.total': runs.length,
+    };
   });
   // SECURITY: cezar executes agents. A non-loopback bind exposes that box to
   // whatever can reach the interface, and cezar itself has NO auth — it is only
@@ -384,14 +416,18 @@ async function serveCommand(
   // The star ask's terminal line — same block, same two off switches.
   await printStarBanner(repoRoot);
 
+  let stopping = false;
   const shutdown = () => {
-    store.flush();
+    if (stopping) process.exit(0); // a second Ctrl-C never waits on telemetry
+    stopping = true;
+    store.flush({ pretty: true });
     // Terminal shells are PTYs, so each sits in its OWN process group and does NOT receive the
     // Ctrl-C the TTY delivers to cezar's foreground group — without this they outlive the
     // cockpit. Spec `2026-10-07-task-workspace` §6: a cezar restart stops every terminal session
     // and its children.
     closeAllTerminals();
-    process.exit(0);
+    track('app_stop', { reason: 'signal' });
+    void flushTelemetry().finally(() => process.exit(0));
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
@@ -436,11 +472,12 @@ async function serveCommand(
       if (!gone) return;
       try {
         process.stderr.write('  supervisor is gone — shutting down\n');
-        store.flush();
+        store.flush({ pretty: true });
+        track('app_stop', { reason: 'supervisor_gone' });
       } catch {
         // Nothing left to save that is worth staying alive for.
       }
-      process.exit(0);
+      void flushTelemetry(1_000).finally(() => process.exit(0));
     }, 2_000).unref();
   }
 
@@ -566,7 +603,10 @@ async function runCommand(
     }
   });
 
+  await initTelemetry({ version: readOwnVersion() });
   const run = manager.startRun(workflow, { task, model });
+  // No cockpit device here: the CLI's message counts under the installation's own id.
+  track('message_sent', { label: 'cli' });
   // `review` is terminal here too (spec 009) — headless runs must not hang on
   // the GUI's review gate; the diff waits on the task branch/cockpit instead.
   const final = await new Promise<string>((resolveStatus) => {
@@ -574,13 +614,14 @@ async function runCommand(
       if (r.id === run.id && ['done', 'review', 'failed', 'cancelled'].includes(r.status)) resolveStatus(r.status);
     });
   });
-  store.flush();
+  store.flush({ pretty: true });
   const record = store.getRun(run.id);
   if (final === 'review') {
     console.log(`\n  changes ready for review on branch ${record?.branch ?? '?'} — inspect them in the cockpit: npx cezar`);
   }
   console.log(`\nrun ${final} — ${record?.tokensUsed ?? 0} tokens — details in the cockpit: npx cezar`);
   process.exitCode = final === 'done' || final === 'review' ? 0 : 1;
+  await flushTelemetry();
 }
 
 // ---- server-install / server-uninstall --------------------------------------

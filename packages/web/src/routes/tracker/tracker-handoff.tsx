@@ -19,6 +19,7 @@ import { MAX_CHAIN_STEPS } from '@/lib/github-task'
 import { Link } from '@/lib/project-router'
 import { Label } from '@/components/ui/label'
 import { TRACKER_TASK_LIMIT, trackerLosses, trackerRunBody, trackerTaskPrompt } from '@/lib/tracker-task'
+import { trackMessageSent } from '@/lib/telemetry'
 
 export type TrackerDraftCache = Map<string, { instruction: string; supplemental: string; acknowledgedSnapshot: string | null }>
 
@@ -82,6 +83,7 @@ export function TrackerHandoff({ item, comments, expectedScope, workflows, skill
       { instruction, supplemental, acknowledgeLoss, expectedScope },
     )),
     onSuccess: (created) => {
+      trackMessageSent('tracker')
       const run = 'runs' in created ? created.runs[0] : created
       setQueued(run?.id ?? null)
       onQueued?.(run?.id ?? null)

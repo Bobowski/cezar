@@ -127,6 +127,9 @@ export type AppShellProps = {
   singleProject?: boolean
   /** Global chrome banner, in its own row between the top bar and the scroller. */
   banner?: ReactNode
+  /** The bottom edge of the main column, above the composer row: the telemetry consent bar
+   *  (docs/telemetry.md) lives here, so it never covers the view or interrupts a flow. */
+  footerBanner?: ReactNode
   brandName?: string
   brandLogoUrl?: string | null
 }
@@ -179,7 +182,7 @@ const NOOP = () => {}
  * Only the scroller scrolls, and it keeps `data-slot="main"`, which the thread, the diff views
  * and the commit list all resolve their scroll owner through.
  */
-export const AppShell = React.memo(function AppShell({ children, banner, ...props }: AppShellProps) {
+export const AppShell = React.memo(function AppShell({ children, banner, footerBanner, ...props }: AppShellProps) {
   const [wideOpen, setWideOpen] = React.useState(readSidebarOpen)
   /*
    * Between a phone (where the sidebar is a sheet) and a roomy window, an open contextual sidebar
@@ -260,7 +263,9 @@ export const AppShell = React.memo(function AppShell({ children, banner, ...prop
               <TopBar crumbs={props.crumbs ?? []} toolsMenu={props.toolsMenu} hasContext={hasContext} />
               {banner ? <div data-slot="banner-slot">{banner}</div> : null}
               <ShellMain>{children}</ShellMain>
-              <div data-slot="composer" className="pb-[env(safe-area-inset-bottom)]" />
+              <div data-slot="composer" className="pb-[env(safe-area-inset-bottom)]">
+                {footerBanner}
+              </div>
             </SidebarInset>
           </ContextSidebarContext.Provider>
         </SidebarProvider>

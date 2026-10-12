@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useEffect } from 'react'
+import { memo, Suspense, useEffect } from 'react'
 import { useSignedInUser } from './api/auth'
 import {
   matchPath,
@@ -12,6 +12,7 @@ import {
 
 import { useHealth, useProjects } from './api/queries'
 import { ProjectScopeProvider } from './api/project-scope-context'
+import { lazyRoute } from './lib/telemetry'
 import { bareRootLanding, locationToRestore, readStoredLastLocation } from './lib/last-location'
 import { Navigate as ScopedNavigate, stripProjectPrefix } from './lib/project-router'
 import { AutomationsLoading } from './routes/automations/automations-loading'
@@ -38,7 +39,7 @@ import { TasksOverviewRoute } from './routes/tasks-overview'
 import { GlobalTasksRoute } from './routes/global-tasks'
 
 // Dashboard charts, drag controls and exports are paid for only on this route.
-const DashboardRoute = lazy(() =>
+const DashboardRoute = lazyRoute('dashboard', () =>
   import('./routes/dashboard').then((m) => ({ default: m.DashboardRoute })),
 )
 
@@ -50,28 +51,33 @@ const DashboardRoute = lazy(() =>
  *  static import both would sit in the main bundle every visitor pays for before any route
  *  renders. The Suspense fallback is the same loading state the route itself shows while
  *  fetching, so the split is invisible to the user. */
-const TaskWorkspaceRoute = lazy(() =>
+const TaskWorkspaceRoute = lazyRoute('task-workspace', () =>
   import('./routes/task-workspace/task-workspace').then((m) => ({ default: m.TaskWorkspaceRoute })),
 )
 
 /** Lazy for the same reason: the compare view renders Progress excerpts through Streamdown and
  *  full diffs through the Shiki singleton — thread-chunk weight the home screen must not pay. */
-const CompareVariantsRoute = lazy(() =>
+const CompareVariantsRoute = lazyRoute('compare', () =>
   import('./routes/compare-variants').then((m) => ({ default: m.CompareVariantsRoute })),
+)
+
+/** #1337's Notes tab. Not a workspace view yet, so it keeps a route of its own. */
+const TaskNotesRoute = lazyRoute('task-notes', () =>
+  import('./routes/task-thread/task-notes').then((m) => ({ default: m.TaskNotesRoute })),
 )
 
 /** Lazy because the repo view renders through the `<Diff>` facade and the Shiki singleton —
  *  the same heavy chunk the task git tabs ride; the home screen must not pay for it. */
-const RepoGitRoute = lazy(() =>
+const RepoGitRoute = lazyRoute('repo-git', () =>
   import('./routes/repo-git/repo-git').then((m) => ({ default: m.RepoGitRoute })),
 )
 
 /** Lazy because the GitHub detail pane renders issue/PR bodies through the same markdown
  *  stack the thread carries — thread-chunk weight the home screen must not pay. */
-const GithubRoute = lazy(() =>
+const GithubRoute = lazyRoute('github', () =>
   import('./routes/github/github').then((m) => ({ default: m.GithubRoute })),
 )
-const TrackerRoute = lazy(() =>
+const TrackerRoute = lazyRoute('tracker', () =>
   import('./routes/tracker/tracker').then((m) => ({ default: m.TrackerRoute })),
 )
 
@@ -82,20 +88,20 @@ const TrackerRoute = lazy(() =>
 
 /** The workflow node editor (spec 2026-09-30-workflow-node-editor) — the Workflows surface. Lazy
  *  so React Flow stays out of the main bundle. */
-const WorkflowGraphRoute = lazy(() =>
+const WorkflowGraphRoute = lazyRoute('workflow-graph', () =>
   import('./routes/workflow-graph/workflow-graph').then((m) => ({ default: m.WorkflowGraphRoute })),
 )
 
 /** Lazy because the skill detail renders the skill body through the same markdown stack the
  *  thread carries — thread-chunk weight the home screen must not pay (it used to ride the main
  *  bundle as a static Settings section). */
-const SkillsRoute = lazy(() => import('./routes/skills').then((m) => ({ default: m.SkillsRoute })))
+const SkillsRoute = lazyRoute('skills', () => import('./routes/skills').then((m) => ({ default: m.SkillsRoute })))
 
 /** Lazy because the surface carries the editor (templates, schedule/GitHub fields, a next-five-
  *  runs preview), the week/day calendars, and the log — ~3k lines nothing outside this route
  *  imports, and now that automations are on by default, every visitor would otherwise pay for
  *  it before ever opening `/automations`. */
-const AutomationsRoute = lazy(() =>
+const AutomationsRoute = lazyRoute('automations', () =>
   import('./routes/automations/automations-route').then((m) => ({ default: m.AutomationsRoute })),
 )
 
@@ -390,6 +396,14 @@ export const AppRoutes = memo(function AppRoutes() {
           element={
             <Suspense fallback={<GitTabLoading tab="changes" />}>
               <TaskWorkspaceRoute view="commits" />
+            </Suspense>
+          }
+        />
+        <Route
+          path="tasks/:id/notes"
+          element={
+            <Suspense fallback={<GitTabLoading tab="notes" />}>
+              <TaskNotesRoute />
             </Suspense>
           }
         />

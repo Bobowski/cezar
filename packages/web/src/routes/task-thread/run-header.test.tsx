@@ -8,8 +8,8 @@ import { createQueryClient } from '@/api/query-client'
 import type { ApiRun, RunStatus, StepState } from '@open-mercato/cezar-api-client'
 import { Toaster, resetToasts } from '@/components/ui/toaster'
 
-import { RunHeader } from './run-header'
-import { resolveConflictsPrompt } from './run-actions'
+import { RunHeader, type RunTab } from './run-header'
+import { fixChecksPrompt, resolveConflictsPrompt, updateBranchPrompt } from './run-actions'
 
 beforeEach(() => {
   // Radix's tooltip arrow measures itself with a ResizeObserver; jsdom has no layout observer.
@@ -103,6 +103,7 @@ function renderHeader(
   onMarkedUnread?: () => void,
   planTally?: { done: number; total: number },
   continuationEngine?: ReactNode,
+  tab?: RunTab,
 ) {
   return render(
     <QueryClientProvider client={createQueryClient()}>
@@ -116,6 +117,7 @@ function renderHeader(
                 onMarkedUnread={onMarkedUnread}
                 planTally={planTally}
                 continuationEngine={continuationEngine}
+                tab={tab}
               />
             }
           />
@@ -129,6 +131,14 @@ function renderHeader(
 
 /** The button row: the run's ONE primary action, plus Open in… and (beside Continue) Finish. */
 const actionBar = () => within(document.querySelector('[data-slot="run-actions"]') as HTMLElement)
+/** The header above a tab other than the Session one. */
+const renderGitTab = (record: ApiRun) => renderHeader(record, undefined, undefined, undefined, 'changes')
+/** Open the PR `+N` and return the chips it lists — every PR, the visible one included. */
+async function overflowChips(): Promise<Element[]> {
+  fireEvent.click(document.querySelector('[data-slot="run-meta"] [data-slot="reference-overflow"]')!)
+  const list = await screen.findByText('References')
+  return [...(list.parentElement as HTMLElement).querySelectorAll('[data-slot="pr-chip"]')]
+}
 
 /** "More actions" — every action that is not the run's primary button lives in this one menu,
  *  at every width (Radix opens on pointerdown). */
@@ -357,6 +367,159 @@ describe('action bar visibility per status (the legacy rules, rendered)', () => 
     expect(menu.getByRole('menuitem', { name: 'Unarchive' })).not.toBeNull()
   })
 
+  it('the git button sits in the action bar, beside Open in… — a PR behind its branch offers Push', async () => {
+    stubFetch({
+      '/api/v1/runs/r1/git/status': () => jsonResponse({ uncommitted: 0, unpushed: 1 }),
+      '/api/v1/health': () => jsonResponse({ forge: { kind: 'github', available: true } }),
+      '/api/v1/repo': () => jsonResponse({ info: { remote: 'git@github.com:open-mercato/cezar.git' } }),
+    })
+    renderHeader(
+      run('done', {
+        worktreePath: '/tmp/wt/r1',
+        branch: 'cez/r1',
+        pullRequestUrl: 'https://github.com/open-mercato/cezar/pull/1311',
+      }),
+    )
+    // A PR behind its branch: the one git step is Push.
+    const button = await waitFor(() => {
+      const el = document.querySelector('[data-slot="git-button"]')
+      expect(el).not.toBeNull()
+      expect(el!.querySelector('[data-action="push"]')).not.toBeNull()
+      return el as HTMLElement
+    })
+    // The redesign's one button row carries it, not a row of its own.
+    expect(button.closest('[data-slot="run-actions"]')).not.toBeNull()
+  })
+
+  it.each([
+    ['conflicting', { prs: { 1311: 'ready' }, conflicts: [1311] }, 'Resolve conflicts', resolveConflictsPrompt(1311)],
+    ['failing CI', { prs: { 1311: 'checks-failing' }, conflicts: [] }, 'Fix errors', fixChecksPrompt(1311)],
+  ] as const)('a %s PR turns the git button into its fix, sent to the task’s own agent', async (_name, forge, label, prompt) => {
+    const sent = stubFetch({
+      '/api/v1/health': () => jsonResponse({ bootProject: 'acme', forge: { kind: 'github', available: true } }),
+      '/api/v1/p/acme/github/ref-status?prs=1311': () =>
+        jsonResponse({ available: true, issues: {}, recheckAfterMs: null, ...forge }),
+      '/api/v1/runs/r1/git/status': () => jsonResponse({ uncommitted: 0, unpushed: 0 }),
+    })
+    renderHeader(
+      run('running', {
+        worktreePath: '/tmp/wt/r1',
+        branch: 'cez/r1',
+        pullRequestUrl: 'https://github.com/open-mercato/cezar/pull/1311',
+      }),
+    )
+    const button = await waitFor(() => {
+      const el = document.querySelector('[data-slot="git-button"] button') as HTMLButtonElement | null
+      expect(el?.textContent).toBe(label)
+      return el!
+    })
+    fireEvent.click(button)
+    const message = await waitFor(() => {
+      const found = sent.find((r) => r.method === 'POST' && r.path.endsWith('/messages'))
+      if (!found) throw new Error('nothing was sent')
+      return found
+    })
+    expect(message.body).toMatchObject({ text: prompt })
+  })
+
+  it('a branch behind its base offers Update branch instead of Create PR, sent to the task’s agent', async () => {
+    const sent = stubFetch({
+      '/api/v1/runs/r1/git/status': () => jsonResponse({ uncommitted: 0, unpushed: null, behind: 4 }),
+      '/api/v1/health': () => jsonResponse({ forge: { kind: 'github', available: true } }),
+    })
+    renderHeader(run('running', { worktreePath: '/tmp/wt/r1', branch: 'cez/r1', baseBranch: 'origin/main' }))
+    const button = await waitFor(() => {
+      const el = document.querySelector('[data-slot="git-button"] button') as HTMLButtonElement | null
+      expect(el?.textContent).toBe('Update branch')
+      return el!
+    })
+    expect(document.querySelector('[data-action="create-pr"]')).toBeNull()
+    fireEvent.click(button)
+    const message = await waitFor(() => {
+      const found = sent.find((r) => r.method === 'POST' && r.path.endsWith('/messages'))
+      if (!found) throw new Error('nothing was sent')
+      return found
+    })
+    expect(message.body).toMatchObject({ text: updateBranchPrompt('origin/main') })
+    expect((message.body as { text: string }).text).toContain('origin/main')
+  })
+
+  it('a merged PR leaves nothing to commit or push — the git button goes, the PR chip stays', async () => {
+    stubFetch({
+      '/api/v1/health': () => jsonResponse({ bootProject: 'acme', forge: { kind: 'github', available: true } }),
+      '/api/v1/p/acme/github/ref-status?prs=1283': () =>
+        jsonResponse({ available: true, prs: { 1283: 'merged' }, issues: {}, conflicts: [], recheckAfterMs: null }),
+      '/api/v1/runs/r1/git/status': () => jsonResponse({ uncommitted: 1, unpushed: 1 }),
+    })
+    renderHeader(
+      run('done', {
+        worktreePath: '/tmp/wt/r1',
+        branch: 'cez/r1',
+        pullRequestUrl: 'https://github.com/open-mercato/cezar/pull/1283',
+      }),
+    )
+    await waitFor(() => expect(document.querySelector('[data-slot="run-meta"] [data-slot="pr-chip"]')).not.toBeNull())
+    await waitFor(() => expect(document.querySelector('[data-slot="git-button"]')).toBeNull())
+  })
+
+  it('a task working on a declared PR is never offered Create PR', async () => {
+    stubFetch({
+      '/api/v1/runs/r1/git/status': () => jsonResponse({ uncommitted: 2, unpushed: 0 }),
+      '/api/v1/health': () => jsonResponse({ forge: { kind: 'github', available: true } }),
+    })
+    renderHeader(
+      run('done', {
+        worktreePath: '/tmp/wt/r1',
+        branch: 'cez/r1',
+        // Declared by the agent (`CEZ:PR`) — the task's own subject.
+        markerRefs: { pr: 534 },
+        prRefs: [{ number: 534, origin: 'marker', at: '2026-07-14T12:00:00.000Z' }],
+      }),
+    )
+    await waitFor(() => expect(document.querySelector('[data-slot="git-button"] [data-action="commit"]')).not.toBeNull())
+    expect(document.querySelector('[data-action="create-pr"]')).toBeNull()
+  })
+
+  it('a PR only scraped from the transcript is not the task’s PR — Create PR is still offered', async () => {
+    // A link the agent merely READ (a file, a log) must never stand in for the task's own PR:
+    // that hid Create PR, and offered "Resolve conflicts" against somebody else's pull request.
+    stubFetch({
+      '/api/v1/runs/r1/git/status': () => jsonResponse({ uncommitted: 2, unpushed: null }),
+      '/api/v1/health': () => jsonResponse({ forge: { kind: 'github', available: true } }),
+    })
+    renderHeader(
+      run('done', {
+        worktreePath: '/tmp/wt/r1',
+        branch: 'cez/r1',
+        referencedPullRequestUrl: 'https://github.com/open-mercato/cezar/pull/534',
+        prRefs: [
+          { number: 534, url: 'https://github.com/open-mercato/cezar/pull/534', origin: 'legacy', at: '2026-07-14T12:00:00.000Z' },
+        ],
+      }),
+    )
+    await waitFor(() => expect(document.querySelector('[data-slot="git-button"] [data-action="create-pr"]')).not.toBeNull())
+  })
+
+  it('a run with no worktree shows no git button at all', () => {
+    stubFetch()
+    renderHeader(run('done'))
+    expect(document.querySelector('[data-slot="git-button"]')).toBeNull()
+  })
+
+  it('the bare strip draws no actions, so it asks for no git status either', async () => {
+    const sent = stubFetch()
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <MemoryRouter>
+          <RunHeader run={run('done', { worktreePath: '/tmp/wt/r1', branch: 'cez/r1' })} mode="strip" bareStrip />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await act(() => Promise.resolve())
+    expect(document.querySelector('[data-slot="run-actions"]')).toBeNull()
+    expect(sent.some((r) => r.path === '/api/v1/runs/r1/git/status')).toBe(false)
+  })
+
   it('VS Code is absent everywhere — the open-in-editor endpoint does not exist yet (R5)', () => {
     stubFetch()
     renderHeader(run('done'))
@@ -454,6 +617,70 @@ describe('Mark unread (#775)', () => {
     expect(actionBar().queryByRole('button', { name: 'Mark unread' })).toBeNull()
     const menu = await openMoreMenu()
     expect(menu.getByRole('menuitem', { name: 'Mark unread' })).not.toBeNull()
+  })
+})
+
+describe('the state toggles share one ON pattern (violet, filled, aria-pressed)', () => {
+  const FINISHED_AT = '2026-07-14T13:00:00.000Z'
+  const iconClass = (item: HTMLElement) => item.querySelector('svg')?.getAttribute('class') ?? ''
+  // The redesign keeps the toggles in "More actions"; the ON pattern is the icon's there.
+  const isOn = (item: HTMLElement) =>
+    item.getAttribute('aria-pressed') === 'true' &&
+    iconClass(item).includes('text-violet') &&
+    iconClass(item).includes('fill-violet/25')
+
+  it.each([
+    ['pinned', { pinned: true, pinnedAt: FINISHED_AT }, 'Unpin'],
+    ['archived', { archived: true }, 'Unarchive'],
+    ['unread', { finishedAt: FINISHED_AT }, 'Mark read'],
+  ] as const)('%s → its toggle is ON', async (_state, extra, name) => {
+    stubFetch()
+    renderHeader(run('done', extra))
+    expect(isOn((await openMoreMenu()).getByRole('menuitem', { name }))).toBe(true)
+  })
+
+  it.each([
+    ['Pin', {}],
+    ['Archive', {}],
+    ['Mark unread', { finishedAt: FINISHED_AT, seenAt: '2026-07-14T13:05:00.000Z' }],
+  ] as const)('%s off → no ON styling, aria-pressed false', async (name, extra) => {
+    stubFetch()
+    renderHeader(run('done', extra))
+    const item = (await openMoreMenu()).getByRole('menuitem', { name })
+    expect(item.getAttribute('aria-pressed')).toBe('false')
+    expect(iconClass(item)).not.toContain('text-violet')
+  })
+
+  it('read/unread is ONE envelope that flips state, not two different icons', async () => {
+    stubFetch()
+    renderHeader(run('done', { finishedAt: FINISHED_AT }))
+    const menu = await openMoreMenu()
+    expect(menu.queryByRole('menuitem', { name: 'Mark unread' })).toBeNull()
+    expect(document.querySelectorAll('[data-slot="unread-toggle"]')).toHaveLength(1)
+  })
+
+  it('Mark read → POST /read, for an unread finished run', async () => {
+    const sent = stubFetch()
+    renderHeader(run('done', { finishedAt: FINISHED_AT }))
+    fireEvent.click((await openMoreMenu()).getByRole('menuitem', { name: 'Mark read' }))
+    await waitFor(() => expect(sent.some((r) => r.method === 'POST' && r.path === '/api/v1/runs/r1/read')).toBe(true))
+  })
+})
+
+describe('the More menu carries the git step for the widths that drop the bar', () => {
+  it('leads with the git step — Create PR and its draft alternative', async () => {
+    stubFetch({
+      '/api/v1/runs/r1/git/status': () => jsonResponse({ uncommitted: 2, unpushed: null }),
+      '/api/v1/health': () => jsonResponse({ forge: { kind: 'github', available: true } }),
+    })
+    renderHeader(run('done', { worktreePath: '/tmp/wt/r1', branch: 'cez/r1' }))
+    // Wait for the step to resolve (the desktop button paints it too) before opening the menu.
+    await waitFor(() => expect(document.querySelector('[data-slot="git-button"]')).not.toBeNull())
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions' }))
+    const menu = await screen.findByRole('menu')
+    const items = [...menu.querySelectorAll('[role="menuitem"]')]
+    expect(items[0]?.getAttribute('data-action')).toBe('create-pr')
+    expect(items[1]?.getAttribute('data-action')).toBe('create-draft-pr')
   })
 })
 
@@ -683,6 +910,24 @@ describe('actions hit their endpoints', () => {
     expect(sent.some((r) => r.method === 'DELETE')).toBe(false)
   })
 
+  it('a refused action surfaces the server message as a danger toast and refetches the record', async () => {
+    // Every 409 here means the record the bar was drawn from is not the run the server has, so
+    // the header refetches it instead of offering the same refused action again.
+    const sent = stubFetch({
+      '/api/v1/runs/r1/archive': () => jsonResponse({ error: 'run is still active' }, 409),
+    })
+    renderHeader(run('done'))
+    const listReadsBefore = sent.filter((r) => r.method === 'GET' && r.path === '/api/v1/runs').length
+    fireEvent.click((await openMoreMenu()).getByRole('menuitem', { name: 'Archive' }))
+    await waitFor(() => expect(toastText()).toBe('run is still active'))
+    expect(toastTone()).toBe('danger')
+    await waitFor(() =>
+      expect(sent.filter((r) => r.method === 'GET' && r.path === '/api/v1/runs').length).toBeGreaterThan(
+        listReadsBefore,
+      ),
+    )
+  })
+
   it('a mutation failure surfaces the server message as a danger toast', async () => {
     stubFetch({
       '/api/v1/runs/r1/continue': () => jsonResponse({ error: 'no agent session to resume' }, 409),
@@ -696,10 +941,8 @@ describe('actions hit their endpoints', () => {
   })
 })
 
-/** Terminal now lives inside the Open in… menu: open it (Radix opens on pointerdown) and click
- *  the resume item. */
 async function clickTerminalResume(): Promise<void> {
-  fireEvent.pointerDown(actionBar().getByRole('button', { name: 'Open in…' }))
+  fireEvent.pointerDown(screen.getByRole('button', { name: 'Open in…' }))
   const menu = await screen.findByRole('menu')
   fireEvent.click(within(menu).getByRole('menuitem', { name: /Terminal \(resume session\)/ }))
 }
@@ -769,7 +1012,7 @@ describe('Open in… menu — agent CLI resume labeling (#402)', () => {
   async function openMenu(): Promise<HTMLElement> {
     // Without a resumable Terminal item, the button itself only appears once the async
     // worktreeTargets query resolves (empty-until-loaded) — findByRole waits it in.
-    const trigger = await actionBar().findByRole('button', { name: 'Open in…' })
+    const trigger = await screen.findByRole('button', { name: 'Open in…' })
     fireEvent.pointerDown(trigger)
     return screen.findByRole('menu')
   }
@@ -864,7 +1107,7 @@ describe('Open in… menu per-target icons (#361)', () => {
         }),
     })
     renderHeader(run('done', { worktreePath: '/tmp/wt' }))
-    fireEvent.pointerDown(actionBar().getByRole('button', { name: 'Open in…' }))
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Open in…' }))
     const menu = await screen.findByRole('menu')
 
     // The menu opens immediately; the worktree targets only appear once useOpenTargets resolves.
@@ -915,6 +1158,23 @@ describe('notes panel', () => {
     renderHeader(run('running'))
     fireEvent.click((await openMoreMenu()).getByRole('menuitem', { name: 'Notes' }))
     await screen.findByText('No notes yet — the handoff file is seeded when the task starts.')
+  })
+})
+
+describe('notes tab', () => {
+  it('Notes is also a tab, deep-linkable like the others — and never a button on the bar', () => {
+    stubFetch()
+    renderHeader(run('done'))
+    const tabs = within(document.querySelector('[data-slot="run-tabs"]') as HTMLElement)
+    expect(tabs.getByRole('link', { name: 'Notes' }).getAttribute('href')).toBe('/tasks/r1/notes')
+    expect(actionBar().queryByRole('button', { name: 'Notes' })).toBeNull()
+  })
+
+  it('the Notes tab is current on its own route', () => {
+    stubFetch()
+    renderHeader(run('done'), undefined, undefined, undefined, 'notes')
+    const tabs = within(document.querySelector('[data-slot="run-tabs"]') as HTMLElement)
+    expect(tabs.getByRole('link', { name: 'Notes' }).getAttribute('aria-current')).toBe('page')
   })
 })
 
@@ -1033,7 +1293,8 @@ describe('meta line, tabs, pill and resume hint', () => {
 
   it('meta shows workflow · branch chip · ±, with the agent on the Details badge and input/output · cost behind it', () => {
     stubFetch()
-    renderHeader(
+    // A tab with no chat box — on the Session tab the composer's pills carry the summary instead.
+    renderGitTab(
       run('done', {
         runner: 'codex',
         model: 'gpt-5.2-codex',
@@ -1186,7 +1447,7 @@ describe('meta line, tabs, pill and resume hint', () => {
       expect(prChip.getAttribute('href')).toBe('https://github.com/open-mercato/cezar/pull/534')
       expect(prChip.textContent).toContain('#534')
       // Right beside the branch: the line no longer puts a separator between its parts.
-      expect(branch?.nextElementSibling).toBe(prChip)
+      expect(branch?.nextElementSibling).toBe(prChip.closest('[data-slot="run-pr-refs"]'))
     }
     if (issueChip) {
       expect(issueChip.getAttribute('href')).toBe('https://github.com/open-mercato/cezar/issues/544')
@@ -1231,7 +1492,7 @@ describe('meta line, tabs, pill and resume hint', () => {
   // and its own page is the last place that should have to pick one. Order is `taskReferences`
   // order — the PR it created, then the PR it is about — the same order the global Tasks table
   // paints.
-  it('shows every PR the task points at, not only the strongest one', () => {
+  it('shows every PR the task points at — the strongest on the row, all of them behind +N', async () => {
     stubFetch()
     renderHeader(
       run('done', {
@@ -1242,14 +1503,14 @@ describe('meta line, tabs, pill and resume hint', () => {
       }),
     )
     const meta = document.querySelector('[data-slot="run-meta"]') as HTMLElement
-    const chips = [...meta.querySelectorAll('[data-slot="pr-chip"]')]
+    // The strongest PR on the row, the rest behind a `+N` — the All tasks table's cell.
+    const visible = [...meta.querySelectorAll('[data-slot="run-pr-refs"] > [data-slot="pr-chip"]')]
+    expect(visible.map((chip) => chip.getAttribute('href'))).toEqual(['https://github.com/open-mercato/cezar/pull/5366'])
+    expect(meta.querySelector('[data-slot="reference-overflow"]')?.textContent).toBe('+1')
+    const chips = await overflowChips()
     expect(chips.map((chip) => chip.getAttribute('href'))).toEqual([
       'https://github.com/open-mercato/cezar/pull/5366',
       'https://github.com/open-mercato/cezar/pull/4326',
-    ])
-    expect(chips.map((chip) => chip.textContent)).toEqual([
-      expect.stringContaining('#5366'),
-      expect.stringContaining('#4326'),
     ])
   })
 
@@ -1266,9 +1527,8 @@ describe('meta line, tabs, pill and resume hint', () => {
         }),
     })
     renderHeader(run('done', { branch: 'cez/r1', prNumber: 901, markerRefs: { pr: 901 } }))
-    const meta = document.querySelector('[data-slot="run-meta"]') as HTMLElement
     await waitFor(() => {
-      const chip = meta.querySelector('[data-slot="pr-chip"]')
+      const chip = document.querySelector('[data-slot="run-meta"] [data-slot="pr-chip"]')
       expect(chip?.getAttribute('href')).toBe('https://github.com/open-mercato/cezar/pull/901')
     })
   })
@@ -1276,7 +1536,7 @@ describe('meta line, tabs, pill and resume hint', () => {
   // A PR URL whose last segment is not a number never becomes a `taskReferences` entry, so it is
   // painted from `taskPrUrl` — and must still be painted when a number-only chip exists beside it
   // (#847: a forge whose PR URLs are not `…/pull/N`).
-  it('keeps a non-numeric PR link beside a chip known only by number', () => {
+  it('keeps a non-numeric PR link beside a chip known only by number', async () => {
     stubFetch({ '/api/v1/health': () => jsonResponse({ repo: {} }) })
     renderHeader(
       run('done', {
@@ -1285,15 +1545,14 @@ describe('meta line, tabs, pill and resume hint', () => {
         prNumber: 42,
       }),
     )
-    const meta = document.querySelector('[data-slot="run-meta"]') as HTMLElement
-    const chips = [...meta.querySelectorAll('[data-slot="pr-chip"]')]
+    const chips = await overflowChips()
     expect(chips).toHaveLength(2)
     expect(chips.map((chip) => chip.getAttribute('href'))).toContain(
       'https://forge.example.com/o/r/merge_requests/spec-fix',
     )
   })
 
-  it('shows a PR known only by number, with no repository to link it to', () => {
+  it('shows a PR known only by number, with no repository to link it to', async () => {
     stubFetch({ '/api/v1/health': () => jsonResponse({ repo: {} }) })
     renderHeader(
       run('done', {
@@ -1302,8 +1561,7 @@ describe('meta line, tabs, pill and resume hint', () => {
         prNumber: 901,
       }),
     )
-    const meta = document.querySelector('[data-slot="run-meta"]') as HTMLElement
-    const chips = [...meta.querySelectorAll('[data-slot="pr-chip"]')]
+    const chips = await overflowChips()
     expect(chips.map((chip) => chip.textContent)).toEqual([
       expect.stringContaining('#5366'),
       expect.stringContaining('#901'),
@@ -1389,7 +1647,7 @@ describe('meta line, tabs, pill and resume hint', () => {
 
     it('names the account the step recorded, by its label — on the badge itself and in its grid', async () => {
       withAccounts()
-      renderHeader(run('done', {
+      renderGitTab(run('done', {
         runner: 'claude',
         model: 'opus',
         steps: [step({ sessionId: 'sess-1', profileId: 'klaudiusz' })],
@@ -1497,9 +1755,21 @@ describe('meta line, tabs, pill and resume hint', () => {
     })
   })
 
+  it.each(['session', 'changes', 'notes'] as RunTab[])(
+    'the %s tab names the engine on the Details badge, in full in its tooltip',
+    (tab) => {
+      stubFetch()
+      renderHeader(run('running', { runner: 'claude', model: 'opus' }), undefined, undefined, undefined, tab)
+      const meta = document.querySelector('[data-slot="run-meta"]') as HTMLElement
+      const badge = within(meta).getByRole('button', { name: /agent: claude, model opus/ })
+      expect(badge.querySelector('[data-slot="agent-badge-summary"]')?.textContent).toBe('claude')
+      expect(badge.getAttribute('title')).toBe('claude · opus')
+    },
+  )
+
   it('a claude run still gets an agent badge — Claude is the default, not a hidden runner', () => {
     stubFetch()
-    renderHeader(run('done', { runner: 'claude' }))
+    renderGitTab(run('done', { runner: 'claude' }))
     const meta = document.querySelector('[data-slot="run-meta"]') as HTMLElement
     const badge = within(meta).getByRole('button', { name: /agent: claude, model auto/ })
     // Named on the badge like any other agent — claude being the default is not a reason to leave

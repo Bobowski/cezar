@@ -1,7 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ArchiveIcon,
-  ArchiveRestoreIcon,
   BotIcon,
   CheckIcon,
   ChevronDownIcon,
@@ -13,7 +12,6 @@ import {
   MailIcon,
   PencilIcon,
   PinIcon,
-  PinOffIcon,
   PlayIcon,
   SquareTerminalIcon,
   Trash2Icon,
@@ -24,9 +22,8 @@ import { Link, useNavigate } from '@/lib/project-router'
 import { ApiError, archiveRun, cancelRun, continueRun, deleteRun, openRunIn, openRunInCli } from '@/api/client'
 import {
   queryKeys,
-  useAgentProfiles,
-  useConfig,
   useHealth,
+  useMarkRunSeen,
   useMarkRunUnseen,
   useOpenTargets,
   usePatchRun,
@@ -37,26 +34,18 @@ import {
   useRunHandoff,
   useRuns,
 } from '@/api/queries'
-import { DEFAULT_AGENT_ACCOUNT_ID, type ApiRun } from '@open-mercato/cezar-api-client'
+import type { ApiRun } from '@open-mercato/cezar-api-client'
 import { DiffStatLabel } from '@/components/diff-stat'
 import { TitleEditInput, useTitleEditor, type TitleEditor } from '@/components/editable-title'
+import { TOGGLE_ON_ICON_CLASS } from '@/components/pin-toggle'
 import { ReferenceChip } from '@/components/reference-chip'
+import { ReferenceOverflow } from '@/components/reference-overflow'
 import { ResolveConflictsButton } from '@/components/reference-conflict-action'
 import { ReferenceStatusProvider } from '@/components/reference-status'
 import { StatusDot } from '@/components/status-dot'
 import { TabLink } from '@/components/tab-link'
 import { forgetViewMemory } from '@/lib/view-memory'
 import { forgetTask } from '@/routes/task-workspace/layout-state'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -90,6 +79,10 @@ import { Markdown } from './markdown'
 import { useContinuationProvider } from './continuation-provider'
 import { cliTargetResumes, cliTargetRunner, finishTitle, resumeHint, runActionFlags } from './run-actions'
 import { cn } from '@/lib/utils'
+import { GIT_ACTION_ICONS, GitActions } from '../task-git/git-toolbar'
+import { useRunGitStep, type RunGitStep } from '../task-git/run-git-step'
+import { RunConfirmDialog, type RunConfirmKind } from './run-confirm-dialog'
+import { useRunEngine } from './run-engine'
 import { WorkflowSteps } from './step-rail'
 import { useFinishRun } from './use-finish-run'
 import { useDraft } from './thread-draft'
@@ -111,7 +104,7 @@ import { useDraft } from './thread-draft'
  */
 /** Which run-detail tab this header instance sits above — drives the active underline.
  *  A prop rather than a route match so the header stays testable with a bare render. */
-export type RunTab = 'session' | 'changes' | 'commits' | 'files' | 'graph'
+export type RunTab = 'session' | 'changes' | 'commits' | 'files' | 'graph' | 'notes'
 
 interface RunHeaderProps {
   run: ApiRun
@@ -182,7 +175,6 @@ function RunHeaderView({
 }: RunHeaderProps) {
   const attention = deriveAttention(run)
   const budget = budgetStop(run)
-  const flags = runActionFlags(run)
   const hint = resumeHint(run)
   const [notesOpen, setNotesOpen] = useState(false)
   const actions = useRunActions(run, onMarkedUnread)
@@ -199,15 +191,7 @@ function RunHeaderView({
   ).data
   const health = useHealth()
   const metricVisibility = usageMetricVisibility(health.data)
-
-  // ONE primary action, picked by what the run's state calls for; the rest is quieter.
-  const primary: 'continue' | 'finish' | 'stop' | null = flags.continueRun
-    ? 'continue'
-    : flags.finish
-      ? 'finish'
-      : flags.cancel
-        ? 'stop'
-        : null
+  const refs = useRunReferences(run)
 
   // The same pieces, arranged three ways (see `mode`).
   const status = (
@@ -224,52 +208,16 @@ function RunHeaderView({
           ) : null}
     </>
   )
+  // A component, not a fragment: it owns the git step's status poll, so a header that draws no
+  // actions (the workspace's bare strip) does not ask for one.
   const actionButtons = (
-    <>
-          <div data-slot="run-actions" className="hidden items-center gap-1.5 md:flex @max-4xl/strip:hidden">
-            <OpenInMenuForRun run={run} canResume={flags.terminal} onResume={() => actions.terminal.mutate()} />
-            {flags.finish && primary !== 'finish' ? (
-              <Button variant="outline" size="sm" title={finishTitle(run.status)} onClick={() => actions.finish.mutate()}>
-                <CheckIcon aria-hidden="true" />
-                Finish
-              </Button>
-            ) : null}
-            {primary === 'continue' ? (
-              <Button
-                variant="default"
-                size="sm"
-                title={actions.continuation.reason ?? 'Reopen the session'}
-                disabled={actions.continueRun.isPending || !actions.continuation.canContinue}
-                onClick={() => actions.continueRun.mutate()}
-              >
-                <PlayIcon aria-hidden="true" />
-                Continue
-              </Button>
-            ) : primary === 'finish' ? (
-              <Button variant="default" size="sm" title={finishTitle(run.status)} onClick={() => actions.finish.mutate()}>
-                <CheckIcon aria-hidden="true" />
-                Finish
-              </Button>
-            ) : primary === 'stop' ? (
-              <Button variant="outline" size="sm" onClick={() => actions.setConfirming('cancel')}>
-                <CircleStopIcon aria-hidden="true" />
-                Stop
-              </Button>
-            ) : null}
-          </div>
-          <MoreMenu
-            run={run}
-            actions={actions}
-            hint={hint}
-            stopInMenu={primary !== 'stop'}
-            onOpenNotes={() => setNotesOpen(true)}
-          />
-    </>
+    <RunActionButtons run={run} actions={actions} hint={hint} onOpenNotes={() => setNotesOpen(true)} />
   )
   const facts = (
     <>
       <MetaRow
         run={run}
+        references={refs.references}
         hint={hint}
         planTally={planTally}
         continuationEngine={continuationEngine}
@@ -292,7 +240,12 @@ function RunHeaderView({
   const overlays = (
     <>
       <NotesSheet runId={run.id} open={notesOpen} onOpenChange={setNotesOpen} />
-      <ConfirmDialog run={run} actions={actions} />
+      <RunConfirmDialog
+        run={run}
+        confirming={actions.confirming}
+        onOpenChange={(open) => !open && actions.setConfirming(null)}
+        onConfirm={(kind) => (kind === 'delete' ? actions.delete.mutate() : actions.cancel.mutate())}
+      />
     </>
   )
 
@@ -300,6 +253,7 @@ function RunHeaderView({
     // The task's own bar — title, state, actions, then the facts — as the head of the fixed Chat
     // layout. No strip: the workspace draws that once, above every layout.
     return (
+      <ReferenceStatusProvider projectId={refs.projectId} requests={refs.requests}>
       <div data-slot="run-bar" className="shrink-0 border-b border-border bg-background px-4 pt-3 pb-3 sm:px-6 md:pt-4">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-2.5">
@@ -314,10 +268,13 @@ function RunHeaderView({
         {facts}
         {overlays}
       </div>
+      </ReferenceStatusProvider>
     )
   }
 
   return (
+    // Around the whole header, not just the meta row: the git step reads the PR's forge status.
+    <ReferenceStatusProvider projectId={refs.projectId} requests={refs.requests}>
     <header
       data-slot="run-header"
       data-mode={mode}
@@ -360,6 +317,11 @@ function RunHeaderView({
                   Graph
                 </TabLink>
               ) : null}
+              {/* The handoff journal as a deep-linkable tab (#1337); the workspace's layout strip
+                  has no route tabs, so "More" keeps opening it in a sheet as well. */}
+              <TabLink to={`/tasks/${run.id}/notes`} active={tab === 'notes'}>
+                Notes
+              </TabLink>
             </>
           )}
         </div>
@@ -392,6 +354,79 @@ function RunHeaderView({
 
       {overlays}
     </header>
+    </ReferenceStatusProvider>
+  )
+}
+
+/** The run's buttons and its "More" menu, from one `useRunGitStep` — the git button and the
+ *  menu's first item are the same step, the same mutation, the same commit dialog (#1337). */
+function RunActionButtons({
+  run,
+  actions,
+  hint,
+  onOpenNotes,
+}: {
+  run: ApiRun
+  actions: RunActions
+  hint?: string
+  onOpenNotes: () => void
+}) {
+  const flags = runActionFlags(run)
+  const git = useRunGitStep(run)
+  // ONE primary action, picked by what the run's state calls for; the rest is quieter.
+  const primary: 'continue' | 'finish' | 'stop' | null = flags.continueRun
+    ? 'continue'
+    : flags.finish
+      ? 'finish'
+      : flags.cancel
+        ? 'stop'
+        : null
+  return (
+    <>
+      <div data-slot="run-actions" className="hidden items-center gap-1.5 md:flex @max-4xl/strip:hidden">
+        <OpenInMenuForRun run={run} canResume={flags.terminal} onResume={() => actions.terminal.mutate()} />
+        {/* The run's one next git step (Commit, Push, Create PR, Update branch, …), or nothing. */}
+        <GitActions action={git.action} onAction={git.onAction} />
+        {flags.finish && primary !== 'finish' ? (
+          <Button variant="outline" size="sm" title={finishTitle(run.status)} onClick={() => actions.finish.mutate()}>
+            <CheckIcon aria-hidden="true" />
+            Finish
+          </Button>
+        ) : null}
+        {primary === 'continue' ? (
+          <Button
+            variant="default"
+            size="sm"
+            title={actions.continuation.reason ?? 'Reopen the session'}
+            disabled={actions.continueRun.isPending || !actions.continuation.canContinue}
+            onClick={() => actions.continueRun.mutate()}
+          >
+            <PlayIcon aria-hidden="true" />
+            Continue
+          </Button>
+        ) : primary === 'finish' ? (
+          <Button variant="default" size="sm" title={finishTitle(run.status)} onClick={() => actions.finish.mutate()}>
+            <CheckIcon aria-hidden="true" />
+            Finish
+          </Button>
+        ) : primary === 'stop' ? (
+          <Button variant="outline" size="sm" onClick={() => actions.setConfirming('cancel')}>
+            <CircleStopIcon aria-hidden="true" />
+            Stop
+          </Button>
+        ) : null}
+      </div>
+      <MoreMenu
+        run={run}
+        actions={actions}
+        git={git}
+        hint={hint}
+        stopInMenu={primary !== 'stop'}
+        onOpenNotes={onOpenNotes}
+      />
+      {/* Outside the menu: a dialog mounted in a dropdown's content closes with it. */}
+      {git.dialogs}
+    </>
   )
 }
 
@@ -489,7 +524,7 @@ function OpenInMenuForRun({
 function useRunActions(run: ApiRun, onMarkedUnread?: () => void) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const [confirming, setConfirming] = useState<'cancel' | 'delete' | null>(null)
+  const [confirming, setConfirming] = useState<RunConfirmKind | null>(null)
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
   const onError = (error: Error) => {
@@ -543,6 +578,13 @@ function useRunActions(run: ApiRun, onMarkedUnread?: () => void) {
       markUnreadMutation.mutate(run.id, { onError })
     },
   }
+  // Mark read — the twin of the above, through the same optimistic hook the thread's own
+  // auto-read uses, so a click here and opening the task stamp the receipt identically.
+  const markReadMutation = useMarkRunSeen()
+  const markRead = {
+    isPending: markReadMutation.isPending,
+    mutate: () => markReadMutation.mutate(run.id, { onError }),
+  }
   const cancel = useMutation({ mutationFn: () => cancelRun(run.id), onSuccess: invalidate, onError })
   const deleteMutation = useMutation({
     mutationFn: () => deleteRun(run.id),
@@ -580,6 +622,7 @@ function useRunActions(run: ApiRun, onMarkedUnread?: () => void) {
     archive,
     pin,
     markUnread,
+    markRead,
     cancel,
     delete: deleteMutation,
     terminal,
@@ -727,6 +770,7 @@ function CopyBranchChip({ branch }: { branch: string }) {
  *  count, revealed on hover/focus rather than always-on text. */
 function MetaRow({
   run,
+  references,
   hint,
   planTally,
   showTokens,
@@ -735,6 +779,8 @@ function MetaRow({
   continuationEngine,
 }: {
   run: ApiRun
+  /** The header's resolved references (`useRunReferences`) — its PR chips are painted here. */
+  references: ReturnType<typeof taskReferences>
   /** The take-over command, when the engine has let go of the session. */
   hint?: string
   planTally?: { done: number; total: number }
@@ -758,22 +804,6 @@ function MetaRow({
       [rootRunId, run.id],
     ),
   ).data
-  // At most two references here, so this is a batch of one or two rather than of a table — but it
-  // goes through the same seam, which is what keeps the header's chip and the table's chip
-  // answering identically for the same PR.
-  const projectId = useReferenceProjectId()
-  const references = useMemo(() => taskReferences(run, repoBase), [run, repoBase])
-  const referenceRequests = useMemo(
-    () =>
-      projectId === undefined
-        ? []
-        : references.map((reference) => ({
-            projectId,
-            kind: reference.kind,
-            number: reference.number,
-          })),
-    [references, projectId],
-  )
   // `workflowLabel` so an inline chain shows its first step's name, not the bare "(planned)"
   // placeholder — which reads like a status next to the live status pill.
   const parts: ReactNode[] = [
@@ -785,48 +815,9 @@ function MetaRow({
   if (branch) {
     parts.push(<CopyBranchChip key="branch" branch={branch} />)
   }
-  // EVERY PR the task points at, in `taskReferences` order — the same order, and the same
-  // statuses, the global Tasks table paints. A task opened on someone else's PR that pushes a
-  // follow-up of its own is about both, and its own page is the last place that should have to
-  // pick one.
-  //
-  // A reference with no URL still gets its chip, exactly as All tasks paints it: a number-only
-  // reference is what a `CEZ:PR` declaration looks like before any link is scraped, and the two
-  // pages read their repository from DIFFERENT places (this one from health's remote, All tasks
-  // from the project registry's `repoUrl`) — so "no URL here" never means "nothing to show".
-  // `ReferenceChip` degrades such a chip to inert text on its own.
-  const prReferences = references.filter((reference) => reference.kind === 'PR')
-  for (const reference of prReferences) {
-    parts.push(
-      <ReferenceChip
-        key={`pr-${reference.number}`}
-        reference={reference}
-        taskTitle={runTitle(run)}
-        className="h-5"
-        // Shown only on a chip that IS conflicting — the chip decides that, being the thing that
-        // knows — and mounted only while its panel is open. The same component the Tasks table
-        // hands its chips, so both send the same prompt on the same seam.
-        conflictAction={<ResolveConflictsButton run={run} prNumber={reference.number} />}
-      />,
-    )
-  }
-  // The one PR chip `taskReferences` cannot express: a forge URL whose last segment is not a
-  // number (`taskPrUrl`'s own tolerance — an unrecognized forge still gets a working link, just
-  // without a number cezar would be inventing). Gated on that URL not being painted already,
-  // NOT on there being no chips at all: today every `pullRequestUrl` is a GitHub `…/pull/N` and
-  // the two are the same test, but a forge whose PR URLs do not end in a number (#847's GitLab
-  // adapter) would have a `prNumber` chip standing in front of a link that then never rendered.
-  const prUrl = taskPrUrl(run)
-  if (prUrl && isHttpUrl(prUrl) && !prReferences.some((reference) => reference.url === prUrl)) {
-    parts.push(
-      <ReferenceChip
-        key="pr"
-        reference={{ kind: 'PR', url: prUrl }}
-        taskTitle={runTitle(run)}
-        className="h-5"
-      />,
-    )
-  }
+  // EVERY PR the task points at: the strongest on the row, all of them behind a `+N` — the same
+  // cell the global Tasks table paints (see `prChipNodes`).
+  parts.push(...prChipNodes(run, references))
   const issueUrl = taskIssueUrl(run, repoBase)
   if (issueUrl && isHttpUrl(issueUrl)) {
     const number = prNumber(issueUrl)
@@ -887,7 +878,6 @@ function MetaRow({
   }
 
   return (
-    <ReferenceStatusProvider projectId={projectId} requests={referenceRequests}>
       <div
         data-slot="run-meta"
         className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-muted-foreground"
@@ -905,8 +895,70 @@ function MetaRow({
           continuationEngine={continuationEngine}
         />
       </div>
-    </ReferenceStatusProvider>
   )
+}
+
+/** The task's references, resolved once for the whole header so every chip and the git step are
+ *  answered by the same status batch. */
+function useRunReferences(run: ApiRun) {
+  // #526: a chip may be synthesized from a CEZ:PR / CEZ:ISSUE marker, and the only repository
+  // such a link may name is the one on screen — never the transcript's.
+  const repoBase = useProjectRepoBase()
+  // A handful of references at most — but through the same seam as the Tasks table, which is what
+  // keeps the header's chip and the table's chip answering identically for the same PR.
+  const projectId = useReferenceProjectId()
+  const references = useMemo(() => taskReferences(run, repoBase), [run, repoBase])
+  const requests = useMemo(
+    () =>
+      projectId === undefined
+        ? []
+        : references.map((reference) => ({
+            projectId,
+            kind: reference.kind,
+            number: reference.number,
+          })),
+    [references, projectId],
+  )
+  return { projectId, references, requests }
+}
+
+/** The task's pull-request chips for the meta row: the strongest PR, the rest behind `+N`. */
+function prChipNodes(run: ApiRun, references: ReturnType<typeof taskReferences>): ReactNode[] {
+  // A reference with no URL still gets its chip, exactly as All tasks paints it: a number-only
+  // reference is what a `CEZ:PR` declaration looks like before any link is scraped, and the two
+  // pages read their repository from DIFFERENT places (this one from health's remote, All tasks
+  // from the project registry's `repoUrl`) — so "no URL here" never means "nothing to show".
+  // `ReferenceChip` degrades such a chip to inert text on its own.
+  const prReferences: { kind: 'PR' | 'Issue'; number?: number; url?: string }[] = references.filter(
+    (reference) => reference.kind === 'PR',
+  )
+  // The one PR `taskReferences` cannot express: a forge URL whose last segment is not a number
+  // (`taskPrUrl`'s own tolerance — an unrecognized forge still gets a working link, just without
+  // a number cezar would be inventing). Gated on that URL not being listed already, NOT on there
+  // being no PRs at all: a forge whose PR URLs do not end in a number (#847's GitLab adapter)
+  // would otherwise have a `prNumber` chip standing in front of a link that never rendered.
+  const prUrl = taskPrUrl(run)
+  if (prUrl && isHttpUrl(prUrl) && !prReferences.some((reference) => reference.url === prUrl)) {
+    prReferences.push({ kind: 'PR', url: prUrl })
+  }
+  const [first] = prReferences
+  if (!first) return []
+  return [
+    <span key="pr" data-slot="run-pr-refs" className="flex flex-nowrap items-center gap-1">
+      <ReferenceChip
+        reference={first}
+        taskTitle={runTitle(run)}
+        className="h-5 shrink-0"
+        // Shown only on a chip that IS conflicting — the chip decides that, being the thing that
+        // knows — and mounted only while its panel is open. The same component the Tasks table
+        // hands its chips, so both send the same prompt on the same seam.
+        conflictAction={<ResolveConflictsButton run={run} prNumber={first.number} />}
+      />
+      {prReferences.length > 1 ? (
+        <ReferenceOverflow references={prReferences} taskTitle={runTitle(run)} hidden={prReferences.length - 1} />
+      ) : null}
+    </span>,
+  ]
 }
 
 /**
@@ -1125,39 +1177,8 @@ function RunDetails({
   /** Draw the list in place instead of behind the popover (the Overview layout). */
   inline?: boolean
 }) {
-  // The record keeps only what the caller ASKED for: `POST /api/runs` persists the raw optional
-  // `runner` (`src/runs/store.ts`), while the run actually executes as
-  // `input.runner ?? config.defaultRunner` (`src/workflows/run.ts`). Mirror that resolution —
-  // hardcoding 'claude' would name the wrong agent on a repo whose `defaultRunner` is
-  // codex/opencode, and "which agent produced this?" is the one question #416 exists to answer.
-  // 'claude' stays the last resort only while the active project's config is in flight.
-  // `/api/health` describes the boot project and can name the wrong runner on scoped routes.
-  const config = useConfig()
-  const profiles = useAgentProfiles()
-  const runner = run.runner ?? config.data?.defaultRunner ?? 'claude'
-  const model = run.model ?? 'auto'
-  // The account is read from the STEP that actually spawned, never from the run's composer
-  // override or the project's current selection (spec 2026-07-29-agent-profiles): the override is
-  // absent whenever the run just followed the project, and the project's selection can have been
-  // changed since — both would name an account this run may never have touched. The last step that
-  // recorded one is what ran; `sessionId` and `profileId` are a pair for exactly this reason.
-  const accountId = [...run.steps].reverse().find((step) => step.profileId)?.profileId
-  const account = accountId === undefined
-    ? undefined
-    : accountId === DEFAULT_AGENT_ACCOUNT_ID
-      ? 'default'
-      // A deleted account still names the folder this run's sessions live in, so the id is shown
-      // rather than swallowed — "gone" is the useful half of that answer.
-      : profiles.data?.profiles.find((p) => p.id === accountId)?.label ?? `${accountId} (removed)`
-  // The canonical `provider/model` the run actually resolved to (#405), shown only when it says
-  // something `model` does not (#546). `model` is the free-text the caller ASKED for — `opus`,
-  // `auto`, a gateway id — so on a repo whose Claude runner points at a custom endpoint the two
-  // genuinely differ, and "which provider served this?" is a question only this field answers.
-  // Absent on pre-#405 records and skipped when it merely repeats `model`, following the same
-  // omitted-not-guessed rule as the account line below: an identity nothing wrote down is not
-  // one this header may invent.
-  const identity = run.modelIdentity && run.modelIdentity !== model ? run.modelIdentity : undefined
-  const summary = [runner, account, model].filter(Boolean).join(' · ')
+  // One resolution with the composer's engine pills (run-engine.tsx), so the two cannot disagree.
+  const { runner, account, model, identity, summary } = useRunEngine(run)
   const hasTokens = showTokens && (run.inputTokens !== undefined || run.outputTokens !== undefined)
   const list = (
     <>
@@ -1290,12 +1311,14 @@ function CopyValue({ value, label, done, slot }: { value: string; label: string;
 function MoreMenu({
   run,
   actions,
+  git,
   hint,
   stopInMenu,
   onOpenNotes,
 }: {
   run: ApiRun
   actions: RunActions
+  git: RunGitStep
   hint?: string
   /** Stop is the header's primary button on a run with nothing else to offer; otherwise it lives here. */
   stopInMenu: boolean
@@ -1303,6 +1326,8 @@ function MoreMenu({
 }) {
   const flags = runActionFlags(run)
   const worktreePath = run.worktreePath
+  const step = git.action
+  const unread = flags.markRead
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -1311,6 +1336,25 @@ function MoreMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" data-slot="run-actions-menu" className="min-w-52">
+        {step ? (
+          // The git step leads, with its alternatives (Create PR → Create draft PR) — the same
+          // step the bar's git button paints, for the widths that drop the bar.
+          <>
+            {[step, ...(step.alternatives ?? [])].map((choice) => (
+              <DropdownMenuItem
+                key={choice.id}
+                data-action={choice.id}
+                disabled={!choice.enabled}
+                title={choice.reason}
+                onSelect={() => git.onAction(choice.id)}
+              >
+                {GIT_ACTION_ICONS[choice.id]}
+                {choice.label}
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
         {flags.finish ? (
           // Always here, not only on a phone: the strip drops its action buttons whenever it runs
           // out of room, at any window size, and this menu is where they are found then.
@@ -1335,19 +1379,24 @@ function MoreMenu({
         <DropdownMenuItem title="Handoff notes — what the agent did and what's left" onSelect={onOpenNotes}>
           <FileTextIcon aria-hidden="true" /> Notes
         </DropdownMenuItem>
-        {flags.markUnread ? (
+        {/* The state toggles — read, pinned, archived: one icon each, ON in the shared violet-filled
+            pattern (`TOGGLE_ON_ICON_CLASS`) with `aria-pressed`, so the icon says WHAT and its
+            colour says WHETHER. Read/unread flips rather than vanishing once the task is unread. */}
+        {flags.markRead || flags.markUnread ? (
           <DropdownMenuItem
-            title="Put this task back in the unread list"
-            disabled={actions.markUnread.isPending}
-            onSelect={() => actions.markUnread.mutate()}
+            data-slot="unread-toggle"
+            aria-pressed={unread}
+            title={unread ? 'Unread — mark it read' : 'Put this task back in the unread list'}
+            disabled={actions.markRead.isPending || actions.markUnread.isPending}
+            onSelect={() => (unread ? actions.markRead.mutate() : actions.markUnread.mutate())}
           >
-            <MailIcon aria-hidden="true" /> Mark unread
+            <MailIcon aria-hidden="true" className={cn(unread && TOGGLE_ON_ICON_CLASS)} />
+            {unread ? 'Mark read' : 'Mark unread'}
           </DropdownMenuItem>
         ) : null}
         {flags.pin ? (
           <DropdownMenuItem
             data-slot="pin-run"
-            // A toggle should announce its state in every spelling.
             aria-pressed={Boolean(run.pinned)}
             title={
               run.pinned
@@ -1357,13 +1406,17 @@ function MoreMenu({
             disabled={actions.pin.isPending}
             onSelect={() => actions.pin.mutate()}
           >
-            {run.pinned ? <PinOffIcon aria-hidden="true" /> : <PinIcon aria-hidden="true" />}
+            <PinIcon aria-hidden="true" className={cn(run.pinned && TOGGLE_ON_ICON_CLASS)} />
             {run.pinned ? 'Unpin' : 'Pin'}
           </DropdownMenuItem>
         ) : null}
         {flags.archive ? (
-          <DropdownMenuItem onSelect={() => actions.archive.mutate()}>
-            {run.archived ? <ArchiveRestoreIcon aria-hidden="true" /> : <ArchiveIcon aria-hidden="true" />}
+          <DropdownMenuItem
+            data-slot="archive-run"
+            aria-pressed={Boolean(run.archived)}
+            onSelect={() => actions.archive.mutate()}
+          >
+            <ArchiveIcon aria-hidden="true" className={cn(run.archived && TOGGLE_ON_ICON_CLASS)} />
             {run.archived ? 'Unarchive' : 'Archive'}
           </DropdownMenuItem>
         ) : null}
@@ -1401,46 +1454,6 @@ function MoreMenu({
         ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
-  )
-}
-
-/** The destructive confirms — one dialog, two scripts. Never a native confirm(). */
-function ConfirmDialog({ run, actions }: { run: ApiRun; actions: RunActions }) {
-  const confirming = actions.confirming
-  return (
-    <AlertDialog open={confirming !== null} onOpenChange={(open) => !open && actions.setConfirming(null)}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{confirming === 'delete' ? 'Delete this task?' : 'Stop this task?'}</AlertDialogTitle>
-          <AlertDialogDescription>
-            {confirming === 'delete' ? (
-              <>
-                This removes the run, its transcript, its worktree and its branch. There is no
-                undo.
-                <span className="mt-1 block truncate font-medium text-foreground" title={runTitle(run)}>
-                  {runTitle(run)}
-                </span>
-              </>
-            ) : (
-              'The agent is stopped and the run completes as cancelled. The worktree stays.'
-            )}
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Keep it</AlertDialogCancel>
-          <AlertDialogAction
-            className="bg-danger text-danger-foreground hover:brightness-[0.96]"
-            onClick={() => {
-              if (confirming === 'delete') actions.delete.mutate()
-              else actions.cancel.mutate()
-              actions.setConfirming(null)
-            }}
-          >
-            {confirming === 'delete' ? 'Delete' : 'Stop the run'}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
   )
 }
 

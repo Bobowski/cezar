@@ -6,6 +6,7 @@ import {
   ChevronsUpDownIcon,
   FolderGit2Icon,
   FolderIcon,
+  FolderPlusIcon,
   LayersIcon,
   LayoutDashboardIcon,
   MonitorIcon,
@@ -29,6 +30,9 @@ import { BrandMark } from '@/components/brand-mark'
 import { ContextSidebarContext } from '@/components/context-sidebar'
 import { useGlobalSettings } from '@/components/global-settings'
 import { CloneProjectDialog } from '@/components/clone-project-dialog'
+import { CreateProjectDialog } from '@/components/create-project-dialog'
+import { DialogErrorBoundary } from '@/components/dialog-error-boundary'
+import { trackAddProjectOpened } from '@/lib/telemetry'
 import { openCommandPalette } from '@/components/command-palette'
 import { GithubIcon } from '@/components/icons'
 import { activeNavPath, visibleNavItems, type NavItem } from '@/components/nav-items'
@@ -792,6 +796,7 @@ function ProjectSwitcher({
   const navigate = useNavigate()
   const [browsing, setBrowsing] = React.useState(false)
   const [cloning, setCloning] = React.useState(false)
+  const [creating, setCreating] = React.useState(false)
   const active = projects.find((project) => project.id === activeProjectId)
   const name = active?.name ?? repo?.name ?? brandName
   const branch = active?.branch ?? repo?.branch ?? null
@@ -860,13 +865,36 @@ function ProjectSwitcher({
             {singleProject ? null : (
               <>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem data-slot="add-project-local" onSelect={() => setBrowsing(true)}>
+                <DropdownMenuItem
+                  data-slot="add-project-local"
+                  onSelect={() => {
+                    setBrowsing(true)
+                    trackAddProjectOpened('folder')
+                  }}
+                >
                   <FolderIcon aria-hidden="true" />
                   Open local folder…
                 </DropdownMenuItem>
-                <DropdownMenuItem data-slot="add-project-clone" onSelect={() => setCloning(true)}>
+                <DropdownMenuItem
+                  data-slot="add-project-clone"
+                  onSelect={() => {
+                    setCloning(true)
+                    trackAddProjectOpened('clone')
+                  }}
+                >
                   <GithubIcon aria-hidden="true" />
                   Clone from GitHub…
+                </DropdownMenuItem>
+                {/* A fresh git repo, optionally a new private GitHub one (spec 2026-09-29-create-new-project). */}
+                <DropdownMenuItem
+                  data-slot="add-project-create"
+                  onSelect={() => {
+                    setCreating(true)
+                    trackAddProjectOpened('new')
+                  }}
+                >
+                  <FolderPlusIcon aria-hidden="true" />
+                  New project…
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => globalSettings.open('projects')}>
                   <Settings2Icon aria-hidden="true" />
@@ -877,8 +905,21 @@ function ProjectSwitcher({
           </DropdownMenuContent>
         </DropdownMenu>
         {/* Mounted only while open: they are the one part of the shell that talks to the API. */}
-        {browsing ? <AddProjectDialog open onOpenChange={setBrowsing} /> : null}
-        {cloning ? <CloneProjectDialog open onOpenChange={setCloning} /> : null}
+        {browsing ? (
+          <DialogErrorBoundary label="Open local folder" onError={() => setBrowsing(false)}>
+            <AddProjectDialog open onOpenChange={setBrowsing} />
+          </DialogErrorBoundary>
+        ) : null}
+        {cloning ? (
+          <DialogErrorBoundary label="Clone from GitHub" onError={() => setCloning(false)}>
+            <CloneProjectDialog open onOpenChange={setCloning} />
+          </DialogErrorBoundary>
+        ) : null}
+        {creating ? (
+          <DialogErrorBoundary label="New project" onError={() => setCreating(false)}>
+            <CreateProjectDialog open onOpenChange={setCreating} />
+          </DialogErrorBoundary>
+        ) : null}
       </SidebarMenuItem>
     </SidebarMenu>
   )

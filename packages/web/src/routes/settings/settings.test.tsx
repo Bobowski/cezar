@@ -75,6 +75,7 @@ const AGENTS_CONFIG = {
   baseBranch: null,
   defaultRunner: 'claude',
   systemPrompt: null,
+  branchNaming: null,
   defaultModels: {},
   maxParallel: 2,
   memoryLimitMb: null,
@@ -150,7 +151,7 @@ afterEach(() => {
   document.documentElement.classList.remove('light')
 })
 
-const PROJECT_SECTIONS = ['tracker', 'secrets', 'environment', 'integrations', 'agents', 'agent-config', 'worktrees', 'bookmarklets', 'prompt-templates']
+const PROJECT_SECTIONS = ['tracker', 'secrets', 'environment', 'integrations', 'agents', 'instructions', 'tasks', 'agent-config', 'worktrees', 'bookmarklets']
 const GLOBAL_SECTIONS = [
   'appearance',
   'notifications',

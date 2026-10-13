@@ -104,6 +104,26 @@ async function openListActions() {
 
 afterEach(cleanup)
 
+// On brutus the branch is the title's second line, not a column — the skeleton sits there.
+describe('TasksOverview — the branch detail', () => {
+  it('shows a skeleton while a started isolated run has no branch yet, nothing otherwise', () => {
+    renderOverview({
+      runs: [
+        run({ id: 'forking', status: 'running' }),
+        run({ id: 'queued', status: 'queued' }),
+        run({ id: 'inplace', status: 'running', worktree: false }),
+        run({ id: 'named', status: 'running', branch: 'feature/fix-login' }),
+      ],
+    })
+    const skeleton = (id: string) => tableRow(id)?.querySelector('[data-slot="branch-skeleton"]') ?? null
+    expect(skeleton('forking')).not.toBeNull()
+    expect(skeleton('queued')).toBeNull()
+    expect(skeleton('inplace')).toBeNull()
+    expect(skeleton('named')).toBeNull()
+    expect(tableRow('named')?.textContent).toContain('feature/fix-login')
+  })
+})
+
 describe('TasksOverview — the table', () => {
   it('starts calm when nothing is stored: fixed columns, the details under the title, the rest in Display', async () => {
     const onToggleColumn = vi.fn()

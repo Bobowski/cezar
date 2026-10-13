@@ -79,6 +79,7 @@ import {
   pushBranch,
   resolveBaseRef,
   syncWithBase,
+  uniqueBranchName,
   worktreeChangedFiles,
   worktreeChangedPaths,
   worktreeDiff,
@@ -133,7 +134,7 @@ import {
 } from '../runs/agent-tmpdir.ts';
 import { extractTaskRefs, refineTaskRefs, titleRefNumber } from '../runs/task-refs.ts';
 import { parseTaskMarkers, stripTaskMarkers } from '../runs/task-markers.ts';
-import { autoNamingActive, generateRunName, liveTitleUpdatesEnabled, postValidateTitle } from '../runs/auto-name.ts';
+import { autoNamingActive, generateRunName, liveTitleUpdatesEnabled, NAMER_TIMEOUT_MS, postValidateTitle } from '../runs/auto-name.ts';
 import { reviewGateEnabled } from '../runs/review-gate.ts';
 import { resolveProfileEnvForRoot } from '../workspace/agent-profiles.ts';
 import { DEFAULT_AGENT_ACCOUNT_ID } from '../workspace/agent-accounts.ts';
@@ -237,6 +238,11 @@ async function configuredModelProvider(
 }
 /** Maximum time a live provider gets to honor cancellation before its slot is reaped. */
 const CANCEL_GRACE_MS = 1_000;
+/** How long a fork waits for the namer's branch (spec 2026-10-11-branch-naming-instructions).
+ *  On an idle cockpit a task starts the instant it is created, so the wait begins together with
+ *  the namer call — and a cold `claude -p` alone takes more than five seconds (run 269606ac
+ *  forked on `cez/` with "not ready in time"). Sized to the namer's own timeout plus a margin. */
+const BRANCH_NAME_WAIT_MS = NAMER_TIMEOUT_MS + 10_000;
 /**
  * Task-completion marker from the agent contract (HANDOFF_INSTRUCTIONS): a
  * turn whose text ends with `CEZ:DONE` means "goal achieved, nothing to ask" —
@@ -1141,6 +1147,10 @@ export class RunManager {
    */
   private readonly unitParents = new Set<string>();
   private readonly pendingJobs = new Map<string, { workflow: WorkflowDef; input: StartRunInput }>();
+  /** The creation-time namer's branch answer per queued run (spec
+   *  2026-10-11-branch-naming-instructions) — `execute` awaits it, bounded, before the fork. */
+  private readonly pendingBranchNames = new Map<string, Promise<string | undefined>>();
+  private readonly branchNameWaitMs: number;
   /** Interrupted agent turns recovered after a process restart. Unlike an
    *  explicit user Continue, these are bulk scheduler work and must re-enter
    *  through `pump()` so both workspace and per-project caps are honored. */
@@ -1242,9 +1252,13 @@ export class RunManager {
       /** The project/workspace secret store (spec 2026-10-10-project-secrets-vault-options);
        *  check steps read it with the `checks` audience. */
       secrets?: SecretStore;
+      /** How long a fork waits for the namer's branch (spec 2026-10-11-branch-naming-instructions).
+       *  Tests shorten it; the default is the slow-model budget. */
+      branchNameWaitMs?: number;
     } = {},
   ) {
     this.dataDir = join(repoRoot, '.ai/cezar');
+    this.branchNameWaitMs = options.branchNameWaitMs ?? BRANCH_NAME_WAIT_MS;
     this.projectId = options.projectId;
     this.resolveTrackerEnv = options.resolveTrackerEnv;
     this.secrets = options.secrets ?? new SecretStore();
@@ -1297,6 +1311,7 @@ export class RunManager {
     this.starting.clear();
     this.queue.length = 0;
     this.pendingJobs.clear();
+    this.pendingBranchNames.clear();
     this.pendingContinuations.clear();
     this.memoryPausing.clear();
     this.hostHeldNoted.clear();
@@ -1604,8 +1619,10 @@ export class RunManager {
     }
     // Fire-and-forget LLM naming (task auto-naming spec): the heuristic title
     // above shows instantly; the namer's short title replaces it when (and if)
-    // the model answers. Never awaited, never fails the run.
-    void this.autoNameRun(run.id, skillHint, input.task);
+    // the model answers. Never awaited here, never fails the run. The same call
+    // also answers the task branch when instructions are set; `execute` waits
+    // for that part, bounded, before it forks.
+    this.pendingBranchNames.set(run.id, this.autoNameRun(run.id, skillHint, input.task));
     // `default` = no explicit pick; the runner/CLI chose. Never the prompt itself.
     track(
       'task_start',
@@ -2180,6 +2197,7 @@ export class RunManager {
     this.memoryPausing.delete(runId);
     this.hostHeldNoted.delete(runId);
     this.lastNamerKey.delete(runId);
+    this.pendingBranchNames.delete(runId);
     this.forceStarted.delete(runId);
     // The run's slot is gone from busySlots() as of the deletes above — hand it
     // to the workspace's oldest queued run, in ANY project. Every terminal path
@@ -3277,6 +3295,7 @@ export class RunManager {
     if (queuedAt >= 0) {
       this.queue.splice(queuedAt, 1);
       this.pendingJobs.delete(runId);
+      this.pendingBranchNames.delete(runId);
       this.pendingContinuations.delete(runId);
       this.store.updateRun(runId, { status: 'cancelled', finishedAt: new Date().toISOString() });
       this.store.appendEvent(runId, { type: 'lifecycle', message: 'cancelled while queued' });
@@ -4714,6 +4733,8 @@ export class RunManager {
       // as their stable lower bound while reading the current working copy.
       const startingCommit = await getHeadCommit(repo.root);
       if (startingCommit) this.store.updateRun(runId, { baseBranch: startingCommit });
+      // In-place runs never fork, so nothing will ever read the namer's branch answer.
+      this.pendingBranchNames.delete(runId);
       emit({ type: 'note', message: 'worktree off — running in the repo working tree' });
     } else if (repo) {
       emit({
@@ -4732,14 +4753,41 @@ export class RunManager {
       // reused as-is, and re-resolving against a since-changed config would
       // silently re-anchor the `merge-base` every diff/shortstat is measured
       // from, shifting "what did this task change" under an existing task.
-      const recorded = this.store.getRun(runId)?.baseBranch;
+      const recordedRun = this.store.getRun(runId);
+      const recorded = recordedRun?.baseBranch;
       const base =
         recorded ??
         (await chooseForkBase(this.repoRoot, repo.branch, config.baseBranch, (message) =>
           emit({ type: 'note', message }),
         ));
       try {
-        const wt = await createWorktree(this.repoRoot, runId, base);
+        // A recorded branch (restart, rematerialize) always wins — a named branch cannot be
+        // recomputed from the id. A fresh run waits, bounded, for the namer's branch instead.
+        const branch =
+          recordedRun?.branch ??
+          (await this.awaitGeneratedBranch(runId, config.branchNaming, (message) =>
+            emit({ type: 'note', message }),
+          ));
+        // The wait can last the namer's whole timeout; a Cancel during it must not fork.
+        if (state.cancelled) {
+          this.dropActive(runId, state);
+          return;
+        }
+        let wt: Awaited<ReturnType<typeof createWorktree>>;
+        try {
+          wt = await createWorktree(this.repoRoot, runId, base, { branch });
+        } catch (err) {
+          // A generated name git still refuses (ref race, an exotic conflict) must degrade to
+          // `cez/<id8>`, never fail the task. A recorded branch is the run's own: no fallback.
+          const generated = branch !== undefined && recordedRun?.branch === undefined;
+          if (!generated || state.cancelled) throw err;
+          const reason = err instanceof Error ? err.message : String(err);
+          emit({
+            type: 'note',
+            message: `generated branch "${branch}" could not be created (${reason}) — using the default cez/ branch`,
+          });
+          wt = await createWorktree(this.repoRoot, runId, base);
+        }
         state.cwd = wt.path;
         this.store.updateRun(runId, {
           worktreePath: wt.path,
@@ -4768,6 +4816,7 @@ export class RunManager {
         return;
       }
     } else {
+      this.pendingBranchNames.delete(runId);
       emit({ type: 'note', message: 'not a git repository — running in place, one task at a time' });
     }
 
@@ -6639,16 +6688,20 @@ export class RunManager {
    * refresh). A user-owned title (`titleOrigin: 'user'`) is never overwritten;
    * namer-owned titles may be replaced by fresher namer results.
    */
+  /**
+   * Resolves to the namer's branch (spec 2026-10-11-branch-naming-instructions) on the
+   * creation call — undefined whenever naming is off, unconfigured, or the answer was unusable.
+   */
   private async autoNameRun(
     runId: string,
     skillName: string | undefined,
     task: string,
     live?: { turnText?: string; diffStat?: string },
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     // CEZ_AUTONAME=0 kills all LLM naming; dry-run skips it too unless
     // CEZ_AUTONAME=1 forces the mock path — see autoNamingActive.
-    if (!autoNamingActive()) return;
-    if (this.disposed) return;
+    if (!autoNamingActive()) return undefined;
+    if (this.disposed) return undefined;
     task = this.store.redactRunText(runId, task);
     if (live?.turnText) live = { ...live, turnText: this.store.redactRunText(runId, live.turnText) };
     try {
@@ -6657,14 +6710,15 @@ export class RunManager {
         const skills = await discoverSkills(this.repoRoot).catch(() => [] as Skill[]);
         skillDescription = skills.find((s) => s.name === skillName)?.description;
       }
-      if (this.disposed) return;
-      const result = await generateRunName(this.repoRoot, { task, skillName, skillDescription, ...live });
-      if (!result) return;
+      if (this.disposed) return undefined;
+      // Only the creation call names the branch: the live refresh must never move it.
+      const result = await generateRunName(this.repoRoot, { task, skillName, skillDescription, ...live, nameBranch: !live });
+      if (!result) return undefined;
       const run = this.store.getRun(runId);
       // Marker-owned state outranks the namer (spec 2026-07-18-task-ref-markers):
       // a declared title blocks the whole apply (this call raced the marker),
       // and a declared pr/issue kind blocks that kind field-by-field.
-      if (!run || run.titleOrigin === 'user' || run.titleOrigin === 'marker') return;
+      if (!run || run.titleOrigin === 'user' || run.titleOrigin === 'marker') return result.branch;
       this.store.updateRun(runId, {
         titleSummary: result.titleSummary,
         titleOrigin: 'auto',
@@ -6675,9 +6729,47 @@ export class RunManager {
           ? { issueNumber: result.issueNumber }
           : {}),
       });
+      return result.branch;
     } catch {
       // Naming is best-effort — nothing here may disturb the run.
+      return undefined;
     }
+  }
+
+  /**
+   * The branch a fresh fork should use (spec 2026-10-11-branch-naming-instructions): the
+   * namer's answer, made unique against existing branches, awaited for at most
+   * `BRANCH_NAME_WAIT_MS` and only when instructions are set — the zero-config fork stays
+   * instant. Undefined means `cez/<id8>`; a late answer is dropped, never applied as a rename.
+   */
+  private async awaitGeneratedBranch(
+    runId: string,
+    branchNaming: string | undefined,
+    note: (message: string) => void,
+  ): Promise<string | undefined> {
+    const pending = this.pendingBranchNames.get(runId);
+    this.pendingBranchNames.delete(runId);
+    if (!pending || !branchNaming) return undefined;
+    const TIMED_OUT = Symbol('timed out');
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<typeof TIMED_OUT>((resolve) => {
+      timer = setTimeout(() => resolve(TIMED_OUT), this.branchNameWaitMs);
+    });
+    const wanted = await Promise.race([pending, timeout]).finally(() => clearTimeout(timer));
+    if (wanted === TIMED_OUT) {
+      note('branch name not ready in time — using the default cez/ branch');
+      return undefined;
+    }
+    if (!wanted) {
+      note('the namer answered no branch name — using the default cez/ branch');
+      return undefined;
+    }
+    const unique = await uniqueBranchName(this.repoRoot, wanted, runId);
+    if (!unique) {
+      note(`generated branch name "${wanted}" is not usable — using the default cez/ branch`);
+      return undefined;
+    }
+    return unique;
   }
 
   async recordTurnEnd(runId: string, turnText: string, owner?: ActiveRun): Promise<void> {

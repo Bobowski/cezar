@@ -40,10 +40,12 @@ import { SettingsError, SettingsGroup, SettingsLoading, SettingsPane } from './s
  *
  * Zero-config: an untouched repo shows `DEFAULT_PROMPT_TEMPLATES` with nothing persisted yet.
  * The first Save writes the full (possibly edited-in-place) list to `ui-state.json`'s additive
- * `promptTemplates` key — same "edit locally, explicit Save" shape as Settings → Agents' system
+ * `promptTemplates` key — same "edit locally, explicit Save" shape as Settings → Instructions' system
  * prompt, because a PUT on every keystroke would be a worse control, not a simpler one.
  */
-export function PromptTemplatesSection() {
+/** `embedded`: rendered inside Settings → Instructions, which already provides the page chassis
+ *  (padding, width), so the form draws no outer wrapper of its own. */
+export function PromptTemplatesSection({ embedded = false }: { embedded?: boolean } = {}) {
   const uiState = useUiState()
 
   if (uiState.isPending) {
@@ -55,10 +57,10 @@ export function PromptTemplatesSection() {
   // Keyed on whether the server has ever written this key: an untouched repo (undefined) and an
   // explicitly-cleared one ([]) both come through `normalizePromptTemplates` correctly already,
   // so the form below never has to know the difference.
-  return <PromptTemplatesForm initial={normalizePromptTemplates(uiState.data.promptTemplates)} />
+  return <PromptTemplatesForm initial={normalizePromptTemplates(uiState.data.promptTemplates)} embedded={embedded} />
 }
 
-function PromptTemplatesForm({ initial }: { initial: PromptTemplate[] }) {
+function PromptTemplatesForm({ initial, embedded }: { initial: PromptTemplate[]; embedded: boolean }) {
   const queryClient = useQueryClient()
   const skills = useSkills()
   // Already cached by the section gate above; read again here for the picker's #519 tiers.
@@ -112,8 +114,10 @@ function PromptTemplatesForm({ initial }: { initial: PromptTemplate[] }) {
 
   const resetToDefaults = () => setTemplates(DEFAULT_PROMPT_TEMPLATES.map((t) => ({ ...t })))
 
+  // Embedded, Settings → Instructions already draws the pane (padding, width).
+  const Chassis = embedded ? 'div' : SettingsPane
   return (
-    <SettingsPane data-slot="prompt-templates-section">
+    <Chassis data-slot="prompt-templates-section">
       <SettingsGroup
         title="Templates"
         description="Reusable snippets you can insert into a prompt — the new-task composer, the GitHub hand-over, and the Inbox's “Add instructions” box all offer this list. Assign a template to a skill and it fills the prompt in for you when you pick that skill, as long as you have not typed anything yet."
@@ -278,7 +282,7 @@ function PromptTemplatesForm({ initial }: { initial: PromptTemplate[] }) {
           <p className="text-xs text-muted-foreground">Unsaved changes</p>
         ) : null}
       </div>
-    </SettingsPane>
+    </Chassis>
   )
 }
 

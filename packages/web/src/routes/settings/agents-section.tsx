@@ -1,9 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Fragment, useState } from 'react'
 
-import { putConfig } from '@/api/client'
 import {
-  queryKeys,
   useAgentProfiles,
   useConfig,
   useProjects,
@@ -26,6 +24,7 @@ import {
 } from '@/components/default-agent-picker'
 import { modelCatalogStatus, modelsForRunner, RUNNERS } from '@/routes/new-task-form'
 import { ProviderSettings } from './provider-settings'
+import { useConfigSave } from './use-config-save'
 import {
   SettingsError,
   SettingsField,
@@ -37,22 +36,18 @@ import {
 } from './settings-field'
 
 /**
- * Settings → Agents (R6 Step 1.5, spec §"Settings"): today's scattered `PUT /api/config` knobs
- * in one place — default runner, per-runner model presets, THE system prompt (this is its
- * single edit surface: the /new composer intentionally has none, user decision in R4), and the
- * base branch (also settable from the Git view's branch picker; both write the same key).
+ * Settings → Agents (R6 Step 1.5, spec §"Settings"): which agent runs THIS repo's tasks —
+ * providers, the default runner (and account), and per-runner model presets. What the user
+ * writes FOR a model lives in Settings → Instructions, and how a task behaves (base branch,
+ * review gate, live titles) in Settings → Tasks; a textarea beside the runner picker kept
+ * reading as "configure the agent".
  *
  * Copy stays coding-agent-agnostic by rule: the section describes capabilities (`runner`,
- * `model`, `system prompt`), never vendor config formats.
+ * `model`), never vendor config formats.
  *
- * Persistence: every control PUTs a partial patch; the server merges it into the raw
- * config.json so user keys survive. The PUT answers the full knob shape, which lands straight
- * in the `config` query — the readback is the server's own truth, not an optimistic guess.
+ * Persistence: every control PUTs a partial patch through `useConfigSave`; the server merges it
+ * into the raw config.json so user keys survive.
  */
-
-/** The server's validation cap for the system prompt (src/config.ts) — enforced here too so an
- *  over-limit draft is a disabled Save with a reason, not a 400 round-trip. */
-const SYSTEM_PROMPT_MAX = 20_000
 
 export function AgentsSection() {
   const config = useConfig()
@@ -79,37 +74,7 @@ function AgentsForm({
   catalogs: ReturnType<typeof useRunnerModelCatalogs>
   providerStatus: ReturnType<typeof useProviderStatus>
 }) {
-  const repo = useRepo()
-  const queryClient = useQueryClient()
-
-  const save = useMutation({
-    mutationFn: (patch: SetConfigInput) => putConfig(patch),
-    onSuccess: (result) => {
-      // The PUT already answers the merged knobs — no refetch needed for this section. The
-      // same knobs surface elsewhere though: defaultRunner in /api/health, baseBranch in
-      // /api/repo — refresh both so the composer and the Git view agree immediately.
-      queryClient.setQueryData(queryKeys.config, result)
-      void queryClient.invalidateQueries({ queryKey: queryKeys.health })
-      void queryClient.invalidateQueries({ queryKey: queryKeys.repo })
-    },
-    // 400/409/500 alike: the server's own words, verbatim (the repo-wide error doctrine).
-    onError: (error: Error) => toast(error.message, { tone: 'danger' }),
-  })
-
-  // The system prompt edits locally and saves explicitly — a textarea that PUT-ed 20k
-  // characters on every keystroke would be a worse control, not a simpler one.
-  const [prompt, setPrompt] = useState(config.systemPrompt ?? '')
-  const trimmedPrompt = prompt.trim()
-  const promptSaved = trimmedPrompt === (config.systemPrompt ?? '')
-  const promptOverLimit = trimmedPrompt.length > SYSTEM_PROMPT_MAX
-  const savePrompt = () =>
-    save.mutate(
-      { systemPrompt: trimmedPrompt === '' ? null : trimmedPrompt },
-      {
-        onSuccess: () =>
-          toast(trimmedPrompt === '' ? 'System prompt cleared' : 'System prompt saved'),
-      },
-    )
+  const save = useConfigSave()
 
   return (
     <SettingsPane data-slot="agents-section">
@@ -206,119 +171,6 @@ function AgentsForm({
             })}
           </div>
         </SettingsField>
-
-        <SettingsField
-          title="Base branch"
-          hint="New task worktrees branch from this and draft PRs target it. Also settable from the Git view."
-          control={
-            repo.data?.info ? (
-              <SettingsSelect
-                aria-label="Base branch"
-                data-slot="agents-base-branch"
-                value={config.baseBranch ?? ''}
-                disabled={save.isPending}
-                onChange={(value) => save.mutate({ baseBranch: value || null })}
-                options={[
-                  { value: '', label: 'follow checked-out branch (default)' },
-                  ...repo.data.branches.map((name) => ({ value: name, label: name })),
-                ]}
-                className="sm:w-72"
-              />
-            ) : undefined
-          }
-        >
-          {repo.data?.info ? null : (
-            <SettingsNote data-slot="agents-base-branch-unavailable">
-              {repo.isPending ? 'Loading branches…' : 'Not a git repository — tasks run in place, no branching.'}
-            </SettingsNote>
-          )}
-        </SettingsField>
-      </SettingsGroup>
-
-      <SettingsGroup title="Behaviour">
-        <SettingsField
-          title="System prompt"
-          hint="Extra instructions appended to every run, whichever runner executes it. This is the only place it is edited."
-        >
-          <Textarea
-            aria-label="System prompt"
-            data-slot="agents-system-prompt"
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            placeholder="Extra rules for every agent run — conventions, tone, review requirements…"
-            className="min-h-32"
-          />
-          <div className="flex flex-wrap items-center gap-3">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              data-action="agents-save-prompt"
-              disabled={promptSaved || promptOverLimit || save.isPending}
-              onClick={savePrompt}
-            >
-              Save
-            </Button>
-            {promptOverLimit ? (
-              <SettingsNote tone="danger" data-slot="agents-prompt-limit">
-                {trimmedPrompt.length.toLocaleString()} characters — the limit is{' '}
-                {SYSTEM_PROMPT_MAX.toLocaleString()}.
-              </SettingsNote>
-            ) : (
-              <SettingsNote>Leave empty and save to clear. Applied to new runs only.</SettingsNote>
-            )}
-          </div>
-        </SettingsField>
-
-        <SettingsField
-          title="Live title updates"
-          hint="Refresh a task's short title through the namer model as the run progresses. A manual rename always wins and stops updates for that task."
-          control={
-            <>
-              <span className="text-xs text-muted-foreground">
-                {(config.liveTitleUpdates ?? true) ? 'On' : 'Off'}
-                {config.liveTitleUpdates === null && ' (default)'}
-              </span>
-              <Switch
-                aria-label="Live title updates"
-                data-slot="agents-live-title-updates"
-                checked={config.liveTitleUpdates ?? true}
-                disabled={save.isPending}
-                onCheckedChange={(checked) =>
-                  save.mutate(
-                    { liveTitleUpdates: checked },
-                    { onSuccess: () => toast(checked ? 'Live title updates on' : 'Live title updates off') },
-                  )
-                }
-              />
-            </>
-          }
-        />
-
-        <SettingsField
-          title="Review changes before finishing"
-          hint="When on, a task with changes pauses so you can Accept, Send back, or open a Draft PR. Autonomous tasks always skip this and finish on their own. Default: off — tasks finish without asking."
-          control={
-            <>
-              <span className="text-xs text-muted-foreground">
-                {(config.reviewGate ?? false) ? 'On' : 'Off'}
-                {config.reviewGate === null && ' (default)'}
-              </span>
-              <Switch
-                aria-label="Review changes before finishing"
-                data-slot="agents-review-gate"
-                checked={config.reviewGate ?? false}
-                disabled={save.isPending}
-                onCheckedChange={(checked) =>
-                  save.mutate(
-                    { reviewGate: checked },
-                    { onSuccess: () => toast(checked ? 'Review gate on' : 'Review gate off') },
-                  )
-                }
-              />
-            </>
-          }
-        />
       </SettingsGroup>
     </SettingsPane>
   )

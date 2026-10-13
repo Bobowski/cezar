@@ -50,6 +50,9 @@ const pinAuthOff = (): void => {
 pinAuthOff()
 beforeEach(pinAuthOff)
 afterEach(pinAuthOff)
+// mock-claude's demo pacing was most of the suite's wall clock in CI. A case that needs a
+// turn held open says `mock:pause`/`mock:slow`, which never scale.
+if (process.env.CEZ_MOCK_PACE === undefined) process.env.CEZ_MOCK_PACE = '0'
 
 const sandboxHome = mkdtempSync(join(realpathSync(tmpdir()), 'cez-vitest-home-'))
 

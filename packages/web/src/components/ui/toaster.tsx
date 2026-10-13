@@ -31,6 +31,15 @@ export interface ToastItem {
 
 const TOAST_MS = 5000
 
+/** Observers of `danger` toasts — telemetry reports each one (`lib/telemetry.ts`). A hook rather
+ *  than an import so this primitive stays dependency-free. */
+const dangerListeners = new Set<(message: string) => void>()
+
+export function onDangerToast(listener: (message: string) => void): () => void {
+  dangerListeners.add(listener)
+  return () => dangerListeners.delete(listener)
+}
+
 /**
  * Show a transient message. `danger` tone for failures — the message should be the server's own
  * words wherever one exists (see ApiError).
@@ -42,6 +51,15 @@ export function toast(
   message: string,
   opts: { tone?: ToastTone; action?: ToastAction; durationMs?: number } = {},
 ): void {
+  if (opts.tone === 'danger') {
+    for (const listener of dangerListeners) {
+      try {
+        listener(message)
+      } catch {
+        // an observer must never stop the toast
+      }
+    }
+  }
   const show = opts.tone === 'danger' ? sonnerToast.error : sonnerToast
   show(message, {
     duration: opts.durationMs ?? TOAST_MS,

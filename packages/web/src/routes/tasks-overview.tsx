@@ -16,7 +16,7 @@ import { Link, useNavigate } from '@/lib/project-router'
 
 import { archiveFinished, markAllRunsSeen, patchRun } from '@/api/client'
 import { useRunUsage } from '@/api/global-events'
-import { queryKeys, useHealth, usePinRun, useReferenceProjectId, useRuns, writePatchedRunToCaches } from '@/api/queries'
+import { queryKeys, useHealth, usePinRun, useReferenceProjectId, useRepo, useRuns, writePatchedRunToCaches } from '@/api/queries'
 import type { RunRecord } from '@open-mercato/cezar-api-client'
 import { DiffStatLabel } from '@/components/diff-stat'
 import { DirectionalUsage } from '@/components/directional-usage'
@@ -169,6 +169,7 @@ export function TasksOverview({
   origin = 'all',
   onOriginChange = () => undefined,
   automationNames,
+  gitRepo = true,
 }: {
   /** Undefined while `/api/runs` has not answered: the frame renders, the body is a skeleton —
    *  an empty state before we know there are no runs would be a lie. */
@@ -187,6 +188,9 @@ export function TasksOverview({
   /** Presentation capability; defaults visible for older health responses and direct renders. */
   showTokens?: boolean
   showCost?: boolean
+  /** Whether this project is a git repository. In-place runs of a non-git project never get a
+   *  branch, so the forking skeleton must not wait for one (spec 2026-10-11-branch-naming-instructions). */
+  gitRepo?: boolean
   /** Workspace-global display choices; absent ids use `CALM_DEFAULTS`. */
   expandedColumns?: NormalizedExpandedColumns
   onToggleColumn?: (id: TaskColumnId) => void
@@ -408,6 +412,7 @@ export function TasksOverview({
                     {rows.map((node) => (
                       <TaskRow
                         key={node.run.id}
+                        gitRepo={gitRepo}
                         run={node.run}
                         depth={node.depth}
                         childCount={node.childCount}
@@ -445,6 +450,7 @@ export function TasksOverview({
                   showTokens={showTokens}
                   showCost={showCost}
                   onTogglePin={pinToggle}
+                  gitRepo={gitRepo}
                 />
               ))}
             </ListFrame>
@@ -518,6 +524,24 @@ function DisplayItem({
     >
       {DISPLAY_LABELS[id]}
     </DropdownMenuCheckboxItem>
+  )
+}
+
+/** A started isolated run with no branch yet is forking — possibly waiting for its generated
+ *  name (spec 2026-10-11-branch-naming-instructions). Queued runs, explicit in-place runs and
+ *  every run of a non-git project (always in place, never flagged) keep their blank. */
+function branchPending(run: RunRecord, gitRepo: boolean): boolean {
+  return gitRepo && run.status === 'running' && !run.branch && run.worktree !== false
+}
+
+function BranchSkeleton() {
+  return (
+    <Skeleton
+      data-slot="branch-skeleton"
+      role="status"
+      aria-label="naming branch"
+      className="inline-block h-4 w-24 align-middle"
+    />
   )
 }
 
@@ -768,7 +792,9 @@ function TaskRow({
   now,
   shown,
   metricColumns,
+  gitRepo,
 }: {
+  gitRepo: boolean
   run: RunRecord
   /** Nesting level under the task that dispatched this one; 0 for a top-level row. */
   depth: number
@@ -803,6 +829,8 @@ function TaskRow({
       <span key="branch" className="truncate font-mono text-xs">
         {run.branch}
       </span>
+    ) : shown('branch') && branchPending(run, gitRepo) ? (
+      <BranchSkeleton key="branch" />
     ) : null,
     queuePosition !== null ? (
       <span key="queue" data-slot="queue-note" className="tabular-nums">
@@ -995,6 +1023,7 @@ function TaskCard({
   showTokens,
   showCost,
   onTogglePin,
+  gitRepo,
 }: {
   run: RunRecord
   /** Nesting level under the task that dispatched this one; 0 for a top-level card. */
@@ -1008,6 +1037,7 @@ function TaskCard({
   showTokens: boolean
   showCost: boolean
   onTogglePin?: (run: RunRecord, pinned: boolean) => void
+  gitRepo: boolean
 }) {
   const navigate = useNavigate()
   const attention = deriveAttention(run)
@@ -1077,6 +1107,11 @@ function TaskCard({
                 <Sep />
                 <span className="font-mono">{run.branch}</span>
               </>
+            ) : branchPending(run, gitRepo) ? (
+              <>
+                <Sep />
+                <BranchSkeleton />
+              </>
             ) : null}
             {showTokens && hasDirectionalUsage ? (
               <>
@@ -1120,6 +1155,10 @@ export function TasksOverviewRoute() {
   const runs = useRuns()
   const health = useHealth()
   const metricVisibility = usageMetricVisibility(health.data)
+  // Project-scoped, unlike health. Unknown (still loading) counts as git so a fresh task's
+  // forking skeleton is not withheld; a known non-git project disables it.
+  const repo = useRepo()
+  const gitRepo = repo.data ? repo.data.info !== null : true
   const [view, setView] = useListView()
   const [origin, setOrigin] = useTaskOrigin()
   // Names for the Automation facet. Only asked for while automations are on AND automation rows
@@ -1191,6 +1230,7 @@ export function TasksOverviewRoute() {
         onMarkAllRead={() => markAllRead.mutate()}
         origin={origin}
         onOriginChange={setOrigin}
+        gitRepo={gitRepo}
         automationNames={automationNames}
         onRename={(id, title) => rename.mutate({ id, title })}
         onTogglePin={(run, pinned) =>

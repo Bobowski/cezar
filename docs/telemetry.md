@@ -27,15 +27,34 @@ Every event carries `service`, `version` (release and channel, e.g. `0.15.0-nigh
 
 Events: `cezar_run` (at most once a day), `app_start`, `app_stop`, `task_start` (agent and model),
 `page_viewed` (the route's shape, e.g. `/p/:param/tasks/:param/changes`), `message_sent` (where
-from), `open_in` (which app), `project_added` (`local` or `github`), `diff_comment_added`,
+from), `open_in` (which app), `add_project_opened` (which Add project dialog: `new`, `clone`,
+`folder`), `project_added` (`local`, `github`, `cli`, or for a new project `new_local`,
+`new_github`, `new_template`), `project_create_failed` (the step that failed, e.g.
+`folder_exists`, `github_create` — never the error text), `diff_comment_added`,
 `task_archived` / `task_unarchived` / `task_pinned` / `task_unpinned` / `task_deleted` (with the
 task's status). Every label comes from a closed set the server enforces.
 
 Error reports carry the error type, message and stack with your home directory, working
 directory, temp directory and registered project roots replaced by `~`, `<repo>` and `<tmp>`,
 plus technical context: build, uptime, memory, route shape, browser engine, enabled feature flags.
+Every red error toast the cockpit shows is reported the same way, with the method, status and
+route shape of the API call that failed just before it (e.g. `POST
+/api/v1/p/:param/runs/:param/messages`, 409). The toast's text is masked first: quoted values,
+emails, URLs, slash-bearing names (paths, branches, `owner/repo`), your project names and
+anything after a `: ` become placeholders.
 
 `cezar telemetry inspect` prints the envelope an event would carry, without sending it.
+
+### The desktop shell
+
+The desktop app's native shell reports its own failures — Node.js could not be downloaded,
+cezar could not be installed, the cockpit process never answered or exited — under runtime
+`app-shell` with the shell's version. It reads the same answer: with a yes, a failure is reported
+on its own (code, message, cezar and shell version, architecture, how Node was found) and the
+failure page says so. Without one, nothing is sent; the failure page offers a **Send error
+report** button instead, which sends that one report — the error and the log the page shows, paths
+masked as above, no install id — and only when clicked. `CEZ_TELEMETRY=0` / `DO_NOT_TRACK=1` hide
+the button too.
 
 ## What is never sent
 

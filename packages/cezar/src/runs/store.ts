@@ -385,7 +385,8 @@ export const runRecordSchema = z.object({
   worktree: z.literal(false).optional(),
   /** Task worktree (spec 006) — absent for in-place runs and after explicit cleanup. */
   worktreePath: z.string().optional(),
-  /** The task's own branch (`cez/<id8>`), created off `baseBranch`. */
+  /** The task's own branch, created off `baseBranch`: `cez/<id8>` unless branch naming
+   *  instructions named it (spec 2026-10-11-branch-naming-instructions) — read it, never recompute it. */
   branch: z.string().optional(),
   /** Stable baseline for session git views: a worktree's fork ref, or an in-place run's starting commit. */
   baseBranch: z.string().optional(),

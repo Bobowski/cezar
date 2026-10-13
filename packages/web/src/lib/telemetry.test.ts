@@ -2,7 +2,15 @@ import { describe, expect, it } from 'vitest'
 
 import { telemetryEventInputSchema, telemetryRouteSchema } from '@open-mercato/cezar-api-client'
 
-import { clientSurface, isBenignError, isCanonicalRoute, routeShape } from './telemetry'
+import {
+  apiRouteShape,
+  clientSurface,
+  errorToastReport,
+  isBenignError,
+  isCanonicalRoute,
+  routeShape,
+  scrubToastMessage,
+} from './telemetry'
 
 describe('routeShape', () => {
   it('keeps the route and drops every user value', () => {
@@ -69,5 +77,74 @@ describe('telemetry event relay contract', () => {
     expect(telemetryEventInputSchema.safeParse({ event: 'anything_else', label: 'new_task' }).success).toBe(false)
     expect(telemetryEventInputSchema.safeParse({ event: 'diff_comment_added', label: 'multi_line' }).success).toBe(true)
     expect(telemetryEventInputSchema.safeParse({ event: 'diff_comment_added', label: 'new_task' }).success).toBe(false)
+  })
+})
+
+describe('error toast reports', () => {
+  it('names the API call that failed, never its ids or names', () => {
+    expect(apiRouteShape('/api/v1/p/acme-shop/runs/22f53332-5ba7/messages')).toBe('/api/v1/p/:param/runs/:param/messages')
+    // A project slug that happens to be a route word is still a project slug.
+    expect(apiRouteShape('/api/v1/p/runs/runs/abc')).toBe('/api/v1/p/:param/runs/:param')
+    expect(apiRouteShape('/api/v1/workflows/client-secret-flow')).toBe('/api/v1/workflows/:param')
+  })
+
+  it('reports a toast after a failed request as that request', () => {
+    const report = errorToastReport({ method: 'POST', path: '/api/v1/p/acme/runs/abc/messages', status: 409, at: 1000 }, 1250)
+    expect(report).toEqual({
+      type: 'ApiError',
+      context: {
+        'request.method': 'POST',
+        'request.route': '/api/v1/p/:param/runs/:param/messages',
+        'request.status': 409,
+        'request.age_ms': 250,
+      },
+    })
+  })
+
+  it('reports a toast with no failed request as a client-side error toast', () => {
+    expect(errorToastReport(null)).toEqual({ type: 'ErrorToast', context: {} })
+  })
+})
+
+describe('scrubToastMessage', () => {
+  it('reduces an API URL to its route shape, slug and query included', () => {
+    expect(scrubToastMessage('cannot reach the cezar server (/api/v1/p/acme-shop/runs/abc/messages?x=1)', [])).toBe(
+      'cannot reach the cezar server (/api/v1/p/:param/runs/:param/messages)',
+    )
+    expect(scrubToastMessage('http://127.0.0.1:4000/api/v1/workflows/secret-flow failed', [])).toBe(
+      '/api/v1/workflows/:param failed',
+    )
+  })
+
+  it('masks quoted values, branches, repositories and paths', () => {
+    expect(scrubToastMessage('No workflow named “client-deploy” — starting a new one.', [])).toBe(
+      'No workflow named <value> — starting a new one.',
+    )
+    expect(scrubToastMessage("branch 'feature/login' already exists", [])).toBe('branch <value> already exists')
+    expect(scrubToastMessage('cannot push cez/1a2b3c4d to acme/shop', [])).toBe('cannot push <path> to <path>')
+    expect(scrubToastMessage("can't open /Users/me/code/shop/README.md", [])).toBe("can't open <path>")
+  })
+
+  it('masks the names and ids of known projects, longest first and whole words only', () => {
+    expect(scrubToastMessage('Acme Shop already has the maximum of 8 tags', ['Acme Shop', 'acme-shop'])).toBe(
+      '<project> already has the maximum of 8 tags',
+    )
+    expect(scrubToastMessage('project acme-shop not found', ['acme', 'acme-shop'])).toBe('project <project> not found')
+    expect(scrubToastMessage('session closed', ['ses', 'x'])).toBe('session closed')
+  })
+
+  it('masks label: value tails, emails, curly single quotes and any-case project names', () => {
+    expect(scrubToastMessage('invalid branch name: feature-login', [])).toBe('invalid branch name: <detail>')
+    expect(scrubToastMessage('unknown account: work-account', [])).toBe('unknown account: <detail>')
+    expect(scrubToastMessage('push rejected for jane@acme.com', [])).toBe('push rejected for <email>')
+    expect(scrubToastMessage('plan ‘secret-plan’ is missing', [])).toBe('plan <value> is missing')
+    expect(scrubToastMessage('ACME-SHOP is busy', ['acme-shop'])).toBe('<project> is busy')
+    expect(scrubToastMessage('cannot reach the cezar server (/api/v1/health)', [])).toBe(
+      'cannot reach the cezar server (/api/v1/health)',
+    )
+  })
+
+  it('leaves a message without user data alone', () => {
+    expect(scrubToastMessage('session closed', [])).toBe('session closed')
   })
 })

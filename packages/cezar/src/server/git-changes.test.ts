@@ -1296,6 +1296,43 @@ describe('worktreeGitStatus — what has not left the worktree', () => {
     }
   });
 
+  it('behind: measures a fork clone against the PR-target remote, not the fork origin (#1383)', async () => {
+    const fork = mkdtempSync(join(tmpdir(), 'cez-gitstatus-fork-'));
+    const canonical = mkdtempSync(join(tmpdir(), 'cez-gitstatus-canonical-'));
+    const dir = mkdtempSync(join(tmpdir(), 'cez-gitstatus-forkclone-'));
+    try {
+      g(fork, 'init', '--bare', '-q');
+      g(canonical, 'init', '--bare', '-q');
+      initRepo(dir);
+      writeFileSync(join(dir, 'a.txt'), 'a\n');
+      g(dir, 'add', '-A');
+      g(dir, 'commit', '-qm', 'base');
+      g(dir, 'branch', '-M', 'main');
+      g(dir, 'remote', 'add', 'origin', fork);
+      g(dir, 'remote', 'add', 'upstream', canonical);
+      g(dir, 'push', '-q', 'origin', 'main');
+      // `gh repo set-default` picks the PR target without a network lookup.
+      g(dir, 'config', 'remote.upstream.gh-resolved', 'base');
+      const forkPoint = g(dir, 'rev-parse', 'HEAD').trim();
+      // Two commits land upstream only; the fork's main stays at the fork point.
+      for (const f of ['b', 'c']) {
+        writeFileSync(join(dir, `${f}.txt`), `${f}\n`);
+        g(dir, 'add', '-A');
+        g(dir, 'commit', '-qm', f);
+      }
+      g(dir, 'push', '-q', 'upstream', 'main');
+      g(dir, 'reset', '-q', '--hard', forkPoint);
+      g(dir, 'checkout', '-q', '-b', 'task');
+
+      expect(await worktreeGitStatus(dir, 'main')).toMatchObject({ behind: 2 });
+      expect(await worktreeGitStatus(dir, 'upstream/main')).toMatchObject({ behind: 2 });
+      // An old record that named the fork explicitly still measures against it.
+      expect(await worktreeGitStatus(dir, 'origin/main')).toMatchObject({ behind: 0 });
+    } finally {
+      for (const d of [fork, canonical, dir]) rmSync(d, { recursive: true, force: true });
+    }
+  });
+
   it('a non-repo dir fails with a reason, never throws', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cez-gitstatus-norepo-'));
     try {

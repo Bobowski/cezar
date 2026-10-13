@@ -2,7 +2,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import { REFERENCE_STATUS_MAX } from '@open-mercato/cezar-contract';
-import { autosaveCommit } from '../../git-worktree.ts';
+import { autosaveCommit, taskRemotes } from '../../git-worktree.ts';
+import { parseRemote, splitRemoteRef } from '../../git-remotes.ts';
 import type {
   DraftPrInput,
   DraftPrOutcome,
@@ -2607,9 +2608,9 @@ function mockGithubComments(kind: 'issue' | 'pr'): ForgeCommentsData {
 }
 
 // ---- draft-PR creation (review gate, spec 009) ------------------------------
-// Final autosave-commit → `git push -u origin cez/<id8>` → `gh pr create
-// --draft`, all executed in the task worktree (gh picks the repo up from the
-// worktree's remote). Every failure maps to a one-line human error — the GUI
+// Final autosave-commit → `git push -u <push remote> cez/<id8>` → `gh pr create
+// --draft --repo <base repo>`, all executed in the task worktree. Every failure
+// maps to a one-line human error — the GUI
 // shows it as a toast plus the manual `git merge <branch>` fallback. Never throws.
 
 const PR_URL_RE = /https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+/;
@@ -2646,12 +2647,13 @@ export async function createDraftPr(input: DraftPrInput): Promise<DraftPrOutcome
     return { ok: true, url: 'https://github.com/open-mercato/demo/pull/777', dryRun: true };
   }
 
-  const remote = await execTool(['remote', 'get-url', 'origin'], worktree, 'git');
-  if (!remote.ok || !remote.stdout.trim()) {
+  // Push to the push remote, open the PR on the base remote the task forked from (#1383).
+  const remotes = await taskRemotes(worktree);
+  if (!remotes.push || !remotes.base) {
     return { ok: false, error: 'no git remote — add one (git remote add origin <url>) or merge the branch locally' };
   }
 
-  const push = await execTool(['push', '-u', 'origin', branch], worktree, 'git', PUSH_TIMEOUT_MS);
+  const push = await execTool(['push', '-u', remotes.push, branch], worktree, 'git', PUSH_TIMEOUT_MS);
   if (!push.ok) {
     return { ok: false, error: `git push failed — ${tail(push.stderr) || 'unknown error'}` };
   }
@@ -2659,12 +2661,13 @@ export async function createDraftPr(input: DraftPrInput): Promise<DraftPrOutcome
   const body = buildPrBody(input.handoffText, run.task);
   // Target the branch the worktree forked from (config `baseBranch`) — without
   // --base, gh aims at the repo default (main) even when work started on
-  // develop. `origin/x` normalizes to `x`; a raw sha (detached-HEAD fork
+  // develop. `<remote>/x` normalizes to `x`; a raw sha (detached-HEAD fork
   // point) can't be a PR base, so gh falls back to the default branch.
-  const prBase = run.baseBranch?.replace(/^origin\//, '');
+  const prBase = run.baseBranch ? splitRemoteRef(run.baseBranch, remotes.names).branch : undefined;
   const baseArgs = prBase && !/^[0-9a-f]{7,40}$/i.test(prBase) ? ['--base', prBase] : [];
+  const repoArgs = await prRepoArgs(worktree, remotes.base, remotes.push, branch);
   const pr = await execTool(
-    ['pr', 'create', ...(input.draft === false ? [] : ['--draft']), '--head', branch, ...baseArgs, '--title', run.title, '--body', body],
+    ['pr', 'create', ...(input.draft === false ? [] : ['--draft']), ...repoArgs, ...baseArgs, '--title', run.title, '--body', body],
     worktree,
     'gh',
     PUSH_TIMEOUT_MS,
@@ -2683,6 +2686,25 @@ export async function createDraftPr(input: DraftPrInput): Promise<DraftPrOutcome
     return { ok: false, error: 'gh pr create returned no PR URL — check `gh pr list` manually' };
   }
   return { ok: true, url: match[0], dryRun: false };
+}
+
+/** `gh pr create` target: `--repo <base repo>`, head owner-qualified when pushed to a fork. */
+export async function prRepoArgs(worktree: string, baseRemote: string, pushRemote: string, branch: string): Promise<string[]> {
+  const url = async (name: string) => {
+    const res = await execTool(['remote', 'get-url', name], worktree, 'git');
+    return res.ok ? parseRemote(res.stdout.trim()) : null;
+  };
+  const target = await url(baseRemote);
+  if (!target) return ['--head', branch];
+  const repoArgs = ['--repo', `${target.host}/${target.owner}/${target.repo}`];
+  if (pushRemote === baseRemote) return [...repoArgs, '--head', branch];
+  const source = await url(pushRemote);
+  const sameRepo =
+    source &&
+    source.host === target.host &&
+    source.owner.toLowerCase() === target.owner.toLowerCase() &&
+    source.repo.toLowerCase() === target.repo.toLowerCase();
+  return [...repoArgs, '--head', source && !sameRepo ? `${source.owner}:${branch}` : branch];
 }
 
 /**

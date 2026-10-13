@@ -274,6 +274,8 @@ import {
 import { WorkspaceSemaphore } from '../workspace/semaphore.ts';
 import { mergeWriteWorkspaceUiState, readWorkspaceUiState } from '../workspace/ui-state.ts';
 import { checkoutRepo, type CloneRunner } from './checkout.ts';
+import { createProjectInputSchema } from '@open-mercato/cezar-contract';
+import { createProject, listGithubOwners, type CommandRunner } from './create-project.ts';
 import { ProjectContextError, ProjectContexts, type ProjectContext } from './project-context.ts';
 import { reviewGateEnabled } from '../runs/review-gate.ts';
 import { readUiState, uiStatePath } from '../ui-state.ts';
@@ -387,6 +389,10 @@ export interface ServerDeps {
   ghApiRunner?: GhApiRunner;
   /** How the Docker view reaches the `docker` CLI. Tests inject a scripted one. */
   dockerExec?: DockerExec;
+  /** How `POST /api/projects/create` and `GET /api/projects/github-owners`
+   *  run `git`/`gh` (spec 2026-09-29-create-new-project). Defaults to real
+   *  commands (or the `CEZ_DRY_RUN=1` fake); injected by tests. */
+  projectCommandRunner?: CommandRunner;
   /** Host-wide model discovery service. Tests inject a deterministic adapter. */
   modelCatalog?: RunnerModelCatalog;
   /** Host-wide provider authentication discovery. Tests inject deterministic probes. */
@@ -3147,6 +3153,51 @@ export function createApp(deps: ServerDeps) {
       }
       // The checkout dialog only clones GitHub repositories (`checkoutSchema`).
       track('project_added', { label: 'github' }, { sid: deviceSid(c.req.header('x-cezar-sid')) });
+      return c.json(registered.body, 200);
+    })
+
+    // ---- new project (spec 2026-09-29-create-new-project) ------------------
+    // "Add project → New project": a fresh git repo at `<projectsDir>/<name>`,
+    // optionally backed by a new PRIVATE GitHub repository (never public — the
+    // body has no visibility field to set), optionally generated from a
+    // template. Same progress stream, same `registerFolder` commit, same
+    // `{ error, reason }` degradation as the clone route above.
+    .get('/projects/github-owners', async (c) => c.json(await listGithubOwners(deps.projectCommandRunner)))
+
+    .post('/projects/create', jsonZodValidator(() => createProjectInputSchema, { message: 'project name must be a valid GitHub repository name — letters, digits, ".", "-" and "_" only, no spaces' }), async (c) => {
+      if (capabilities().singleProject) {
+        return c.json(singleProjectRefusal('adding projects'), 409);
+      }
+      const { name, github, checkoutId } = c.req.valid('json');
+      const result = await createProject({
+        name,
+        github,
+        checkoutId,
+        projectsDir: expandTilde(await workspaceProjectsDir()),
+        onProgress: (event) => workspaceEvents.emit('checkout-progress', event),
+        signal: c.req.raw.signal,
+        ...(deps.projectCommandRunner ? { run: deps.projectCommandRunner } : {}),
+      });
+      const sid = deviceSid(c.req.header('x-cezar-sid'));
+      if (!result.ok) {
+        // The stage, never the error text: that can carry paths and repository names.
+        track('project_create_failed', { label: result.stage }, { sid });
+        return c.json(
+          'reason' in result ? { error: result.error, reason: result.reason } : { error: result.error },
+          result.status,
+        );
+      }
+      // GitHub-backed projects register as `checkout` (they have an origin the
+      // clone flow would also produce); a local-only repo is `local`.
+      const registered = await registerFolder(result.target, result.slug ? 'checkout' : 'local');
+      if (registered.status !== 200) {
+        const { body } = registered;
+        const error = 'error' in body && body.error ? body.error : 'could not register the new project';
+        track('project_create_failed', { label: 'register' }, { sid });
+        return c.json({ error: `${error} (the project is at ${result.target})` }, registered.status);
+      }
+      // `new_local` / `new_github` / `new_template`, beside the folder and clone flows' labels.
+      track('project_added', { label: `new_${result.kind}` }, { sid });
       return c.json(registered.body, 200);
     });
 
@@ -7405,7 +7456,7 @@ export function createApp(deps: ServerDeps) {
   // ---- chained family: repo / git (project-scoped) ----
   const repoRoutes = new Hono<ProjectApiEnv>()
     .get('/repo', async (c) => {
-      const { root: repoRoot } = c.get('project');
+      const { root: repoRoot, store } = c.get('project');
       const info = await getRepoInfo(repoRoot);
       if (!info)
         return c.json({
@@ -7415,10 +7466,12 @@ export function createApp(deps: ServerDeps) {
           branches: [],
           baseBranch: null,
         });
+      // Task branches are never a base: hide the named ones (no `cez/` prefix) by record.
+      const taskBranches = new Set(store.listRuns().flatMap((r) => (r.branch ? [r.branch] : [])));
       const [status, log, branches, config] = await Promise.all([
         getStatus(info.root),
         getLog(info.root),
-        getBranches(info.root),
+        getBranches(info.root, taskBranches),
         loadConfig(repoRoot),
       ]);
       return c.json({
@@ -7639,6 +7692,7 @@ export function createApp(deps: ServerDeps) {
       baseBranch: config.baseBranch ?? null,
       defaultRunner: config.defaultRunner,
       systemPrompt: config.systemPrompt ?? null,
+      branchNaming: config.branchNaming ?? null,
       // Native defaults seed each runner independently. A Cezar preset remains
       // selectable unless the operator opts into the fixed-model policy.
       // An explicit auto override (#906) answers `''` for that runner — the one
@@ -7703,6 +7757,14 @@ export function createApp(deps: ServerDeps) {
           delete raw.systemPrompt;
         } else {
           raw.systemPrompt = parsed.data.systemPrompt;
+        }
+      }
+      if (parsed.data.branchNaming !== undefined) {
+        // Same clearing rule as systemPrompt: an emptied textarea means `cez/<id8>` again.
+        if (parsed.data.branchNaming === null || parsed.data.branchNaming === '') {
+          delete raw.branchNaming;
+        } else {
+          raw.branchNaming = parsed.data.branchNaming;
         }
       }
       if (parsed.data.maxParallel !== undefined) raw.maxParallel = parsed.data.maxParallel;
@@ -7779,6 +7841,8 @@ export function createApp(deps: ServerDeps) {
     baseBranch: z.string().trim().min(1).max(200).nullable().optional(),
     defaultRunner: z.enum(RUNNER_IDS).optional(),
     systemPrompt: z.string().trim().max(20_000, 'must be at most 20000 characters').nullable().optional(),
+    // Branch naming instructions (spec 2026-10-11-branch-naming-instructions); null/'' clears.
+    branchNaming: z.string().trim().max(4_000, 'must be at most 4000 characters').nullable().optional(),
     defaultModels: z
       .object({
         claude: modelPresetSchema,

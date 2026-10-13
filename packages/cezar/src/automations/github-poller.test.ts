@@ -92,6 +92,66 @@ describe('GithubPoller', () => {
     ]));
   });
 
+  it('splits closed pull requests into disjoint merged and closed events with one closed: search', async () => {
+    const pr = (number: number, closedAt: string | null, mergedAt?: string | null) => ({
+      ...item, node_id: `PR_${number}`, number, html_url: `https://github.com/acme/demo/pull/${number}`,
+      updated_at: '2026-07-26T05:00:00.000Z', closed_at: closedAt,
+      pull_request: { url: 'https://api.github.com/x', merged_at: mergedAt ?? null },
+    });
+    const run = vi.fn(async () => JSON.stringify({ items: [
+      pr(1, '2026-07-26T03:00:00.000Z', '2026-07-26T03:00:00.000Z'),
+      pr(2, '2026-07-26T02:00:00.000Z'),
+      pr(3, null),
+      pr(4, '2026-07-20T00:00:00.000Z'),
+    ] }));
+    const poll = (events: GithubAutomationDefinition['events']) => new GithubPoller({ run }).poll('acme', 'demo', {
+      ...definition, events,
+    }, { since: '2026-07-25T23:58:00.000Z' });
+
+    const both = await poll(['pull_request.closed', 'pull_request.merged']);
+    expect(both.candidates.map((c) => [c.event, c.number, c.timestamp])).toEqual([
+      ['pull_request.closed', 2, '2026-07-26T02:00:00.000Z'],
+      ['pull_request.merged', 1, '2026-07-26T03:00:00.000Z'],
+    ]);
+    expect(both.candidates[1]?.eventId).toBe('acme/demo:PR_1:pull_request.merged:2026-07-26T03:00:00.000Z');
+    expect(both.cursor?.timestamp).toBe('2026-07-26T03:00:00.000Z');
+    const [, args] = run.mock.calls[0] as unknown as [string, string[]];
+    expect(args).toEqual(expect.arrayContaining([
+      'sort=updated',
+      expect.stringMatching(/is:pr closed:>=2026-07-25T23:58:00.000Z/),
+    ]));
+
+    const mergedOnly = await poll(['pull_request.merged']);
+    expect(mergedOnly.candidates.map((c) => c.number)).toEqual([1]);
+    // The unselected closed PR still moves the cursor, as every observation does.
+    expect(mergedOnly.cursor?.timestamp).toBe('2026-07-26T03:00:00.000Z');
+  });
+
+  it('reads every page of a full closed search so the cursor never passes an unread close', async () => {
+    // Search orders by `updated`; PR 1 closed first but was touched last, so it sits on page 2.
+    const pr = (number: number, closedAt: string, updatedAt: string) => ({
+      ...item, node_id: `PR_${number}`, number, html_url: `https://github.com/acme/demo/pull/${number}`,
+      updated_at: updatedAt, closed_at: closedAt, pull_request: { merged_at: null },
+    });
+    const late = Array.from({ length: 100 }, (_, index) => pr(
+      100 + index,
+      `2026-07-26T05:${String(Math.floor(index / 2)).padStart(2, '0')}:00.000Z`,
+      '2026-07-26T06:00:00.000Z',
+    ));
+    const early = pr(1, '2026-07-26T01:00:00.000Z', '2026-07-26T09:00:00.000Z');
+    const run = vi.fn(async (_executable: string, args: readonly string[]) =>
+      JSON.stringify({ items: args.includes('page=2') ? [early] : late }));
+    const result = await new GithubPoller({ run }).poll('acme', 'demo', {
+      ...definition, events: ['pull_request.closed'], filters: { lookbackDays: 7, maxRecords: 25 },
+    }, { since: '2026-07-26T00:00:00.000Z' });
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(result.candidates[0]?.number).toBe(1);
+    expect(result.candidates).toHaveLength(25);
+    expect(result.truncated).toBe(true);
+    expect(result.cursor?.timestamp).toBe('2026-07-26T05:11:00.000Z');
+  });
+
   it('keeps polling when the timeline carries entries other than labeled/unlabeled', async () => {
     // Every issue anyone has commented on has such an entry, so validating the
     // whole `/timeline` array against `timelineEventSchema` made label triggers

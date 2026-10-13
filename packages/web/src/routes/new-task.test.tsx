@@ -152,6 +152,7 @@ const CONFIG: ConfigResponse = {
   baseBranch: null,
   defaultRunner: 'claude',
   systemPrompt: null,
+  branchNaming: null,
   defaultModels: {},
   modelsLocked: false,
   maxParallel: 2,

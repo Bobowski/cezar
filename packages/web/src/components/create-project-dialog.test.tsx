@@ -110,8 +110,8 @@ describe('CreateProjectDialog', () => {
     expect(ownerCards().map((card) => card.dataset.owner)).toEqual(['octo', 'acme'])
     expect(selectedOwner()).toBe('octo')
     expect(ownerCards()[0]?.textContent).toContain('Personal account')
-    expect(ownerCards()[0]?.querySelector('img')?.getAttribute('src')).toBe('https://avatars.githubusercontent.com/u/1')
-    expect(ownerCards()[1]?.textContent).toContain('Builds rockets')
+    // An organisation is its name and avatar — its description is GitHub's page, not a picker's.
+    expect(ownerCards()[1]?.textContent).not.toContain('Builds rockets')
 
     fireEvent.change(nameInput(), { target: { value: ' fresh' } })
     expect(slot('create-target')?.textContent).toBe('~/cezar/projects/fresh')
@@ -162,14 +162,19 @@ describe('CreateProjectDialog', () => {
     expect(posted).toHaveLength(0)
   })
 
-  it('arrow keys move the owner selection', async () => {
+  it('arrow keys move between the owner cards, and a press selects', async () => {
     serve()
     renderDialog()
     await waitFor(() => expect(ownerCards()).toHaveLength(2))
+    // The toggle group's roving focus: arrows travel, Space or Enter (a click) chooses.
+    ownerCards()[0]?.focus()
     fireEvent.keyDown(ownerCards()[0] as HTMLButtonElement, { key: 'ArrowDown' })
+    await waitFor(() => expect(document.activeElement).toBe(ownerCards()[1]))
+    fireEvent.click(ownerCards()[1] as HTMLButtonElement)
     expect(selectedOwner()).toBe('acme')
-    fireEvent.keyDown(ownerCards()[1] as HTMLButtonElement, { key: 'ArrowDown' })
-    expect(selectedOwner()).toBe('octo')
+    // Pressing the chosen card again does not leave the dialog without an owner.
+    fireEvent.click(ownerCards()[1] as HTMLButtonElement)
+    expect(selectedOwner()).toBe('acme')
   })
 
   it('has no link away to settings', async () => {

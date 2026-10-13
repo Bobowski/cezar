@@ -1,10 +1,10 @@
-import { CircleCheckIcon, LockIcon } from 'lucide-react'
+import { LockIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { onWorkspaceEvent } from '@/api/global-events'
 import { useCreateProject, useGithubOwners, useProjects } from '@/api/queries'
-import { GITHUB_REPO_NAME_PATTERN, type CheckoutProgressEvent, type GithubOwner } from '@open-mercato/cezar-api-client'
+import { GITHUB_REPO_NAME_PATTERN, type CheckoutProgressEvent } from '@open-mercato/cezar-api-client'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -17,6 +17,8 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { choiceCard, GithubOwnerPicker, GithubOwnerPickerLoading } from '@/components/github-owner-picker'
 import { GithubTemplateInput } from '@/components/github-template-input'
 import { cn } from '@/lib/utils'
 
@@ -161,14 +163,15 @@ export function CreateProjectDialog({ open, onOpenChange }: { open: boolean; onO
               className="min-w-0 md:flex md:min-h-0 md:flex-col md:border-r md:border-border md:pr-6"
             >
               {githubAvailable ? (
-                <OwnerPicker
+                <GithubOwnerPicker
+                  slot="create"
                   owners={ownerOptions}
                   value={effectiveOwner}
                   disabled={busy || !github}
                   onChange={setOwner}
                 />
               ) : (
-                <OwnerPickerLoading />
+                <GithubOwnerPickerLoading slot="create" />
               )}
             </div>
           ) : null}
@@ -252,24 +255,30 @@ export function CreateProjectDialog({ open, onOpenChange }: { open: boolean; onO
               <span id="create-start-label" className="text-sm font-medium">
                 Start with
               </span>
-              <div role="radiogroup" aria-labelledby="create-start-label" className="grid gap-2 sm:grid-cols-2">
-                <StartOption
-                  slot="create-start-empty"
-                  checked={!fromTemplate}
-                  disabled={busy}
-                  title="Empty repository"
-                  hint="One empty commit, no files."
-                  onSelect={() => setStart('empty')}
-                />
-                <StartOption
-                  slot="create-start-template"
-                  checked={fromTemplate}
-                  disabled={busy || !github}
-                  title="From a template"
-                  hint={github ? 'Copy a GitHub template.' : 'Needs a GitHub repository.'}
-                  onSelect={() => setStart('template')}
-                />
-              </div>
+              <ToggleGroup
+                type="single"
+                variant="outline"
+                spacing={2}
+                value={fromTemplate ? 'template' : 'empty'}
+                disabled={busy}
+                onValueChange={(next) => (next === 'empty' || next === 'template' ? setStart(next) : undefined)}
+                aria-labelledby="create-start-label"
+                className="grid w-full gap-2 sm:grid-cols-2"
+              >
+                <ToggleGroupItem value="empty" data-slot="create-start-empty" className={cn(choiceCard, 'grid gap-0.5 rounded-md px-3 py-2')}>
+                  <span className="text-sm font-medium">Empty repository</span>
+                  <span className="text-xs text-muted-foreground">One empty commit, no files.</span>
+                </ToggleGroupItem>
+                <ToggleGroupItem
+                  value="template"
+                  disabled={!github}
+                  data-slot="create-start-template"
+                  className={cn(choiceCard, 'grid gap-0.5 rounded-md px-3 py-2')}
+                >
+                  <span className="text-sm font-medium">From a template</span>
+                  <span className="text-xs text-muted-foreground">{github ? 'Copy a GitHub template.' : 'Needs a GitHub repository.'}</span>
+                </ToggleGroupItem>
+              </ToggleGroup>
               {fromTemplate ? (
                 <div className="grid gap-1.5 md:flex md:min-h-0 md:flex-1 md:flex-col">
                   <Label htmlFor="create-template">Template</Label>
@@ -306,180 +315,5 @@ export function CreateProjectDialog({ open, onOpenChange }: { open: boolean; onO
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  )
-}
-
-/**
- * The owner cards: avatar, login, and "Personal account" or the organisation's description, the
- * selected one outlined and checked. A radio group — arrow keys move between cards, the way a
- * native `<select>` would have.
- */
-function OwnerPicker({
-  owners,
-  value,
-  disabled,
-  onChange,
-}: {
-  owners: GithubOwner[]
-  value: string
-  disabled: boolean
-  onChange: (login: string) => void
-}) {
-  const refs = useRef<(HTMLButtonElement | null)[]>([])
-  const move = (from: number, delta: number) => {
-    if (owners.length === 0) return
-    const next = (from + delta + owners.length) % owners.length
-    const login = owners[next]?.login
-    if (login === undefined) return
-    onChange(login)
-    refs.current[next]?.focus()
-  }
-  return (
-    <div className="grid gap-3 md:flex md:min-h-0 md:flex-1 md:flex-col">
-      <span
-        id="create-owner-label"
-        className="text-[12px] font-semibold tracking-wider text-muted-foreground uppercase"
-      >
-        Select organization
-      </span>
-      <div
-        role="radiogroup"
-        aria-labelledby="create-owner-label"
-        data-slot="create-owner"
-        className="-mx-1 grid max-h-64 content-start gap-2 overflow-y-auto px-1 py-0.5 md:max-h-none md:min-h-0 md:flex-1"
-      >
-        {owners.map((o, index) => {
-          const selected = o.login === value
-          return (
-            <button
-              key={o.login}
-              ref={(el) => {
-                refs.current[index] = el
-              }}
-              type="button"
-              role="radio"
-              aria-checked={selected}
-              tabIndex={selected ? 0 : -1}
-              disabled={disabled}
-              data-slot="create-owner-option"
-              data-owner={o.login}
-              onClick={() => onChange(o.login)}
-              onKeyDown={(event) => {
-                if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
-                  event.preventDefault()
-                  move(index, 1)
-                } else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
-                  event.preventDefault()
-                  move(index, -1)
-                }
-              }}
-              className={cn(
-                'flex w-full items-center gap-3 rounded-lg border bg-card px-3 py-2.5 text-left outline-none transition-colors',
-                'focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50',
-                selected ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50',
-              )}
-            >
-              <OwnerAvatar owner={o} />
-              <span className="grid min-w-0 flex-1 gap-0.5">
-                <span className="flex items-center gap-1.5 truncate text-sm font-semibold">
-                  {o.login}
-                  {selected ? <CircleCheckIcon className="size-4 shrink-0 text-primary" aria-hidden="true" /> : null}
-                </span>
-                {o.personal ? (
-                  <span className="text-[12px] text-muted-foreground">Personal account</span>
-                ) : o.description ? (
-                  <span className="line-clamp-2 text-[12px] text-muted-foreground">{o.description}</span>
-                ) : null}
-              </span>
-            </button>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-/** One of the two "Start with" choices — a radio rendered as a small card. */
-function StartOption({
-  slot,
-  checked,
-  disabled,
-  title,
-  hint,
-  onSelect,
-}: {
-  slot: string
-  checked: boolean
-  disabled: boolean
-  title: string
-  hint: string
-  onSelect: () => void
-}) {
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={checked}
-      disabled={disabled}
-      data-slot={slot}
-      onClick={onSelect}
-      className={cn(
-        'grid gap-0.5 rounded-md border px-3 py-2 text-left outline-none transition-colors',
-        'focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50',
-        checked ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50',
-      )}
-    >
-      <span className="text-sm font-medium">{title}</span>
-      <span className="text-[12px] text-muted-foreground">{hint}</span>
-    </button>
-  )
-}
-
-/** Placeholder cards while `gh` is asked for the accounts, so the column does not pop in. */
-function OwnerPickerLoading() {
-  return (
-    <div className="grid gap-3" data-slot="create-owners-loading" aria-hidden="true">
-      <span className="text-[12px] font-semibold tracking-wider text-muted-foreground uppercase">
-        Select organization
-      </span>
-      {[0, 1].map((i) => (
-        <div key={i} className="flex items-center gap-3 rounded-lg border border-border px-3 py-2.5">
-          <span className="size-9 shrink-0 animate-pulse rounded-full bg-muted" />
-          <span className="h-3 w-24 animate-pulse rounded bg-muted" />
-        </div>
-      ))}
-    </div>
-  )
-}
-
-/** A 36 px avatar with a letter fallback — never a broken-image glyph. Organisations are rounded
- *  squares and people are circles, as on GitHub. */
-function OwnerAvatar({ owner }: { owner: GithubOwner }) {
-  const [failed, setFailed] = useState(false)
-  const shape = owner.personal ? 'rounded-full' : 'rounded-md'
-  if (owner.avatarUrl && !failed) {
-    return (
-      <img
-        src={owner.avatarUrl}
-        alt=""
-        width={36}
-        height={36}
-        loading="lazy"
-        onError={() => setFailed(true)}
-        data-slot="create-owner-avatar"
-        className={cn('size-9 shrink-0 bg-muted', shape)}
-      />
-    )
-  }
-  return (
-    <span
-      aria-hidden="true"
-      className={cn(
-        'flex size-9 shrink-0 items-center justify-center bg-muted text-sm font-semibold text-muted-foreground uppercase',
-        shape,
-      )}
-    >
-      {owner.login.slice(0, 1)}
-    </span>
   )
 }

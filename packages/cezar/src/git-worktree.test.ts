@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -11,6 +11,7 @@ import {
   createWorktree,
   parseShortstat,
   resolveBaseRef,
+  syncWithBase,
   worktreeChangedPaths,
   worktreeShortstat,
   worktreeSizeBytes,
@@ -505,6 +506,45 @@ describe('worktreeChangedPaths', () => {
     expect(await worktreeChangedPaths(repo)).toEqual(
       expect.arrayContaining(['base.txt', 'renamed.txt', 'generated/nested/output.txt']),
     );
+  });
+});
+
+describe('syncWithBase (real git)', () => {
+  /** A clone of an origin whose `main` then moved on by one commit the clone never fetched. */
+  async function cloneBehindOrigin(): Promise<{ work: string; startingCommit: string }> {
+    const origin = await fixtureRepo('cez-sync-origin-');
+    const work = mkdtempSync(join(tmpdir(), 'cez-sync-work-'));
+    worktreeRoots.push(work);
+    await run('git', ['clone', '-q', '-c', 'gc.auto=0', origin, work], { cwd: tmpdir() });
+    await run('git', ['config', 'user.name', 'test'], { cwd: work });
+    await run('git', ['config', 'user.email', 'test@local'], { cwd: work });
+    const startingCommit = (await run('git', ['rev-parse', 'HEAD'], { cwd: work })).stdout.trim();
+    writeFileSync(join(origin, 'upstream.txt'), 'upstream\n');
+    await run('git', ['add', '-A'], { cwd: origin });
+    await run('git', [...GIT_ID, 'commit', '-q', '-m', 'upstream'], { cwd: origin });
+    return { work, startingCommit };
+  }
+
+  it('fetches and merges the new tip when the recorded base is origin/<name>', async () => {
+    const { work } = await cloneBehindOrigin();
+    expect(await syncWithBase(work, 'origin/main')).toEqual({ result: 'done' });
+    expect(existsSync(join(work, 'upstream.txt'))).toBe(true);
+  });
+
+  it('syncs a pinned starting commit with the default branch that contains it', async () => {
+    const { work, startingCommit } = await cloneBehindOrigin();
+    expect(await syncWithBase(work, startingCommit)).toEqual({ result: 'done' });
+    expect(existsSync(join(work, 'upstream.txt'))).toBe(true);
+  });
+
+  it('fails instead of reporting a no-op merge when a pinned commit is on no base branch', async () => {
+    const { work } = await cloneBehindOrigin();
+    await run('git', ['checkout', '-q', '-b', 'local-only'], { cwd: work });
+    writeFileSync(join(work, 'mine.txt'), 'mine\n');
+    await run('git', ['add', '-A'], { cwd: work });
+    await run('git', ['commit', '-q', '-m', 'mine'], { cwd: work });
+    const pinned = (await run('git', ['rev-parse', 'HEAD'], { cwd: work })).stdout.trim();
+    expect(await syncWithBase(work, pinned)).toMatchObject({ result: 'failed' });
   });
 });
 

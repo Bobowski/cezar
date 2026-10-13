@@ -703,6 +703,18 @@ export async function pushBranch(dir: string, branch: string): Promise<{ ok: tru
   return push.ok ? { ok: true } : { ok: false, error: (push.stderr || push.stdout).trim().split('\n')[0] || 'git push failed' };
 }
 
+const PINNED_COMMIT = /^[0-9a-f]{7,64}$/i;
+
+/** The branch a pinned starting commit belongs to: origin's default branch when it contains the
+ *  commit — the rule `freshestPinnedBaseRef` (`git-diff-base.ts`) measures diffs by. Else null. */
+async function pinnedBaseBranch(dir: string, commit: string): Promise<string | null> {
+  const originHead = await git(dir, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD']);
+  const remote = originHead.ok ? originHead.stdout.trim() : '';
+  if (!remote.startsWith('origin/') || !isSafeGitRef(remote)) return null;
+  const contains = await git(dir, ['merge-base', '--is-ancestor', commit, remote]);
+  return contains.ok ? remote.slice('origin/'.length) : null;
+}
+
 /**
  * Merge the freshest base into the worktree (the graph `git.sync-base` node): `origin/<base>`
  * after a fetch when origin has it, else the local base. A conflicted merge is LEFT IN PROGRESS
@@ -714,13 +726,23 @@ export async function syncWithBase(
   baseBranch: string,
 ): Promise<{ result: 'done' } | { result: 'conflict'; files: string[] } | { result: 'failed'; error: string }> {
   if (!isSafeGitRef(baseBranch)) return { result: 'failed', error: `refusing option-like base: ${baseBranch}` };
-  let ref = baseBranch;
-  const remote = await git(dir, ['remote', 'get-url', 'origin']);
-  if (remote.ok && process.env.CEZ_DRY_RUN !== '1') {
-    await git(dir, ['fetch', 'origin', baseBranch]);
-    const remoteRef = await git(dir, ['rev-parse', '--verify', '--quiet', `origin/${baseBranch}`]);
-    if (remoteRef.ok) ref = `origin/${baseBranch}`;
+  // The recorded base is whatever the task forked from: a branch name, `origin/<name>` (local was
+  // stale at fork time) or a pinned commit (in-place run, detached HEAD). Only a NAME can be synced.
+  let name = baseBranch.startsWith('origin/') ? baseBranch.slice('origin/'.length) : baseBranch;
+  if (PINNED_COMMIT.test(baseBranch)) {
+    const pinned = await pinnedBaseBranch(dir, baseBranch);
+    if (!pinned) {
+      return {
+        result: 'failed',
+        error: `this task started from commit ${baseBranch.slice(0, 8)}, which is on no known base branch — nothing to sync with`,
+      };
+    }
+    name = pinned;
   }
+  let ref = name;
+  await fetchBase(dir, name);
+  const remoteRef = await git(dir, ['rev-parse', '--verify', '--quiet', `origin/${name}^{commit}`]);
+  if (remoteRef.ok) ref = `origin/${name}`;
   const identityArgs = (await gitHasIdentity(dir)) ? [] : ['-c', 'user.name=cezar', '-c', 'user.email=cezar@local'];
   const merge = await git(dir, [...identityArgs, 'merge', '--no-edit', ref]);
   if (merge.ok) return { result: 'done' };

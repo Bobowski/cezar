@@ -12,12 +12,14 @@ import {
   repoSyncQuerySchema, type RepoPullResponse, type RepoSync,
   PROJECT_ICON_MAX_BYTES, setProjectIconSchema, type ProjectIconCandidates,
   dockerContainerParamsSchema, dockerStackParamsSchema, type DockerState,
+  githubReposQuerySchema, type GithubReposResponse,
   serviceLogsQuerySchema, serviceParamsSchema, servicePatchSchema, servicePinInputSchema, type ServiceLogs, type ServicesState,
   e2eSetupInputSchema, type E2eStatus,
 } from '@open-mercato/cezar-contract';
 import { SecretStore, SecretsError, type SecretScopeRef } from '../workspace/secrets.ts';
 import { listEnvFiles, readEnvFile, removeEnvFile, writeEnvFile } from '../env-files.ts';
 import { discoverServiceCandidates } from '../services/discover.ts';
+import { listGithubRepos, originSlug, type GhApiRunner } from './github-repos.ts';
 import {
   composeWantedPorts, containersSignature, dockerExec, groupStacks, listContainers, portConflicts,
   type DockerExec, type ListedContainer,
@@ -381,6 +383,8 @@ export interface ServerDeps {
    *  route's guards, cleanup and error surfacing are exercised for real
    *  against real temp dirs, without a network or a `gh` binary. */
   cloneRunner?: CloneRunner;
+  /** How the clone dialog's picker reaches `gh api`. Tests inject a scripted one. */
+  ghApiRunner?: GhApiRunner;
   /** How the Docker view reaches the `docker` CLI. Tests inject a scripted one. */
   dockerExec?: DockerExec;
   /** Host-wide model discovery service. Tests inject a deterministic adapter. */
@@ -2797,6 +2801,26 @@ export function createApp(deps: ServerDeps) {
     return updated;
   };
   const projectsRoutes = new Hono<ProjectApiEnv>()
+    // The clone dialog's picker. Registered before any `/projects/:projectId` so it is never read as one.
+    .get('/projects/github-repos', queryZodValidator(githubReposQuerySchema), async (c) => {
+      c.header('Cache-Control', 'no-store');
+      const off = (reason: string): GithubReposResponse => ({ available: false, reason, repos: [] });
+      if (capabilities().singleProject) return c.json(off(singleProjectRefusal('adding projects').error), 200);
+      const listing = await listGithubRepos({ ...(deps.ghApiRunner ? { run: deps.ghApiRunner } : {}), refresh: c.req.valid('query').refresh === '1' });
+      if (!listing.available) return c.json(off(listing.reason), 200);
+      const registry = (await loadWorkspaceConfig()).projects;
+      const origins = new Map<string, string>();
+      await Promise.all(registry.map(async (project) => {
+        const slug = await originSlug(project.root);
+        if (slug && !origins.has(slug)) origins.set(slug, project.id);
+      }));
+      const body: GithubReposResponse = {
+        available: true,
+        reason: null,
+        repos: listing.repos.map((repo) => ({ ...repo, projectId: origins.get(repo.slug.toLowerCase()) ?? null })),
+      };
+      return c.json(body, 200);
+    })
     .get('/projects', async (c) => {
       let projects: ProjectListEntry[] = [];
       let projectsDir = defaultWorkspaceConfig().projectsDir;

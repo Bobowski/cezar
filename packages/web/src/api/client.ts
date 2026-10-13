@@ -162,7 +162,7 @@ import type {
   TrackerItemsResponse,
   TrackerKind, TrackerCredentials, TrackerConnectionResponse, TrackerConnectionSourcesResponse,
   SecretsList, SecretValueInput, EnvFileContent, EnvFilesList, SetEnvFileInput,
-  DockerState, ServicePatch, ServicePin, ServicePinInput, ServicesState,
+  DockerState, GithubReposResponse, ServicePatch, ServicePin, ServicePinInput, ServicesState,
   E2eStatus, E2eSetupInput, E2eSetupResponse,
 } from '@open-mercato/cezar-api-client'
 import { parseProviderStatusResponse } from '@/lib/provider-status'
@@ -1523,6 +1523,11 @@ export async function registerProject(root: string): Promise<RegisterProjectResp
  * what the dialog waits on. Progress meanwhile comes from `checkout-progress` on the workspace
  * stream, keyed by `input.checkoutId`.
  */
+/** The clone dialog's picker (`GET /api/v1/projects/github-repos`). `refresh` skips the server's minute-long cache. */
+export async function getGithubRepos(opts?: ReadOptions & { refresh?: boolean }): Promise<GithubReposResponse> {
+  return unwrap(await cez.api.v1.projects['github-repos'].$get({ query: opts?.refresh ? { refresh: '1' } : {} }, init(opts)), '/projects/github-repos')
+}
+
 export async function checkoutProject(input: CheckoutProjectInput): Promise<RegisterProjectResponse> {
   return unwrap(await cez.api.v1.projects.checkout.$post({ json: input }), '/projects/checkout')
 }

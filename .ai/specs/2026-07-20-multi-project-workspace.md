@@ -578,6 +578,13 @@ progress state driven by `checkout-progress` SSE, then registration +
 navigation as above. Errors (`gh` auth, network, existing dir) surface in the
 dialog verbatim from `{ error }`.
 
+As built on `brutus` (2026-10-13): the input is also a picker. `GET /api/v1/projects/github-repos`
+lists what the signed-in `gh` account can clone (`gh api user/repos`, the 300 most recently
+pushed, archived ones left out, cached for a minute); typing narrows the list, picking a row
+fills the input, and a repository that is already a registered project (matched by its checkout's
+`origin`) opens that project instead. When the list cannot be read the input works alone and
+the dialog says why.
+
 ### Bookmarklets — project-oriented
 
 The bookmarklets pane lives under each project's settings; generated

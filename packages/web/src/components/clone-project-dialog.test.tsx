@@ -4,8 +4,8 @@ import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createQueryClient } from '@/api/query-client'
-import type { ProjectListEntry } from '@open-mercato/cezar-api-client'
-import { CloneProjectDialog, githubSsoUrl } from '@/components/clone-project-dialog'
+import type { GithubRepo, GithubReposResponse, ProjectListEntry } from '@open-mercato/cezar-api-client'
+import { CloneProjectDialog, githubSsoUrl, matchRepos, pushedAgo } from '@/components/clone-project-dialog'
 import { useGlobalSettings } from '@/components/global-settings'
 import { ShellProviders } from '@/test/shell-providers'
 
@@ -62,7 +62,7 @@ const posted: Record<string, unknown>[] = []
 
 /** `checkout` answers the POST; it may be a deferred promise so a test can inspect the pending
  *  state (the progress line) before the clone "finishes". */
-function serve(checkout: () => Promise<Response> = async () => json({ project: PROJECT })): void {
+function serve(checkout: () => Promise<Response> = async () => json({ project: PROJECT }), repos?: GithubReposResponse): void {
   posted.length = 0
   fetchMock.mockImplementation(async (input, init) => {
     const url = new URL(String(input), 'http://localhost')
@@ -70,6 +70,7 @@ function serve(checkout: () => Promise<Response> = async () => json({ project: P
       posted.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
       return checkout()
     }
+    if (url.pathname === '/api/v1/projects/github-repos' && repos) return json(repos)
     if (url.pathname === '/api/v1/projects') {
       return json({ projects: [], bootProject: 'cezar', projectsDir: '~/cezar/projects' })
     }
@@ -315,6 +316,81 @@ describe('CloneProjectDialog', () => {
   })
 })
 
+const repo = (over: Partial<GithubRepo>): GithubRepo => ({
+  slug: 'acme/shop', owner: 'acme', name: 'shop', description: null, private: false, fork: false, pushedAt: null, projectId: null, ...over,
+})
+const REPOS: GithubReposResponse = {
+  available: true,
+  reason: null,
+  repos: [
+    repo({ private: true, description: 'Medusa backend' }),
+    repo({ slug: 'acme/storefront', name: 'storefront' }),
+    repo({ slug: 'me/cezar', owner: 'me', name: 'cezar', projectId: 'cezar-2' }),
+  ],
+}
+const rows = () => [...document.querySelectorAll('[data-slot="clone-repo"]')] as HTMLButtonElement[]
+
+describe('CloneProjectDialog — the repository list', () => {
+  it('lists the repositories of the account and clones the one that is picked', async () => {
+    serve(undefined, REPOS)
+    renderDialog()
+    await waitFor(() => expect(rows()).toHaveLength(3))
+    expect(rows()[0]?.textContent).toContain('acme/shop')
+    expect(rows()[0]?.querySelector('[aria-label="Private"]')).not.toBeNull()
+
+    fireEvent.click(rows()[1]!)
+    expect(urlInput().value).toBe('acme/storefront')
+    await waitFor(() => expect(slot('clone-target')?.textContent).toBe('~/cezar/projects/storefront'))
+    // A pick is a selection, not a search: the other rows stay within reach.
+    expect(rows()).toHaveLength(3)
+    expect(rows()[1]?.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.click(cloneButton())
+    await waitFor(() => expect(posted[0]).toMatchObject({ url: 'acme/storefront' }))
+  })
+
+  it('narrows as you type, and still takes a pasted URL that matches nothing', async () => {
+    serve(undefined, REPOS)
+    renderDialog()
+    await waitFor(() => expect(rows()).toHaveLength(3))
+    fireEvent.change(urlInput(), { target: { value: 'medusa' } })
+    expect(rows().map((row) => row.textContent)).toHaveLength(1)
+    fireEvent.change(urlInput(), { target: { value: 'https://github.com/other/thing' } })
+    expect(rows()).toHaveLength(0)
+    expect(cloneButton().disabled).toBe(false)
+  })
+
+  it('opens a repository that is already a project instead of cloning it again', async () => {
+    serve(undefined, REPOS)
+    const { onOpenChange } = renderDialog()
+    await waitFor(() => expect(rows()).toHaveLength(3))
+    expect(rows()[2]?.textContent).toContain('Added')
+    fireEvent.click(rows()[2]!)
+    expect(onOpenChange).toHaveBeenCalledWith(false)
+    await waitFor(() => expect(document.querySelector('[data-testid="location"]')?.textContent).toBe('/p/cezar-2/'))
+    expect(posted).toHaveLength(0)
+  })
+
+  it('says why the list is missing and keeps the paste field working', async () => {
+    serve(undefined, { available: false, reason: 'gh is not signed in — run `gh auth login`', repos: [] })
+    renderDialog()
+    await waitFor(() => expect(slot('clone-repos-unavailable')?.textContent).toContain('gh is not signed in'))
+    expect(slot('clone-repos')).toBeNull()
+    fireEvent.change(urlInput(), { target: { value: 'open-mercato/cezar' } })
+    await waitFor(() => expect(cloneButton().disabled).toBe(false))
+  })
+
+  it('orders nothing itself: it filters and it words the age', () => {
+    expect(matchRepos(REPOS.repos, ' ACME/Shop ')).toHaveLength(3)
+    expect(matchRepos(REPOS.repos, 'store').map((r) => r.slug)).toEqual(['acme/storefront'])
+    const now = Date.parse('2026-10-13T12:00:00Z')
+    expect(pushedAgo('2026-10-13T08:00:00Z', now)).toBe('today')
+    expect(pushedAgo('2026-10-01T12:00:00Z', now)).toBe('12d ago')
+    expect(pushedAgo('2026-06-01T12:00:00Z', now)).toBe('4mo ago')
+    expect(pushedAgo('2024-06-01T12:00:00Z', now)).toBe('2y ago')
+    expect(pushedAgo(null, now)).toBe('')
+  })
+})
 
 describe('githubSsoUrl', () => {
   const url = 'https://github.com/orgs/Acme/sso?authorization_request=ABC'

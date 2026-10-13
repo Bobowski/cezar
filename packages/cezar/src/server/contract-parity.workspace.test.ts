@@ -91,6 +91,8 @@ describe('src/contract projects/workspace schemas match the routes exactly', () 
   type Projects200 = InferResponseType<typeof client.api.v1.projects.$get, 200>;
   type RegisterProject200 = InferResponseType<typeof client.api.v1.projects.$post, 200>;
   type Checkout200 = InferResponseType<typeof client.api.v1.projects.checkout.$post, 200>;
+  type GithubRepos200 = InferResponseType<(typeof client.api.v1.projects)['github-repos']['$get'], 200>;
+  type GithubReposParity = Assert<Mutual<import('@open-mercato/cezar-contract').GithubReposResponse, GithubRepos200>>;
   type UpdateProject200 = InferResponseType<(typeof client.api.v1.projects)[':projectId']['$patch'], 200>;
   type RemoveProject200 = InferResponseType<(typeof client.api.v1.projects)[':projectId']['$delete'], 200>;
   type FsBrowse200 = InferResponseType<typeof client.api.v1.fs.browse.$get, 200>;

@@ -1,11 +1,11 @@
-import { ChevronRightIcon, SettingsIcon } from 'lucide-react'
+import { ChevronRightIcon, LockIcon, SettingsIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { useGlobalSettings } from '@/components/global-settings'
 
 import { onWorkspaceEvent } from '@/api/global-events'
-import { useCheckoutProject, useProjects } from '@/api/queries'
-import type { CheckoutProgressEvent } from '@open-mercato/cezar-api-client'
+import { useCheckoutProject, useGithubRepos, useProjects } from '@/api/queries'
+import type { CheckoutProgressEvent, GithubRepo } from '@open-mercato/cezar-api-client'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -46,11 +46,40 @@ export function githubSsoUrl(error: unknown): string | null {
   return match?.[0] ?? null
 }
 
+/** How long ago a repository was pushed to, in the fewest words that still order a list. */
+export function pushedAgo(pushedAt: string | null, now = Date.now()): string {
+  const then = pushedAt === null ? Number.NaN : Date.parse(pushedAt)
+  if (Number.isNaN(then)) return ''
+  const days = Math.floor((now - then) / 86_400_000)
+  if (days < 1) return 'today'
+  if (days < 30) return `${days}d ago`
+  if (days < 365) return `${Math.floor(days / 30)}mo ago`
+  return `${Math.floor(days / 365)}y ago`
+}
+
+/** Rows shown at once: the list is a picker, and a longer one is a search away. */
+const REPO_ROWS = 60
+
+/**
+ * The picker's rows for what is typed. An exact slug is a SELECTION, not a search — the whole
+ * list stays, so picking a different repository does not start with clearing the field.
+ */
+export function matchRepos(repos: GithubRepo[], typed: string): GithubRepo[] {
+  const needle = typed.trim().toLowerCase()
+  if (needle === '' || repos.some((repo) => repo.slug.toLowerCase() === needle)) return repos.slice(0, REPO_ROWS)
+  return repos
+    .filter((repo) => repo.slug.toLowerCase().includes(needle) || (repo.description ?? '').toLowerCase().includes(needle))
+    .slice(0, REPO_ROWS)
+}
+
 /**
  * "Add project → Clone from GitHub" (multi-project spec, "Add project" option B / step 4.3).
  *
  * The mockup's three parts, and what each one is faithful to:
  *
+ * - **The repository list** is what the signed-in `gh` account can clone, most recently pushed
+ *   first. Picking a row writes its `owner/repo` into the input; typing narrows the list. When
+ *   the list cannot be read the input alone remains, with the reason.
  * - **The repo input** takes `owner/repo` or any GitHub URL spelling. It is NOT validated here
  *   beyond "non-empty": the server parses it with the one parser that also decides what `gh`
  *   is handed, and a second, looser copy in the browser would only disagree with it.
@@ -81,6 +110,8 @@ export function CloneProjectDialog({
   const ssoRetryArmed = useRef(false)
   const projects = useProjects()
   const checkout = useCheckoutProject()
+  const repos = useGithubRepos()
+  const listed = repos.data?.available ? matchRepos(repos.data.repos, url) : []
   const { mutate, isPending } = checkout
   const navigate = useNavigate()
   const ssoUrl = githubSsoUrl(checkout.error)
@@ -181,7 +212,7 @@ export function CloneProjectDialog({
             id="clone-url"
             data-slot="clone-url"
             autoFocus
-            placeholder="owner/repo or https://github.com/owner/repo"
+            placeholder={repos.data?.available ? 'Search your repositories, or paste owner/repo or a URL' : 'owner/repo or https://github.com/owner/repo'}
             value={url}
             disabled={checkout.isPending}
             onChange={(event) => setUrl(event.target.value)}
@@ -189,6 +220,51 @@ export function CloneProjectDialog({
               if (event.key === 'Enter') clone()
             }}
           />
+          {repos.isPending ? <p className="text-xs text-muted-foreground">Loading your repositories…</p> : null}
+          {repos.data && !repos.data.available ? (
+            <p data-slot="clone-repos-unavailable" className="text-xs text-pretty text-muted-foreground">
+              Your repositories could not be listed ({repos.data.reason}). Paste one instead.
+            </p>
+          ) : null}
+          {repos.data?.available ? (
+            <ul data-slot="clone-repos" aria-label="Your repositories" className="max-h-60 min-w-0 overflow-y-auto rounded-md border border-border">
+              {listed.length === 0 ? <li className="px-3 py-2 text-xs text-muted-foreground">No repository matches. A full URL still works.</li> : null}
+              {listed.map((repo) => {
+                const picked = repo.slug.toLowerCase() === url.trim().toLowerCase()
+                return (
+                  <li key={repo.slug}>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      data-slot="clone-repo"
+                      aria-pressed={picked}
+                      disabled={checkout.isPending}
+                      className={cn('h-auto w-full justify-start gap-2 rounded-none px-3 py-1.5 text-left font-normal', picked && 'bg-accent')}
+                      onClick={() => {
+                        // Already a project here: open it instead of cloning a second copy.
+                        if (repo.projectId !== null) {
+                          onOpenChange(false)
+                          navigate(`/p/${encodeURIComponent(repo.projectId)}/`)
+                          return
+                        }
+                        setUrl(repo.slug)
+                        setName('')
+                      }}
+                    >
+                      <span className="flex min-w-0 flex-1 flex-col">
+                        <span className="flex min-w-0 items-center gap-1.5 text-[13px]">
+                          <span className="truncate"><span className="text-muted-foreground">{repo.owner}/</span><span className="font-medium text-foreground">{repo.name}</span></span>
+                          {repo.private ? <LockIcon aria-label="Private" className="size-3 shrink-0 text-muted-foreground" /> : null}
+                        </span>
+                        {repo.description ? <span className="truncate text-[11px] text-muted-foreground">{repo.description}</span> : null}
+                      </span>
+                      <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">{repo.projectId !== null ? 'Added — open' : pushedAgo(repo.pushedAt)}</span>
+                    </Button>
+                  </li>
+                )
+              })}
+            </ul>
+          ) : null}
         </Field>
 
         <Field>

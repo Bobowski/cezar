@@ -178,6 +178,36 @@ export const checkoutProjectInputSchema = z.object({
 });
 export type CheckoutProjectInput = z.infer<typeof checkoutProjectInputSchema>;
 
+/** A repository the signed-in GitHub account can clone. */
+export const githubRepoSchema = z.object({
+  /** `owner/name` — what `POST /projects/checkout` takes as `url`. */
+  slug: z.string(),
+  owner: z.string(),
+  name: z.string(),
+  description: z.string().nullable(),
+  private: z.boolean(),
+  fork: z.boolean(),
+  pushedAt: z.string().nullable(),
+  /** The registered project whose `origin` is this repository, when there is one. */
+  projectId: z.string().nullable(),
+});
+export type GithubRepo = z.infer<typeof githubRepoSchema>;
+
+/**
+ * `GET /api/v1/projects/github-repos` — the clone dialog's picker: the account's most recently
+ * pushed repositories, across its organizations. `available: false` (no `gh`, not signed in,
+ * offline) leaves the dialog its paste-a-URL field; `reason` says why.
+ */
+export const githubReposResponseSchema = z.object({
+  available: z.boolean(),
+  reason: z.string().nullable(),
+  repos: z.array(githubRepoSchema),
+});
+export type GithubReposResponse = z.infer<typeof githubReposResponseSchema>;
+
+export const githubReposQuerySchema = z.object({ refresh: z.enum(['1']).optional() });
+export type GithubReposQuery = z.infer<typeof githubReposQuerySchema>;
+
 /** One directory in a `GET /api/v1/fs/browse` listing (multi-project spec, step 4.1). `path` is
  *  absolute — same-origin route, like `ProjectListEntry.root`. */
 export const fsBrowseDirSchema = z.object({

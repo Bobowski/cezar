@@ -8,6 +8,7 @@ import {
   ApiError,
   browseFs,
   checkoutProject,
+  getGithubRepos,
   connectProvider,
   continueRun,
   continueProjectRun,
@@ -442,6 +443,7 @@ export const workspaceQueryKeys = {
   models: (runner: string) => ['workspace', 'models', runner] as const,
   providerStatus: ['workspace', 'providers', 'status'] as const,
   projects: ['workspace', 'projects'] as const,
+  githubRepos: ['workspace', 'github-repos'] as const,
   /** The cross-project task index behind ⌘K. Workspace-led for the same reason the registry is:
    *  it answers for every project at once, so no scope owns it. */
   runsIndex: ['workspace', 'runs-index'] as const,
@@ -885,6 +887,16 @@ export function useOpenAgentAccountFile() {
       return openAgentAccountFile(routeId, input)
     },
     retry: false,
+  })
+}
+
+/** What the signed-in GitHub account can clone — asked only while the clone dialog is open. */
+export function useGithubRepos() {
+  return useQuery({
+    queryKey: workspaceQueryKeys.githubRepos,
+    queryFn: ({ signal }) => getGithubRepos({ signal }),
+    retry: false,
+    staleTime: 60_000,
   })
 }
 

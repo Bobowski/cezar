@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  browserTab, bufferFrom, closeOthers, closeTab, DEFAULT_LAYOUT, diffTab, EMPTY_TABS, focusedGroup, isDiffTab, isDirty, isFileTab, keepTab,
-  languageOf, lineMarksFromPatch, loadDraft, loadLayout, MAX_GROUPS, openBrowser, openPaths, openTab, openToSide,
-  pruneBrowsers, reconcile, resolveConflict, retargetTab, saveDraft, saveLayout, stepTab, tabFile, tabLabel, updateGroup,
+  agentTab, browserTab, bufferFrom, closeOthers, closeTab, DEFAULT_LAYOUT, diffTab, EMPTY_TABS, focusedGroup, isDiffTab, isDirty, isFileTab, keepTab,
+  languageOf, lineMarksFromPatch, loadDraft, loadLayout, MAX_GROUPS, openAgent, openBrowser, openPaths, openTab, openToSide,
+  pruneTools, reconcile, resolveConflict, retargetTab, saveDraft, saveLayout, stepTab, tabFile, tabLabel, updateGroup,
   updateGroups, type Buffer, type CodeLayout, type Storage,
 } from './code-state'
 
@@ -70,8 +70,8 @@ describe('what survives a reload', () => {
     expect(loadLayout(storage, 'p', 'main')).toEqual(DEFAULT_LAYOUT)
     const layout: CodeLayout = {
       groups: [{ tabs: [{ path: 'a.ts', preview: false }], active: 'a.ts' }, { tabs: [{ path: 'browser:b1', preview: false }], active: 'browser:b1' }],
-      sizes: [70, 30], focused: 1, sidebar: 'scm', panel: 'terminal', panelSize: 40, agent: true, agentSize: 35, agentRun: 'run-9',
-      browsers: { b1: { tabs: ['http://localhost:3000/'], active: 0 } }, wrap: true,
+      sizes: [70, 30], focused: 1, sidebar: 'scm', panel: 'terminal', panelSize: 40,
+      browsers: { b1: { tabs: ['http://localhost:3000/'], active: 0 } }, agents: {}, wrap: true,
     }
     saveLayout(storage, 'p', 'main', layout)
     expect(loadLayout(storage, 'p', 'main')).toEqual(layout)
@@ -79,7 +79,7 @@ describe('what survives a reload', () => {
     expect(loadLayout(storage, 'p', 'run-1')).toEqual(DEFAULT_LAYOUT)
     storage.setItem('cez:code:layout:p:main', JSON.stringify({
       groups: [{ tabs: [{ path: 7 }, { path: 'b.ts' }], active: 'gone' }, { tabs: [] }], sizes: [10, 20], focused: 5, panel: 'nope', sidebar: null,
-      panelSize: 2, agentSize: 'wide', browsers: { orphan: { tabs: ['x'], active: 0 } },
+      panelSize: 2, browsers: { orphan: { tabs: ['x'], active: 0 } }, agents: { orphan: 'run-1' },
     }))
     expect(loadLayout(storage, 'p', 'main')).toEqual({ ...DEFAULT_LAYOUT, groups: [{ tabs: [{ path: 'b.ts', preview: false }], active: 'b.ts' }], panelSize: 10 })
     storage.setItem('cez:code:layout:p:main', '{ not json')
@@ -169,8 +169,32 @@ describe('editor groups', () => {
     expect(shape(opened)).toEqual([['a.ts', 'browser:b1']])
     expect(opened.groups[0]?.active).toBe('browser:b1')
     expect(opened.browsers).toEqual({ b1: { tabs: ['http://localhost:3000/'], active: 0 } })
-    expect(pruneBrowsers(opened)).toBe(opened)
-    expect(pruneBrowsers(updateGroup(opened, 0, (group) => closeTab(group, 'browser:b1'))).browsers).toEqual({})
+    expect(pruneTools(opened)).toBe(opened)
+    expect(pruneTools(updateGroup(opened, 0, (group) => closeTab(group, 'browser:b1'))).browsers).toEqual({})
+  })
+
+  it('opens an agent as a tab, focuses the one already showing a task, and forgets a closed one', () => {
+    const fresh = openAgent(one('a.ts'), 'g1', null)
+    expect(shape(fresh)).toEqual([['a.ts', 'agent:g1']])
+    expect(fresh.agents).toEqual({ g1: null })
+    expect(tabLabel(agentTab('g1'))).toBe('New task')
+    expect(tabLabel(agentTab('g1'), {}, { g1: 'Fix the header' })).toBe('Fix the header')
+    expect(isFileTab(agentTab('g1'))).toBe(false)
+    // A task already open in an agent tab is brought forward, not opened a second time.
+    const shown = openAgent({ ...fresh, agents: { g1: 'run-1' }, groups: [{ ...fresh.groups[0]!, active: 'a.ts' }] }, 'g2', 'run-1')
+    expect(shape(shown)).toEqual([['a.ts', 'agent:g1']])
+    expect(shown.groups[0]?.active).toBe('agent:g1')
+    // Beside the code, when asked.
+    const side = openAgent(one('a.ts'), 'g3', 'run-2', true)
+    expect(shape(side)).toEqual([['a.ts'], ['agent:g3']])
+    expect(pruneTools(updateGroup(side, 1, (group) => closeTab(group, 'agent:g3'))).agents).toEqual({})
+  })
+
+  it('restores the task each agent tab showed', () => {
+    const storage = memory()
+    const layout = openAgent(openAgent(one('a.ts'), 'g1', 'run-1'), 'g2', null)
+    saveLayout(storage, 'p', 'main', layout)
+    expect(loadLayout(storage, 'p', 'main').agents).toEqual({ g1: 'run-1', g2: null })
   })
 })
 

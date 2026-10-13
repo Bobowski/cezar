@@ -133,18 +133,16 @@ export interface CodeLayout {
   panel: CodePanel | null
   /** The bottom panel's share of the column, in percent. */
   panelSize: number
-  /** The agent pane: open or not, its share of the row, and which task it shows (`null` = a new one). */
-  agent: boolean
-  agentSize: number
-  agentRun: string | null
   /** State of every open browser tab, by the id in its tab path. */
   browsers: Record<string, CodeBrowser>
+  /** The task every open agent tab shows, by the id in its tab path; `null` is the new-task form. */
+  agents: Record<string, string | null>
   wrap: boolean
 }
 
 export const DEFAULT_LAYOUT: CodeLayout = {
   groups: [EMPTY_TABS], sizes: [100], focused: 0, sidebar: 'explorer', panel: null, panelSize: 32,
-  agent: false, agentSize: 30, agentRun: null, browsers: {}, wrap: false,
+  browsers: {}, agents: {}, wrap: false,
 }
 
 export const focusedGroup = (layout: CodeLayout): TabsState => layout.groups[layout.focused] ?? layout.groups[0] ?? EMPTY_TABS
@@ -199,6 +197,7 @@ export function closeOthers(group: TabsState, path: string, keep: (tab: CodeTab)
 
 const DIFF_PREFIX = 'diff:'
 const BROWSER_PREFIX = 'browser:'
+const AGENT_PREFIX = 'agent:'
 /** A tab that shows a file's changes instead of the file. Its path is not a path on disk. */
 export const diffTab = (path: string): string => `${DIFF_PREFIX}${path}`
 export const isDiffTab = (path: string): boolean => path.startsWith(DIFF_PREFIX)
@@ -206,10 +205,18 @@ export const isDiffTab = (path: string): boolean => path.startsWith(DIFF_PREFIX)
 export const browserTab = (id: string): string => `${BROWSER_PREFIX}${id}`
 export const isBrowserTab = (path: string): boolean => path.startsWith(BROWSER_PREFIX)
 export const browserId = (path: string): string => path.slice(BROWSER_PREFIX.length)
+/** A tab that is an agent: a task's conversation, or the form that starts one. */
+export const agentTab = (id: string): string => `${AGENT_PREFIX}${id}`
+export const isAgentTab = (path: string): boolean => path.startsWith(AGENT_PREFIX)
+export const agentId = (path: string): string => path.slice(AGENT_PREFIX.length)
+/** A tab with no file behind it: a browser or an agent. */
+export const isToolTab = (path: string): boolean => isBrowserTab(path) || isAgentTab(path)
 /** A tab that IS a file in the editor — the only kind with a buffer, a path and a draft. */
-export const isFileTab = (path: string): boolean => !isDiffTab(path) && !isBrowserTab(path)
+export const isFileTab = (path: string): boolean => !isDiffTab(path) && !isToolTab(path)
 export const tabFile = (path: string): string => (isDiffTab(path) ? path.slice(DIFF_PREFIX.length) : path)
-export const tabLabel = (path: string, browsers: Record<string, CodeBrowser> = {}): string => {
+/** `agentTitles` names the task each agent tab shows, by tab id; absent is the new-task form. */
+export const tabLabel = (path: string, browsers: Record<string, CodeBrowser> = {}, agentTitles: Record<string, string> = {}): string => {
+  if (isAgentTab(path)) return agentTitles[agentId(path)] ?? 'New task'
   if (isBrowserTab(path)) {
     const browser = browsers[browserId(path)]
     const url = browser?.tabs[browser.active] ?? ''
@@ -230,11 +237,29 @@ export function openBrowser(layout: CodeLayout, id: string, url?: string): CodeL
   return updateGroup({ ...layout, browsers }, layout.focused, (group) => openTab(group, browserTab(id), true))
 }
 
-/** Forget the state of browser tabs no group shows any more. */
-export function pruneBrowsers(layout: CodeLayout): CodeLayout {
-  const open = new Set(openPaths(layout).filter(isBrowserTab).map(browserId))
-  const kept = Object.fromEntries(Object.entries(layout.browsers).filter(([id]) => open.has(id)))
-  return Object.keys(kept).length === Object.keys(layout.browsers).length ? layout : { ...layout, browsers: kept }
+/**
+ * An agent tab for `runId` (`null`: the new-task form). One that already shows that task is
+ * focused instead of opened twice; `side` puts a new one beside the focused group.
+ */
+export function openAgent(layout: CodeLayout, id: string, runId: string | null, side = false): CodeLayout {
+  const existing = runId === null ? undefined : Object.entries(layout.agents).find(([, shown]) => shown === runId)?.[0]
+  if (existing !== undefined) {
+    const at = layout.groups.findIndex((group) => group.tabs.some((tab) => tab.path === agentTab(existing)))
+    if (at !== -1) return updateGroup({ ...layout, focused: at }, at, (group) => ({ ...group, active: agentTab(existing) }))
+  }
+  const next = { ...layout, agents: { ...layout.agents, [id]: runId } }
+  return side ? openToSide(next, agentTab(id)) : updateGroup(next, next.focused, (group) => openTab(group, agentTab(id), true))
+}
+
+/** Forget the state of browser and agent tabs no group shows any more. */
+export function pruneTools(layout: CodeLayout): CodeLayout {
+  const open = openPaths(layout)
+  const browserIds = new Set(open.filter(isBrowserTab).map(browserId))
+  const agentIds = new Set(open.filter(isAgentTab).map(agentId))
+  const browsers = Object.fromEntries(Object.entries(layout.browsers).filter(([id]) => browserIds.has(id)))
+  const agents = Object.fromEntries(Object.entries(layout.agents).filter(([id]) => agentIds.has(id)))
+  const same = Object.keys(browsers).length === Object.keys(layout.browsers).length && Object.keys(agents).length === Object.keys(layout.agents).length
+  return same ? layout : { ...layout, browsers, agents }
 }
 
 function reviveGroup(raw: unknown): TabsState | null {
@@ -275,7 +300,13 @@ export function loadLayout(storage: Storage | null, projectId: string, tree: str
       && Math.abs(raw.sizes.reduce((sum, size) => sum + size, 0) - 100) < 0.5
       ? raw.sizes
       : equalSizes(groups.length)
-    const open = new Set(groups.flatMap((group) => group.tabs.map((tab) => tab.path)).filter(isBrowserTab).map(browserId))
+    const paths = groups.flatMap((group) => group.tabs.map((tab) => tab.path))
+    const open = new Set(paths.filter(isBrowserTab).map(browserId))
+    const agents: Record<string, string | null> = {}
+    for (const id of paths.filter(isAgentTab).map(agentId)) {
+      const shown = (raw.agents as Record<string, unknown> | undefined)?.[id]
+      agents[id] = typeof shown === 'string' && shown !== '' ? shown : null
+    }
     return {
       groups,
       sizes,
@@ -283,10 +314,8 @@ export function loadLayout(storage: Storage | null, projectId: string, tree: str
       sidebar: raw.sidebar === 'search' || raw.sidebar === 'scm' ? raw.sidebar : 'explorer',
       panel: raw.panel === 'terminal' || raw.panel === 'services' ? raw.panel : null,
       panelSize: number(raw.panelSize, DEFAULT_LAYOUT.panelSize, 10, 80),
-      agent: raw.agent === true,
-      agentSize: number(raw.agentSize, DEFAULT_LAYOUT.agentSize, 15, 70),
-      agentRun: typeof raw.agentRun === 'string' && raw.agentRun !== '' ? raw.agentRun : null,
       browsers: reviveBrowsers(raw.browsers, open),
+      agents,
       wrap: raw.wrap === true,
     }
   } catch {

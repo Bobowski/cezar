@@ -296,7 +296,7 @@ describe('Code page as an editor (VS Code-like)', () => {
     await waitFor(() => expect(document.querySelector('[data-slot="code-markdown"]')).toBeNull())
   })
 
-  it('puts a draggable border between editor groups and beside the agent pane', async () => {
+  it('puts a draggable border between editor groups', async () => {
     setup()
     await view()
     expect(screen.queryAllByRole('separator')).toHaveLength(0)
@@ -305,8 +305,6 @@ describe('Code page as an editor (VS Code-like)', () => {
     expect(screen.getByRole('separator', { name: 'Resize editor groups 1 and 2' })).toBeTruthy()
     // The library owns the drag; the page owns which panels exist.
     expect(document.querySelectorAll('[data-panel-id^="code-group-"]')).toHaveLength(2)
-    fireEvent.keyDown(window, { key: 'l', metaKey: true })
-    expect(await screen.findByRole('separator', { name: 'Resize agent pane' })).toBeTruthy()
   })
 
   it('opens a browser as a tab beside the code, named after its address', async () => {
@@ -321,24 +319,32 @@ describe('Code page as an editor (VS Code-like)', () => {
     await view()
   })
 
-  it('opens the agent pane, starts a task from it with the open file as context, and shows that task', async () => {
+  it('opens the agent as a tab, like a file, and starts a task from it with the last file as context', async () => {
     const { sent } = setup({ runs: [RUN] })
     await view()
     expect(document.querySelector('[data-slot="code-agent"]')).toBeNull()
     fireEvent.keyDown(window, { key: 'l', metaKey: true })
-    const pane = await waitFor(() => {
-      const found = document.querySelector('[data-slot="code-agent"]')
-      expect(found).not.toBeNull()
-      return found as HTMLElement
-    })
-    // Existing tasks are one pick away.
-    await waitFor(() => expect([...pane.querySelectorAll('select[aria-label="Task"] option')].map((option) => option.textContent)).toEqual(['New task…', 'Fix the header']))
+    await waitFor(() => expect(tabsOf(0)).toEqual(['app.ts', 'New task']))
+    const pane = document.querySelector('[data-slot="code-group"] [data-slot="code-agent"]') as HTMLElement
+    expect(pane).not.toBeNull()
+    // A shadcn Select, not a native one (Radix keeps a hidden native twin for forms only).
+    expect(pane.querySelector('select:not([aria-hidden])')).toBeNull()
+    expect(pane.querySelector('[data-slot="select-trigger"][aria-label="Task"]')?.textContent).toContain('New task…')
     fireEvent.change(pane.querySelector('textarea')!, { target: { value: 'Rename the greeting' } })
     fireEvent.click(pane.querySelector('button[type=submit]')!)
     await waitFor(() => expect(sent.find((request) => request.method === 'POST' && request.path === '/api/v1/runs')?.body).toEqual({
       workflow: 'quick-task',
       task: 'Rename the greeting\n\nThe file open in my editor: src/app.ts',
     }))
+  })
+
+  it('names an agent tab after the task it shows, and does not open the same task twice', async () => {
+    window.localStorage.setItem(`cez:code:layout:${queryScope()}:main`, JSON.stringify({
+      groups: [{ tabs: [{ path: 'src/app.ts', preview: false }, { path: 'agent:g1', preview: false }], active: 'agent:g1' }], focused: 0, agents: { g1: 'run-1' },
+    }))
+    setup({ runs: [RUN], at: '/code' })
+    await waitFor(() => expect(tabsOf(0)).toEqual(['app.ts', 'Fix the header']))
+    expect(document.querySelector('[data-slot="code-sidebar"] [data-slot="select-trigger"][aria-label="Checkout"]')?.textContent).toContain('Main checkout')
   })
 
   it('goes full screen with its sidebar, and back', async () => {

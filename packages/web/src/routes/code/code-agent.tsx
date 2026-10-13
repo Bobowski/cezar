@@ -1,4 +1,4 @@
-import { PlusIcon, XIcon } from 'lucide-react'
+import { ExternalLinkIcon, PlusIcon } from 'lucide-react'
 import { lazy, Suspense, useState } from 'react'
 
 import type { ApiRun } from '@open-mercato/cezar-api-client'
@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { IconTooltip } from '@/components/ui/icon-tooltip'
 import { Label } from '@/components/ui/label'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from '@/components/ui/toaster'
 import { Link } from '@/lib/project-router'
@@ -18,45 +18,50 @@ const Conversation = lazy(() => import('@/routes/task-workspace/task-workspace')
 
 /** The workflow a task started from here runs, when the user has not picked one. */
 export const DEFAULT_AGENT_WORKFLOW = 'quick-task'
+/** Radix's Select has no empty value, so "no task yet" needs a name of its own. */
+const NEW_TASK = '__new__'
 
 /**
- * The agent pane (spec 2026-10-11-code-page): a task's conversation beside the code, or the
- * place to start one. Choosing a task here also decides where the browser's Design Mode notes
- * go — to that task, or into a new one.
+ * An agent tab (spec 2026-10-11-code-page): a task's conversation beside the code, or the form
+ * that starts one. It is a tab like a file or a browser — it splits, moves and resizes the same
+ * way. The task chosen here is also where the browser's Design Mode notes go.
  */
-export function AgentPane({
-  runs, run, activeFile, onSelect, onStart, onClose,
+export function AgentTab({
+  runs, run, activeFile, onSelect, onStart,
 }: {
   runs: readonly ApiRun[]
   /** The task shown; `null` is the new-task form. */
   run: ApiRun | null
-  /** The file in the focused editor — offered as context for a new task. */
+  /** The file last focused in an editor — offered as context for a new task. */
   activeFile: string | null
   onSelect: (runId: string | null) => void
-  /** Start a task. Resolves once it exists (and is selected). */
+  /** Start a task. Resolves once it exists (and this tab shows it). */
   onStart: (input: { task: string; workflow: string }) => Promise<void>
-  onClose: () => void
 }) {
   const recent = [...runs].filter((each) => !each.archived).sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '')).slice(0, 40)
   return (
-    <aside data-slot="code-agent" aria-label="Agent" className="flex h-full min-w-0 flex-col bg-background">
-      <header className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-2">
-        <NativeSelect aria-label="Task" value={run?.id ?? ''} onChange={(event) => onSelect(event.target.value === '' ? null : event.target.value)} className="h-7 min-w-0 flex-1 text-xs">
-          <NativeSelectOption value="">New task…</NativeSelectOption>
-          {run && !recent.some((each) => each.id === run.id) ? <NativeSelectOption value={run.id}>{runTitle(run)}</NativeSelectOption> : null}
-          {recent.map((each) => <NativeSelectOption key={each.id} value={each.id}>{runTitle(each)}</NativeSelectOption>)}
-        </NativeSelect>
+    <section data-slot="code-agent" aria-label="Agent" className="flex h-full min-w-0 flex-1 flex-col bg-background">
+      <header className="flex h-10 shrink-0 items-center gap-1 border-b border-border px-2">
+        <Select value={run?.id ?? NEW_TASK} onValueChange={(value) => onSelect(value === NEW_TASK ? null : value)}>
+          <SelectTrigger size="sm" aria-label="Task" className="min-w-0 flex-1">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NEW_TASK}>New task…</SelectItem>
+            {run && !recent.some((each) => each.id === run.id) ? <SelectItem value={run.id}>{runTitle(run)}</SelectItem> : null}
+            {recent.map((each) => <SelectItem key={each.id} value={each.id}>{runTitle(each)}</SelectItem>)}
+          </SelectContent>
+        </Select>
         {run ? (
           <>
             <IconTooltip label="New task">
-              <Button variant="ghost" size="icon-xs" aria-label="New task" onClick={() => onSelect(null)}><PlusIcon aria-hidden="true" /></Button>
+              <Button variant="ghost" size="icon-sm" aria-label="New task" onClick={() => onSelect(null)}><PlusIcon aria-hidden="true" /></Button>
             </IconTooltip>
-            <Button variant="ghost" size="xs" asChild><Link to={`/tasks/${run.id}`}>Open</Link></Button>
+            <IconTooltip label="Open the task">
+              <Button variant="ghost" size="icon-sm" aria-label="Open the task" asChild><Link to={`/tasks/${run.id}`}><ExternalLinkIcon aria-hidden="true" /></Link></Button>
+            </IconTooltip>
           </>
         ) : null}
-        <IconTooltip label="Close">
-          <Button variant="ghost" size="icon-xs" aria-label="Close agent" onClick={onClose}><XIcon aria-hidden="true" /></Button>
-        </IconTooltip>
       </header>
       <div className="relative flex min-h-0 flex-1 flex-col">
         {run ? (
@@ -67,7 +72,7 @@ export function AgentPane({
           <NewTask activeFile={activeFile} onStart={onStart} />
         )}
       </div>
-    </aside>
+    </section>
   )
 }
 
@@ -90,8 +95,9 @@ function NewTask({ activeFile, onStart }: { activeFile: string | null; onStart: 
       setBusy(false)
     }
   }
+  const names = workflows.some((each) => each.name === DEFAULT_AGENT_WORKFLOW) ? workflows.map((each) => each.name) : [DEFAULT_AGENT_WORKFLOW, ...workflows.map((each) => each.name)]
   return (
-    <form data-slot="code-agent-new" className="flex flex-1 flex-col gap-2 p-3" onSubmit={(event) => { event.preventDefault(); void submit() }}>
+    <form data-slot="code-agent-new" className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-3 p-4" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <p className="text-xs text-pretty text-muted-foreground">
         Describe the work. It runs as a task in its own worktree and ends at a review — nothing merges on its own.
       </p>
@@ -113,10 +119,14 @@ function NewTask({ activeFile, onStart }: { activeFile: string | null; onStart: 
         </div>
       ) : null}
       <div className="flex items-center gap-2">
-        <NativeSelect aria-label="Workflow" value={workflow} onChange={(event) => setWorkflow(event.target.value)} className="h-8 min-w-0 flex-1 text-xs">
-          {!workflows.some((each) => each.name === DEFAULT_AGENT_WORKFLOW) ? <NativeSelectOption value={DEFAULT_AGENT_WORKFLOW}>{DEFAULT_AGENT_WORKFLOW}</NativeSelectOption> : null}
-          {workflows.map((each) => <NativeSelectOption key={each.name} value={each.name}>{each.name}</NativeSelectOption>)}
-        </NativeSelect>
+        <Select value={workflow} onValueChange={setWorkflow}>
+          <SelectTrigger size="sm" aria-label="Workflow" className="min-w-0 flex-1">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {names.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}
+          </SelectContent>
+        </Select>
         <Button type="submit" size="sm" disabled={busy || text.trim() === ''}>Start task</Button>
       </div>
     </form>

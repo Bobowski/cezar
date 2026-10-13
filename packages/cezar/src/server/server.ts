@@ -11,12 +11,17 @@ import {
   codeSearchQuerySchema, codeWatchQuerySchema, repoFilePathQuerySchema, type CodeWatch,
   repoSyncQuerySchema, type RepoPullResponse, type RepoSync,
   PROJECT_ICON_MAX_BYTES, setProjectIconSchema, type ProjectIconCandidates,
+  dockerContainerParamsSchema, dockerStackParamsSchema, type DockerState,
   serviceLogsQuerySchema, serviceParamsSchema, servicePatchSchema, servicePinInputSchema, type ServiceLogs, type ServicesState,
   e2eSetupInputSchema, type E2eStatus,
 } from '@open-mercato/cezar-contract';
 import { SecretStore, SecretsError, type SecretScopeRef } from '../workspace/secrets.ts';
 import { listEnvFiles, readEnvFile, removeEnvFile, writeEnvFile } from '../env-files.ts';
 import { discoverServiceCandidates } from '../services/discover.ts';
+import {
+  composeWantedPorts, containersSignature, dockerExec, groupStacks, listContainers, portConflicts,
+  type DockerExec, type ListedContainer,
+} from '../services/docker.ts';
 import { findIconCandidates, readProjectIcon, removeProjectIcons, saveProjectIcon } from '../workspace/project-icons.ts';
 import { searchCheckout } from './code-search.ts';
 import { pullFastForward, refreshRepoSync, repoSyncCounts, watchRepoSync } from '../git-sync.ts';
@@ -376,6 +381,8 @@ export interface ServerDeps {
    *  route's guards, cleanup and error surfacing are exercised for real
    *  against real temp dirs, without a network or a `gh` binary. */
   cloneRunner?: CloneRunner;
+  /** How the Docker view reaches the `docker` CLI. Tests inject a scripted one. */
+  dockerExec?: DockerExec;
   /** Host-wide model discovery service. Tests inject a deterministic adapter. */
   modelCatalog?: RunnerModelCatalog;
   /** Host-wide provider authentication discovery. Tests inject deterministic probes. */
@@ -6826,6 +6833,95 @@ export function createApp(deps: ServerDeps) {
       return c.json(logs, 200);
     });
 
+  // ---- chained family: the machine's containers, seen from a project ----------
+  // Spec 2026-10-13-docker-view. Reading or stopping another project's containers is a shell-level
+  // capability, so every route follows the terminal's policy and refuses a task's own credential.
+  const docker = deps.dockerExec ?? dockerExec;
+  const DOCKER_TOPIC = 'docker';
+  const dockerWatch = { version: 0, signature: '', publish: new Set<(payload: { version: number }) => void>() };
+  const dockerChanged = (signature?: string): void => {
+    if (signature !== undefined) {
+      if (signature === dockerWatch.signature) return;
+      dockerWatch.signature = signature;
+    }
+    dockerWatch.version += 1;
+    for (const publish of dockerWatch.publish) publish({ version: dockerWatch.version });
+  };
+  // Demand-driven: `docker ps` is polled only while a view holds the topic. A bare counter.
+  // Registered by the first read, like a project's services topic — not a boot-time topic.
+  let dockerTopicRegistered = false;
+  const registerDockerTopic = (): void => {
+    if (dockerTopicRegistered) return;
+    dockerTopicRegistered = true;
+    deps.socketHub?.registerTopic(DOCKER_TOPIC, {
+      snapshot: async () => ({ version: dockerWatch.version }),
+      start: (publish) => {
+        dockerWatch.publish.add(publish);
+        const timer = setInterval(() => {
+          void listContainers(docker).then((listed) => dockerChanged(listed.ok ? containersSignature(listed.containers) : 'down'));
+        }, 3_000);
+        timer.unref();
+        return () => {
+          clearInterval(timer);
+          dockerWatch.publish.delete(publish);
+        };
+      },
+    });
+  };
+  const dockerRefusal = (c: Context): string | null => {
+    if (principalOf(c)?.kind === 'run') return 'a task cannot read or change the machine\'s containers';
+    const policy = terminalPolicyRefusal(capabilities());
+    return policy ? policy.replace('the terminal is', 'the Docker view is') : null;
+  };
+  const dockerState = async (project: ProjectContext, c: Context): Promise<DockerState> => {
+    const off = (reason: string): DockerState => ({ available: false, reason, stacks: [], conflicts: [], topic: DOCKER_TOPIC });
+    registerDockerTopic();
+    const refusal = dockerRefusal(c);
+    if (refusal) return off(refusal);
+    const listed = await listContainers(docker);
+    if (!listed.ok) return off(listed.reason);
+    const registry = (await loadWorkspaceConfig()).projects;
+    const known = registry.some((entry) => entry.id === project.id) ? registry : [...registry, { id: project.id, root: project.root, name: '' }];
+    const stacks = groupStacks(listed.containers, known, project.id);
+    const composeFiles = (await discoverServiceCandidates(project.root)).filter((candidate) => /^docker compose -f \S+ up$/.test(candidate.command));
+    const wanted = (await Promise.all(composeFiles.map((candidate) =>
+      composeWantedPorts(docker, project.root, candidate.cwd, candidate.command.split(' ')[3]!)))).flat();
+    return { available: true, reason: null, stacks, conflicts: portConflicts(wanted, stacks), topic: DOCKER_TOPIC };
+  };
+  const dockerAct = async (c: Context, find: (containers: ListedContainer[]) => boolean, args: string[]) => {
+    const refusal = dockerRefusal(c);
+    if (refusal) return c.json({ error: refusal }, 409);
+    const listed = await listContainers(docker);
+    if (!listed.ok) return c.json({ error: listed.reason }, 409);
+    // Only what the listing shows is addressable — never an argument the caller made up.
+    if (!find(listed.containers)) return c.json({ error: 'no such container' }, 404);
+    const result = await docker(args, { timeoutMs: 60_000 });
+    dockerChanged();
+    if (!result.ok) return c.json({ error: result.reason }, 409);
+    return c.body(null, 204);
+  };
+  const dockerRoutes = new Hono<ProjectApiEnv>()
+    .get('/docker', async (c) => {
+      c.header('Cache-Control', 'no-store');
+      return c.json(await dockerState(c.get('project'), c), 200);
+    })
+    .post('/docker/stacks/:name/start', paramZodValidator(dockerStackParamsSchema), async (c) => {
+      const { name } = c.req.valid('param');
+      return dockerAct(c, (all) => all.some((entry) => entry.stack === name), ['compose', '-p', name, 'start']);
+    })
+    .post('/docker/stacks/:name/stop', paramZodValidator(dockerStackParamsSchema), async (c) => {
+      const { name } = c.req.valid('param');
+      return dockerAct(c, (all) => all.some((entry) => entry.stack === name), ['compose', '-p', name, 'stop']);
+    })
+    .post('/docker/containers/:id/start', paramZodValidator(dockerContainerParamsSchema), async (c) => {
+      const { id } = c.req.valid('param');
+      return dockerAct(c, (all) => all.some((entry) => entry.id === id), ['start', id]);
+    })
+    .post('/docker/containers/:id/stop', paramZodValidator(dockerContainerParamsSchema), async (c) => {
+      const { id } = c.req.valid('param');
+      return dockerAct(c, (all) => all.some((entry) => entry.id === id), ['stop', id]);
+    });
+
   // ---- chained family: one-click e2e setup ----------------------------------
   // Spec 2026-10-10-e2e-one-click-setup. `GET /e2e` says what the project has; `POST /e2e/setup`
   // stores the model key (when given) as a `checks` secret and starts the setup as an ordinary
@@ -7981,6 +8077,7 @@ export function createApp(deps: ServerDeps) {
     .route('/', secretsRoutes)
     .route('/', envFilesRoutes)
     .route('/', servicesRoutes)
+    .route('/', dockerRoutes)
     .route('/', e2eRoutes)
     .route('/', repoRoutes)
     .route('/', codeRoutes)

@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 
-import { getServices } from './client'
+import { getDocker, getServices } from './client'
 import { useHostTransport } from './host-usage'
 import { queryKeys } from './queries'
 import { subscribeTopic } from './ws'
@@ -60,6 +60,30 @@ export function useServices({ live = false }: { live?: boolean } = {}) {
   useEffect(() => {
     if (!socket || !topic) return
     const key = queryKeys.services.list()
+    return subscribeTopic(topic, () => void queryClient.invalidateQueries({ queryKey: key }), () => setRefused(true))
+  }, [queryClient, socket, topic])
+  return query
+}
+
+/**
+ * The machine's containers (spec 2026-10-13-docker-view). The same shape as `useServices`: one
+ * re-read per change on the bus, a poll where the bus is not usable — and only while mounted, so
+ * the server stops asking Docker the moment the view is left.
+ */
+export function useDocker() {
+  const queryClient = useQueryClient()
+  const transport = useHostTransport()
+  const [refused, setRefused] = useState(false)
+  const socket = transport === 'local' && !refused
+  const query = useQuery({
+    queryKey: queryKeys.docker.state(),
+    queryFn: ({ signal }) => getDocker({ signal }),
+    refetchInterval: transport !== undefined && !socket ? POLL_MS : false,
+  })
+  const topic = query.data?.topic
+  useEffect(() => {
+    if (!socket || !topic) return
+    const key = queryKeys.docker.state()
     return subscribeTopic(topic, () => void queryClient.invalidateQueries({ queryKey: key }), () => setRefused(true))
   }, [queryClient, socket, topic])
   return query

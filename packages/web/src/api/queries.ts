@@ -156,6 +156,9 @@ export const queryKeys = {
     allFor: (projectId: string) => ['services', projectId] as const,
     list: () => ['services', queryScope()] as const,
   },
+  docker: {
+    state: () => ['docker', queryScope()] as const,
+  },
   envFiles: {
     allFor: (projectId: string) => ['env-files', projectId] as const,
     list: () => ['env-files', queryScope()] as const,

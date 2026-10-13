@@ -162,7 +162,7 @@ import type {
   TrackerItemsResponse,
   TrackerKind, TrackerCredentials, TrackerConnectionResponse, TrackerConnectionSourcesResponse,
   SecretsList, SecretValueInput, EnvFileContent, EnvFilesList, SetEnvFileInput,
-  ServicePatch, ServicePin, ServicePinInput, ServicesState,
+  DockerState, ServicePatch, ServicePin, ServicePinInput, ServicesState,
   E2eStatus, E2eSetupInput, E2eSetupResponse,
 } from '@open-mercato/cezar-api-client'
 import { parseProviderStatusResponse } from '@/lib/provider-status'
@@ -977,6 +977,20 @@ export async function saveEnvFile(input: SetEnvFileInput): Promise<EnvFileConten
 export async function removeEnvFile(path: string): Promise<void> {
   await expectNoContent(await cez.api.v1.p[':projectId']['env-files'].$delete(
     { param: { projectId: queryScope() }, query: { path } }))
+}
+
+// ---- the machine's containers (spec 2026-10-13-docker-view) ----
+
+const dockerApi = () => cez.api.v1.p[':projectId'].docker
+
+export async function getDocker(opts?: ReadOptions): Promise<DockerState> {
+  return unwrap(await dockerApi().$get({ param: scopeParam() }, init(opts)), '/docker')
+}
+export async function dockerStackAction(name: string, action: 'start' | 'stop'): Promise<void> {
+  await expectNoContent(await dockerApi().stacks[':name'][action].$post({ param: { ...scopeParam(), name } }))
+}
+export async function dockerContainerAction(id: string, action: 'start' | 'stop'): Promise<void> {
+  await expectNoContent(await dockerApi().containers[':id'][action].$post({ param: { ...scopeParam(), id } }))
 }
 
 // ---- project services (spec 2026-10-11-project-services) ----

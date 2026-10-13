@@ -19,6 +19,7 @@
 >   area is the selected service — its command, state, addresses, actions — and its log.
 > - **Agents**: the read-only guarantee is the run token's allowlist (`auth/run-tokens.ts`) — two
 >   GETs and nothing else — plus a refusal on every lifecycle route for a run principal.
+> - **Per-container rows** arrived as their own view: `2026-10-13-docker-view.md`.
 > Sibling: `2026-10-11-code-page.md` (the Code page docks this panel and shares §5's session owner).
 > Builds on: `2026-10-07-task-workspace.md` §6 (PTY sessions), `2026-10-10-task-slots.md`,
 > `2026-10-10-preview-gateway.md`, `2026-10-10-cezar-in-a-container.md`.

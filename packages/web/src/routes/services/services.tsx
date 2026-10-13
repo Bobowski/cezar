@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ExternalLinkIcon, FolderIcon, PlayIcon, PlusIcon, RotateCwIcon, SquareIcon, TagIcon, TerminalIcon, Trash2Icon } from 'lucide-react'
 import { useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router'
 
 import { queryScope, type Service, type ServiceCandidate } from '@open-mercato/cezar-api-client'
 import {
@@ -19,9 +20,12 @@ import {
   SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarMenu, SidebarMenuAction,
   SidebarMenuButton, SidebarMenuItem,
 } from '@/components/ui/sidebar'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from '@/components/ui/toaster'
 import { cn } from '@/lib/utils'
 import { TerminalPane, type TerminalIo } from '@/routes/task-workspace/terminal-pane'
+
+import { DockerView } from './docker-view'
 
 /** The sentence beside a service's name. `running` claims a live process and nothing more. */
 export function serviceStateLabel(service: Pick<Service, 'status' | 'exitCode' | 'reason'>): string {
@@ -227,6 +231,8 @@ export function ServicesRoute() {
   const state = useServices({ live: true })
   const { act, all, pin, unpin } = useServiceMutations()
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const view = searchParams.get('view') === 'docker' ? 'docker' : 'project'
   const busy = act.isPending || all.isPending || pin.isPending || unpin.isPending
 
   const services = state.data?.services ?? []
@@ -237,18 +243,32 @@ export function ServicesRoute() {
   const running = selected?.status === 'running'
   const urls = selected?.urls.filter((entry) => entry.running !== false) ?? []
 
+  const header = (
+    <SidebarHeader data-slot="services-header" className="gap-3 p-3">
+      <h2 className="px-1 text-[15px] font-semibold text-foreground">Services</h2>
+      {/* Two answers to "what is running": this project's commands, the machine's containers. */}
+      <Tabs value={view} onValueChange={(next) => setSearchParams(next === 'docker' ? { view: 'docker' } : {}, { replace: true })}>
+        <TabsList className="w-full" aria-label="Services view">
+          <TabsTrigger value="project">Project</TabsTrigger>
+          <TabsTrigger value="docker">Docker</TabsTrigger>
+        </TabsList>
+      </Tabs>
+      {view === 'project' && available && services.length > 0 ? (
+        <div className="flex gap-2">
+          <Button size="sm" className="flex-1" disabled={busy || services.every((service) => service.status === 'running')} onClick={() => all.mutate('start-all')}>Start all</Button>
+          <Button size="sm" variant="outline" className="flex-1" disabled={busy || !anyRunning} onClick={() => all.mutate('stop-all')}>Stop all</Button>
+        </div>
+      ) : null}
+    </SidebarHeader>
+  )
+  if (view === 'docker') {
+    return <Page width="full" data-route="services" className="h-full"><DockerView header={header} /></Page>
+  }
+
   return (
     <Page width="full" data-route="services" className="h-full">
       <ContextSidebar>
-        <SidebarHeader data-slot="services-header" className="gap-3 p-3">
-          <h2 className="px-1 text-[15px] font-semibold text-foreground">Services</h2>
-          {available && services.length > 0 ? (
-            <div className="flex gap-2">
-              <Button size="sm" className="flex-1" disabled={busy || services.every((service) => service.status === 'running')} onClick={() => all.mutate('start-all')}>Start all</Button>
-              <Button size="sm" variant="outline" className="flex-1" disabled={busy || !anyRunning} onClick={() => all.mutate('stop-all')}>Stop all</Button>
-            </div>
-          ) : null}
-        </SidebarHeader>
+        {header}
         <SidebarContent>
           {state.isPending ? <p className="px-4 text-xs text-muted-foreground">Loading…</p> : null}
           {available ? (

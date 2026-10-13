@@ -68,5 +68,20 @@ export const hostUsageSchema = z.object({
    * (`'unconstrained'` is reserved for a future producer that wants to say it explicitly.)
    */
   cgroupProbe: z.enum(['unavailable', 'unconstrained']).optional(),
+  /**
+   * The host-pressure admission gate (spec `.ai/specs/2026-10-13-host-pressure-admission.md`).
+   * Present ONLY while the gate is holding work back — a calm machine keeps the payload unchanged.
+   */
+  admission: z
+    .object({
+      state: z.enum(['elevated', 'critical']),
+      /** ISO-8601 instant this state began. */
+      since: z.string().optional(),
+      /** What tripped it, e.g. `memory 91% used (1.4 GiB free)`. */
+      reason: z.string().optional(),
+      /** Workflow steps currently waiting at the gate; absent when none. */
+      heldSteps: z.number().int().positive().optional(),
+    })
+    .optional(),
 });
 export type HostUsage = z.infer<typeof hostUsageSchema>;

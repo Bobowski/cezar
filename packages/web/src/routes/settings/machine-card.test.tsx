@@ -341,6 +341,28 @@ describe('MachineCard — remote cockpit', () => {
     expect(document.querySelector('[data-slot="machine-card-swap"]')).not.toBeNull()
   })
 
+  it('says so while the admission gate is holding work back, and nothing when it is not', async () => {
+    serve(
+      REMOTE_HEALTH,
+      sample({
+        cpuPct: 12,
+        admission: { state: 'elevated', reason: 'memory 91% used (1.4 GiB free)', heldSteps: 2 },
+      }),
+    )
+    const { unmount } = render(<MachineCard />, { wrapper: wrapper() })
+    await waitFor(() =>
+      expect(document.querySelector('[data-slot="machine-card-admission"]')?.textContent).toBe(
+        'Machine under pressure — new tasks and workflow steps wait for headroom. memory 91% used (1.4 GiB free). 2 steps held.',
+      ),
+    )
+    unmount()
+
+    serve(REMOTE_HEALTH, sample({ cpuPct: 12 }))
+    render(<MachineCard />, { wrapper: wrapper() })
+    await waitFor(() => expect(screen.getByText('12%')).toBeTruthy())
+    expect(document.querySelector('[data-slot="machine-card-admission"]')).toBeNull()
+  })
+
   it('follows a first answer without cpuPct with one warm-up read', async () => {
     let reads = 0
     serve(REMOTE_HEALTH, () => {

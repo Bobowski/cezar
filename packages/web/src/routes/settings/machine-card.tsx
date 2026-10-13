@@ -141,6 +141,26 @@ export function MachineCard() {
         </p>
       ) : null}
 
+      {sample?.admission === undefined ? null : (
+        <p
+          data-slot="machine-card-admission"
+          className={cn(
+            'mt-3 rounded-md border px-3 py-2 text-[13px]',
+            sample.admission.state === 'critical'
+              ? 'border-danger/40 text-danger'
+              : 'border-pending/40 text-pending',
+          )}
+        >
+          {sample.admission.state === 'critical'
+            ? 'Machine under critical pressure — new tasks and steps wait, and the heaviest running task is paused.'
+            : 'Machine under pressure — new tasks and workflow steps wait for headroom.'}
+          {sample.admission.reason === undefined ? '' : ` ${sample.admission.reason}.`}
+          {sample.admission.heldSteps === undefined
+            ? ''
+            : ` ${sample.admission.heldSteps} step${sample.admission.heldSteps === 1 ? '' : 's'} held.`}
+        </p>
+      )}
+
       <div className="mt-4 grid gap-3.5">
         <div data-slot="machine-card-cpu" className="grid grid-cols-[96px_1fr] items-start gap-3">
           <span className="pt-0.5 text-[13px] text-muted-foreground">

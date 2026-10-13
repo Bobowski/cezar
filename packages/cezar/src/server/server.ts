@@ -100,6 +100,7 @@ import {
 } from '@open-mercato/cezar-contract';
 import { dispatchInputSchema, dispatchIntentSchema, dispatchReportSchema } from '@open-mercato/cezar-contract';
 import { detectEnvironment } from '../core/backend-detect.ts';
+import type { HostUsage } from '@open-mercato/cezar-contract';
 import { hostUsageSampler, type HostSampler } from '../core/host-usage.ts';
 import { RUNNER_IDS } from '../core/agent-runner.ts';
 import type { ContentBlock } from '../core/agent-runner.ts';
@@ -2013,9 +2014,24 @@ export function createApp(deps: ServerDeps) {
   // health this is not a discovery payload, so a foreign local page admitted by the loopback
   // fallback must not be able to read which machine it is sitting on.
   const hostSampler = deps.hostSampler ?? hostUsageSampler;
+  // The admission gate's state rides the same payload, only while it is holding work back
+  // (spec 2026-10-13-host-pressure-admission) — the sampler reports it, never the reverse.
+  const withAdmission = (usage: HostUsage): HostUsage => {
+    const gate = deps.semaphore?.hostAdmissionState();
+    if (!gate || gate.level === 'normal') return usage;
+    return {
+      ...usage,
+      admission: {
+        state: gate.level,
+        ...(gate.since === undefined ? {} : { since: new Date(gate.since).toISOString() }),
+        ...(gate.reason === undefined ? {} : { reason: gate.reason }),
+        ...(gate.heldSteps > 0 ? { heldSteps: gate.heldSteps } : {}),
+      },
+    };
+  };
   deps.socketHub?.registerTopic('host', {
-    snapshot: async () => hostSampler.sampleHostUsage(),
-    start: (publish) => hostSampler.onHostUsage(publish),
+    snapshot: async () => withAdmission(hostSampler.sampleHostUsage()),
+    start: (publish) => hostSampler.onHostUsage((usage) => publish(withAdmission(usage))),
   });
   /**
    * Warm the whole of cezar's agent knowledge — the three discovered defaults AND every extra
@@ -3514,7 +3530,7 @@ export function createApp(deps: ServerDeps) {
     // window exists (the card renders `sampling…` and follows up once ~2.5 s later). The read
     // keeps the sampler warm, so a cockpit polling this route gets a fresh delta each time.
     .get('/workspace/host-usage', async (c) => {
-      const usage = hostSampler.sampleHostUsage();
+      const usage = withAdmission(hostSampler.sampleHostUsage());
       hostSampler.keepWarm();
       return c.json(usage);
     })

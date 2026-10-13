@@ -1,5 +1,7 @@
 import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
+import type { HostUsage } from '@open-mercato/cezar-contract';
+import { HostPressureGovernor, type HostPressureLevel, type HostPressureState } from '../core/host-pressure.ts';
 import { DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MONITORING_WAKE_MINUTES, loadWorkspaceConfig } from './config.ts';
 
 /**
@@ -108,6 +110,48 @@ export interface SemaphoreParticipant {
    * and any caller that predates the hold — keeps working; absent simply holds nothing.
    */
   accountHolds?(): AccountHolds;
+  /** Any run live or queued here — the host-pressure watch's demand signal. Absent reads the
+   *  slot count and the queue head, which misses only parked sessions. */
+  hasWork?(): boolean;
+  /** The working runs this manager could pause under `critical` host pressure. */
+  pressureReliefCandidates?(): PressureReliefCandidate[];
+}
+
+/** One run a manager offers for the critical-pressure pause (spec 2026-10-13 §4). */
+export interface PressureReliefCandidate {
+  /** Process-tree RSS; 0 when the sampler has no data for it. */
+  rssBytes: number;
+  startedAtMs: number;
+  pause(reason: string): void;
+}
+
+/** Where host samples come from — the `onHostUsage` half of `HostSampler`. */
+export interface HostPressureSource {
+  onHostUsage(listener: (usage: HostUsage) => void): () => void;
+}
+
+/** Gap between two task starts while others run, so the newcomer's memory is visible to the
+ *  next decision instead of six tasks reading the same calm sample. */
+export const HOST_ADMISSION_STAGGER_MS = 6_000;
+/** How often a held step re-asks; the sampler's own cadence. */
+export const HOST_STEP_POLL_MS = 2_000;
+/** A step never waits longer than this — a gate that cannot lift is a new cap. */
+export const HOST_STEP_HOLD_MAX_MS = 10 * 60_000;
+/** One pause, then time for the freed memory to show up before pausing another. */
+export const HOST_RELIEF_COOLDOWN_MS = 30_000;
+
+export type HostAdmission = 'ok' | 'stagger' | 'pressure';
+
+/** On by default; `CEZ_HOST_ADMISSION=0` turns it off. A dry run has no real agents to weigh,
+ *  so it stays off there unless asked for with `=1`. */
+export function hostAdmissionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.CEZ_HOST_ADMISSION === '0') return false;
+  return env.CEZ_DRY_RUN !== '1' || env.CEZ_HOST_ADMISSION === '1';
+}
+
+export interface HostAdmissionState extends HostPressureState {
+  /** Workflow steps currently held at the gate, workspace-wide. */
+  heldSteps: number;
 }
 
 const DEFAULT_LIMITS: WorkspaceResourceLimits = {
@@ -150,7 +194,17 @@ export interface WorkspaceSemaphoreOptions {
    *  schema's own defaults (`maxParallel: 2`, no memory limit), so a manager
    *  constructed without boot wiring behaves like a fresh workspace. */
   initial?: Partial<WorkspaceResourceLimits>;
+  /** Host samples for the pressure gate (spec 2026-10-13-host-pressure-admission). ABSENT means
+   *  no gate at all — which is what every test and bare manager gets; only boot wires it. */
+  hostPressure?: HostPressureSource;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
 }
+
+const unrefSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms).unref?.();
+  });
 
 export class WorkspaceSemaphore {
   private readonly participants = new Set<SemaphoreParticipant>();
@@ -162,16 +216,138 @@ export class WorkspaceSemaphore {
    *  the manager that should get it, so re-run rather than drop the wakeup. */
   private pendingRelease = false;
 
+  private readonly hostPressure: HostPressureSource | undefined;
+  private readonly governor = new HostPressureGovernor();
+  private readonly now: () => number;
+  private readonly sleep: (ms: number) => Promise<void>;
+  private offHostPressure: (() => void) | undefined;
+  /** A queued run was refused by the host gate; the next sample that would admit re-pumps. */
+  private admissionDeferred = false;
+  private lastAdmitAt = 0;
+  private lastReliefAt = 0;
+  private heldSteps = 0;
+
   constructor(options: WorkspaceSemaphoreOptions = {}) {
     this.load = options.load ?? loadResourceLimits;
     this.limits = { ...DEFAULT_LIMITS, ...options.initial };
+    this.hostPressure = options.hostPressure;
+    this.now = options.now ?? (() => Date.now());
+    this.sleep = options.sleep ?? unrefSleep;
   }
 
   /** Join the shared counter. Returns the unregister handle — the manager's
    *  `dispose()` must call it so a torn-down project stops counting. */
   register(participant: SemaphoreParticipant): () => void {
     this.participants.add(participant);
-    return () => this.participants.delete(participant);
+    return () => {
+      this.participants.delete(participant);
+      this.syncHostPressureWatch();
+    };
+  }
+
+  // ---- host-pressure admission (spec 2026-10-13-host-pressure-admission) ----
+
+  /** Sample the host only while some manager has a run live or queued. */
+  private syncHostPressureWatch(): void {
+    if (!this.hostPressure) return;
+    let work = false;
+    for (const p of this.participants) {
+      if (p.hasWork ? p.hasWork() : p.busySlots() > 0 || p.oldestQueuedAt() !== null) {
+        work = true;
+        break;
+      }
+    }
+    if (work && !this.offHostPressure) {
+      this.offHostPressure = this.hostPressure.onHostUsage((usage) => this.onHostSample(usage));
+    } else if (!work && this.offHostPressure) {
+      this.offHostPressure();
+      this.offHostPressure = undefined;
+      this.governor.reset();
+    }
+  }
+
+  private onHostSample(usage: HostUsage): void {
+    const now = this.now();
+    this.governor.observe(usage, now);
+    if (this.admissionDeferred && this.hostAdmission() === 'ok') {
+      this.admissionDeferred = false;
+      void this.release();
+    }
+    if (this.governor.level(now) === 'critical') this.relieveHostPressure(now);
+    this.syncHostPressureWatch();
+  }
+
+  /**
+   * May a queued run start now, as far as the MACHINE goes? Pure but for the wake flag — `pump()`
+   * asks it several times per candidate; `noteRunAdmitted()` is the one write. A workspace holding
+   * no slot always admits: pressure cezar did not cause must never wedge its queue.
+   */
+  hostAdmission(): HostAdmission {
+    if (!this.hostPressure) return 'ok';
+    this.syncHostPressureWatch();
+    if (this.busy() === 0) return 'ok';
+    const now = this.now();
+    const verdict: HostAdmission =
+      this.governor.level(now) !== 'normal'
+        ? 'pressure'
+        : now - this.lastAdmitAt < HOST_ADMISSION_STAGGER_MS
+          ? 'stagger'
+          : 'ok';
+    if (verdict !== 'ok') this.admissionDeferred = true;
+    return verdict;
+  }
+
+  noteRunAdmitted(): void {
+    this.lastAdmitAt = this.now();
+  }
+
+  /** The gate's state for the readout and for notes. */
+  hostAdmissionState(): HostAdmissionState {
+    return { ...this.governor.state(this.now()), heldSteps: this.heldSteps };
+  }
+
+  hostPressureLevel(): HostPressureLevel {
+    return this.hostPressure ? this.governor.level(this.now()) : 'normal';
+  }
+
+  /** A held step goes when the machine is calm, or when no other run is making progress. */
+  private stepAdmitted(othersHeld: number): boolean {
+    return this.hostPressureLevel() === 'normal' || this.busy() - othersHeld <= 1;
+  }
+
+  /**
+   * Wait at a workflow-step boundary for the machine. Self-polling, so it needs no wake-up from
+   * anyone; exits on calm, on "nothing else is running", on `cancelled()`, and at the clock bound.
+   */
+  async awaitStepHeadroom(options: {
+    cancelled: () => boolean;
+    onHold?: (reason: string | undefined) => void;
+  }): Promise<'admitted' | 'timeout' | 'cancelled'> {
+    if (!this.hostPressure || this.stepAdmitted(this.heldSteps)) return 'admitted';
+    options.onHold?.(this.governor.state(this.now()).reason);
+    const deadline = this.now() + HOST_STEP_HOLD_MAX_MS;
+    this.heldSteps += 1;
+    try {
+      for (;;) {
+        await this.sleep(HOST_STEP_POLL_MS);
+        if (options.cancelled()) return 'cancelled';
+        if (this.stepAdmitted(this.heldSteps - 1)) return 'admitted';
+        if (this.now() >= deadline) return 'timeout';
+      }
+    } finally {
+      this.heldSteps -= 1;
+    }
+  }
+
+  /** `critical`: pause the heaviest working run, workspace-wide — never the only one. */
+  private relieveHostPressure(now: number): void {
+    if (now - this.lastReliefAt < HOST_RELIEF_COOLDOWN_MS) return;
+    const candidates: PressureReliefCandidate[] = [];
+    for (const participant of this.participants) candidates.push(...(participant.pressureReliefCandidates?.() ?? []));
+    if (candidates.length < 2) return;
+    candidates.sort((a, b) => b.rssBytes - a.rssBytes || b.startedAtMs - a.startedAtMs);
+    this.lastReliefAt = now;
+    candidates[0]?.pause(this.governor.state(now).reason ?? 'the machine is out of memory');
   }
 
   /** Slots held across EVERY registered manager (waiting runs excluded by

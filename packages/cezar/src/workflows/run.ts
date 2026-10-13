@@ -22,7 +22,7 @@ import {
   supportsPrivateMcp,
   type PrivateMcpServer,
 } from '../core/private-mcp.ts';
-import { onUsage, registerRunProcess, unregisterRunProcess, type ProcessUsage } from '../core/process-usage.ts';
+import { currentUsage, onUsage, registerRunProcess, unregisterRunProcess, type ProcessUsage } from '../core/process-usage.ts';
 import { parseUsageLimit } from '../core/usage-limit.ts';
 import { createRunner } from '../core/runner-factory.ts';
 import type { RunnerId } from '../core/agent-runner.ts';
@@ -136,7 +136,7 @@ import { autoNamingActive, generateRunName, liveTitleUpdatesEnabled, postValidat
 import { reviewGateEnabled } from '../runs/review-gate.ts';
 import { resolveProfileEnvForRoot } from '../workspace/agent-profiles.ts';
 import { DEFAULT_AGENT_ACCOUNT_ID } from '../workspace/agent-accounts.ts';
-import { WorkspaceSemaphore, type AccountHolds } from '../workspace/semaphore.ts';
+import { WorkspaceSemaphore, type AccountHolds, type HostAdmission, type PressureReliefCandidate } from '../workspace/semaphore.ts';
 import { SecretStore } from '../workspace/secrets.ts';
 import { PROJECT_ID_RE } from '../workspace/config.ts';
 import { prunePrHeadRefs } from '../automations/pr-head.ts';
@@ -1180,6 +1180,9 @@ export class RunManager {
    *  triggers one pause, not a burst. Cleared in dropActive when the run leaves the registry. */
   private readonly memoryPausing = new Set<string>();
 
+  /** Queued runs already told they are waiting for the machine — one note each, not one per sweep. */
+  private readonly hostHeldNoted = new Set<string>();
+
   /** Unsubscribe handle for the constructor's `onUsage` subscription — released
    *  by dispose() so a torn-down manager stops receiving sampler ticks. */
   private readonly offUsage: () => void;
@@ -1248,6 +1251,8 @@ export class RunManager {
       pump: () => this.pump(),
       oldestQueuedAt: () => this.oldestQueuedAt(),
       accountHolds: () => this.accountHolds(),
+      hasWork: () => this.active.size > 0 || this.starting.size > 0 || this.queue.length > 0,
+      pressureReliefCandidates: () => this.pressureReliefCandidates(),
     });
     // Memory guard (#memory-guard): the shared process-tree sampler already ticks ~every 2 s for
     // the runs table; piggyback on it to enforce the per-task memory ceiling.
@@ -1291,6 +1296,7 @@ export class RunManager {
     this.pendingJobs.clear();
     this.pendingContinuations.clear();
     this.memoryPausing.clear();
+    this.hostHeldNoted.clear();
     this.lastNamerKey.clear();
   }
 
@@ -1317,25 +1323,73 @@ export class RunManager {
     for (const runId of runIds) {
       const usage = snapshot[runId];
       if (!usage || usage.rssBytes <= limitBytes) continue;
-      if (this.memoryPausing.has(runId)) continue;
       const state = this.active.get(runId);
-      if (!state?.session?.open || state.cancelled) continue;
-      this.memoryPausing.add(runId);
+      if (!state) continue;
       const usedMb = Math.round(usage.rssBytes / (1024 * 1024));
-      this.store.appendEvent(runId, {
-        type: 'note',
-        message: `⚠ memory limit exceeded — this task's process tree is using ${usedMb} MiB (limit ${limitMb} MiB). Pausing it and letting the next queued task run; resume it with Continue.`,
-      });
-      this.store.appendEvent(runId, {
-        type: 'lifecycle',
-        message: `paused — memory limit exceeded (${usedMb} MiB > ${limitMb} MiB)`,
-      });
-      // Closing the session frees the tree and lets the normal exit path settle the run and
-      // pump the queue. Suppress autonomous auto-continue so the pause actually holds.
-      state.autonomous = false;
-      this.clearIdleTimer(state);
-      state.session.end();
+      this.pauseForMemory(
+        runId,
+        state,
+        `⚠ memory limit exceeded — this task's process tree is using ${usedMb} MiB (limit ${limitMb} MiB). Pausing it and letting the next queued task run; resume it with Continue.`,
+        `paused — memory limit exceeded (${usedMb} MiB > ${limitMb} MiB)`,
+      );
     }
+  }
+
+  /** The one memory pause, shared by the per-task ceiling and the host-pressure relief. */
+  private pauseForMemory(runId: string, state: ActiveRun, note: string, lifecycle: string): void {
+    if (this.memoryPausing.has(runId) || !state.session?.open || state.cancelled) return;
+    this.memoryPausing.add(runId);
+    this.store.appendEvent(runId, { type: 'note', message: note });
+    this.store.appendEvent(runId, { type: 'lifecycle', message: lifecycle });
+    // Closing the session frees the tree and lets the normal exit path settle the run and
+    // pump the queue. Suppress autonomous auto-continue so the pause actually holds.
+    state.autonomous = false;
+    this.clearIdleTimer(state);
+    state.session.end();
+  }
+
+  /**
+   * Working runs the workspace may pause under `critical` host pressure (spec
+   * 2026-10-13-host-pressure-admission §4). Parked sessions and check steps are not offered:
+   * the first is idle by the user's choice, the second cannot be continued.
+   */
+  private pressureReliefCandidates(): PressureReliefCandidate[] {
+    const out: PressureReliefCandidate[] = [];
+    for (const [runId, state] of this.active) {
+      if (this.waiting.has(runId) || this.memoryPausing.has(runId)) continue;
+      if (!state.session?.open || state.cancelled) continue;
+      const startedAt = Date.parse(this.store.getRun(runId)?.startedAt ?? '');
+      out.push({
+        rssBytes: currentUsage(runId)?.rssBytes ?? 0,
+        startedAtMs: Number.isNaN(startedAt) ? 0 : startedAt,
+        pause: (reason) =>
+          this.pauseForMemory(
+            runId,
+            state,
+            `⚠ the machine is critically short of resources — ${reason}. Pausing this task, the heaviest one running; resume it with Continue.`,
+            `paused — host under critical pressure (${reason})`,
+          ),
+      });
+    }
+    return out;
+  }
+
+  /** Hold a workflow step until the machine has headroom (spec 2026-10-13 §3). */
+  private async awaitHostHeadroom(
+    state: ActiveRun,
+    name: string,
+    emit: (event: { type: string; [k: string]: unknown }) => void,
+  ): Promise<void> {
+    let held = false;
+    const outcome = await this.semaphore.awaitStepHeadroom({
+      cancelled: () => state.cancelled || this.disposed,
+      onHold: (reason) => {
+        held = true;
+        emit({ type: 'note', message: `waiting for the machine before "${name}"${reason ? ` — ${reason}` : ''}` });
+      },
+    });
+    if (outcome === 'timeout') emit({ type: 'note', message: `the machine is still busy — starting "${name}" anyway` });
+    else if (held && outcome === 'admitted') emit({ type: 'note', message: `the machine has headroom again — starting "${name}"` });
   }
 
   /** Env the spawned claude gets so the agent can find its handoff file and
@@ -1714,10 +1768,16 @@ export class RunManager {
         // Only pay for the config read when something is actually held: a queued record may name
         // no runner, and then the account it would use is the configured default.
         const defaultRunner = anyHold ? (await loadConfig(this.repoRoot)).defaultRunner : undefined;
+        // The machine's own say (spec 2026-10-13-host-pressure-admission), asked last and only
+        // of a run every other gate would start. A forced sweep skips it, like the account hold.
+        let hostVerdict: HostAdmission = 'ok';
         const startable = (id: string): boolean => {
           const queued = this.store.getRun(id);
           if (queued && anyHold && accountHeldFor(queued, holds, defaultRunner ?? 'claude')) return false;
-          return capacity();
+          if (!capacity()) return false;
+          if (forced) return true;
+          hostVerdict = this.semaphore.hostAdmission();
+          return hostVerdict === 'ok';
         };
         // The catalog as it is NOW (#1078), read once per sweep and only when a fresh run can
         // actually start — never inside the loop, whose dequeue must stay in one synchronous tick.
@@ -1740,6 +1800,8 @@ export class RunManager {
           this.pendingContinuations.delete(runId);
           if (!job && !continuation) continue;
           this.starting.add(runId);
+          this.semaphore.noteRunAdmitted();
+          this.hostHeldNoted.delete(runId);
           if (continuation) {
             const hydrated = this.hydrateQueuedContinuation(runId, continuation);
             const ownerToken = Symbol('run-owner');
@@ -1783,6 +1845,15 @@ export class RunManager {
             this.clearAutosaveTimer(state);
             this.starting.delete(runId);
             if (state && !state.cancelled) this.dropActive(runId, state);
+          });
+        }
+        const held = this.queue[0];
+        if ((hostVerdict as HostAdmission) === 'pressure' && held && !this.hostHeldNoted.has(held)) {
+          this.hostHeldNoted.add(held);
+          const reason = this.semaphore.hostAdmissionState().reason;
+          this.store.appendEvent(held, {
+            type: 'note',
+            message: `held in the queue — waiting for the machine${reason ? ` (${reason})` : ''}`,
           });
         }
       } while (this.pumpAgain);
@@ -2104,6 +2175,7 @@ export class RunManager {
     // Session result has settled and its sink has flushed before terminal cleanup.
     this.store.clearRunSecrets(runId);
     this.memoryPausing.delete(runId);
+    this.hostHeldNoted.delete(runId);
     this.lastNamerKey.delete(runId);
     this.forceStarted.delete(runId);
     // The run's slot is gone from busySlots() as of the deletes above — hand it
@@ -4975,9 +5047,16 @@ export class RunManager {
       : enterGraph(graph, loopCounts);
     if (resumeNode) emit({ type: 'note', message: `resuming the workflow at "${resumeNode.name ?? resumeNode.id}" after a restart` });
     else record(step.transitions);
+    // The first node rides the queue's own admission; every later agent/check node asks again.
+    let hostGated = false;
     while (step.kind === 'node') {
       if (state.cancelled) return null;
       const node = step.node;
+      if (hostGated && (node.type === 'agent' || node.type === 'check')) {
+        await this.awaitHostHeadroom(state, node.name ?? node.id, emit);
+        if (state.cancelled) return null;
+      }
+      hostGated = true;
       const resuming = resumeNode?.id === node.id && cursor === undefined;
       cursor = node.id;
       persistWalk();

@@ -43,7 +43,8 @@ import { writeLaunchers } from './self-update/launcher.ts';
 import { initWorkspace } from './workspace/boot.ts';
 import { loadWorkspaceConfig } from './workspace/config.ts';
 import { runProjectsCommand } from './workspace/projects-cli.ts';
-import { WorkspaceSemaphore } from './workspace/semaphore.ts';
+import { hostUsageSampler } from './core/host-usage.ts';
+import { WorkspaceSemaphore, hostAdmissionEnabled } from './workspace/semaphore.ts';
 import { flushTelemetry, initTelemetry, installCrashReporter, registerTelemetryContext, startDailyPing, track } from './telemetry.ts';
 import { runTaskCommand } from './dispatch/task-cli.ts';
 import { runAutomationCommand } from './automations/automation-cli.ts';
@@ -283,7 +284,7 @@ async function serveCommand(
   // the boot manager and every lazily-built project context count their runs
   // against the same `resources.maxParallel`. The boot refresh() below is the
   // cache hook's first call; PUT /api/workspace/config (step 2.7) re-fires it.
-  const semaphore = new WorkspaceSemaphore();
+  const semaphore = new WorkspaceSemaphore(hostAdmissionEnabled() ? { hostPressure: hostUsageSampler } : {});
   await semaphore.refresh();
   // keepLive + recover() (#367): runs that were queued/running/waiting when
   // the previous process exited are re-queued or resumed instead of failed.
@@ -578,7 +579,7 @@ async function runCommand(
   providerRuntimeAuth.watch(store);
   // Headless runs enforce the same workspace-level cap/memory limit (step
   // 2.5) — one refreshed semaphore, even with just one manager in play.
-  const semaphore = new WorkspaceSemaphore();
+  const semaphore = new WorkspaceSemaphore(hostAdmissionEnabled() ? { hostPressure: hostUsageSampler } : {});
   await semaphore.refresh();
   const manager = new RunManager(store, repoRoot, { semaphore });
 

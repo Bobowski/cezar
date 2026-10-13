@@ -34,6 +34,7 @@ import type {
   skillsUpdateStateSchema,
   selfUpdateStatusSchema,
   starCountSchema,
+  designProxyResponseSchema,
   setTelemetryConsentInputSchema,
   telemetryConsentSchema,
   uiStateSchema,
@@ -127,6 +128,9 @@ describe('src/contract projects/workspace schemas match the routes exactly', () 
 
   // ---- the star ask -------------------------------------------------------------------------
   type StarCount200 = InferResponseType<(typeof client.api.v1)['star-count']['$get'], 200>;
+
+  // ---- Design Mode --------------------------------------------------------------------------
+  type DesignProxy200 = InferResponseType<(typeof client.api.v1.preview)['design-proxy']['$post'], 200>;
 
   // ---- telemetry consent --------------------------------------------------------------------
   type TelemetryConsent200 = InferResponseType<typeof client.api.v1.telemetry.consent.$get, 200>;
@@ -224,6 +228,8 @@ describe('src/contract projects/workspace schemas match the routes exactly', () 
     Assert<Exact<z.infer<typeof selfUpdateStatusSchema>, SelfUpdateApply200>>,
     // the star ask
     Assert<Exact<z.infer<typeof starCountSchema>, StarCount200>>,
+    // Design Mode
+    Assert<Exact<z.infer<typeof designProxyResponseSchema>, DesignProxy200>>,
     // telemetry consent
     Assert<Exact<z.infer<typeof telemetryConsentSchema>, TelemetryConsent200>>,
     Assert<Exact<z.infer<typeof telemetryConsentSchema>, SetTelemetryConsent200>>,

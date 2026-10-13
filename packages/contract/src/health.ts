@@ -38,6 +38,13 @@ export type ForgeInfo = z.infer<typeof forgeInfoSchema>;
 /** Server-side feature switches the cockpit reads once at boot. */
 export const capabilitiesSchema = z.object({
   localHandoff: z.boolean(),
+  /**
+   * `true` means the task's Preview tab may offer Design Mode (spec
+   * `.ai/specs/2026-10-09-design-mode.md`): click an element of the task's app and send a note
+   * about it to the agent. It needs a second loopback listener that re-serves the app with a picker
+   * injected, so it exists only on a LOCAL cockpit, and `CEZ_DESIGN_MODE=0` turns it off there too.
+   */
+  designMode: z.boolean(),
   followups: z.boolean(),
   singleProject: z.boolean(),
   /**

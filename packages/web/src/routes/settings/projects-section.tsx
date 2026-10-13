@@ -1,3 +1,4 @@
+import { ProjectIcon } from '@/components/project-icon'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChevronDownIcon, MoreHorizontalIcon, PlusIcon, Trash2Icon, XIcon } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
@@ -382,10 +383,15 @@ function ProjectRow({
   return (
     <TableRow data-slot="project-row" data-project={project.id} className="hover:bg-transparent">
       <TableCell className="max-w-0 py-3 pl-5">
-        <span className="block truncate font-medium text-foreground">{project.name}</span>
-        <span className="block truncate font-mono text-[11px] text-muted-foreground" title={project.root}>
-          {project.root}
-        </span>
+        <div className="flex items-center gap-3">
+          <ProjectIcon project={project} size="default" className="shrink-0" />
+          <div className="min-w-0">
+            <span className="block truncate font-medium text-foreground">{project.name}</span>
+            <span className="block truncate font-mono text-[11px] text-muted-foreground" title={project.root}>
+              {project.root}
+            </span>
+          </div>
+        </div>
       </TableCell>
       <TableCell>
         <span className="flex flex-wrap items-center gap-x-1.5 text-[13px]">

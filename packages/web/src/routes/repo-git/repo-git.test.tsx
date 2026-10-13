@@ -437,6 +437,38 @@ describe('the repo view Branches segment', () => {
     await waitFor(() => expect(client.getQueryData<HealthResponse>(queryKeys.health)?.repo?.branch).toBe('feature'))
   })
 
+  it('shows how far the checkout is behind origin and pulls on click', async () => {
+    const behind = { branch: 'main', upstream: 'origin/main', ahead: 0, behind: 3, fetchedAt: null, topic: null }
+    const sync = () => jsonResponse(behind)
+    const sent = stubFetch({
+      'GET /api/v1/repo/sync': sync,
+      'GET /api/v1/repo/sync?refresh=1': sync,
+      'POST /api/v1/repo/pull': () => jsonResponse({ updated: 3, sync: { ...behind, behind: 0 } }),
+    })
+    renderAt('/git')
+
+    const chip = await waitFor(() => within(sidebar()).getByRole('button', { name: 'Pull 3 commits from origin/main' }))
+    expect(chip.textContent).toBe('3')
+    fireEvent.click(chip)
+    await waitFor(() => expect(sent.some((r) => r.method === 'POST' && r.path === '/api/v1/repo/pull')).toBe(true))
+    await waitFor(() => expect(document.body.textContent).toContain('Pulled 3 commits from origin/main.'))
+  })
+
+  it('a diverged checkout is reported, not pulled', async () => {
+    const sync = () => jsonResponse({ branch: 'main', upstream: 'origin/main', ahead: 2, behind: 1, fetchedAt: null, topic: null })
+    stubFetch({ 'GET /api/v1/repo/sync': sync, 'GET /api/v1/repo/sync?refresh=1': sync })
+    renderAt('/git')
+
+    const chip = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>('[data-slot="repo-sync-chip"]')
+      expect(found).not.toBeNull()
+      return found!
+    })
+    expect(chip.dataset.state).toBe('diverged')
+    expect(chip.tagName).toBe('SPAN')
+    expect(chip.title).toContain('diverged')
+  })
+
   it('filters branch rows without narrowing the base-branch picker', async () => {
     stubFetch()
     renderAt('/git/branches')

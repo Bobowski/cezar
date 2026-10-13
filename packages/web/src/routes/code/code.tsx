@@ -31,6 +31,7 @@ import { Kbd } from '@/components/ui/kbd'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { RepoSyncChip } from '@/components/repo-sync-chip'
 import { SidebarContent, SidebarHeader, useSidebar } from '@/components/ui/sidebar'
 import { toast } from '@/components/ui/toaster'
 import { useNavigate } from '@/lib/project-router'
@@ -542,16 +543,19 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
   /** What the sidebar holds: the checkout, the view switch, the view. One body, two homes. */
   const sidebarHead = (
     <div data-slot="code-sidebar-head" className="flex flex-col gap-2">
-      <Select value={key} onValueChange={switchTree}>
-        <SelectTrigger size="sm" aria-label="Checkout" className="w-full">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="main">Main checkout</SelectItem>
-          {tree.kind === 'run' && !worktrees.some((each) => each.id === tree.runId) ? <SelectItem value={tree.runId}>Task {tree.runId.slice(0, 8)}</SelectItem> : null}
-          {worktrees.map((each) => <SelectItem key={each.id} value={each.id}>{runTitle(each)}</SelectItem>)}
-        </SelectContent>
-      </Select>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <Select value={key} onValueChange={switchTree}>
+          <SelectTrigger size="sm" aria-label="Checkout" className="min-w-0 flex-1">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="main">Main checkout</SelectItem>
+            {tree.kind === 'run' && !worktrees.some((each) => each.id === tree.runId) ? <SelectItem value={tree.runId}>Task {tree.runId.slice(0, 8)}</SelectItem> : null}
+            {worktrees.map((each) => <SelectItem key={each.id} value={each.id}>{runTitle(each)}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        {tree.kind === 'main' ? <RepoSyncChip /> : null}
+      </div>
       <Tabs value={layout.sidebar} onValueChange={(view) => setLayout((state) => ({ ...state, sidebar: view as CodeSidebar }))}>
         <TabsList aria-label="Views" data-slot="code-views" className="w-full">
           {VIEWS.map(({ view, label, icon: Icon, badge }) => (

@@ -9,6 +9,7 @@ import {
   secretParamsSchema, secretValueInputSchema, type SecretsList, type SecretValueInput,
   envFileQuerySchema, setEnvFileSchema, type EnvFilesList,
   codeSearchQuerySchema, codeWatchQuerySchema, repoFilePathQuerySchema, type CodeWatch,
+  repoSyncQuerySchema, type RepoPullResponse, type RepoSync,
   PROJECT_ICON_MAX_BYTES, setProjectIconSchema, type ProjectIconCandidates,
   serviceLogsQuerySchema, serviceParamsSchema, servicePatchSchema, servicePinInputSchema, type ServiceLogs, type ServicesState,
   e2eSetupInputSchema, type E2eStatus,
@@ -18,6 +19,7 @@ import { listEnvFiles, readEnvFile, removeEnvFile, writeEnvFile } from '../env-f
 import { discoverServiceCandidates } from '../services/discover.ts';
 import { findIconCandidates, readProjectIcon, removeProjectIcons, saveProjectIcon } from '../workspace/project-icons.ts';
 import { searchCheckout } from './code-search.ts';
+import { pullFastForward, refreshRepoSync, repoSyncCounts, watchRepoSync } from '../git-sync.ts';
 import { checkoutWatchSupported, watchCheckout } from './checkout-watch.ts';
 import { ignoredAmong } from '../worktree-env.ts';
 import { projectTerminalOwner } from './terminal/sessions.ts';
@@ -7259,6 +7261,27 @@ export function createApp(deps: ServerDeps) {
     overrideRules: z.boolean().optional().default(false),
   }).strict();
 
+  const repoSyncTopics = new Set<string>();
+  /** Register (once) the bell for one project's upstream. It fetches only while someone listens,
+   *  and carries a bare counter: branch names stay on the HTTP read. */
+  const repoSyncTopic = (projectId: string, root: string): string | null => {
+    if (!deps.socketHub) return null;
+    const topic = `repo-sync:${projectId}`;
+    if (!repoSyncTopics.has(topic)) {
+      repoSyncTopics.add(topic);
+      let version = 0;
+      deps.socketHub.registerTopic(topic, {
+        snapshot: async () => ({ version }),
+        start: (publish) => watchRepoSync(root, () => publish({ version: (version += 1) })),
+      });
+    }
+    return topic;
+  };
+  const repoSyncAnswer = async (projectId: string, root: string): Promise<RepoSync> => ({
+    ...(await repoSyncCounts(root)),
+    topic: repoSyncTopic(projectId, root),
+  });
+
   // ---- chained family: repo / git (project-scoped) ----
   const repoRoutes = new Hono<ProjectApiEnv>()
     .get('/repo', async (c) => {
@@ -7448,6 +7471,29 @@ export function createApp(deps: ServerDeps) {
       const result = await createOrSwitchBranch(info.root, parsed.data.name, parsed.data.from);
       if (!result.ok) return c.json({ error: result.error }, 409);
       return c.json({ branch: result.branch, created: result.created });
+    })
+
+    .get('/repo/sync', queryZodValidator(repoSyncQuerySchema), async (c) => {
+      c.header('Cache-Control', 'no-store');
+      const project = c.get('project');
+      const info = await getRepoInfo(project.root);
+      if (!info) {
+        const none: RepoSync = { branch: null, upstream: null, ahead: 0, behind: 0, fetchedAt: null, topic: null };
+        return c.json(none, 200);
+      }
+      if (c.req.valid('query').refresh === '1') await refreshRepoSync(info.root);
+      return c.json(await repoSyncAnswer(project.id, info.root), 200);
+    })
+
+    .post('/repo/pull', async (c) => {
+      const project = c.get('project');
+      if (principalOf(c)?.kind === 'run') return c.json({ error: 'a task may not pull the main checkout' }, 409);
+      const info = await getRepoInfo(project.root);
+      if (!info) return c.json({ error: 'not a git repository' }, 409);
+      const pulled = await pullFastForward(info.root);
+      if (!pulled.ok) return c.json({ error: pulled.error }, 409);
+      const answer: RepoPullResponse = { updated: pulled.updated, sync: await repoSyncAnswer(project.id, info.root) };
+      return c.json(answer, 200);
     });
 
   // An explicit "auto" default becomes `''` on the wire (#906): the empty id IS

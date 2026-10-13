@@ -251,6 +251,9 @@ export const queryKeys = {
     return [queryScope(), 'repo', 'changes'] as const
   },
   repoCommit: (sha: string) => [queryScope(), 'repo', 'commit', sha] as const,
+  get repoSync() {
+    return [queryScope(), 'repo', 'sync'] as const
+  },
   /** The Files sub-tab's path index (#1279) — also under `repo`, so a branch switch invalidates
    *  the tree along with the diff. */
   get repoTree() {

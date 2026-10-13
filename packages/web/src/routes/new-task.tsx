@@ -47,6 +47,7 @@ import type {
 import { Composer, type ComposerHandle } from '@/components/composer/composer'
 import { DispatchToggle } from '@/components/dispatch-toggle'
 import { PickerPill, RunnerPill, chevron, chipClass } from '@/components/picker-pill'
+import { RepoSyncChip } from '@/components/repo-sync-chip'
 import { PromptTemplateMenu } from '@/components/prompt-template-menu'
 import { SourcePill } from '@/components/source-pill'
 import {
@@ -862,6 +863,7 @@ export function NewTaskRoute() {
                         title="Base branch"
                         description="Tasks fork from it; pull requests target it."
                       >
+                        <RepoSyncChip />
                         <BaseBranchPill repo={repo.data} />
                       </OptionRow>
                     ) : null}

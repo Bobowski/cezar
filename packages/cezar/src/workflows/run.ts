@@ -87,6 +87,7 @@ import {
 import { commentOnIssue, commentOnPr, fetchGithubChecks, updatePr } from '../server/forge/github.ts';
 import { createDraftPr } from '../server/pr.ts';
 import { getHeadCommit, getRepoInfo } from '../server/git.ts';
+import { pullFastForward, repoAutoSyncEnabled } from '../git-sync.ts';
 import { loadWorkflows, newerCatalogWorkflow } from './load.ts';
 import type { QueuedMessage, RunRecord, RunStore, StepState } from '../runs/store.ts';
 // Task dispatch (spec 2026-09-10-dispatch). Every import below is inert unless the feature is
@@ -1204,6 +1205,8 @@ export class RunManager {
   /** Runs the watchdog started despite the hold. The spawn-time gate (`requeueWhileHeld`) would
    *  otherwise hand them straight back and the rescue would undo itself in a millisecond. */
   private readonly forceStarted = new Set<string>();
+  /** In-place runs still owed their one pre-start fast-forward; survives a requeue before it. */
+  private readonly inPlaceSyncPending = new Set<string>();
 
   /** The workspace-wide parallel-cap semaphore + cached resource config
    *  (spec 2026-07-20, step 2.5). Boot constructs ONE and every manager shares
@@ -4701,6 +4704,8 @@ export class RunManager {
       this.dropActive(runId, state);
       return;
     }
+    // No recorded starting commit yet = this run has never run in place before.
+    if (input.worktree === false && !this.store.getRun(runId)?.baseBranch) this.inPlaceSyncPending.add(runId);
     if (repo && input.worktree === false) {
       // Composer opt-out: run in the repo working tree, no branch/worktree. The
       // repository-root lease serializes these runs by default; the explicit
@@ -4790,6 +4795,22 @@ export class RunManager {
       // check also covers the explicit lock-bypass path, where the account may close while the
       // run is preparing its first step.
       if (this.requeueWhileHeld(runId, workflow, input, taskBackend, state)) return;
+      // The tree is ours and the run is going ahead: bring a checkout that is clean and merely
+      // BEHIND origin up to date, so an in-place agent does not start on stale code. Once per
+      // run, never without the lease. It takes time, so the account is asked about again after.
+      if (
+        repo && this.inPlaceSyncPending.delete(runId) && !repositoryRootLockDisabled() && !state.cancelled && repoAutoSyncEnabled()
+      ) {
+        const pulled = await pullFastForward(repo.root, { requireClean: true });
+        if (pulled.ok && pulled.updated > 0) {
+          const head = await getHeadCommit(repo.root);
+          if (head) this.store.updateRun(runId, { baseBranch: head });
+          emit({ type: 'note', message: `fast-forwarded the checkout by ${pulled.updated} commit(s) from origin before starting` });
+        } else if (!pulled.ok && pulled.behind > 0) {
+          emit({ type: 'note', message: `the checkout is ${pulled.behind} commit(s) behind ${pulled.upstream} and was left as it is — ${pulled.error}` });
+        }
+        if (this.requeueWhileHeld(runId, workflow, input, taskBackend, state)) return;
+      }
     }
 
     // Handoff journal (spec 007) — seeded after the worktree exists so the

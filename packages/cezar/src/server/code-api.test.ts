@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { codeSearchResultSchema, codeWatchSchema, terminalSessionSchema, terminalStateSchema, worktreeEntrySchema } from '@open-mercato/cezar-contract';
+import { codeSearchResultSchema, codeWatchSchema, repoPullResponseSchema, repoSyncSchema,terminalSessionSchema, terminalStateSchema, worktreeEntrySchema } from '@open-mercato/cezar-contract';
 import { RunStore } from '../runs/store.ts';
 import { fakeServiceBinding } from '../services/testkit.ts';
 import type { RunManager } from '../workflows/run.ts';
@@ -149,6 +149,42 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
     const { instance } = await app();
     expect(codeWatchSchema.parse(await (await apiRequest(instance, '/api/v1/repo/watch')).json())).toEqual({ topic: null });
     expect(codeWatchSchema.parse(await (await apiRequest(instance, '/api/v1/repo/watch?tree=nope')).json())).toEqual({ topic: null });
+  });
+
+  it('reports the checkout\'s distance from origin and fast-forwards it on pull', async () => {
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+    const origin = mkdtempSync(join(tmpdir(), 'cez-code-api-origin-'));
+    try {
+      git(tmpdir(), 'clone', '-q', '--bare', root, origin);
+      git(root, 'remote', 'add', 'origin', origin);
+      git(root, 'fetch', '-q', 'origin');
+      const branch = git(root, 'rev-parse', '--abbrev-ref', 'HEAD').toString().trim();
+      git(root, 'branch', '-q', `--set-upstream-to=origin/${branch}`);
+      const { id, instance } = await app();
+      const sync = async (path = '/api/v1/repo/sync') => repoSyncSchema.parse(await (await apiRequest(instance, path)).json());
+      expect(await sync()).toMatchObject({ branch, upstream: `origin/${branch}`, ahead: 0, behind: 0, topic: null });
+
+      // Origin moves on: the local read cannot know until a fetch, which `refresh=1` asks for.
+      const other = mkdtempSync(join(tmpdir(), 'cez-code-api-other-'));
+      try {
+        git(tmpdir(), 'clone', '-q', origin, other);
+        writeFileSync(join(other, 'upstream.txt'), 'new\n');
+        git(other, 'add', '-A');
+        git(other, '-c', 'user.name=t', '-c', 'user.email=t@t.t', 'commit', '-qm', 'upstream');
+        git(other, 'push', '-q', 'origin', `HEAD:${branch}`);
+      } finally {
+        rmSync(other, { recursive: true, force: true });
+      }
+      expect((await sync()).behind).toBe(0);
+      expect((await sync(`/api/v1/p/${id}/repo/sync?refresh=1`)).behind).toBe(1);
+
+      const pulled = await apiRequest(instance, '/api/v1/repo/pull', send('POST'));
+      expect(pulled.status).toBe(200);
+      expect(repoPullResponseSchema.parse(await pulled.json())).toMatchObject({ updated: 1, sync: { behind: 0 } });
+      expect(existsSync(join(root, 'upstream.txt'))).toBe(true);
+    } finally {
+      rmSync(origin, { recursive: true, force: true });
+    }
   });
 
   it('opens a terminal owned by the project in the main checkout, apart from any task\'s', async () => {

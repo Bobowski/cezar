@@ -2,7 +2,7 @@ import type { InferRequestType, InferResponseType } from 'hono/client';
 import { hc } from 'hono/client';
 import { expect, it } from 'vitest';
 import type {
-  CodeSearchQuery, CodeSearchResult, CodeWatch, RepoFilePathQuery, RepoTree, RunFileCreate, RunFileDeleteResponse, RunFileRename,
+  CodeSearchQuery, CodeSearchResult, CodeWatch, RepoFilePathQuery, RepoPullResponse, RepoSync, RepoSyncQuery, RepoTree, RunFileCreate, RunFileDeleteResponse, RunFileRename,
   RunFileWrite, RunFileWriteResponse, TerminalCreateInput, TerminalOutput, TerminalSession, TerminalState,
 } from '@open-mercato/cezar-contract';
 import type { AppType } from './app-type.ts';
@@ -28,6 +28,9 @@ type Checks = [
   Assert<Mutual<CodeSearchQuery, InferRequestType<typeof unscoped.search.$get>['query']>>,
   Assert<Mutual<RepoTree, InferResponseType<typeof run.tree.$get, 200>>>,
   Assert<Mutual<CodeWatch, InferResponseType<typeof repo.watch.$get, 200>>>,
+  Assert<Mutual<RepoSync, InferResponseType<typeof repo.sync.$get, 200>>>,
+  Assert<Mutual<RepoSyncQuery, InferRequestType<typeof unscoped.sync.$get>['query']>>,
+  Assert<Mutual<RepoPullResponse, InferResponseType<typeof repo.pull.$post, 200>>>,
   Assert<Mutual<TerminalState, InferResponseType<typeof repo.terminal.$get, 200>>>,
   Assert<Mutual<TerminalSession, InferResponseType<typeof repo.terminal.$post, 201>>>,
   Assert<Mutual<TerminalCreateInput, InferRequestType<typeof repo.terminal.$post>['json']>>,

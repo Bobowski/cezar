@@ -103,6 +103,8 @@ import type {
   UpdateProjectResponse,
   RemoveTodoResponse,
   RepoBranchResponse,
+  RepoPullResponse,
+  RepoSync,
   RepoCommitPayload,
   RunCommitsResponse,
   RunHistoryContext,
@@ -2320,6 +2322,24 @@ export async function createRepoBranch(input: { name: string; from?: string }): 
     }),
     '/repo/branch',
   )
+}
+
+/** How far the main checkout is from its upstream. `refresh` asks the server to fetch first
+ *  (throttled there) — for a view that has no socket bell to tell it origin moved. */
+export async function getRepoSync(opts?: ReadOptions & { refresh?: boolean }): Promise<RepoSync> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].repo.sync.$get(
+      { param: { projectId: queryScope() }, query: opts?.refresh ? { refresh: '1' as const } : {} },
+      init(opts),
+    ),
+    '/repo/sync',
+  )
+}
+
+/** Fetch and fast-forward the main checkout. A diverged branch or a change the update would
+ *  overwrite comes back as a 409 whose ApiError carries the reason. */
+export async function pullRepo(): Promise<RepoPullResponse> {
+  return unwrap(await cez.api.v1.p[':projectId'].repo.pull.$post({ param: { projectId: queryScope() } }), '/repo/pull')
 }
 
 // ---- plan mode (spec 008) -------------------------------------------------------------------

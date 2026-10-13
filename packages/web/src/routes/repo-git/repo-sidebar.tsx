@@ -3,6 +3,7 @@ import { useContext, type ReactNode } from 'react'
 
 import type { RepoInfo } from '@open-mercato/cezar-api-client'
 import { ContextSidebarContext } from '@/components/context-sidebar'
+import { RepoSyncChip } from '@/components/repo-sync-chip'
 import { Button } from '@/components/ui/button'
 import { SidebarHeader, useSidebar } from '@/components/ui/sidebar'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -29,7 +30,12 @@ export function RepoSidebarHeader({ info, tab, children }: { info?: RepoInfo; ta
     <SidebarHeader data-slot="repo-header" className="gap-3 p-3">
       <div className="flex min-w-0 items-center justify-between gap-2">
         <h2 className="px-1 text-[15px] font-semibold text-foreground">Git</h2>
-        {info ? <BranchChip branch={info.branch} /> : null}
+        {info ? (
+          <span className="flex min-w-0 items-center gap-1.5">
+            <RepoSyncChip />
+            <BranchChip branch={info.branch} />
+          </span>
+        ) : null}
       </div>
       {info?.remote ? (
         <p data-slot="repo-remote" title={info.remote} className="-mt-1.5 truncate px-1 text-xs text-muted-foreground">

@@ -62,6 +62,34 @@ export const repoBranchResponseSchema = z.object({
 });
 export type RepoBranchResponse = z.infer<typeof repoBranchResponseSchema>;
 
+/**
+ * `GET /api/v1/repo/sync` — how far the main checkout is from its upstream. A local read unless
+ * `refresh=1`, which a view WITHOUT the socket bus sends to ask for a (throttled) fetch first;
+ * with the bus, `topic` rings a bare counter whenever a background fetch moved the upstream.
+ */
+export const repoSyncQuerySchema = z.object({ refresh: z.enum(['1']).optional() });
+export type RepoSyncQuery = z.infer<typeof repoSyncQuerySchema>;
+export const repoSyncSchema = z.object({
+  /** Null on a detached HEAD or outside a repository. */
+  branch: z.string().nullable(),
+  /** The `origin/<name>` ref compared with; null when the branch has none. */
+  upstream: z.string().nullable(),
+  ahead: z.number(),
+  behind: z.number(),
+  /** Last successful fetch by this server (ISO), null when it has not fetched yet. */
+  fetchedAt: z.string().nullable(),
+  topic: z.string().nullable(),
+});
+export type RepoSync = z.infer<typeof repoSyncSchema>;
+
+/** `POST /api/v1/repo/pull` — fetch and fast-forward only; anything else is a 409 with the reason. */
+export const repoPullResponseSchema = z.object({
+  /** Commits the checkout moved forward by; 0 when it was already up to date. */
+  updated: z.number(),
+  sync: repoSyncSchema,
+});
+export type RepoPullResponse = z.infer<typeof repoPullResponseSchema>;
+
 /** The aggregate line counts every structured-diff payload carries. Module-local: the runs family
  *  carries its own `DiffStat` of the same shape, and two `export`s of one name would collide when
  *  `contract/index.ts` re-exports both files. */

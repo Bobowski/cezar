@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { PlayIcon, SquareIcon, TriangleAlertIcon } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
+import { Fragment, useState, type ReactNode } from 'react'
 
 import type { DockerContainer, DockerStack } from '@open-mercato/cezar-api-client'
 import { dockerContainerAction, dockerStackAction } from '@/api/client'
@@ -12,8 +12,10 @@ import { StatusDot } from '@/components/status-dot'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card } from '@/components/ui/card'
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
+import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemSeparator, ItemTitle } from '@/components/ui/item'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarMenu, SidebarMenuButton, SidebarMenuItem,
 } from '@/components/ui/sidebar'
@@ -31,23 +33,27 @@ export function stackOwner(stack: Pick<DockerStack, 'mine' | 'project'>): string
 
 function ContainerRow({ container, busy, onAct }: { container: DockerContainer; busy: boolean; onAct: (action: 'start' | 'stop') => void }) {
   return (
-    <li data-slot="docker-container" data-running={container.running} className="flex items-center gap-3 px-4 py-2">
-      <StatusDot tone={container.running ? 'success' : 'neutral'} />
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-[13px] font-medium text-foreground">{container.service ?? container.name}</p>
-        <p className="truncate font-mono text-[11px] text-muted-foreground">{container.image} · {container.status}</p>
-      </div>
-      <p className="hidden shrink-0 font-mono text-xs text-foreground tabular-nums sm:block">
+    <Item size="sm" data-slot="docker-container" data-running={container.running} className="flex-nowrap rounded-none">
+      <ItemMedia>
+        <StatusDot tone={container.running ? 'success' : 'neutral'} />
+      </ItemMedia>
+      <ItemContent className="min-w-0 gap-0.5">
+        <ItemTitle className="max-w-full"><span className="truncate">{container.service ?? container.name}</span></ItemTitle>
+        <ItemDescription className="truncate font-mono text-xs">{container.image} · {container.status}</ItemDescription>
+      </ItemContent>
+      <ItemContent className="hidden font-mono text-xs tabular-nums sm:flex">
         {container.ports.map((port) => (port.host === port.container ? String(port.host) : `${port.host}→${port.container}`)).join('  ')}
-      </p>
-      <Button
-        variant="ghost" size="icon-sm" disabled={busy}
-        aria-label={`${container.running ? 'Stop' : 'Start'} ${container.name}`}
-        onClick={() => onAct(container.running ? 'stop' : 'start')}
-      >
-        {container.running ? <SquareIcon aria-hidden="true" /> : <PlayIcon aria-hidden="true" />}
-      </Button>
-    </li>
+      </ItemContent>
+      <ItemActions>
+        <Button
+          variant="ghost" size="icon-sm" disabled={busy}
+          aria-label={`${container.running ? 'Stop' : 'Start'} ${container.name}`}
+          onClick={() => onAct(container.running ? 'stop' : 'start')}
+        >
+          {container.running ? <SquareIcon aria-hidden="true" /> : <PlayIcon aria-hidden="true" />}
+        </Button>
+      </ItemActions>
+    </Item>
   )
 }
 
@@ -77,7 +83,12 @@ export function DockerView({ header }: { header: ReactNode }) {
       <ContextSidebar>
         {header}
         <SidebarContent>
-          {state.isPending ? <p className="px-4 text-xs text-muted-foreground">Loading…</p> : null}
+          {state.isPending ? (
+            <div className="grid gap-2 px-4" aria-hidden="true">
+              <Skeleton className="h-4 w-3/4" />
+              <Skeleton className="h-4 w-1/2" />
+            </div>
+          ) : null}
           {available && stacks.length > 0 ? (
             <SidebarGroup>
               <SidebarGroupLabel>On this machine</SidebarGroupLabel>
@@ -146,36 +157,35 @@ export function DockerView({ header }: { header: ReactNode }) {
           const owner = stackOwner(stack)
           return (
             <Card key={stack.name} flush data-slot="docker-stack" data-stack={stack.name} className="overflow-hidden">
-              <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
-                <div className="min-w-0 space-y-0.5">
-                  <h2 className="flex items-center gap-2 text-[14px] font-semibold text-foreground">
-                    <span className="truncate">{stackLabel(stack)}</span>
-                    {owner ? <Badge variant={stack.mine ? 'default' : 'secondary'}>{owner}</Badge> : null}
-                  </h2>
-                  <p className="truncate font-mono text-[11px] text-muted-foreground">
-                    {up} of {stack.containers.length} running{stack.dir ? `  ·  ${stack.dir}` : ''}
-                  </p>
-                </div>
+              <CardHeader className="border-b border-border px-4 py-3 [.border-b]:pb-3">
+                <CardTitle className="flex min-w-0 items-center gap-2 text-sm">
+                  <span className="truncate">{stackLabel(stack)}</span>
+                  {owner ? <Badge variant={stack.mine ? 'default' : 'secondary'}>{owner}</Badge> : null}
+                </CardTitle>
+                <CardDescription className="truncate font-mono text-xs">
+                  {up} of {stack.containers.length} running{stack.dir ? `  ·  ${stack.dir}` : ''}
+                </CardDescription>
                 {stack.name !== '' ? (
-                  up > 0 ? (
-                    <Button variant="outline" size="sm" disabled={act.isPending} onClick={() => act.mutate({ kind: 'stack', id: stack.name, action: 'stop' })}>
-                      <SquareIcon aria-hidden="true" /> Stop stack
+                  <CardAction>
+                    <Button variant="outline" size="sm" disabled={act.isPending} onClick={() => act.mutate({ kind: 'stack', id: stack.name, action: up > 0 ? 'stop' : 'start' })}>
+                      {up > 0 ? <><SquareIcon aria-hidden="true" /> Stop stack</> : <><PlayIcon aria-hidden="true" /> Start stack</>}
                     </Button>
-                  ) : (
-                    <Button variant="outline" size="sm" disabled={act.isPending} onClick={() => act.mutate({ kind: 'stack', id: stack.name, action: 'start' })}>
-                      <PlayIcon aria-hidden="true" /> Start stack
-                    </Button>
-                  )
+                  </CardAction>
                 ) : null}
-              </header>
-              <ul className="divide-y divide-border">
-                {stack.containers.map((container) => (
-                  <ContainerRow
-                    key={container.id} container={container} busy={act.isPending}
-                    onAct={(action) => act.mutate({ kind: 'container', id: container.id, action })}
-                  />
-                ))}
-              </ul>
+              </CardHeader>
+              <CardContent className="px-0">
+                <ItemGroup>
+                  {stack.containers.map((container, index) => (
+                    <Fragment key={container.id}>
+                      {index > 0 ? <ItemSeparator /> : null}
+                      <ContainerRow
+                        container={container} busy={act.isPending}
+                        onAct={(action) => act.mutate({ kind: 'container', id: container.id, action })}
+                      />
+                    </Fragment>
+                  ))}
+                </ItemGroup>
+              </CardContent>
             </Card>
           )
         })}

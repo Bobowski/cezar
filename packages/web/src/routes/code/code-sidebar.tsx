@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { CaseSensitiveIcon, ChevronsDownUpIcon, FilePlusIcon, FolderPlusIcon, RefreshCwIcon, RegexIcon } from 'lucide-react'
+import { CaseSensitiveIcon, ChevronsDownUpIcon, FilePlusIcon, FolderPlusIcon, FolderSearchIcon, RefreshCwIcon, RegexIcon, SearchIcon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { queryScope, type ChangedFile, type CodeSearchMatch } from '@open-mercato/cezar-api-client'
@@ -8,8 +8,9 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { IconTooltip } from '@/components/ui/icon-tooltip'
+import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group'
 import {
-  SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarInput, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarMenuSub,
+  SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarMenuSub,
   SidebarMenuSubButton, SidebarMenuSubItem,
 } from '@/components/ui/sidebar'
 import { Toggle } from '@/components/ui/toggle'
@@ -135,17 +136,24 @@ export function SearchView({ tree, onOpen, focus }: { tree: CodeTree; onOpen: (p
           className="flex flex-col gap-1.5 px-2"
           onSubmit={(event) => { event.preventDefault(); if (text.trim() !== '') setAsked({ q: text, glob, regex, caseSensitive }) }}
         >
-          <div className="flex items-center gap-1">
-            <SidebarInput ref={inputRef} aria-label="Search in files" value={text} onChange={(event) => setText(event.target.value)} placeholder="Search" spellCheck={false} autoComplete="off" className="min-w-0 flex-1 font-mono text-xs" />
-            <IconTooltip label="Match Case">
-              <Toggle size="sm" aria-label="Match Case" pressed={caseSensitive} onPressedChange={setCaseSensitive}><CaseSensitiveIcon aria-hidden="true" /></Toggle>
-            </IconTooltip>
-            <IconTooltip label="Use Regular Expression">
-              <Toggle size="sm" aria-label="Use Regular Expression" pressed={regex} onPressedChange={setRegex}><RegexIcon aria-hidden="true" /></Toggle>
-            </IconTooltip>
-          </div>
-          <SidebarInput aria-label="Files to include" value={glob} onChange={(event) => setGlob(event.target.value)} placeholder="files to include, e.g. src/**/*.ts" spellCheck={false} autoComplete="off" className="font-mono text-xs" />
-          <Button type="submit" size="sm" variant="outline" disabled={text.trim() === ''}>Search</Button>
+          {/* The explorer filter's shape, so the two sidebar views read as one. */}
+          <InputGroup className="bg-background shadow-none">
+            <InputGroupAddon><SearchIcon aria-hidden="true" /></InputGroupAddon>
+            <InputGroupInput ref={inputRef} aria-label="Search in files" value={text} onChange={(event) => setText(event.target.value)} placeholder="Search" spellCheck={false} autoComplete="off" />
+            <InputGroupAddon align="inline-end" className="gap-0.5">
+              <IconTooltip label="Match Case">
+                <Toggle size="sm" className="size-6 min-w-6 px-0" aria-label="Match Case" pressed={caseSensitive} onPressedChange={setCaseSensitive}><CaseSensitiveIcon aria-hidden="true" /></Toggle>
+              </IconTooltip>
+              <IconTooltip label="Use Regular Expression">
+                <Toggle size="sm" className="size-6 min-w-6 px-0" aria-label="Use Regular Expression" pressed={regex} onPressedChange={setRegex}><RegexIcon aria-hidden="true" /></Toggle>
+              </IconTooltip>
+            </InputGroupAddon>
+          </InputGroup>
+          <InputGroup className="bg-background shadow-none">
+            <InputGroupAddon><FolderSearchIcon aria-hidden="true" /></InputGroupAddon>
+            <InputGroupInput aria-label="Files to include" value={glob} onChange={(event) => setGlob(event.target.value)} placeholder="Files to include" title="A glob, e.g. src/**/*.ts" spellCheck={false} autoComplete="off" />
+          </InputGroup>
+          <Button type="submit" size="sm" variant="secondary" disabled={text.trim() === ''}>Search</Button>
         </form>
         <div data-slot="code-search-results" className="px-2 text-xs">
           {result.isFetching ? <p className="text-muted-foreground">Searching…</p> : null}

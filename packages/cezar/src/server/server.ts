@@ -2812,7 +2812,7 @@ export function createApp(deps: ServerDeps) {
       c.header('Cache-Control', 'no-store');
       const off = (reason: string): GithubReposResponse => ({ available: false, reason, repos: [] });
       if (capabilities().singleProject) return c.json(off(singleProjectRefusal('adding projects').error), 200);
-      const listing = await listGithubRepos({ ...(deps.ghApiRunner ? { run: deps.ghApiRunner } : {}), refresh: c.req.valid('query').refresh === '1' });
+      const listing = await listGithubRepos({ ...(deps.ghApiRunner ? { run: deps.ghApiRunner } : {}), refresh: c.req.valid('query').refresh === '1', ...(c.req.valid('query').owner ? { owner: c.req.valid('query').owner, personal: c.req.valid('query').personal === '1' } : {}) });
       if (!listing.available) return c.json(off(listing.reason), 200);
       const registry = (await loadWorkspaceConfig()).projects;
       const origins = new Map<string, string>();

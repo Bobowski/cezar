@@ -70,7 +70,16 @@ function serve(checkout: () => Promise<Response> = async () => json({ project: P
       posted.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
       return checkout()
     }
-    if (url.pathname === '/api/v1/projects/github-repos' && repos) return json(repos)
+    // The picker: owners first, then the chosen owner's repositories (`?owner=`).
+    if (url.pathname === '/api/v1/projects/github-owners' && repos) {
+      return json(repos.available
+        ? { available: true, owners: [{ login: 'me', personal: true }, { login: 'acme', personal: false, description: 'Builds rockets' }] }
+        : { available: false, reason: repos.reason })
+    }
+    if (url.pathname === '/api/v1/projects/github-repos' && repos) {
+      const owner = url.searchParams.get('owner')
+      return json({ ...repos, repos: repos.repos.filter((entry) => owner === null || entry.owner === owner) })
+    }
     if (url.pathname === '/api/v1/projects') {
       return json({ projects: [], bootProject: 'cezar', projectsDir: '~/cezar/projects' })
     }
@@ -292,7 +301,7 @@ describe('CloneProjectDialog', () => {
 
     await waitFor(() => expect(slot('clone-error')?.textContent).toContain('evil.example'))
     expect(slot('clone-sso-link')).toBeNull()
-    expect(slot('clone-error')?.querySelector('p')?.className).toContain('break-all')
+    expect(slot('clone-error')?.querySelector('[data-slot="alert-description"]')?.className).toContain('break-all')
     expect(cloneButton().textContent).toBe('Retry clone')
   })
 
@@ -329,53 +338,65 @@ const REPOS: GithubReposResponse = {
   ],
 }
 const rows = () => [...document.querySelectorAll('[data-slot="clone-repo"]')] as HTMLButtonElement[]
+const owners = () => [...document.querySelectorAll<HTMLButtonElement>('[data-slot="clone-owner-option"]')]
+const pickedOwner = () => owners().find((card) => card.getAttribute('aria-checked') === 'true')?.dataset.owner
 
-describe('CloneProjectDialog — the repository list', () => {
-  it('lists the repositories of the account and clones the one that is picked', async () => {
+describe('CloneProjectDialog — organization, then repository', () => {
+  it('lists the first account’s repositories and clones the one that is picked', async () => {
     serve(undefined, REPOS)
     renderDialog()
-    await waitFor(() => expect(rows()).toHaveLength(3))
-    expect(rows()[0]?.textContent).toContain('acme/shop')
+    // The personal account leads and is selected; its repositories are the ones listed.
+    await waitFor(() => expect(owners().map((card) => card.dataset.owner)).toEqual(['me', 'acme']))
+    expect(pickedOwner()).toBe('me')
+    await waitFor(() => expect(rows().map((row) => row.textContent)).toEqual(['cezarAdded']))
+
+    fireEvent.click(owners()[1]!)
+    await waitFor(() => expect(rows()).toHaveLength(2))
+    expect(rows()[0]?.textContent).toContain('shop')
     expect(rows()[0]?.querySelector('[aria-label="Private"]')).not.toBeNull()
 
     fireEvent.click(rows()[1]!)
     expect(urlInput().value).toBe('acme/storefront')
     await waitFor(() => expect(slot('clone-target')?.textContent).toBe('~/cezar/projects/storefront'))
     // A pick is a selection, not a search: the other rows stay within reach.
-    expect(rows()).toHaveLength(3)
-    expect(rows()[1]?.getAttribute('aria-pressed')).toBe('true')
+    expect(rows()).toHaveLength(2)
+    expect(rows()[1]?.getAttribute('aria-checked')).toBe('true')
 
     fireEvent.click(cloneButton())
     await waitFor(() => expect(posted[0]).toMatchObject({ url: 'acme/storefront' }))
   })
 
-  it('narrows as you type, and still takes a pasted URL that matches nothing', async () => {
+  it('narrows as you type, still takes a pasted URL, and starts over on another organization', async () => {
     serve(undefined, REPOS)
     renderDialog()
-    await waitFor(() => expect(rows()).toHaveLength(3))
+    await waitFor(() => expect(owners()).toHaveLength(2))
+    fireEvent.click(owners()[1]!)
+    await waitFor(() => expect(rows()).toHaveLength(2))
     fireEvent.change(urlInput(), { target: { value: 'medusa' } })
-    expect(rows().map((row) => row.textContent)).toHaveLength(1)
+    expect(rows()).toHaveLength(1)
     fireEvent.change(urlInput(), { target: { value: 'https://github.com/other/thing' } })
     expect(rows()).toHaveLength(0)
     expect(cloneButton().disabled).toBe(false)
+    fireEvent.click(owners()[0]!)
+    expect(urlInput().value).toBe('')
   })
 
   it('opens a repository that is already a project instead of cloning it again', async () => {
     serve(undefined, REPOS)
     const { onOpenChange } = renderDialog()
-    await waitFor(() => expect(rows()).toHaveLength(3))
-    expect(rows()[2]?.textContent).toContain('Added')
-    fireEvent.click(rows()[2]!)
+    await waitFor(() => expect(rows()).toHaveLength(1))
+    fireEvent.click(rows()[0]!)
     expect(onOpenChange).toHaveBeenCalledWith(false)
     await waitFor(() => expect(document.querySelector('[data-testid="location"]')?.textContent).toBe('/p/cezar-2/'))
     expect(posted).toHaveLength(0)
   })
 
-  it('says why the list is missing and keeps the paste field working', async () => {
+  it('says why GitHub is missing and keeps the paste field working, in one column', async () => {
     serve(undefined, { available: false, reason: 'gh is not signed in — run `gh auth login`', repos: [] })
     renderDialog()
     await waitFor(() => expect(slot('clone-repos-unavailable')?.textContent).toContain('gh is not signed in'))
     expect(slot('clone-repos')).toBeNull()
+    expect(slot('clone-owners-column')).toBeNull()
     fireEvent.change(urlInput(), { target: { value: 'open-mercato/cezar' } })
     await waitFor(() => expect(cloneButton().disabled).toBe(false))
   })

@@ -194,8 +194,8 @@ export const githubRepoSchema = z.object({
 export type GithubRepo = z.infer<typeof githubRepoSchema>;
 
 /**
- * `GET /api/v1/projects/github-repos` — the clone dialog's picker: the account's most recently
- * pushed repositories, across its organizations. `available: false` (no `gh`, not signed in,
+ * `GET /api/v1/projects/github-repos` — the clone dialog's picker: one owner's repositories
+ * (`?owner=`), or the account's most recently pushed across its organizations. `available: false` (no `gh`, not signed in,
  * offline) leaves the dialog its paste-a-URL field; `reason` says why.
  */
 export const githubReposResponseSchema = z.object({
@@ -205,7 +205,13 @@ export const githubReposResponseSchema = z.object({
 });
 export type GithubReposResponse = z.infer<typeof githubReposResponseSchema>;
 
-export const githubReposQuerySchema = z.object({ refresh: z.enum(['1']).optional() });
+/** `owner`: one account or organisation's repositories instead of the most recent across all. */
+export const githubReposQuerySchema = z.object({
+  refresh: z.enum(['1']).optional(),
+  owner: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/).optional(),
+  /** The owner is the signed-in account itself, not an organisation. */
+  personal: z.enum(['1']).optional(),
+});
 export type GithubReposQuery = z.infer<typeof githubReposQuerySchema>;
 /**
  * A GitHub repository name, as GitHub itself accepts it: letters, digits, `.`, `-` and `_`, at

@@ -896,10 +896,11 @@ export function useOpenAgentAccountFile() {
 }
 
 /** What the signed-in GitHub account can clone — asked only while the clone dialog is open. */
-export function useGithubRepos() {
+export function useGithubRepos(owner: string | null, personal = false) {
   return useQuery({
-    queryKey: workspaceQueryKeys.githubRepos,
-    queryFn: ({ signal }) => getGithubRepos({ signal }),
+    queryKey: [...workspaceQueryKeys.githubRepos, owner ?? ''] as const,
+    queryFn: ({ signal }) => getGithubRepos({ signal, ...(owner ? { owner, personal } : {}) }),
+    enabled: owner !== null,
     retry: false,
     staleTime: 60_000,
   })

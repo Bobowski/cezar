@@ -42,8 +42,10 @@ export const ghApiRunner: GhApiRunner = (path) =>
   });
 
 const DRY_RUN_REPOS: Array<Omit<GithubRepo, 'projectId'>> = [
-  { slug: 'open-mercato/cezar', owner: 'open-mercato', name: 'cezar', description: 'Parallel coding-agents orchestrator', private: false, fork: false, pushedAt: '2026-10-12T09:00:00Z' },
-  { slug: 'acme/storefront', owner: 'acme', name: 'storefront', description: null, private: true, fork: false, pushedAt: '2026-10-01T09:00:00Z' },
+  // The owners `create-project.ts` fakes in a dry run, so the two dialogs agree.
+  { slug: 'dry-run-user/notes', owner: 'dry-run-user', name: 'notes', description: 'CEZ_DRY_RUN=1 fake repository', private: true, fork: false, pushedAt: '2026-10-12T09:00:00Z' },
+  { slug: 'dry-run-org/storefront', owner: 'dry-run-org', name: 'storefront', description: null, private: true, fork: false, pushedAt: '2026-10-01T09:00:00Z' },
+  { slug: 'dry-run-org/backend', owner: 'dry-run-org', name: 'backend', description: 'Medusa backend', private: false, fork: false, pushedAt: '2026-09-01T09:00:00Z' },
 ];
 
 function reasonOf(err: unknown): string {
@@ -54,37 +56,69 @@ function reasonOf(err: unknown): string {
   return whyLine(text).slice(0, 300);
 }
 
-let cache: { at: number; listing: GithubRepoListing } | null = null;
+const cache = new Map<string, { at: number; listing: GithubRepoListing }>();
 
-export async function listGithubRepos(options: { run?: GhApiRunner; refresh?: boolean } = {}): Promise<GithubRepoListing> {
-  if (process.env.CEZ_DRY_RUN === '1' && !options.run) return { available: true, repos: DRY_RUN_REPOS };
+const NOT_FOUND = /not found|HTTP 404/i;
+
+/**
+ * `owner` narrows the listing to one account. An organisation is asked for directly; the
+ * signed-in person (`personal`, or a 404 from the organisation route) through `user/repos`,
+ * keeping that owner's rows.
+ */
+export async function listGithubRepos(options: { run?: GhApiRunner; refresh?: boolean; owner?: string; personal?: boolean } = {}): Promise<GithubRepoListing> {
+  const { owner } = options;
+  if (process.env.CEZ_DRY_RUN === '1' && !options.run) {
+    return { available: true, repos: owner ? DRY_RUN_REPOS.filter((repo) => repo.owner === owner) : DRY_RUN_REPOS };
+  }
   // An injected runner is a test's: it must never read, or leave behind, another case's answer.
-  const cached = !options.run && !options.refresh && cache && Date.now() - cache.at < TTL_MS ? cache.listing : null;
+  const key = owner?.toLowerCase() ?? '';
+  const hit = cache.get(key);
+  const cached = !options.run && !options.refresh && hit && Date.now() - hit.at < TTL_MS ? hit.listing : null;
   if (cached) return cached;
   const run = options.run ?? ghApiRunner;
   const repos: Array<Omit<GithubRepo, 'projectId'>> = [];
+  const seen = new Set<string>();
+  // Every page at once: a `gh` call is seconds of process start and TLS, whatever it returns.
+  const pages = (source: string): Promise<string[]> =>
+    Promise.all(Array.from({ length: PAGES }, (_, index) => run(`${source}per_page=${PER_PAGE}&sort=pushed&page=${index + 1}`)));
+  const own = 'user/repos?affiliation=owner&';
   try {
-    for (let page = 1; page <= PAGES; page += 1) {
-      const raw: unknown = JSON.parse(await run(`user/repos?per_page=${PER_PAGE}&sort=pushed&page=${page}`));
+    let texts: string[];
+    if (!owner) texts = await pages('user/repos?');
+    else if (options.personal) texts = await pages(own);
+    else {
+      try {
+        texts = await pages(`orgs/${owner}/repos?type=all&`);
+      } catch (err) {
+        const stderr = (err as { stderr?: unknown } | null)?.stderr;
+        if (!NOT_FOUND.test(`${typeof stderr === 'string' ? stderr : ''} ${err instanceof Error ? err.message : ''}`)) throw err;
+        texts = await pages(own);
+      }
+    }
+    for (const text of texts) {
+      const raw: unknown = JSON.parse(text);
       if (!Array.isArray(raw)) break;
       for (const entry of raw) {
         const parsed = ghRepoSchema.safeParse(entry);
         // An archived repository is one nobody starts work in; a name `gh` could not clone is not offered.
         if (!parsed.success || parsed.data.archived || !parseRepoRef(parsed.data.full_name)) continue;
+        if (owner && parsed.data.owner.login.toLowerCase() !== key) continue;
+        // Pages are read at once, so a push between two of them can list one repository twice.
+        if (seen.has(parsed.data.full_name)) continue;
+        seen.add(parsed.data.full_name);
         const repo = parsed.data;
         repos.push({
           slug: repo.full_name, owner: repo.owner.login, name: repo.name, description: repo.description || null,
           private: repo.private, fork: repo.fork, pushedAt: repo.pushed_at ?? null,
         });
       }
-      if (raw.length < PER_PAGE) break;
     }
   } catch (err) {
     // A failure is not cached: signing in must show on the next open, not a minute later.
     return { available: false, reason: reasonOf(err) };
   }
   const listing: GithubRepoListing = { available: true, repos };
-  if (!options.run) cache = { at: Date.now(), listing };
+  if (!options.run) cache.set(key, { at: Date.now(), listing });
   return listing;
 }
 

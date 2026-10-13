@@ -40,13 +40,36 @@ describe('the clone dialog’s repository list', () => {
       asked.push(path);
       const page = Number(/page=(\d+)$/.exec(path)?.[1]);
       if (page === 1) return JSON.stringify(Array.from({ length: 100 }, (_, i) => gh({ full_name: `acme/r${i}`, name: `r${i}` })));
+      if (page === 3) return '[]';
       return JSON.stringify([gh({}), gh({ full_name: 'acme/old', name: 'old', archived: true }), gh({ full_name: 'bad name/x' }), { nonsense: true }]);
     };
     const listing = await listGithubRepos({ run });
     if (!listing.available) throw new Error(listing.reason);
-    expect(asked).toEqual(['user/repos?per_page=100&sort=pushed&page=1', 'user/repos?per_page=100&sort=pushed&page=2']);
+    expect(asked).toEqual([1, 2, 3].map((page) => `user/repos?per_page=100&sort=pushed&page=${page}`));
     expect(listing.repos).toHaveLength(101);
     expect(listing.repos.at(-1)).toEqual({ slug: 'acme/shop', owner: 'acme', name: 'shop', description: 'A shop', private: true, fork: false, pushedAt: '2026-10-01T00:00:00Z' });
+  });
+
+  it('lists one organisation directly, and a person through the signed-in account', async () => {
+    const asked: string[] = [];
+    const org: GhApiRunner = async (path) => { asked.push(path); return path.endsWith('page=1') ? JSON.stringify([gh({}), gh({ full_name: 'acme/api', name: 'api' })]) : '[]'; };
+    const listing = await listGithubRepos({ run: org, owner: 'acme' });
+    expect(asked).toEqual([1, 2, 3].map((page) => `orgs/acme/repos?type=all&per_page=100&sort=pushed&page=${page}`));
+    expect(listing.available && listing.repos.map((repo) => repo.slug)).toEqual(['acme/shop', 'acme/api']);
+
+    asked.length = 0;
+    const person: GhApiRunner = async (path) => {
+      asked.push(path);
+      if (path.startsWith('orgs/')) throw Object.assign(new Error('Command failed'), { stderr: 'gh: Not Found (HTTP 404)' });
+      return path.endsWith('page=1') ? JSON.stringify([gh({ full_name: 'me/dotfiles', name: 'dotfiles', owner: { login: 'Me' } }), gh({})]) : '[]';
+    };
+    const mine = await listGithubRepos({ run: person, owner: 'me' });
+    expect(asked.filter((path) => path.startsWith('user/'))).toHaveLength(3);
+    expect(mine.available && mine.repos.map((repo) => repo.slug)).toEqual(['me/dotfiles']);
+    // Told the owner is the signed-in account, the organisation route is never tried.
+    asked.length = 0;
+    await listGithubRepos({ run: person, owner: 'me', personal: true });
+    expect(asked.every((path) => path.startsWith('user/repos?affiliation=owner&'))).toBe(true);
   });
 
   it('answers with a reason when gh is missing, signed out or failing', async () => {

@@ -1530,8 +1530,13 @@ export async function registerProject(root: string): Promise<RegisterProjectResp
  * stream, keyed by `input.checkoutId`.
  */
 /** The clone dialog's picker (`GET /api/v1/projects/github-repos`). `refresh` skips the server's minute-long cache. */
-export async function getGithubRepos(opts?: ReadOptions & { refresh?: boolean }): Promise<GithubReposResponse> {
-  return unwrap(await cez.api.v1.projects['github-repos'].$get({ query: opts?.refresh ? { refresh: '1' } : {} }, init(opts)), '/projects/github-repos')
+export async function getGithubRepos(opts?: ReadOptions & { refresh?: boolean; owner?: string; personal?: boolean }): Promise<GithubReposResponse> {
+  const query = {
+    ...(opts?.refresh ? { refresh: '1' as const } : {}),
+    ...(opts?.owner ? { owner: opts.owner } : {}),
+    ...(opts?.owner && opts.personal ? { personal: '1' as const } : {}),
+  }
+  return unwrap(await cez.api.v1.projects['github-repos'].$get({ query }, init(opts)), '/projects/github-repos')
 }
 
 export async function checkoutProject(input: CheckoutProjectInput): Promise<RegisterProjectResponse> {

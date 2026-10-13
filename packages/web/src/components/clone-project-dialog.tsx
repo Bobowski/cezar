@@ -4,9 +4,13 @@ import { useNavigate } from 'react-router'
 import { useGlobalSettings } from '@/components/global-settings'
 
 import { onWorkspaceEvent } from '@/api/global-events'
-import { useCheckoutProject, useGithubRepos, useProjects } from '@/api/queries'
+import { useCheckoutProject, useGithubOwners, useGithubRepos, useProjects } from '@/api/queries'
 import type { CheckoutProgressEvent, GithubRepo } from '@open-mercato/cezar-api-client'
+import { GithubOwnerPicker, GithubOwnerPickerLoading } from '@/components/github-owner-picker'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import {
   Dialog,
   DialogContent,
@@ -15,10 +19,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { bareButton } from '@/components/bare-control'
 import { cn } from '@/lib/utils'
 
@@ -77,9 +82,10 @@ export function matchRepos(repos: GithubRepo[], typed: string): GithubRepo[] {
  *
  * The mockup's three parts, and what each one is faithful to:
  *
- * - **The repository list** is what the signed-in `gh` account can clone, most recently pushed
+ * - **Organization, then repository** — the New project dialog's layout: the accounts `gh` is
+ *   signed into on the left, the chosen one's repositories on the right, most recently pushed
  *   first. Picking a row writes its `owner/repo` into the input; typing narrows the list. When
- *   the list cannot be read the input alone remains, with the reason.
+ *   GitHub cannot be read the input alone remains, with the reason.
  * - **The repo input** takes `owner/repo` or any GitHub URL spelling. It is NOT validated here
  *   beyond "non-empty": the server parses it with the one parser that also decides what `gh`
  *   is handed, and a second, looser copy in the browser would only disagree with it.
@@ -105,16 +111,34 @@ export function CloneProjectDialog({
   const globalSettings = useGlobalSettings()
   const [url, setUrl] = useState('')
   const [name, setName] = useState('')
+  const [owner, setOwner] = useState('')
   const [progress, setProgress] = useState<string | null>(null)
   const [awaitingSso, setAwaitingSso] = useState(false)
   const ssoRetryArmed = useRef(false)
   const projects = useProjects()
   const checkout = useCheckoutProject()
-  const repos = useGithubRepos()
-  const listed = repos.data?.available ? matchRepos(repos.data.repos, url) : []
+  const owners = useGithubOwners()
   const { mutate, isPending } = checkout
   const navigate = useNavigate()
   const ssoUrl = githubSsoUrl(checkout.error)
+
+  const ownersData = owners.data
+  const ownerOptions = useMemo(
+    () => (ownersData?.available && Array.isArray(ownersData.owners) ? ownersData.owners : []),
+    [ownersData],
+  )
+  const githubAvailable = ownerOptions.length > 0
+  // The personal account is first, so it is the default until the user picks an organisation.
+  const effectiveOwner = ownerOptions.some((o) => o.login === owner) ? owner : (ownerOptions[0]?.login ?? '')
+  const repos = useGithubRepos(
+    githubAvailable ? effectiveOwner : null,
+    ownerOptions.find((o) => o.login === effectiveOwner)?.personal === true,
+  )
+  const listed = repos.data?.available ? matchRepos(repos.data.repos, url) : []
+  const picked = listed.find((repo) => repo.slug.toLowerCase() === url.trim().toLowerCase())?.slug ?? ''
+  // Why there is no list, in the server's words — `gh` missing, signed out, offline.
+  const unavailable =
+    ownersData && !ownersData.available ? ownersData.reason : repos.data && !repos.data.available ? repos.data.reason : null
 
   // One id per mounted dialog. The dialog is mounted only while open (AddProjectMenu), so a
   // second clone attempt in a second opening is a second id — which is the point: a stale
@@ -168,6 +192,19 @@ export function CloneProjectDialog({
     )
   }, [mutate, isPending, checkoutId, name, navigate, onOpenChange, url])
 
+  const pick = (slug: string) => {
+    const repo = listed.find((entry) => entry.slug === slug)
+    if (!repo) return
+    // Already a project here: open it instead of cloning a second copy.
+    if (repo.projectId !== null) {
+      onOpenChange(false)
+      navigate(`/p/${encodeURIComponent(repo.projectId)}/`)
+      return
+    }
+    setUrl(repo.slug)
+    setName('')
+  }
+
   // Authorizing an existing OAuth token changes GitHub's server-side token
   // grant; it cannot wake the `gh repo clone` process that already exited.
   // Returning to this tab is the only browser signal available to the local
@@ -192,11 +229,20 @@ export function CloneProjectDialog({
     }
   }, [awaitingSso, clone])
 
+  // The New project dialog's shape: owners on the left, the form on the right, a fixed height
+  // from `md` up so a long list never resizes the dialog. Without GitHub it is the form alone.
+  const showOwners = owners.isPending || githubAvailable
+
   return (
     <Dialog open={open} onOpenChange={(next) => (checkout.isPending ? undefined : onOpenChange(next))}>
       <DialogContent
         data-slot="clone-project-dialog"
-        className="min-w-0 max-h-[calc(100dvh-2rem)] overflow-x-hidden overflow-y-auto sm:max-w-lg"
+        className={cn(
+          'min-w-0 max-h-[calc(100dvh-2rem)] overflow-x-hidden overflow-y-auto',
+          showOwners
+            ? 'md:h-[min(50rem,calc(100dvh-4rem))] md:max-w-3xl md:grid-rows-[auto_minmax(0,1fr)_auto] md:overflow-hidden'
+            : 'sm:max-w-lg',
+        )}
       >
         <DialogHeader>
           <DialogTitle>Clone from GitHub</DialogTitle>
@@ -205,176 +251,185 @@ export function CloneProjectDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <FieldGroup className="gap-4">
-        <Field>
-          <FieldLabel htmlFor="clone-url">Repository</FieldLabel>
-          <Input
-            id="clone-url"
-            data-slot="clone-url"
-            autoFocus
-            placeholder={repos.data?.available ? 'Search your repositories, or paste owner/repo or a URL' : 'owner/repo or https://github.com/owner/repo'}
-            value={url}
-            disabled={checkout.isPending}
-            onChange={(event) => setUrl(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') clone()
-            }}
-          />
-          {repos.isPending ? <p className="text-xs text-muted-foreground">Loading your repositories…</p> : null}
-          {repos.data && !repos.data.available ? (
-            <p data-slot="clone-repos-unavailable" className="text-xs text-pretty text-muted-foreground">
-              Your repositories could not be listed ({repos.data.reason}). Paste one instead.
-            </p>
+        <div
+          data-slot="clone-layout"
+          className={cn('grid min-w-0 gap-6', showOwners ? 'md:min-h-0 md:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]' : undefined)}
+        >
+          {showOwners ? (
+            <div data-slot="clone-owners-column" className="min-w-0 md:flex md:min-h-0 md:flex-col md:border-r md:border-border md:pr-6">
+              {githubAvailable ? (
+                <GithubOwnerPicker
+                  slot="clone"
+                  owners={ownerOptions}
+                  value={effectiveOwner}
+                  disabled={checkout.isPending}
+                  onChange={(login) => {
+                    setOwner(login)
+                    // The typed text narrowed the PREVIOUS owner's list.
+                    setUrl('')
+                  }}
+                />
+              ) : (
+                <GithubOwnerPickerLoading slot="clone" />
+              )}
+            </div>
           ) : null}
-          {repos.data?.available ? (
-            <ul data-slot="clone-repos" aria-label="Your repositories" className="max-h-60 min-w-0 overflow-y-auto rounded-md border border-border">
-              {listed.length === 0 ? <li className="px-3 py-2 text-xs text-muted-foreground">No repository matches. A full URL still works.</li> : null}
-              {listed.map((repo) => {
-                const picked = repo.slug.toLowerCase() === url.trim().toLowerCase()
-                return (
-                  <li key={repo.slug}>
-                    <Button
-                      type="button"
-                      variant="ghost"
+
+          <FieldGroup className={cn('min-w-0 gap-4', showOwners ? 'md:min-h-0' : undefined)}>
+            <Field className={showOwners ? 'md:min-h-0 md:flex-1' : undefined}>
+              <FieldLabel htmlFor="clone-url">Repository</FieldLabel>
+              <Input
+                id="clone-url"
+                data-slot="clone-url"
+                autoFocus
+                placeholder={githubAvailable ? `Search ${effectiveOwner}, or paste owner/repo or a URL` : 'owner/repo or https://github.com/owner/repo'}
+                value={url}
+                disabled={checkout.isPending}
+                onChange={(event) => setUrl(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') clone()
+                }}
+              />
+              {unavailable ? (
+                <FieldDescription data-slot="clone-repos-unavailable">
+                  Your repositories could not be listed ({unavailable}). Paste one instead.
+                </FieldDescription>
+              ) : null}
+              {githubAvailable && repos.isPending ? (
+                <div data-slot="clone-repos-loading" aria-hidden="true" className="grid gap-2 rounded-md border border-border p-3">
+                  {[0, 1, 2].map((index) => <Skeleton key={index} className="h-4 w-2/3" />)}
+                </div>
+              ) : null}
+              {repos.data?.available ? (
+                <ToggleGroup
+                  type="single"
+                  orientation="vertical"
+                  value={picked}
+                  disabled={checkout.isPending}
+                  onValueChange={(next) => (next ? pick(next) : undefined)}
+                  aria-label={`Repositories of ${effectiveOwner}`}
+                  data-slot="clone-repos"
+                  className="max-h-60 w-full flex-col items-stretch overflow-y-auto rounded-md border border-border md:max-h-none md:min-h-0 md:flex-1"
+                >
+                  {listed.length === 0 ? (
+                    <p className="px-3 py-2 text-xs text-muted-foreground">No repository matches. A full URL still works.</p>
+                  ) : null}
+                  {listed.map((repo: GithubRepo) => (
+                    <ToggleGroupItem
+                      key={repo.slug}
+                      value={repo.slug}
                       data-slot="clone-repo"
-                      aria-pressed={picked}
-                      disabled={checkout.isPending}
-                      className={cn('h-auto w-full justify-start gap-2 rounded-none px-3 py-1.5 text-left font-normal', picked && 'bg-accent')}
-                      onClick={() => {
-                        // Already a project here: open it instead of cloning a second copy.
-                        if (repo.projectId !== null) {
-                          onOpenChange(false)
-                          navigate(`/p/${encodeURIComponent(repo.projectId)}/`)
-                          return
-                        }
-                        setUrl(repo.slug)
-                        setName('')
-                      }}
+                      className="h-auto w-full shrink-0 justify-start gap-2 rounded-none px-3 py-1.5 text-left font-normal first:rounded-none last:rounded-none"
                     >
                       <span className="flex min-w-0 flex-1 flex-col">
                         <span className="flex min-w-0 items-center gap-1.5 text-[13px]">
-                          <span className="truncate"><span className="text-muted-foreground">{repo.owner}/</span><span className="font-medium text-foreground">{repo.name}</span></span>
+                          <span className="truncate font-medium text-foreground">{repo.name}</span>
                           {repo.private ? <LockIcon aria-label="Private" className="size-3 shrink-0 text-muted-foreground" /> : null}
                         </span>
-                        {repo.description ? <span className="truncate text-[11px] text-muted-foreground">{repo.description}</span> : null}
+                        {repo.description ? <span className="truncate text-xs text-muted-foreground">{repo.description}</span> : null}
                       </span>
-                      <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">{repo.projectId !== null ? 'Added — open' : pushedAgo(repo.pushedAt)}</span>
-                    </Button>
-                  </li>
-                )
-              })}
-            </ul>
-          ) : null}
-        </Field>
+                      {repo.projectId !== null ? (
+                        <Badge variant="secondary">Added</Badge>
+                      ) : (
+                        <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{pushedAgo(repo.pushedAt)}</span>
+                      )}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+              ) : null}
+            </Field>
 
-        <Field>
-          <FieldLabel htmlFor="clone-name">Folder name</FieldLabel>
-          <Input
-            id="clone-name"
-            data-slot="clone-name"
-            placeholder={derivedName === '' ? 'repo' : derivedName}
-            value={name}
-            disabled={checkout.isPending}
-            onChange={(event) => setName(event.target.value)}
-          />
-          <div className="flex min-w-0 items-center gap-1 rounded-md bg-muted py-0.5 pr-0.5 pl-2.5">
-            <p
-              data-slot="clone-target"
-              className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground"
-              title={target}
-            >
-              {target}
-            </p>
-            {checkout.isPending ? (
-              <Button
-                data-slot="clone-root-settings"
-                variant="ghost"
-                size="icon-sm"
-                className="size-7"
-                aria-label="Edit checkout root"
-                title="Edit checkout root"
-                disabled
-              >
-                <SettingsIcon className="size-3.5" aria-hidden="true" />
-              </Button>
-            ) : (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                className="size-7"
-                data-slot="clone-root-settings"
-                aria-label="Edit checkout root"
-                title="Edit checkout root"
-                // One modal at a time: this dialog steps aside for the settings one.
-                onClick={() => {
-                  onOpenChange(false)
-                  globalSettings.open('projects')
-                }}
-              >
-                <SettingsIcon className="size-3.5" aria-hidden="true" />
-              </Button>
-            )}
-          </div>
-        </Field>
-        </FieldGroup>
-
-        {/* One line, replaced in place: `git clone` emits a counter update every few hundred ms,
-            and a growing log would scroll a dialog that is otherwise a form. */}
-        {checkout.isPending ? (
-          <p data-slot="clone-progress" className="flex min-w-0 items-center gap-2 font-mono text-xs text-muted-foreground">
-            <Spinner className="size-3.5 shrink-0" />
-            <span className="truncate">{progress ?? 'Starting the clone…'}</span>
-          </p>
-        ) : null}
-
-        {checkout.isError ? (
-          <div data-slot="clone-error" role="alert" className="grid min-w-0 gap-1.5 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2.5 text-[13px] text-danger">
-            {ssoUrl ? (
-              <>
-                <p>GitHub requires SAML authorization for this organization.</p>
-                <p>
-                  <a
-                    data-slot="clone-sso-link"
-                    className="font-medium underline underline-offset-2"
-                    href={ssoUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    onClick={() => {
-                      ssoRetryArmed.current = true
-                      setAwaitingSso(true)
-                    }}
-                  >
-                    Authorize this GitHub organization
-                  </a>
-                  {awaitingSso
-                    ? ' — return here after authorizing, or choose Retry clone.'
-                    : ' — return to this tab to retry, or choose Retry clone.'}
+            <Field>
+              <FieldLabel htmlFor="clone-name">Folder name</FieldLabel>
+              <Input
+                id="clone-name"
+                data-slot="clone-name"
+                placeholder={derivedName === '' ? 'repo' : derivedName}
+                value={name}
+                disabled={checkout.isPending}
+                onChange={(event) => setName(event.target.value)}
+              />
+              <div className="flex min-w-0 items-center gap-1 rounded-md bg-muted py-0.5 pr-0.5 pl-2.5">
+                <p data-slot="clone-target" className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground" title={target}>
+                  {target}
                 </p>
-                <Collapsible className="min-w-0">
-                  <CollapsibleTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      className={cn(bareButton, 'gap-1 hover:underline [&[data-state=open]>svg]:rotate-90')}
-                    >
-                      <ChevronRightIcon aria-hidden="true" className="size-3 transition-transform" />
-                      Error details
-                    </Button>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    <p className="whitespace-pre-wrap break-all">
-                      {checkout.error instanceof Error ? checkout.error.message : null}
-                    </p>
-                  </CollapsibleContent>
-                </Collapsible>
-              </>
-            ) : (
-              <p className="min-w-0 whitespace-pre-wrap break-all">
-                {checkout.error instanceof Error ? checkout.error.message : 'could not clone that repository'}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="size-7"
+                  data-slot="clone-root-settings"
+                  aria-label="Edit checkout root"
+                  title="Edit checkout root"
+                  disabled={checkout.isPending}
+                  // One modal at a time: this dialog steps aside for the settings one.
+                  onClick={() => {
+                    onOpenChange(false)
+                    globalSettings.open('projects')
+                  }}
+                >
+                  <SettingsIcon className="size-3.5" aria-hidden="true" />
+                </Button>
+              </div>
+            </Field>
+
+            {/* One line, replaced in place: `git clone` emits a counter update every few hundred ms,
+                and a growing log would scroll a dialog that is otherwise a form. */}
+            {checkout.isPending ? (
+              <p data-slot="clone-progress" className="flex min-w-0 items-center gap-2 font-mono text-xs text-muted-foreground">
+                <Spinner className="size-3.5 shrink-0" />
+                <span className="truncate">{progress ?? 'Starting the clone…'}</span>
               </p>
-            )}
-          </div>
-        ) : null}
+            ) : null}
+
+            {checkout.isError ? (
+              <Alert variant="destructive" data-slot="clone-error" className="min-w-0">
+                {ssoUrl ? (
+                  <>
+                    <AlertTitle>GitHub requires SAML authorization for this organization.</AlertTitle>
+                    <AlertDescription>
+                      <p>
+                        <a
+                          data-slot="clone-sso-link"
+                          className="font-medium underline underline-offset-2"
+                          href={ssoUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={() => {
+                            ssoRetryArmed.current = true
+                            setAwaitingSso(true)
+                          }}
+                        >
+                          Authorize this GitHub organization
+                        </a>
+                        {awaitingSso
+                          ? ' — return here after authorizing, or choose Retry clone.'
+                          : ' — return to this tab to retry, or choose Retry clone.'}
+                      </p>
+                      <Collapsible className="min-w-0">
+                        <CollapsibleTrigger asChild>
+                          <Button variant="ghost" className={cn(bareButton, 'gap-1 hover:underline [&[data-state=open]>svg]:rotate-90')}>
+                            <ChevronRightIcon aria-hidden="true" className="size-3 transition-transform" />
+                            Error details
+                          </Button>
+                        </CollapsibleTrigger>
+                        <CollapsibleContent>
+                          <p className="whitespace-pre-wrap break-all">
+                            {checkout.error instanceof Error ? checkout.error.message : null}
+                          </p>
+                        </CollapsibleContent>
+                      </Collapsible>
+                    </AlertDescription>
+                  </>
+                ) : (
+                  <AlertDescription className="whitespace-pre-wrap break-all">
+                    {checkout.error instanceof Error ? checkout.error.message : 'could not clone that repository'}
+                  </AlertDescription>
+                )}
+              </Alert>
+            ) : null}
+          </FieldGroup>
+        </div>
 
         <DialogFooter>
           <Button variant="outline" disabled={checkout.isPending} onClick={() => onOpenChange(false)}>

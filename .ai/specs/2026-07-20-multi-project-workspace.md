@@ -583,7 +583,7 @@ lists what the signed-in `gh` account can clone (`gh api user/repos`, the 300 mo
 pushed, archived ones left out, cached for a minute); typing narrows the list, picking a row
 fills the input, and a repository that is already a registered project (matched by its checkout's
 `origin`) opens that project instead. When the list cannot be read the input works alone and
-the dialog says why.
+the dialog says why. Since 2026-10-14 the dialog has the New project dialog's shape — organization on the left (the shared `GithubOwnerPicker`), that owner's repositories on the right, read per owner (`?owner=`, three pages fetched at once).
 
 ### Bookmarklets — project-oriented
 

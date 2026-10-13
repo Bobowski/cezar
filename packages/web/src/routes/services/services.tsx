@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ExternalLinkIcon, PlayIcon, PlusIcon, RotateCwIcon, SquareIcon, Trash2Icon } from 'lucide-react'
+import { ExternalLinkIcon, FolderIcon, PlayIcon, PlusIcon, RotateCwIcon, SquareIcon, TagIcon, TerminalIcon, Trash2Icon } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import { queryScope, type Service, type ServiceCandidate } from '@open-mercato/cezar-api-client'
@@ -14,8 +14,9 @@ import { StatusDot, type StatusDotTone } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
+import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group'
 import {
-  SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInput, SidebarMenu, SidebarMenuAction,
+  SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarMenu, SidebarMenuAction,
   SidebarMenuButton, SidebarMenuItem,
 } from '@/components/ui/sidebar'
 import { toast } from '@/components/ui/toaster'
@@ -198,10 +199,19 @@ function AddCommand({ busy, onAdd }: { busy: boolean; onAdd: (input: { name: str
             setName(''); setCommand(''); setCwd('')
           }}
         >
-          <SidebarInput aria-label="Command" value={command} onChange={(event) => setCommand(event.target.value)} placeholder="stripe listen --forward-to …" spellCheck={false} autoComplete="off" className="font-mono text-xs" />
-          <SidebarInput aria-label="Name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Name (optional)" autoComplete="off" className="text-xs" />
-          <SidebarInput aria-label="Directory" value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder="Directory (repo root)" spellCheck={false} autoComplete="off" className="font-mono text-xs" />
-          <Button type="submit" variant="outline" size="sm" disabled={busy || command.trim() === ''}>Add</Button>
+          <InputGroup className="bg-background shadow-none">
+            <InputGroupAddon><TerminalIcon aria-hidden="true" /></InputGroupAddon>
+            <InputGroupInput aria-label="Command" value={command} onChange={(event) => setCommand(event.target.value)} placeholder="Command" title="e.g. stripe listen --forward-to localhost:9000" spellCheck={false} autoComplete="off" />
+          </InputGroup>
+          <InputGroup className="bg-background shadow-none">
+            <InputGroupAddon><TagIcon aria-hidden="true" /></InputGroupAddon>
+            <InputGroupInput aria-label="Name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Name (optional)" autoComplete="off" />
+          </InputGroup>
+          <InputGroup className="bg-background shadow-none">
+            <InputGroupAddon><FolderIcon aria-hidden="true" /></InputGroupAddon>
+            <InputGroupInput aria-label="Directory" value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder="Directory (repo root)" spellCheck={false} autoComplete="off" />
+          </InputGroup>
+          <Button type="submit" variant="secondary" size="sm" disabled={busy || command.trim() === ''}>Add</Button>
         </form>
       </SidebarGroupContent>
     </SidebarGroup>

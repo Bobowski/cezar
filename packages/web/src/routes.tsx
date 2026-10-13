@@ -85,6 +85,9 @@ const TrackerRoute = lazyRoute('tracker', () =>
 )
 
 /** The live workflow graph of a task (same spec, phase 3) — the editor's chunk, loaded lazily. */
+const TaskPreviewRoute = lazyRoute('task-preview', () =>
+  import('./routes/task-preview/task-preview').then((m) => ({ default: m.TaskPreviewRoute })),
+)
 const TaskGraphRoute = lazyRoute('task-graph', () =>
   import('./routes/workflow-graph/task-graph').then((m) => ({ default: m.TaskGraphRoute })),
 )
@@ -395,6 +398,14 @@ export const AppRoutes = memo(function AppRoutes() {
           element={
             <Suspense fallback={<GitTabLoading tab="notes" />}>
               <TaskNotesRoute />
+            </Suspense>
+          }
+        />
+        <Route
+          path="tasks/:id/preview"
+          element={
+            <Suspense fallback={<GitTabLoading tab="preview" />}>
+              <TaskPreviewRoute />
             </Suspense>
           }
         />

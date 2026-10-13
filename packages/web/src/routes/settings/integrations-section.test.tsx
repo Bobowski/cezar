@@ -10,6 +10,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('External integrations', () => {
   it('opens on the Test frameworks tab with the TesterArmy e2e card', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ configFile: null, workflow: false, credentials: [], setup: null }), { status: 200 })))
     render(<QueryClientProvider client={createQueryClient()}><MemoryRouter><IntegrationsSection /></MemoryRouter></QueryClientProvider>)
     expect(screen.getByRole('tab', { name: 'Test frameworks' }).getAttribute('aria-selected')).toBe('true')

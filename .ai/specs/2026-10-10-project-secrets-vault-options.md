@@ -259,3 +259,8 @@ features without touching the agents' subscription login.
    Audiences shipped: `checks` and `cezar` (the latter reserved: no consumer reads it yet; the
    first one resolves through `SecretStore.resolve(project, 'cezar')`). `tracker` is deferred with
    the tracker-store migration. Backend E (`op://`, `env://` references) is a follow-up.
+
+**Amendment (2026-10-13) — sharing a project secret.** `POST /secrets/:name/share` moves a project
+secret to the workspace scope server-side (same value and audiences, the project copy removed so it
+cannot shadow the shared one). The value still never reaches a client. The e2e setup's
+`credential.shared` stores a pasted key at the workspace scope directly.

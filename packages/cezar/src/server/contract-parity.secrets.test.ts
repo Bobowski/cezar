@@ -20,6 +20,8 @@ type Checks = [
   Assert<Mutual<SecretParams & { projectId: string }, InferRequestType<typeof scoped[':name']['$put']>['param']>>,
   Assert<Mutual<SecretParams, InferRequestType<typeof unscoped[':name']['$delete']>['param']>>,
   Assert<Mutual<SecretParams, InferRequestType<typeof workspace[':name']['$delete']>['param']>>,
+  Assert<Mutual<SecretParams & { projectId: string }, InferRequestType<typeof scoped[':name']['share']['$post']>['param']>>,
+  Assert<Mutual<SecretsErrorResponse, InferResponseType<typeof scoped[':name']['share']['$post'], 404>>>,
   Assert<Mutual<SecretsErrorResponse, InferResponseType<typeof unscoped[':name']['$put'], 409>>>,
   Assert<Mutual<SecretsErrorResponse, InferResponseType<typeof unscoped[':name']['$delete'], 404>>>,
   Assert<Mutual<SecretsErrorResponse, InferResponseType<typeof workspace[':name']['$delete'], 404>>>,

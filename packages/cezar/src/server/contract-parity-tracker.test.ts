@@ -6,7 +6,7 @@ import type {
   TrackerAssociationResponse, TrackerAssociationSavedResponse, TrackerClearedResponse,
   TrackerCandidatesResponse, TrackerItemsResponse, TrackerItemResponse,
   TrackerErrorResponse, TrackerAssociationInput, TrackerCandidatesQueryInput,
-  TrackerCredentials, TrackerConnectionResponse, TrackerListQueryInput, TrackerSearchQueryInput, TrackerItemParams, TrackerItemQuery,
+  TrackerCredentials, TrackerConnectionResponse, TrackerConnectionSourcesResponse, TrackerConnectionCopyInput, TrackerListQueryInput, TrackerSearchQueryInput, TrackerItemParams, TrackerItemQuery,
 } from '@open-mercato/cezar-contract';
 import type { AppType } from './app-type.ts';
 
@@ -26,6 +26,10 @@ type Checks = [
   Assert<Mutual<TrackerConnectionResponse, InferResponseType<typeof scoped.connection.$get, 200>>>,
   Assert<Mutual<TrackerConnectionResponse, InferResponseType<typeof scoped.connection.$put, 200>>>,
   Assert<Mutual<TrackerClearedResponse, InferResponseType<typeof scoped.connection.$delete, 200>>>,
+  Assert<Mutual<TrackerConnectionSourcesResponse, InferResponseType<typeof scoped.connection.sources.$get, 200>>>,
+  Assert<Mutual<TrackerConnectionCopyInput, InferRequestType<typeof scoped.connection.copy.$post>['json']>>,
+  Assert<Mutual<TrackerConnectionResponse, InferResponseType<typeof scoped.connection.copy.$post, 200>>>,
+  Assert<Mutual<TrackerErrorResponse, InferResponseType<typeof scoped.connection.copy.$post, 404>>>,
   Assert<Mutual<TrackerCandidatesResponse, InferResponseType<typeof scoped.candidates.$get, 200>>>,
   Assert<Mutual<TrackerListQueryInput, InferRequestType<typeof tracker.$get>['query']>>,
   Assert<Mutual<TrackerSearchQueryInput, InferRequestType<typeof tracker.search.$get>['query']>>,

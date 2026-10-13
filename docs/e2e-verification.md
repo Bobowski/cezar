@@ -40,6 +40,11 @@ project secret (audience `checks`), so it reaches the e2e check steps and never 
 agent session — the reason not to `export` it (see below). `e2e`'s own telemetry is
 turned off (`E2E_TELEMETRY_DISABLED=1`) in every command cezar writes.
 
+To use one key in every project, tick **Use this key in every project** when you paste it (it
+is stored as a workspace secret instead), or — for a key a project already holds — press **Use
+it in every project** on the card, or **Share with all projects** in Settings → *Secrets*. That
+moves the secret to the workspace scope without the value ever leaving the server.
+
 Everything below is what that task does for you, for when you want to do it by hand
 or change it.
 

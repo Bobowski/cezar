@@ -1,12 +1,12 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { CheckIcon, ExternalLinkIcon, KeyRoundIcon, LinkIcon, SearchIcon, TicketIcon, TriangleAlertIcon, UnplugIcon } from 'lucide-react'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { CheckIcon, CopyIcon, ExternalLinkIcon, KeyRoundIcon, LinkIcon, SearchIcon, TicketIcon, TriangleAlertIcon, UnplugIcon } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import type { TrackerCandidate, TrackerKind } from '@open-mercato/cezar-api-client'
 import { queryScope } from '@open-mercato/cezar-api-client'
 import { TRACKER_PROVIDERS, trackerProviders } from '@/lib/tracker-providers'
-import { clearTrackerAssociation, saveTrackerAssociation, saveTrackerConnection, removeTrackerConnection } from '@/api/client'
-import { queryKeys, useTrackerConnection, useTrackerAssociation, useTrackerCandidates, workspaceQueryKeys } from '@/api/queries'
+import { clearTrackerAssociation, copyTrackerConnection, saveTrackerAssociation, saveTrackerConnection, removeTrackerConnection } from '@/api/client'
+import { queryKeys, useTrackerConnection, useTrackerConnectionSources, useTrackerAssociation, useTrackerCandidates, workspaceQueryKeys } from '@/api/queries'
 import { StatusDot } from '@/components/status-dot'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -31,6 +31,8 @@ import { toast } from '@/components/ui/toaster'
 export function TrackerSection() {
   const connection = useTrackerConnection()
   const association = useTrackerAssociation()
+  // Demo mode stores no credentials, so there is nothing to reuse and nothing to ask.
+  const reusable = useTrackerConnectionSources(connection.data?.demo === false).data?.sources ?? []
   const queryClient = useQueryClient()
   const [kind, setKind] = useState<TrackerKind>('jira')
   const [credentialKind, setCredentialKind] = useState<TrackerKind | null>(null)
@@ -52,7 +54,15 @@ export function TrackerSection() {
     () => pages.flatMap((page) => page.available ? page.candidates : []),
     [pages],
   )
-  useEffect(() => { setPickerOpen(false); setSelected(null); resetSecrets() }, [connection.data?.connection?.id])
+  // Reused credentials need only a scope: the new connection opens its picker instead of closing it.
+  const browseAfterCopy = useRef<TrackerKind | null>(null)
+  useEffect(() => {
+    const browse = browseAfterCopy.current
+    browseAfterCopy.current = null
+    setSelected(null); resetSecrets(); setSearch('')
+    if (browse) setKind(browse)
+    setPickerOpen(browse !== null)
+  }, [connection.data?.connection?.id])
   const candidateFailure = pages.find((page) => !page.available)
 
   const refresh = async (projectId: string) => {
@@ -129,7 +139,21 @@ export function TrackerSection() {
     },
     onError: (error: Error) => toast(error.message, { tone: 'danger' }),
   })
-  const credentialBusy = saveCredentials.isPending || removeCredentials.isPending
+  const copyCredentials = useMutation({
+    mutationFn: async (source: { projectId: string; kind: TrackerKind }) => {
+      const projectId = queryScope()
+      return { ...await copyTrackerConnection(source.projectId), projectId, kind: source.kind }
+    },
+    onSuccess: async result => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.tracker.allFor(result.projectId) })
+      if (queryScope() === result.projectId) browseAfterCopy.current = result.kind
+      queryClient.setQueryData(['tracker', result.projectId, 'connection'], { connection: result.connection, demo: result.demo })
+      await refresh(result.projectId)
+      toast('Credentials copied to this project. Pick its project or team.')
+    },
+    onError: (error: Error) => toast(error.message, { tone: 'danger' }),
+  })
+  const credentialBusy = saveCredentials.isPending || removeCredentials.isPending || copyCredentials.isPending
   const savedAssociation = association.data?.association
   const currentConnection = connection.data?.connection
   const scopeConnected = !!savedAssociation && (connection.data?.demo === true || (
@@ -253,6 +277,35 @@ export function TrackerSection() {
           )
         })}
       </SettingsGroup>
+
+      {reusable.length > 0 ? (
+        <SettingsGroup
+          title="Reuse credentials from another project"
+          description="Copies that project's saved credentials into this one, so you only pick the project or team here. Each project keeps its own copy: rotating a token means replacing it in every project that uses it."
+        >
+          {reusable.map((source) => (
+            <Item key={source.projectId} size="sm" className="rounded-none px-5 py-4">
+              <ItemContent>
+                <ItemTitle>{source.name}</ItemTitle>
+                <ItemDescription>
+                  {TRACKER_PROVIDERS[source.kind].label}{source.site ? ` · ${source.site}` : ''}
+                </ItemDescription>
+              </ItemContent>
+              <ItemActions>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={credentialBusy || connection.isPending || connection.isError}
+                  aria-label={`Use credentials from ${source.name}`}
+                  onClick={() => copyCredentials.mutate(source)}
+                >
+                  <CopyIcon className="size-3.5" /> Use these credentials
+                </Button>
+              </ItemActions>
+            </Item>
+          ))}
+        </SettingsGroup>
+      ) : null}
 
       {credentialKind ? (
         <SettingsGroup

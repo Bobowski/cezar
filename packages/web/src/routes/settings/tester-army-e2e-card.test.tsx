@@ -11,13 +11,19 @@ afterEach(() => { cleanup(); setApiScope(null); vi.unstubAllGlobals() })
 
 const EMPTY: E2eStatus = { configFile: null, workflow: false, credentials: [], setup: null }
 
-function setup(options: { status?: E2eStatus; runStatus?: string; postStatus?: number; prUrl?: string } = {}) {
-  const { status = EMPTY, runStatus, postStatus = 201, prUrl } = options
+function setup(options: { status?: E2eStatus; runStatus?: string; postStatus?: number; prUrl?: string; projectSecrets?: string[] } = {}) {
+  const { status = EMPTY, runStatus, postStatus = 201, prUrl, projectSecrets = [] } = options
   const calls: { method: string; url: string; body?: string }[] = []
+  // The share checkbox (Radix) sizes its indicator with a ResizeObserver; jsdom has none.
+  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
     const url = String(input)
     calls.push({ method, url, body: typeof init?.body === 'string' ? init.body : undefined })
+    if (method === 'POST' && url.endsWith('/share')) return new Response(null, { status: 204 })
+    if (url.endsWith('/secrets')) {
+      return new Response(JSON.stringify({ secrets: projectSecrets.map((name) => ({ name, audiences: ['checks'], updatedAt: '' })), keyBackend: 'file' }), { status: 200 })
+    }
     if (method === 'POST') {
       return postStatus === 201
         ? new Response(JSON.stringify({ runId: 'run-1234abcd' }), { status: 201 })
@@ -58,6 +64,27 @@ describe('TesterArmy e2e card', () => {
     const post = calls.find((c) => c.method === 'POST')!
     expect(post.url).toMatch(/\/e2e\/setup$/)
     expect(JSON.parse(post.body!)).toEqual({ credential: { name: 'OPENAI_API_KEY', value: 'sk-test' } })
+  })
+
+  it('stores the key for every project when asked to', async () => {
+    const calls = setup()
+    await screen.findByText('Not configured in this checkout')
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'sk-test' } })
+    fireEvent.click(screen.getByLabelText(/Use this key in every project/))
+    fireEvent.click(screen.getByRole('button', { name: 'Set up e2e' }))
+    await screen.findByText('task page')
+    expect(JSON.parse(calls.find((c) => c.method === 'POST')!.body!)).toEqual({ credential: { name: 'AI_GATEWAY_API_KEY', value: 'sk-test', shared: true } })
+  })
+
+  it('offers to share a key stored for this project only, and not one that is already shared', async () => {
+    const stored: E2eStatus = { ...EMPTY, credentials: ['OPENAI_API_KEY'] }
+    const calls = setup({ status: stored, projectSecrets: ['OPENAI_API_KEY'] })
+    fireEvent.click(await screen.findByRole('button', { name: 'Use it in every project' }))
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/secrets/OPENAI_API_KEY/share'))).toBe(true))
+    cleanup()
+    setup({ status: stored })
+    await screen.findByText(/Model key:/)
+    expect(screen.queryByRole('button', { name: 'Use it in every project' })).toBeNull()
   })
 
   it('sends no credential when the key is left empty', async () => {

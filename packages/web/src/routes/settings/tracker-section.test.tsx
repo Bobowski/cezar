@@ -210,6 +210,36 @@ it.each(['Jira', 'Linear'] as const)('enables only the configured %s provider an
   expect(await screen.findByLabelText(`Search ${provider === 'Jira' ? 'Jira projects' : 'Linear teams'}`)).toBeTruthy()
 })
 
+it('reuses another project\'s credentials and goes straight to the scope picker', async () => {
+  setApiScope('project-b')
+  let connection: { id: string; kind: string } | null = null
+  const copies: { url: string; body: unknown }[] = []
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 })
+    if (url.endsWith('/tracker/connection/sources')) {
+      return json({ sources: [{ projectId: 'project-a', name: 'Wrap Creators', kind: 'jira', site: 'acme.atlassian.net' }] })
+    }
+    if (url.endsWith('/tracker/connection/copy')) {
+      copies.push({ url, body: JSON.parse(String(init?.body)) })
+      connection = { id: '22222222-2222-4222-8222-222222222222', kind: 'jira' }
+      return json({ connection, demo: false })
+    }
+    if (url.endsWith('/tracker/connection')) return json({ connection, demo: false })
+    if (url.includes('/tracker/candidates')) {
+      return json({ available: true, source: { id: 'acme', webUrl: 'https://acme.atlassian.net' }, candidates: [{ id: '7', name: 'Lekarnar' }], truncated: false })
+    }
+    return json({ association: null })
+  }))
+  render(<MemoryRouter><QueryClientProvider client={createQueryClient()}><TrackerSection /></QueryClientProvider></MemoryRouter>)
+  const reuse = await screen.findByRole('button', { name: 'Use credentials from Wrap Creators' })
+  expect(screen.getByText('Jira · acme.atlassian.net')).toBeTruthy()
+  await waitFor(() => expect((reuse as HTMLButtonElement).disabled).toBe(false))
+  fireEvent.click(reuse)
+  await screen.findByRole('button', { name: /Lekarnar/ })
+  expect(copies).toEqual([{ url: '/api/v1/p/project-b/tracker/connection/copy', body: { fromProjectId: 'project-a' } }])
+})
+
 it('saves write-only credentials to the selected project and clears the secret form', async () => {
   setApiScope('project-a')
   let connection: { id: string; kind: string } | null = null

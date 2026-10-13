@@ -123,6 +123,19 @@ describe('one-click e2e setup API (spec 2026-10-10-e2e-one-click-setup)', () => 
     });
   });
 
+  it('stores a shared key as a workspace secret, replacing the project copy that would shadow it', async () => {
+    gitInit();
+    const { id, instance } = await app();
+    await secrets.set({ kind: 'project', projectId: id, root }, 'ANTHROPIC_API_KEY', 'older-project-only-key');
+    const response = await apiRequest(instance, '/api/v1/e2e/setup', post({ credential: { name: 'ANTHROPIC_API_KEY', value: KEY, shared: true } }));
+    expect(response.status).toBe(201);
+    expect(secretsListSchema.parse(await (await apiRequest(instance, '/api/v1/secrets')).json()).secrets).toEqual([]);
+    const workspace = secretsListSchema.parse(await (await apiRequest(instance, '/api/v1/workspace/secrets')).json());
+    expect(workspace.secrets.map((s) => [s.name, s.audiences])).toEqual([['ANTHROPIC_API_KEY', ['checks']]]);
+    expect((await secrets.resolve({ projectId: id, root }, 'checks')).values).toEqual({ ANTHROPIC_API_KEY: KEY });
+    expect((await status(instance)).credentials).toEqual(['ANTHROPIC_API_KEY']);
+  });
+
   it('starts without a key, and refuses a second setup while the first is in flight', async () => {
     gitInit();
     const { instance } = await app();

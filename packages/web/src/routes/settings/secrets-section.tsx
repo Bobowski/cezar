@@ -1,11 +1,11 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Trash2Icon } from 'lucide-react'
+import { Share2Icon, Trash2Icon } from 'lucide-react'
 import { useState } from 'react'
 
 import { SECRET_AUDIENCES, secretNameIssue, type SecretAudience, type SecretsList } from '@open-mercato/cezar-api-client'
 import { queryScope } from '@open-mercato/cezar-api-client'
 import {
-  removeProjectSecret, removeWorkspaceSecret, saveProjectSecret, saveWorkspaceSecret,
+  removeProjectSecret, removeWorkspaceSecret, saveProjectSecret, saveWorkspaceSecret, shareProjectSecret,
 } from '@/api/client'
 import { queryKeys, useProjectSecrets, useWorkspaceSecrets, workspaceQueryKeys } from '@/api/queries'
 import { Button } from '@/components/ui/button'
@@ -34,6 +34,8 @@ interface SecretsSectionProps {
   list: { data?: SecretsList; isPending: boolean; isError: boolean; error: Error | null }
   save: (name: string, input: { value: string; audiences: SecretAudience[] }) => Promise<void>
   remove: (name: string) => Promise<void>
+  /** Project scope only: move a secret to the workspace, where every project reads it. */
+  share?: (name: string) => Promise<void>
   invalidate: (queryClient: ReturnType<typeof useQueryClient>, projectId: string | null) => Promise<void>
 }
 
@@ -42,7 +44,7 @@ interface SecretsSectionProps {
  * fetched, shown or copyable; the form takes a value once and sends it. One component for both
  * scopes, parameterized by the queries and writers it uses.
  */
-function SecretsSection({ scope, list, save, remove, invalidate }: SecretsSectionProps) {
+function SecretsSection({ scope, list, save, remove, share, invalidate }: SecretsSectionProps) {
   const queryClient = useQueryClient()
   const [name, setName] = useState('')
   const [value, setValue] = useState('')
@@ -64,6 +66,15 @@ function SecretsSection({ scope, list, save, remove, invalidate }: SecretsSectio
   const removing = useMutation({
     mutationFn: async (target: string) => { const projectId = queryScope(); await remove(target); return { projectId, removed: target } },
     onSuccess: async ({ projectId, removed }) => { await invalidate(queryClient, projectId); toast(`${removed} removed`) },
+    onError: (e: Error) => toast(e.message, { tone: 'danger' }),
+  })
+
+  const sharing = useMutation({
+    mutationFn: async (target: string) => { const projectId = queryScope(); await share!(target); return { projectId, shared: target } },
+    onSuccess: async ({ projectId, shared }) => {
+      await Promise.all([invalidate(queryClient, projectId), queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.secrets })])
+      toast(`${shared} is now shared with every project`)
+    },
     onError: (e: Error) => toast(e.message, { tone: 'danger' }),
   })
 
@@ -104,15 +115,29 @@ function SecretsSection({ scope, list, save, remove, invalidate }: SecretsSectio
                       {stored.audiences.map((a) => AUDIENCE_LABELS[a].split(' (')[0]).join(' · ')}
                     </p>
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    aria-label={`Delete ${stored.name}`}
-                    disabled={removing.isPending}
-                    onClick={() => removing.mutate(stored.name)}
-                  >
-                    <Trash2Icon aria-hidden="true" /> Delete
-                  </Button>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {share ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        aria-label={`Share ${stored.name} with all projects`}
+                        title="Move to workspace secrets, so every project on this machine reads it"
+                        disabled={sharing.isPending || removing.isPending}
+                        onClick={() => sharing.mutate(stored.name)}
+                      >
+                        <Share2Icon aria-hidden="true" /> Share with all projects
+                      </Button>
+                    ) : null}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      aria-label={`Delete ${stored.name}`}
+                      disabled={removing.isPending || sharing.isPending}
+                      onClick={() => removing.mutate(stored.name)}
+                    >
+                      <Trash2Icon aria-hidden="true" /> Delete
+                    </Button>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -202,7 +227,13 @@ export function ProjectSecretsSection() {
       list={list}
       save={saveProjectSecret}
       remove={removeProjectSecret}
-      invalidate={(queryClient, projectId) => queryClient.invalidateQueries({ queryKey: queryKeys.secrets.allFor(projectId ?? '') })}
+      share={shareProjectSecret}
+      invalidate={async (queryClient, projectId) => {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: queryKeys.secrets.allFor(projectId ?? '') }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.e2e.allFor(projectId ?? '') }),
+        ])
+      }}
     />
   )
 }

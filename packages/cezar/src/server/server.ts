@@ -5,7 +5,7 @@ import {
   terminalResizeSchema, terminalSessionParamsSchema, terminalSessionSchema, terminalStateSchema,
   trackerWatchInputSchema, trackerWatchParamsSchema, trackerWatchQuerySchema,
   trackerCandidatesQuerySchema, trackerListQuerySchema, trackerSearchQuerySchema, trackerItemQuerySchema, trackerReadScope, trackerRunLinkInputSchema, trackerRunIssueQuerySchema, trackerTransitionInputSchema,
-  trackerCredentialsSchema, trackerItemParamsSchema, trackerAssociationInputSchema, type TrackerChangedEvent,
+  trackerCredentialsSchema, trackerConnectionCopyInputSchema, type TrackerConnectionSource, trackerItemParamsSchema, trackerAssociationInputSchema, type TrackerChangedEvent,
   secretParamsSchema, secretValueInputSchema, type SecretsList, type SecretValueInput,
   envFileQuerySchema, setEnvFileSchema, type EnvFilesList,
   codeSearchQuerySchema, codeWatchQuerySchema, repoFilePathQuerySchema, type CodeWatch,
@@ -6576,6 +6576,19 @@ export function createApp(deps: ServerDeps) {
     }
     return removed ? null : { status: 404 as const, error: 'no secret with that name' };
   };
+  // Move a project secret to the workspace scope, server-side: the value never reaches a client.
+  // The project copy goes, because it would shadow the shared one on its next rotation.
+  const shareSecret = async (scope: SecretScopeRef, name: string) => {
+    try {
+      const entry = (await secretStore.read(scope)).values[name];
+      if (!entry) return { status: 404 as const, error: 'no secret with that name' };
+      await secretStore.set({ kind: 'workspace' }, name, entry.value, entry.audiences);
+      await secretStore.unset(scope, name);
+    } catch {
+      return { status: 409 as const, error: 'Could not share the secret. Check local storage permissions.' };
+    }
+    return null;
+  };
   const secretsRoutes = new Hono<ProjectApiEnv>()
     .get('/secrets', async (c) => {
       const project = c.get('project');
@@ -6592,6 +6605,13 @@ export function createApp(deps: ServerDeps) {
       const project = c.get('project');
       if (project.id === 'default') return c.json(unregisteredSecrets, 409);
       const failed = await deleteSecret({ kind: 'project', projectId: project.id, root: project.root }, c.req.valid('param').name);
+      if (failed) return c.json({ error: failed.error }, failed.status);
+      return c.body(null, 204);
+    })
+    .post('/secrets/:name/share', paramZodValidator(secretParamsSchema), async (c) => {
+      const project = c.get('project');
+      if (project.id === 'default') return c.json(unregisteredSecrets, 409);
+      const failed = await shareSecret({ kind: 'project', projectId: project.id, root: project.root }, c.req.valid('param').name);
       if (failed) return c.json({ error: failed.error }, failed.status);
       return c.body(null, 204);
     });
@@ -6817,13 +6837,16 @@ export function createApp(deps: ServerDeps) {
         return c.json({ error: 'e2e setup needs a git repository — it runs in its own worktree and finishes as a branch you merge' }, 409);
       }
       if (credential) {
-        if (project.id === 'default') return c.json(unregisteredSecrets, 409);
+        const own: SecretScopeRef = { kind: 'project', projectId: project.id, root: project.root };
+        if (!credential.shared && project.id === 'default') return c.json(unregisteredSecrets, 409);
         const failed = await putSecret(
-          { kind: 'project', projectId: project.id, root: project.root },
+          credential.shared ? { kind: 'workspace' } : own,
           credential.name,
           { value: credential.value, audiences: ['checks'] },
         );
         if (failed) return c.json({ error: failed.error }, 409);
+        // A project secret of the same name would win over the shared key just stored.
+        if (credential.shared && project.id !== 'default') await secretStore.unset(own, credential.name).catch(() => false);
       }
       const workflow = e2eSetupWorkflow(e2eCredentialsAmong(await checkSecretNames(project)));
       const blocked = await providerActionError(
@@ -6853,6 +6876,20 @@ export function createApp(deps: ServerDeps) {
       return c.body(null, 204);
     });
 
+  // Reusing another project's credentials is the operator's own act, across their own projects:
+  // a single-project cockpit, or a hosted one without sign-in, offers nothing to reuse.
+  const reusableProjects = async () => {
+    if (capabilities().singleProject || !trustedOperator(process.env, bindHost)) return [];
+    return (await listProjects().catch(() => [])).filter(entry => entry.status !== 'missing');
+  };
+  const trackerConnectionSources = async (project: ProjectContext): Promise<TrackerConnectionSource[]> => {
+    const projects = (await reusableProjects()).filter(entry => entry.root !== project.root);
+    const found = await trackers.connectionSources(project.root, projects.map(entry => entry.root));
+    return found.flatMap(({ root, kind, site }) => {
+      const entry = projects.find(candidate => candidate.root === root)!;
+      return [{ projectId: entry.id, name: entry.name || entry.id, kind, ...(site ? { site } : {}) }];
+    });
+  };
   const trackerRoutes = new Hono<ProjectApiEnv>()
     .get('/tracker/automation-options', queryZodValidator(trackerAutomationOptionsQuerySchema), async c => {
       const project = c.get('project');
@@ -6902,6 +6939,20 @@ export function createApp(deps: ServerDeps) {
         if (!await trackers.removeConnection(project.root)) return c.json({ error: 'Could not remove project credentials.' }, 409);
         await trackerChanged(project);
         return c.json({ cleared: true as const }, 200);
+      });
+    })
+    .get('/tracker/connection/sources', async c => c.json({ sources: await trackerConnectionSources(c.get('project')) }, 200))
+    .post('/tracker/connection/copy', jsonZodValidator(trackerConnectionCopyInputSchema), async c => {
+      const project = c.get('project');
+      const { fromProjectId } = c.req.valid('json');
+      return mutateTracker(project.dataDir, async () => {
+        const source = (await trackerConnectionSources(project)).find(candidate => candidate.projectId === fromProjectId);
+        const from = source && (await reusableProjects()).find(candidate => candidate.id === fromProjectId);
+        if (!from) return c.json({ error: 'That project has no tracker credentials to reuse.' }, 404);
+        const result = await trackers.copyConnection(from.root, project.root);
+        if (!result) return c.json({ error: 'Could not save project credentials. Check local storage permissions.' }, 409);
+        await trackerChanged(project);
+        return c.json(result, 200);
       });
     })
     .get('/tracker/candidates', queryZodValidator(trackerCandidatesQuerySchema), async c => {

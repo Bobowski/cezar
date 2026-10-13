@@ -38,10 +38,11 @@ export type E2eStatus = z.infer<typeof e2eStatusSchema>;
 
 /**
  * `POST /e2e/setup`: start the setup task. `credential`, when given, is stored first as a
- * project secret (audience `checks`) — the same write `PUT /secrets/:name` does.
+ * project secret (audience `checks`) — the same write `PUT /secrets/:name` does. With
+ * `shared`, it is stored as a workspace secret instead, so every project's checks read it.
  */
 export const e2eSetupInputSchema = z.object({
-  credential: z.object({ name: e2eCredentialNameSchema, value: z.string().min(1) }).strict().optional(),
+  credential: z.object({ name: e2eCredentialNameSchema, value: z.string().min(1), shared: z.boolean().optional() }).strict().optional(),
 });
 export type E2eSetupInput = z.infer<typeof e2eSetupInputSchema>;
 

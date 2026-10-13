@@ -428,6 +428,18 @@ export const trackerConnectionResponseSchema = z.object({
   connection: trackerConnectionSchema.nullable(), demo: z.boolean(), error: z.string().optional(),
 }).strict();
 export type TrackerConnectionResponse = z.infer<typeof trackerConnectionResponseSchema>;
+/** Another registered project whose stored credentials this one may reuse. Never a secret. */
+export const trackerConnectionSourceSchema = z.object({
+  projectId: z.string(), name: z.string(), kind: trackerKindSchema,
+  /** The Jira site's hostname, to tell two organizations apart. */
+  site: z.string().optional(),
+}).strict();
+export type TrackerConnectionSource = z.infer<typeof trackerConnectionSourceSchema>;
+export const trackerConnectionSourcesResponseSchema = z.object({ sources: z.array(trackerConnectionSourceSchema) }).strict();
+export type TrackerConnectionSourcesResponse = z.infer<typeof trackerConnectionSourcesResponseSchema>;
+/** `POST /tracker/connection/copy`: reuse another project's credentials here, as this project's own copy. */
+export const trackerConnectionCopyInputSchema = z.object({ fromProjectId: z.string().min(1).max(200) }).strict();
+export type TrackerConnectionCopyInput = z.infer<typeof trackerConnectionCopyInputSchema>;
 
 /** Visible-list observation: bounded first page, explicit project association. */
 export const trackerWatchInputSchema = z.object({

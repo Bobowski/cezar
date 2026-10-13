@@ -99,6 +99,20 @@ describe('secrets API (spec 2026-10-10-project-secrets-vault-options)', () => {
     expect(secretsListSchema.parse(await (await apiRequest(instance, '/api/v1/secrets')).json()).secrets).toEqual([]);
   });
 
+  it('moves a project secret to the workspace without returning its value', async () => {
+    const { id, instance } = await app();
+    await apiRequest(instance, '/api/v1/secrets/E2E_KEY', put({ value: 'secret-value-123', audiences: ['checks', 'cezar'] }));
+    const shared = await apiRequest(instance, `/api/v1/p/${id}/secrets/E2E_KEY/share`, { method: 'POST' });
+    expect(shared.status).toBe(204);
+    expect(await shared.text()).toBe('');
+    expect(secretsListSchema.parse(await (await apiRequest(instance, '/api/v1/secrets')).json()).secrets).toEqual([]);
+    const workspace = secretsListSchema.parse(await (await apiRequest(instance, '/api/v1/workspace/secrets')).json());
+    expect(workspace.secrets.map((s) => [s.name, s.audiences])).toEqual([['E2E_KEY', ['checks', 'cezar']]]);
+    // Still what this project's checks resolve, now from the shared scope.
+    expect((await secrets.resolve({ projectId: id, root }, 'checks')).values).toEqual({ E2E_KEY: 'secret-value-123' });
+    expect((await apiRequest(instance, '/api/v1/secrets/E2E_KEY/share', { method: 'POST' })).status).toBe(404);
+  });
+
   it('refuses project writes for an unregistered boot project, and still serves the workspace', async () => {
     const instance = createApp({ repoRoot: root, store, manager: {} as RunManager, version: 'test', secrets });
     expect((await apiRequest(instance, '/api/v1/secrets/KEY', put({ value: 'value' }))).status).toBe(409);

@@ -19,6 +19,15 @@ requires selecting a scope again, even if the vendor IDs happen to match. Failed
 storage preserves the previous credentials. Failed scope selection preserves the previous
 association, but an association tied to replaced credentials remains disabled until reconnected.
 
+**Reusing credentials in another project.** When another registered project already holds
+tracker credentials — one Jira site, several repositories — Settings → Issue tracker lists it
+under **Reuse credentials from another project**. **Use these credentials** copies them into
+this project and opens the scope picker, so only the Jira project or Linear team is left to
+choose. The copy is this project's own record: removing or replacing credentials in one project
+does not touch the other, and rotating a token means replacing it in each project that uses it.
+Nothing is offered in demo mode, on a single-project cockpit, or on a hosted cockpit without
+sign-in.
+
 **Disconnect** removes the selected scope while retaining the project's credentials for reuse.
 **Remove project credentials** deletes the local credential record and disables reads; it does
 not revoke the token at the vendor. The old scope metadata may remain stored, but Settings shows no connected tracker without matching credentials.

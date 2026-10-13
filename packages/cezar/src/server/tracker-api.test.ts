@@ -5,7 +5,7 @@ import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import {
   trackerCandidatesResponseSchema, trackerAssociationResponseSchema, trackerItemsResponseSchema,
-  trackerItemResponseSchema, trackerChangedEventSchema,
+  trackerItemResponseSchema, trackerChangedEventSchema, trackerConnectionSourcesResponseSchema,
 } from '@open-mercato/cezar-contract';
 import { registerProject } from '../workspace/projects.ts';
 import { RunStore } from '../runs/store.ts';
@@ -167,6 +167,65 @@ describe('tracker API boundaries and isolation', () => {
     expect((await apiRequest(instance, '/api/v1/tracker?state=all&cursor=' + page.nextCursor)).status).toBe(400);
     expect(await (await apiRequest(instance, '/api/v1/tracker/search?q=ENG51-125')).json()).toMatchObject({ available: true, items: [{ id: 'ENG51-125' }] });
     expect(await (await apiRequest(instance, '/api/v1/tracker/search?q=DEMO51-125')).json()).toMatchObject({ available: true, items: [] });
+  });
+
+  it('reuses another project\'s credentials as this project\'s own copy, without vendor I/O or secret readback', async () => {
+    vi.stubEnv('CEZ_DRY_RUN', '0');
+    const fetcher = vi.fn(() => { throw new Error('No vendor access during credential reuse'); });
+    vi.stubGlobal('fetch', fetcher);
+    const otherRoot = join(root, 'other-project');
+    mkdirSync(otherRoot);
+    const boot = await registerProject(root);
+    const other = await registerProject(otherRoot);
+    const instance = createApp({ repoRoot: root, store, manager: {} as RunManager, version: 'test', bootProjectId: boot.id });
+    const send = (path: string, method: string, body?: unknown) => apiRequest(instance, path, {
+      method, headers: { 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    const secret = 'test-private-token-never-in-response';
+    const sources = async (id: string) => trackerConnectionSourcesResponseSchema.parse(await (await send(`/api/v1/p/${id}/tracker/connection/sources`, 'GET')).json()).sources;
+    expect(await sources(other.id)).toEqual([]);
+    const saved = await (await send(`/api/v1/p/${boot.id}/tracker/connection`, 'PUT', { kind: 'jira', origin: 'https://acme.atlassian.net', email: 'a@example.com', token: secret })).json() as { connection: { id: string } };
+
+    // Offered to the other project, never to the owner itself; names and the site only.
+    expect(await sources(boot.id)).toEqual([]);
+    const text = await (await send(`/api/v1/p/${other.id}/tracker/connection/sources`, 'GET')).text();
+    expect(text).not.toContain(secret);
+    expect(text).not.toContain('a@example.com');
+    expect(JSON.parse(text)).toEqual({ sources: [{ projectId: boot.id, name: boot.name, kind: 'jira', site: 'acme.atlassian.net' }] });
+
+    const copy = (body: unknown) => send(`/api/v1/p/${other.id}/tracker/connection/copy`, 'POST', body);
+    expect((await copy({ fromProjectId: 'nope' })).status).toBe(404);
+    expect((await copy({ fromProjectId: other.id })).status).toBe(404);
+    expect((await copy({})).status).toBe(400);
+    const copied = await copy({ fromProjectId: boot.id });
+    expect(copied.status).toBe(200);
+    const body = await copied.json() as { connection: { id: string; kind: string } };
+    expect(JSON.stringify(body)).not.toContain(secret);
+    // A new revision of its own: the two projects never share a record.
+    expect(body.connection.kind).toBe('jira');
+    expect(body.connection.id).not.toBe(saved.connection.id);
+    expect(await (await send(`/api/v1/p/${other.id}/tracker/connection`, 'GET')).json()).toEqual(body);
+
+    // Removing the source leaves the copy standing.
+    expect((await send(`/api/v1/p/${boot.id}/tracker/connection`, 'DELETE')).status).toBe(200);
+    expect(await (await send(`/api/v1/p/${other.id}/tracker/connection`, 'GET')).json()).toEqual(body);
+    expect(await sources(boot.id)).toEqual([{ projectId: other.id, name: other.name, kind: 'jira', site: 'acme.atlassian.net' }]);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('offers nothing to reuse on a single-project cockpit', async () => {
+    vi.stubEnv('CEZ_DRY_RUN', '0');
+    const otherRoot = join(root, 'other-project');
+    mkdirSync(otherRoot);
+    const boot = await registerProject(root);
+    const other = await registerProject(otherRoot);
+    const json = (method: string, body: unknown): RequestInit => ({ method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const open = createApp({ repoRoot: root, store, manager: {} as RunManager, version: 'test', bootProjectId: boot.id });
+    expect((await apiRequest(open, `/api/v1/p/${other.id}/tracker/connection`, json('PUT', { kind: 'linear', key: 'k' }))).status).toBe(200);
+    vi.stubEnv('CEZ_SINGLE_PROJECT', '1');
+    const single = createApp({ repoRoot: root, store, manager: {} as RunManager, version: 'test', bootProjectId: boot.id });
+    expect(await (await apiRequest(single, '/api/v1/tracker/connection/sources')).json()).toEqual({ sources: [] });
+    expect((await apiRequest(single, '/api/v1/tracker/connection/copy', json('POST', { fromProjectId: other.id }))).status).toBe(404);
   });
 });
 

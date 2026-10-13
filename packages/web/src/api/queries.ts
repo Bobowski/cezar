@@ -58,7 +58,7 @@ import {
   getSkills,
   getSkillsWhenReady,
   getTodos,
-  getTrackerAssociation, getTrackerConnection, getProjectSecrets, getWorkspaceSecrets, getEnvFiles, getServices, getE2eStatus,
+  getTrackerAssociation, getTrackerConnection, getTrackerConnectionSources, getProjectSecrets, getWorkspaceSecrets, getEnvFiles, getServices, getE2eStatus,
   getTrackerCandidates,
   getTrackerItem,
   getTrackerItems,
@@ -175,6 +175,7 @@ export const queryKeys = {
     association: () => ['tracker', queryScope(), 'association'] as const,
     candidates: (kind: TrackerKind, query = '') => ['tracker', queryScope(), 'candidates', kind, query] as const,
     connection: () => ['tracker', queryScope(), 'connection'] as const,
+    connectionSources: () => ['tracker', queryScope(), 'connection-sources'] as const,
     items: (
       association: TrackerAssociation,
       params: { state: 'active' | 'all'; labels: readonly string[]; query?: string },
@@ -320,6 +321,10 @@ export function useE2eStatus() {
   return useQuery({ queryKey: queryKeys.e2e.status(), queryFn: ({ signal }) => getE2eStatus({ signal }) })
 }
 
+/** Other projects whose stored tracker credentials this one can reuse — names only, never a secret. */
+export function useTrackerConnectionSources(enabled: boolean) {
+  return useQuery({ queryKey: queryKeys.tracker.connectionSources(), queryFn: ({ signal }) => getTrackerConnectionSources({ signal }), enabled })
+}
 export function useTrackerConnection() {
   return useQuery({ queryKey: queryKeys.tracker.connection(), queryFn: ({ signal }) => getTrackerConnection({ signal }) })
 }

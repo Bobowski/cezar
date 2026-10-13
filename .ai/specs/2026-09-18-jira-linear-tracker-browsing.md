@@ -531,6 +531,15 @@ discovery, setup cannot be fully automatic, but the rest of cezar still requires
 Automations' default-on behavior is not a precedent for unsolicited polling: its timer arms only
 for an automation the user enabled. The auto-refresh extension checks only while a list is observed; it introduces no unattended sync job.
 
+**Amendment (2026-10-13) — explicit credential reuse.** One organization commonly spans several
+repositories, and re-entering the same site, email and token per project was pure friction.
+`GET /tracker/connection/sources` lists the other registered projects holding credentials (project
+name, provider and Jira hostname only) and `POST /tracker/connection/copy` copies one into the
+current project as its own record with a new connection id. Everything below still holds: records
+are never shared or linked, no credential is supplied implicitly, and a copy requires selecting a
+scope like any credential save. It is offered only where every project belongs to one operator —
+not in demo mode, single-project mode, or a hosted cockpit without sign-in.
+
 Credentials, discovery, caches and cursors are project-bound. Vendor permissions still constrain
 the token itself; choosing a project does not reduce its vendor permissions. Application isolation
 is not tenant authorization or a boundary against processes running as the same OS user. Such

@@ -4,10 +4,12 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 
 import { E2E_CREDENTIAL_NAMES, queryScope, type E2eCredentialName, type RunStatus } from '@open-mercato/cezar-api-client'
-import { startE2eSetup } from '@/api/client'
-import { queryKeys, useE2eStatus, useRun } from '@/api/queries'
+import { shareProjectSecret, startE2eSetup } from '@/api/client'
+import { queryKeys, useE2eStatus, useProjectSecrets, useRun, workspaceQueryKeys } from '@/api/queries'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { toast } from '@/components/ui/toaster'
@@ -71,6 +73,8 @@ export function TesterArmyE2eCard() {
   // `e2e init`'s own default) — re-running a setup should not quietly switch providers.
   const [chosenProvider, setProvider] = useState<E2eCredentialName | undefined>(undefined)
   const [key, setKey] = useState('')
+  const [shared, setShared] = useState(false)
+  const projectSecrets = useProjectSecrets()
   const [error, setError] = useState<string | null>(null)
 
   const setupStatus = setupRun.data?.status ?? status.data?.setup?.status
@@ -84,7 +88,7 @@ export function TesterArmyE2eCard() {
   const starting = useMutation({
     mutationFn: async () => {
       const projectId = queryScope()
-      const response = await startE2eSetup(key ? { credential: { name: provider, value: key } } : {})
+      const response = await startE2eSetup(key ? { credential: { name: provider, value: key, ...(shared ? { shared: true } : {}) } } : {})
       return { projectId, runId: response.runId }
     },
     onSuccess: async ({ projectId, runId }) => {
@@ -93,12 +97,32 @@ export function TesterArmyE2eCard() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.e2e.allFor(projectId ?? '') }),
         queryClient.invalidateQueries({ queryKey: queryKeys.secrets.allFor(projectId ?? '') }),
+        queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.secrets }),
       ])
       toast('e2e setup started')
       if (queryScope() === projectId) void navigate(scopeTo(projectId, `/tasks/${runId}`))
     },
     // Keep the key on failure: a transient 409 should not cost a re-paste.
     onError: (e: Error) => setError(e.message),
+  })
+
+  // A key stored for this project only can be moved to the workspace, where every project's
+  // checks read it — the value stays on the server.
+  const projectOnly = credentials.filter((name) => projectSecrets.data?.secrets?.some((stored) => stored.name === name))
+  const sharing = useMutation({
+    mutationFn: async () => {
+      const projectId = queryScope()
+      for (const name of projectOnly) await shareProjectSecret(name)
+      return projectId
+    },
+    onSuccess: async (projectId) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.secrets.allFor(projectId ?? '') }),
+        queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.secrets }),
+      ])
+      toast('Model key is now shared with every project')
+    },
+    onError: (e: Error) => toast(e.message, { tone: 'danger' }),
   })
 
   const badge = inFlight ? 'Setting up' : installed ? 'Installed' : 'Not set up'
@@ -172,6 +196,14 @@ export function TesterArmyE2eCard() {
                 )}
               </Row>
             </ul>
+            {projectOnly.length > 0 ? (
+              <div className="flex flex-wrap items-center gap-3 text-[13px] text-muted-foreground" data-slot="e2e-share-key">
+                <span>This key is stored for this project only.</span>
+                <Button type="button" variant="outline" size="sm" disabled={sharing.isPending} onClick={() => sharing.mutate()}>
+                  Use it in every project
+                </Button>
+              </div>
+            ) : null}
             {status.data.setup && setupStatus ? (
               <p className="text-[13px] text-pretty" data-slot="e2e-setup-run" data-status={setupStatus}>
                 {setupLine(setupStatus, Boolean(status.data.configFile), setupRun.data?.branch, prUrl)}{' '}
@@ -236,6 +268,12 @@ export function TesterArmyE2eCard() {
               onChange={(event) => setKey(event.target.value)}
               placeholder={credentials.includes(provider) ? 'stored — leave empty to keep it' : ''}
             />
+            <div className="flex items-center gap-2.5 pt-1">
+              <Checkbox id="e2e-key-shared" checked={shared} onCheckedChange={(checked) => setShared(checked === true)} />
+              <Label htmlFor="e2e-key-shared" className="font-normal">
+                Use this key in every project (stored as a workspace secret)
+              </Label>
+            </div>
           </SettingsField>
           <div className="flex flex-wrap items-center justify-end gap-3 px-5 py-3">
             {error ? (

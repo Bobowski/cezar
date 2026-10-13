@@ -112,6 +112,16 @@ describe('Secrets settings', () => {
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('OK_NAME')
   })
 
+  it('moves a project secret to the workspace with POST …/share, and offers that for project secrets only', async () => {
+    const calls = setup()
+    fireEvent.click(await screen.findByRole('button', { name: 'Share STAGING_TOKEN with all projects' }))
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/secrets/STAGING_TOKEN/share'))).toBe(true))
+    cleanup()
+    setup({ scope: 'workspace' })
+    await screen.findByRole('button', { name: 'Delete STAGING_TOKEN' })
+    expect(screen.queryByRole('button', { name: /Share .* with all projects/ })).toBeNull()
+  })
+
   it('deletes a secret with DELETE', async () => {
     const calls = setup()
     fireEvent.click(await screen.findByRole('button', { name: 'Delete STAGING_TOKEN' }))

@@ -158,7 +158,7 @@ import type {
   TrackerTransitionResponse,
   TrackerTransitionsResponse,
   TrackerItemsResponse,
-  TrackerKind, TrackerCredentials, TrackerConnectionResponse,
+  TrackerKind, TrackerCredentials, TrackerConnectionResponse, TrackerConnectionSourcesResponse,
   SecretsList, SecretValueInput, EnvFileContent, EnvFilesList, SetEnvFileInput,
   ServicePatch, ServicePin, ServicePinInput, ServicesState,
   E2eStatus, E2eSetupInput, E2eSetupResponse,
@@ -936,6 +936,14 @@ export async function saveTrackerConnection(input: TrackerCredentials): Promise<
   return unwrap(await cez.api.v1.p[':projectId'].tracker.connection.$put(
     { param: { projectId: queryScope() }, json: input }), '/tracker/connection')
 }
+export async function getTrackerConnectionSources(opts?: ReadOptions): Promise<TrackerConnectionSourcesResponse> {
+  return unwrap(await cez.api.v1.p[':projectId'].tracker.connection.sources.$get(
+    { param: { projectId: queryScope() } }, init(opts)), '/tracker/connection/sources')
+}
+export async function copyTrackerConnection(fromProjectId: string): Promise<TrackerConnectionResponse> {
+  return unwrap(await cez.api.v1.p[':projectId'].tracker.connection.copy.$post(
+    { param: { projectId: queryScope() }, json: { fromProjectId } }), '/tracker/connection/copy')
+}
 export async function removeTrackerConnection(): Promise<TrackerClearedResponse> {
   return unwrap(await cez.api.v1.p[':projectId'].tracker.connection.$delete(
     { param: { projectId: queryScope() } }), '/tracker/connection')
@@ -1013,6 +1021,11 @@ export async function saveProjectSecret(name: string, input: SecretValueInput): 
 }
 export async function removeProjectSecret(name: string): Promise<void> {
   await expectNoContent(await cez.api.v1.p[':projectId'].secrets[':name'].$delete(
+    { param: { projectId: queryScope(), name } }))
+}
+/** Move a project secret to the workspace scope, so every project reads it. */
+export async function shareProjectSecret(name: string): Promise<void> {
+  await expectNoContent(await cez.api.v1.p[':projectId'].secrets[':name'].share.$post(
     { param: { projectId: queryScope(), name } }))
 }
 export async function saveWorkspaceSecret(name: string, input: SecretValueInput): Promise<void> {

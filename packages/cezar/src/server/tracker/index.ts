@@ -76,6 +76,28 @@ export function createTrackerService(env: NodeJS.ProcessEnv = process.env, fetch
       invalidate(root);
       return { connection: { id: saved.id, kind: saved.credentials.kind }, demo: false };
     },
+    /** Which of `roots` hold credentials `target` could reuse. Local reads only, no vendor I/O. */
+    async connectionSources(target: string, roots: readonly string[]): Promise<Array<{ root: string; kind: TrackerKind; site?: string }>> {
+      if (demo) return [];
+      const own = (await store.read(target))?.projectRoot;
+      const found = await Promise.all(roots.map(async root => {
+        const record = await store.read(root);
+        if (!record || record.projectRoot === own) return [];
+        const { credentials } = record;
+        return [{ root, kind: credentials.kind, ...(credentials.kind === 'jira' ? { site: new URL(credentials.origin).host } : {}) }];
+      }));
+      return found.flat();
+    },
+    /** An explicit, user-requested copy: `to` gets its own record and revision, never a shared one. */
+    async copyConnection(from: string, to: string): Promise<TrackerConnectionResponse | null> {
+      if (demo) return null;
+      const source = await store.read(from);
+      if (!source) return null;
+      const saved = await store.write(to, source.credentials);
+      if (!saved) return null;
+      invalidate(to);
+      return { connection: { id: saved.id, kind: saved.credentials.kind }, demo: false };
+    },
     async removeConnection(root: string): Promise<boolean> {
       if (demo) return false;
       const removed = await store.remove(root);

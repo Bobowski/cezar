@@ -7388,9 +7388,9 @@ export const CHECK_CONTEXT_VARS = [
   'CEZ_PR_BASE_REF',
 ] as const;
 
-/** `https://github.com/<owner>/<repo>/(pull|issues)/<n>` → its repo and number. */
+/** `https://<github host>/<owner>/<repo>/(pull|issues)/<n>` → its repo and number (any host: GitHub Enterprise). */
 export function parseGithubItemUrl(url: string): { repo: string; number: number } | undefined {
-  const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/(?:pull|issues)\/([1-9][0-9]*)(?:[/?#].*)?$/.exec(url);
+  const match = /^https:\/\/[A-Za-z0-9.-]+(?::\d+)?\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/(?:pull|issues)\/([1-9][0-9]*)(?:[/?#].*)?$/.exec(url);
   return match ? { repo: match[1]!, number: Number(match[2]) } : undefined;
 }
 

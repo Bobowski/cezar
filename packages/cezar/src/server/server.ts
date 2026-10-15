@@ -63,7 +63,18 @@ import {
 // A contract VALUE, like `workspaceUiStateSchema` in workspace/migrations.ts — the request
 // schema this route validates with is the same one the client compiles against.
 import {
+  ATTACHMENT_IMAGES_TOO_LARGE,
+  ATTACHMENT_UPLOAD_MISSING,
   attachmentInputSchema,
+  attachmentListSchema,
+  type AttachmentEntry,
+  deleteUploadResponseSchema,
+  isImageAttachmentName,
+  isImageMediaType,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  MAX_ATTACHMENTS_TOTAL_BASE64,
+  stagedUploadSchema,
+  uploadIdParamSchema,
   modelDiscoveryRunnerSchema,
   openProjectInSchema,
   updateProjectInputSchema,
@@ -160,6 +171,7 @@ import {
   type DeleteDraftResponse,
 } from '@open-mercato/cezar-contract';
 import { toPastedContent, type PastedContent, type RunManager } from '../workflows/run.ts';
+import { deleteUpload, readUpload, writeUpload } from '../uploads.ts';
 import { removeWorktree, worktreeDiff, worktreeDiffStat, worktreeSizeBytes } from '../git-worktree.ts';
 import { isReclaimable, reclaimWorktrees } from '../runs/retention.ts';
 import { getBranches, getCommit, getDiff, getLog, getRepoInfo, getStatus } from './git.ts';
@@ -727,7 +739,7 @@ const startRunSchema = z
       .transform((s) => (s ? s : undefined)),
     // Attachments pasted into the new-task form — same shape and limits as a
     // live-session message; delivered with the first agent step's opening.
-    images: z.array(attachmentInputSchema).max(4).optional(),
+    images: attachmentListSchema.optional(),
     // Inbox follow-up (#374): the todo the composer was prefilled from
     // (`/new?skill=&ref=&todo=t1`). On a successful start the entry is marked
     // started — the same bookkeeping POST /api/todos/:id/start does, so the
@@ -930,13 +942,13 @@ const openInSchema = z.object({
   path: z.string().max(1_000).optional(),
 });
 
-// Attachment-carrying bodies validate with the CONTRACT's `attachmentInputSchema` (#950) —
+// Attachment-carrying bodies validate with the CONTRACT's `attachmentListSchema` (#950) —
 // images plus the short PDF/TXT/MD allowlist, ~5 MB each once base64-decoded. Imported rather
 // than mirrored here, so the wire cannot drift from what the cockpit compiles against.
 const messageSchema = z
   .object({
     text: z.string().max(100_000).default(''),
-    images: z.array(attachmentInputSchema).max(4).default([]),
+    images: attachmentListSchema.default([]),
   })
   .refine((m) => m.text.trim().length > 0 || m.images.length > 0, {
     message: 'message needs text or at least one attachment',
@@ -947,7 +959,7 @@ const messageSchema = z
 const queuedMessagePatchSchema = z
   .object({
     text: z.string().max(100_000).optional(),
-    images: z.array(attachmentInputSchema).max(4).optional(),
+    images: attachmentListSchema.optional(),
   })
   .refine((m) => m.text !== undefined || m.images !== undefined, {
     message: 'message edit needs text or attachments',
@@ -957,7 +969,7 @@ const queuedMessagePatchSchema = z
 // above; the one that actually matters is the FOLDED total, because 20 messages of
 // 100 000 chars each would otherwise compose a ~2 M-character {{task}}.
 const MAX_QUEUED_MESSAGES = 20;
-const MAX_QUEUED_ATTACHMENTS = 8;
+const MAX_QUEUED_ATTACHMENTS = 2 * MAX_ATTACHMENTS_PER_MESSAGE;
 const MAX_FOLDED_TASK_CHARS = 200_000;
 
 /** Length of the prompt a run would execute with — `task` plus its whole stack,
@@ -971,6 +983,49 @@ function foldedLength(task: string, stack: Array<{ text: string }>): number {
     .join('\n\n').length;
 }
 
+/** A message's attachments as engine content, staged uploads read back from the store
+ *  (telemetry 7054e5f2). A string is the refusal: `ATTACHMENT_UPLOAD_MISSING` when a referenced
+ *  upload is gone (the composer re-stages), or the image budget — images reach the provider
+ *  inline in one turn, so references count toward it too. */
+function resolveAttachments(entries: AttachmentEntry[]): PastedContent[] | string;
+function resolveAttachments(entries: AttachmentEntry[] | undefined): PastedContent[] | undefined | string;
+function resolveAttachments(entries: AttachmentEntry[] | undefined): PastedContent[] | undefined | string {
+  if (entries === undefined) return undefined;
+  const out: PastedContent[] = [];
+  let imageChars = 0;
+  for (const entry of entries) {
+    const attachment = 'data' in entry ? entry : readUpload(entry.uploadId);
+    if (!attachment) return ATTACHMENT_UPLOAD_MISSING;
+    if (isImageMediaType(attachment.mediaType)) imageChars += attachment.data.length;
+    out.push(toPastedContent('data' in entry || !entry.name ? attachment : { ...attachment, name: entry.name }));
+  }
+  if (imageChars > MAX_ATTACHMENTS_TOTAL_BASE64) return ATTACHMENT_IMAGES_TOO_LARGE;
+  return out;
+}
+
+/** Base64 size of the images a queued run's OPENING turn will carry: its task images plus every
+ *  stacked message's, read back from disk at dequeue and delivered together (#472). */
+function queuedImageChars(dataDir: string, runId: string, urls: readonly string[]): number {
+  let bytes = 0;
+  for (const url of urls) {
+    const name = url.split('/').pop() ?? '';
+    if (!isImageAttachmentName(name) || name.includes('..')) continue;
+    try {
+      bytes += statSync(join(dataDir, 'runs', `${runId}-images`, name)).size;
+    } catch {
+      // Gone files are dropped at dequeue too.
+    }
+  }
+  return Math.ceil(bytes / 3) * 4;
+}
+
+/** Base64 size of the image blocks among a message's resolved attachments. */
+function imageChars(content: readonly PastedContent[]): number {
+  return content.reduce((n, b) => (b.type === 'image' ? n + b.source.data.length : n), 0);
+}
+
+const QUEUED_IMAGES_TOO_LARGE = 'too many queued images — 20 MB of images across the task and its queued messages';
+
 // "Continue"/"Send back" body (spec 003 / #401): every field optional, so an empty POST reopens
 // the last session on the run's current backend (backward compat). A runner/model/account override
 // lets the follow-up composer choose which engine handles the continuation. `text` stays bounded
@@ -979,7 +1034,7 @@ function foldedLength(task: string, stack: Array<{ text: string }>): number {
 // session rather than being silently dropped.
 const continueSchema = z.object({
   text: z.string().max(100_000, 'must be at most 100000 characters').optional(),
-  images: z.array(attachmentInputSchema).max(4).optional(),
+  images: attachmentListSchema.optional(),
   runner: z.enum(RUNNER_IDS).optional(),
   model: z.string().max(200).optional(),
   /** Agent account for the reopened session (spec 2026-07-29-agent-profiles). Bound mirrors
@@ -1027,8 +1082,8 @@ const pinSchema = z.object({
 });
 
 // Request-body size guards (#429). A generous global cap keeps a single
-// localhost request from being unbounded (the largest legit body is 4 pasted
-// images at ~7 MB base64 each); the ui-state PUT gets a much tighter cap since
+// localhost request from being unbounded (the largest legit body is one message's
+// attachments, ≤ MAX_ATTACHMENTS_TOTAL_BASE64 in total); the ui-state PUT gets a much tighter cap since
 // it only ever carries small GUI prefs.
 const GLOBAL_BODY_LIMIT = 32 * 1024 * 1024; // 32 MiB
 const UI_STATE_BODY_LIMIT = 128 * 1024; // 128 KiB
@@ -3462,6 +3517,20 @@ export function createApp(deps: ServerDeps) {
       return c.json(workspaceBrandingLogoResponseSchema.parse({ logoUrl: null }));
     })
 
+    // Staged attachments (telemetry 7054e5f2): the composer uploads each file when it is attached
+    // and the message references it, so attachments stop sharing one request body. One file per
+    // request rides the global body limit.
+    .post('/workspace/uploads', jsonZodValidator(attachmentInputSchema), (c) => {
+      const result = writeUpload(c.req.valid('json'));
+      // The fs error names a path under the user's home; the cockpit reports this answer to telemetry.
+      if (!result.ok) return c.json({ error: 'could not stage the attachment' }, 500);
+      return c.json(stagedUploadSchema.parse(result.upload));
+    })
+    .delete('/workspace/uploads/:uploadId', paramZodValidator(uploadIdParamSchema), (c) => {
+      deleteUpload(c.req.valid('param').uploadId);
+      return c.json(deleteUploadResponseSchema.parse({ deleted: true }));
+    })
+
     // Global GUI state (`~/.cezar/ui-state.json`) — same parse/key-cap/shallow-
     // merge semantics as the per-repo /api/v1/ui-state route below (the shared half
     // is `uiStateBodySchema`), but backed by the workspace file.
@@ -4448,7 +4517,8 @@ export function createApp(deps: ServerDeps) {
           );
         }
       }
-      const images = parsed.data.images?.map((image) => toPastedContent(image));
+      const images = resolveAttachments(parsed.data.images);
+      if (typeof images === 'string') return c.json({ error: images }, 400);
       const input = {
         task: parsed.data.task,
         model: parsed.data.model,
@@ -4566,7 +4636,7 @@ export function createApp(deps: ServerDeps) {
     // Live-session participation (spec 002): deliver a user message (text +
     // pasted screenshots) into the run's open claude session.
     .post('/runs/:id/messages', jsonZodValidator(messageSchema), async (c) => {
-      const { root: repoRoot, store, manager } = c.get('project');
+      const { root: repoRoot, dataDir, store, manager } = c.get('project');
       const id = c.req.param('id');
       const run = store.getRun(id);
       if (!run) return c.json({ error: 'not found' }, 404);
@@ -4583,8 +4653,10 @@ export function createApp(deps: ServerDeps) {
         });
         if (blocked) return c.json({ error: blocked }, 409);
       }
+      const attachments = resolveAttachments(parsed.data.images);
+      if (typeof attachments === 'string') return c.json({ error: attachments }, 400);
       const content: PastedContent[] = [
-        ...parsed.data.images.map((image) => toPastedContent(image)),
+        ...attachments,
         ...(parsed.data.text.trim() ? [{ type: 'text', text: parsed.data.text } satisfies ContentBlock] : []),
       ];
       // Three-rung delivery ladder (#472). Branch on the ENGINE's answer rather
@@ -4609,6 +4681,10 @@ export function createApp(deps: ServerDeps) {
         if (stackedImages + parsed.data.images.length > MAX_QUEUED_ATTACHMENTS) {
           return c.json({ error: `too many queued attachments — ${MAX_QUEUED_ATTACHMENTS} attachment limit across the stack` }, 400);
         }
+        const opening = [...(currentRun.taskImages ?? []), ...stack.flatMap((m) => m.images ?? [])];
+        if (queuedImageChars(dataDir, id, opening) + imageChars(attachments) > MAX_ATTACHMENTS_TOTAL_BASE64) {
+          return c.json({ error: QUEUED_IMAGES_TOO_LARGE }, 400);
+        }
         const prospective = foldedLength(currentRun.task, [...stack, { text: parsed.data.text }]);
         if (prospective > MAX_FOLDED_TASK_CHARS) {
           return c.json(
@@ -4629,7 +4705,7 @@ export function createApp(deps: ServerDeps) {
     // Edit / remove a stacked message (#472). Registered before any conflicting
     // `/:id` route so `queued-messages` never matches as a run id.
     .patch('/runs/:id/queued-messages/:msgId', jsonZodValidator(queuedMessagePatchSchema), async (c) => {
-      const { store, manager } = c.get('project');
+      const { dataDir, store, manager } = c.get('project');
       const id = c.req.param('id');
       const run = store.getRun(id);
       if (!run) return c.json({ error: 'not found' }, 404);
@@ -4661,7 +4737,14 @@ export function createApp(deps: ServerDeps) {
       }
 
       if (run.status !== 'queued') return c.json({ error: 'run already started' }, 409);
-      const images: PastedContent[] | undefined = parsed.data.images?.map((image) => toPastedContent(image));
+      const images = resolveAttachments(parsed.data.images);
+      if (typeof images === 'string') return c.json({ error: images }, 400);
+      if (images !== undefined) {
+        const opening = [...(run.taskImages ?? []), ...others.flatMap((m) => m.images ?? [])];
+        if (queuedImageChars(dataDir, id, opening) + imageChars(images) > MAX_ATTACHMENTS_TOTAL_BASE64) {
+          return c.json({ error: QUEUED_IMAGES_TOO_LARGE }, 400);
+        }
+      }
       const message = manager.editQueuedMessage(id, msgId, {
         ...(parsed.data.text !== undefined ? { text: parsed.data.text } : {}),
         ...(images !== undefined ? { images } : {}),
@@ -4721,9 +4804,11 @@ export function createApp(deps: ServerDeps) {
         const account = await resolveWorkspaceProfile(provider, parsed.data.agentProfile);
         if ('error' in account) return c.json({ error: account.error }, 400);
       }
+      const images = resolveAttachments(parsed.data.images);
+      if (typeof images === 'string') return c.json({ error: images }, 400);
       const result = manager.continueRun(id, {
         text: parsed.data.text,
-        images: parsed.data.images?.map((image) => toPastedContent(image)),
+        images,
         runner: parsed.data.runner,
         model: parsed.data.model,
         agentProfile: parsed.data.agentProfile,

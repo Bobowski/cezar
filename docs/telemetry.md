@@ -45,7 +45,11 @@ session that replaced a pruned conversation ended without a session error — `r
 `missing_session`, `usage_limit`, `auth`, `timeout` or `other` — never the error text; once per
 transition into failed, not for runs a restart interrupted nor for an auto-resume failing again),
 `skills_update_apply_dropped` (a skills update whose request lost its connection, and whether
-following the server then found it `recovered`, `not_applied`, `unreachable` or `timed_out`). Every label
+following the server then found it `recovered`, `not_applied`, `unreachable` or `timed_out`),
+`attachments_sent` (how many attachments a sent message carried, as a bucket —
+`1`, `2-4`, `5-10`, `11-20` — never their names, types or contents), `attachments_restaged`
+(whether the automatic re-upload after an expired staged attachment was `recovered` or
+`failed`). Every label
 comes from a closed set the server enforces.
 
 Error reports carry the error type, message and stack with your home directory, working

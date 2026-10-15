@@ -939,7 +939,8 @@ export function sanitizeAttachmentName(name: string, mediaType: string): string 
 }
 
 /**
- * One inline attachment, base64 — ≤4 per request, ~5 MB each once decoded.
+ * One inline attachment, base64 — ~5 MB each once decoded; a request carries an
+ * `attachmentListSchema` of them.
  *
  * An image rides along as a block the model can view; a file (#950) is written to the run's
  * attachment folder and reaches the agent as a PATH only, which is the form its file tools want,
@@ -960,6 +961,63 @@ export const attachmentInputSchema = z.object({
   name: z.string().max(255).optional(),
 });
 export type AttachmentInput = z.input<typeof attachmentInputSchema>;
+
+/** A STAGED attachment (`POST /workspace/uploads`): the bytes crossed the wire when the user
+ *  attached the file, so a message names them instead of carrying them again. `name` overrides the
+ *  name it was staged under. */
+export const UPLOAD_ID_RE = /^[a-f0-9]{24}$/;
+export const attachmentRefSchema = z
+  .object({
+    uploadId: z.string().regex(UPLOAD_ID_RE, 'invalid upload id'),
+    name: z.string().max(255).optional(),
+  })
+  .strict();
+export type AttachmentRef = z.input<typeof attachmentRefSchema>;
+
+/** One entry of a message's `images` list: the bytes inline, or a reference to a staged upload. */
+export const attachmentEntrySchema = z.union([attachmentInputSchema, attachmentRefSchema]);
+export type AttachmentEntry = z.input<typeof attachmentEntrySchema>;
+
+/** The refusal for a reference whose upload is gone (pruned, or staged on another machine). The
+ *  composer matches it to re-stage and resend once, so keep the wording stable. */
+export const ATTACHMENT_UPLOAD_MISSING = 'attachment upload expired — attach the file again';
+
+/** The refusal for a message whose IMAGES, staged or inline, exceed `MAX_ATTACHMENTS_TOTAL_BASE64`:
+ *  images reach the provider inline in one turn, so staging lifts the body limit but not this one.
+ *  Files reach the agent as paths and never count. */
+export const ATTACHMENT_IMAGES_TOO_LARGE = 'attachments too large — 20 MB of images in total per message';
+
+/** Attachments per message. Staged uploads keep the bytes out of the request, so the count is a
+ *  sanity bound rather than a size proxy (telemetry 7054e5f2: a fifth screenshot was refused). */
+export const MAX_ATTACHMENTS_PER_MESSAGE = 20;
+
+/** Base64 characters across one message's INLINE attachments — the old 4 × ~7 MB ceiling, so a
+ *  body still fits the server's 32 MiB global limit. References do not count. */
+export const MAX_ATTACHMENTS_TOTAL_BASE64 = 28_000_000;
+
+/** One message's attachments: bounded by count, and the inline ones by total size. */
+export const attachmentListSchema = z
+  .array(attachmentEntrySchema)
+  .max(MAX_ATTACHMENTS_PER_MESSAGE)
+  .refine(
+    (list) => list.reduce((n, a) => n + ('data' in a ? a.data.length : 0), 0) <= MAX_ATTACHMENTS_TOTAL_BASE64,
+    { message: 'attachments too large — 20 MB in total per message' },
+  );
+
+/** `POST /workspace/uploads` — stage one attachment; the answer is what a message references. */
+export const stagedUploadSchema = z.object({
+  uploadId: z.string(),
+  mediaType: z.string(),
+  bytes: z.number(),
+});
+export type StagedUpload = z.infer<typeof stagedUploadSchema>;
+
+export const uploadIdParamSchema = z.object({
+  uploadId: z.string().regex(UPLOAD_ID_RE, 'invalid upload id'),
+});
+
+export const deleteUploadResponseSchema = z.object({ deleted: z.literal(true) });
+export type DeleteUploadResponse = z.infer<typeof deleteUploadResponseSchema>;
 
 /** @deprecated Attachments are no longer images only — use `attachmentInputSchema`. Kept because
  *  the `images` key it validates is the wire contract and did not change name. */
@@ -1008,7 +1066,7 @@ export const createRunInputBaseSchema = z
     /** Attachments pasted into the new-task form — screenshots, and since #950 PDF/TXT/MD files
      *  too; delivered with the first agent step. The key keeps its name: the wire contract widened
      *  in place rather than growing a second list. */
-    images: z.array(attachmentInputSchema).max(4).optional(),
+    images: attachmentListSchema.optional(),
     /** The inbox entry this task came from (#374). Best-effort bookkeeping: an unknown or
      *  already-started id never fails the run. For ×2/×3 the FIRST variant is recorded. */
     todoId: z.string().min(1).max(200, 'must be at most 200 characters').optional(),
@@ -1048,7 +1106,7 @@ export type CreateRunInput = z.input<typeof createRunInputSchema>;
 export const messageInputSchema = z
   .object({
     text: z.string().max(100_000).default(''),
-    images: z.array(attachmentInputSchema).max(4).default([]),
+    images: attachmentListSchema.default([]),
   })
   .refine((m) => m.text.trim().length > 0 || m.images.length > 0, {
     message: 'message needs text or at least one attachment',

@@ -2,6 +2,7 @@ import { lazy, useEffect, type ComponentType, type LazyExoticComponent } from 'r
 import { useLocation } from 'react-router'
 
 import {
+  attachmentCountBucket,
   TELEMETRY_ROUTE_SEGMENTS,
   type AddProjectDialog,
   type MessageSurface,
@@ -53,6 +54,18 @@ export function trackMessageSent(surface: Exclude<MessageSurface, 'cli'>): void 
  *  store refuses is not counted). */
 export function trackDiffCommentAdded(kind: 'single_line' | 'multi_line'): void {
   send('/api/v1/telemetry/event', { event: 'diff_comment_added', label: kind })
+}
+
+/** A sent message carried attachments (telemetry 7054e5f2) — only the count's bucket, after the
+ *  send landed. */
+export function trackAttachmentsSent(count: number): void {
+  if (count < 1) return
+  send('/api/v1/telemetry/event', { event: 'attachments_sent', label: attachmentCountBucket(count) })
+}
+
+/** A send that hit an expired staged upload, after the automatic re-stage and resend settled. */
+export function trackAttachmentsRestaged(outcome: 'recovered' | 'failed'): void {
+  send('/api/v1/telemetry/event', { event: 'attachments_restaged', label: outcome })
 }
 
 /** One of the "Add project" dialogs was opened (New project, Clone from GitHub, Open local folder). */
@@ -189,7 +202,7 @@ function assetFile(url: string | undefined): string | null {
 /** Errors already reported, so the window hooks don't report a chunk failure a second time. */
 const reported = new WeakSet<object>()
 /** Last report per throttle slot: toasts get their own, so a repeated toast never hides a crash. */
-const lastErrorAt = { error: 0, toast: 0 }
+const lastErrorAt = { error: 0, toast: 0, staging: 0 }
 
 /** An uncaught `ApiError(0)` — the server never answered — carries its transport cause too. */
 function unreachableContext(err: Error): Context {
@@ -210,7 +223,8 @@ function reportClientError(
   session.errors += 1
   // Don't flood: at most one cockpit error report per 10 s (the server throttles per error too).
   const now = Date.now()
-  const slot = handler === 'toast' ? 'toast' : 'error'
+  // Own slots, so a burst of toasts or staging failures cannot mute a real crash report.
+  const slot = handler === 'toast' ? 'toast' : handler === 'attachment-staging' ? 'staging' : 'error'
   if (now - lastErrorAt[slot] < 10_000) return
   lastErrorAt[slot] = now
   // A thrown non-Error (a string, a bare `window.error` message) has no stack of its own. Never
@@ -326,6 +340,17 @@ export function scrubToastMessage(message: string, projects: readonly string[] =
 function reportErrorToast(message: string): void {
   const { type, context } = errorToastReport(recentFailedRequest())
   reportClientError(scrubToastMessage(message), 'toast', { type, context })
+}
+
+/** A composer attachment that could not be staged (telemetry 7054e5f2). The send still works —
+ *  the bytes ride inline — which is exactly why nobody would notice a broken uploads store
+ *  without this report. */
+export function reportAttachmentStagingFailed(error: unknown): void {
+  const status = (error as { status?: unknown } | null)?.status
+  reportClientError(error, 'attachment-staging', {
+    code: 'attachment_stage_failed',
+    context: { 'request.route': '/api/v1/workspace/uploads', ...(typeof status === 'number' ? { 'request.status': status } : {}) },
+  })
 }
 
 /** `React.lazy` that says WHICH page failed when its bundle can't load. Engines word the failure

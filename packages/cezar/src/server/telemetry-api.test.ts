@@ -97,6 +97,21 @@ describe('telemetry routes', () => {
     expect(track).not.toHaveBeenCalled();
   });
 
+  /** Telemetry 7054e5f2: attachment counts as buckets, re-stage outcomes — closed sets only. */
+  it('relays attachments_sent and attachments_restaged with their closed labels only', async () => {
+    for (const label of ['1', '2-4', '5-10', '11-20']) {
+      expect((await post('/api/v1/telemetry/event', { event: 'attachments_sent', label })).status).toBe(204);
+      expect(track).toHaveBeenCalledWith('attachments_sent', { label }, { sid: undefined });
+    }
+    for (const label of ['recovered', 'failed']) {
+      expect((await post('/api/v1/telemetry/event', { event: 'attachments_restaged', label })).status).toBe(204);
+    }
+    vi.mocked(track).mockClear();
+    expect((await post('/api/v1/telemetry/event', { event: 'attachments_sent', label: '7' })).status).toBe(400);
+    expect((await post('/api/v1/telemetry/event', { event: 'attachments_restaged', label: 'shot.png' })).status).toBe(400);
+    expect(track).not.toHaveBeenCalled();
+  });
+
   it('relays skills_update_apply_dropped with its closed outcome labels only', async () => {
     for (const label of ['recovered', 'not_applied', 'unreachable', 'timed_out']) {
       expect((await post('/api/v1/telemetry/event', { event: 'skills_update_apply_dropped', label })).status).toBe(204);

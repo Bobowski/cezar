@@ -38,7 +38,7 @@ import { VIEW_ICONS, ViewItems, ViewTiles } from './view-picker'
 
 /** Narrower than this and the layout shows one column at a time (spec §5.2, §11). Tailwind's
  *  `lg`, which is where a three-way split first has room to be readable. */
-const SIDE_BY_SIDE_MIN_WIDTH = 1024
+export const SIDE_BY_SIDE_MIN_WIDTH = 1024
 
 export interface ColumnActions {
   addColumn: (view: ViewId) => void

@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { trackTerminalTabRenamed } from '@/lib/telemetry'
 import { cn } from '@/lib/utils'
 
 import {
@@ -270,6 +271,7 @@ export function TerminalDrawer({
               // warning §6 requires and took a running build with it.
               onClose={() => (session.busy !== false ? setConfirming(session) : closeTab(session))}
               onRename={(name) => {
+                trackTerminalTabRenamed(name.trim() ? 'named' : 'reset')
                 // Shown at once; the host's answer (the automatic name, for an empty one) follows.
                 if (name.trim()) {
                   setSessions((current) =>

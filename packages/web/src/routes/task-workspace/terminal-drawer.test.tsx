@@ -32,6 +32,11 @@ vi.mock('@/api/client', () => ({
   renameRunTerminal: (...args: unknown[]) => renameRunTerminal(...(args as [])),
 }))
 
+const trackTerminalTabRenamed = vi.fn()
+vi.mock('@/lib/telemetry', () => ({
+  trackTerminalTabRenamed: (...args: unknown[]) => trackTerminalTabRenamed(...(args as [])),
+}))
+
 vi.mock('@/api/queries', () => ({
   useHealth: () => ({ data: { repo: { root: '/tmp/project' }, capabilities: { terminal: true } } }),
 }))
@@ -267,6 +272,8 @@ describe('TerminalDrawer — renaming a tab', () => {
     fireEvent.keyDown(field, { key: 'Enter' })
 
     expect(renameRunTerminal).toHaveBeenCalledWith('r1', 's-1', 'dev server')
+    // The kind of rename, never the name.
+    expect(trackTerminalTabRenamed).toHaveBeenCalledWith('named')
     await waitFor(() => expect(tabNames()).toEqual(['dev server']))
 
     fireEvent.contextMenu(screen.getByRole('tab', { name: 'dev server' }))

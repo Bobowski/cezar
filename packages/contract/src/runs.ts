@@ -449,9 +449,12 @@ export const runIndexEntrySchema = z.object({
    *  global page's origin filter reads it, and a dispatched child inherits its root's answer
    *  there through `dispatch.rootRunId` rather than through a copy here. */
   automationId: z.string().optional(),
-  /** When the agent actually started, as opposed to when the task was created. The global page's
-   *  age column prefers it and falls back to `createdAt`, exactly as the per-project table does. */
+  /** When the agent actually started, as opposed to when the task was created. Feeds
+   *  `lastActivityAt` when no step is newer. */
   startedAt: z.string().optional(),
+  /** When the run last moved — its newest step start/finish, else its own times. The index is
+   *  sorted on it; the slim row carries no steps, so the cockpit cannot derive it itself. */
+  lastActivityAt: z.string(),
   /**
    * The eight fields `taskReference()` (`web/src/lib/tasks-table.ts`) reads to decide a task's PR
    * or issue chip. Carried verbatim rather than pre-resolved into a `{kind, number, url}` on the

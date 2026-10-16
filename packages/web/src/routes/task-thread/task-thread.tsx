@@ -34,6 +34,7 @@ import { useDiffComments } from './diff-comments'
 import { TaskComposer, TaskDock } from './task-composer'
 import { WorkingIndicator } from './thread-items'
 import { useContinueAction } from './follow-up-engine'
+import { useDeliverPrompt } from './deliver-prompt'
 import { AgentsDock } from './agents-dock'
 import { PlanDock, planCounts } from './plan-dock'
 import { SkillsDock } from './skills-dock'
@@ -217,6 +218,10 @@ export function ThreadView({
   const continueAction = useContinueAction(run)
   const hasContinuation = !sessionOpen && !queued && continueAction.available
   const continuable = hasContinuation && continueAction.canContinue
+  // The footer's one-click Continue rides the same delivery seam as the composer's (deliver-prompt):
+  // its record can be just as stale, and a `run is still active` refusal means the run is already
+  // live — refetch and drop it, never the false failure a raw `continueWith` toasted (77117b95).
+  const deliverPrompt = useDeliverPrompt(run, continueAction.continueWith)
   // A closed session can never settle its in-flight items — nothing in the reducer rewrites a
   // `running` item on `session.ended`, so an interrupted fan-out stays `running` in the
   // persisted stream forever. Without this, reopening it pulses `Agents · 0/1` above a dead
@@ -395,7 +400,7 @@ export function ThreadView({
               // Offered whenever there is a session to reopen — not only once the provider check
               // has passed: while it loads (or the provider is disconnected) the button is there,
               // greyed, saying why, instead of the advice silently degrading to plain text.
-              onContinue={hasContinuation ? () => continueAction.continueWith('', []) : undefined}
+              onContinue={hasContinuation ? () => deliverPrompt('', []) : undefined}
               blockedReason={
                 continuable
                   ? undefined

@@ -19,6 +19,7 @@ import { StreamRedaction } from './stream-redaction.ts';
 import { collectSecretValues, redactDeep, redactSecrets } from '../core/secret-redaction.ts';
 // Sibling module, files only — a draft belongs to a run and is deleted with it (#939).
 import { deleteRunDrafts } from './drafts.ts';
+import { deleteRunLayouts, pruneOrphanLayouts } from './layouts.ts';
 import { failureKind, taskFailedLabel } from './failure-kind.ts';
 import { track } from '../telemetry.ts';
 // Pure, dependency-free reference helpers — the same sanity bound the marker parser applies.
@@ -464,6 +465,8 @@ export interface RunEvent {
   [key: string]: unknown;
 }
 
+/** A layout file this young may belong to a run another process has not saved to the index yet. */
+const ORPHAN_LAYOUT_GRACE_MS = 10 * 60_000;
 const MAX_RUNS_KEPT = 300;
 /** Every save rewrites the whole index, and a live run touches its record at event rate. */
 const SAVE_DEBOUNCE_MS = 1_000;
@@ -948,6 +951,8 @@ export class RunStore extends EventEmitter {
           for (const run of parsed.data) {
             store.runs.set(run.id, reconcileLoadedRun(run, opts));
           }
+          // Only behind an index that actually loaded — an unreadable one would orphan every layout.
+          pruneOrphanLayouts(dataDir, new Set(store.runs.keys()), ORPHAN_LAYOUT_GRACE_MS);
         } else {
           store.indexReadHealth = { state: 'unavailable', omittedRuns: Array.isArray(raw) ? raw.length : 0, reason: 'Task index could not be loaded by this server' };
         }
@@ -1810,6 +1815,7 @@ export class RunStore extends EventEmitter {
         rmSync(this.handoffPath(stale.id), { force: true });
         rmSync(this.imagesDir(stale.id), { recursive: true, force: true });
         deleteRunDrafts(this.dataDir, stale.id);
+        deleteRunLayouts(this.dataDir, stale.id); // spec 2026-10-07-task-workspace §5.3
       } catch {
         // best effort
       }

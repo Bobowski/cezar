@@ -443,17 +443,31 @@ describe('action bar visibility per status (the legacy rules, rendered)', () => 
     expect(diff.compareDocumentPosition(pr) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it('tokens, cost and the agent badge sit on the tabs line on desktop', () => {
+  it('collapses the desktop header to its title and tabs, and remembers it', () => {
+    stubFetch()
+    try {
+      window.localStorage.removeItem('cez:run-header-collapsed')
+    } catch {}
+    renderHeader(run('done'))
+    const details = document.querySelector('[data-slot="run-details"]') as HTMLElement
+    expect(details.className).toContain('md:block')
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse header' }))
+    expect(details.className).toContain('md:hidden')
+    expect(screen.getByRole('button', { name: 'Expand header' }).getAttribute('aria-expanded')).toBe('false')
+    expect(window.localStorage.getItem('cez:run-header-collapsed')).toBe('1')
+    fireEvent.click(screen.getByRole('button', { name: 'Expand header' }))
+    expect(details.className).toContain('md:block')
+    expect(window.localStorage.getItem('cez:run-header-collapsed')).toBeNull()
+  })
+
+  it('tokens, cost and the agent badge sit once in the meta row, leaving the tabs line to navigation', () => {
     stubFetch()
     renderHeader(run('done', { costUsd: 12, inputTokens: 152, outputTokens: 37_300 }))
-    const desktop = document.querySelector('[data-slot="run-tabs"] [data-slot="run-usage"]') as HTMLElement
-    expect(desktop.className).toContain('hidden')
-    expect(desktop.className).toContain('md:flex')
-    expect(desktop.textContent).toContain('$12')
-    expect(desktop.querySelector('[data-slot="agent-badge"]')).not.toBeNull()
-    // Phones read it in the collapsible details row instead.
-    const phone = document.querySelector('[data-slot="run-meta"] [data-slot="run-usage"]') as HTMLElement
-    expect(phone.className).toContain('md:hidden')
+    expect(document.querySelector('[data-slot="run-tabs"] [data-slot="run-usage"]')).toBeNull()
+    const usage = document.querySelectorAll('[data-slot="run-meta"] [data-slot="run-usage"]')
+    expect(usage).toHaveLength(1)
+    expect(usage[0]!.textContent).toContain('$12')
+    expect(usage[0]!.querySelector('[data-slot="agent-badge"]')).not.toBeNull()
   })
 
   it('the git button sits top right; the other actions close the details row', async () => {
@@ -1313,7 +1327,7 @@ describe('meta line, tabs, pill and resume hint', () => {
       '/api/v1/health': () =>
         jsonResponse({
           capabilities: {
-            localHandoff: true, followups: false, singleProject: false, automations: true,
+            localHandoff: true, terminal: false, followups: false, singleProject: false, automations: true,
             tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true,
           },
         }),
@@ -1329,7 +1343,7 @@ describe('meta line, tabs, pill and resume hint', () => {
       '/api/v1/health': () =>
         jsonResponse({
           capabilities: {
-            localHandoff: true, followups: false, singleProject: false, automations: false,
+            localHandoff: true, terminal: false, followups: false, singleProject: false, automations: false,
             tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true,
           },
         }),
@@ -1350,6 +1364,7 @@ describe('meta line, tabs, pill and resume hint', () => {
         jsonResponse({
           capabilities: {
             localHandoff: true,
+    terminal: false,
             followups: false,
             singleProject: false,
             tokenMetrics: false,

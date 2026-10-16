@@ -11,6 +11,19 @@ import { createTrackerService } from './tracker/index.ts';
 import { TrackerWatches } from './tracker/watch.ts';
 import { readTrackerAssociation, writeTrackerAssociation, clearTrackerAssociation } from '../tracker-association.ts';
 import { existsSync, readFileSync, statSync } from 'node:fs';
+import {
+  detectedUrlsSchema, discoveredCommandsSchema,
+  terminalCreateSchema, terminalInputSchema, terminalOutputQuerySchema, terminalOutputSchema,
+  terminalResizeSchema, terminalSessionParamsSchema, terminalSessionSchema, terminalStateSchema,
+} from '@open-mercato/cezar-contract';
+import { workspaceLayoutsResponseSchema, workspaceLayoutsSchema } from '@open-mercato/cezar-contract';
+import { deleteRunLayouts, readRunLayouts, writeRunLayouts } from '../runs/layouts.ts';
+import { discoverCommands } from './terminal/commands.ts';
+import { DetectedUrls } from './terminal/detected-urls.ts';
+import { processSnapshot } from './terminal/foreground.ts';
+import { loadPty } from './terminal/pty-module.ts';
+import { discoverShells } from './terminal/shells.ts';
+import { TerminalSessions, type TerminalSessionInfo } from './terminal/sessions.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { AutomationStore } from '../automations/store.ts';
 import { AutomationCoordinator } from '../automations/coordinator.ts';
@@ -394,6 +407,8 @@ export interface ServerDeps {
    *  to the HTTP server it binds. Optional so legacy callers/tests change
    *  nothing: no hub, no topics, and the HTTP surface is byte-identical. */
   socketHub?: SocketHub;
+  /** The task terminal's session registry. Injectable so route tests drive a fake PTY. */
+  terminalSessions?: TerminalSessions;
   /** The host-telemetry sampler behind the `host` topic and the `/workspace/host-usage` route.
    *  Defaults to the process-wide singleton; injectable so tests can drive a frame shape (a
    *  container object, for instance) that CI machines do not have. */
@@ -1497,6 +1512,16 @@ export function createApp(deps: ServerDeps) {
   const trackers = createTrackerService();
   const trackerWatches = new TrackerWatches(trackers, deps.socketHub);
   const capabilities = () => resolveCapabilities(process.env, bindHost);
+  // The task terminal's registry (spec `2026-10-07-task-workspace` §6): one per server, because a
+  // shell outlives the request that opened it and belongs to the host, not to a project context.
+  const detectedUrls = new DetectedUrls();
+  const terminalSessions = deps.terminalSessions ?? new TerminalSessions(undefined, detectedUrls);
+  deps.onDispose?.(() => terminalSessions.closeAll());
+  /** Stop a task's shells, their process trees and the addresses they printed (archive + delete). */
+  const stopTaskProcesses = (runId: string) => {
+    for (const session of terminalSessions.listFor(runId)) terminalSessions.kill(session.id);
+    detectedUrls.forget(runId);
+  };
   const singleProjectRefusal = (
     action: 'adding projects' | 'editing projects' | 'removing projects' | 'folder browsing',
   ) => ({ error: `single-project mode is enabled; ${action} is disabled` });
@@ -2862,6 +2887,8 @@ export function createApp(deps: ServerDeps) {
       // In-process handles for a project no route can reach any more: store
       // closed (index flushed), manager's timers and usage subscription dropped.
       trackerWatches.invalidateProject(entry.root);
+      // Its terminals live in the app-level registry, which no project route reaches once it is gone.
+      for (const run of contexts.peek(id)?.store.listRuns() ?? []) stopTaskProcesses(run.id);
       contexts.dispose(id);
       workspaceEvents.emit('project-removed', { id });
       const body: RemoveProjectResponse = { removed: true, id };
@@ -4405,7 +4432,11 @@ export function createApp(deps: ServerDeps) {
     // Registered before the `/:id/...` routes so "archive-finished" and "read-all"
     // never match as a run id.
     .post('/runs/archive-finished', (c) => {
-      const archived = c.get('project').store.archiveFinished();
+      const { store } = c.get('project');
+      const open = store.listRuns().filter((run) => !run.archived).map((run) => run.id);
+      const archived = store.archiveFinished();
+      // The sweep is an archive like any other: each task it took loses its terminals (spec §6).
+      if (archived > 0) for (const id of open) if (store.getRun(id)?.archived) stopTaskProcesses(id);
       // One event for the sweep, `value` = how many it archived (summed on the dashboard).
       if (archived > 0) track('task_archived', { label: 'bulk', value: archived }, { sid: deviceSid(c.req.header('x-cezar-sid')) });
       return c.json({ archived });
@@ -4426,6 +4457,7 @@ export function createApp(deps: ServerDeps) {
       const parsed = { data: c.req.valid('json') };
       const retiresQuestion = parsed.data.archived !== false && store.getRun(id)?.awaitingAnswerSince !== undefined;
       const run = store.setArchived(id, parsed.data.archived !== false);
+      if (run && parsed.data.archived !== false) stopTaskProcesses(id);
       if (run && retiresQuestion) manager.notifyQuestionRetired?.(id);
       // Labelled with the button that did it.
       if (run) track(parsed.data.archived !== false ? 'task_archived' : 'task_unarchived', { label: parsed.data.surface ?? 'api' }, { sid: deviceSid(c.req.header('x-cezar-sid')) });
@@ -5274,6 +5306,8 @@ export function createApp(deps: ServerDeps) {
       const run = store.getRun(id);
       if (!run) return c.json({ error: 'not found' }, 404);
       if (manager.isActive(id)) return c.json({ error: 'run is active — cancel it first' }, 409);
+      // A shell must not outlive the directory it is standing in (spec §6).
+      stopTaskProcesses(id);
       if (run.worktreePath) await removeWorktree(repoRoot, run.worktreePath, run.branch);
       store.updateRun(id, { worktreePath: undefined, branch: undefined });
       if (run.prHead) await manager.sweepPrHeadRefs();
@@ -5281,12 +5315,15 @@ export function createApp(deps: ServerDeps) {
     })
 
     .delete('/runs/:id', async (c) => {
-      const { root: repoRoot, store, manager } = c.get('project');
+      const { root: repoRoot, store, manager, dataDir } = c.get('project');
       const id = c.req.param('id');
       if (manager.isActive(id)) return c.json({ error: 'run is active — cancel it first' }, 409);
       const run = store.getRun(id);
       if (!run) return c.json({ error: 'not found' }, 404);
-      // Delete cleans up after itself: worktree + branch go with the run (spec 006).
+      // Delete cleans up after itself: worktree + branch go with the run (spec 006), and so do its terminals.
+      stopTaskProcesses(id);
+      // Layouts go with the task, and only with it — archiving keeps them (spec §5.3).
+      deleteRunLayouts(dataDir, id);
       if (run.worktreePath) await removeWorktree(repoRoot, run.worktreePath, run.branch);
       const deleted = store.deleteRun(id);
       // The run's `refs/cezar/pr/<n>` goes with the last run that needed it (Phase 3).
@@ -5310,6 +5347,47 @@ export function createApp(deps: ServerDeps) {
    * The `:surface` param is validated as MIDDLEWARE (`draftSurfaceParamSchema`), not interpolated:
    * it reaches the filesystem as a path segment.
    */
+  /**
+   * A task's saved workspace layouts (spec `.ai/specs/2026-10-07-task-workspace.md` §5.3:
+   * "Persist named layouts per task ON THE CEZAR HOST THAT OWNS THE TASK").
+   *
+   * Its own family and its own files (`.ai/cezar/layouts/`), for the same reason drafts got
+   * theirs: this is per-run state whose lifetime is the run's, so deleting a task is one `rm`
+   * rather than a key to find in a shared bag. Both routes 404 on an unknown run, so layouts can
+   * never outlive their task through this surface.
+   *
+   * There is no DELETE: §5.3 removes layouts only when the task itself is permanently deleted,
+   * which the run-delete route does directly. Emptying the workspace is a PUT of an empty list.
+   * The store keeps `null` and `[]` apart because they are different facts on disk; the COCKPIT
+   * opens a fresh `Czat` for both, which is §5.3's rule for a task whose layouts were all
+   * deleted.
+   */
+  const layoutRoutes = new Hono<ProjectApiEnv>()
+    .get('/runs/:id/layouts', paramZodValidator(runIdParamSchema), (c) => {
+      const { dataDir, store } = c.get('project');
+      const run = store.getRun(c.req.param('id'));
+      if (!run) return c.json({ error: 'not found' }, 404);
+      return c.json(workspaceLayoutsResponseSchema.parse({ layouts: readRunLayouts(dataDir, run.id) }));
+    })
+
+    .put(
+      '/runs/:id/layouts',
+      paramZodValidator(runIdParamSchema),
+      jsonZodValidator(workspaceLayoutsSchema),
+      (c) => {
+        const { dataDir, store } = c.get('project');
+        const run = store.getRun(c.req.param('id'));
+        if (!run) return c.json({ error: 'not found' }, 404);
+        const value = c.req.valid('json');
+        if (!writeRunLayouts(dataDir, run.id, value)) {
+          // A read-only home or a full disk. The cockpit keeps working from memory for the rest
+          // of the visit rather than losing the layout the user is looking at.
+          return c.json({ error: 'could not save layouts on this host' }, 409);
+        }
+        return c.json(workspaceLayoutsResponseSchema.parse({ layouts: value }));
+      },
+    );
+
   const draftRoutes = new Hono<ProjectApiEnv>()
     .get('/runs/:id/drafts', paramZodValidator(runIdParamSchema), (c) => {
       const { dataDir, store } = c.get('project');
@@ -5482,6 +5560,7 @@ export function createApp(deps: ServerDeps) {
 
       for (const loser of losers) {
         if (manager.isActive(loser.id)) manager.cancel(loser.id);
+        stopTaskProcesses(loser.id);
         if (loser.worktreePath) await removeWorktree(repoRoot, loser.worktreePath, loser.branch);
         store.updateRun(loser.id, { worktreePath: undefined, branch: undefined });
         store.setArchived(loser.id, true);
@@ -6890,6 +6969,178 @@ export function createApp(deps: ServerDeps) {
   //
   // Written as ONE chained expression because that is the only shape Hono can infer route types
   // from — it is what puts these routes in `AppType`, and so in the typed client.
+  /** One refusal sentence for every terminal route, or null when a shell is allowed here. */
+  const terminalPolicyRefusal = (caps: ReturnType<typeof capabilities>): string | null =>
+    caps.terminal
+      ? null
+      : 'the terminal is disabled on this cockpit — it is off in hosted mode unless CEZ_TERMINAL=1';
+
+  /** The topic a client subscribes to for "there is new output". Derived, never stored, so the
+   *  session id stays the only identity. */
+  const terminalTopic = (sessionId: string) => `terminal:${sessionId}`;
+  const withTopic = (session: TerminalSessionInfo) => ({ ...session, topic: terminalTopic(session.id) });
+
+  /**
+   * Publish a cursor — and ONLY a cursor — whenever a session produces output or exits.
+   *
+   * The hub's topics are workspace-level and readable by anything the upgrade guard trusts, so
+   * nothing that is terminal CONTENT may ride one. A monotonically growing number tells the
+   * cockpit "there is more", and it then reads the bytes over the same authenticated HTTP as
+   * everything else. The registration disposes itself when the session goes, the way a tracker
+   * watch does.
+   */
+  const registerTerminalTopic = (sessionId: string) => {
+    if (!deps.socketHub) return;
+    const read = () => ({ cursor: terminalSessions.read(sessionId, Number.MAX_SAFE_INTEGER)?.cursor ?? 0 });
+    const remove = deps.socketHub.registerTopic(terminalTopic(sessionId), {
+      snapshot: async () => read(),
+      start: (publish) => terminalSessions.subscribe(sessionId, () => publish(read())),
+    });
+    // The registry forgets an exited session a minute later; drop the topic with it rather than
+    // leaving a name that answers forever.
+    terminalSessions.subscribe(sessionId, () => {
+      if (!terminalSessions.get(sessionId)) remove();
+    });
+  };
+
+  /** The session named by this URL, but only if it really belongs to the run named by this URL. */
+  const terminalFor = ({ id, sessionId }: { id: string; sessionId: string }): TerminalSessionInfo | null => {
+    const session = terminalSessions.get(sessionId);
+    return session && session.runId === id ? session : null;
+  };
+
+  /**
+   * The workspace terminal (spec `.ai/specs/2026-10-07-task-workspace.md` §6, Milestone 2).
+   *
+   * Every route answers 409 unless `capabilities().terminal` allows a shell here — policy first,
+   * before anything touches a PTY. A session is addressed by id but ALWAYS re-checked against the
+   * run in the path, so one task's url can never drive another task's shell.
+   *
+   * Output is never pushed over the WebSocket. The topic carries a cursor and nothing else; the
+   * bytes come back over the same authenticated HTTP the rest of the cockpit uses. That keeps
+   * terminal content off a workspace-level bus entirely — the hub's topics are single-mount and
+   * readable by anything the upgrade guard trusts, and a shell's output is the last thing that
+   * should ride one.
+   */
+  const terminalRoutes = new Hono<ProjectApiEnv>()
+    .get('/runs/:id/terminal', async (c) => {
+      const { store } = c.get('project');
+      const run = store.getRun(c.req.param('id'));
+      if (!run) return c.json({ error: 'not found' }, 404);
+      const refusal = terminalPolicyRefusal(capabilities());
+      if (refusal) return c.json(terminalStateSchema.parse({ available: false, reason: refusal, sessions: [] }));
+      const binding = await loadPty();
+      // One `ps` reading names every tab and answers "is anything running" for all of them.
+      terminalSessions.observe(await processSnapshot());
+      return c.json(terminalStateSchema.parse({
+        available: binding.available,
+        ...(binding.available ? {} : { reason: binding.reason }),
+        sessions: terminalSessions.listFor(run.id).map(withTopic),
+        // What a new tab may be opened with (spec §6, "shell selection"). Sent only when the PTY
+        // is actually available, because a cockpit that cannot open a terminal has no use for a
+        // list of shells it cannot spawn.
+        ...(binding.available ? { shells: discoverShells() } : {}),
+      }));
+    })
+    .post('/runs/:id/terminal', jsonZodValidator(terminalCreateSchema), async (c) => {
+      const { root: repoRoot, store } = c.get('project');
+      const run = store.getRun(c.req.param('id'));
+      if (!run) return c.json({ error: 'not found' }, 404);
+      const refusal = terminalPolicyRefusal(capabilities());
+      if (refusal) return c.json({ error: refusal }, 409);
+      // The task's OWN tree or nothing. Falling back to the repo root the way open-in-cli
+      // does would put the user in the boot checkout while the header says they are in a task —
+      // exactly the "panels must not silently display the boot repo" rule (spec §3.3). A
+      // worktree-off task is not that fallback: the repo checkout IS the tree it ran in.
+      const cwd = workingDirectoryOf(run, repoRoot);
+      if (!cwd) {
+        return c.json({ error: 'this task has no worktree to open a terminal in' }, 409);
+      }
+      const created = await terminalSessions.create({
+        runId: run.id,
+        cwd,
+        ...c.req.valid('json'),
+      });
+      if (!created.ok) return c.json({ error: created.reason }, 409);
+      registerTerminalTopic(created.session.id);
+      return c.json(terminalSessionSchema.parse(withTopic(created.session)), 201);
+    })
+    .get(
+      '/runs/:id/terminal/:sessionId/output',
+      paramZodValidator(terminalSessionParamsSchema),
+      queryZodValidator(terminalOutputQuerySchema),
+      async (c) => {
+        const session = terminalFor(c.req.valid('param'));
+        if (!session) return c.json({ error: 'terminal session not found' }, 404);
+        // Policy is re-checked on the READ too, not only on create and write: `CEZ_TERMINAL` is
+        // read live, so turning it off must stop a session's output being served from under a
+        // cockpit that is no longer allowed one — a shell's scrollback is the content this flag
+        // exists to withhold.
+        const outputRefusal = terminalPolicyRefusal(capabilities());
+        if (outputRefusal) return c.json({ error: outputRefusal }, 409);
+        const read = terminalSessions.read(session.id, c.req.valid('query').cursor ?? 0);
+        if (!read) return c.json({ error: 'terminal session not found' }, 404);
+        c.header('Cache-Control', 'no-store');
+        return c.json(terminalOutputSchema.parse(read));
+      },
+    )
+    .post(
+      '/runs/:id/terminal/:sessionId/input',
+      paramZodValidator(terminalSessionParamsSchema),
+      jsonZodValidator(terminalInputSchema),
+      async (c) => {
+        const session = terminalFor(c.req.valid('param'));
+        if (!session) return c.json({ error: 'terminal session not found' }, 404);
+        const refusal = terminalPolicyRefusal(capabilities());
+        if (refusal) return c.json({ error: refusal }, 409);
+        // A write to a shell that has already exited is not an error: the client may not have
+        // learned about the exit yet, and the exit code is in every output read anyway.
+        return c.json({ delivered: terminalSessions.write(session.id, c.req.valid('json').data) });
+      },
+    )
+    .post(
+      '/runs/:id/terminal/:sessionId/resize',
+      paramZodValidator(terminalSessionParamsSchema),
+      jsonZodValidator(terminalResizeSchema),
+      async (c) => {
+        const session = terminalFor(c.req.valid('param'));
+        if (!session) return c.json({ error: 'terminal session not found' }, 404);
+        const resizeRefusal = terminalPolicyRefusal(capabilities());
+        if (resizeRefusal) return c.json({ error: resizeRefusal }, 409);
+        const { cols, rows } = c.req.valid('json');
+        return c.json({ resized: terminalSessions.resize(session.id, cols, rows) });
+      },
+    )
+    .get('/runs/:id/terminal/urls', async (c) => {
+      const { store } = c.get('project');
+      const run = store.getRun(c.req.param('id'));
+      if (!run) return c.json({ error: 'not found' }, 404);
+      // Probed on read rather than on a timer: the list is only looked at while the drawer is
+      // open, and an idle cockpit should cost no connections at all.
+      const urls = await detectedUrls.refresh(run.id);
+      c.header('Cache-Control', 'no-store');
+      return c.json(detectedUrlsSchema.parse({ urls }));
+    })
+    .get('/runs/:id/terminal/commands', async (c) => {
+      const { root: repoRoot, store } = c.get('project');
+      const run = store.getRun(c.req.param('id'));
+      if (!run) return c.json({ error: 'not found' }, 404);
+      // The task's own tree or nothing: suggesting the boot repo's scripts for a task would
+      // offer commands that run against the wrong tree (spec §3.3). Same tree the terminal opens.
+      const worktree = workingDirectoryOf(run, repoRoot);
+      const commands = worktree ? await discoverCommands(worktree) : [];
+      return c.json(discoveredCommandsSchema.parse({ commands }));
+    })
+    // Deliberately NOT policy-gated: stopping a shell is the one terminal action that reduces
+    // exposure, and refusing it with the flag off would strand a running process tree with no
+    // way to reach it.
+    .delete('/runs/:id/terminal/:sessionId', paramZodValidator(terminalSessionParamsSchema), async (c) => {
+      const session = terminalFor(c.req.valid('param'));
+      if (!session) return c.json({ error: 'terminal session not found' }, 404);
+      terminalSessions.kill(session.id);
+      return c.json({ stopped: true });
+    });
+
   const v1 = new Hono<ProjectApiEnv>()
     .use('*', resolveProjectScope)
     .route('/', launchKeyRoutes)
@@ -6901,6 +7152,7 @@ export function createApp(deps: ServerDeps) {
     .route('/', dispatchRoutes)
     .route('/', runsRoutes)
     .route('/', draftRoutes)
+    .route('/', layoutRoutes)
     .route('/', groupsRoutes)
     .route('/', openTargetsRoutes)
     .route('/', worktreesRoutes)
@@ -6912,7 +7164,8 @@ export function createApp(deps: ServerDeps) {
     .route('/', e2eRoutes)
     .route('/', repoRoutes)
     .route('/', configRoutes)
-    .route('/', agentConfigRoutes);
+    .route('/', agentConfigRoutes)
+    .route('/', terminalRoutes);
 
   // ---- chained family: the cross-project run index (workspace-level) -------
   /**

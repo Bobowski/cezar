@@ -245,6 +245,31 @@ describe('the task workspace (main)', () => {
     expect(toggle.textContent).toContain('in column')
   })
 
+  it('offers a way out of full view on a narrow screen, which has no Escape key', async () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }))
+    stubFetch()
+    renderWorkspace()
+    await ready()
+
+    fireEvent.click(screen.getByRole('button', { name: 'New layout' }))
+    await pickTile('session')
+    fireEvent.click(await screen.findByRole('button', { name: 'Split view' }))
+    await pickTile('changes')
+    await waitFor(() => expect(document.querySelector('[data-slot="workspace-columns"][data-narrow]')).not.toBeNull())
+
+    expect(screen.queryByRole('button', { name: /Exit full view/ })).toBeNull()
+    fireEvent.keyDown(window, { key: 'f' })
+    const exit = await screen.findAllByRole('button', { name: /Exit full view/ })
+    expect(exit).toHaveLength(1)
+    fireEvent.click(exit[0]!)
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Exit full view/ })).toBeNull())
+  })
+
   it('splits the screen when a view tab is dropped beside the chat', async () => {
     stubFetch()
     renderWorkspace()

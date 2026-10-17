@@ -152,12 +152,19 @@ cezar projects tag api storefront backend   # set the grouping tags (no tags cle
 These read and write `~/.cezar/config.json` directly, so they work with the
 server stopped, and `CEZ_HOME` selects which workspace they operate on.
 
-Settings split along the same line: **General** (the project's folder, its
-registry facts, its parallel-task ceiling, and Remove), **Agents**,
-**Instructions**, **Tasks**, **Worktrees**, **Bookmarklets** and **MCP** describe one
-repo and live under `/p/<projectId>/settings`; **Appearance**,
-**Notifications**, **Resources**, **Projects** and **Keyboard** are yours or the
-machine's and live at `/settings/global`.
+Settings is one full-screen surface with one navigation (the app sidebar is
+hidden there; **Back** or Escape returns to the page you came from). The
+**General settings** group — **Appearance**, **Notifications**, **Resources**,
+**Skills**, **Secrets**, **Agent accounts**, **Projects**, **Privacy** — is yours
+or the machine's and lives at `/settings/global`. Below it, a **Project
+settings** tree lists every registered project; each opens into **General**
+(the project's folder, its registry facts, its parallel-task ceiling, and
+Remove), **Tracker**, **Secrets**, **External integrations**, **Agents**,
+**Instructions** (system prompt, branch naming, prompt templates), **Tasks**,
+**Agent config**, **Worktrees** and **Bookmarklets**, which describe that one
+repo and live under `/p/<projectId>/settings`. On any project page, clicking
+another project in the tree opens the same place there: the same section, or
+its General page when General is open; the previous project folds.
 
 ### Grouping connected repositories: tags and the All tasks page
 

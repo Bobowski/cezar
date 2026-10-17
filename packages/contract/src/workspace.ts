@@ -190,6 +190,8 @@ export const uiStateSchema = z.looseObject({
   githubView: z.enum(['issues', 'prs']).optional(),
   /** The GitHub tab's list order. Absent → newest first, which is what `gh` already returns. */
   githubSort: z.enum(['newest', 'oldest']).optional(),
+  /** Sidebar pages this project hides, by nav path (`/git`, `/docker`). Absent → none hidden. */
+  hiddenNav: z.array(z.string().min(1).max(64)).max(32).optional(),
   /** Settings → Appearance. The theme itself stays in localStorage (`cez-theme`) — it must
    *  pre-paint, and it is per-browser by design. */
   appearance: appearanceSchema.optional(),

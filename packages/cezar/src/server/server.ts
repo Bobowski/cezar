@@ -939,6 +939,8 @@ const uiStateSchema = z
     // ui-state.json without the key behaves as the default (newest), and the sort is applied
     // client-side, so this key changes presentation only, never what `GET /github` fetches.
     githubSort: z.enum(['newest', 'oldest']).optional(),
+    // Project settings → Sidebar: nav paths hidden for this project. ADDITIVE — absent hides none.
+    hiddenNav: z.array(z.string().min(1).max(64)).max(32).optional(),
     // Settings → Appearance (redesign R6): accent + density. ADDITIVE — the theme itself
     // stays in the browser (`cez-theme` localStorage, pre-paint). The cockpit always PUTs
     // the whole object because the top-level merge below is shallow.

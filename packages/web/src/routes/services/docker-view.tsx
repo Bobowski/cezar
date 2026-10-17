@@ -7,7 +7,7 @@ import { dockerContainerAction, dockerStackAction } from '@/api/client'
 import { queryKeys } from '@/api/queries'
 import { useDocker } from '@/api/services'
 import { ContextSidebar } from '@/components/context-sidebar'
-import { PageBody } from '@/components/page'
+import { Page, PageBody } from '@/components/page'
 import { StatusDot } from '@/components/status-dot'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -17,7 +17,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/u
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemSeparator, ItemTitle } from '@/components/ui/item'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
-  SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarMenu, SidebarMenuButton, SidebarMenuItem,
+  SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem,
 } from '@/components/ui/sidebar'
 import { toast } from '@/components/ui/toaster'
 
@@ -58,7 +58,7 @@ function ContainerRow({ container, busy, onAct }: { container: DockerContainer; 
 }
 
 /**
- * The Docker view of `/p/:projectId/services` (spec 2026-10-13-docker-view): every container on
+ * The Docker view of `/p/:projectId/docker` (spec 2026-10-13-docker-view): every container on
  * the machine, grouped by compose project and named after the cezar project that owns it — so
  * "can I start this project?" is answered before the port collision, not by it.
  */
@@ -200,4 +200,14 @@ export function DockerView({ header }: { header: ReactNode }) {
       </PageBody>
     </>
   )
+}
+
+/** `/p/:projectId/docker` — the machine's containers as a page of its own. */
+export function DockerRoute() {
+  const header = (
+    <SidebarHeader data-slot="docker-header" className="gap-3 p-3">
+      <h2 className="px-1 text-[15px] font-semibold text-foreground">Docker</h2>
+    </SidebarHeader>
+  )
+  return <Page width="full" data-route="docker" className="h-full"><DockerView header={header} /></Page>
 }

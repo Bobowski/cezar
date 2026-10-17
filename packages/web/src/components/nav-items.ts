@@ -7,14 +7,14 @@ import {
   WorkflowIcon,
   ZapIcon,
   TicketIcon,
-  ServerIcon,
+  SquareTerminalIcon,
   Code2Icon,
 } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 import type { TrackerKind } from '@open-mercato/cezar-api-client'
 
 import { TRACKER_PROVIDERS } from '@/lib/tracker-providers'
-import { GithubIcon } from '@/components/icons'
+import { DockerIcon, GithubIcon } from '@/components/icons'
 
 export type NavItem = {
   /** Where the item navigates. Also its identity — `activeNavPath` returns this. */
@@ -52,7 +52,8 @@ export const NAV_ITEMS: NavItem[] = [
   { to: '/inbox', label: 'Inbox', icon: InboxIcon, match: ['/inbox'], badge: 'inbox-count', inbox: true },
   { to: '/git', label: 'Git', icon: GitBranchIcon, match: ['/git'] },
   { to: '/code', label: 'Code', icon: Code2Icon, match: ['/code'] },
-  { to: '/services', label: 'Services', icon: ServerIcon, match: ['/services'], badge: 'services' },
+  { to: '/scripts', label: 'Scripts', icon: SquareTerminalIcon, match: ['/scripts', '/services'], badge: 'services' },
+  { to: '/docker', label: 'Docker', icon: DockerIcon, match: ['/docker'] },
   { to: '/github', label: 'GitHub', icon: GithubIcon, match: ['/github'], forge: true },
   { to: '/tracker', label: 'Tracker', icon: TicketIcon, match: ['/tracker'], tracker: true },
   { to: '/automations', label: 'Automations', icon: ZapIcon, match: ['/automations'], automations: true },

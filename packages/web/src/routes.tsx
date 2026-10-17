@@ -83,6 +83,16 @@ const CodeRoute = lazyRoute('code', () =>
 const ServicesRoute = lazyRoute('services', () =>
   import('./routes/services/services').then((m) => ({ default: m.ServicesRoute })),
 )
+const DockerRoute = lazyRoute('docker', () =>
+  import('./routes/services/docker-view').then((m) => ({ default: m.DockerRoute })),
+)
+
+/** `/services` became `/scripts`, and its Docker tab (`?view=docker`) became `/docker`. */
+function ServicesRedirect() {
+  const location = useLocation()
+  const docker = new URLSearchParams(location.search).get('view') === 'docker'
+  return <ScopedNavigate to={{ pathname: docker ? '/docker' : '/scripts', hash: location.hash }} replace />
+}
 const TrackerRoute = lazyRoute('tracker', () =>
   import('./routes/tracker/tracker').then((m) => ({ default: m.TrackerRoute })),
 )
@@ -316,7 +326,8 @@ const PAGE_TITLE_ROUTES = [
   { pattern: '/git/*', pageLabel: 'Git' },
   { pattern: '/github/*', pageLabel: 'GitHub' },
   { pattern: '/code/*', pageLabel: 'Code' },
-  { pattern: '/services', pageLabel: 'Services' },
+  { pattern: '/scripts', pageLabel: 'Scripts' },
+  { pattern: '/docker', pageLabel: 'Docker' },
   { pattern: '/tracker/*', pageLabel: 'Tracker' },
   { pattern: '/automations/*', pageLabel: 'Automations' },
   { pattern: '/skills', pageLabel: 'Skills' },
@@ -507,8 +518,13 @@ export const AppRoutes = memo(function AppRoutes() {
         <Route path="code" element={<Suspense fallback={<ScopeResolving />}><CodeRoute /></Suspense>} />
         <Route path="code/*" element={<Suspense fallback={<ScopeResolving />}><CodeRoute /></Suspense>} />
         <Route
-          path="services"
+          path="scripts"
           element={<Suspense fallback={<ScopeResolving />}><ServicesRoute /></Suspense>}
+        />
+        <Route path="services" element={<ServicesRedirect />} />
+        <Route
+          path="docker"
+          element={<Suspense fallback={<ScopeResolving />}><DockerRoute /></Suspense>}
         />
         <Route
           path="tracker"

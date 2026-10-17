@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { setApiScope, type DockerState } from '@open-mercato/cezar-api-client'
 import { createQueryClient } from '@/api/query-client'
 import { ShellWithSidebar } from '@/test/shell-with-sidebar'
-import { ServicesRoute } from './services'
+import { DockerRoute } from './docker-view'
 
 afterEach(() => { cleanup(); setApiScope(null); vi.unstubAllGlobals() })
 
@@ -28,7 +28,7 @@ const DOCKER: DockerState = {
 }
 const SERVICES = { available: true, reason: null, services: [], candidates: [], lastRunning: [], topic: 'services:p' }
 
-function setup(docker: DockerState = DOCKER, entry = '/?view=docker') {
+function setup(docker: DockerState = DOCKER, entry = '/docker') {
   const calls: string[] = []
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
@@ -41,14 +41,14 @@ function setup(docker: DockerState = DOCKER, entry = '/?view=docker') {
   render(
     <QueryClientProvider client={createQueryClient()}>
       <MemoryRouter initialEntries={[entry]}>
-        <ShellWithSidebar><ServicesRoute /></ShellWithSidebar>
+        <ShellWithSidebar><DockerRoute /></ShellWithSidebar>
       </MemoryRouter>
     </QueryClientProvider>,
   )
   return calls
 }
 
-describe('Services → Docker (spec 2026-10-13-docker-view)', () => {
+describe('Docker page (spec 2026-10-13-docker-view)', () => {
   it('shows every stack with its owner, and which port this project cannot have', async () => {
     setup()
     const alert = await screen.findByRole('alert')
@@ -83,11 +83,4 @@ describe('Services → Docker (spec 2026-10-13-docker-view)', () => {
     expect((await screen.findByRole('note')).textContent).toBe('Docker is installed, but its daemon is not running')
   })
 
-  it('is one tab away from the project view, which stays the default', async () => {
-    setup(DOCKER, '/')
-    expect(document.querySelector('[data-slot="docker-stack"]')).toBeNull()
-    const tab = await screen.findByRole('tab', { name: 'Docker' })
-    fireEvent.mouseDown(tab, { button: 0 })
-    await screen.findByRole('alert')
-  })
 })

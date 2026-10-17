@@ -11,9 +11,9 @@ import type { WorkflowDef } from './types.ts';
 
 /**
  * The check step as the ENGINE uses it (#landing-check S1): the seam's
- * outcomes must survive the trip through the workflow run loop, and the three
- * that are not exit codes — the dry-run skip, the per-command timeout and the
- * gate deadline — must never end a run green.
+ * outcomes must survive the trip through the workflow run loop, and the two
+ * that are not exit codes — the per-command timeout and the gate deadline —
+ * must never end a run green.
  *
  * The seam's own mechanics live in `check-runner.test.ts`; this file is about
  * the run record, the step rail's vocabulary and the config keys a user sets.
@@ -91,7 +91,7 @@ posix('check steps through the run loop', () => {
     expect(String(output?.text)).toContain('all good');
   });
 
-  it('CEZ_DRY_RUN=1 spawns nothing, records a skipped step and never reports the run green', async () => {
+  it('CEZ_DRY_RUN=1 still runs the check — dry run swaps the agent, not the gate', async () => {
     process.env.CEZ_DRY_RUN = '1';
     const record = manager.startRun(
       checkWorkflow(`node -e "require('fs').writeFileSync('ran', 'yes')"`),
@@ -100,20 +100,9 @@ posix('check steps through the run loop', () => {
     currentId = record.id;
     await settle(record.id);
 
-    // Nothing ran — the observable proof is the file the command would have made.
-    expect(existsSync(join(repoRoot, 'ran'))).toBe(false);
-
-    const final = store.getRun(record.id);
-    expect(final?.status).toBe('failed');
-    expect(final?.error).toMatch(/skipped \(CEZ_DRY_RUN=1\)/);
-    expect(final?.steps.map(({ id, status }) => ({ id, status }))).toEqual([{ id: 'check-1', status: 'skipped' }]);
-
-    // The skip is on the wire too, and it is not an exit-code-zero pass.
-    const output = events(record.id).find((e) => e.type === 'check-output');
-    expect(output?.status).toBe('skipped');
-    expect(output?.exitCode).toBe(-1);
-    expect(String(output?.text)).toMatch(/nothing was run/);
-    expect(final?.status === 'done').toBe(false);
+    expect(existsSync(join(repoRoot, 'ran'))).toBe(true);
+    expect(store.getRun(record.id)?.status).toBe('done');
+    expect(events(record.id).find((e) => e.type === 'check-output')?.status).toBe('passed');
   }, 30_000);
 
   it('a command that outlives "checkTimeoutMs" fails the step with a distinct, non-green outcome', async () => {
@@ -189,10 +178,10 @@ posix('check steps through the run loop', () => {
         .map((e) => e.stepId),
     ).toEqual(['check-1', 'check-2']);
     expect(
-      events(record.id).some((e) => e.type === 'note' && String(e.message).includes('check failed — retrying from')),
+      events(record.id).some((e) => e.type === 'note' && String(e.message).includes('— iteration')),
     ).toBe(false);
     // Not silent either: the skip is a note on the wire.
-    expect(events(record.id).some((e) => e.type === 'note' && String(e.message).includes('not retrying from'))).toBe(
+    expect(events(record.id).some((e) => e.type === 'note' && String(e.message).includes('not retrying:'))).toBe(
       true,
     );
   }, 30_000);
@@ -215,12 +204,12 @@ posix('check steps through the run loop', () => {
     expect(events(record.id).filter((e) => e.type === 'check-output' && e.stepId === 'check-1')).toHaveLength(3);
     expect(
       events(record.id).filter(
-        (e) => e.type === 'note' && String(e.message).includes('check failed — retrying from'),
+        (e) => e.type === 'note' && String(e.message).includes('— iteration'),
       ),
     ).toHaveLength(2);
   }, 30_000);
 
-  it('is dry-run aware by DEFAULT: `checkTimeoutMs` and `checkGateTimeoutMs` are the documented defaults', async () => {
+  it('`checkTimeoutMs` and `checkGateTimeoutMs` default to the documented limits', async () => {
     const config = await loadConfig(repoRoot);
     expect(config.checkTimeoutMs).toBe(20 * 60_000);
     expect(config.checkGateTimeoutMs).toBe(45 * 60_000);

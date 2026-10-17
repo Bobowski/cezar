@@ -7,7 +7,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { RunStore } from '../runs/store.ts';
 import type { WorkflowDef } from './types.ts';
 import { RunManager } from './run.ts';
-import { mockAgentWithRealChecks } from './mock-agent.testkit.ts';
 
 const run = promisify(execFile);
 const GIT_ID = ['-c', 'user.name=test', '-c', 'user.email=test@local'];
@@ -33,7 +32,6 @@ describe('model identity wiring (dry run)', () => {
   let store: RunStore;
   let manager: RunManager;
   const savedEnv: Record<string, string | undefined> = {};
-  let restoreMockAgent: () => void = () => undefined;
 
   beforeAll(async () => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-model-identity-'));
@@ -41,7 +39,7 @@ describe('model identity wiring (dry run)', () => {
     savedEnv.CEZ_DRY_RUN = process.env.CEZ_DRY_RUN;
     savedEnv.CEZ_MOCK_ARGS_FILE = process.env.CEZ_MOCK_ARGS_FILE;
     savedEnv.CEZ_FOLLOWUPS = process.env.CEZ_FOLLOWUPS;
-    restoreMockAgent = mockAgentWithRealChecks();
+    process.env.CEZ_DRY_RUN = '1';
     process.env.CEZ_MOCK_ARGS_FILE = argsFile;
     delete process.env.CEZ_FOLLOWUPS;
     await run('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
@@ -55,7 +53,6 @@ describe('model identity wiring (dry run)', () => {
   });
 
   afterAll(() => {
-    restoreMockAgent();
     for (const [key, value] of Object.entries(savedEnv)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -159,6 +156,40 @@ describe('model identity wiring (dry run)', () => {
     expect(capturedModel(1)).toBe('haiku');
     // The record now asserts what the continuation ran, not what the run started with.
     expect(store.getRun(id)?.modelIdentity).toBe('anthropic/haiku');
+  }, 40_000);
+
+  it('retains the first step identity when a continuation switches to auto (#545)', async () => {
+    const id = await runToEnd({ task: 'do the thing', model: 'opus' });
+    expect(store.getRun(id)?.steps.find((step) => step.id === 'work')?.modelIdentity).toBe('anthropic/opus');
+
+    expect(manager.continueRun(id, { text: 'keep going', model: '' })).toEqual({ ok: true });
+    const deadline = Date.now() + 20_000;
+    while (readFileSync(argsFile, 'utf8').trim().split('\n').length < 2) {
+      if (Date.now() > deadline) throw new Error('continuation did not start in time');
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const record = store.getRun(id);
+    expect(record?.modelIdentity).toBeUndefined();
+    expect(record?.steps.find((step) => step.id === 'work')?.modelIdentity).toBe('anthropic/opus');
+    expect(record?.steps.find((step) => step.id === 'continue-1')?.modelIdentity).toBeUndefined();
+  }, 40_000);
+
+  it('persists distinct identities for model-specific steps (#545)', async () => {
+    const multiModelWorkflow: WorkflowDef = {
+      name: 'multi-model-identity-test',
+      source: 'built-in',
+      steps: [
+        { id: 'first', model: 'opus', prompt: '{{task}}' },
+        { id: 'second', model: 'haiku', prompt: '{{task}}' },
+        { id: 'verify', command: 'true' },
+      ],
+    };
+    writeFileSync(argsFile, '', 'utf8');
+    const record = manager.startRun(multiModelWorkflow, { task: 'do the thing' });
+    await settle(record.id);
+    const saved = store.getRun(record.id);
+    expect(saved?.steps.find((step) => step.id === 'first')?.modelIdentity).toBe('anthropic/opus');
+    expect(saved?.steps.find((step) => step.id === 'second')?.modelIdentity).toBe('anthropic/haiku');
   }, 40_000);
 
   it('Claude gateway models run with their provider-qualified wire id', async () => {

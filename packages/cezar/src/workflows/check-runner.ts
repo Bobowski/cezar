@@ -19,7 +19,7 @@
  *
  * Every exit is a `CheckOutcomeStatus`, and exactly one of them (`passed`) is
  * green: a timeout, a cancellation, a platform that cannot run a POSIX process
- * group and a dry run are all visibly NOT success. "It did not run" must never
+ * group and a requested dry run are all visibly NOT success. "It did not run" must never
  * read as "it passed" — that is the whole point of the status union.
  */
 
@@ -71,7 +71,7 @@ export function capCheckOutput(text: string, cap = CHECK_OUTPUT_CAP, totalChars?
  *                     process group was killed. NON-GREEN.
  *  - `cancelled`    — the run was cancelled (or interrupted); group killed. NON-GREEN.
  *  - `could-not-run`— win32, no `bash`, or a spawn error: nothing ran. NON-GREEN.
- *  - `skipped`      — `CEZ_DRY_RUN=1`: nothing ran on purpose. NON-GREEN.
+ *  - `skipped`      — the caller asked for a dry run: nothing ran on purpose. NON-GREEN.
  */
 export type CheckOutcomeStatus =
   | 'passed'
@@ -114,7 +114,8 @@ export interface CheckCommandOptions {
   graceMs?: number;
   /** Output cap in characters (tail kept). Default `CHECK_OUTPUT_CAP`. */
   cap?: number;
-  /** `CEZ_DRY_RUN=1` semantics: spawn nothing, report `skipped`. Default: the env. */
+  /** Spawn nothing and report `skipped`. Opt-in only: `CEZ_DRY_RUN=1` swaps the
+   *  agent for the bundled mock and still runs checks (#1164 review). */
   dryRun?: boolean;
   /** Default: `process.platform`. win32 is a deterministic `could-not-run`. */
   platform?: NodeJS.Platform;
@@ -127,12 +128,6 @@ export interface CheckCommandOptions {
   /** Live output tap (uncapped). The workflow transcript is emitted once, at the
    *  end, by the caller; this is for a caller that wants to stream. */
   onOutput?: (chunk: string) => void;
-}
-
-/** `CEZ_DRY_RUN=1` means "spawn nothing". Read here so a check is dry-run aware
- *  even when its caller forgets to pass anything. */
-export function checkDryRunEnabled(source: NodeJS.ProcessEnv = process.env): boolean {
-  return source.CEZ_DRY_RUN === '1';
 }
 
 /** Case-insensitive env read — Windows spells it `Path`. */
@@ -194,7 +189,7 @@ export async function runCheckCommand(options: CheckCommandOptions): Promise<Che
   const startedAt = Date.now();
   const cap = options.cap ?? CHECK_OUTPUT_CAP;
   const graceMs = options.graceMs ?? CHECK_TERMINATE_GRACE_MS;
-  const dryRun = options.dryRun ?? checkDryRunEnabled();
+  const dryRun = options.dryRun ?? false;
   const platform = options.platform ?? process.platform;
   const env = options.env ?? buildCheckEnv();
 
@@ -208,11 +203,7 @@ export async function runCheckCommand(options: CheckCommandOptions): Promise<Che
   });
 
   if (options.signal?.aborted) return nothing('cancelled', 'cancelled before the command started');
-  if (dryRun) {
-    // Spawns nothing, by contract: `CEZ_DRY_RUN=1` is the offline look-around, and
-    // a check is repository code. The skip is visible and NOT green.
-    return nothing('skipped', 'skipped (CEZ_DRY_RUN=1) — nothing was run');
-  }
+  if (dryRun) return nothing('skipped', 'skipped (dry run) — nothing was run');
   if (platform === 'win32') {
     return nothing(
       'could-not-run',

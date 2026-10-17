@@ -323,11 +323,11 @@ describe('runCheckCommand — dry run', () => {
     });
     expect(outcome.status).toBe('skipped');
     expect(outcome.ok).toBe(false);
-    expect(outcome.output).toMatch(/CEZ_DRY_RUN=1/);
+    expect(outcome.output).toMatch(/nothing was run/);
     expect(existsSync(join(cwd, 'ran'))).toBe(false);
   });
 
-  it('follows CEZ_DRY_RUN from the environment when the caller says nothing', async () => {
+  it('does not follow CEZ_DRY_RUN — a dry run mocks the agent, never the checks', async () => {
     const saved = process.env.CEZ_DRY_RUN;
     process.env.CEZ_DRY_RUN = '1';
     try {
@@ -335,8 +335,8 @@ describe('runCheckCommand — dry run', () => {
         cwd,
         command: `node -e "require('fs').writeFileSync('ran', 'yes')"`,
       });
-      expect(outcome.status).toBe('skipped');
-      expect(existsSync(join(cwd, 'ran'))).toBe(false);
+      expect(outcome.status).toBe('passed');
+      expect(existsSync(join(cwd, 'ran'))).toBe(true);
     } finally {
       if (saved === undefined) delete process.env.CEZ_DRY_RUN;
       else process.env.CEZ_DRY_RUN = saved;

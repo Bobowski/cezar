@@ -6,7 +6,6 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RunStore, type RunRecord } from '../runs/store.ts';
 import { RunManager } from './run.ts';
-import { mockAgentWithRealChecks } from './mock-agent.testkit.ts';
 import type { WorkflowDef } from './types.ts';
 import { WorkspaceSemaphore } from '../workspace/semaphore.ts';
 
@@ -18,9 +17,7 @@ describe('CEZ:MONITORING on a non-final workflow step (#1076)', () => {
   let store: RunStore;
   let manager: RunManager;
   let currentId: string | undefined;
-  // The trailing `verify` is a REAL check: it is what proves the workflow did
-  // not advance past the park. A dry run would skip it (and never run at all).
-  let restoreMockAgent: () => void = () => undefined;
+  const savedDryRun = process.env.CEZ_DRY_RUN;
 
   const workflow: WorkflowDef = {
     name: 'implement-verify',
@@ -33,7 +30,7 @@ describe('CEZ:MONITORING on a non-final workflow step (#1076)', () => {
 
   beforeEach(async () => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-1076-'));
-    restoreMockAgent = mockAgentWithRealChecks();
+    process.env.CEZ_DRY_RUN = '1';
     await run('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
     writeFileSync(join(repoRoot, 'a.txt'), 'one\n');
     await run('git', ['add', '-A'], { cwd: repoRoot });
@@ -46,7 +43,8 @@ describe('CEZ:MONITORING on a non-final workflow step (#1076)', () => {
   afterEach(() => {
     if (currentId) manager.cancel(currentId);
     manager.dispose();
-    restoreMockAgent();
+    if (savedDryRun === undefined) delete process.env.CEZ_DRY_RUN;
+    else process.env.CEZ_DRY_RUN = savedDryRun;
     store.flush();
     rmSync(repoRoot, { recursive: true, force: true });
   });
@@ -73,20 +71,20 @@ describe('CEZ:MONITORING on a non-final workflow step (#1076)', () => {
     ]);
   }, 40_000);
 
-  it('nudges an autonomous non-final monitoring step before it can advance', async () => {
+  it('parks an autonomous non-final monitoring step without nudging it', async () => {
     const record = manager.startRun(workflow, {
       task: 'mock:monitoring compare in the background',
       worktree: false,
       autonomous: true,
     });
     currentId = record.id;
-    await waitFor(record.id, (current) => current?.status === 'done');
+    await waitFor(record.id, (current) => current?.activity === 'monitoring');
 
     const events = store.readEvents(record.id);
-    expect(events.some((event) => String(event.message ?? '').includes('autonomous — continuing'))).toBe(true);
+    expect(events.some((event) => String(event.message ?? '').includes('autonomous — continuing'))).toBe(false);
     expect(store.getRun(record.id)?.steps.map(({ id, status }) => ({ id, status }))).toEqual([
-      { id: 'implement', status: 'done' },
-      { id: 'verify', status: 'done' },
+      { id: 'implement', status: 'running' },
+      { id: 'verify', status: 'pending' },
     ]);
   }, 40_000);
 

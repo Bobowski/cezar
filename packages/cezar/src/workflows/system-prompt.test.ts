@@ -8,6 +8,7 @@ import { AUTOMATIONS_PROMPT } from '../automations/prompts.ts';
 import { HANDOFF_INSTRUCTIONS, HANDOFF_ONLY_INSTRUCTIONS } from '../handoff.ts';
 import { RunStore } from '../runs/store.ts';
 import { WorkspaceSemaphore } from '../workspace/semaphore.ts';
+import { CLAUDE_HEADLESS_GUIDANCE } from '../core/claude-cli-runner.ts';
 import type { WorkflowDef } from './types.ts';
 import {
   RunManager,
@@ -16,7 +17,6 @@ import {
   resolveExtraSystemPrompt,
   skillSystemPrompt,
 } from './run.ts';
-import { mockAgentWithRealChecks } from './mock-agent.testkit.ts';
 
 const run = promisify(execFile);
 const GIT_ID = ['-c', 'user.name=test', '-c', 'user.email=test@local'];
@@ -91,20 +91,20 @@ describe('skill-aware task naming (#432)', () => {
     // A bare number without a skill stays bare — no `469: 469`.
     expect(makeRunTitle('469', workflow)).toBe('469');
     expect(makeRunTitle('#469', workflow)).toBe('#469');
+    // An attachment-only task (telemetry 18c930de) is named after its attachments.
+    expect(makeRunTitle('', workflow, 1)).toBe('Task from 1 attachment');
+    expect(makeRunTitle('', workflow, 2)).toBe('Task from 2 attachments');
+    expect(makeRunTitle('', workflow)).toBe('(untitled task)');
   });
 });
 
 /**
- * End-to-end through the real engine with the bundled mock agent: the config
- * default and the per-run override must reach the claude CLI's argv verbatim
+ * End-to-end through the real engine with CEZ_DRY_RUN=1: the config default
+ * and the per-run override must reach the claude CLI's argv verbatim
  * (`--append-system-prompt`, captured via the mock's CEZ_MOCK_ARGS_FILE hook)
  * and be echoed on the RunRecord.
- *
- * Not a DRY RUN: the golden workflows end in a real `verify` check, and a dry
- * run spawns nothing for one (#landing-check S1). `mock-agent.testkit.ts` is the
- * seam that keeps the agent mocked without making that claim.
  */
-describe('systemPrompt end-to-end (mock agent)', () => {
+describe('systemPrompt end-to-end (dry run)', () => {
   const CONFIG_PROMPT = 'CONFIG-DEFAULT: always write tests first.';
   const OVERRIDE_PROMPT = 'PER-RUN OVERRIDE: answer in bullet points.';
   const SKILL_DESCRIPTION = 'Review a pull request by number and report actionable findings.';
@@ -115,12 +115,12 @@ describe('systemPrompt end-to-end (mock agent)', () => {
   let store: RunStore;
   let manager: RunManager;
   const savedEnv: Record<string, string | undefined> = {};
-  let restoreMockAgent: () => void = () => undefined;
 
   beforeAll(async () => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-sysprompt-'));
     argsFile = join(repoRoot, 'mock-args.ndjson');
     inheritedTodos = join(repoRoot, 'inherited-todos.json');
+    savedEnv.CEZ_DRY_RUN = process.env.CEZ_DRY_RUN;
     savedEnv.CEZ_MOCK_ARGS_FILE = process.env.CEZ_MOCK_ARGS_FILE;
     savedEnv.CEZ_TODOS_FILE = process.env.CEZ_TODOS_FILE;
     savedEnv.CEZ_FOLLOWUPS = process.env.CEZ_FOLLOWUPS;
@@ -129,7 +129,7 @@ describe('systemPrompt end-to-end (mock agent)', () => {
     savedEnv.CEZ_AUTOMATIONS = process.env.CEZ_AUTOMATIONS;
     // The dispatch and automations tests below set and clear this; restore whatever the outer process had.
     savedEnv.CEZ_API_URL = process.env.CEZ_API_URL;
-    restoreMockAgent = mockAgentWithRealChecks();
+    process.env.CEZ_DRY_RUN = '1';
     // Dispatch is on by default (spec 2026-09-10-dispatch A2) and composes its own prompt part
     // ahead of everything asserted here. These goldens are about the BASE composition, so they
     // run with it off; the default-on part is pinned by its own test below.
@@ -176,7 +176,6 @@ describe('systemPrompt end-to-end (mock agent)', () => {
   });
 
   afterAll(() => {
-    restoreMockAgent();
     for (const [key, value] of Object.entries(savedEnv)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -227,7 +226,11 @@ describe('systemPrompt end-to-end (mock agent)', () => {
     const argv = JSON.parse(lines[index] as string) as string[];
     const idx = argv.indexOf('--append-system-prompt');
     expect(idx).toBeGreaterThanOrEqual(0);
-    return argv[idx + 1] as string;
+    const prompt = argv[idx + 1] as string;
+    // The Claude runner owns a backend-local suffix for denied-tool guidance;
+    // these tests assert workflow composition before that transport decoration.
+    const suffix = `\n\n---\n\n${CLAUDE_HEADLESS_GUIDANCE}`;
+    return prompt.endsWith(suffix) ? prompt.slice(0, -suffix.length) : prompt;
   }
 
   it('dispatch on (the default): every task is taught the cez task CLI ahead of the base prompt', async () => {
@@ -333,21 +336,12 @@ describe('systemPrompt end-to-end (mock agent)', () => {
     const record = manager.startRun(skillWorkflow, { task: '437' });
 
     // Dry-run guard (without the CEZ_AUTONAME=1 force): no key is recorded,
-    // the namer is never consulted. This suite is no longer a dry run, so the
-    // window is opened here on purpose.
+    // the namer is never consulted.
     const forced = process.env.CEZ_AUTONAME;
-    const savedDryForGuard = process.env.CEZ_DRY_RUN;
     delete process.env.CEZ_AUTONAME;
-    process.env.CEZ_DRY_RUN = '1';
-    try {
-      await seam.maybeRefreshTitle(record.id, 'made real progress on the fix');
-      expect(seam.lastNamerKey.has(record.id)).toBe(false);
-    } finally {
-      if (savedDryForGuard === undefined) delete process.env.CEZ_DRY_RUN;
-      else process.env.CEZ_DRY_RUN = savedDryForGuard;
-      if (forced === undefined) delete process.env.CEZ_AUTONAME;
-      else process.env.CEZ_AUTONAME = forced;
-    }
+    await seam.maybeRefreshTitle(record.id, 'made real progress on the fix');
+    expect(seam.lastNamerKey.has(record.id)).toBe(false);
+    process.env.CEZ_AUTONAME = forced;
 
     // Outside dry-run, a fast-failing fake binary guards against real spawns.
     const savedDry = process.env.CEZ_DRY_RUN;
@@ -547,10 +541,8 @@ describe('systemPrompt end-to-end (mock agent)', () => {
  * and the reason the ceiling lives in the manager rather than in the HTTP route. A route-level
  * gate would leave every one of those callers writing todos.json on a server that has the inbox
  * off.
- *
- * The agent is the bundled mock, NOT a dry run — see the suite above.
  */
-describe('the global follow-up gate (mock agent)', () => {
+describe('the global follow-up gate (dry run)', () => {
   const CONFIG_PROMPT = 'CONFIG-DEFAULT: always write tests first.';
   let repoRoot: string;
   let argsFile: string;
@@ -558,17 +550,17 @@ describe('the global follow-up gate (mock agent)', () => {
   let store: RunStore;
   let manager: RunManager;
   const savedEnv: Record<string, string | undefined> = {};
-  let restoreMockAgent: () => void = () => undefined;
 
   beforeAll(async () => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-followup-gate-'));
     argsFile = join(repoRoot, 'mock-args.ndjson');
     inheritedTodos = join(repoRoot, 'inherited-todos.json');
+    savedEnv.CEZ_DRY_RUN = process.env.CEZ_DRY_RUN;
     savedEnv.CEZ_MOCK_ARGS_FILE = process.env.CEZ_MOCK_ARGS_FILE;
     savedEnv.CEZ_TODOS_FILE = process.env.CEZ_TODOS_FILE;
     savedEnv.CEZ_FOLLOWUPS = process.env.CEZ_FOLLOWUPS;
     savedEnv.CEZ_DISPATCH = process.env.CEZ_DISPATCH;
-    restoreMockAgent = mockAgentWithRealChecks();
+    process.env.CEZ_DRY_RUN = '1';
     process.env.CEZ_DISPATCH = '0'; // base composition only — see the first suite
     process.env.CEZ_MOCK_ARGS_FILE = argsFile;
     // A parent cezar's inbox, as in the suite above: the gate must not leak into it either.
@@ -592,7 +584,6 @@ describe('the global follow-up gate (mock agent)', () => {
   });
 
   afterAll(() => {
-    restoreMockAgent();
     for (const [key, value] of Object.entries(savedEnv)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -623,7 +614,9 @@ describe('the global follow-up gate (mock agent)', () => {
   const capturedSystemPrompt = (index = 0): string => {
     const lines = readFileSync(argsFile, 'utf8').trim().split('\n');
     const argv = JSON.parse(lines[index] as string) as string[];
-    return argv[argv.indexOf('--append-system-prompt') + 1] as string;
+    const prompt = argv[argv.indexOf('--append-system-prompt') + 1] as string;
+    const suffix = `\n\n---\n\n${CLAUDE_HEADLESS_GUIDANCE}`;
+    return prompt.endsWith(suffix) ? prompt.slice(0, -suffix.length) : prompt;
   };
 
   it('without CEZ_FOLLOWUPS the agent is never told about the inbox', async () => {
@@ -631,7 +624,21 @@ describe('the global follow-up gate (mock agent)', () => {
     rmSync(todosFile, { force: true });
     rmSync(inheritedTodos, { force: true });
 
-    const id = await runToEnd({ task: 'do the thing mock:done' });
+    // This case asserts the follow-up gate only; keep ambient cockpit flags from
+    // adding the automation prompt when the suite runs inside cezar.
+    const savedAutomations = process.env.CEZ_AUTOMATIONS;
+    const savedApiUrl = process.env.CEZ_API_URL;
+    delete process.env.CEZ_AUTOMATIONS;
+    delete process.env.CEZ_API_URL;
+    let id: string;
+    try {
+      id = await runToEnd({ task: 'do the thing mock:done' });
+    } finally {
+      if (savedAutomations === undefined) delete process.env.CEZ_AUTOMATIONS;
+      else process.env.CEZ_AUTOMATIONS = savedAutomations;
+      if (savedApiUrl === undefined) delete process.env.CEZ_API_URL;
+      else process.env.CEZ_API_URL = savedApiUrl;
+    }
 
     expect(capturedSystemPrompt()).toBe(composeSystemPrompt(CONFIG_PROMPT, HANDOFF_ONLY_INSTRUCTIONS));
     expect(capturedSystemPrompt()).not.toContain('CEZ_TODOS_FILE');

@@ -72,7 +72,12 @@ export type NavAvailability = {
   automations?: boolean
   /** Saved local association; its kind supplies the provider label. */
   tracker?: TrackerKind
+  /** Items this project hid from its sidebar (`uiState.hiddenNav`, by `to`). */
+  hidden?: readonly string[]
 }
+
+/** Never hideable: the project's home, and Settings — the way back to un-hiding the rest. */
+export const PINNED_NAV: ReadonlySet<string> = new Set(['/', '/settings'])
 
 /**
  * The nav items a surface should actually render: a gated item drops out — nav item AND tab —
@@ -94,9 +99,11 @@ export function visibleNavItems({
   inbox = false,
   automations = false,
   tracker,
+  hidden = [],
 }: NavAvailability = {}): NavItem[] {
   return NAV_ITEMS.filter((item) =>
-    (item.forge ? forge : true)
+    (PINNED_NAV.has(item.to) || !hidden.includes(item.to))
+    && (item.forge ? forge : true)
     && (item.inbox ? inbox : true)
     && (item.automations ? automations : true)
     && (item.tracker ? tracker !== undefined : true))

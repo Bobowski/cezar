@@ -130,6 +130,8 @@ export type AppShellProps = {
   forgeAvailable?: boolean
   inboxAvailable?: boolean
   automationsAvailable?: boolean
+  /** Nav paths the project hid in Project settings → Sidebar. */
+  hiddenNav?: readonly string[]
   tracker?: TrackerKind
   /** Single-project capability gating: hides the workspace-expansion affordances. */
   singleProject?: boolean
@@ -392,6 +394,7 @@ function useAreas({
   inboxAvailable = true,
   automationsAvailable = true,
   tracker,
+  hiddenNav,
 }: RailProps) {
   const { pathname } = useLocation()
   // The project the areas are about: the one the URL names, else the boot project — a global
@@ -406,8 +409,9 @@ function useAreas({
         inbox: inboxAvailable,
         automations: automationsAvailable,
         tracker: navProject?.tracker ?? tracker,
+        hidden: hiddenNav,
       }),
-    [navProject, forgeAvailable, inboxAvailable, automationsAvailable, tracker],
+    [navProject, forgeAvailable, inboxAvailable, automationsAvailable, tracker, hiddenNav],
   )
   return { pathname, navProjectId, activeTo, items }
 }

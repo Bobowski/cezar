@@ -17,6 +17,7 @@ import {
   ShieldCheckIcon,
   TicketIcon,
   FileKeyIcon,
+  PanelLeftIcon,
 } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 
@@ -39,6 +40,7 @@ import { WorktreesSection } from './worktrees-section'
 import { TrackerSection } from './tracker-section'
 import { ProjectSecretsSection, WorkspaceSecretsSection } from './secrets-section'
 import { EnvFilesSection } from './env-files-section'
+import { SidebarSection } from './sidebar-section'
 import { IntegrationsSection } from './integrations-section'
 
 /**
@@ -59,6 +61,7 @@ import { IntegrationsSection } from './integrations-section'
 
 export type SettingsSectionId =
   | 'bookmarklets'
+  | 'sidebar'
   | 'appearance'
   | 'accounts'
   | 'agents'
@@ -190,6 +193,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description: 'Launch skills from a GitHub PR or issue.',
     icon: BookmarkIcon,
     component: BookmarkletsSection,
+    scope: 'project',
+  },
+  {
+    id: 'sidebar',
+    title: 'Sidebar',
+    description: 'Which pages this project shows in the sidebar.',
+    icon: PanelLeftIcon,
+    component: SidebarSection,
     scope: 'project',
   },
   // ---- global scope (`/settings/global/…`) — the user and the machine, in mockup order -----

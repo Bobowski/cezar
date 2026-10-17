@@ -5072,8 +5072,7 @@ export class RunManager {
           // Not a verdict on the diff (#1164): after the gate deadline every retry runs nothing,
           // and a missing shell never runs anything, so the fail port's loop back to an agent
           // would only burn turns. End the run and say which it was.
-          const why =
-            status === 'timed-out' ? 'timed out' : status === 'could-not-run' ? 'could not run' : status === 'cancelled' ? 'was cancelled' : 'was skipped';
+          const why = { 'timed-out': 'timed out', 'could-not-run': 'could not run', cancelled: 'was cancelled', skipped: 'was skipped' }[status];
           if (status !== 'cancelled') {
             emit({
               type: 'note',
@@ -7439,7 +7438,7 @@ function checkFailureNote(command: string, status: CheckOutcomeStatus): string {
 
 /**
  * Every variable a check step's run context may set (spec 2026-10-06-agentic-e2e-checks
- * Phase 2) — also the list stripped from the inherited env, so an unset one is truly absent.
+ * Phase 2). None is inherited — `buildCheckEnv` drops every `CEZ_*` — so an unset one is absent.
  * Documented in `docs/reference.md` and `.env.example`; keep the three in step.
  */
 export const CHECK_CONTEXT_VARS = [

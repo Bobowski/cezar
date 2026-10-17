@@ -319,7 +319,7 @@ describe('run context for check steps', () => {
     });
     expect(seen.CEZ_SHARED_CACHE_DIR).toBe(join(process.env.CEZ_HOME!, 'cache', PROJECT));
     // Absent, not empty — including the stale values this process inherited. Driven off
-    // `CHECK_CONTEXT_VARS` rather than a second hand-written list, so a name added to the strip
+    // `CHECK_CONTEXT_VARS` rather than a second hand-written list, so a name added to the
     // list without a value cannot quietly stop being asserted here.
     const expected = new Set(Object.keys(seen));
     for (const name of CHECK_CONTEXT_VARS) {

@@ -122,6 +122,7 @@ import { dispatchInputSchema, dispatchIntentSchema, dispatchReportSchema } from 
 import { hasTaskOrAttachments, TASK_OR_ATTACHMENTS_ISSUE } from '@open-mercato/cezar-contract';
 import { detectEnvironment } from '../core/backend-detect.ts';
 import type { HostUsage } from '@open-mercato/cezar-contract';
+import { resolveCursorAgentBin } from '../core/cursor-bin.ts';
 import { hostUsageSampler, type HostSampler } from '../core/host-usage.ts';
 import { RUNNER_IDS } from '../core/agent-runner.ts';
 import type { ContentBlock } from '../core/agent-runner.ts';
@@ -9129,7 +9130,7 @@ export function resumeCommand(runner: string | undefined, sessionId: string): st
     case 'opencode':
       return `opencode --session ${sessionId}`;
     case 'cursor': {
-      const bin = quoteResumeBin(process.env.CEZ_CURSOR_AGENT_BIN ?? 'agent');
+      const bin = quoteResumeBin(resolveCursorAgentBin());
       return bin === null ? null : `${bin} --resume ${sessionId}`;
     }
     case 'pi':

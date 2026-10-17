@@ -1,3 +1,4 @@
+import { Segmented } from '@/components/segmented'
 import { ProjectIcon } from '@/components/project-icon'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -104,6 +105,8 @@ import {
   hasActiveFilters,
   tagValuesOf,
   tasksExcludingFacet,
+  SORT_OPTIONS,
+  sortGlobalTasks,
   toGlobalTasks,
   toggleFacetValue,
   truncatedProjectNames,
@@ -112,12 +115,13 @@ import {
   type GlobalTaskFilters,
   type GlobalTasksUrlState,
   type GroupBy,
+  type SortBy,
 } from '@/lib/global-tasks'
 import { scopeTo } from '@/lib/project-router'
 import { TASK_ORIGIN_OPTIONS, useTaskOrigin, type TaskOrigin } from '@/lib/task-origin'
 import { allProjectTags } from '@/lib/project-tags'
 import { canBeUnread, isReadDoneItem, isUnread } from '@/lib/read-state'
-import { runTitle, type ListView } from '@/lib/task-groups'
+import { runTitle, sortTimeLabel, sortTimestamp, type ListView } from '@/lib/task-groups'
 import { usageMetricVisibility } from '@/lib/token-metrics'
 import { useNow } from '@/lib/use-now'
 import { cn } from '@/lib/utils'
@@ -177,7 +181,7 @@ const ARCHIVABLE_STATUSES: ReadonlySet<string> = new Set(['done', 'failed', 'can
 function useArchiveIndexedRun() {
   return useIndexedRunMutation({
     request: ({ task, archived }: { task: GlobalTask; archived: boolean }) =>
-      archiveProjectRun(task.run.projectId, task.run.id, archived),
+      archiveProjectRun(task.run.projectId, task.run.id, archived, 'all_tasks'),
     patch: ({ archived }) => (run) => ({ ...run, archived }),
   })
 }
@@ -316,7 +320,7 @@ export function GlobalTasksRoute() {
   // source of truth means a refresh, a pasted link and the Back button all land on the same
   // filtered view, with no effect syncing two copies that can disagree.
   const [searchParams, setSearchParams] = useSearchParams()
-  const { filters, groupBy, view } = React.useMemo(
+  const { filters, groupBy, sortBy, view } = React.useMemo(
     () => urlStateFromSearchParams(searchParams),
     [searchParams],
   )
@@ -347,6 +351,7 @@ export function GlobalTasksRoute() {
   const setFilters = (next: (current: GlobalTaskFilters) => GlobalTaskFilters) =>
     commit((state) => ({ ...state, filters: next(state.filters) }))
   const setGroupBy = (groupBy: GroupBy) => commit((state) => ({ ...state, groupBy }))
+  const setSortBy = (sortBy: SortBy) => commit((state) => ({ ...state, sortBy }))
   const setView = (nextView: ListView) => commit((state) => ({ ...state, view: nextView }))
 
   /**
@@ -421,8 +426,8 @@ export function GlobalTasksRoute() {
     return { regular: count('regular'), automation: count('automation'), all: count('all') }
   }, [allTasks, automations, filters, view])
   const visible = React.useMemo(
-    () => filterGlobalTasks(tasks, filters, view),
-    [tasks, filters, view],
+    () => sortGlobalTasks(filterGlobalTasks(tasks, filters, view), sortBy),
+    [tasks, filters, view, sortBy],
   )
   const groups = React.useMemo(() => groupGlobalTasks(visible, groupBy), [visible, groupBy])
   /**
@@ -530,6 +535,7 @@ export function GlobalTasksRoute() {
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
+        <Segmented slot="sort-by" label="Sort tasks by" value={sortBy} options={SORT_OPTIONS} onChange={setSortBy} />
         <div className="flex-1" />
         <span data-slot="global-tasks-count" className="hidden text-[13px] text-muted-foreground tabular-nums sm:inline">
           {visible.length} of {allTasks.length}
@@ -578,7 +584,7 @@ export function GlobalTasksRoute() {
 
         {truncated.length > 0 ? (
           <p data-slot="global-tasks-truncated" className="text-[13px] text-muted-foreground">
-            Showing the newest {index.data?.perProjectLimit} tasks per project — older ones in{' '}
+            Showing the {index.data?.perProjectLimit} most recently active tasks per project — older ones in{' '}
             {truncated.join(', ')} are only in that project&rsquo;s own Tasks page.
           </p>
         ) : null}
@@ -637,6 +643,7 @@ export function GlobalTasksRoute() {
                   <TaskTable
                     tasks={group.tasks}
                     now={now}
+                    sortBy={sortBy}
                     isSubtasksExpanded={isSubtasksExpanded}
                     onToggleSubtasks={toggleSubtasks}
                     showProject={groupBy !== 'project'}
@@ -1114,6 +1121,7 @@ const dispatchOf = (run: RunIndexEntry): TaskTreeInput['dispatch'] =>
 function TaskTable({
   tasks,
   now,
+  sortBy,
   isSubtasksExpanded,
   onToggleSubtasks,
   showProject,
@@ -1124,6 +1132,8 @@ function TaskTable({
 }: {
   tasks: readonly GlobalTask[]
   now: number
+  /** Picks the time column's heading and timestamp, so it always reads in row order. */
+  sortBy: SortBy
   /** The page-level accordion (#1110): whether a parent's dispatched rows are unfolded. */
   isSubtasksExpanded: (id: string) => boolean
   onToggleSubtasks: (id: string) => void
@@ -1149,7 +1159,7 @@ function TaskTable({
                   {OPTIONAL_COLUMNS.find((column) => column.id === id)?.label}
                 </TableHead>
               ))}
-              <TableHead className={cn(LIST_HEAD_CLASS, 'text-right')}>Started</TableHead>
+              <TableHead className={cn(LIST_HEAD_CLASS, 'text-right')}>{sortTimeLabel(sortBy)}</TableHead>
               <TableHead className={cn(LIST_HEAD_CLASS, 'w-[84px]')}>
                 <span className="sr-only">Actions</span>
               </TableHead>
@@ -1174,6 +1184,7 @@ function TaskTable({
                 subtasksExpanded={isSubtasksExpanded(node.run.id)}
                 onToggleSubtasks={onToggleSubtasks}
                 now={now}
+                sortBy={sortBy}
                 showProject={showProject}
                 onArchive={onArchive}
                 onSetRead={onSetRead}
@@ -1201,6 +1212,7 @@ function TaskRow({
   subtasksExpanded,
   onToggleSubtasks,
   now,
+  sortBy,
   showProject,
   onArchive,
   onSetRead,
@@ -1216,6 +1228,7 @@ function TaskRow({
   subtasksExpanded: boolean
   onToggleSubtasks: (id: string) => void
   now: number
+  sortBy: SortBy
   showProject: boolean
   onArchive: (task: GlobalTask, archived: boolean) => void
   onSetRead: (task: GlobalTask, read: boolean) => void
@@ -1338,7 +1351,7 @@ function TaskRow({
         ),
       )}
       <TableCell className={cn(LIST_CELL_CLASS, 'text-right text-[13px] text-muted-foreground tabular-nums')}>
-        {shortAge(run.startedAt ?? run.createdAt, now)}
+        {shortAge(sortTimestamp(run, sortBy), now)}
       </TableCell>
       <TableCell className={cn(LIST_CELL_CLASS, 'text-right')}>
         {/* Revealed on hover so a resting list stays quiet; always there without a pointer. */}

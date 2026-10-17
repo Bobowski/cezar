@@ -153,8 +153,10 @@ function MovedSettingsSectionRedirect({ sectionId }: { sectionId: SettingsSectio
  *  redirect restores the last project location or lands on the boot project. */
 function GlobalSettingsDeepLink({ sectionId }: { sectionId?: SettingsSectionId }) {
   const { open } = useGlobalSettings()
+  const { search } = useLocation()
   useEffect(() => open(sectionId), [open, sectionId])
-  return <Navigate to="/" replace />
+  // The query rides along: a section reads its own deep-link params (Accounts `?agent=`).
+  return <Navigate to={{ pathname: '/', search }} replace />
 }
 
 /** What renders while a redirect target is still being resolved (the boot id from `/api/health`,
@@ -423,6 +425,14 @@ export const AppRoutes = memo(function AppRoutes() {
           element={
             <Suspense fallback={<GitTabLoading tab="notes" />}>
               <TaskNotesRoute />
+            </Suspense>
+          }
+        />
+        <Route
+          path="tasks/:id/preview"
+          element={
+            <Suspense fallback={<GitTabLoading tab="preview" />}>
+              <TaskWorkspaceRoute view="browser" />
             </Suspense>
           }
         />

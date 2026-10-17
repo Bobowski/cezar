@@ -175,6 +175,17 @@ const rowFor = (runner: string, account = '') =>
   document.querySelector<HTMLButtonElement>(
     `[data-slot="agents-runner"] [data-value="${runner}"][data-account="${account}"]`,
   )
+/** A row is rendered as soon as the profiles answer, but ENABLED only once the provider-status
+ *  query has resolved — clicking before that hits a disabled button and writes nothing. The two
+ *  answers race, and request order (the settings sidebar fetches its own branding first) decides
+ *  which lands first, so wait for the row itself rather than for the list. */
+const enabledRow = (runner: string, account = '') =>
+  waitFor(() => {
+    const el = rowFor(runner, account)
+    expect(el).not.toBeNull()
+    expect(el!.disabled).toBe(false)
+    return el!
+  })
 const configPuts = () => requests.filter((r) => r.method === 'PUT' && r.url === '/api/v1/workspace/config')
 const selections = () =>
   requests.filter((r) => r.url === '/api/v1/workspace/agent-profiles/selection')
@@ -263,7 +274,10 @@ describe('Agent accounts → Defaults for new projects', () => {
     renderAccounts()
 
     await waitFor(() => expect(rows()).toHaveLength(8))
-    fireEvent.click(rowFor('codex')!)
+    // Rows render before provider status answers and stay disabled until it does — wait for
+    // the row to be clickable, not merely present.
+    await waitFor(() => expect(rowFor('codex')!.disabled).toBe(false))
+    fireEvent.click(await enabledRow('codex'))
 
     await waitFor(() => expect(configPuts()).toHaveLength(1))
     expect(configPuts()[0]?.body).toEqual({ agentDefaults: { runner: 'codex' } })
@@ -277,7 +291,8 @@ describe('Agent accounts → Defaults for new projects', () => {
     renderAccounts()
 
     await waitFor(() => expect(rows()).toHaveLength(8))
-    fireEvent.click(rowFor('claude', 'klaudiusz')!)
+    await waitFor(() => expect(rowFor('claude', 'klaudiusz')!.disabled).toBe(false))
+    fireEvent.click(await enabledRow('claude', 'klaudiusz'))
 
     await waitFor(() => expect(selections()).toHaveLength(1))
     // `null` is what makes this the machine-wide default rather than one repo's selection.
@@ -304,7 +319,8 @@ describe('Agent accounts → Defaults for new projects', () => {
     renderAccounts()
 
     await waitFor(() => expect(rows()).toHaveLength(8))
-    fireEvent.click(rowFor('claude', '')!)
+    await waitFor(() => expect(rowFor('claude', '')!.disabled).toBe(false))
+    fireEvent.click(await enabledRow('claude', ''))
 
     await waitFor(() => expect(selections()).toHaveLength(1))
     expect(selections()[0]?.body).toEqual({

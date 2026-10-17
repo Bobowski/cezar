@@ -54,6 +54,7 @@ interface HealthBody {
   forge: unknown;
   capabilities: {
     localHandoff: boolean;
+    terminal: boolean;
     followups: boolean;
     singleProject: boolean;
     automations: boolean;

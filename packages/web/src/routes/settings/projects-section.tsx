@@ -2,6 +2,7 @@ import { ProjectIcon } from '@/components/project-icon'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChevronDownIcon, MoreHorizontalIcon, PlusIcon, Trash2Icon, XIcon } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
+import { Link as RouterLink } from 'react-router'
 
 import { putWorkspaceConfig } from '@/api/client'
 import {

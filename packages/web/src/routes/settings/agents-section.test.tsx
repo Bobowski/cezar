@@ -31,6 +31,7 @@ const REPO: RepoResponse = {
   status: [],
   log: [],
   branches: ['main', 'develop'],
+  checkedOutElsewhere: {},
   baseBranch: null,
 }
 

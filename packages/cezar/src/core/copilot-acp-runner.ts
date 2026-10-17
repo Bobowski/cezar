@@ -1,5 +1,4 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { scriptAwareCommand } from './script-command.ts';
 import { dirname, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -28,6 +27,7 @@ import {
   isCopilotAuthFailure,
 } from './copilot-ui-mapper.ts';
 import type { UiEvent } from './ui-events.ts';
+import { spawnableCommand } from './windows-shim.ts';
 
 const DEFAULT_TIMEOUT_MS = 30 * 60_000;
 /** `initialize` / `session/new` / `session/load` are handshakes: bounded, unlike a prompt. */
@@ -169,10 +169,8 @@ class CopilotAcpSession implements AgentSession {
     private readonly onEvent: ((event: AgentEvent) => void) | undefined,
     private readonly opts: SessionOptions,
   ) {
-    this.child = nodeSpawn(...scriptAwareCommand(bin, buildCopilotArgs(spec)), {
-      cwd: spec.cwd,
-      env: buildCopilotEnv(backend, spec.env),
-    });
+    const [file, argv] = spawnableCommand(bin, buildCopilotArgs(spec));
+    this.child = nodeSpawn(file, argv, { cwd: spec.cwd, env: buildCopilotEnv(backend, spec.env) });
     this.pid = this.child.pid;
     this.hasExited = trackChildExit(this.child);
     this.child.on('error', (error: NodeJS.ErrnoException) => {

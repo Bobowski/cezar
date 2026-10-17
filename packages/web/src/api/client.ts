@@ -1,5 +1,11 @@
+import type { z } from 'zod'
+import type {
+  lifecycleListResponseSchema, lifecycleDetailResponseSchema, lifecycleOperationResponseSchema,
+  lifecyclePreviewInputSchema, lifecycleListQuerySchema, LifecycleOutputResponse,
+  LifecyclePreviewResponse, LifecycleActionInput, StartLifecycleRemovalInput,
+} from '@open-mercato/cezar-api-client'
 import { trackerReadScope, resolveApiUrl, workspaceBrandingLogoResponseSchema } from '@open-mercato/cezar-api-client'
-import type { TrackerAutomationOptions } from '@open-mercato/cezar-api-client'
+import type { TaskActionSurface, TrackerAutomationOptions } from '@open-mercato/cezar-api-client'
 import { trackerWatchHandleSchema, trackerWatchSnapshotSchema, type TrackerWatchInput } from "@open-mercato/cezar-api-client"
 import type {
   AgentConfigFileContent,
@@ -68,7 +74,10 @@ import type {
   GroupResponse,
   HealthResponse,
   HostUsage,
+  AttachmentEntry,
   AttachmentInput,
+  DeleteUploadResponse,
+  StagedUpload,
   LaunchKeyResponse,
   MessageInput,
   EditQueuedMessageResponse,
@@ -94,6 +103,7 @@ import type {
   PickVariantResponse,
   PlanResponse,
   ProviderConnectResponse,
+  ProviderUpdateResponse,
   ProviderId,
   ProviderStatusResponse,
   ProjectsResponse,
@@ -438,7 +448,7 @@ async function fetchOrThrow(url: string, init?: RequestInit): Promise<Response> 
     return response
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === 'AbortError') throw cause
-    noteFailedRequest(url, init?.method, 0)
+    noteFailedRequest(url, init?.method, 0, init?.body, cause)
     throw new ApiError(0, `cannot reach the cezar server (${url})`, { cause })
   }
 }
@@ -1460,6 +1470,15 @@ export async function connectProvider(
   )
 }
 
+/** Opens a terminal running the agent CLI's own update (`opencode upgrade`). A 409 carries
+ *  `command` for the clipboard fallback, or none when the CLI cannot update itself. */
+export async function updateProvider(provider: ProviderId): Promise<ProviderUpdateResponse> {
+  return unwrap(
+    await cez.api.v1.providers[':provider'].update.$post({ param: { provider } }),
+    `/providers/${encodeURIComponent(provider)}/update`,
+  )
+}
+
 export async function setProviderEnabled(
   provider: ProviderId,
   enabled: boolean,
@@ -1680,22 +1699,22 @@ export async function cancelRun(id: string): Promise<CancelResponse> {
 }
 
 /** Archives by default; pass `false` to bring a run back into the live list. */
-export async function archiveRun(id: string, archived = true): Promise<RunRecord> {
+export async function archiveRun(id: string, archived = true, surface?: TaskActionSurface): Promise<RunRecord> {
   return unwrap(
     await cez.api.v1.p[':projectId'].runs[':id'].archive.$post({
       param: { projectId: queryScope(), id: encodeURIComponent(id) },
-      json: { archived },
+      json: { archived, ...(surface ? { surface } : {}) },
     }),
     runPath(id, '/archive'),
   )
 }
 
 /** Pins by default; pass `false` to drop the task back into its ordinary bucket (#935). */
-export async function pinRun(id: string, pinned = true): Promise<RunRecord> {
+export async function pinRun(id: string, pinned = true, surface?: TaskActionSurface): Promise<RunRecord> {
   return unwrap(
     await cez.api.v1.p[':projectId'].runs[':id'].pin.$post({
       param: { projectId: queryScope(), id: encodeURIComponent(id) },
-      json: { pinned },
+      json: { pinned, ...(surface ? { surface } : {}) },
     }),
     runPath(id, '/pin'),
   )
@@ -1707,11 +1726,16 @@ export async function pinRun(id: string, pinned = true): Promise<RunRecord> {
  * REGISTERED project, so a pin toggle on another project's row would otherwise be sent with the
  * scope of whichever project the URL happens to name.
  */
-export async function pinProjectRun(projectId: string, id: string, pinned = true): Promise<RunRecord> {
+export async function pinProjectRun(
+  projectId: string,
+  id: string,
+  pinned = true,
+  surface?: TaskActionSurface,
+): Promise<RunRecord> {
   return unwrap(
     await cez.api.v1.p[':projectId'].runs[':id'].pin.$post({
       param: { projectId, id: encodeURIComponent(id) },
-      json: { pinned },
+      json: { pinned, ...(surface ? { surface } : {}) },
     }),
     runPath(id, '/pin'),
   )
@@ -1728,11 +1752,12 @@ export async function archiveProjectRun(
   projectId: string,
   id: string,
   archived = true,
+  surface?: TaskActionSurface,
 ): Promise<RunRecord> {
   return unwrap(
     await cez.api.v1.p[':projectId'].runs[':id'].archive.$post({
       param: { projectId, id: encodeURIComponent(id) },
-      json: { archived },
+      json: { archived, ...(surface ? { surface } : {}) },
     }),
     runPath(id, '/archive'),
   )
@@ -1833,7 +1858,7 @@ export async function finishRun(id: string): Promise<FinishResponse> {
  *  the engine opens with its plain "Continue.". */
 export interface ContinueOptions {
   text?: string
-  images?: AttachmentInput[]
+  images?: AttachmentEntry[]
   runner?: Runner
   model?: string
   /** Which login of that agent reopens it (spec 2026-07-29-agent-profiles). Switching account
@@ -1882,18 +1907,37 @@ export async function continueProjectRun(
   )
 }
 
+const PR_RETRY_DELAY_MS = 1_000
+
 /** Open the run's PR (spec 009): push the branch, `gh pr create`; the run completes as done with
  *  the PR badge. Draft unless `draft: false` — the review gate's Draft PR omits it, the run
  *  header's Create PR asks for a ready one. On 409 the ApiError's `manual` carries the
- *  `git merge <branch>` fallback to show copyable. */
+ *  `git merge <branch>` fallback to show copyable.
+ *
+ *  A publish runs push + `gh pr create` for up to minutes, so a lost response (status 0) says
+ *  nothing about the PR: ask once more — the server joins a publish still running and adopts a
+ *  PR the first one opened (telemetry 9119d21a). */
 export async function createRunPr(id: string, opts: { draft?: boolean } = {}): Promise<CreatePrResponse> {
-  return unwrap(
-    await cez.api.v1.p[':projectId'].runs[':id'].pr.$post({
-      param: { projectId: queryScope(), id: encodeURIComponent(id) },
-      json: opts,
-    }),
-    runPath(id, '/pr'),
-  )
+  const projectId = queryScope()
+  const post = async () =>
+    unwrap(
+      await cez.api.v1.p[':projectId'].runs[':id'].pr.$post({
+        param: { projectId, id: encodeURIComponent(id) },
+        json: opts,
+      }),
+      runPath(id, '/pr'),
+    )
+  try {
+    return await post()
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 0) throw error
+    await new Promise((resolve) => setTimeout(resolve, PR_RETRY_DELAY_MS))
+    try {
+      return await post()
+    } catch (retry) {
+      throw retry instanceof ApiError && retry.status === 0 ? error : retry
+    }
+  }
 }
 
 /** Rename a run (#389): the edit becomes the display title and wins over any auto-summary. */
@@ -2330,6 +2374,19 @@ export async function postRunDraftImage(
       json: image,
     }),
     runPath(id, `/drafts/${surface}/images`),
+  )
+}
+
+/** Stage one attachment the moment it is attached; the message then references it by id
+ *  (telemetry 7054e5f2). Workspace-level, so it survives a project switch on `/new`. */
+export async function stageUpload(input: AttachmentInput): Promise<StagedUpload> {
+  return unwrap(await cez.api.v1.workspace.uploads.$post({ json: input }), '/workspace/uploads')
+}
+
+export async function deleteStagedUpload(uploadId: string): Promise<DeleteUploadResponse> {
+  return unwrap(
+    await cez.api.v1.workspace.uploads[':uploadId'].$delete({ param: { uploadId } }),
+    `/workspace/uploads/${uploadId}`,
   )
 }
 
@@ -2974,4 +3031,30 @@ export async function readTrackerWatch(projectId: string, watchId: string, signa
 export async function refreshTrackerWatch(projectId: string, watchId: string, signal: AbortSignal) {
   return trackerWatchSnapshotSchema.parse(await unwrap(await cez.api.v1.p[':projectId'].tracker.watch[':watchId'].$post(
     { param: { projectId, watchId } }, { init: { signal } }), '/tracker/watch'))
+}
+
+/** Worktree lifecycle reads/actions share the existing scope and authenticated transport. */
+export async function getWorktreeLifecycle(query: z.output<typeof lifecycleListQuerySchema> = { limit: 50 }, opts?: ReadOptions): Promise<z.infer<typeof lifecycleListResponseSchema>> {
+  return unwrap(await cez.api.v1.p[':projectId']['worktree-lifecycle'].$get({
+    param: { projectId: queryScope() },
+    query: { cursor: query.cursor, limit: query.limit, attentionOnly: query.attentionOnly === undefined ? undefined : query.attentionOnly ? 'true' : 'false' },
+  }, init(opts)), '/worktree-lifecycle')
+}
+export async function getWorktreeLifecycleDetail(worktreeId: string, opts?: ReadOptions): Promise<z.infer<typeof lifecycleDetailResponseSchema>> {
+  return unwrap(await cez.api.v1.p[':projectId']['worktree-lifecycle'][':worktreeId'].$get({ param: { projectId: queryScope(), worktreeId } }, init(opts)), '/worktree-lifecycle')
+}
+export async function getLifecycleOperation(operationId: string, opts?: ReadOptions): Promise<z.infer<typeof lifecycleOperationResponseSchema>> {
+  return unwrap(await cez.api.v1.p[':projectId']['worktree-lifecycle'].operations[':operationId'].$get({ param: { projectId: queryScope(), operationId } }, init(opts)), '/worktree-lifecycle/operations')
+}
+export async function getLifecycleOutput(operationId: string, afterSeq = 0, opts?: ReadOptions): Promise<LifecycleOutputResponse> {
+  return unwrap(await cez.api.v1.p[':projectId']['worktree-lifecycle'].operations[':operationId'].output.$get({ param: { projectId: queryScope(), operationId }, query: { afterSeq, limit: 100 } }, init(opts)), '/worktree-lifecycle/operations/output')
+}
+export async function startLifecycleRemoval(input: StartLifecycleRemovalInput): Promise<z.infer<typeof lifecycleOperationResponseSchema>> {
+  return unwrap(await cez.api.v1.p[':projectId']['worktree-lifecycle'].operations.$post({ param: { projectId: queryScope() }, json: input }), '/worktree-lifecycle/operations')
+}
+export async function actOnLifecycleOperation(operationId: string, input: LifecycleActionInput): Promise<z.infer<typeof lifecycleOperationResponseSchema>> {
+  return unwrap(await cez.api.v1.p[':projectId']['worktree-lifecycle'].operations[':operationId'].actions.$post({ param: { projectId: queryScope(), operationId }, json: input }), '/worktree-lifecycle/operations/actions')
+}
+export async function previewLifecycleCommand(input: z.infer<typeof lifecyclePreviewInputSchema>): Promise<LifecyclePreviewResponse> {
+  return unwrap(await cez.api.v1.p[':projectId']['worktree-lifecycle'].preview.$post({ param: { projectId: queryScope() }, json: input }), '/worktree-lifecycle/preview')
 }

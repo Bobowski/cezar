@@ -64,7 +64,19 @@ import {
   type NormalizedExpandedColumns,
   type TaskColumnId,
 } from '@/lib/task-columns'
-import { listCounts, queuePositions, runTitle, sortRuns, type ListView } from '@/lib/task-groups'
+import {
+  SORT_OPTIONS,
+  listCounts,
+  queuePositions,
+  runTitle,
+  sortRuns,
+  sortTableRuns,
+  sortTimeLabel,
+  sortTimestamp,
+  taskSections,
+  type ListView,
+  type SortBy,
+} from '@/lib/task-groups'
 import { dispatchKindLabel, subtaskLabel, taskTreeRows } from '@/lib/task-tree'
 import {
   compareGroups,
@@ -216,17 +228,26 @@ export function TasksOverview({
     })
   // The facets are session-local, like the search text; only the origin is remembered.
   const [filters, setFilters] = React.useState<TaskTableFilters>(NO_TASK_FILTERS)
+  // Session-local like the facets; Recent on every fresh visit.
+  const [sortBy, setSortBy] = React.useState<SortBy>('recent')
   const all = React.useMemo(() => runs ?? [], [runs])
   const automations = React.useMemo(() => automationIndex(all), [all])
   // Origin and facets narrow BEFORE everything else, so the tab counts, the queue-free rows and
   // the compare strips all describe the same list the table shows.
   const narrowed = filterTaskTable(all, origin, filters, automations)
   const counts = listCounts(narrowed)
-  const visible = sortRuns(filterRuns(narrowed, query), view)
+  const visible = sortTableRuns(filterRuns(narrowed, query), view, sortBy)
   // A live search overrides the fold wholesale: a match the accordion hid would read as a miss.
   const searching = query.trim() !== ''
   // Dispatched children nest under the task that ordered them. One derivation, both layouts.
-  const rows = taskTreeRows(visible, (id) => searching || expandedSubtasks.has(id))
+  // Pinned rows get their own section (#935), each building its own tree: a child pinned apart
+  // from its parent is a root of its section, not hidden under an unpinned one.
+  const sections = taskSections(visible, view).map((section) => ({
+    ...section,
+    rows: taskTreeRows(section.runs, (id) => searching || expandedSubtasks.has(id)),
+    // Tasks, not rows: a folded parent's subtasks are not on screen, so they are not counted.
+    taskCount: taskTreeRows(section.runs, () => false).length,
+  }))
   // Positions come from the full list, never the filtered one: a search must not renumber the
   // queue the engine is actually going to drain.
   const positions = queuePositions(all)
@@ -325,6 +346,8 @@ export function TasksOverview({
             onFiltersChange={setFilters}
             automations={automations}
             automationNames={automationNames}
+            sortBy={sortBy}
+            onSortByChange={setSortBy}
           />
         ) : null}
         {/* Finished variant groups are a decision waiting on a person, so they sit above the list. */}
@@ -400,7 +423,7 @@ export function TasksOverview({
                           data-column-id={id}
                           className={cn(LIST_HEAD_CLASS, id !== 'diff' && 'text-right')}
                         >
-                          {HEAD_LABELS[id]}
+                          {id === 'started' ? sortTimeLabel(sortBy) : HEAD_LABELS[id]}
                         </TableHead>
                       ))}
                       <TableHead className={cn(LIST_HEAD_CLASS, 'w-[76px]')}>
@@ -409,7 +432,20 @@ export function TasksOverview({
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {rows.map((node) => (
+                    {sections.map((section) => (
+                      <React.Fragment key={section.key}>
+                        {section.label ? (
+                          <TableRow data-slot="tasks-section" data-section={section.key} className="hover:bg-transparent">
+                            <TableHead
+                              scope="rowgroup"
+                              colSpan={3 + metricColumns.length}
+                              className={cn(SECTION_LABEL_CLASS, 'h-8 bg-muted/40')}
+                            >
+                              {section.label} · {section.taskCount}
+                            </TableHead>
+                          </TableRow>
+                        ) : null}
+                    {section.rows.map((node) => (
                       <TaskRow
                         key={node.run.id}
                         gitRepo={gitRepo}
@@ -426,7 +462,10 @@ export function TasksOverview({
                         now={now}
                         shown={shown}
                         metricColumns={metricColumns}
+                        sortBy={sortBy}
                       />
+                    ))}
+                      </React.Fragment>
                     ))}
                   </TableBody>
                 </Table>
@@ -435,7 +474,14 @@ export function TasksOverview({
 
             {/* <md: the same runs as one stacked list. */}
             <ListFrame data-slot="task-cards" className="divide-y divide-border md:hidden">
-              {rows.map((node) => (
+              {sections.map((section) => (
+                <React.Fragment key={section.key}>
+                  {section.label ? (
+                    <h2 data-slot="tasks-section" data-section={section.key} className={cn(SECTION_LABEL_CLASS, 'px-3 py-1.5')}>
+                      {section.label} · {section.taskCount}
+                    </h2>
+                  ) : null}
+              {section.rows.map((node) => (
                 <TaskCard
                   key={node.run.id}
                   run={node.run}
@@ -447,11 +493,14 @@ export function TasksOverview({
                     node.run.status === 'queued' ? (positions.get(node.run.id) ?? null) : null
                   }
                   now={now}
+                  sortBy={sortBy}
                   showTokens={showTokens}
                   showCost={showCost}
                   onTogglePin={pinToggle}
                   gitRepo={gitRepo}
                 />
+              ))}
+                </React.Fragment>
               ))}
             </ListFrame>
           </>
@@ -669,6 +718,8 @@ function TasksFilterBar({
   onFiltersChange,
   automations,
   automationNames,
+  sortBy,
+  onSortByChange,
 }: {
   runs: readonly RunRecord[]
   view: ListView
@@ -678,6 +729,8 @@ function TasksFilterBar({
   onFiltersChange: (update: (current: TaskTableFilters) => TaskTableFilters) => void
   automations: ReadonlyMap<string, string | undefined>
   automationNames?: ReadonlyMap<string, string>
+  sortBy: SortBy
+  onSortByChange: (next: SortBy) => void
 }) {
   const inView = React.useMemo(
     () => runs.filter((run) => (view === 'archived' ? run.archived : !run.archived)),
@@ -754,9 +807,16 @@ function TasksFilterBar({
           Clear
         </Button>
       ) : null}
+      {/* The all-projects bar's labelled-segmented grammar (its Group by and Sort by). */}
+      <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
+      <span className="text-[11px] font-medium text-soft-foreground">Sort by</span>
+      <Segmented slot="sort-by" label="Sort tasks by" value={sortBy} options={SORT_OPTIONS} onChange={onSortByChange} />
     </div>
   )
 }
+
+/** A section header's label — the sidebar's bucket header, so `Pinned` reads the same in both. */
+const SECTION_LABEL_CLASS = 'text-[11px] font-semibold tracking-[0.04em] text-soft-foreground uppercase'
 
 const titleTone = (run: RunRecord) =>
   // Read/unread (#unread-done-items): promote an unread done item, dim a read one — the same
@@ -792,6 +852,7 @@ function TaskRow({
   now,
   shown,
   metricColumns,
+  sortBy,
   gitRepo,
 }: {
   gitRepo: boolean
@@ -809,6 +870,7 @@ function TaskRow({
   now: number
   shown: Shown
   metricColumns: readonly TaskColumnId[]
+  sortBy: SortBy
 }) {
   const navigate = useNavigate()
   const attention = deriveAttention(run)
@@ -947,7 +1009,7 @@ function TaskRow({
                 data-column-id={id}
                 className={cn(LIST_CELL_CLASS, 'text-right text-[13px] text-muted-foreground tabular-nums')}
               >
-                {shortAge(run.startedAt ?? run.createdAt, now)}
+                {shortAge(sortTimestamp(run, sortBy), now)}
               </TableCell>
             )
           default:
@@ -1020,6 +1082,7 @@ function TaskCard({
   onToggleSubtasks,
   queuePosition,
   now,
+  sortBy,
   showTokens,
   showCost,
   onTogglePin,
@@ -1034,6 +1097,7 @@ function TaskCard({
   onToggleSubtasks: (id: string) => void
   queuePosition: number | null
   now: number
+  sortBy: SortBy
   showTokens: boolean
   showCost: boolean
   onTogglePin?: (run: RunRecord, pinned: boolean) => void
@@ -1067,7 +1131,7 @@ function TaskCard({
           {isUnread(run) ? <UnreadMarker /> : null}
         </Link>
         <span className="mt-px shrink-0 text-xs text-muted-foreground tabular-nums">
-          {shortAge(run.finishedAt ?? run.createdAt, now)}
+          {shortAge(sortTimestamp(run, sortBy), now)}
         </span>
         {/* Always visible here: a card has no hover on the device it exists for. */}
         {onTogglePin ? (
@@ -1196,7 +1260,7 @@ export function TasksOverviewRoute() {
     onError: (error: Error) => toast(error.message, { tone: 'danger' }),
   })
   // Pinning (#935) — this page is the scoped project's own table, so no explicit project id.
-  const pin = usePinRun()
+  const pin = usePinRun('tasks_table')
   const now = useNow(30_000)
   const taskTableColumns = useTaskTableColumns()
   // Chip statuses are hydrated HERE rather than inside `TasksOverview`, which is a pure

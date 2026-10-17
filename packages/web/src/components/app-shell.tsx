@@ -1,3 +1,4 @@
+import { openCommandPalette } from '@/components/command-palette'
 import { ProjectIcon } from '@/components/project-icon'
 import type { ServicesBadge } from '@/api/services'
 import {
@@ -33,7 +34,7 @@ import { CloneProjectDialog } from '@/components/clone-project-dialog'
 import { CreateProjectDialog } from '@/components/create-project-dialog'
 import { DialogErrorBoundary } from '@/components/dialog-error-boundary'
 import { trackAddProjectOpened } from '@/lib/telemetry'
-import { openCommandPalette } from '@/components/command-palette'
+import { CommandPaletteHint } from '@/components/command-palette-hint'
 import { GithubIcon } from '@/components/icons'
 import { activeNavPath, visibleNavItems, type NavItem } from '@/components/nav-items'
 import { SelfUpdateDialog } from '@/components/self-update-dialog'

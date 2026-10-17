@@ -16,6 +16,7 @@ import {
   SettingsPane,
 } from './settings-field'
 import { WorktreesPanel } from './worktrees-panel'
+import { WorktreeLifecycleEditor } from './worktree-lifecycle-editor'
 
 /**
  * Project settings → Worktrees: the retention count (#483) and the disk panel — what used to be

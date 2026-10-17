@@ -242,6 +242,8 @@ export function RepoBranchesSection({
               {filteredBranches.map((name) => {
                 const current = name === info.branch
                 const base = name === repo.baseBranch
+                // git refuses to check out a branch another worktree holds (telemetry da5ca728).
+                const heldAt = repo.checkedOutElsewhere?.[name]
                 return (
                   <TableRow
                     key={name}
@@ -271,6 +273,11 @@ export function RepoBranchesSection({
                             Agents’ base
                           </Badge>
                         ) : null}
+                        {!current && heldAt ? (
+                          <Badge variant="outline" data-slot="branch-elsewhere" title={`Checked out in ${heldAt}`} className="font-normal text-soft-foreground">
+                            In another worktree
+                          </Badge>
+                        ) : null}
                       </div>
                     </TableCell>
                     <TableCell className="pr-3 text-right">
@@ -281,14 +288,16 @@ export function RepoBranchesSection({
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            data-action="switch-branch"
-                            disabled={current || branchAction.isPending}
-                            onSelect={() => branchAction.mutate(name)}
-                          >
-                            <ArrowLeftRightIcon aria-hidden="true" />
-                            Switch to this branch
-                          </DropdownMenuItem>
+                          {heldAt ? null : (
+                            <DropdownMenuItem
+                              data-action="switch-branch"
+                              disabled={current || branchAction.isPending}
+                              onSelect={() => branchAction.mutate(name)}
+                            >
+                              <ArrowLeftRightIcon aria-hidden="true" />
+                              Switch to this branch
+                            </DropdownMenuItem>
+                          )}
                           <DropdownMenuItem
                             data-action="set-base-branch"
                             disabled={base || setBase.isPending}

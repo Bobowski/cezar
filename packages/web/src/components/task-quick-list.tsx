@@ -773,7 +773,7 @@ export function TaskQuickListContainer({
   const health = useHealth()
   const activeProjectId = useActiveProjectId()
   const runs = useRunsForProject(activeProjectId, health.data?.bootProject ?? null)
-  const pinMutation = usePinRun()
+  const pinMutation = usePinRun('sidebar')
   const visibility = usageMetricVisibility(health.data)
   const [view, setView] = useListView()
   // The remembered Regular | Automations | All split the Tasks tables set — the sidebar shows the

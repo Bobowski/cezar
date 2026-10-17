@@ -98,7 +98,7 @@ export function TaskRowActionsScope({ children }: { children: React.ReactNode })
 
   const { mutate: markSeen } = useMarkRunSeen()
   const { mutate: markUnseen } = useMarkRunUnseen()
-  const { mutate: pin } = usePinRun()
+  const { mutate: pin } = usePinRun('sidebar')
   const { mutate: archive } = useMutation({
     mutationFn: ({ id, archived }: { id: string; archived: boolean }) => archiveRun(id, archived),
     onSuccess: invalidate,

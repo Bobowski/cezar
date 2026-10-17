@@ -22,7 +22,7 @@ const health = (dispatch = true) => ({
   repoRoot: '/repo',
   repo: { root: '/repo', branch: 'main' },
   forge: null,
-  capabilities: { localHandoff: true, followups: true, singleProject: false, automations: true, dispatch, tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true },
+  capabilities: { localHandoff: true, terminal: false, followups: true, singleProject: false, automations: true, dispatch, tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true },
   defaultRunner: 'claude',
   checks: [{ name: 'claude', available: true }],
   projects: [],
@@ -233,6 +233,23 @@ describe('AutomationEditor — new', () => {
       enable: false,
     })
   })
+
+  it('flags a login the prompt names but no filter enforces, and "Add to Authors" saves it as a filter', async () => {
+    const sent = stubFetch()
+    const { onSaved } = renderEditor()
+    fireEvent.click(screen.getByRole('button', { name: 'When GitHub changes' }))
+    fireEvent.click(screen.getByRole('button', { name: 'pull_request.opened' }))
+    fireEvent.click(screen.getByRole('button', { name: 'issue.opened' }))
+    fillRequired('Self-review', 'When user `patzick` opens PR run auto review')
+    expect(screen.getByText(/prompt names @patzick/)).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Authors' }))
+    expect(screen.queryByText(/prompt names @patzick/)).toBeNull()
+    fireEvent.click(saveButton())
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1))
+    const post = sent.find((request) => request.method === 'POST' && request.path === '/api/v1/automations')
+    expect((post?.body as { filters: unknown }).filters).toEqual({ authors: ['patzick'], lookbackDays: 7, maxRecords: 25 })
+  })
+
 
   it('"Use this" fills the form from a template and closes the palette', async () => {
     stubFetch()

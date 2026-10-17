@@ -306,3 +306,14 @@ export function visibleSettingsSections(
       !(section.id === 'security' && options.signedIn !== true),
   )
 }
+
+/** Both areas at once — what the unified nav (spec 2026-10-13-unified-settings) renders: the
+ *  global sections as flat rows, the project sections under every project in the tree. */
+export function settingsSectionsByScope(
+  capabilities?: Partial<Pick<Capabilities, 'singleProject'>>,
+): Record<SettingsScope, SettingsSection[]> {
+  return {
+    global: visibleSettingsSections('global', capabilities),
+    project: visibleSettingsSections('project', capabilities),
+  }
+}

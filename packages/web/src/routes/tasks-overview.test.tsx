@@ -124,6 +124,61 @@ describe('TasksOverview — the branch detail', () => {
   })
 })
 
+describe('TasksOverview — sorting', () => {
+  it('sorts by recent activity by default, and by creation (Created) from the toolbar', () => {
+    renderOverview({
+      runs: [
+        run({ id: 'new-idle', createdAt: ago(3_600_000), finishedAt: ago(3_000_000) }),
+        // Created a week ago, finished a minute ago.
+        run({ id: 'old-busy', status: 'failed', createdAt: ago(7 * 86_400_000), finishedAt: ago(60_000) }),
+      ],
+    })
+    const ids = () =>
+      [...document.querySelectorAll('[data-slot="task-table-row"]')].map((row) => row.getAttribute('data-run-id'))
+    const timeHeader = () => document.querySelector('th[data-column-id="started"]')?.textContent
+    const timeCell = (id: string) => tableRow(id)?.querySelector('td[data-column-id="started"]')?.textContent
+
+    const sortBy = within(document.querySelector('[data-slot="sort-by"]') as HTMLElement)
+    expect(sortBy.getByRole('button', { name: 'Recent' }).getAttribute('aria-pressed')).toBe('true')
+    expect(ids()).toEqual(['old-busy', 'new-idle'])
+    expect(timeHeader()).toContain('Updated')
+    expect(timeCell('old-busy')).toBe('1m')
+
+    fireEvent.click(sortBy.getByRole('button', { name: 'Created' }))
+
+    expect(ids()).toEqual(['new-idle', 'old-busy'])
+    expect(timeHeader()).toContain('Created')
+    expect(timeCell('old-busy')).toBe('7d')
+  })
+})
+
+describe('TasksOverview — the table reads in time order', () => {
+  // The review's repro: a status-ranked Recent put a running task above newer finished ones, so
+  // the Updated column jumped around. Pins stay on top; below them, time alone decides.
+  const mixed = () => [
+    run({ id: 'pinned-old', pinned: true, createdAt: ago(9 * 86_400_000), finishedAt: ago(5 * 86_400_000) }),
+    run({ id: 'running', status: 'running', createdAt: ago(3 * 3_600_000), startedAt: ago(3 * 3_600_000) }),
+    run({ id: 'done-now', createdAt: ago(2 * 86_400_000), finishedAt: ago(60_000) }),
+    run({ id: 'waiting', status: 'waiting', createdAt: ago(30 * 60_000), startedAt: ago(30 * 60_000) }),
+    run({ id: 'failed-old', status: 'failed', createdAt: ago(86_400_000), finishedAt: ago(6 * 3_600_000) }),
+  ]
+  const ids = () =>
+    [...document.querySelectorAll('[data-slot="task-table-row"]')].map((row) => row.getAttribute('data-run-id'))
+
+  it('Recent: pins first, then newest activity — not needs-you or running first', () => {
+    renderOverview({ runs: mixed() })
+    expect(ids()).toEqual(['pinned-old', 'done-now', 'waiting', 'running', 'failed-old'])
+  })
+
+  it('Created: pins first, then newest creation', () => {
+    renderOverview({ runs: mixed() })
+    fireEvent.click(
+      within(document.querySelector('[data-slot="sort-by"]') as HTMLElement).getByRole('button', { name: 'Created' }),
+    )
+    expect(ids()).toEqual(['pinned-old', 'waiting', 'running', 'failed-old', 'done-now'])
+  })
+})
+
 describe('TasksOverview — the table', () => {
   it('starts calm when nothing is stored: fixed columns, the details under the title, the rest in Display', async () => {
     const onToggleColumn = vi.fn()
@@ -135,7 +190,7 @@ describe('TasksOverview — the table', () => {
 
     // Status, the task, how big the change is and how old it is. Spend and live usage are a
     // click away, not columns a fresh workspace has to read past.
-    expect(headers()).toEqual(['Status', 'Task', 'Changes', 'Started', 'Actions'])
+    expect(headers()).toEqual(['Status', 'Task', 'Changes', 'Updated', 'Actions'])
     // Workflow and branch are not columns at all any more: they are the title's second line.
     expect(document.querySelector('th[data-column-id="branch"]')).toBeNull()
     expect(detailsOf('fresh')?.textContent).toBe('default·feat/fresh-workspace')
@@ -292,7 +347,7 @@ describe('TasksOverview — the table', () => {
       'Cost',
       'CPU',
       'Memory',
-      'Started',
+      'Updated',
       'Actions',
     ])
     expect(cellOf('full', 'status')).toBe('Needs review')
@@ -358,7 +413,7 @@ describe('TasksOverview — the table', () => {
       ],
     })
 
-    expect(headers()).toEqual(['Status', 'Task', 'Changes', 'CPU', 'Memory', 'Started', 'Actions'])
+    expect(headers()).toEqual(['Status', 'Task', 'Changes', 'CPU', 'Memory', 'Updated', 'Actions'])
     expect(cellOf('hidden', 'status')).toBe('Done')
     expect(detailsOf('hidden')?.textContent).toBe('default')
     expect(cellsOf('hidden').slice(2, 6)).toEqual(['—', '—', '—', '1m'])
@@ -750,6 +805,84 @@ describe('TasksOverview — pinned tasks (#935)', () => {
       onTogglePin: vi.fn(),
     })
     expect(document.querySelector('[data-slot="pin-toggle"]')).toBeNull()
+  })
+
+  // The divider: one table, `Pinned · N` above the pinned rows and `All tasks · N` before the rest.
+  const sectionLabels = (scope: string) =>
+    [...document.querySelectorAll(`[data-slot="${scope}"] [data-slot="tasks-section"]`)].map((el) => el.textContent)
+
+  it('divides pinned rows from the rest with header rows, in the table and the cards', () => {
+    renderOverview({
+      runs: [
+        run({ id: 'waiting', status: 'waiting' }),
+        run({ id: 'kept', status: 'done', pinned: true }),
+        run({ id: 'running', status: 'running' }),
+      ],
+      onTogglePin: vi.fn(),
+    })
+    expect(sectionLabels('tasks-table')).toEqual(['Pinned · 1', 'All tasks · 2'])
+    expect(sectionLabels('task-cards')).toEqual(['Pinned · 1', 'All tasks · 2'])
+    // The header spans every column, so the one set of columns stays aligned.
+    const th = document.querySelector('[data-slot="tasks-table"] [data-slot="tasks-section"] th') as HTMLElement
+    expect(th.getAttribute('colspan')).toBe(String(document.querySelectorAll('[data-slot="tasks-table"] thead th').length))
+    const body = [...document.querySelectorAll('[data-slot="tasks-table"] tbody tr')].map(
+      (el) => el.getAttribute('data-section') ?? el.getAttribute('data-run-id'),
+    )
+    expect(body).toEqual(['pinned', 'kept', 'rest', 'waiting', 'running'])
+  })
+
+  it('paints no section headers when nothing is pinned', () => {
+    renderOverview({ runs: [run({ id: 'plain', status: 'done' })], onTogglePin: vi.fn() })
+    expect(document.querySelector('[data-slot="tasks-section"]')).toBeNull()
+  })
+
+  it('paints no section headers in the archived view, even over a stale pin', () => {
+    renderOverview({
+      view: 'archived',
+      runs: [run({ id: 'gone', archived: true, pinned: true })],
+      onTogglePin: vi.fn(),
+    })
+    expect(document.querySelector('[data-slot="tasks-section"]')).toBeNull()
+  })
+
+  it("keeps a pinned task's subtasks folded under it, not loose in the other section (#1110)", () => {
+    renderOverview({
+      runs: [
+        run({ id: 'p', status: 'done', pinned: true }),
+        run({ id: 'c1', status: 'done', dispatch: { rootRunId: 'p', parentRunId: 'p', kind: 'review' } }),
+        run({ id: 'x', status: 'done' }),
+      ],
+      onTogglePin: vi.fn(),
+    })
+    const body = () =>
+      [...document.querySelectorAll('[data-slot="tasks-table"] tbody tr')].map(
+        (el) => el.getAttribute('data-section') ?? el.getAttribute('data-run-id'),
+      )
+    // Collapsed by default: the subtask is not on screen at all, and the counts say tasks.
+    expect(body()).toEqual(['pinned', 'p', 'rest', 'x'])
+    expect(sectionLabels('tasks-table')).toEqual(['Pinned · 1', 'All tasks · 1'])
+    // Unfolded, it nests under its parent inside `Pinned`.
+    const parent = tableRow('p') as HTMLElement
+    fireEvent.click(parent.querySelector('[data-slot="subtask-toggle"]') as HTMLElement)
+    expect(body()).toEqual(['pinned', 'p', 'c1', 'rest', 'x'])
+    expect(tableRow('c1')?.getAttribute('data-depth')).toBe('1')
+  })
+
+  it('lifts a subtask pinned on its own into Pinned as a root of that section', () => {
+    renderOverview({
+      runs: [
+        run({ id: 'p', status: 'done' }),
+        run({ id: 'c1', status: 'done', pinned: true, dispatch: { rootRunId: 'p', parentRunId: 'p', kind: 'review' } }),
+      ],
+      onTogglePin: vi.fn(),
+    })
+    expect(sectionLabels('tasks-table')).toEqual(['Pinned · 1', 'All tasks · 1'])
+    expect(tableRow('c1')?.getAttribute('data-depth')).toBe('0')
+  })
+
+  it('omits the rest header when every task is pinned', () => {
+    renderOverview({ runs: [run({ id: 'kept', status: 'done', pinned: true })], onTogglePin: vi.fn() })
+    expect(sectionLabels('tasks-table')).toEqual(['Pinned · 1'])
   })
 })
 

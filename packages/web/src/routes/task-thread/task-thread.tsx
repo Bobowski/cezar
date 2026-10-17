@@ -5,6 +5,7 @@ import { useLocation, useParams } from 'react-router'
 import { Link } from '@/lib/project-router'
 
 import { ApiError } from '@/api/client'
+import { toast } from '@/components/ui/toaster'
 import {
   useEditQueuedMessage,
   useMarkRunSeen,
@@ -17,6 +18,7 @@ import {
 import { useRunHistory, type RunHistoryState } from '@/api/run-history'
 import type { ApiRun } from '@open-mercato/cezar-api-client'
 import { CenteredState } from '@/components/centered-state'
+import { TaskLifecycleCard } from '@/components/worktree-lifecycle-operation'
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { useKeyboardInsetVar } from '@/lib/keyboard-inset'
@@ -33,6 +35,7 @@ import { useDiffComments } from './diff-comments'
 import { TaskComposer, TaskDock } from './task-composer'
 import { WorkingIndicator } from './thread-items'
 import { useContinueAction } from './follow-up-engine'
+import { useDeliverPrompt } from './deliver-prompt'
 import { AgentsDock } from './agents-dock'
 import { PlanDock, planCounts } from './plan-dock'
 import { SkillsDock } from './skills-dock'
@@ -84,12 +87,12 @@ export function TaskThreadRoute() {
   const history = useRunHistory(id)
   const runStatus = run.data?.status
   const thread = useMemo(
-    () => reduceThread(history.visibleEvents, { activeTurn: runStatus === 'running' }),
-    [history.visibleEvents, runStatus],
+    () => reduceThread(history.visibleEvents, { activeTurn: runStatus === 'running', runner: run.data?.runner }),
+    [history.visibleEvents, runStatus, run.data?.runner],
   )
   const currentThread = useMemo(
-    () => reduceThread(history.currentEvents, { activeTurn: runStatus === 'running' }),
-    [history.currentEvents, runStatus],
+    () => reduceThread(history.currentEvents, { activeTurn: runStatus === 'running', runner: run.data?.runner }),
+    [history.currentEvents, runStatus, run.data?.runner],
   )
 
   // Read receipt (#unread-done-items): opening a finished task's thread marks it read — the same
@@ -229,6 +232,10 @@ export function ThreadView({
   const continueAction = useContinueAction(run)
   const hasContinuation = !sessionOpen && !queued && continueAction.available
   const continuable = hasContinuation && continueAction.canContinue
+  // The footer's one-click Continue rides the same delivery seam as the composer's (deliver-prompt):
+  // its record can be just as stale, and a `run is still active` refusal means the run is already
+  // live — refetch and drop it, never the false failure a raw `continueWith` toasted (77117b95).
+  const deliverPrompt = useDeliverPrompt(run, continueAction.continueWith, { surface: null })
   // A closed session can never settle its in-flight items — nothing in the reducer rewrites a
   // `running` item on `session.ended`, so an interrupted fan-out stays `running` in the
   // persisted stream forever. Without this, reopening it pulses `Agents · 0/1` above a dead
@@ -237,6 +244,7 @@ export function ThreadView({
   // Derived from `sessionOpen` rather than enumerated, so it cannot drift when a status is
   // added: anything that is neither live nor still queued is closed. `review` matters most —
   // it is where this pipeline's runs normally END, and `threadFooter` already calls it closed.
+  const lifecycleGate = !!run.worktreeLifecycle?.activeOperationId
   const runIsTerminal = !sessionOpen && run.status !== 'queued'
   const agents = useMemo(
     () => collectSubagents(currentThread.turns, runIsTerminal),
@@ -357,6 +365,7 @@ export function ThreadView({
       {/* Row spacing lives on each thread row (pb-2.5, both render modes measure alike);
           this gap only separates the sections — rows, empty state, footer, review panel. */}
       <div className="mx-auto flex w-full max-w-[var(--measure)] flex-1 flex-col gap-2.5 px-3 py-3 md:gap-3.5 md:px-6 md:py-5">
+        {run.worktreeLifecycle ? <TaskLifecycleCard worktreeId={run.worktreeLifecycle.worktreeId} operationId={run.worktreeLifecycle.activeOperationId} worktreePath={run.worktreePath} taskTitle={run.title ?? run.task} /> : null}
         {history ? (
           <HistoryBoundary
             hasOlder={history.hasOlder}
@@ -392,7 +401,7 @@ export function ThreadView({
         {/* Live session heartbeat: while the engine owns the turn (`running`), a spinner tails
             the thread so quiet gaps between bursts don't read as "finished". `waiting` hands
             off to the dock's reply hint, `queued` to the placeholder above — so `running` only. */}
-        {run.status === 'running' ? (
+        {run.status === 'running' && !lifecycleGate ? (
           <WorkingIndicator since={liveTurnStart(run, currentThread)} lastActivityAt={currentThread.lastEventAt} />
         ) : null}
 
@@ -429,7 +438,7 @@ export function ThreadView({
         {/* The review gate (spec 009): a finished run with changes parks here — nothing
             auto-merges. The panel exists exactly while the run rests at `review`. */}
         {/* Send back carries the drafted line comments, like the composer does. */}
-        {run.status === 'review' ? <ReviewPanel run={run} diffComments={diffComments} /> : null}
+        {run.status === 'review' && !lifecycleGate ? <ReviewPanel run={run} diffComments={diffComments} /> : null}
       </div>
 
       <AcceptCelebration status={run.status} />
@@ -476,7 +485,7 @@ export function ThreadView({
             dock says so before the composer offers a Continue nobody needs to press. */}
         <AutoResumeHint run={run} />
 
-        {budget ? (
+        {!lifecycleGate && budget ? (
           <div
             data-slot="budget-hint"
             className="flex items-center gap-2 px-1 text-xs text-muted-foreground"
@@ -490,7 +499,7 @@ export function ThreadView({
               </>
             ) : null}
           </div>
-        ) : run.status === 'waiting' ? (
+        ) : !lifecycleGate && run.status === 'waiting' ? (
           <div
             data-slot="paused-hint"
             className="flex items-center gap-2 px-1 text-xs text-muted-foreground"
@@ -514,13 +523,13 @@ export function ThreadView({
           </div>
         ) : null}
 
-        <TaskComposer
+        {!lifecycleGate ? <TaskComposer
           run={run}
           draft={draft}
           diffComments={diffComments}
           continueAction={continueAction}
           getMentionCandidates={() => threadFilePaths(thread)}
-        />
+        /> : <p className="px-1 text-xs text-muted-foreground">Resolve the worktree operation above before continuing this task.</p>}
       </TaskDock>
     </div>
   )
@@ -561,6 +570,37 @@ function FooterLinks({ prUrl, issueUrl }: { prUrl?: string; issueUrl?: string })
         </a>
       ) : null}
     </>
+  )
+}
+
+function FooterContinueButton({
+  onContinue,
+  blockedReason,
+}: {
+  onContinue: () => Promise<unknown>
+  blockedReason?: string
+}) {
+  const [pending, setPending] = useState(false)
+  return (
+    <button
+      type="button"
+      data-slot="footer-continue"
+      disabled={pending || blockedReason !== undefined}
+      title={blockedReason ?? 'Reopen the session and pick up where it stopped'}
+      onClick={() => {
+        setPending(true)
+        onContinue()
+          .catch((error: unknown) =>
+            toast(error instanceof Error ? error.message : String(error), { tone: 'danger' }),
+          )
+          .finally(() => setPending(false))
+      }}
+      // A text button in the message's own red: it is part of the sentence it completes, so it
+      // keeps that sentence's colour; the weight and underline are what mark it as the action.
+      className="rounded-sm font-semibold underline underline-offset-2 hover:brightness-125 focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none disabled:cursor-not-allowed disabled:no-underline disabled:opacity-60"
+    >
+      Continue
+    </button>
   )
 }
 

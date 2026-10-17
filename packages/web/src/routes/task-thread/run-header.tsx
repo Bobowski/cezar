@@ -4,6 +4,8 @@ import {
   BotIcon,
   CheckIcon,
   ChevronDownIcon,
+  ChevronsDownUpIcon,
+  ChevronsUpDownIcon,
   CircleStopIcon,
   CopyIcon,
   EllipsisIcon,
@@ -18,9 +20,10 @@ import {
 import { Fragment, memo, useEffect, useId, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
 import { Link, useNavigate } from '@/lib/project-router'
 
-import { ApiError, archiveRun, cancelRun, deleteRun, openRunIn, openRunInCli } from '@/api/client'
+import { ApiError, archiveRun, cancelRun, deleteRun, getConfig, startLifecycleRemoval, openRunIn, openRunInCli } from '@/api/client'
 import {
   queryKeys,
+  useConfig,
   useHealth,
   useMarkRunSeen,
   useMarkRunUnseen,
@@ -95,14 +98,12 @@ import { useDraft } from './thread-draft'
  * Two deliberate omissions, both seams rather than gaps:
  *  - **VS Code** (spec: `POST /api/runs/:id/open-in-editor`) — the endpoint does not exist yet;
  *    R5 adds it driver-detected. Faking the button against nothing would be dishonest.
- *  - **Hosted mode** (spec §"Deployment modes"): when R5's `capabilities.localHandoff` lands in
- *    `/api/health`, Terminal (and VS Code) must disappear entirely and the resume hint must drop
- *    its `cd`. Today's HealthResponse carries no such field, so Terminal renders per current
- *    (local-only) behavior — the gate goes in where the flags are read, `runActionFlags` callers.
+ *  - **Hosted mode** (spec §"Deployment modes"): Terminal disappears when `capabilities.localHandoff`
+ *    is false (`useCanOpenTerminal`); the resume hint still carries its `cd`.
  */
 /** Which run-detail tab this header instance sits above — drives the active underline.
  *  A prop rather than a route match so the header stays testable with a bare render. */
-export type RunTab = 'session' | 'changes' | 'commits' | 'files' | 'graph' | 'notes'
+export type RunTab = 'session' | 'changes' | 'commits' | 'files' | 'graph' | 'notes' | 'terminal' | 'preview'
 
 interface RunHeaderProps {
   run: ApiRun
@@ -190,6 +191,7 @@ function RunHeaderView({
   const health = useHealth()
   const metricVisibility = usageMetricVisibility(health.data)
   const refs = useRunReferences(run)
+  const [collapsed, setCollapsed] = useHeaderCollapsed()
 
   // The same pieces, arranged three ways (see `mode`).
   const status = (
@@ -370,6 +372,7 @@ function RunActionButtons({
   onOpenNotes: () => void
 }) {
   const flags = runActionFlags(run)
+  const canTerminal = useCanOpenTerminal(run)
   const git = useRunGitStep(run)
   // ONE primary action, picked by what the run's state calls for. Continue is not among them:
   // it is the composer's send, which carries the prompt and the engine picks (#1337).
@@ -377,7 +380,7 @@ function RunActionButtons({
   return (
     <>
       <div data-slot="run-actions" className="hidden items-center gap-1.5 md:flex @max-4xl/strip:hidden">
-        <OpenInMenuForRun run={run} canResume={flags.terminal} onResume={() => actions.terminal.mutate()} />
+        <OpenInMenuForRun run={run} canResume={canTerminal} onResume={() => actions.terminal.mutate()} />
         {/* The run's one next git step (Commit, Push, Create PR, Update branch, …), or nothing. */}
         <GitActions action={git.action} onAction={git.onAction} />
         {primary === 'finish' ? (
@@ -440,7 +443,7 @@ function OpenInMenuForRun({
     ? (targets.data?.targets ?? [])
         .filter((target) => {
           const runner = cliTargetRunner(target.id)
-          return runner === undefined || agentAvailable(runner)
+          return runner === undefined || (!run.worktreeLifecycle?.activeOperationId && agentAvailable(runner))
         })
         // Agent-CLI targets (#402): the one matching this run's own runner resumes THIS run's
         // session when one exists — label that explicitly so it reads as different from just
@@ -500,6 +503,9 @@ function useRunActions(run: ApiRun, onMarkedUnread?: () => void) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [confirming, setConfirming] = useState<RunConfirmKind | null>(null)
+  const config = useConfig()
+  const configured = config.data?.worktreeLifecycle
+  const lifecycleDelete = !!run.worktreeLifecycle || (!!run.worktreePath && !!((configured?.afterCreate.length ?? 0) + (configured?.beforeRemove.length ?? 0)))
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
   const onError = (error: Error) => {
@@ -516,14 +522,14 @@ function useRunActions(run: ApiRun, onMarkedUnread?: () => void) {
   // must be ONE implementation, not two buttons that happen to agree today.
   const finish = useFinishRun(run.id)
   const archive = useMutation({
-    mutationFn: () => archiveRun(run.id, !run.archived),
+    mutationFn: () => archiveRun(run.id, !run.archived, 'task_view'),
     onSuccess: invalidate,
     onError,
   })
   // Pin/unpin (#935) — the shared hook rather than a local mutation, because the sidebar and the
   // Tasks table drive the same action and the cache rule belongs in one place. Toggling off the
   // record, exactly like archive above.
-  const pinMutation = usePinRun()
+  const pinMutation = usePinRun('task_view')
   const pin = {
     isPending: pinMutation.isPending,
     mutate: () => pinMutation.mutate({ id: run.id, pinned: !run.pinned }, { onError }),
@@ -587,6 +593,7 @@ function useRunActions(run: ApiRun, onMarkedUnread?: () => void) {
     markRead,
     cancel,
     delete: deleteMutation,
+    lifecycleDelete,
     terminal,
     confirming,
     setConfirming,
@@ -1284,6 +1291,7 @@ function MoreMenu({
   onOpenNotes: () => void
 }) {
   const flags = runActionFlags(run)
+  const canTerminal = useCanOpenTerminal(run)
   const worktreePath = run.worktreePath
   const step = git.action
   const unread = flags.markRead
@@ -1321,7 +1329,7 @@ function MoreMenu({
             <CheckIcon aria-hidden="true" /> Finish
           </DropdownMenuItem>
         ) : null}
-        {flags.terminal ? (
+        {canTerminal ? (
           <DropdownMenuItem onSelect={() => actions.terminal.mutate()}>
             <SquareTerminalIcon aria-hidden="true" /> Resume in terminal
           </DropdownMenuItem>
@@ -1445,4 +1453,35 @@ function NotesBody({ runId }: { runId: string }) {
       )}
     </div>
   )
+}
+
+const HEADER_COLLAPSED_KEY = 'cez:run-header-collapsed'
+
+/** Whether the desktop header is folded — one answer for every task, kept in this browser. */
+function useHeaderCollapsed(): [boolean, (next: boolean) => void] {
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem(HEADER_COLLAPSED_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+  const update = (next: boolean) => {
+    setCollapsed(next)
+    try {
+      if (next) window.localStorage.setItem(HEADER_COLLAPSED_KEY, '1')
+      else window.localStorage.removeItem(HEADER_COLLAPSED_KEY)
+    } catch {
+      // A browser without storage still folds for this visit.
+    }
+  }
+  return [collapsed, update]
+}
+
+/** Terminal resume spawns a terminal on the SERVER's machine, so a hosted cockpit
+ *  (`localHandoff: false`) never offers it — the route 409s there (telemetry f179cc7d). Only an
+ *  explicit `false` hides it: the route stays authoritative while health is still loading. */
+function useCanOpenTerminal(run: ApiRun): boolean {
+  const localHandoff = useHealth().data?.capabilities?.localHandoff
+  return runActionFlags(run).terminal && localHandoff !== false
 }

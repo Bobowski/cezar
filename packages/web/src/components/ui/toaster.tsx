@@ -49,9 +49,9 @@ export function onDangerToast(listener: (message: string) => void): () => void {
  */
 export function toast(
   message: string,
-  opts: { tone?: ToastTone; action?: ToastAction; durationMs?: number } = {},
+  opts: { tone?: ToastTone; action?: ToastAction; durationMs?: number; reported?: boolean } = {},
 ): void {
-  if (opts.tone === 'danger') {
+  if (opts.tone === 'danger' && !opts.reported) {
     for (const listener of dangerListeners) {
       try {
         listener(message)

@@ -45,6 +45,7 @@ const REPO: RepoResponse = {
     { hash: 'def5678', subject: 'fix: stop the bug', author: 'Linus', when: '3 days ago' },
   ],
   branches: ['feature', 'main'],
+  checkedOutElsewhere: {},
   baseBranch: null,
 }
 
@@ -296,7 +297,7 @@ describe('the repo view Changes segment', () => {
   it('outside a git repository the whole view degrades honestly', async () => {
     stubFetch({
       'GET /api/v1/repo': () =>
-        jsonResponse({ info: null, status: [], log: [], branches: [], baseBranch: null }),
+        jsonResponse({ info: null, status: [], log: [], branches: [], checkedOutElsewhere: {}, baseBranch: null }),
     })
     renderAt('/git')
     await waitFor(() =>
@@ -419,6 +420,17 @@ describe('the repo view Branches segment', () => {
     // The sidebar's list marks the checkout too.
     const menu = sidebar().querySelector('[data-slot="repo-branch-menu"]') as HTMLElement
     expect([...menu.querySelectorAll('li')].map((li) => li.textContent)).toEqual(['feature', 'mainCurrent'])
+  })
+
+  it('offers no Switch for a branch another worktree holds (telemetry da5ca728)', async () => {
+    stubFetch({
+      'GET /api/v1/repo': () => jsonResponse({ ...REPO, checkedOutElsewhere: { feature: '/elsewhere' } }),
+    })
+    renderAt('/git/branches')
+    await waitFor(() => expect(document.querySelector('[data-slot="branch-elsewhere"]')).not.toBeNull())
+    const row = document.querySelector('[data-slot="branch-row"][data-branch="feature"]')
+    expect(row?.querySelector('[data-action="switch-branch"]')).toBeNull()
+    expect(row?.querySelector('[data-slot="branch-elsewhere"]')?.getAttribute('title')).toContain('/elsewhere')
   })
 
   it('Switch POSTs /api/v1/repo/branch and toasts the outcome', async () => {

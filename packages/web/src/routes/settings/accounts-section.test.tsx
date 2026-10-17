@@ -1,6 +1,7 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import type { ReactNode } from 'react'
+import { MemoryRouter, useNavigate } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { queryKeys, workspaceQueryKeys } from '@/api/queries'
@@ -156,7 +157,17 @@ function serve(
   )
 }
 
-function renderAccounts() {
+/** Navigates the mounted router to another `?agent=` — what back/forward does. */
+function AgentParamProbe() {
+  const navigate = useNavigate()
+  return (
+    <button type="button" onClick={() => navigate('/settings/global/accounts?agent=claude')}>
+      go claude
+    </button>
+  )
+}
+
+function renderAccounts(entry = '/settings/global/accounts', extra: ReactNode = null) {
   const client = createQueryClient()
   client.setDefaultOptions({ queries: { ...client.getDefaultOptions().queries, retry: false } })
   client.setQueryData(queryKeys.health, {
@@ -176,7 +187,7 @@ function renderAccounts() {
   })
   render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={['/settings/global/accounts']}>
+      <MemoryRouter initialEntries={[entry]}>
         {/* What the app shell gives every route: global settings as a dialog (the global sections
             render inside it), the sidebar, and the list view the project home reads. */}
         <ShellProviders dialog={<GlobalSettingsDialog />}>
@@ -184,6 +195,7 @@ function renderAccounts() {
             <AppRoutes />
           </ListViewProvider>
         </ShellProviders>
+        {extra}
         <Toaster />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -227,6 +239,39 @@ const openDetails = async (id: string) => {
 }
 
 describe('the agent accounts section', () => {
+  it('opens on the agent named by ?agent= — the Tools menu\'s "Set up" deep link', async () => {
+    serve({ editable: true, profileCapableProviders: ['claude', 'codex'], defaults: {}, selections: {}, profiles: DEFAULTS })
+    renderAccounts('/settings/global/accounts?agent=codex')
+    await waitFor(() =>
+      expect(document.querySelector('[data-slot="accounts-tabs"] [data-provider="codex"]')?.getAttribute('data-state')).toBe('active'),
+    )
+    expect(document.querySelector('[data-slot="accounts-tabs"] [data-provider="claude"]')?.getAttribute('data-state')).toBe('inactive')
+  })
+
+  it('an unknown or absent ?agent= opens the first tab, and a changed one switches the mounted pane', async () => {
+    const data: AgentProfilesResponse = { editable: true, profileCapableProviders: ['claude', 'codex'], defaults: {}, selections: {}, profiles: DEFAULTS }
+    const active = (provider: string) =>
+      document.querySelector(`[data-slot="accounts-tabs"] [data-provider="${provider}"]`)?.getAttribute('data-state')
+    serve(data)
+    renderAccounts('/settings/global/accounts?agent=bogus')
+    await waitFor(() => expect(active('claude')).toBe('active'))
+    cleanup()
+
+    serve(data)
+    renderAccounts('/settings/global/accounts')
+    await waitFor(() => expect(active('claude')).toBe('active'))
+    cleanup()
+
+    // Deep-link to codex, then (back/forward) to claude on the SAME mounted pane.
+    serve(data)
+    renderAccounts('/settings/global/accounts?agent=codex', <AgentParamProbe />)
+    await waitFor(() => expect(active('codex')).toBe('active'))
+    // Outside the modal settings dialog, so hidden from the accessibility tree while it is open.
+    fireEvent.click(screen.getByText('go claude'))
+    await waitFor(() => expect(active('claude')).toBe('active'))
+    expect(active('codex')).toBe('inactive')
+  })
+
   it('lists the discovered account with no edit controls at all', async () => {
     serve({ editable: true, profileCapableProviders: ['claude', 'codex'],
       defaults: {},

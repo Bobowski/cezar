@@ -2,9 +2,11 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { FolderGit2Icon, MoreHorizontalIcon, RecycleIcon, Trash2Icon } from 'lucide-react'
 import { useState } from 'react'
 
-import { reclaimWorktrees, removeRunWorktree } from '@/api/client'
-import { queryKeys, useWorktrees } from '@/api/queries'
-import type { WorktreeInfo } from '@open-mercato/cezar-api-client'
+import { reclaimWorktrees, removeRunWorktree, startLifecycleRemoval } from '@/api/client'
+import { queryKeys, useWorktrees, useConfig } from '@/api/queries'
+import { lifecycleQueryKeys, useWorktreeLifecycles } from '@/api/worktree-lifecycle'
+import { LifecycleOperationCard } from '@/components/worktree-lifecycle-operation'
+import type { WorktreeLifecycleSummary, WorktreeInfo } from '@open-mercato/cezar-api-client'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -28,7 +30,7 @@ import { shortAge } from '@/lib/format'
 import { SettingsError, SettingsGroup } from './settings-field'
 
 /** What the confirm dialog is about — a bulk reclaim, or one row's delete. */
-type Confirming = { kind: 'reclaim' } | { kind: 'delete'; runId: string; title: string } | null
+type Confirming = { kind: 'reclaim' } | { kind: 'delete'; runId: string; title: string } | { kind: 'orphan'; worktreeId: string; title: string } | null
 
 /**
  * Settings → Resources: the worktrees management panel (#483). Lists every task
@@ -41,9 +43,16 @@ type Confirming = { kind: 'reclaim' } | { kind: 'delete'; runId: string; title: 
  */
 export function WorktreesPanel() {
   const worktrees = useWorktrees()
+  const lifecycle = useWorktreeLifecycles()
+  const config = useConfig()
+  const [selectedOperation, setSelectedOperation] = useState<{id: string; title: string} | null>(null)
+  const managed = lifecycle.data?.worktrees ?? []
+  const configured = !!config.data?.worktreeLifecycle && (config.data.worktreeLifecycle.afterCreate.length > 0 || config.data.worktreeLifecycle.beforeRemove.length > 0)
   const queryClient = useQueryClient()
   const [confirming, setConfirming] = useState<Confirming>(null)
-  const refresh = () => queryClient.invalidateQueries({ queryKey: queryKeys.worktrees })
+  const refresh = async () => {
+    await Promise.all([queryClient.invalidateQueries({ queryKey: queryKeys.worktrees }), queryClient.invalidateQueries({ queryKey: lifecycleQueryKeys.all() })])
+  }
 
   const reclaim = useMutation({
     mutationFn: () => reclaimWorktrees(),
@@ -51,7 +60,9 @@ export function WorktreesPanel() {
       void refresh()
       toast(
         result.reclaimed.length === 0
-          ? 'Nothing to reclaim — all worktrees are within the limit'
+          ? configured || managed.some(item => item.operation || item.autoCleanupSuppressed)
+            ? 'No worktrees reclaimed yet. Pending cleanup or retained worktrees may keep usage above the limit.'
+            : 'Nothing to reclaim — all worktrees are within the limit'
           : `Reclaimed ${result.reclaimed.length} worktree${result.reclaimed.length === 1 ? '' : 's'} (branch kept)`,
       )
     },
@@ -59,11 +70,22 @@ export function WorktreesPanel() {
   })
 
   const remove = useMutation({
-    mutationFn: (runId: string) => removeRunWorktree(runId),
-    onSuccess: () => {
+    mutationFn: async (runId: string) => configured || managed.some(item => item.runId === runId)
+      ? startLifecycleRemoval({ requestId: crypto.randomUUID(), runId, intent: 'remove-worktree' })
+      : removeRunWorktree(runId),
+    onSuccess: (result, runId) => {
       void refresh()
-      toast('Worktree removed')
+      if ('operation' in result) {
+        setSelectedOperation({id: result.operation.id, title: worktrees.data?.worktrees.find(item => item.runId === runId)?.title ?? runId})
+        toast('Cleanup requested. The worktree remains until cleanup and removal complete.')
+      } else toast('Worktree removed')
     },
+    onError: (error: Error) => toast(error.message, { tone: 'danger' }),
+  })
+
+  const removeOrphan = useMutation({
+    mutationFn: (worktreeId: string) => startLifecycleRemoval({ requestId: crypto.randomUUID(), worktreeId, intent: 'orphan' }),
+    onSuccess: result => { setSelectedOperation({id: result.operation.id, title: 'Orphan worktree'}); void refresh(); toast('Orphan cleanup requested. Review its progress below.') },
     onError: (error: Error) => toast(error.message, { tone: 'danger' }),
   })
 
@@ -93,11 +115,12 @@ export function WorktreesPanel() {
   }
 
   const { worktrees: rows, totalBytes, keep } = worktrees.data
-  const busy = reclaim.isPending || remove.isPending
+  const busy = reclaim.isPending || remove.isPending || removeOrphan.isPending
 
   const runConfirmed = () => {
     if (confirming?.kind === 'reclaim') reclaim.mutate()
     else if (confirming?.kind === 'delete') remove.mutate(confirming.runId)
+    else if (confirming?.kind === 'orphan') removeOrphan.mutate(confirming.worktreeId)
     setConfirming(null)
   }
 
@@ -166,14 +189,26 @@ export function WorktreesPanel() {
         {keep === 0 ? 'keeping all (unlimited)' : `keeping the last ${keep}`}
       </p>
 
+      {lifecycle.isError && <p className="text-xs text-danger" role="alert">Lifecycle state could not be loaded: {lifecycle.error.message}</p>}
+      {managed.filter(item => item.operation || item.autoCleanupSuppressed || item.needsAttention || !item.task).map(item => <section key={item.worktreeId} className="min-w-0 rounded-md border border-border p-3" data-slot="lifecycle-worktree-row">
+        <h3 className="text-sm font-medium">{item.task?.title ?? `Orphan worktree ${item.runId.slice(0, 8)}`}</h3>
+        <p className="break-all font-mono text-[11px] text-muted-foreground">{item.worktreePath}</p>
+        {item.error && <p className="mt-1 text-xs text-danger">{item.error}</p>}
+        {item.needsAttention && <p className="mt-1 text-xs text-danger">{item.operation?.phase === 'setup' ? 'Setup needs attention' : 'Cleanup needs attention'} — worktree retained.</p>}
+        {item.autoCleanupSuppressed && <p className="mt-1 text-xs text-muted-foreground">Automatic cleanup is suppressed for this generation because it was kept or cancelled. Explicit removal is still available.</p>}
+        {item.operation ? <div id={`lifecycle-operation-${item.operation.id}`} className="mt-3 scroll-mt-4"><LifecycleOperationCard operationId={item.operation.id} worktreePath={item.worktreePath} taskTitle={item.task?.title} /></div>
+          : !item.task && !item.error && item.onDisk ? <Button className="mt-2" type="button" variant="outline" size="sm" disabled={busy} onClick={() => setConfirming({kind: 'orphan', worktreeId: item.worktreeId, title: item.worktreePath})}>Remove orphan worktree</Button> : null}
+      </section>)}
+      {selectedOperation && !managed.some(item => item.operation?.id === selectedOperation.id) && <div id={`lifecycle-operation-${selectedOperation.id}`}><LifecycleOperationCard operationId={selectedOperation.id} taskTitle={selectedOperation.title} /></div>}
+
       <AlertDialog open={confirming !== null} onOpenChange={(open) => !open && setConfirming(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {confirming?.kind === 'delete' ? 'Delete this worktree?' : 'Reclaim old worktrees?'}
+              {confirming?.kind === 'delete' || confirming?.kind === 'orphan' ? 'Delete this worktree?' : 'Reclaim old worktrees?'}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {confirming?.kind === 'delete' ? (
+              {confirming?.kind === 'delete' || confirming?.kind === 'orphan' ? (
                 <>
                   This removes the worktree directory and its branch — the local-only work is not
                   recoverable afterwards.
@@ -193,7 +228,7 @@ export function WorktreesPanel() {
               className={confirming?.kind === 'delete' ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90' : undefined}
               onClick={runConfirmed}
             >
-              {confirming?.kind === 'delete' ? 'Delete' : 'Reclaim now'}
+              {confirming?.kind === 'delete' || confirming?.kind === 'orphan' ? 'Delete' : 'Reclaim now'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -204,10 +239,12 @@ export function WorktreesPanel() {
 
 function WorktreeRow({
   worktree,
+  lifecycle,
   disabled,
   onDelete,
 }: {
   worktree: WorktreeInfo
+  lifecycle?: WorktreeLifecycleSummary
   disabled: boolean
   onDelete: () => void
 }) {

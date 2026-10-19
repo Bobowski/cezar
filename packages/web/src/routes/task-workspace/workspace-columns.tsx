@@ -83,8 +83,9 @@ export function WorkspaceColumns({
   const [narrowIndex, setNarrowIndex] = useState(0)
   /**
    * A window that has been split off but not given a view yet: the slot it will take. It is this
-   * component's own, never saved — a saved column always names a view — so leaving the layout or
-   * reloading simply forgets it. Clamped on read, so closing a column cannot strand it.
+   * component's own, never saved — a saved column always names a view — so reloading forgets it.
+   * Leaving the layout keeps it while the workspace keeps that layout mounted (`KeptLayout`), and
+   * forgets it once the layout is dropped. Clamped on read, so closing a column cannot strand it.
    */
   const [pendingAt, setPendingAt] = useState<number | null>(null)
   const pending = pendingAt === null ? null : Math.min(pendingAt, columns.length)

@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router'
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createQueryClient } from '@/api/query-client'
@@ -152,7 +152,7 @@ const terminalTab = () => document.querySelector<HTMLElement>('[data-slot="layou
 
 const openLayoutMenu = () => fireEvent.keyDown(screen.getByRole('button', { name: /^Layout/ }), { key: 'Enter' })
 const columnViews = () =>
-  Array.from(document.querySelectorAll('[data-slot="workspace-column"]')).map((column) => column.getAttribute('data-view'))
+  Array.from(document.querySelectorAll('[data-slot="workspace-layout"][data-active] [data-slot="workspace-column"]')).map((column) => column.getAttribute('data-view'))
 
 async function ready() {
   await waitFor(() => expect(document.querySelector('[data-route="task-workspace"]')).not.toBeNull())
@@ -428,6 +428,111 @@ describe('the task workspace (main)', () => {
     expect((await screen.findByTestId('terminal')).dataset.fill).toBe('')
     await waitFor(() => expect(activeCard()).toBe('Terminal'))
     expect(terminalTab()?.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('keeps a left layout mounted, hidden, so going back to Changes does not rebuild it', async () => {
+    stubFetch()
+    renderWorkspace()
+    await ready()
+    const visible = () => document.querySelector('[data-slot="workspace-layout"][data-active]')
+    const select = (view: ViewId) =>
+      fireEvent.click(document.querySelector(`[data-slot="layout-card"][data-fixed="${view}"]`) as HTMLElement)
+
+    select('changes')
+    await waitFor(() => expect(columnViews()).toEqual(['changes']))
+    const changes = visible()
+
+    select('session')
+    await waitFor(() => expect(columnViews()).toEqual(['session']))
+    expect(changes?.isConnected).toBe(true)
+    expect(changes?.hasAttribute('data-active')).toBe(false)
+
+    select('changes')
+    await waitFor(() => expect(columnViews()).toEqual(['changes']))
+    expect(visible()).toBe(changes)
+  })
+
+  it('sends the \\ key to the layout on screen, never to a kept one hidden behind it', async () => {
+    stubFetch()
+    renderWorkspace()
+    await ready()
+    // ⌥-click builds a split layout, whose windows carry Split view buttons.
+    fireEvent.click(document.querySelector<HTMLElement>('[data-fixed="changes"]')!, { altKey: true })
+    await waitFor(() => expect(columnViews()).toEqual(['session', 'changes']))
+
+    fireEvent.click(document.querySelector<HTMLElement>('[data-slot="layout-card"][data-fixed="changes"]')!)
+    await waitFor(() => expect(columnViews()).toEqual(['changes']))
+    const hidden = () => document.querySelector('[data-slot="workspace-layout"]:not([data-active])')
+    // The split layout is kept, hidden, with its Split view buttons still in the DOM.
+    expect(hidden()?.querySelector('[data-action="split-view"]')).not.toBeNull()
+
+    // The key splits the layout on screen — the hidden one sits later in the DOM, so a stage-wide
+    // lookup would have pressed ITS last Split view instead.
+    fireEvent.keyDown(document.body, { key: '\\' })
+    await waitFor(() =>
+      expect(document.querySelector('[data-slot="workspace-layout"][data-active] [data-slot="view-tiles-stage"]')).not.toBeNull(),
+    )
+  })
+
+  it('gives each task its own Changes view — the previous task\'s diff never renders under the next', async () => {
+    // Both tasks open on Changes. A guard: one ChangesView reused across them would let its
+    // deferred diff hand the second task's first render the first task's files.
+    const onChanges = { layouts: [{ name: 'Chat', columns: [{ view: 'session', width: 100 }] }, { name: 'Changes', columns: [{ view: 'changes', width: 100 }] }], active: 'Changes' }
+    hostLayouts = { r1: onChanges, r2: onChanges }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        const path = String(input)
+        const run = /^\/api\/v1\/runs\/(r[12])(\/.*)?$/.exec(path)
+        if (path === '/api/v1/health') return jsonResponse(health(true))
+        if (path === '/api/v1/runs') return jsonResponse([RUN, { ...RUN, id: 'r2' }])
+        if (path === '/api/v1/repo') return jsonResponse(health(true).repo)
+        if (!run) return jsonResponse({ error: `unstubbed: ${path}` }, 404)
+        const [, id, rest = ''] = run
+        if (rest === '') return jsonResponse({ ...RUN, id })
+        if (rest === '/layouts') return jsonResponse({ layouts: (init.method ?? 'GET') === 'GET' ? hostLayouts[id!] : JSON.parse(String(init.body)) })
+        if (rest.startsWith('/drafts')) return jsonResponse({ surfaces: {} })
+        if (rest.startsWith('/changes')) return jsonResponse({ files: [], stat: { adds: 0, dels: 0, files: 0 } })
+        return jsonResponse([])
+      }),
+    )
+    let navigate: (to: string) => void = () => {}
+    function Navigator() {
+      const go = useNavigate()
+      navigate = (to) => void go(to)
+      return null
+    }
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <MemoryRouter initialEntries={['/tasks/r1']}>
+          <Navigator />
+          <Routes>
+            <Route path="/tasks/:id" element={<TaskWorkspaceRoute />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    const changesView = () => document.querySelector('[data-route="task-changes"]')
+    await waitFor(() => expect(changesView()).not.toBeNull())
+    const first = changesView()
+
+    navigate('/tasks/r2')
+    await waitFor(() => expect(document.querySelector('[data-route="task-workspace"]')?.getAttribute('data-run-id')).toBe('r2'))
+    await waitFor(() => expect(changesView()).not.toBeNull())
+    expect(changesView()).not.toBe(first)
+  })
+
+  it('never keeps a Preview layout once left — a hidden page would keep running', async () => {
+    stubFetch()
+    renderWorkspace()
+    await ready()
+    fireEvent.click(document.querySelector('[data-slot="layout-card"][data-fixed="browser"]') as HTMLElement)
+    await waitFor(() => expect(columnViews()).toEqual(['browser']))
+    const preview = document.querySelector('[data-slot="workspace-layout"][data-active]')
+
+    fireEvent.click(document.querySelector('[data-slot="layout-card"][data-fixed="session"]') as HTMLElement)
+    await waitFor(() => expect(columnViews()).toEqual(['session']))
+    expect(preview?.isConnected).toBe(false)
   })
 
   it('splits the screen when a view tab is dropped beside the chat', async () => {

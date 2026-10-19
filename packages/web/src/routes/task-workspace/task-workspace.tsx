@@ -27,7 +27,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { IconTooltip } from '@/components/ui/icon-tooltip'
-import { Link, useNavigate } from '@/lib/project-router'
+import { Link, useActiveProjectId, useNavigate } from '@/lib/project-router'
 import { isUnread } from '@/lib/read-state'
 import { recordTaskVisit } from '@/lib/recent-tasks'
 import { publishTaskWorkspace, takeQueuedFileOpen, withdrawTaskWorkspace, type TaskWorkspaceBridge } from '@/lib/task-workspace-bridge'
@@ -37,6 +37,7 @@ import { rememberViewState } from '@/lib/view-memory'
 
 import { GitTabLoading } from '../task-git/git-tab-loading'
 import { BrowserView } from '../task-preview/browser-view'
+import { RunAppPanel } from '../task-preview/run-app'
 import { DesignNotePopup } from '../task-preview/design-note-popup'
 import { useDesignNotes } from '../task-preview/design-notes'
 import { ChangesView } from '../task-git/task-changes'
@@ -327,6 +328,7 @@ function WorkspaceView({
   // A Terminal column already shows this task's shells; a drawer under it would be a second view
   // of the same sessions, fighting over the PTY's size.
   const terminalColumnShown = layouts.layout?.columns.some((column) => column.view === 'terminal') ?? false
+  const projectId = useActiveProjectId()
   const drawerShown = terminalAllowed && drawer.open && !terminalColumnShown
 
   const [maximized, setMaximized] = useState(false)
@@ -677,6 +679,19 @@ function WorkspaceView({
               onPickElement={addDraft}
               designMarks={designMarks}
               onDesignEscape={escapeNote}
+              renderEmpty={
+                terminalAllowed
+                  ? (open) => (
+                      <RunAppPanel
+                        runId={run.id}
+                        projectId={projectId}
+                        onOpen={open}
+                        setup={run.worktreeLifecycle}
+                        onShowTerminal={terminalColumnShown ? undefined : () => updateDrawer({ open: true })}
+                      />
+                    )
+                  : undefined
+              }
               renderDesignNote={({ mark, close }) => {
                 const note = noteFor(mark)
                 return note ? <DesignNotePopup note={note} run={run} notes={designNotes} onClose={close} /> : null
@@ -697,6 +712,9 @@ function WorkspaceView({
       run,
       setColumnBrowser,
       terminalAllowed,
+      projectId,
+      terminalColumnShown,
+      updateDrawer,
     ],
   )
 

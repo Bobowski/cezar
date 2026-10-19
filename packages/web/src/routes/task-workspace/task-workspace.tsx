@@ -3,6 +3,7 @@ import {
   LoaderCircleIcon,
   Maximize2Icon,
   MessageSquareTextIcon,
+  PanelBottomIcon,
   SearchXIcon,
   TerminalIcon,
 } from 'lucide-react'
@@ -25,7 +26,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { Separator } from '@/components/ui/separator'
+import { IconTooltip } from '@/components/ui/icon-tooltip'
 import { Link, useNavigate } from '@/lib/project-router'
 import { isUnread } from '@/lib/read-state'
 import { recordTaskVisit } from '@/lib/recent-tasks'
@@ -49,9 +50,20 @@ import { ThreadLoading } from '../task-thread/thread-loading'
 import { reduceThread } from '../task-thread/thread-state'
 import { readDrawerState, writeDrawerState, type DrawerState } from './drawer-state'
 import { LayoutCards } from './layout-cards'
-import { emptyBrowserState, FIXED_VIEW_ORDER, fixedViewOf, layoutDisplayName, VIEW_IDS, type ViewId, type WorkspaceColumn } from './layout-state'
+import {
+  emptyBrowserState,
+  FIXED_VIEW_ORDER,
+  fixedViewOf,
+  layoutDisplayName,
+  MAX_COLUMNS,
+  toSavedLayout,
+  VIEW_IDS,
+  type ViewId,
+  type WorkspaceColumn,
+} from './layout-state'
 import { FullViewExit, usePanelCover, WorkspaceMaximizeContext } from './maximize'
-import { stripEntries, useStripKeyHints } from './strip'
+import { stripEntries, stripTabs, useStripKeyHints } from './strip'
+import { useSavedLayouts } from './use-saved-layouts'
 import { useWorkspaceLayouts } from './use-workspace-layouts'
 import { AvailableViewsContext } from './view-picker'
 import { ViewDropZones } from './view-drop-zones'
@@ -149,7 +161,21 @@ function WorkspaceView({
   onMarkedUnread: (runId: string) => void
 }) {
   const layouts = useWorkspaceLayouts(run.id)
-  const { openDeepLink, addLayout, closeLayout, selectLayout, renameLayout, setColumnBrowser, openInBrowser } = layouts
+  const { openDeepLink, addLayout, closeLayout, selectLayout, setColumnBrowser, openInBrowser, applySaved, keepAs } = layouts
+  // Layouts saved for every task: nothing is saved until the user names one (Layout menu).
+  const savedLayouts = useSavedLayouts()
+  const { save: saveLayout, remove: deleteSavedLayout } = savedLayouts
+  const layoutState = layouts.state
+  const canSaveLayout = (layouts.layout?.columns.length ?? 0) > 0
+  const saveCurrentLayout = useCallback(
+    (name: string) => {
+      const layout = toSavedLayout(layoutState, name)
+      if (!layout) return
+      saveLayout(layout)
+      keepAs(layout.name)
+    },
+    [keepAs, layoutState, saveLayout],
+  )
 
   // Policy, read from the one place that knows it: no shell here means no Terminal anywhere.
   const terminalAllowed = useHealth().data?.capabilities?.terminal === true
@@ -222,7 +248,7 @@ function WorkspaceView({
   )
   const createLayout = useCallback(() => addLayout(), [addLayout])
 
-  // The numbered tabs — views, then Notes (`strip.ts`) — and, while ⌘ is held on its own, each
+  // The numbered tabs — views with Notes among them (`strip.ts`) — and, while ⌘ is held on its own, each
   // tab's number (spec 2026-10-17-task-palette). Saved layouts are not numbered.
   const strip = useMemo(() => stripEntries(fixedViews), [fixedViews])
   const { hints: keyHints, show: keysHeld } = useStripKeyHints(strip)
@@ -236,19 +262,45 @@ function WorkspaceView({
   }, [])
   const endViewDrag = useCallback(() => setDraggingView(null), [])
   const dropView = layouts.dropView
+  // The layout shown before this one. A view's tab dropped beside its OWN card (the Terminal tab
+  // dragged while the Terminal shows) means "beside what I was on", which is only known here.
+  const shownLayout = useRef({ runId: run.id, current: layouts.state.active, previous: null as string | null })
+  if (shownLayout.current.runId !== run.id) shownLayout.current = { runId: run.id, current: layouts.state.active, previous: null }
+  else if (shownLayout.current.current !== layouts.state.active) {
+    shownLayout.current = { runId: run.id, current: layouts.state.active, previous: shownLayout.current.current }
+  }
+  const besideItself = useCallback(
+    (view: ViewId): number | null => {
+      if (fixedActive !== view) return null
+      const previous = shownLayout.current.previous
+      const back = previous === null ? undefined : layouts.state.layouts.find((layout) => layout.name === previous)
+      if (back && !(back.columns.length === 1 && back.columns[0]?.view === view)) {
+        selectLayout(back.name)
+        return back.columns.length
+      }
+      openDeepLink(view === 'session' ? 'changes' : 'session')
+      return 1
+    },
+    [fixedActive, layouts.state.layouts, openDeepLink, selectLayout],
+  )
   const dropViewHere = useCallback(
     (view: ViewId, at: number, mode: 'insert' | 'replace') => {
       setDraggingView(null)
+      if (mode === 'insert' && besideItself(view) !== null) {
+        // Its own card offered a left and a right edge: keep the side, beside the view it returns to.
+        dropView(view, at === 0 ? 0 : MAX_COLUMNS, mode)
+        return
+      }
       dropView(view, at, mode)
     },
-    [dropView],
+    [besideItself, dropView],
   )
   const openViewBeside = useCallback(
     (view: ViewId) => {
-      const count = layouts.layout?.columns.length ?? 0
+      const count = besideItself(view) ?? layouts.layout?.columns.length ?? 0
       dropView(view, count, 'insert')
     },
-    [dropView, layouts.layout?.columns.length],
+    [besideItself, dropView, layouts.layout?.columns.length],
   )
   const columnCount = layouts.layout?.columns.length ?? 0
   const closeColumnByDrop = fixedActive === null && columnCount > 1 ? layouts.closeColumn : undefined
@@ -287,6 +339,27 @@ function WorkspaceView({
   const cover = usePanelCover<HTMLDivElement>(maximized, exitMaximized)
   const maximize = useMemo(() => ({ maximized, toggle: toggleMaximized }), [maximized, toggleMaximized])
 
+  // The Terminal tab opens the shells as a view, like Preview; a drag or ⌥-click puts them beside
+  // the view instead. The bottom drawer is the ` key's, and a column's "Move to bottom".
+  const drawerOpen = drawer.open
+  const toggleDrawer = useCallback(() => {
+    if (!terminalColumnShown) updateDrawer({ open: !drawerOpen })
+  }, [drawerOpen, terminalColumnShown, updateDrawer])
+  const { closeColumn } = layouts
+  const terminalColumns = layouts.layout?.columns
+  const moveTerminalToDrawer = useCallback(() => {
+    updateDrawer({ open: true })
+    const index = terminalColumns?.findIndex((column) => column.view === 'terminal') ?? -1
+    if (index < 0) return
+    // A layout of the shells alone has nothing to fall back to but Chat.
+    if (fixedActive !== null || terminalColumns!.length === 1) openDeepLink('session')
+    else closeColumn(index)
+  }, [closeColumn, fixedActive, openDeepLink, terminalColumns, updateDrawer])
+  const onViews = useMemo<readonly ViewId[]>(
+    () => (drawerShown || terminalColumnShown ? ['terminal'] : []),
+    [drawerShown, terminalColumnShown],
+  )
+
   // Memoized: `RunHeader` is memo'd on prop identity.
   const tabs = useMemo(
     () => (
@@ -295,11 +368,14 @@ function WorkspaceView({
         active={layouts.state.active}
         fixedViews={fixedViews}
         fixedActive={fixedActive}
+        onViews={onViews}
         onSelectFixed={openDeepLink}
         onSelect={selectLayout}
-        onRename={renameLayout}
         onClose={closeLayout}
-        onCreate={createLayout}
+        saved={savedLayouts.saved}
+        onApplySaved={applySaved}
+        onSaveCurrent={canSaveLayout ? saveCurrentLayout : undefined}
+        onDeleteSaved={deleteSavedLayout}
         notesHref={`/tasks/${run.id}/notes`}
         onViewDragStart={startViewDrag}
         onViewDragEnd={endViewDrag}
@@ -314,11 +390,15 @@ function WorkspaceView({
       layouts.state.active,
       fixedViews,
       fixedActive,
+      onViews,
       openDeepLink,
       selectLayout,
-      renameLayout,
       closeLayout,
-      createLayout,
+      savedLayouts.saved,
+      applySaved,
+      canSaveLayout,
+      saveCurrentLayout,
+      deleteSavedLayout,
       run.id,
       startViewDrag,
       endViewDrag,
@@ -329,59 +409,27 @@ function WorkspaceView({
     ],
   )
 
-  const drawerOpen = drawer.open
-  const trailing = useMemo(
+  // Icon only, beside the header's collapse button: both change how much of the screen the work gets.
+  const headerActions = useMemo(
     () => (
-      <div className="mb-1 flex shrink-0 items-center gap-0.5">
-        {terminalAllowed ? (
-          // The terminal's ONE control: it opens the drawer under any view, and stays lit while
-          // the shells sit in a column of this layout instead.
-          <Button
-            variant="outline"
-            size="sm"
-            data-action="toggle-terminal"
-            aria-label={drawerOpen ? 'Hide terminal' : 'Show terminal'}
-            aria-pressed={drawerOpen || terminalColumnShown}
-            disabled={terminalColumnShown}
-            title={
-              terminalColumnShown
-                ? 'The terminal is open in a column of this layout'
-                : drawerOpen
-                  ? 'Hide terminal — processes keep running (`)'
-                  : 'Terminal (`)'
-            }
-            className={cn(
-              'shrink-0 disabled:opacity-100',
-              drawerOpen || terminalColumnShown ? 'bg-muted text-foreground' : 'text-muted-foreground',
-            )}
-            onClick={() => updateDrawer({ open: !drawerOpen })}
-          >
-            <TerminalIcon aria-hidden="true" />
-            <span className="max-lg:hidden">Terminal</span>
-            {terminalColumnShown ? <span className="text-xs font-normal text-muted-foreground max-xl:hidden">in column</span> : null}
-          </Button>
-        ) : null}
-        <Separator orientation="vertical" className="mx-1 data-[orientation=vertical]:h-5" />
-        <Button
-          variant="outline"
-          size="sm"
-          data-action="maximize-layout"
-          aria-label="Full view"
-          title="Full view — hide everything but this layout (F)"
-          className="shrink-0 text-foreground"
-          onClick={toggleMaximized}
-        >
-          <Maximize2Icon aria-hidden="true" />
-          <span className="max-xl:hidden">Full view</span>
-        </Button>
-      </div>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        data-action="maximize-layout"
+        aria-label="Full view"
+        title="Full view — hide everything but this layout (F)"
+        className="text-muted-foreground"
+        onClick={toggleMaximized}
+      >
+        <Maximize2Icon aria-hidden="true" />
+      </Button>
     ),
-    [drawerOpen, terminalAllowed, terminalColumnShown, toggleMaximized, updateDrawer],
+    [toggleMaximized],
   )
 
   /**
    * The workspace's keys — bare keys, never while typing or with a dialog/menu open (brutus §5.2):
-   *   1…9 nth numbered tab (views, then Notes) · [ ] previous/next card · f full view · \ split the last window ·
+   *   1…9 nth numbered tab (`stripTabs`) · [ ] previous/next card · f full view · \ split the last window ·
    *   / focus the composer · ` show or hide the terminal drawer
    */
   const stripOrder = useMemo(
@@ -394,17 +442,18 @@ function WorkspaceView({
     ],
     [fixedViews, cardLayouts, fixedActive, layouts.state.active, openDeepLink, selectLayout],
   )
-  // The 1–9 keys: the numbered tabs only (`strip.ts` — views, then Notes; no layouts), so the key
+  // The 1–9 keys: the numbered tabs only (`strip.ts` — views and Notes; no layouts), so the key
   // is the number the tab wears. `[` `]` still step through every card, layouts included.
   const numbered = useMemo(
     () => [
-      ...fixedViews.map((view) => () => openDeepLink(view)),
-      () => navigate(`/tasks/${run.id}/notes`),
+      ...stripTabs(fixedViews).map((tab) =>
+        tab === 'notes' ? () => navigate(`/tasks/${run.id}/notes`) : () => openDeepLink(tab),
+      ),
     ],
     [fixedViews, openDeepLink, navigate, run.id],
   )
-  const keys = useRef({ stripOrder, numbered, toggleMaximized, terminalAllowed, drawerOpen, updateDrawer })
-  keys.current = { stripOrder, numbered, toggleMaximized, terminalAllowed, drawerOpen, updateDrawer }
+  const keys = useRef({ stripOrder, numbered, toggleMaximized, terminalAllowed, toggleDrawer })
+  keys.current = { stripOrder, numbered, toggleMaximized, terminalAllowed, toggleDrawer }
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey || event.repeat || event.defaultPrevented) return
@@ -436,7 +485,7 @@ function WorkspaceView({
         input.focus()
       } else if (event.key === '`') {
         if (!now.terminalAllowed) return
-        now.updateDrawer({ open: !now.drawerOpen })
+        now.toggleDrawer()
       } else return
       event.preventDefault()
     }
@@ -463,13 +512,24 @@ function WorkspaceView({
 
   const actions: ColumnActions = useMemo(
     () => ({
-      addColumn: layouts.addColumn,
+      // A view tab stays the one view it stands for: splitting it builds the working arrangement.
+      addColumn:
+        fixedActive === null ? layouts.addColumn : (view: ViewId) => dropView(view, columnCount, 'insert'),
       closeColumn: layouts.closeColumn,
       setColumnView: requestColumnView,
       resizeColumns: layouts.resizeColumns,
       moveColumn: layouts.moveColumn,
     }),
-    [layouts.addColumn, layouts.closeColumn, requestColumnView, layouts.resizeColumns, layouts.moveColumn],
+    [
+      fixedActive,
+      dropView,
+      columnCount,
+      layouts.addColumn,
+      layouts.closeColumn,
+      requestColumnView,
+      layouts.resizeColumns,
+      layouts.moveColumn,
+    ],
   )
 
   // A file or commit named in the chat opens beside it, in the window that remembers it by key.
@@ -510,7 +570,6 @@ function WorkspaceView({
         active: fixedActive === null && layout.name === layouts.state.active,
       })),
       selectLayout,
-      newLayout: createLayout,
       maximized,
       toggleMaximized,
       // Getters: the composer and split buttons mount after this commit (history loads), so they
@@ -522,7 +581,7 @@ function WorkspaceView({
         allowed: terminalAllowed,
         open: drawerOpen,
         inColumn: terminalColumnShown,
-        toggle: () => updateDrawer({ open: !drawerOpen }),
+        toggle: toggleDrawer,
         openInColumn: () => {
           updateDrawer({ open: false })
           openBeside('terminal')
@@ -551,6 +610,27 @@ function WorkspaceView({
       if (noteFor(mark)?.phase === 'draft') discardNote(mark)
     },
     [discardNote, noteFor],
+  )
+
+  // A terminal column's bar docks the same shells at the bottom instead.
+  const headerExtras = useCallback(
+    (view: ViewId) =>
+      view === 'terminal' && terminalAllowed ? (
+        <IconTooltip label="Move to bottom — under every view">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            data-action="terminal-to-drawer"
+            aria-label="Move to bottom"
+            onClick={moveTerminalToDrawer}
+            className="text-soft-foreground hover:text-foreground"
+          >
+            <PanelBottomIcon aria-hidden="true" className="size-3.5" />
+          </Button>
+        </IconTooltip>
+      ) : null,
+    [moveTerminalToDrawer, terminalAllowed],
   )
 
   const renderView = useCallback(
@@ -618,7 +698,7 @@ function WorkspaceView({
 
   return (
     <div data-route="task-workspace" data-run-id={run.id} className="flex h-full min-h-0 flex-col">
-      <RunHeader run={run} tab={headerTab} onMarkedUnread={markedUnread} tabs={tabs} trailing={trailing} wide />
+      <RunHeader run={run} tab={headerTab} onMarkedUnread={markedUnread} tabs={tabs} headerActions={headerActions} wide />
       {layouts.loadFailed ? (
         <div
           data-slot="layouts-unloaded"
@@ -658,7 +738,7 @@ function WorkspaceView({
                 columns={layouts.layout.columns}
                 actions={actions}
                 renderView={renderView}
-                editable={fixedActive === null}
+                headerExtras={headerExtras}
               />
             ) : (
               <CenteredState

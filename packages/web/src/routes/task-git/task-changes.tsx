@@ -3,7 +3,7 @@ import { FileDiffIcon, GitCommitHorizontalIcon } from 'lucide-react'
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react'
 import { useParams, useSearchParams } from 'react-router'
 
-import { ApiError, createRunPr, getRunFile, openRunFileInApp, pushRun, runFileRawUrl } from '@/api/client'
+import { ApiError, getRunFile, openRunFileInApp, runFileRawUrl } from '@/api/client'
 import { queryKeys, useHealth, useRepo, useRun, useRunChanges } from '@/api/queries'
 import type { ApiRun, ChangedFile } from '@open-mercato/cezar-api-client'
 import { CenteredState } from '@/components/centered-state'

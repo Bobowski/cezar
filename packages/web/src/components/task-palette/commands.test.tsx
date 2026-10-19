@@ -139,6 +139,15 @@ describe('git', () => {
     expect(byId.get('git:create-draft-pr')?.unavailable).toBe('not now')
   })
 
+  it('a step in flight makes every git entry unavailable, the shown one under the in-flight label', () => {
+    // Mid-turn the policy may already show the NEXT step (Update branch → Create PR here).
+    const { byId } = build(run('running'), { git: step, gitPending: 'update-branch' })
+    expect(byId.get('git:create-pr')?.label).toBe('Updating branch…')
+    expect(byId.get('git:create-pr')?.unavailable).toBe('Already in progress')
+    expect(byId.get('git:create-draft-pr')?.label).toBe('Create draft PR')
+    expect(byId.get('git:create-draft-pr')?.unavailable).toBe('Already in progress')
+  })
+
   it('offers Open pull request only for an http PR link', () => {
     expect(build(run('done'), { prUrl: 'https://github.com/o/r/pull/7' }).byId.has('open-pr')).toBe(true)
     expect(build(run('done'), { prUrl: '#7' }).byId.has('open-pr')).toBe(false)

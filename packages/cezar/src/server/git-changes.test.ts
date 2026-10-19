@@ -866,6 +866,27 @@ describe('session git API routes', () => {
     expect((await commit(run.id, {})).status).toBe(400);
   });
 
+  it('POST pr/adopt records the PR found by branch, leaves the status alone, and is idempotent', async () => {
+    const previous = process.env.CEZ_DRY_RUN;
+    process.env.CEZ_DRY_RUN = '1'; // the forge lookup answers the fixed demo PR, no gh
+    try {
+      const adopt = () => apiRequest(app, `/api/v1/runs/${run.id}/pr/adopt`, { method: 'POST' });
+      // No remote, no target: nothing to look up.
+      expect(await (await adopt()).json()).toEqual({ found: false });
+
+      g(worktree, 'remote', 'add', 'origin', 'git@github.com:open-mercato/cezar.git');
+      store.updateRun(run.id, { status: 'waiting' });
+      const url = 'https://github.com/open-mercato/demo/pull/777';
+      expect(await (await adopt()).json()).toEqual({ found: true, url });
+      expect(store.getRun(run.id)).toMatchObject({ pullRequestUrl: url, status: 'waiting' });
+      expect(await (await adopt()).json()).toEqual({ found: true, url });
+      expect((await apiRequest(app, '/api/v1/runs/nope/pr/adopt', { method: 'POST' })).status).toBe(404);
+    } finally {
+      if (previous === undefined) delete process.env.CEZ_DRY_RUN;
+      else process.env.CEZ_DRY_RUN = previous;
+    }
+  });
+
   it('POST git/push with no remote is a 409 with a human reason', async () => {
     const res = await apiRequest(app, `/api/v1/runs/${run.id}/git/push`, { method: 'POST' });
     expect(res.status).toBe(409);
@@ -1325,7 +1346,7 @@ describe('worktreeGitStatus — what has not left the worktree', () => {
       g(dir, 'push', '-q', 'origin', 'main');
       const fork = g(dir, 'rev-parse', 'HEAD').trim();
       g(dir, 'checkout', '-q', '-b', 'task');
-      expect((await worktreeGitStatus(dir, 'main')) as { behind: number | null }).toMatchObject({ behind: 0 });
+      expect((await worktreeGitStatus(dir, 'main')) as { behind: number | null }).toMatchObject({ behind: 0, ahead: 0 });
 
       // One commit lands on the REMOTE main (another clone pushed it) and is fetched — the local
       // main never moves, so only the remote-tracking ref knows the branch is behind.

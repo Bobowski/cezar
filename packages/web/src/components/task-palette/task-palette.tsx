@@ -269,7 +269,7 @@ export function TaskPalette() {
       return
     }
     performed.current = true
-    keepSubject.current = DIALOG_COMMANDS.has(command.id)
+    keepSubject.current = keepsSubject(command.id)
     setOpen(false)
     const run = beside && command.performBeside ? command.performBeside : command.perform
     // Clipboard writes and new tabs need the key press's user gesture, which a timer loses (WebKit).
@@ -676,8 +676,11 @@ function shortcutFor(command: TaskCommand, bindings: ReadonlyMap<string, string>
   return command.shortcut
 }
 
-/** Commands that open a dialog: the palette keeps their host mounted after it closes. */
-const DIALOG_COMMANDS = new Set(['stop', 'delete', 'git:commit', 'git:commit-push'])
+/** Commands whose host the palette keeps mounted after it closes: the ones that open a dialog,
+ *  and every git step — the agent's turn it starts must be seen to end (busy state, adoption of an
+ *  opened PR), and with no agent to ask Commit opens its dialog. */
+const DIALOG_COMMANDS = new Set(['stop', 'delete'])
+export const keepsSubject = (id: string) => DIALOG_COMMANDS.has(id) || id.startsWith('git:')
 
 /** Commands that must run inside the key press or click that chose them. */
 const needsGesture = (id: string) => id.startsWith('copy:') || id === 'open-pr'
@@ -871,6 +874,7 @@ function SubjectCommands({
       run,
       canResume: openIn.canResumeHere,
       git: git.action,
+      gitPending: git.pending,
       workspace: taskWorkspaceFor(run.id),
       terminalAvailable,
       openChoices: openIn.choices,
@@ -911,7 +915,12 @@ function SubjectCommands({
   latest.current = commands
   React.useEffect(() => onCommands({ runId: run.id, commands: latest.current }), [signature, onCommands, run.id])
 
-  const busy = actions.confirming !== null || git.commitOpen || actions.delete.isPending || actions.cancel.isPending
+  const busy =
+    actions.confirming !== null ||
+    git.commitOpen ||
+    git.pending !== null ||
+    actions.delete.isPending ||
+    actions.cancel.isPending
   const wasBusy = React.useRef(busy)
   React.useEffect(() => {
     if (wasBusy.current && !busy) onDialogDone()

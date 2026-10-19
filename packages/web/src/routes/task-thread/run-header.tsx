@@ -1264,7 +1264,7 @@ function GitStepAndKebab({
     <>
       {/* The one git button, top right. Desktop only: on phones it leads the menu instead. */}
       <span className="hidden md:contents">
-        <GitActions action={git.action} onAction={git.onAction} />
+        <GitActions action={git.action} pending={git.pending} onAction={git.onAction} />
       </span>
       <ActionsKebab run={run} actions={actions} git={git} showRunControls={showRunControls} />
       {git.dialogs}
@@ -1291,7 +1291,7 @@ function ActionsKebab({
 }) {
   const canTerminal = useCanOpenTerminal(run)
   const commands = buildTaskCommands(
-    { run, canResume: canTerminal, git: git.action, workspace: null, terminalAvailable: false, openChoices: [], taskUrl: '' },
+    { run, canResume: canTerminal, git: git.action, gitPending: git.pending, workspace: null, terminalAvailable: false, openChoices: [], taskUrl: '' },
     {
       markRead: () => actions.markRead.mutate(),
       markUnread: () => actions.markUnread.mutate(),

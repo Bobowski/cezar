@@ -92,6 +92,8 @@ export const MESSAGE_SURFACES = [
   'bookmarklet',
   'existing_session',
   'ask_answer',
+  // The run header's git buttons (Create PR, Push, Update branch, …), sent to the task's agent.
+  'git_step',
   'review',
   'github',
   'tracker',

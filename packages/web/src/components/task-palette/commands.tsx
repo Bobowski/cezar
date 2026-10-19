@@ -5,6 +5,7 @@ import {
   ColumnsIcon,
   CopyIcon,
   ExternalLinkIcon,
+  LoaderCircleIcon,
   LayoutGridIcon,
   LinkIcon,
   MailIcon,
@@ -25,7 +26,7 @@ import { openInIcon, type OpenInChoice } from '@/components/open-in-menu'
 import type { GitAction, GitActionId } from '@/lib/git-actions'
 import type { TaskWorkspaceBridge } from '@/lib/task-workspace-bridge'
 import { isRunActive, resumeHint, runActionFlags } from '@/routes/task-thread/run-actions'
-import { GIT_ACTION_ICONS } from '@/routes/task-git/git-toolbar'
+import { GIT_ACTION_ICONS, GIT_ACTION_PENDING_LABELS } from '@/routes/task-git/git-toolbar'
 import { FIXED_VIEW_ORDER, VIEW_PATHS, viewLabel, type ViewId } from '@/routes/task-workspace/layout-state'
 import { stripEntries, stripTabs, type StripEntry } from '@/routes/task-workspace/strip'
 import { VIEW_ICONS } from '@/routes/task-workspace/view-picker'
@@ -95,6 +96,9 @@ export interface TaskCommandInput {
   /** The header's resume gate (`useCanOpenTerminal`) narrowed by provider availability. */
   canResume: boolean
   git: GitAction | null
+  /** The git step in flight on this task (the header's `useRunGitStep`), if any: every git entry
+   *  is then unavailable and the step's own entry says so — a second send would repeat it. */
+  gitPending?: GitActionId | null
   /** Present only when `run` is the task on screen. */
   workspace: TaskWorkspaceBridge | null
   terminalAvailable: boolean
@@ -219,17 +223,26 @@ function actionCommands({ run, workspace }: TaskCommandInput, on: TaskCommandHan
   return commands
 }
 
-function gitCommands({ git, prUrl }: TaskCommandInput, on: TaskCommandHandlers): TaskCommand[] {
+function gitCommands({ git, gitPending, prUrl }: TaskCommandInput, on: TaskCommandHandlers): TaskCommand[] {
   const commands: TaskCommand[] = git
-    ? [git, ...(git.alternatives ?? [])].map((step) => ({
-        id: `git:${step.id}`,
-        group: 'git' as const,
-        label: step.label,
-        icon: GIT_ACTION_ICONS[step.id],
-        keywords: ['git'],
-        ...(step.enabled ? {} : { unavailable: step.reason ?? 'Not available right now' }),
-        perform: () => on.gitAction(step.id),
-      }))
+    ? [git, ...(git.alternatives ?? [])].map((step) => {
+        // The shown step carries the in-flight one's label: mid-turn the policy can already have
+        // moved on (Commit and push → Push) while the agent is still at it.
+        const busy = gitPending ? step.id === git.id : false
+        return {
+          id: `git:${step.id}`,
+          group: 'git' as const,
+          label: busy && gitPending ? GIT_ACTION_PENDING_LABELS[gitPending] : step.label,
+          icon: busy ? <LoaderCircleIcon aria-hidden="true" className="motion-safe:animate-spin" /> : GIT_ACTION_ICONS[step.id],
+          keywords: ['git'],
+          ...(gitPending
+            ? { unavailable: 'Already in progress' }
+            : step.enabled
+              ? {}
+              : { unavailable: step.reason ?? 'Not available right now' }),
+          perform: () => on.gitAction(step.id),
+        }
+      })
     : []
   if (prUrl && /^https?:\/\//.test(prUrl)) {
     commands.push({

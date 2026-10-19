@@ -611,6 +611,14 @@ export const createPrResponseSchema = z.object({
 });
 export type CreatePrResponse = z.infer<typeof createPrResponseSchema>;
 
+/** `POST /runs/:id/pr/adopt` — record the PR the agent opened from this task's branch, found on
+ *  the forge by its head. `found: false` when there is none (or gh cannot say). */
+export const adoptPrResponseSchema = z.discriminatedUnion('found', [
+  z.object({ found: z.literal(true), url: z.string() }),
+  z.object({ found: z.literal(false) }),
+]);
+export type AdoptPrResponse = z.infer<typeof adoptPrResponseSchema>;
+
 /**
  * `POST /runs/:id/messages` — one of three shapes (#472), by how far the run has got:
  * `delivered` (a live session took it), `queued` (still waiting for a slot, so it was stacked

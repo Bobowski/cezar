@@ -289,6 +289,7 @@ import {
   withResolvedClaudeBin,
 } from './open-in-app.ts';
 import { createDraftPr, type DraftPrOutcome } from './pr.ts';
+import { findBranchPr, resolvePrTarget } from './forge/github.ts';
 import {
   DEFAULT_TELEMETRY_URL,
   TELEMETRY_POLICY_VERSION,
@@ -5424,6 +5425,25 @@ export function createApp(deps: ServerDeps) {
         return c.json({ error: outcome.error, manual: `git merge ${branch}` }, 409);
       }
       return c.json({ url: outcome.url, dryRun: outcome.dryRun }, 201);
+    })
+
+    // Create PR by the task's agent: once its turn ends, the PR it opened is found by branch and
+    // recorded, even if the agent never declared `CEZ:PR`. Best-effort; the status stays.
+    .post('/runs/:id/pr/adopt', async (c) => {
+      const { root: repoRoot, store } = c.get('project');
+      const id = c.req.param('id');
+      const run = store.getRun(id);
+      if (!run) return c.json({ error: 'not found' }, 404);
+      if (run.pullRequestUrl) return c.json({ found: true as const, url: run.pullRequestUrl });
+      const worktree = worktreeOf(run);
+      const target = worktree ? await resolvePrTarget(run) : null;
+      const pr = worktree && target ? await findBranchPr(worktree, target) : null;
+      if (!pr) return c.json({ found: false as const });
+      forgetRefStatus(repoRoot, pr.number);
+      // Unlike `POST /pr`, the status stays: the agent's session, not the cockpit, owns the run.
+      store.updateRun(id, { pullRequestUrl: pr.url });
+      store.appendEvent(id, { type: 'note', message: `PR opened by the agent: ${pr.url}` });
+      return c.json({ found: true as const, url: pr.url });
     })
 
     // Archived tasks keep their worktree for inspection; this is the explicit

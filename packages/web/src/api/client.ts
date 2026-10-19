@@ -56,6 +56,7 @@ import type {
   WorktreesResponse,
   ContinueResponse,
   CreatePrResponse,
+  AdoptPrResponse,
   CreateRunInput,
   CreateRunResponse,
   DeleteDraftResponse,
@@ -1696,6 +1697,16 @@ export async function createRunPr(id: string, opts: { draft?: boolean } = {}): P
       throw retry instanceof ApiError && retry.status === 0 ? error : retry
     }
   }
+}
+
+/** Record the PR the run's agent opened, found on the forge by the run's branch. */
+export async function adoptRunPr(id: string): Promise<AdoptPrResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].runs[':id'].pr.adopt.$post({
+      param: { projectId: queryScope(), id: encodeURIComponent(id) },
+    }),
+    runPath(id, '/pr/adopt'),
+  )
 }
 
 /** Rename a run (#389): the edit becomes the display title and wins over any auto-summary. */

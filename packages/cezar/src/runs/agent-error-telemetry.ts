@@ -1,5 +1,6 @@
 import { isOutdatedBackendError } from '../core/agent-errors.ts';
 import { RUNNER_IDS } from '../core/agent-runner.ts';
+import { isUsageLimitMessage, parseUsageLimit } from '../core/usage-limit.ts';
 import { reportError, telemetryEnabled } from '../telemetry.ts';
 
 /** The prefixes `run.ts` and the runners put in front of the agent's own text. */
@@ -60,6 +61,10 @@ export function reportAgentError(
 ): void {
   // Without consent there is nothing to send, so skip the masking work on the event path too.
   if (!telemetryEnabled() || INTERRUPTED_RE.test(event.message)) return;
+  const limited = isUsageLimitMessage(event.message);
+  // A limit with a readable reset is the account's state, not a failure: auto-resume handles it
+  // and `task_failed`'s `usage_limit` kind counts it (#1438). Only one cezar cannot schedule is.
+  if (limited && parseUsageLimit(event.message) !== null) return;
   const id = (RUNNER_IDS as readonly string[]).includes(backend ?? '') ? backend! : 'unknown';
   const masked = scrubAgentErrorMessage(event.message, id);
   if (masked === '') return;
@@ -67,10 +72,15 @@ export function reportAgentError(
   error.name = 'AgentError';
   // No stack: it would be cezar's own frames, and the panel then groups by the message.
   error.stack = undefined;
-  reportError(error, {
-    'agent.backend': id,
-    'agent.event': event.type,
-    ...(typeof event.fatal === 'boolean' ? { 'agent.fatal': event.fatal } : {}),
-    'agent.outdated': isOutdatedBackendError(event.message),
-  });
+  reportError(
+    error,
+    {
+      'agent.backend': id,
+      'agent.event': event.type,
+      ...(typeof event.fatal === 'boolean' ? { 'agent.fatal': event.fatal } : {}),
+      'agent.outdated': isOutdatedBackendError(event.message),
+    },
+    // One group for every limit phrasing the parser misses — each is a parser gap to close.
+    limited ? { code: 'usage_limit_unparsed' } : {},
+  );
 }

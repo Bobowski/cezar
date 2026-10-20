@@ -108,6 +108,23 @@ describe('reportAgentError', () => {
     reportAgentError('claude', { type: 'error', message: 'interrupted — cezar process exited during the run' });
     expect(reported()).toEqual([]);
   });
+
+  it('skips a usage limit auto-resume can schedule — the account\'s state, not a failure (telemetry 987e8238)', () => {
+    reportAgentError('claude', { type: 'error', message: "You've hit your session limit · resets 3:10pm (UTC)" });
+    reportAgentError('claude', { type: 'session.error', message: 'Claude AI usage limit reached|1760450400' });
+    expect(reported()).toEqual([]);
+  });
+
+  it('reports a usage limit with no readable reset under one code — a parser gap to close', () => {
+    reportAgentError('codex', { type: 'error', message: 'You have hit your usage limit. Upgrade to continue.' });
+    expect(reported()[0]?.message).toBe('codex: You have hit your usage limit. Upgrade to continue.');
+    expect(vi.mocked(reportError).mock.calls[0]?.[2]).toEqual({ code: 'usage_limit_unparsed' });
+  });
+
+  it('gives an ordinary agent error no code, so it keeps grouping by its own message', () => {
+    reportAgentError('claude', { type: 'error', message: 'API Error: 529 Overloaded' });
+    expect(vi.mocked(reportError).mock.calls[0]?.[2]).toEqual({});
+  });
 });
 
 describe('RunStore.appendEvent → agent error reports', () => {

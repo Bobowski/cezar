@@ -10,6 +10,8 @@ import { cn } from '@/lib/utils'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { bareButton } from '@/components/bare-control'
 
+import { offerWhenIdle, WhenIdleButton } from './self-update-when-idle'
+
 /** The PR number a preview version was cut for (`0.13.0-pr1169.1234` → 1169), else null. */
 export function pullOfVersion(version: string): number | null {
   const match = /-pr(\d+)\./.exec(version)
@@ -27,10 +29,12 @@ type Tab = 'worktrees' | 'pulls'
 export function DevelopmentPanel({
   data,
   onApply,
+  onSchedule,
   applying,
 }: {
   data: SelfUpdateStatus
   onApply: (target: string) => void
+  onSchedule: (target: string) => void
   applying: boolean
 }) {
   const dev = useSelfUpdateDevelopment()
@@ -197,7 +201,7 @@ export function DevelopmentPanel({
       </div>
 
       <div className="flex min-w-0 items-center justify-between gap-2">
-        <p className="min-w-0 truncate text-xs text-muted-foreground" title={pickedCheckout?.worktree}>
+        <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={pickedCheckout?.worktree}>
           {pickedCheckout
             ? needsBuild
               ? `${pickedCheckout.built ? 'Built before its last commit' : 'Not built yet'} — runs npm run build in ${pickedCheckout.worktree} first (about a minute).`
@@ -208,6 +212,18 @@ export function DevelopmentPanel({
                 ? 'Linked, not copied: a worktree that is not built, or built before its last commit, is built before the switch.'
                 : 'Preview builds CI publishes for green same-repo pull requests.'}
         </p>
+        {!targetIsActive && offerWhenIdle(data, target) ? (
+          <WhenIdleButton
+            label="When idle"
+            doing={
+              pickedPull
+                ? `${pickedPull.installed ? 'switches to' : 'installs'} PR #${pickedPull.number}'s build`
+                : `${needsBuild ? 'builds and switches to' : 'switches to'} ${pickedCheckout!.branch}`
+            }
+            onClick={() => onSchedule(target)}
+            disabled={!data.canSelfUpdate || applying || jobBusy}
+          />
+        ) : null}
         <Button
           size="sm"
           variant="contrast"

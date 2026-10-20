@@ -1,4 +1,3 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ArchiveIcon,
   BotIcon,
@@ -18,21 +17,13 @@ import {
   Trash2Icon,
 } from 'lucide-react'
 import { Fragment, memo, useEffect, useId, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
-import { Link, useNavigate } from '@/lib/project-router'
+import { Link } from '@/lib/project-router'
 
-import { ApiError, archiveRun, cancelRun, deleteRun, getConfig, startLifecycleRemoval, openRunIn, openRunInCli } from '@/api/client'
 import {
-  queryKeys,
-  useConfig,
   useHealth,
-  useMarkRunSeen,
-  useMarkRunUnseen,
-  useOpenTargets,
   usePatchRun,
-  usePinRun,
   useProjectRepoBase,
   useReferenceProjectId,
-  useProviderStatus,
   useRunHandoff,
   useRuns,
 } from '@/api/queries'
@@ -46,8 +37,6 @@ import { ResolveConflictsButton } from '@/components/reference-conflict-action'
 import { ReferenceStatusProvider } from '@/components/reference-status'
 import { StatusDot } from '@/components/status-dot'
 import { TabLink } from '@/components/tab-link'
-import { forgetViewMemory } from '@/lib/view-memory'
-import { forgetTask } from '@/routes/task-workspace/layout-state'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -57,7 +46,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { OpenInMenu, type OpenInChoice } from '@/components/open-in-menu'
+import { OpenInMenu } from '@/components/open-in-menu'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { toast } from '@/components/ui/toaster'
@@ -65,7 +54,6 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { DirectionalUsage } from '@/components/directional-usage'
 import { ATTENTION_RANK, budgetStop, deriveAttention, type AttentionTone } from '@/lib/attention'
 import { queuePositions, runTitle } from '@/lib/task-groups'
-import { usableRunners } from '@/lib/provider-status'
 import {
   formatCost,
   prNumber,
@@ -78,15 +66,15 @@ import { usageMetricVisibility } from '@/lib/token-metrics'
 import { isHttpUrl } from '@/lib/utils'
 
 import { Markdown } from './markdown'
-import { cliTargetResumes, cliTargetRunner, finishTitle, resumeHint, runActionFlags } from './run-actions'
+import { finishTitle, resumeHint, runActionFlags } from './run-actions'
 import { cn } from '@/lib/utils'
-import { GIT_ACTION_ICONS, GitActions } from '../task-git/git-toolbar'
+import { GIT_ACTION_ICONS, GIT_ACTION_PENDING_LABELS, GitActions } from '../task-git/git-toolbar'
 import { useRunGitStep, type RunGitStep } from '../task-git/run-git-step'
-import { RunConfirmDialog, type RunConfirmKind } from './run-confirm-dialog'
+import { RunConfirmDialog } from './run-confirm-dialog'
 import { useRunEngine } from './run-engine'
 import { WorkflowSteps } from './step-rail'
-import { useFinishRun } from './use-finish-run'
 import { useDraft } from './thread-draft'
+import { copyToClipboard, useCanOpenTerminal, useRunActions, useRunOpenChoices, type RunActions } from './use-run-actions'
 
 /**
  * The run header (spec §"Task thread" → Header): editable title + status pill, the meta line,
@@ -176,7 +164,7 @@ function RunHeaderView({
   const budget = budgetStop(run)
   const hint = resumeHint(run)
   const [notesOpen, setNotesOpen] = useState(false)
-  const actions = useRunActions(run, onMarkedUnread)
+  const actions = useRunActions(run, { onMarkedUnread })
 
   // The queue position a parked run shows in its pill ("queued #2"). Reads the shared runs-list
   // query — already warm from the sidebar quick-list — because position is a property of the
@@ -382,7 +370,7 @@ function RunActionButtons({
       <div data-slot="run-actions" className="hidden items-center gap-1.5 md:flex @max-4xl/strip:hidden">
         <OpenInMenuForRun run={run} canResume={canTerminal} onResume={() => actions.terminal.mutate()} />
         {/* The run's one next git step (Commit, Push, Create PR, Update branch, …), or nothing. */}
-        <GitActions action={git.action} onAction={git.onAction} />
+        <GitActions action={git.action} pending={git.pending} onAction={git.onAction} />
         {primary === 'finish' ? (
           <Button variant="default" size="sm" title={finishTitle(run.status)} onClick={() => actions.finish.mutate()}>
             <CheckIcon aria-hidden="true" />
@@ -426,37 +414,7 @@ function OpenInMenuForRun({
   canResume: boolean
   onResume: () => void
 }) {
-  const targets = useOpenTargets()
-  const providers = useProviderStatus()
-  const open = useMutation({
-    mutationFn: (target: string) => openRunIn(run.id, target),
-    onError: (error: Error) => toast(error.message, { tone: 'danger' }),
-  })
-  const availableRunners = usableRunners(providers.data)
-  // The action routes remain authoritative for a stale browser. Once the complete status has
-  // arrived, hide only unavailable *agent* handoffs; editors, Finder, and file tools stay
-  // available because they do not launch a provider.
-  const agentAvailable = (runner: ApiRun['runner']) =>
-    !providers.isSuccess || availableRunners.includes(runner ?? 'claude')
-  const canResumeHere = canResume && agentAvailable(run.runner)
-  const choices: OpenInChoice[] = run.worktreePath
-    ? (targets.data?.targets ?? [])
-        .filter((target) => {
-          const runner = cliTargetRunner(target.id)
-          return runner === undefined || (!run.worktreeLifecycle?.activeOperationId && agentAvailable(runner))
-        })
-        // Agent-CLI targets (#402): the one matching this run's own runner resumes THIS run's
-        // session when one exists — label that explicitly so it reads as different from just
-        // opening the editor/file-manager entries. Every other CLI (wrong backend, or no session
-        // yet) still opens, just starts clean — no silent cross-backend resume attempt.
-        .map((target) => {
-          const resumes = cliTargetResumes(run, target.id)
-          return {
-            target,
-            ...(resumes ? { suffix: ' (resume)', title: "Resume this run's session" } : {}),
-          }
-        })
-    : []
+  const { choices, canResumeHere, open } = useRunOpenChoices(run, canResume)
   if (!canResumeHere && choices.length === 0) return null
 
   const copyPath = () => {
@@ -471,7 +429,7 @@ function OpenInMenuForRun({
   return (
     <OpenInMenu
       choices={choices}
-      onPick={(target) => open.mutate(target)}
+      onPick={open}
       title="Resume in a terminal, or open the worktree locally"
       triggerVariant="outline"
       leading={
@@ -495,121 +453,6 @@ function OpenInMenuForRun({
       }
     />
   )
-}
-
-/** The mutations + confirm state, bundled so the desktop bar and the mobile kebab drive the
- *  exact same behavior. Every failure surfaces the server's own words as a danger toast. */
-function useRunActions(run: ApiRun, onMarkedUnread?: () => void) {
-  const queryClient = useQueryClient()
-  const navigate = useNavigate()
-  const [confirming, setConfirming] = useState<RunConfirmKind | null>(null)
-  const config = useConfig()
-  const configured = config.data?.worktreeLifecycle
-  const lifecycleDelete = !!run.worktreeLifecycle || (!!run.worktreePath && !!((configured?.afterCreate.length ?? 0) + (configured?.beforeRemove.length ?? 0)))
-
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
-  const onError = (error: Error) => {
-    // Every 409 here says the same thing: the record these buttons were drawn from is not the run
-    // the server has (Continue on a run that is running again, Cancel on one that just finished).
-    // Refetch it, so the bar redraws to the truth instead of offering the same refused action —
-    // the composer's rule (deliver-prompt.ts) and the thread's healer (run-reconcile.ts), applied
-    // to the actions. `useSendMessage` in queries.ts has always done exactly this.
-    if (error instanceof ApiError && error.status === 409) void invalidate()
-    toast(error.message, { tone: 'danger' })
-  }
-
-  // Shared with the review panel's ✓ Accept (use-finish-run.ts) — the review-accept semantics
-  // must be ONE implementation, not two buttons that happen to agree today.
-  const finish = useFinishRun(run.id)
-  const archive = useMutation({
-    mutationFn: () => archiveRun(run.id, !run.archived, 'task_view'),
-    onSuccess: invalidate,
-    onError,
-  })
-  // Pin/unpin (#935) — the shared hook rather than a local mutation, because the sidebar and the
-  // Tasks table drive the same action and the cache rule belongs in one place. Toggling off the
-  // record, exactly like archive above.
-  const pinMutation = usePinRun('task_view')
-  const pin = {
-    isPending: pinMutation.isPending,
-    mutate: () => pinMutation.mutate({ id: run.id, pinned: !run.pinned }, { onError }),
-  }
-  // Mark unread (#775) drives the shared optimistic hook rather than a local mutation: the
-  // cache choreography (clear `seenAt`, guarded rollback) belongs next to its read twin in
-  // queries.ts, and no `invalidate` is wanted here — an invalidation would refetch the list
-  // and reinstate the receipt before the server's own answer lands.
-  const markUnreadMutation = useMarkRunUnseen()
-  const markUnread = {
-    isPending: markUnreadMutation.isPending,
-    mutate: () => {
-      // Before the mutation, so the Session tab's suppression is in place by the time the
-      // optimistic write re-renders the thread and re-evaluates its auto-mark-read effect.
-      onMarkedUnread?.()
-      markUnreadMutation.mutate(run.id, { onError })
-    },
-  }
-  // Mark read — the twin of the above, through the same optimistic hook the thread's own
-  // auto-read uses, so a click here and opening the task stamp the receipt identically.
-  const markReadMutation = useMarkRunSeen()
-  const markRead = {
-    isPending: markReadMutation.isPending,
-    mutate: () => markReadMutation.mutate(run.id, { onError }),
-  }
-  const cancel = useMutation({ mutationFn: () => cancelRun(run.id), onSuccess: invalidate, onError })
-  const deleteMutation = useMutation({
-    mutationFn: () => deleteRun(run.id),
-    onSuccess: () => {
-      invalidate()
-      // The task is gone for good, so its browser-local state goes with it (spec
-      // `2026-10-07-task-workspace` §5.3). The server drops the shells, their process trees and
-      // the addresses they printed; the layouts and the drawer live in localStorage, which no
-      // server route can reach — and a task id is never reused, so leaving them would be a leak
-      // nothing ever cleans up.
-      forgetTask(run.id)
-      forgetViewMemory(`${run.id}:`)
-      // The run is gone — so is this page. Home is the only honest destination.
-      void navigate('/')
-    },
-    onError,
-  })
-  const terminal = useMutation({
-    mutationFn: () => openRunInCli(run.id),
-    onError: (error: Error) => {
-      // The legacy 409 fallback: no terminal emulator → the server sends the manual command;
-      // put it on the clipboard so "no terminal" still ends with the user one paste away.
-      if (error instanceof ApiError && error.command) {
-        void copyToClipboard(error.command, 'No terminal found — command copied to clipboard.')
-        return
-      }
-      onError(error)
-    },
-  })
-
-  return {
-    finish,
-    archive,
-    pin,
-    markUnread,
-    markRead,
-    cancel,
-    delete: deleteMutation,
-    lifecycleDelete,
-    terminal,
-    confirming,
-    setConfirming,
-  }
-}
-
-type RunActions = ReturnType<typeof useRunActions>
-
-async function copyToClipboard(text: string, doneMessage: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(text)
-    toast(doneMessage)
-  } catch {
-    // No clipboard access (permissions, http) — show the command itself; it is the payload.
-    toast(`Run manually: ${text}`)
-  }
 }
 
 /**
@@ -869,7 +712,7 @@ function MetaRow({
 
 /** The task's references, resolved once for the whole header so every chip and the git step are
  *  answered by the same status batch. */
-function useRunReferences(run: ApiRun) {
+export function useRunReferences(run: ApiRun) {
   // #526: a chip may be synthesized from a CEZ:PR / CEZ:ISSUE marker, and the only repository
   // such a link may name is the one on screen — never the transcript's.
   const repoBase = useProjectRepoBase()
@@ -1311,12 +1154,12 @@ function MoreMenu({
               <DropdownMenuItem
                 key={choice.id}
                 data-action={choice.id}
-                disabled={!choice.enabled}
+                disabled={!choice.enabled || git.pending !== null}
                 title={choice.reason}
                 onSelect={() => git.onAction(choice.id)}
               >
                 {GIT_ACTION_ICONS[choice.id]}
-                {choice.label}
+                {git.pending === choice.id ? GIT_ACTION_PENDING_LABELS[choice.id] : choice.label}
               </DropdownMenuItem>
             ))}
             <DropdownMenuSeparator />
@@ -1372,7 +1215,7 @@ function MoreMenu({
           <DropdownMenuItem
             data-slot="archive-run"
             aria-pressed={Boolean(run.archived)}
-            onSelect={() => actions.archive.mutate()}
+            onSelect={() => actions.archive.mutate(undefined)}
           >
             <ArchiveIcon aria-hidden="true" className={cn(run.archived && TOGGLE_ON_ICON_CLASS)} />
             {run.archived ? 'Unarchive' : 'Archive'}
@@ -1478,10 +1321,3 @@ function useHeaderCollapsed(): [boolean, (next: boolean) => void] {
   return [collapsed, update]
 }
 
-/** Terminal resume spawns a terminal on the SERVER's machine, so a hosted cockpit
- *  (`localHandoff: false`) never offers it — the route 409s there (telemetry f179cc7d). Only an
- *  explicit `false` hides it: the route stays authoritative while health is still loading. */
-function useCanOpenTerminal(run: ApiRun): boolean {
-  const localHandoff = useHealth().data?.capabilities?.localHandoff
-  return runActionFlags(run).terminal && localHandoff !== false
-}

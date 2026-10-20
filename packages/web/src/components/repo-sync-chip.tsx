@@ -27,13 +27,13 @@ export function RepoSyncChip() {
     },
     onError: (error: Error) => toast(`Could not pull: ${error.message}`, { tone: 'danger' }),
   })
-  if (!sync?.upstream || sync.behind === 0) return null
-  if (sync.ahead > 0) {
+  if (!sync?.upstream || !sync.behind) return null
+  if ((sync.ahead ?? 0) > 0) {
     return (
       <span
         data-slot="repo-sync-chip"
         data-state="diverged"
-        title={`${sync.branch} and ${sync.upstream} have diverged: ${commits(sync.ahead)} only here, ${commits(sync.behind)} only on origin. Merge or rebase by hand.`}
+        title={`${sync.branch} and ${sync.upstream} have diverged: ${commits(sync.ahead ?? 0)} only here, ${commits(sync.behind)} only on origin. Merge or rebase by hand.`}
         className="shrink-0 rounded-sm border border-border px-1.5 py-px font-mono text-[11px] text-pending-strong"
       >
         ↓{sync.behind} ↑{sync.ahead}

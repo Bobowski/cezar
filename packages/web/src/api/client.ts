@@ -46,6 +46,7 @@ import type {
   WorktreesResponse,
   ContinueResponse,
   CreatePrResponse,
+  AdoptPrResponse,
   CreateRunInput,
   CreateRunResponse,
   DeleteDraftResponse,
@@ -84,6 +85,8 @@ import type {
   MessageResponse,
   RemoveQueuedMessageResponse,
   OpenInCliResponse,
+  StartAppSet,
+  StartAppState,
   DetectedUrlsResponse,
   DiscoveredCommandsResponse,
   TerminalCreateInput,
@@ -117,6 +120,7 @@ import type {
   RepoBranchResponse,
   RepoPullResponse,
   RepoSync,
+  RepoSyncActionResponse,
   RepoCommitPayload,
   RunCommitsResponse,
   RunHistoryContext,
@@ -885,6 +889,18 @@ export async function getRepoCommit(sha: string, opts?: ReadOptions): Promise<Re
       init(opts),
     ),
     '/repo/commit/:sha',
+  )
+}
+
+/** A run's whole path index (`/repo/tree`'s shape, read from its worktree) — the ⌘P palette's
+ *  `#` file search. 409 when the run has no working directory. */
+export async function getRunTree(id: string, opts?: ReadOptions): Promise<RepoTree> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].runs[':id'].tree.$get(
+      { param: { projectId: queryScope(), id: encodeURIComponent(id) } },
+      init(opts),
+    ),
+    runPath(id, '/tree'),
   )
 }
 
@@ -1940,6 +1956,16 @@ export async function createRunPr(id: string, opts: { draft?: boolean } = {}): P
   }
 }
 
+/** Record the PR the run's agent opened, found on the forge by the run's branch. */
+export async function adoptRunPr(id: string): Promise<AdoptPrResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].runs[':id'].pr.adopt.$post({
+      param: { projectId: queryScope(), id: encodeURIComponent(id) },
+    }),
+    runPath(id, '/pr/adopt'),
+  )
+}
+
 /** Rename a run (#389): the edit becomes the display title and wins over any auto-summary. */
 export async function patchRun(id: string, patch: PatchRunInput): Promise<RunRecord> {
   return unwrap(
@@ -2448,6 +2474,24 @@ export async function getRepoSync(opts?: ReadOptions & { refresh?: boolean }): P
  *  overwrite comes back as a 409 whose ApiError carries the reason. */
 export async function pullRepo(): Promise<RepoPullResponse> {
   return unwrap(await cez.api.v1.p[':projectId'].repo.pull.$post({ param: { projectId: queryScope() } }), '/repo/pull')
+}
+
+export type RepoSyncAction = 'fetch' | 'pull' | 'push' | 'sync'
+
+/** Fetch / pull (fast-forward only) / push / sync the main checkout. A diverged branch, no
+ *  upstream or an auth failure is a 409 whose ApiError carries git's own reason. */
+export async function runRepoSyncAction(action: RepoSyncAction): Promise<RepoSyncActionResponse> {
+  const param = { param: { projectId: queryScope() } }
+  const repo = cez.api.v1.p[':projectId'].repo
+  const res =
+    action === 'fetch'
+      ? await repo.fetch.$post(param)
+      : action === 'pull'
+        ? await repo.pull.$post(param)
+        : action === 'push'
+          ? await repo.push.$post(param)
+          : await repo.sync.$post(param)
+  return unwrap(res, `/repo/${action}`)
 }
 
 // ---- plan mode (spec 008) -------------------------------------------------------------------
@@ -2962,6 +3006,21 @@ export async function applySelfUpdate(version: string): Promise<SelfUpdateStatus
   )
 }
 
+/** "Update when idle": the server applies `version` once no task is running or queued. */
+export async function scheduleSelfUpdate(version: string): Promise<SelfUpdateStatus> {
+  return unwrap(
+    await cez.api.v1.workspace['self-update'].apply.$post({ json: { version, whenIdle: true } }),
+    '/workspace/self-update/apply',
+  )
+}
+
+export async function cancelScheduledSelfUpdate(): Promise<SelfUpdateStatus> {
+  return unwrap(
+    await cez.api.v1.workspace['self-update'].scheduled.$delete({}),
+    '/workspace/self-update/scheduled',
+  )
+}
+
 /** Partial update — absent keys stay untouched; answers the merged config. A `projectsDir`
  *  the server cannot write to comes back as a 400 `ApiError` whose message is the reason,
  *  which is exactly what the Projects pane renders inline (step 4.4). */
@@ -3057,4 +3116,20 @@ export async function actOnLifecycleOperation(operationId: string, input: Lifecy
 }
 export async function previewLifecycleCommand(input: z.infer<typeof lifecyclePreviewInputSchema>): Promise<LifecyclePreviewResponse> {
   return unwrap(await cez.api.v1.p[':projectId']['worktree-lifecycle'].preview.$post({ param: { projectId: queryScope() }, json: input }), '/worktree-lifecycle/preview')
+}
+
+/** The project's start recipes, the team's and this user's (spec `2026-10-09-design-mode` §7c). */
+export async function getStartApp(): Promise<StartAppState> {
+  return unwrap(
+    await cez.api.v1.p[':projectId']['start-app'].$get({ param: { projectId: queryScope() } }),
+    '/start-app',
+  )
+}
+
+/** Save or (with `recipe: null`) remove one scope's start recipe. */
+export async function setStartApp(body: StartAppSet): Promise<StartAppState> {
+  return unwrap(
+    await cez.api.v1.p[':projectId']['start-app'].$put({ param: { projectId: queryScope() }, json: body }),
+    '/start-app',
+  )
 }

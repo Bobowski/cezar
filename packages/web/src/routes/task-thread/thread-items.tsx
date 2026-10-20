@@ -23,6 +23,8 @@ import {
 } from 'lucide-react'
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 
+import { Link as GlobalLink } from 'react-router'
+import { useAgentProfiles } from '@/api/queries'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -410,6 +412,7 @@ export function ProviderAuthRequiredCard({
 }: {
   incident: ThreadProviderAuthRequired
 }) {
+  if (incident.profileId !== undefined) return <AccountAuthRequiredCard incident={incident} profileId={incident.profileId} />
   const label = PROVIDER_LABEL[incident.provider]
   return (
     <div
@@ -429,6 +432,43 @@ export function ProviderAuthRequiredCard({
       >
         Open provider settings
       </Link>
+    </div>
+  )
+}
+
+/** A named account was rejected, not the default login (telemetry 9e4a95db): name it and send the
+ *  user to the pane that can sign it in — the Providers card describes the default login only. */
+function AccountAuthRequiredCard({
+  incident,
+  profileId,
+}: {
+  incident: ThreadProviderAuthRequired
+  profileId: string
+}) {
+  const profiles = useAgentProfiles()
+  const label = PROVIDER_LABEL[incident.provider]
+  const account = profiles.data?.profiles
+    .find((p) => p.id === profileId && p.provider === incident.provider)?.label ?? profileId
+  return (
+    <div
+      role="alert"
+      data-slot="provider-auth-required"
+      data-profile-id={profileId}
+      className="rounded-md border border-danger/30 bg-danger/5 px-3.5 py-3"
+    >
+      <p className="text-[13px] font-semibold text-foreground">
+        This run needed {label} account “{account}” to be signed in
+      </p>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Sign that account in again before retrying.
+      </p>
+      {/* Global settings sit outside every project scope — react-router's own Link. */}
+      <GlobalLink
+        to="/settings/global/accounts"
+        className="mt-2 inline-flex text-xs font-medium text-foreground underline-offset-2 hover:underline"
+      >
+        Open agent accounts
+      </GlobalLink>
     </div>
   )
 }

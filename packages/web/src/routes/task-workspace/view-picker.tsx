@@ -4,9 +4,10 @@ import {
   GitCommitHorizontalIcon,
   GlobeIcon,
   MessageSquareTextIcon,
+  TerminalIcon,
   WorkflowIcon,
 } from 'lucide-react'
-import type { ComponentType, ReactNode } from 'react'
+import { createContext, useContext, type ComponentType, type ReactNode } from 'react'
 
 import { Button } from '@/components/ui/button'
 
@@ -20,16 +21,14 @@ import {
 
 import { VIEW_IDS, viewLabel, type ViewId } from './layout-state'
 
-/*
- * Every view here is pickable, Browser included, on every cockpit.
- *
- * `capabilities.preview` says whether THIS TASK'S OWN APP can be shown (§9, Milestone 3) — not
- * whether the column works. §7 is explicit that "The user may type any URL, including task app
- * addresses and external sites such as GitHub", so disabling the tile on a hosted cockpit would
- * take away a working browser to express a limit that only applies to one kind of address. The
- * column itself says so, where the limit actually bites: `browser-view.tsx` refuses a loopback
- * address on a hosted cockpit with the reason, and loads everything else.
- */
+/** The views this cockpit can show — a Terminal only where `capabilities.terminal` allows a
+ *  shell; every picker reads this. */
+export const AvailableViewsContext = createContext<readonly ViewId[]>(VIEW_IDS)
+
+function useAvailable(order: readonly ViewId[]): ViewId[] {
+  const available = useContext(AvailableViewsContext)
+  return order.filter((view) => available.includes(view))
+}
 
 export const VIEW_ICONS: Record<ViewId, ComponentType<{ className?: string }>> = {
   session: MessageSquareTextIcon,
@@ -39,6 +38,7 @@ export const VIEW_ICONS: Record<ViewId, ComponentType<{ className?: string }>> =
   browser: GlobeIcon,
   // The same icon the standalone graph route uses, so the tile and the surface agree.
   graph: WorkflowIcon,
+  terminal: TerminalIcon,
 }
 
 /**
@@ -66,9 +66,10 @@ export function ViewItems({
    */
   purpose?: 'set' | 'add'
 }) {
+  const views = useAvailable(VIEW_IDS)
   return (
     <>
-      {VIEW_IDS.map((view) => {
+      {views.map((view) => {
         const Icon = VIEW_ICONS[view]
         return (
           <DropdownMenuItem
@@ -113,13 +114,14 @@ export function ViewPickerMenu({
   onPick: (view: ViewId) => void
   align?: 'start' | 'end'
 }) {
+  const views = useAvailable(VIEW_IDS)
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
       <DropdownMenuContent align={align} className="w-64">
         <DropdownMenuLabel>{heading}</DropdownMenuLabel>
         <div data-slot="view-tiles" className="grid grid-cols-3 gap-1 p-1">
-          {VIEW_IDS.map((view) => {
+          {views.map((view) => {
             const Icon = VIEW_ICONS[view]
             return (
               <DropdownMenuItem
@@ -141,7 +143,7 @@ export function ViewPickerMenu({
 }
 
 /** The tiles' order — the same as the fixed cards on the strip. */
-const TILE_ORDER: readonly ViewId[] = ['session', 'graph', 'changes', 'commits', 'files', 'browser']
+const TILE_ORDER: readonly ViewId[] = ['session', 'graph', 'changes', 'commits', 'files', 'browser', 'terminal']
 
 /** One line per view, for the tiles of an empty layout. */
 const VIEW_HINTS: Record<ViewId, string> = {
@@ -151,6 +153,7 @@ const VIEW_HINTS: Record<ViewId, string> = {
   commits: 'The commits on the task branch',
   files: 'The worktree, file by file',
   browser: 'A browser beside the work',
+  terminal: 'A shell in the task worktree',
 }
 
 /**
@@ -166,6 +169,7 @@ export function ViewTiles({
   /** What is being filled: a whole new layout, or one new window of an existing one. */
   scope?: 'layout' | 'window'
 }) {
+  const views = useAvailable(TILE_ORDER)
   return (
     // A container, because the tiles also fill ONE window of a split layout: the grid answers to
     // the room it has, not to the viewport.
@@ -185,7 +189,7 @@ export function ViewTiles({
           </p>
         </div>
         <div className="grid grid-cols-1 gap-2.5 @[15rem]:grid-cols-2 @lg:grid-cols-3 @lg:gap-3">
-          {TILE_ORDER.map((view) => {
+          {views.map((view) => {
             const Icon = VIEW_ICONS[view]
             return (
               <Button

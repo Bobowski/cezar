@@ -8,6 +8,7 @@ import {
   FileTextIcon,
   FolderIcon,
   GitBranchIcon,
+  GitBranchPlusIcon,
   GitCommitHorizontalIcon,
   GitForkIcon,
   ListPlusIcon,
@@ -60,6 +61,7 @@ import {
 import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from '@/components/ui/item'
 import { Kbd } from '@/components/ui/kbd'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -504,6 +506,8 @@ export function NewTaskRoute() {
         variants,
         images: submitted,
         worktree: worktreeOn,
+        newBranch: draft.newBranch,
+        branch: draft.branchName,
         autonomous: autonomousOn,
         generateFollowups: generateFollowupsOn,
         // #374: when the Inbox's "Run" sent us here, hand the entry's id back so the server
@@ -592,6 +596,7 @@ export function NewTaskRoute() {
               hasGit,
               dispatch: dispatchOn,
               autonomous: autonomousOn,
+              newBranch: draft.newBranch,
             })}
           </p>
         </header>
@@ -806,6 +811,35 @@ export function NewTaskRoute() {
                           checked={worktreeOn}
                           disabled={worktreeForced}
                           onCheckedChange={(on) => update({ worktree: on })}
+                        />
+                      </OptionRow>
+                    ) : null}
+                    {worktreeToggleShown && !worktreeOn ? (
+                      <OptionRow
+                        slot="new-branch-option"
+                        icon={GitBranchPlusIcon}
+                        title="New branch"
+                        description={
+                          draft.newBranch === true
+                            ? 'Switches your checkout to a new branch from the base before the agent starts.'
+                            : 'Off — runs on whatever branch is checked out.'
+                        }
+                      >
+                        {draft.newBranch === true ? (
+                          <Input
+                            aria-label="New branch name"
+                            data-slot="new-branch-name"
+                            value={draft.branchName ?? ''}
+                            placeholder="feat/… (auto)"
+                            onChange={(event) => update({ branchName: event.target.value })}
+                            className="mr-2 h-7 w-36 font-mono text-[11px]"
+                          />
+                        ) : null}
+                        <Switch
+                          aria-label="New branch"
+                          data-slot="new-branch-toggle"
+                          checked={draft.newBranch === true}
+                          onCheckedChange={(on) => update({ newBranch: on })}
                         />
                       </OptionRow>
                     ) : null}

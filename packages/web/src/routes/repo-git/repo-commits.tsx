@@ -5,7 +5,7 @@ import { useParams } from 'react-router'
 import { Link } from '@/lib/project-router'
 
 import { ApiError } from '@/api/client'
-import { useRepoCommit } from '@/api/queries'
+import { useRepoCommit, useRepoSync } from '@/api/queries'
 import type { LogEntry } from '@open-mercato/cezar-api-client'
 import { ContextSidebar } from '@/components/context-sidebar'
 import { Diff, type DiffMode } from '@/components/diff'
@@ -17,12 +17,14 @@ import {
   SidebarContent,
   SidebarGroup,
   SidebarGroupContent,
+  SidebarGroupLabel,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
 } from '@/components/ui/sidebar'
 import { Spinner } from '@/components/ui/spinner'
 import { useIsDesktop } from '@/lib/use-desktop'
+import { cn } from '@/lib/utils'
 
 import { DiffViewToggles } from '../task-git/diff-controls'
 import { RepoEmpty } from './repo-empty'
@@ -40,12 +42,37 @@ import { OpenSidebarButton } from './repo-sidebar'
  */
 export function RepoCommitsSection({ log, header }: { log: LogEntry[]; header: ReactNode }) {
   const { sha } = useParams<{ sha: string }>()
+  const sync = useRepoSync().data
+  // spec 2026-10-19-repo-git-sync: incoming commits first, as last fetched; local ones marked.
+  const outgoing = new Set(sync?.outgoing ?? [])
+  const incoming = sync?.incoming ?? []
+  const markOf = (commit: LogEntry) => (outgoing.has(commit.hash) ? 'outgoing' : undefined)
 
   return (
     <>
       <ContextSidebar>
         {header}
         <SidebarContent>
+          {incoming.length > 0 ? (
+            <SidebarGroup data-slot="repo-incoming" className="pt-0">
+              <SidebarGroupLabel>
+                Incoming from {sync?.upstream} · {incoming.length}
+              </SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu data-slot="repo-incoming-commits">
+                  {incoming.map((commit) => (
+                    <SidebarMenuItem key={commit.hash}>
+                      <SidebarMenuButton asChild isActive={sameCommit(commit.hash, sha)} className="h-auto py-2">
+                        <Link data-slot="commit-row" data-sha={commit.hash} to={`/git/commits/${commit.hash}`}>
+                          <CommitLines commit={commit} mark="incoming" />
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          ) : null}
           <SidebarGroup className="pt-0">
             <SidebarGroupContent>
               {log.length === 0 ? (
@@ -56,7 +83,7 @@ export function RepoCommitsSection({ log, header }: { log: LogEntry[]; header: R
                     <SidebarMenuItem key={commit.hash}>
                       <SidebarMenuButton asChild isActive={sameCommit(commit.hash, sha)} className="h-auto py-2">
                         <Link data-slot="commit-row" data-sha={commit.hash} to={`/git/commits/${commit.hash}`}>
-                          <CommitLines commit={commit} />
+                          <CommitLines commit={commit} mark={markOf(commit)} />
                         </Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
@@ -93,6 +120,26 @@ export function RepoCommitsSection({ log, header }: { log: LogEntry[]; header: R
           {/* Phones: the sidebar is a closed sheet, so the list is the page. */}
           <PageBody className="pt-4 md:hidden">
             <h1 className="pb-3 text-[15px] font-semibold text-foreground">Commits</h1>
+            {incoming.length > 0 ? (
+              <>
+                <h2 className="pb-2 text-xs font-medium text-muted-foreground">
+                  Incoming from {sync?.upstream} · {incoming.length}
+                </h2>
+                <div className="mb-4 divide-y divide-border overflow-hidden rounded-xl border bg-card shadow-xs">
+                  {incoming.map((commit) => (
+                    <Link
+                      key={commit.hash}
+                      data-slot="commit-row"
+                      data-sha={commit.hash}
+                      to={`/git/commits/${commit.hash}`}
+                      className="flex min-h-14 min-w-0 items-center px-4 py-2.5 outline-none hover:bg-muted/50 focus-visible:bg-muted/50"
+                    >
+                      <CommitLines commit={commit} mark="incoming" />
+                    </Link>
+                  ))}
+                </div>
+              </>
+            ) : null}
             <div className="divide-y divide-border overflow-hidden rounded-xl border bg-card shadow-xs">
               {log.map((commit) => (
                 <Link
@@ -102,7 +149,7 @@ export function RepoCommitsSection({ log, header }: { log: LogEntry[]; header: R
                   to={`/git/commits/${commit.hash}`}
                   className="flex min-h-14 min-w-0 items-center px-4 py-2.5 outline-none hover:bg-muted/50 focus-visible:bg-muted/50"
                 >
-                  <CommitLines commit={commit} />
+                  <CommitLines commit={commit} mark={markOf(commit)} />
                 </Link>
               ))}
             </div>
@@ -118,11 +165,26 @@ function sameCommit(hash: string, sha: string | undefined): boolean {
   return sha !== undefined && sha.length >= 4 && (hash.startsWith(sha) || sha.startsWith(hash))
 }
 
-/** A commit row's two lines: the subject, then the muted `sha · author · age`. */
-function CommitLines({ commit }: { commit: LogEntry }) {
+/** A commit row's two lines: the subject (with its sync mark), then the muted `sha · author · age`. */
+function CommitLines({ commit, mark }: { commit: LogEntry; mark?: 'outgoing' | 'incoming' }) {
   return (
     <span className="grid min-w-0 flex-1 gap-0.5">
-      <span className="truncate text-[13px] font-medium text-foreground">{commit.subject}</span>
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className="truncate text-[13px] font-medium text-foreground">{commit.subject}</span>
+        {mark ? (
+          <span
+            data-slot="commit-sync"
+            data-sync={mark}
+            title={mark === 'outgoing' ? 'Not pushed yet' : 'On the remote, not pulled yet'}
+            className={cn(
+              'shrink-0 rounded-sm border px-1 font-mono text-[10px] font-normal',
+              mark === 'outgoing' ? 'border-primary/40 text-primary' : 'border-border text-muted-foreground',
+            )}
+          >
+            {mark === 'outgoing' ? '↑ local' : '↓ incoming'}
+          </span>
+        ) : null}
+      </span>
       <span className="truncate text-xs font-normal text-muted-foreground">
         <span className="font-mono">{commit.hash}</span> · {commit.author} · {commit.when}
       </span>

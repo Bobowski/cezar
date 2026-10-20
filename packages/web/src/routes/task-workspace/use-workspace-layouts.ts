@@ -5,10 +5,13 @@ import { getRunLayouts, putRunLayouts } from '@/api/client'
 import {
   addColumn as addColumnTo,
   addLayout as addLayoutTo,
+  applySavedLayout as applySavedLayoutTo,
+  keepAs as keepAsIn,
   openBeside as openBesideOf,
   activeLayout as activeLayoutOf,
   closeColumn as closeColumnOf,
   closeLayout as closeLayoutOf,
+  dropView as dropViewOn,
   moveColumn as moveColumnOf,
   openDeepLink as openDeepLinkOn,
   openInBrowser as openInBrowserOn,
@@ -20,6 +23,7 @@ import {
   setColumnBrowser as setColumnBrowserOf,
   setColumnView as setColumnViewOf,
   type BrowserState,
+  type SavedLayout,
   type ViewId,
   type WorkspaceLayout,
   type WorkspaceState,
@@ -64,6 +68,10 @@ export interface WorkspaceLayouts {
   closeLayout: (name: string) => void
   selectLayout: (name: string) => void
   renameLayout: (name: string, requested: string) => void
+  /** Open a layout saved for every task (see `applySavedLayout`). */
+  applySaved: (saved: SavedLayout) => void
+  /** Name what is on screen in this task too, after it was saved (see `keepAs`). */
+  keepAs: (name: string) => void
   addColumn: (view: ViewId) => void
   closeColumn: (index: number) => void
   setColumnView: (index: number, view: ViewId) => void
@@ -81,6 +89,8 @@ export interface WorkspaceLayouts {
   /** The deep-link entry (`/tasks/:id/changes` and friends) — idempotent, so a refresh does not
    *  pile up cards. Called from an effect by the route, not during render. */
   openDeepLink: (view: ViewId) => void
+  /** A view tab dropped on the workspace (see `dropView`). */
+  dropView: (view: ViewId, at: number, mode: 'insert' | 'replace') => void
 }
 
 /** How long a burst of changes is collected before one save goes out. Long enough that a whole
@@ -317,6 +327,11 @@ export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
       (name: string, requested: string) => setState((current) => renameLayoutOf(current, name, requested)),
       [],
     ),
+    applySaved: useCallback(
+      (saved: SavedLayout) => setState((current) => applySavedLayoutTo(current, saved)),
+      [],
+    ),
+    keepAs: useCallback((name: string) => setState((current) => keepAsIn(current, name)), []),
     addColumn: useCallback(
       (view: ViewId) => onActive((current, name) => addColumnTo(current, name, view)),
       [onActive],
@@ -338,6 +353,11 @@ export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
       [onActive],
     ),
     openDeepLink: useCallback((view: ViewId) => setState((current) => openDeepLinkOn(current, view)), []),
+    dropView: useCallback(
+      (view: ViewId, at: number, mode: 'insert' | 'replace') =>
+        setState((current) => dropViewOn(current, view, at, mode)),
+      [],
+    ),
     setColumnBrowser: useCallback(
       (index: number, browser: BrowserState) =>
         onActive((current, name) => setColumnBrowserOf(current, name, index, browser)),

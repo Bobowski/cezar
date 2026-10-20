@@ -8,7 +8,7 @@ import { createQueryClient } from '@/api/query-client'
 import type { HealthResponse, RunRecord } from '@open-mercato/cezar-api-client'
 import { ContextSidebarContext } from '@/components/context-sidebar'
 import { ListViewProvider, useListView } from '@/components/list-view'
-import { TaskQuickList, TaskQuickListContainer } from '@/components/task-quick-list'
+import { RepoBaseContext, TaskQuickList, TaskQuickListContainer } from '@/components/task-quick-list'
 import { TasksSidebar } from '@/components/tasks-sidebar'
 import { ShellProviders } from '@/test/shell-providers'
 
@@ -1003,3 +1003,21 @@ describe('dispatched subtasks in the quick-list', () => {
     expect(kind.className).not.toContain('hidden')
   })
 })
+
+describe('a PR known only by number', () => {
+  it('links to the repo the list provides, and stays a plain chip without one', () => {
+    const marked = run({ markerRefs: { pr: 1497 } } as Partial<RunRecord>)
+    const { unmount } = render(
+      <MemoryRouter>
+        <RepoBaseContext.Provider value="https://github.com/o/shop">
+          <TaskQuickList runs={[marked]} view="active" now={NOW} onViewChange={vi.fn()} />
+        </RepoBaseContext.Provider>
+      </MemoryRouter>,
+    )
+    expect(document.querySelector('[data-slot="pr-chip"]')?.closest('a')?.getAttribute('href')).toBe('https://github.com/o/shop/pull/1497')
+    unmount()
+    renderList({ runs: [run({ markerRefs: { pr: 1497 } } as Partial<RunRecord>)] })
+    expect(document.querySelector('[data-slot="pr-chip"]')?.closest('a')).toBeNull()
+  })
+})
+

@@ -398,18 +398,23 @@ describe('task thread', () => {
     ).toBe('cez/fcd519dd')
   })
 
-  it('saved-layout cards replace the route tabs; the done run offers the closed-run actions', () => {
-    // The workspace replaced the Session/Changes/Commits/Files/Graph strip with its saved-layout
-    // cards, and the spec is explicit that both must never show at once (§5.2). A clean visit
-    // opens the one default card, `Czat`, and it is the active one. Every surface those tabs
-    // pointed at is now a VIEW a column can hold — including Graf, which stopped being a page of
-    // its own on 2026-10-08.
-    expect(browser.count('[data-slot="run-tabs"] a')).toBe(0)
-    const cards = browser.evaluate(`[...document.querySelectorAll('[data-slot="layout-card"] [aria-current]')].map((el) => ({
-      text: el.textContent.trim(),
-      current: el.getAttribute('aria-current'),
-    }))`) as Array<{ text: string; current: string | null }>
-    expect(cards).toEqual([{ text: 'Czat', current: 'page' }])
+  it('the layout strip replaces the route tabs (spec 2026-10-07-task-workspace); the done run offers the closed-run actions', () => {
+    const cards = browser.evaluate(`[...document.querySelectorAll('[data-slot="layout-card"]')].map((card) => ({
+      text: card.textContent.trim(),
+      active: card.hasAttribute('data-active'),
+    }))`) as Array<{ text: string; active: boolean }>
+    // A local cockpit allows a shell, so Terminal (the drawer's toggle) is the last tab.
+    expect(cards).toEqual([
+      { text: 'Chat', active: true },
+      { text: 'Changes', active: false },
+      { text: 'Commits', active: false },
+      { text: 'Code', active: false },
+      { text: 'Graph', active: false },
+      { text: 'Browser', active: false },
+      { text: 'Terminal', active: false },
+    ])
+    // Notes keeps its own page, reached from the strip's trailing icon.
+    expect(browser.count(`[data-slot="run-tabs"] a[href="${scoped(`/tasks/${RUN_ID}/notes`)}"]`)).toBe(1)
     // And the URL stays canonical — opening a task is not a navigation to a tab.
     expect(browser.url()).toBe(`${baseUrl}${scoped(`/tasks/${RUN_ID}`)}`)
 

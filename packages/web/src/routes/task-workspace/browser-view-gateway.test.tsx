@@ -71,3 +71,11 @@ describe('a loopback address on a hosted cockpit', () => {
     expect(openPreviewGateway).not.toHaveBeenCalled()
   })
 })
+
+describe('an empty tab on a hosted cockpit', () => {
+  it('is left to the address bar: there is no local app to run from here', () => {
+    render(<BrowserView state={{ tabs: [''], active: 0 }} onChange={() => {}} renderEmpty={() => <p>run panel</p>} />)
+    expect(screen.queryByText('run panel')).toBeNull()
+    expect(screen.getByText('Empty tab')).toBeTruthy()
+  })
+})

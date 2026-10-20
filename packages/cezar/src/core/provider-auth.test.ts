@@ -600,6 +600,46 @@ describe('provider auth parsers', () => {
     expect(onInconclusive).not.toHaveBeenCalled();
   });
 
+  // Telemetry 1cd541cc: the --format rejection worded by other arg parsers, and plain-status variants.
+  it.each([
+    ["error: unknown option '--format'\n(Did you mean --force?)\n", ' ✓ Logged in as me@example.com\n', 'connected'],
+    ['Unknown argument: format\n', 'Signed in as me@example.com\n', 'connected'],
+    ["error: unexpected argument '--format' found\n", '✗ You are not logged in. Run `agent login`.\n', 'disconnected'],
+    ['Unrecognized flag: --format\n', "You're not signed in\n", 'disconnected'],
+  ])('falls back to plain `status` when --format is rejected as %j', async (stderr, stdout, expected) => {
+    const onInconclusive = vi.fn();
+    const runCommand = vi.fn<RunProviderCommand>(async (executable, args) => {
+      if (executable !== 'agent') return resultFor(executable);
+      return args.includes('--format') ? { stdout: '', stderr, exitCode: 1 } : { stdout, stderr: '', exitCode: 0 };
+    });
+    const service = new ProviderAuthService({ runCommand, onInconclusive });
+
+    await expect(statuses(service)).resolves.toMatchObject({ cursor: { status: expected } });
+    expect(onInconclusive).not.toHaveBeenCalled();
+  });
+
+  it('does not fall back on an unrelated status failure', async () => {
+    const runCommand = vi.fn<RunProviderCommand>(async (executable) => executable === 'agent'
+      ? { stdout: '', stderr: 'error: network unreachable\n', exitCode: 1 }
+      : resultFor(executable));
+    const service = new ProviderAuthService({ runCommand });
+
+    await expect(statuses(service)).resolves.toMatchObject({ cursor: { status: 'unknown' } });
+    expect(runCommand).not.toHaveBeenCalledWith('agent', ['status'], 10_000);
+  });
+
+  it('never reads "not logged in as" as signed out', async () => {
+    const runCommand = vi.fn<RunProviderCommand>(async (executable, args) => {
+      if (executable !== 'agent') return resultFor(executable);
+      return args.includes('--format')
+        ? { stdout: '', stderr: "error: unknown option '--format'\n", exitCode: 1 }
+        : { stdout: 'not logged in as an admin\n', stderr: '', exitCode: 0 };
+    });
+    const service = new ProviderAuthService({ runCommand });
+
+    await expect(statuses(service)).resolves.toMatchObject({ cursor: { status: 'unknown' } });
+  });
+
   // Telemetry 8d304c50: another program named `agent` (0.2.22) exited 2 with a usage error.
   it('names the PATH shadowing when `agent` answers like a different program', async () => {
     const service = new ProviderAuthService({
@@ -927,6 +967,79 @@ describe('ProviderAuthService', () => {
       providers: expect.arrayContaining([
         expect.objectContaining({ provider: 'claude', status: 'connected' }),
       ]),
+    });
+  });
+
+  describe('a named account carries its own runtime incident (telemetry 9e4a95db)', () => {
+    const account = { id: 'work', configDir: '/accounts/work' };
+
+    it('marks only that account, and leaves the default login connected', async () => {
+      const service = new ProviderAuthService({ runCommand: runner(), createAuthFailureId: () => 'incident-1' });
+      await service.profileStatus('claude', account);
+
+      expect(service.reportProfileAuthFailure('claude', 'work')).toMatchObject({ transitioned: true });
+      expect(service.reportProfileAuthFailure('claude', 'work')).toMatchObject({ transitioned: false });
+
+      await expect(statuses(service)).resolves.toMatchObject({ claude: { status: 'connected' } });
+      // Within the cached connected answer's lifetime, the incident still wins.
+      await expect(service.profileStatus('claude', account)).resolves.toMatchObject({
+        status: 'disconnected', authFailureId: 'incident-1', profileId: 'work',
+      });
+      expect(service.peekProfileStatus('claude', 'other')).toBeUndefined();
+    });
+
+    it('is known to a peek before the account was ever probed', () => {
+      const service = new ProviderAuthService({ runCommand: runner(), createAuthFailureId: () => 'incident-1' });
+      service.reportProfileAuthFailure('claude', 'work');
+
+      expect(service.peekProfileStatus('claude', 'work')).toMatchObject({
+        provider: 'claude', status: 'disconnected', authFailureId: 'incident-1', profileId: 'work',
+      });
+    });
+
+    it('lifts on a fresh connected probe of that account, and not on a disconnected one', async () => {
+      const answers: ProviderCommandResult[] = [
+        { stdout: '{"loggedIn":false}', stderr: '', exitCode: 1 },
+        { stdout: '{"loggedIn":true}', stderr: '', exitCode: 0 },
+      ];
+      const service = new ProviderAuthService({
+        runCommand: runner((executable) => (executable === 'claude' ? answers.shift()! : resultFor(executable))),
+        createAuthFailureId: () => 'incident-1',
+      });
+      service.reportProfileAuthFailure('claude', 'work');
+
+      await expect(service.profileStatus('claude', account)).resolves.toMatchObject({ status: 'disconnected', authFailureId: 'incident-1' });
+      service.forgetProfileStatus('claude', 'work');
+      await expect(service.profileStatus('claude', account)).resolves.toEqual({ provider: 'claude', status: 'connected', profileId: 'work' });
+      expect(service.peekProfileStatus('claude', 'work')).toEqual({ provider: 'claude', status: 'connected', profileId: 'work' });
+    });
+
+    it('is dropped with the account, and kept by a plain cache refresh', () => {
+      const service = new ProviderAuthService({ runCommand: runner(), createAuthFailureId: () => 'incident-1' });
+      service.reportProfileAuthFailure('claude', 'work');
+
+      service.forgetProfileStatus('claude', 'work');
+      expect(service.peekProfileStatus('claude', 'work')).toMatchObject({ status: 'disconnected' });
+      service.forgetProfile('claude', 'work');
+      expect(service.peekProfileStatus('claude', 'work')).toBeUndefined();
+    });
+
+    it('survives a probe that was already running when the rejection arrived', async () => {
+      let release!: () => void;
+      const waiting = new Promise<void>((resolve) => { release = resolve; });
+      const runCommand = vi.fn(async (executable: string) => {
+        await waiting;
+        return resultFor(executable);
+      });
+      const service = new ProviderAuthService({ runCommand, createAuthFailureId: () => 'incident-1' });
+
+      const probing = service.profileStatus('claude', account);
+      await vi.waitFor(() => expect(runCommand).toHaveBeenCalledTimes(1));
+      service.reportProfileAuthFailure('claude', 'work');
+      release();
+
+      await expect(probing).resolves.toMatchObject({ status: 'disconnected', authFailureId: 'incident-1' });
+      expect(service.peekProfileStatus('claude', 'work')).toMatchObject({ status: 'disconnected' });
     });
   });
 
@@ -1529,6 +1642,141 @@ describe('inconclusive probe reports', () => {
     await service.status({ refresh: true });
     expect(runCommand.mock.calls.filter(([executable]) => executable === 'codex')).toHaveLength(2);
     expect(onInconclusive.mock.calls[0]?.[0]).toMatchObject({ provider: 'codex', reason: 'unrecognized_output' });
+  });
+
+  // Telemetry ce0c5d1f: Ctrl-C reached the probe too, `opencode` exited 130 and was reported.
+  it('asks again when a signal interrupted the CLI', async () => {
+    let codexCalls = 0;
+    const onInconclusive = vi.fn();
+    const service = new ProviderAuthService({
+      runCommand: async (executable) => {
+        if (executable !== 'codex') return { stdout: '', stderr: '', exitCode: null, errorCode: 'ENOENT' };
+        codexCalls += 1;
+        return codexCalls === 1 ? { stdout: '', stderr: '', exitCode: 130 } : connectedResults.codex!;
+      },
+      onInconclusive,
+    });
+    const status = await service.status({ refresh: true });
+    expect(status.providers.find((row) => row.provider === 'codex')?.status).toBe('connected');
+    expect(codexCalls).toBe(2);
+    expect(onInconclusive).not.toHaveBeenCalled();
+  });
+
+  it('never reports a probe that stays interrupted', async () => {
+    for (const result of [
+      { stdout: '', stderr: '', exitCode: 130 },
+      { stdout: '', stderr: '', exitCode: 143 },
+      { stdout: '', stderr: '', exitCode: null, signal: 'SIGINT' },
+    ]) {
+      const runCommand = vi.fn(codexOnly(result));
+      expect(await reasonsFor(result)).toEqual([]);
+      const service = new ProviderAuthService({ runCommand });
+      const row = (await service.status({ refresh: true })).providers.find((p) => p.provider === 'codex');
+      expect(row).toMatchObject({ status: 'unknown', hint: expect.stringContaining('interrupted') });
+      expect(runCommand.mock.calls.filter(([executable]) => executable === 'codex')).toHaveLength(2);
+    }
+  });
+
+  // Telemetry e316b141: claude and codex timed out together on a busy Windows host, then both
+  // answered `--version` at once — a stall from the concurrent burst, not a CLI defect.
+  it('asks a timed-out CLI once more with a longer budget', async () => {
+    const timeouts: number[] = [];
+    const onInconclusive = vi.fn();
+    const service = new ProviderAuthService({
+      runCommand: async (executable, _args, timeoutMs) => {
+        if (executable !== 'codex') return { stdout: '', stderr: '', exitCode: null, errorCode: 'ENOENT' };
+        timeouts.push(timeoutMs);
+        return timeouts.length === 1
+          ? { stdout: '', stderr: '', exitCode: null, timedOut: true }
+          : connectedResults.codex!;
+      },
+      onInconclusive,
+    });
+    const status = await service.status({ refresh: true });
+    expect(status.providers.find((row) => row.provider === 'codex')?.status).toBe('connected');
+    expect(timeouts).toEqual([10_000, 30_000]);
+    expect(onInconclusive).not.toHaveBeenCalled();
+  });
+
+  it('reports a timeout only once the longer second ask hung too', async () => {
+    const timeout = { stdout: '', stderr: '', exitCode: null, timedOut: true };
+    const runCommand = vi.fn(codexOnly(timeout));
+    const onInconclusive = vi.fn();
+    const service = new ProviderAuthService({ runCommand, onInconclusive });
+    const row = (await service.status({ refresh: true })).providers.find((p) => p.provider === 'codex');
+    expect(row).toMatchObject({ status: 'unknown', hint: expect.stringContaining('timed out') });
+    expect(runCommand.mock.calls.filter(([executable, args]) => executable === 'codex' && args[0] !== '--version')
+      .map(([, , timeoutMs]) => timeoutMs)).toEqual([10_000, 30_000]);
+    expect(onInconclusive.mock.calls[0]?.[0]).toMatchObject({ reason: 'timeout' });
+  });
+
+  // Telemetry b28d2993: the same burst as e316b141 hit claude, which had been connected for days;
+  // the hang turned it `unknown` and the action gate refused runs against a login that was fine.
+  describe('a probe that hangs after a connected answer', () => {
+    const hang: ProviderCommandResult = { stdout: '', stderr: '', exitCode: null, timedOut: true };
+    const scripted = (answers: ProviderCommandResult[]): RunProviderCommand => async (executable, args) => {
+      if (args[0] === '--version') return { stdout: 'codex-cli 0.46.0\n', stderr: '', exitCode: 0 };
+      if (executable !== 'codex') return { stdout: '', stderr: '', exitCode: null, errorCode: 'ENOENT' };
+      return answers.shift() ?? hang;
+    };
+    const codexRow = async (service: ProviderAuthService) =>
+      (await service.status({ refresh: true })).providers.find((row) => row.provider === 'codex');
+
+    it('keeps the recent connected answer, and still reports the hang', async () => {
+      let now = 1_000;
+      const onInconclusive = vi.fn();
+      const service = new ProviderAuthService({
+        runCommand: scripted([connectedResults.codex!]),
+        now: () => now,
+        onInconclusive,
+      });
+      expect(await codexRow(service)).toEqual({ provider: 'codex', status: 'connected' });
+      now += 20 * 60_000;
+      expect(await codexRow(service)).toEqual({ provider: 'codex', status: 'connected' });
+      expect(onInconclusive.mock.calls[0]?.[0]).toMatchObject({ provider: 'codex', reason: 'timeout' });
+    });
+
+    it('lets the hang show once the connected answer is too old to vouch for the login', async () => {
+      let now = 1_000;
+      const service = new ProviderAuthService({ runCommand: scripted([connectedResults.codex!]), now: () => now });
+      await codexRow(service);
+      now += 31 * 60_000;
+      expect(await codexRow(service)).toMatchObject({ status: 'unknown', hint: expect.stringContaining('timed out') });
+    });
+
+    it('never bridges past an answer the CLI actually gave', async () => {
+      const service = new ProviderAuthService({
+        runCommand: scripted([connectedResults.codex!, { stdout: 'Not logged in', stderr: '', exitCode: 1 }]),
+        now: () => 1_000,
+      });
+      await codexRow(service);
+      expect((await codexRow(service))?.status).toBe('disconnected');
+      expect(await codexRow(service)).toMatchObject({ status: 'unknown', hint: expect.stringContaining('timed out') });
+    });
+
+    it('never bridges past a runtime rejection', async () => {
+      const service = new ProviderAuthService({ runCommand: scripted([connectedResults.codex!]), now: () => 1_000 });
+      await codexRow(service);
+      const report = service.reportRuntimeAuthFailure('codex');
+      service.clearRuntimeAuthFailure('codex', report!.status.authFailureId);
+      expect(await codexRow(service)).toMatchObject({ status: 'unknown', hint: expect.stringContaining('timed out') });
+    });
+
+    it('bridges a named account only for the dir that answered, and never lifts its latch', async () => {
+      const service = new ProviderAuthService({ runCommand: scripted([connectedResults.codex!]), now: () => 1_000 });
+      const account = { id: 'work', configDir: '/work' };
+      expect((await service.profileStatus('codex', account)).status).toBe('connected');
+      service.forgetProfileStatus('codex', 'work');
+      service.reportProfileAuthFailure('codex', 'work');
+      expect((await service.profileStatus('codex', account)).status).toBe('disconnected');
+
+      const other = new ProviderAuthService({ runCommand: scripted([connectedResults.codex!]), now: () => 1_000 });
+      await other.profileStatus('codex', account);
+      other.forgetProfileStatus('codex', 'work');
+      expect((await other.profileStatus('codex', account)).status).toBe('connected');
+      other.forgetProfileStatus('codex', 'work');
+      expect((await other.profileStatus('codex', { id: 'work', configDir: '/elsewhere' })).status).toBe('unknown');
+    });
   });
 
   it('tells an unexpected exit, a spawn error, a timeout and a throw apart', async () => {

@@ -7,14 +7,21 @@ import {
   closeColumn,
   closeLayout,
   defaultState,
+  dropView,
+  applySavedLayout,
+  keepAs,
+  toSavedLayout,
+  WORKING_LAYOUT_NAME,
   DEFAULT_LAYOUT_NAME,
   findLayout,
   fixedViewOf,
   forgetTask,
+  layoutDisplayName,
   MAX_COLUMNS,
   MIN_COLUMN_WIDTH,
   moveColumn,
   normalizeWidths,
+  openBeside,
   openDeepLink,
   preferredActive,
   renameLayout,
@@ -51,11 +58,13 @@ describe('defaultState', () => {
     expect(DEFAULT_LAYOUT_NAME).toBe('Chat')
     expect(state.active).toBe(DEFAULT_LAYOUT_NAME)
     expect(names(state)).toEqual(BORN)
-    expect(names(state)).toEqual(VIEW_IDS.map(viewLabel))
+    // Terminal is the one view not pre-seeded: its card is minted on first use.
+    const seeded = VIEW_IDS.filter((view) => view !== 'terminal')
+    expect(names(state)).toEqual(seeded.map(viewLabel))
     // Each card is one full-width column of the view it is named after — which is exactly what
     // makes it the plain layout a FIXED card stands in for.
     expect(state.layouts.map((layout) => layout.columns)).toEqual(
-      VIEW_IDS.map((view) => [{ view, width: 100 }]),
+      seeded.map((view) => [{ view, width: 100 }]),
     )
     expect(state.layouts[0]!.columns).toEqual([{ view: 'session', width: 100 }])
   })
@@ -339,6 +348,83 @@ describe('preferredActive', () => {
   })
 })
 
+describe('dropView', () => {
+  const views = (state: WorkspaceState) => activeLayout(state)?.columns.map((column) => column.view)
+
+  it('splits a fixed card into the working arrangement, leaving the fixed card one view', () => {
+    const state = dropView(defaultState(), 'changes', 1, 'insert')
+    expect(state.active).toBe(WORKING_LAYOUT_NAME)
+    expect(views(state)).toEqual(['session', 'changes'])
+    expect(findLayout(state, 'Chat')?.columns.map((column) => column.view)).toEqual(['session'])
+  })
+
+  it('never mints a layout: every split of a view tab reuses the one working arrangement', () => {
+    const once = dropView(defaultState(), 'changes', 1, 'insert')
+    const again = dropView(selectLayout(once, 'Changes'), 'files', 1, 'insert')
+    expect(again.layouts).toHaveLength(once.layouts.length)
+    expect(again.active).toBe(WORKING_LAYOUT_NAME)
+    expect(views(again)).toEqual(['changes', 'files'])
+  })
+
+  it('edits a layout the user built in place: insert, move, replace with swap', () => {
+    const built = dropView(defaultState(), 'changes', 1, 'insert')
+    const three = dropView(built, 'files', 0, 'insert')
+    expect(three.active).toBe(WORKING_LAYOUT_NAME)
+    expect(views(three)).toEqual(['files', 'session', 'changes'])
+    expect(activeLayout(three)?.columns.map((column) => column.width)).toEqual([33.33, 33.33, 33.34])
+    // Already on screen: it moves rather than appearing twice.
+    expect(views(dropView(three, 'files', 3, 'insert'))).toEqual(['session', 'changes', 'files'])
+    expect(views(dropView(three, 'changes', 0, 'replace'))).toEqual(['changes', 'session', 'files'])
+  })
+
+  it(`stops at ${MAX_COLUMNS} columns`, () => {
+    const three = dropView(dropView(defaultState(), 'changes', 1, 'insert'), 'files', 2, 'insert')
+    expect(dropView(three, 'commits', 0, 'insert')).toBe(three)
+    expect(views(dropView(three, 'commits', 1, 'replace'))).toEqual(['session', 'commits', 'files'])
+  })
+})
+
+describe('saved layouts', () => {
+  const split = dropView(defaultState(), 'changes', 1, 'insert')
+
+  it('saves the arrangement only, and refuses a view tab’s name', () => {
+    expect(toSavedLayout(split, ' Review ')).toEqual({
+      name: 'Review',
+      columns: [
+        { view: 'session', width: 50 },
+        { view: 'changes', width: 50 },
+      ],
+    })
+    expect(toSavedLayout(split, 'Changes')).toBeNull()
+    expect(toSavedLayout(split, WORKING_LAYOUT_NAME)).toBeNull()
+  })
+
+  it('names what is on screen after it is saved; a view tab is copied, not renamed', () => {
+    const kept = keepAs(split, 'Review')
+    expect(kept.active).toBe('Review')
+    expect(findLayout(kept, WORKING_LAYOUT_NAME)).toBeUndefined()
+    const fromTab = keepAs(selectLayout(split, 'Code'), 'Code only')
+    expect(fixedViewOf(findLayout(fromTab, 'Code')!)).toBe('files')
+    expect(findLayout(fromTab, 'Code only')?.columns.map((column) => column.view)).toEqual(['files'])
+  })
+
+  it('opens a saved layout in a task, reusing the task’s copy while the arrangement is the same', () => {
+    const saved = { name: 'Review', columns: [{ view: 'changes' as const, width: 70 }, { view: 'files' as const, width: 30 }] }
+    const opened = applySavedLayout(defaultState(), saved)
+    expect(opened.active).toBe('Review')
+    expect(findLayout(opened)?.columns.map((column) => [column.view, column.width])).toEqual([
+      ['changes', 70],
+      ['files', 30],
+    ])
+    const again = applySavedLayout(selectLayout(opened, 'Chat'), saved)
+    expect(again.layouts).toHaveLength(opened.layouts.length)
+    const changed = applySavedLayout(opened, { ...saved, columns: [{ view: 'session', width: 100 }] })
+    expect(findLayout(changed, 'Review')?.columns.map((column) => column.view)).toEqual(['session'])
+    // A saved name that collides with a view tab is never applied over it.
+    expect(applySavedLayout(defaultState(), { ...saved, name: 'Chat' })).toEqual(defaultState())
+  })
+})
+
 describe('openDeepLink', () => {
   it('still knows a born card saved under the label its view used to have', () => {
     // `Code` was `Files`. A task opened before the rename has that card SAVED as `Files`, and the
@@ -349,6 +435,16 @@ describe('openDeepLink', () => {
     expect(fixedViewOf(saved)).toBe('files')
     const state = openDeepLink(before, 'files')
     expect(state.active).toBe('Files')
+    expect(state.layouts).toEqual(before.layouts)
+  })
+
+  it('still knows the born Preview card as the Browser', () => {
+    // Builds from main labelled the Browser view `Preview`; a task opened there has its card saved so.
+    const before = renameLayout(defaultState(), viewLabel('browser'), 'Preview')
+    expect(fixedViewOf(findLayout(before, 'Preview')!)).toBe('browser')
+    expect(layoutDisplayName('Preview')).toBe('Browser')
+    const state = openDeepLink(before, 'browser')
+    expect(state.active).toBe('Preview')
     expect(state.layouts).toEqual(before.layouts)
   })
 
@@ -665,5 +761,24 @@ describe('forgetTask', () => {
     localStorage.setItem(drawerStorageKey('run-2'), JSON.stringify({ open: true, height: 420 }))
     forgetTask('run-1')
     expect(localStorage.getItem(drawerStorageKey('run-2'))).not.toBeNull()
+  })
+})
+
+describe('the terminal view (main)', () => {
+  it('is a view like any other: a deep link mints its own card, once', () => {
+    const opened = openDeepLink(defaultState(), 'terminal')
+    expect(opened.active).toBe('Terminal')
+    expect(findLayout(opened, 'Terminal')!.columns).toEqual([{ view: 'terminal', width: 100 }])
+    expect(fixedViewOf(findLayout(opened, 'Terminal')!)).toBe('terminal')
+    expect(openDeepLink(opened, 'terminal')).toEqual(opened)
+  })
+
+  it('sits beside the chat in a split, and survives a save round trip', () => {
+    const placed = openBeside(defaultState(), 'terminal')!
+    const layout = findLayout(placed.state, placed.name)!
+    expect(layout.columns.map((column) => column.view)).toEqual(['session', 'terminal'])
+    const revived = reviveState(JSON.parse(JSON.stringify(placed.state)))
+    expect(revived.active).toBe(placed.name)
+    expect(findLayout(revived, placed.name)).toEqual(layout)
   })
 })

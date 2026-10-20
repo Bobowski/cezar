@@ -12,7 +12,8 @@ import {
 import { useRef, useState, type FormEvent, type ReactNode } from 'react'
 
 import { createRepoBranch, putConfig } from '@/api/client'
-import { queryKeys, useGithub, useHealth } from '@/api/queries'
+import { queryKeys, useGithub, useHealth, useRepoSync } from '@/api/queries'
+import { BranchTrackingBadge } from './repo-sync-bar'
 import type { GithubItem, HealthResponse, RepoInfo, RepoResponse } from '@open-mercato/cezar-api-client'
 import { ContextSidebar } from '@/components/context-sidebar'
 import { PageBody, PageSection, PageToolbar } from '@/components/page'
@@ -76,6 +77,7 @@ export function RepoBranchesSection({
   header: (extra?: ReactNode) => ReactNode
 }) {
   const health = useHealth()
+  const sync = useRepoSync()
   const queryClient = useQueryClient()
   const onError = (error: Error) => toast(error.message, { tone: 'danger' })
 
@@ -262,6 +264,7 @@ export function RepoBranchesSection({
                         <span className={cn('min-w-0 truncate font-mono text-[12.5px]', current && 'font-semibold')}>
                           {name}
                         </span>
+                        <BranchTrackingBadge name={name} sync={sync.data} />
                         {current ? (
                           <Badge variant="outline" data-slot="branch-current" className="gap-1.5 font-normal">
                             <StatusDot tone="success" />

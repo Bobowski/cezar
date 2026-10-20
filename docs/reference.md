@@ -94,6 +94,15 @@ still means no build step and no dev server on your machine — with a dark/ligh
 theme, a ⌘K command palette, and bookmarklets that launch a task straight from
 a GitHub page.
 
+**⌘P / Ctrl+P** acts on one task: on a task page it lists that task's actions
+(pin, archive, rename, stop, the git step, views, layouts, Open in…, copy). The
+prefix picks the mode: `@` to switch tasks (a PR or issue number finds every task about it — in ⌘K too), `>` for commands only, `#` for the task's files.
+Repeated ⌘P walks back through recent tasks; Tab on a task row (here or in ⌘K)
+acts on that task without opening it; ⌥↵ opens a view beside the current one.
+Shortcuts run those commands with the palette closed: ⌘1–⌘9 switch the task's tabs and
+⌘/ opens the terminal in a column; hold ⌘ to see each tab's number. Rebind any command with ⇧↵ on its row, or in
+Settings → Keyboard. Shortcuts are saved in `~/.cezar/ui-state.json`.
+
 ---
 
 ## Multiple projects, one cockpit
@@ -765,9 +774,13 @@ never blocks startup; configured lifecycle transitions pause on malformed config
   "modelsLocked": true,      // optional: native per-runner model is fixed/read-only; runner stays selectable
   "plannerModel": "sonnet",  // model the "Plan first" button uses to draft chains
   "baseBranch": "develop",   // branch worktrees fork from + PRs target (also settable in the Git tab)
-  "branchNaming": "your branch naming preferences"
+  "branchNaming": "your branch naming preferences",
                              // optional: task branches are named from the first prompt under these
                              // instructions (Settings → Instructions); absent = cez/<id8>
+  "startApp": { "services": ["npm run api", "npm run web"], "url": "http://localhost:5173" }
+                             // optional: what the Preview's Start app runs, each service in its own
+                             // terminal tab; url = the address to show (absent: the first one printed).
+                             // A `startApp` in your project entry of ~/.cezar/config.json wins.
 }
 ```
 

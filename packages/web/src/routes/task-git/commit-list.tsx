@@ -42,6 +42,9 @@ export interface CommitListItem {
   href: string
   /** The sha as displayed; the task list abbreviates, the repo log is already short. */
   shaLabel: string
+  /** Sync marker (spec 2026-10-19-repo-git-sync): a local commit no remote has, or one the
+   *  upstream has that HEAD does not. Absent means "on both". */
+  sync?: 'outgoing' | 'incoming'
 }
 
 export function CommitList({
@@ -149,6 +152,19 @@ function CommitRowBody({ commit }: { commit: CommitListItem }) {
     <>
       <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{commit.shaLabel}</span>
       <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{commit.subject}</span>
+      {commit.sync ? (
+        <span
+          data-slot="commit-sync"
+          data-sync={commit.sync}
+          title={commit.sync === 'outgoing' ? 'Not pushed yet' : 'On the remote, not pulled yet'}
+          className={cn(
+            'shrink-0 rounded-sm border px-1 font-mono text-[10px]',
+            commit.sync === 'outgoing' ? 'border-primary/40 text-primary' : 'border-border text-muted-foreground',
+          )}
+        >
+          {commit.sync === 'outgoing' ? '↑ local' : '↓ incoming'}
+        </span>
+      ) : null}
       <span className="hidden shrink-0 text-[11px] text-soft-foreground sm:inline">
         {commit.author} · {commit.when}
       </span>

@@ -110,6 +110,9 @@ export interface SemaphoreParticipant {
    * and any caller that predates the hold — keeps working; absent simply holds nothing.
    */
   accountHolds?(): AccountHolds;
+  /** Runs a restart would interrupt (queued, waiting or running) — the self-update dialog's
+   *  warning. Optional for stubs; absent counts none. */
+  activeRuns?(): number;
   /** Any run live or queued here — the host-pressure watch's demand signal. Absent reads the
    *  slot count and the queue head, which misses only parked sessions. */
   hasWork?(): boolean;
@@ -356,6 +359,22 @@ export class WorkspaceSemaphore {
     let total = 0;
     for (const participant of this.participants) total += participant.busySlots();
     return total;
+  }
+
+  /** Runs a restart would interrupt, across every registered project — not just the boot one. */
+  activeRuns(): number {
+    let total = 0;
+    for (const participant of this.participants) total += participant.activeRuns?.() ?? 0;
+    return total;
+  }
+
+  /** No slot held and nothing queued anywhere in the workspace — when "update when idle" may
+   *  restart. Waiting runs do not count (#347): they are parked on the user, and boot resumes them. */
+  idle(): boolean {
+    for (const participant of this.participants) {
+      if (participant.busySlots() > 0 || participant.oldestQueuedAt() !== null) return false;
+    }
+    return true;
   }
 
   /** Cached workspace-wide parallel cap. */

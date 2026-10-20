@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -435,6 +435,27 @@ describe('agent profiles API', () => {
       const { status } = await select('default', 'claude', account.id);
       expect(status).toBe(200);
       expect((await loadAgentAccounts()).selections[project.root]).toEqual({ claude: account.id });
+    });
+
+    // Telemetry d81f8db7: booted into a non-empty registry, the repo is served under a fallback
+    // slug with no registry row — the scope resolver accepts it, so this route must too.
+    it('accepts the boot project\'s id when the boot repo is not in the registry', async () => {
+      const other = mkdtempSync(join(realpathSync(tmpdir()), 'cez-profiles-other-'));
+      try {
+        await registerProject(other);
+        const account = await create('work');
+        const { bootProject: bootId, projects } = await (await apiRequest(makeApp(), '/api/v1/projects')).json() as {
+          bootProject: string;
+          projects: { id: string }[];
+        };
+        expect(projects.map((p) => p.id)).not.toContain(bootId);
+
+        const { status } = await select(bootId, 'claude', account.id);
+        expect(status).toBe(200);
+        expect((await loadAgentAccounts()).selections).toEqual({ [realpathSync(repoRoot)]: { claude: account.id } });
+      } finally {
+        rmSync(other, { recursive: true, force: true });
+      }
     });
 
     it('404s an unknown project rather than storing an orphan row', async () => {

@@ -3,13 +3,18 @@ import {
   LoaderCircleIcon,
   Maximize2Icon,
   MessageSquareTextIcon,
+  PanelBottomIcon,
   SearchXIcon,
   TerminalIcon,
 } from 'lucide-react'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Activity, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigationType, useParams } from 'react-router'
 
 import { ApiError } from '@/api/client'
+import { useHealth, useMarkRunSeen, useRun } from '@/api/queries'
+import { useRunHistory } from '@/api/run-history'
+import type { ApiRun } from '@open-mercato/cezar-api-client'
+import { CenteredState } from '@/components/centered-state'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,78 +25,78 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { useHealth, useMarkRunSeen, useRun } from '@/api/queries'
-import { useRunHistory } from '@/api/run-history'
-import type { ApiRun } from '@open-mercato/cezar-api-client'
-import { CenteredState } from '@/components/centered-state'
 import { Button } from '@/components/ui/button'
-import { Link } from '@/lib/project-router'
+import { Separator } from '@/components/ui/separator'
+import { IconTooltip } from '@/components/ui/icon-tooltip'
+import { Link, useActiveProjectId, useNavigate } from '@/lib/project-router'
 import { isUnread } from '@/lib/read-state'
-import { recallViewState, rememberViewState } from '@/lib/view-memory'
+import { recordTaskVisit } from '@/lib/recent-tasks'
+import { publishTaskWorkspace, takeQueuedFileOpen, withdrawTaskWorkspace, type TaskWorkspaceBridge } from '@/lib/task-workspace-bridge'
 import { isEditableTarget } from '@/lib/use-command-shortcut'
+import { cn } from '@/lib/utils'
+import { recallViewState, rememberViewState } from '@/lib/view-memory'
 
+import { GitTabLoading } from '../task-git/git-tab-loading'
 import { ChangesView } from '../task-git/task-changes'
 import { CommitsView } from '../task-git/task-commits'
 import { isDirty, type FileEdit } from '../task-git/file-preview'
 import { FilesView } from '../task-git/task-files'
-import { GitTabLoading } from '../task-git/git-tab-loading'
-import { RunHeader } from '../task-thread/run-header'
-import { ThreadLoading } from '../task-thread/thread-loading'
-import { ThreadView } from '../task-thread/task-thread'
 import { useDiffComments } from '../task-thread/diff-comments'
+import { RunHeader, type RunTab } from '../task-thread/run-header'
 import { useRunRecordReconcile } from '../task-thread/run-reconcile'
+import { ThreadView } from '../task-thread/task-thread'
+import { ThreadLoading } from '../task-thread/thread-loading'
 import { reduceThread } from '../task-thread/thread-state'
-
 import { BrowserView } from './browser-view'
 import { DesignNotePopup } from './design-note-popup'
 import { useDesignNotes } from './design-notes'
-import { Separator } from '@/components/ui/separator'
-import { cn } from '@/lib/utils'
-
-import { LayoutCards } from './layout-cards'
-import { FullViewExit, WorkspaceMaximizeContext, usePanelCover } from './maximize'
-import { WorkspaceColumns, type ColumnActions } from './workspace-columns'
-import { useWorkspaceLayouts } from './use-workspace-layouts'
 import { readDrawerState, writeDrawerState, type DrawerState } from './drawer-state'
-import { emptyBrowserState, fixedViewOf, type ViewId, type WorkspaceColumn } from './layout-state'
+import { LayoutCards } from './layout-cards'
+import {
+  emptyBrowserState,
+  FIXED_VIEW_ORDER,
+  fixedViewOf,
+  layoutDisplayName,
+  MAX_COLUMNS,
+  toSavedLayout,
+  VIEW_IDS,
+  type ViewId,
+  type WorkspaceColumn,
+  type WorkspaceLayout,
+} from './layout-state'
+import { FullViewExit, usePanelCover, WorkspaceMaximizeContext } from './maximize'
+import { RunAppPanel } from './run-app'
+import { stripEntries, stripTabs, useStripKeyHints } from './strip'
+import { useSavedLayouts } from './use-saved-layouts'
+import { useWorkspaceLayouts } from './use-workspace-layouts'
+import { AvailableViewsContext } from './view-picker'
+import { ViewDropZones } from './view-drop-zones'
+import { WorkspaceColumns, type ColumnActions } from './workspace-columns'
 
-/** Lazy because it carries the emulator (xterm, ~80 KB gz) and its stylesheet. A task whose
- *  drawer is never opened must not pay for either — the drawer starts hidden on every visit
- *  (spec §6), so that is most visits. */
+/** Lazy: xterm is the heaviest thing on this screen, and most visits never open a shell. */
 const TerminalDrawer = lazy(() =>
   import('./terminal-drawer').then((m) => ({ default: m.TerminalDrawer })),
 )
 
-/** Lazy for the same reason the drawer is: the graph carries `@xyflow/react` and its layout
- *  engine, and a workspace showing Czat beside Zmiany must not pay for either. */
+/** Lazy for the same reason: the graph carries `@xyflow/react` and its layout engine. */
 const GraphColumn = lazy(() =>
   import('../workflow-graph/task-graph').then((m) => ({ default: m.GraphView })),
 )
 
 /**
- * `/tasks/:id` — the task workspace (spec `.ai/specs/2026-10-07-task-workspace.md`).
- *
- * The task detail view, not a mode beside it: the SAME `RunHeader` anchors the screen, with its
- * four route tabs replaced by the saved-layout strip, and the view area below holds one to three
- * resizable columns. Each column embeds the existing Conversation, Changes, Commits or Files
- * component — `embedded` drops that component's own header and nothing else, so none of their
- * data fetching, polling, review gates or draft handling is reimplemented here.
- *
- * The three `/changes`, `/files` and `/commits` URLs render this same route with `view` set; the
- * deep link opens its view as a new one-column card and leaves every saved layout alone (§5.3).
+ * `/tasks/:id` — the task workspace (spec `.ai/specs/2026-10-07-task-workspace.md`): the run
+ * header, its route tabs replaced by the saved-layout strip, and one to three resizable columns
+ * below. Each column embeds an existing view; `embedded` drops that view's own header and nothing
+ * else. `/changes`, `/files`, `/commits`, `/graph`, `/preview` and `/terminal` render this route with `view`
+ * set, which opens that view as a card and leaves every saved layout alone (§5.3).
  */
 export function TaskWorkspaceRoute({ view }: { view?: ViewId }) {
   const { id } = useParams<{ id: string }>()
   const run = useRun(id)
 
-  // The read receipt, verbatim from the Session route it replaces (#unread-done-items, #775):
-  // opening a finished task marks it read, and "Mark unread" from this very header suppresses
-  // that for the rest of the visit. It lives at the route, not in a column, because it is a
-  // property of VISITING the task — a workspace with no Czat column still opens the mail.
+  // The read receipt, moved here from the Session route (#unread-done-items, #775): visiting the
+  // task marks it read even when no Chat column is showing.
   const suppressAutoRead = useRef<string | undefined>(undefined)
-  // Leaving ends the visit, and has to be said: /tasks/A → /tasks/B → /tasks/A reuses this route
-  // element, so the ref outlived the round trip and A stayed unread forever (main #1337).
-  // Declared BEFORE the receipt effect: effects run in order.
   useEffect(() => {
     if (suppressAutoRead.current !== id) suppressAutoRead.current = undefined
   }, [id])
@@ -110,13 +115,9 @@ export function TaskWorkspaceRoute({ view }: { view?: ViewId }) {
     run.data?.finishedAt,
     run.data?.seenAt,
     run.data?.archived,
-    // Coming back to a run whose cached record is unchanged must still re-run the receipt.
     id,
   ])
 
-  // The skeleton the URL asked for, not the workspace's own: a `/changes` deep link that says
-  // "Loading changes…" is telling the truth about what it is opening, and it keeps a cold load of
-  // each task URL looking exactly as it did before the workspace existed.
   if (run.isPending) return <DeepLinkLoading view={view} />
 
   if (run.isError) {
@@ -145,13 +146,12 @@ export function TaskWorkspaceRoute({ view }: { view?: ViewId }) {
   return <WorkspaceView run={run.data} deepLinkView={view} onMarkedUnread={suppressAutoReadFor} />
 }
 
-/** The fixed cards, left to right. Chat is home; the graph is the task's shape, so it is next. */
-const FIXED_VIEW_ORDER: readonly ViewId[] = ['session', 'graph', 'changes', 'commits', 'files', 'browser']
 
 function DeepLinkLoading({ view }: { view?: ViewId }) {
   if (view === 'files') return <GitTabLoading tab="files" />
-  // Commits has no skeleton of its own — it rides the Changes one, as its route always has.
-  if (view === 'changes' || view === 'commits') return <GitTabLoading tab="changes" />
+  if (view === 'terminal') return <GitTabLoading tab="terminal" />
+  if (view === 'browser') return <GitTabLoading tab="preview" />
+  if (view === 'changes' || view === 'commits' || view === 'graph') return <GitTabLoading tab="changes" />
   return <ThreadLoading />
 }
 
@@ -165,34 +165,33 @@ function WorkspaceView({
   onMarkedUnread: (runId: string) => void
 }) {
   const layouts = useWorkspaceLayouts(run.id)
-  const { openDeepLink, addLayout, closeLayout, selectLayout, renameLayout, setColumnBrowser, openInBrowser } =
-    layouts
+  const { openDeepLink, addLayout, closeLayout, selectLayout, setColumnBrowser, openInBrowser, applySaved, keepAs } = layouts
+  // Layouts saved for every task: nothing is saved until the user names one (Layout menu).
+  const savedLayouts = useSavedLayouts()
+  const { save: saveLayout, remove: deleteSavedLayout } = savedLayouts
+  const layoutState = layouts.state
+  const canSaveLayout = (layouts.layout?.columns.length ?? 0) > 0
+  const saveCurrentLayout = useCallback(
+    (name: string) => {
+      const layout = toSavedLayout(layoutState, name)
+      if (!layout) return
+      saveLayout(layout)
+      keepAs(layout.name)
+    },
+    [keepAs, layoutState, saveLayout],
+  )
 
-  // The deep-link hop. Keyed on the run id as well as the view: task A `/changes` → task B
-  // `/changes` changes neither the path nor `openDeepLink`, and without the id in the deps task B
-  // would open its default Czat card instead of the Changes the URL asked for.
-  //
-  // Gated on `ready`, because the layouts now come from the host: applied to the placeholder
-  // state the hook starts with, the new card would be built on top of a workspace this task does
-  // not have, and the host's answer would then replace it wholesale a tick later.
-  //
-  // BACK UNDOES IT. §5.3 asks the URL to "preserve its intent and browser Back behavior", and a
-  // deep link that activates a card has to give that card up when the user presses Back to
-  // `/tasks/:id` — otherwise the canonical URL silently shows the surface the previous entry
-  // asked for. The card itself stays (the spec saves it); only the SELECTION is restored, to
-  // whatever was active before the hop.
+  // Policy, read from the one place that knows it: no shell here means no Terminal anywhere.
+  const terminalAllowed = useHealth().data?.capabilities?.terminal === true
+  const availableViews = useMemo(
+    () => VIEW_IDS.filter((view) => view !== 'terminal' || terminalAllowed),
+    [terminalAllowed],
+  )
+
+  // The deep-link hop, and Back undoing it (§5.3) — as on brutus, gated on `ready` so a card is
+  // never built on the stand-in state before the host has answered.
   const navigationType = useNavigationType()
   const beforeDeepLink = useRef<{ runId: string; name: string } | null>(null)
-  /**
-   * The card each deep-linked view minted during THIS visit to this task.
-   *
-   * Without it, Back-then-Forward across a deep link minted a card every time — Back cleared the
-   * hop and restored `Czat`, so the Forward looked like a brand-new arrival, and `openDeepLink`'s
-   * idempotence guard (which only holds while that card is still active) no longer applied. Six
-   * presses left `Układ 2, 3, 4` behind, saved on the host. Reusing the card this visit already
-   * made is not the same as adopting a layout the USER built, which §5.3 forbids and which this
-   * deliberately cannot do: only names minted here are ever in the map.
-   */
   const hops = useRef<Map<ViewId, string>>(new Map())
   const hopsRun = useRef(run.id)
   if (hopsRun.current !== run.id) {
@@ -204,8 +203,6 @@ function WorkspaceView({
   useEffect(() => {
     if (!layouts.ready) return
     if (deepLinkView) {
-      // Remember once per hop: a re-render inside the same deep link must not overwrite the
-      // layout we are meant to come back to with the one the link itself activated.
       if (beforeDeepLink.current?.runId !== run.id) {
         beforeDeepLink.current = { runId: run.id, name: layouts.state.active }
       }
@@ -219,23 +216,14 @@ function WorkspaceView({
     }
     const previous = beforeDeepLink.current
     beforeDeepLink.current = null
-    // Only a POP — Back or Forward. §5.3 asks the deep link to preserve "browser Back behavior",
-    // and nothing more: following an in-app link to `/tasks/:id` after deliberately choosing
-    // another card should leave that choice alone, not yank the user back to the pre-link one.
     if (navigationType !== 'POP') return
     if (previous && previous.runId === run.id && previous.name !== layouts.state.active) {
       selectLayout(previous.name)
     }
-    // `layouts.state.active` is deliberately NOT a dependency: this runs on a navigation, and
-    // re-running it whenever the user picks another card would drag them back to the old one.
-    // `replaced` re-applies the link when a late answer from the host replaces the stand-in — not
-    // on a late "never opened", which keeps the card the user picked meanwhile.
+    // `layouts.state.active` is deliberately not a dependency: this runs on a navigation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deepLinkView, layouts.ready, layouts.replaced, navigationType, openDeepLink, run.id, selectLayout])
 
-  // Record the card the hop produced, once the transition has landed. Recognised by shape — a
-  // one-column layout of exactly this view — so the OLD active can never be mistaken for it in
-  // the render before `openDeepLink` applies.
   useEffect(() => {
     if (!layouts.ready || !deepLinkView || hops.current.has(deepLinkView)) return
     const active = layouts.layout
@@ -246,41 +234,85 @@ function WorkspaceView({
 
   const markedUnread = useCallback(() => onMarkedUnread(run.id), [onMarkedUnread, run.id])
 
-  /**
-   * The fixed cards: one per view — Chat, Graph (when the task has a workflow), Changes, Commits,
-   * Files, Browser — always on the strip, in that order, with no close and no rename. Chat
-   * is the task's home (its bar, then the conversation) and is where a task opens.
-   *
-   * Each stands in for the plain saved layout of its view (`fixedViewOf`): picking one selects
-   * that layout, creating it the first time, so what a fixed card shows is remembered like any
-   * other layout — but the plain layout itself is never drawn as a second, closable card.
-   */
   const fixedViews = useMemo<readonly ViewId[]>(
-    () => FIXED_VIEW_ORDER.filter((view) => view !== 'graph' || Boolean(run.workflowDef)),
-    [run.workflowDef],
+    () =>
+      FIXED_VIEW_ORDER.filter(
+        (view) => availableViews.includes(view) && (view !== 'graph' || Boolean(run.workflowDef)),
+      ),
+    [availableViews, run.workflowDef],
   )
   const fixedActive: ViewId | null = !layouts.ready
     ? null
     : layouts.layout
       ? fixedViewOf(layouts.layout)
-      // Every layout closed: the task's home is what is left.
       : 'session'
+  // Chat is the task's home: its bar, then the conversation.
   const overview = fixedActive === 'session'
   const cardLayouts = useMemo(
     () => layouts.state.layouts.filter((layout) => fixedViewOf(layout) === null),
     [layouts.state.layouts],
   )
-  const pickLayout = selectLayout
   const createLayout = useCallback(() => addLayout(), [addLayout])
 
-  /**
-   * Whether the drawer is showing, and how tall (spec §6).
-   *
-   * Read during render on a CHANGED task id for the same reason the layouts are: run A → run B
-   * keeps the same route element, so React does not remount, and plain state would carry run A's
-   * drawer into run B. `readDrawerState` is also what enforces the spec's two different restores
-   * — a refresh reopens the drawer, a navigation does not — so this is a plain read either way.
-   */
+  // The numbered tabs — views with Notes among them (`strip.ts`) — and, while ⌘ is held on its own, each
+  // tab's number (spec 2026-10-17-task-palette). Saved layouts are not numbered.
+  const strip = useMemo(() => stripEntries(fixedViews), [fixedViews])
+  const { hints: keyHints, show: keysHeld } = useStripKeyHints(strip)
+  const navigate = useNavigate()
+
+  // A view tab being dragged: the stage shows its drop zones until the drag ends. Set a tick late,
+  // because changing the page under a drag that has only just started can cancel it.
+  const [draggingView, setDraggingView] = useState<ViewId | null>(null)
+  const startViewDrag = useCallback((view: ViewId) => {
+    setTimeout(() => setDraggingView(view), 0)
+  }, [])
+  const endViewDrag = useCallback(() => setDraggingView(null), [])
+  const dropView = layouts.dropView
+  // The layout shown before this one. A view's tab dropped beside its OWN card (the Terminal tab
+  // dragged while the Terminal shows) means "beside what I was on", which is only known here.
+  const shownLayout = useRef({ runId: run.id, current: layouts.state.active, previous: null as string | null })
+  if (shownLayout.current.runId !== run.id) shownLayout.current = { runId: run.id, current: layouts.state.active, previous: null }
+  else if (shownLayout.current.current !== layouts.state.active) {
+    shownLayout.current = { runId: run.id, current: layouts.state.active, previous: shownLayout.current.current }
+  }
+  const besideItself = useCallback(
+    (view: ViewId): number | null => {
+      if (fixedActive !== view) return null
+      const previous = shownLayout.current.previous
+      const back = previous === null ? undefined : layouts.state.layouts.find((layout) => layout.name === previous)
+      if (back && !(back.columns.length === 1 && back.columns[0]?.view === view)) {
+        selectLayout(back.name)
+        return back.columns.length
+      }
+      openDeepLink(view === 'session' ? 'changes' : 'session')
+      return 1
+    },
+    [fixedActive, layouts.state.layouts, openDeepLink, selectLayout],
+  )
+  const dropViewHere = useCallback(
+    (view: ViewId, at: number, mode: 'insert' | 'replace') => {
+      setDraggingView(null)
+      if (mode === 'insert' && besideItself(view) !== null) {
+        // Its own card offered a left and a right edge: keep the side, beside the view it returns to.
+        dropView(view, at === 0 ? 0 : MAX_COLUMNS, mode)
+        return
+      }
+      dropView(view, at, mode)
+    },
+    [besideItself, dropView],
+  )
+  const openViewBeside = useCallback(
+    (view: ViewId) => {
+      const count = besideItself(view) ?? layouts.layout?.columns.length ?? 0
+      dropView(view, count, 'insert')
+    },
+    [besideItself, dropView, layouts.layout?.columns.length],
+  )
+  const columnCount = layouts.layout?.columns.length ?? 0
+  const closeColumnByDrop = fixedActive === null && columnCount > 1 ? layouts.closeColumn : undefined
+
+  // The drawer: browser-local open + height, per task (spec §6). Read during render on a changed
+  // task id, so run A's drawer never carries into run B.
   const [drawer, setDrawer] = useState<DrawerState>(() => readDrawerState(run.id))
   const drawerFor = useRef(run.id)
   if (drawerFor.current !== run.id) {
@@ -297,10 +329,12 @@ function WorkspaceView({
     },
     [run.id],
   )
-  /**
-   * Full view of the active layout (see `maximize.tsx`). A way of looking, not a setting: reset
-   * per task like the drawer above, and left by picking another layout.
-   */
+  // A Terminal column already shows this task's shells; a drawer under it would be a second view
+  // of the same sessions, fighting over the PTY's size.
+  const terminalColumnShown = layouts.layout?.columns.some((column) => column.view === 'terminal') ?? false
+  const projectId = useActiveProjectId()
+  const drawerShown = terminalAllowed && drawer.open && !terminalColumnShown
+
   const [maximized, setMaximized] = useState(false)
   const maximizedFor = useRef(run.id)
   if (maximizedFor.current !== run.id) {
@@ -314,12 +348,28 @@ function WorkspaceView({
   // One element for the life of the view: `RunHeader` is memo'd on prop identity.
   const fullViewExit = useMemo(() => <FullViewExit />, [])
 
-  // Policy, read from the one place that knows it. A cockpit where a shell is not allowed shows
-  // no button at all rather than one that explains itself after the click.
-  const terminalAllowed = useHealth().data?.capabilities?.terminal === true
+  // The Terminal tab opens the shells as a view, like Preview; a drag or ⌥-click puts them beside
+  // the view instead. The bottom drawer is the ` key's, and a column's "Move to bottom".
+  const drawerOpen = drawer.open
+  const toggleDrawer = useCallback(() => {
+    if (!terminalColumnShown) updateDrawer({ open: !drawerOpen })
+  }, [drawerOpen, terminalColumnShown, updateDrawer])
+  const { closeColumn } = layouts
+  const terminalColumns = layouts.layout?.columns
+  const moveTerminalToDrawer = useCallback(() => {
+    updateDrawer({ open: true })
+    const index = terminalColumns?.findIndex((column) => column.view === 'terminal') ?? -1
+    if (index < 0) return
+    // A layout of the shells alone has nothing to fall back to but Chat.
+    if (fixedActive !== null || terminalColumns!.length === 1) openDeepLink('session')
+    else closeColumn(index)
+  }, [closeColumn, fixedActive, openDeepLink, terminalColumns, updateDrawer])
+  const onViews = useMemo<readonly ViewId[]>(
+    () => (drawerShown || terminalColumnShown ? ['terminal'] : []),
+    [drawerShown, terminalColumnShown],
+  )
 
-  // Memoized because `RunHeader` is `memo`'d on prop identity: a fresh element every render would
-  // make that comparator always false and re-render the whole header on every thread frame.
+  // Memoized: `RunHeader` is memo'd on prop identity.
   const tabs = useMemo(
     () => (
       <LayoutCards
@@ -327,18 +377,51 @@ function WorkspaceView({
         active={layouts.state.active}
         fixedViews={fixedViews}
         fixedActive={fixedActive}
+        onViews={onViews}
         onSelectFixed={openDeepLink}
-        onSelect={pickLayout}
-        onRename={renameLayout}
+        onSelect={selectLayout}
         onClose={closeLayout}
         onCreate={createLayout}
+        saved={savedLayouts.saved}
+        onApplySaved={applySaved}
+        onSaveCurrent={canSaveLayout ? saveCurrentLayout : undefined}
+        onDeleteSaved={deleteSavedLayout}
+        notesHref={`/tasks/${run.id}/notes`}
+        onViewDragStart={startViewDrag}
+        onViewDragEnd={endViewDrag}
+        onOpenBeside={openViewBeside}
+        onColumnDropClose={closeColumnByDrop}
+        keyHints={keyHints}
+        showKeyHints={keysHeld}
       />
     ),
-    [cardLayouts, layouts.state.active, fixedViews, fixedActive, openDeepLink, pickLayout, renameLayout, closeLayout, createLayout],
+    [
+      cardLayouts,
+      layouts.state.active,
+      fixedViews,
+      fixedActive,
+      onViews,
+      openDeepLink,
+      selectLayout,
+      closeLayout,
+      createLayout,
+      savedLayouts.saved,
+      applySaved,
+      canSaveLayout,
+      saveCurrentLayout,
+      deleteSavedLayout,
+      run.id,
+      startViewDrag,
+      endViewDrag,
+      openViewBeside,
+      closeColumnByDrop,
+      keyHints,
+      keysHeld,
+    ],
   )
 
-  // The drawer's toggle, handed to the header's tab row. Memoized for the same reason `tabs` is.
-  const drawerOpen = drawer.open
+  // The drawer's toggle, handed to the header's tab row (the Terminal tab opens the shells as a
+  // view instead). Lit, and inert, while a column of this layout already shows them.
   const terminalToggle = useMemo(
     () =>
       terminalAllowed ? (
@@ -347,82 +430,26 @@ function WorkspaceView({
           size="icon-sm"
           data-action="toggle-terminal"
           aria-label={drawerOpen ? 'Hide terminal' : 'Show terminal'}
-          aria-pressed={drawerOpen}
-          title={drawerOpen ? 'Hide terminal — processes keep running (`)' : 'Terminal (`)'}
-          className={drawerOpen ? 'bg-muted text-foreground' : 'text-muted-foreground'}
-          onClick={() => updateDrawer({ open: !drawerOpen })}
+          aria-pressed={drawerOpen || terminalColumnShown}
+          disabled={terminalColumnShown}
+          title={
+            terminalColumnShown
+              ? 'The terminal is open in a column of this layout'
+              : drawerOpen
+                ? 'Hide terminal — processes keep running (`)'
+                : 'Terminal (`)'
+          }
+          className={cn(
+            'disabled:opacity-100',
+            drawerOpen || terminalColumnShown ? 'bg-muted text-foreground' : 'text-muted-foreground',
+          )}
+          onClick={toggleDrawer}
         >
           <TerminalIcon aria-hidden="true" />
         </Button>
       ) : null,
-    [terminalAllowed, drawerOpen, updateDrawer],
+    [terminalAllowed, drawerOpen, terminalColumnShown, toggleDrawer],
   )
-  /**
-   * The workspace's keys. BARE keys, the `c`-to-create convention the cockpit already follows
-   * (`useKeyShortcut`), and for the same reason: the chords one would reach for are the browser's.
-   * ⌘1…⌘9 switch BROWSER tabs, ⌘[ / ⌘] are back and forward, ⌘F is find, ⌘\ and ⌘/ belong to
-   * extensions — and a page cannot reliably claim any of them. A bare key collides with nothing,
-   * as long as it never fires while someone is typing: a focused input, the composer, the
-   * terminal (xterm types into a textarea) all swallow it, and so does any open dialog or menu.
-   *
-   *   1…9   the nth card on the strip        [ / ]   previous / next card
-   *   f     full view on and off              \       split the last window (a layout you built)
-   *   /     focus the composer                `       show or hide the terminal
-   *
-   * Taken elsewhere and left alone: `c` and ⌘N (new task), ⌘K (palette), ⌘B (sidebar),
-   * ⌥+letter (quick replies), ⌃⇧` (new terminal tab), Escape (leave full view).
-   */
-  const stripOrder = useMemo(
-    () => [
-      ...fixedViews.map((view) => ({ select: () => openDeepLink(view), active: fixedActive === view })),
-      ...cardLayouts.map((layout) => ({
-        select: () => pickLayout(layout.name),
-        active: fixedActive === null && layout.name === layouts.state.active,
-      })),
-    ],
-    [fixedViews, cardLayouts, fixedActive, layouts.state.active, openDeepLink, pickLayout],
-  )
-  const keys = useRef({ stripOrder, toggleMaximized, terminalAllowed, drawerOpen, updateDrawer })
-  keys.current = { stripOrder, toggleMaximized, terminalAllowed, drawerOpen, updateDrawer }
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.metaKey || event.ctrlKey || event.altKey || event.repeat || event.defaultPrevented) return
-      if (isEditableTarget(event.target)) return
-      // Something modal is up: its keys are its own.
-      if (document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]')) return
-      const now = keys.current
-      const stage = document.querySelector<HTMLElement>('[data-slot="workspace-stage"]')
-      const at = now.stripOrder.findIndex((entry) => entry.active)
-      const step = (delta: number) => {
-        if (now.stripOrder.length === 0) return
-        const next = (Math.max(at, 0) + delta + now.stripOrder.length) % now.stripOrder.length
-        now.stripOrder[next]!.select()
-      }
-      if (/^[1-9]$/.test(event.key)) {
-        const entry = now.stripOrder[Number(event.key) - 1]
-        if (!entry) return
-        entry.select()
-      } else if (event.key === '[') step(-1)
-      else if (event.key === ']') step(1)
-      else if (event.key === 'f' || event.key === 'F') now.toggleMaximized()
-      else if (event.key === '\\') {
-        const buttons = stage?.querySelectorAll<HTMLButtonElement>('[data-action="split-view"]:not(:disabled)')
-        const last = buttons?.[buttons.length - 1]
-        if (!last) return
-        last.click()
-      } else if (event.key === '/') {
-        const input = stage?.querySelector<HTMLElement>('[data-slot="composer"] textarea, [data-slot="composer-input"]')
-        if (!input) return
-        input.focus()
-      } else if (event.key === '`') {
-        if (!now.terminalAllowed) return
-        now.updateDrawer({ open: !now.drawerOpen })
-      } else return
-      event.preventDefault()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
 
   // Full view closes the strip: the last control, set apart by a rule and drawn as a real button
   // so it is found without hunting among the ghost icons beside it.
@@ -448,32 +475,73 @@ function WorkspaceView({
   )
 
   /**
-   * Changing a column's view away from Zmiany while it holds an unsent comment asks first (spec
-   * §5.2: warn, with `Zamknij mimo to` to discard and change, or `Wróć` to keep it and stay).
-   * Czat's composer text is discarded without a warning, which the same paragraph says.
+   * The workspace's keys — bare keys, never while typing or with a dialog/menu open (brutus §5.2):
+   *   1…9 nth numbered tab (`stripTabs`) · [ ] previous/next card · f full view · \ split the last window ·
+   *   / focus the composer · ` show or hide the terminal drawer
    */
-  // Run-level, because that is what the comments ARE: `useDiffComments` is keyed by run and the
-  // draft behind it is one server surface per run, so every Zmiany column anywhere in the task
-  // shows the same set.
-  //
-  // The count that decides the warning is over the ACTIVE layout, though, because that is what
-  // "out of sight" means here: switching layouts unmounts the columns of the one you left
-  // (§5.4), so a Zmiany column in another saved layout is not displaying anything to be warned
-  // about. Asking once there is no VISIBLE column left is therefore the right line — and asking
-  // once per column would ask while an identical column next door still displays them.
-  const diffComments = useDiffComments(run.id)
-  // Design Mode (spec 2026-10-09-design-mode §7): one note per element of the app. Run-level, so
-  // every Browser column of the task frames the same elements and a draft survives a layout
-  // switch that unmounts the column it was written in.
-  const designNotes = useDesignNotes(run)
-  const { addDraft, discard: discardNote, note: noteFor, marks: designMarks } = designNotes
-  /** Esc in the page with a note open: a draft is thrown away, exactly as its ✕ does. */
-  const escapeNote = useCallback(
-    (mark: string) => {
-      if (noteFor(mark)?.phase === 'draft') discardNote(mark)
-    },
-    [discardNote, noteFor],
+  const stripOrder = useMemo(
+    () => [
+      ...fixedViews.map((view) => ({ select: () => openDeepLink(view), active: fixedActive === view })),
+      ...cardLayouts.map((layout) => ({
+        select: () => selectLayout(layout.name),
+        active: fixedActive === null && layout.name === layouts.state.active,
+      })),
+    ],
+    [fixedViews, cardLayouts, fixedActive, layouts.state.active, openDeepLink, selectLayout],
   )
+  // The 1–9 keys: the numbered tabs only (`strip.ts` — views and Notes; no layouts), so the key
+  // is the number the tab wears. `[` `]` still step through every card, layouts included.
+  const numbered = useMemo(
+    () => [
+      ...stripTabs(fixedViews).map((tab) =>
+        tab === 'notes' ? () => navigate(`/tasks/${run.id}/notes`) : () => openDeepLink(tab),
+      ),
+    ],
+    [fixedViews, openDeepLink, navigate, run.id],
+  )
+  const keys = useRef({ stripOrder, numbered, toggleMaximized, terminalAllowed, toggleDrawer })
+  keys.current = { stripOrder, numbered, toggleMaximized, terminalAllowed, toggleDrawer }
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey || event.repeat || event.defaultPrevented) return
+      if (isEditableTarget(event.target)) return
+      if (document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]')) return
+      const now = keys.current
+      const stage = document.querySelector<HTMLElement>(VISIBLE_LAYOUT)
+      const at = now.stripOrder.findIndex((entry) => entry.active)
+      const step = (delta: number) => {
+        if (now.stripOrder.length === 0) return
+        const next = (Math.max(at, 0) + delta + now.stripOrder.length) % now.stripOrder.length
+        now.stripOrder[next]!.select()
+      }
+      if (/^[1-9]$/.test(event.key)) {
+        const open = now.numbered[Number(event.key) - 1]
+        if (!open) return
+        open()
+      } else if (event.key === '[') step(-1)
+      else if (event.key === ']') step(1)
+      else if (event.key === 'f' || event.key === 'F') now.toggleMaximized()
+      else if (event.key === '\\') {
+        const buttons = stage?.querySelectorAll<HTMLButtonElement>('[data-action="split-view"]:not(:disabled)')
+        const last = buttons?.[buttons.length - 1]
+        if (!last) return
+        last.click()
+      } else if (event.key === '/') {
+        const input = stage?.querySelector<HTMLElement>('[data-slot="composer"] textarea, [data-slot="composer-input"]')
+        if (!input) return
+        input.focus()
+      } else if (event.key === '`') {
+        if (!now.terminalAllowed) return
+        now.toggleDrawer()
+      } else return
+      event.preventDefault()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // Changing the last visible Changes column away while it holds unsent comments asks first (§5.2).
+  const diffComments = useDiffComments(run.id)
   const [pendingView, setPendingView] = useState<{ index: number; view: ViewId } | null>(null)
   const columns = layouts.layout?.columns
   const requestColumnView = useCallback(
@@ -491,17 +559,27 @@ function WorkspaceView({
 
   const actions: ColumnActions = useMemo(
     () => ({
-      addColumn: layouts.addColumn,
+      // A view tab stays the one view it stands for: splitting it builds the working arrangement.
+      addColumn:
+        fixedActive === null ? layouts.addColumn : (view: ViewId) => dropView(view, columnCount, 'insert'),
       closeColumn: layouts.closeColumn,
       setColumnView: requestColumnView,
       resizeColumns: layouts.resizeColumns,
       moveColumn: layouts.moveColumn,
     }),
-    [layouts.addColumn, layouts.closeColumn, requestColumnView, layouts.resizeColumns, layouts.moveColumn],
+    [
+      fixedActive,
+      dropView,
+      columnCount,
+      layouts.addColumn,
+      layouts.closeColumn,
+      requestColumnView,
+      layouts.resizeColumns,
+      layouts.moveColumn,
+    ],
   )
 
-  // A file or commit named in the chat: put its view beside the chat, then tell THAT window —
-  // by the same key it remembers its selection under — what to show.
+  // A file or commit named in the chat opens beside it, in the window that remembers it by key.
   const openBeside = layouts.openBeside
   // The Code window's own rule (`FilesView.select`): an unsaved edit is not dropped by a click.
   // Writing the selection from here goes around that view, so the question is asked here.
@@ -521,31 +599,131 @@ function WorkspaceView({
     [openBeside, run.id],
   )
 
-  /**
-   * The LAYOUT is part of each column's memory key, not just its index.
-   *
-   * Spec §5.4 asks that switching saved layouts preserve "each layout's view state… scroll
-   * position, file selection". Keyed by index alone, two layouts whose Files column happens to
-   * sit in the same position shared one remembered selection — so switching between them moved
-   * the other one's file under the user. The name changes on rename, which costs that column its
-   * remembered position for the rest of the session; that is the right trade for state the
-   * module already documents as session-lifetime.
-   */
-  const activeName = layouts.state.active
+  // The ⌘P palette's handle on this workspace (spec 2026-10-17-task-palette), refreshed every commit.
+  useEffect(() => recordTaskVisit(run.id), [run.id])
+  useEffect(() => {
+    if (!layouts.ready) return
+    const path = takeQueuedFileOpen(run.id)
+    if (path) openReference({ view: 'files', value: path })
+  }, [layouts.ready, openReference, run.id])
+  useEffect(() => {
+    const stage = () => document.querySelector<HTMLElement>(VISIBLE_LAYOUT)
+    const splitButton = () => {
+      const buttons = stage()?.querySelectorAll<HTMLButtonElement>('[data-action="split-view"]:not(:disabled)')
+      return buttons?.[buttons.length - 1] ?? null
+    }
+    const composer = () =>
+      stage()?.querySelector<HTMLElement>('[data-slot="composer"] textarea, [data-slot="composer-input"]') ?? null
+    const bridge: TaskWorkspaceBridge = {
+      runId: run.id,
+      views: fixedViews,
+      activeView: fixedActive,
+      openView: openDeepLink,
+      openViewBeside,
+      layouts: cardLayouts.map((layout) => ({
+        name: layout.name,
+        label: layoutDisplayName(layout.name),
+        active: fixedActive === null && layout.name === layouts.state.active,
+      })),
+      selectLayout,
+      maximized,
+      toggleMaximized,
+      // Getters: the composer and split buttons mount after this commit (history loads), so they
+      // are looked up when the palette reads them, not when this was published.
+      get splitView() {
+        return splitButton() ? () => splitButton()?.click() : null
+      },
+      terminal: {
+        allowed: terminalAllowed,
+        open: drawerOpen,
+        inColumn: terminalColumnShown,
+        toggle: toggleDrawer,
+        openInColumn: () => {
+          updateDrawer({ open: false })
+          openBeside('terminal')
+        },
+      },
+      get focusComposer() {
+        return composer() ? () => composer()?.focus() : null
+      },
+      openFile: (path: string) => openReference({ view: 'files', value: path }),
+      markedUnread,
+    }
+    publishTaskWorkspace(bridge)
+    return () => withdrawTaskWorkspace(bridge)
+  })
 
-  // One run, one worktree: every column is handed the SAME record (spec §3.3), so no column can
-  // drift onto another task's state or the boot repo.
+  // The layout name is part of each column's memory key, so two layouts never share a selection.
+  const activeName = layouts.state.active
+  // The header's run controls (Continue, ■ Stop) live in the composer when a Chat column shows it.
+  const headerTab: RunTab = columns?.some((column) => column.view === 'session') ? 'session' : 'changes'
+
+  // Design Mode notes (spec 2026-10-09-design-mode) are the task's, shared by every Preview column.
+  const designNotes = useDesignNotes(run)
+  const { addDraft, discard: discardNote, note: noteFor, marks: designMarks } = designNotes
+  const escapeNote = useCallback(
+    (mark: string) => {
+      if (noteFor(mark)?.phase === 'draft') discardNote(mark)
+    },
+    [discardNote, noteFor],
+  )
+
+  const keptLayouts = useKeptLayouts(run.id, layouts.layout ? activeName : null, layouts.state.layouts)
+
+  // A terminal column's bar docks the same shells at the bottom instead.
+  const headerExtras = useCallback(
+    (view: ViewId) =>
+      view === 'terminal' && terminalAllowed ? (
+        <IconTooltip label="Move to bottom — under every view">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            data-action="terminal-to-drawer"
+            aria-label="Move to bottom"
+            onClick={moveTerminalToDrawer}
+            className="text-soft-foreground hover:text-foreground"
+          >
+            <PanelBottomIcon aria-hidden="true" className="size-3.5" />
+          </Button>
+        </IconTooltip>
+      ) : null,
+    [moveTerminalToDrawer, terminalAllowed],
+  )
+
   const renderView = useCallback(
-    (view: ViewId, index: number, column: WorkspaceColumn) => {
+    (view: ViewId, index: number, column: WorkspaceColumn, layoutName: string) => {
       switch (view) {
         case 'session':
           return <ConversationColumn run={run} onMarkedUnread={onMarkedUnread} onOpenReference={openReference} />
         case 'changes':
-          return <ChangesView run={run} embedded stateKey={`${run.id}:${activeName}:${index}:changes`} />
+          // Keyed by run, like the standalone route, so its deferred diff can never hand one task's
+          // files to the next. (Today the layouts' reload on a task change already remounts it.)
+          return <ChangesView key={run.id} run={run} embedded stateKey={`${run.id}:${layoutName}:${index}:changes`} />
         case 'commits':
-          return <CommitsView run={run} embedded stateKey={`${run.id}:${activeName}:${index}:commits`} />
+          return <CommitsView run={run} embedded stateKey={`${run.id}:${layoutName}:${index}:commits`} />
         case 'files':
-          return <FilesView run={run} embedded stateKey={`${run.id}:${activeName}:${index}:files`} />
+          return <FilesView run={run} embedded stateKey={`${run.id}:${layoutName}:${index}:files`} />
+        case 'graph':
+          return (
+            <Suspense fallback={<ColumnLoading title="Loading graph…" />}>
+              <GraphColumn run={run} embedded />
+            </Suspense>
+          )
+        case 'terminal':
+          return terminalAllowed ? (
+            <Suspense fallback={<ColumnLoading title="Loading terminal…" />}>
+              <TerminalDrawer runId={run.id} height={0} onHeightChange={noop} onOpenInBrowser={openInBrowser} fill />
+            </Suspense>
+          ) : (
+            <CenteredState
+              icon={<TerminalIcon />}
+              tone="neutral"
+              heading="h2"
+              title="Terminal disabled"
+              subtitle="The terminal is off on this cockpit — it is off in hosted mode unless CEZ_TERMINAL=1."
+            />
+          )
         case 'browser':
           return (
             <BrowserView
@@ -554,38 +732,50 @@ function WorkspaceView({
               onPickElement={addDraft}
               designMarks={designMarks}
               onDesignEscape={escapeNote}
+              renderEmpty={
+                terminalAllowed
+                  ? (open) => (
+                      <RunAppPanel
+                        runId={run.id}
+                        projectId={projectId}
+                        onOpen={open}
+                        setup={run.worktreeLifecycle}
+                        onShowTerminal={terminalColumnShown ? undefined : () => updateDrawer({ open: true })}
+                      />
+                    )
+                  : undefined
+              }
               renderDesignNote={({ mark, close }) => {
                 const note = noteFor(mark)
                 return note ? <DesignNotePopup note={note} run={run} notes={designNotes} onClose={close} /> : null
               }}
             />
           )
-        case 'graph':
-          return (
-            // The chunk is fetched on first use; a bare centred spinner is the whole fallback,
-            // because the column's chrome is already painted around it.
-            <Suspense
-              fallback={
-                <CenteredState
-                  icon={<LoaderCircleIcon className="motion-safe:animate-spin" />}
-                  tone="neutral"
-                  heading="h2"
-                  title="Loading graph…"
-                />
-              }
-            >
-              <GraphColumn run={run} embedded />
-            </Suspense>
-          )
       }
     },
-    [activeName, addDraft, designMarks, designNotes, escapeNote, noteFor, onMarkedUnread, run, setColumnBrowser, openReference],
+    [
+      addDraft,
+      designMarks,
+      designNotes,
+      escapeNote,
+      noteFor,
+      onMarkedUnread,
+      openInBrowser,
+      openReference,
+      run,
+      setColumnBrowser,
+      terminalAllowed,
+      projectId,
+      terminalColumnShown,
+      updateDrawer,
+    ],
   )
 
   return (
     <div data-route="task-workspace" data-run-id={run.id} className="flex h-full min-h-0 flex-col">
       <RunHeader
         run={run}
+        tab={headerTab}
         onMarkedUnread={markedUnread}
         tabs={tabs}
         trailing={terminalToggle}
@@ -594,82 +784,76 @@ function WorkspaceView({
         bareStrip={overview}
       />
       {layouts.loadFailed ? (
-        // Same clear-state rule as below, for the read: nothing is written over the host's copy
-        // until it has answered, so what is built meanwhile may be replaced by what was saved.
         <div
           data-slot="layouts-unloaded"
           role="status"
           className="shrink-0 border-b border-border bg-muted/40 px-4 py-1.5 text-xs text-muted-foreground sm:px-6"
         >
-          This task's saved layouts could not be loaded yet — retrying. Changes made meanwhile are
-          not saved.
+          This task's saved layouts could not be loaded yet — retrying. Changes made meanwhile are not saved.
         </div>
       ) : null}
       {layouts.saveFailed ? (
-        // Spec §2: a capability that cannot work degrades to a CLEAR state. The workspace still
-        // works from memory for the rest of the visit — what is lost is only the remembering —
-        // so this says exactly that rather than blocking anything.
         <div
           data-slot="layouts-unsaved"
           role="status"
           className="shrink-0 border-b border-border bg-muted/40 px-4 py-1.5 text-xs text-muted-foreground sm:px-6"
         >
-          This layout could not be saved on this host — it keeps working in this tab, but will not
-          come back after a refresh.
+          This layout could not be saved on this host — it keeps working in this tab, but will not come back after a
+          refresh.
         </div>
       ) : null}
-      <WorkspaceMaximizeContext.Provider value={maximize}>
-        <div
-          ref={cover.ref}
-          data-slot="workspace-stage"
-          data-maximized={cover.covering ? '' : undefined}
-          style={cover.style}
-          className={cn(
-            'relative flex min-h-0 flex-1 flex-col',
-            // Wears the panel's own corners and edge, so it reads as the panel showing one thing.
-            cover.covering && 'fixed z-40 overflow-hidden bg-background md:rounded-xl md:border md:border-border/70',
-          )}
-        >
-          {overview ? (
-            // The task's bar, then the conversation in the scroller slot every thread resolves.
-            <>
+      <AvailableViewsContext.Provider value={availableViews}>
+        <WorkspaceMaximizeContext.Provider value={maximize}>
+          <div
+            ref={cover.ref}
+            data-slot="workspace-stage"
+            data-maximized={cover.covering ? '' : undefined}
+            style={cover.style}
+            className={cn(
+              'relative flex min-h-0 flex-1 flex-col',
+              cover.covering && 'fixed z-40 overflow-hidden bg-background md:rounded-xl md:border md:border-border/70',
+            )}
+          >
+            {/* Chat is the task's home: the task's bar sits on top of its column. */}
+            {overview && layouts.ready ? (
               <RunHeader run={run} onMarkedUnread={markedUnread} mode="overview" trailingEnd={fullViewExit} />
-              <div data-slot="main" className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-                <ConversationColumn run={run} onMarkedUnread={onMarkedUnread} onOpenReference={openReference} />
-              </div>
-            </>
-          ) : !layouts.ready ? (
-            // The host still owes us this task's layouts (spec §5.3). Painting the default card first
-            // and swapping it a tick later would flash a workspace the user never built, so the view
-            // area holds the same skeleton a cold load of this URL already shows.
-            <DeepLinkLoading view={deepLinkView} />
-          ) : layouts.layout ? (
-            <WorkspaceColumns
-              key={activeName}
-              columns={layouts.layout.columns}
-              actions={actions}
-              renderView={renderView}
-              editable={fixedActive === null}
-            />
-          ) : (
-            // The workspace the user emptied by closing its last card. It stays empty for this visit
-            // and comes back as a fresh `Czat` on the next one (§5.3) — the state module's recovery
-            // rule, not a second code path here.
-            <CenteredState
-              icon={<LayoutGridIcon />}
-              tone="neutral"
-              heading="h2"
-              title="No layouts"
-              subtitle="You closed every layout of this task. Create a new one, or come back later — the task will open with a Chat layout."
-              actions={
-                <Button variant="outline" onClick={createLayout}>
-                  New layout
-                </Button>
-              }
-            />
-          )}
-        </div>
-      </WorkspaceMaximizeContext.Provider>
+            ) : null}
+            {!layouts.ready ? (
+              <DeepLinkLoading view={deepLinkView} />
+            ) : layouts.layout ? (
+              keptLayouts.map((layout) => (
+                <KeptLayout
+                  key={layout.name}
+                  layout={layout}
+                  active={layout.name === activeName}
+                  actions={actions}
+                  renderView={renderView}
+                  headerExtras={headerExtras}
+                />
+              ))
+            ) : (
+              <CenteredState
+                icon={<LayoutGridIcon />}
+                tone="neutral"
+                heading="h2"
+                title="No layouts"
+                subtitle="You closed every layout of this task. Create a new one, or come back later — the task will open with a Chat layout."
+                actions={
+                  <Button variant="outline" onClick={createLayout}>
+                    New layout
+                  </Button>
+                }
+              />
+            )}
+            {draggingView ? (
+              <ViewDropZones view={draggingView} columns={layouts.layout?.columns ?? []} onDrop={dropViewHere} />
+            ) : null}
+            {cover.covering && fixedActive !== null && !overview ? (
+              <FullViewExit className="absolute top-2 right-3 z-20 bg-card shadow-sm" />
+            ) : null}
+          </div>
+        </WorkspaceMaximizeContext.Provider>
+      </AvailableViewsContext.Provider>
       <AlertDialog open={pendingView !== null} onOpenChange={(open) => !open && setPendingView(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -682,8 +866,6 @@ function WorkspaceView({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            {/* `Wróć` keeps the comment and stays in Zmiany; `Zamknij mimo to` changes the view
-                anyway — the two answers spec §5.2 names, in that order. */}
             <AlertDialogCancel>Go back</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
@@ -721,13 +903,17 @@ function WorkspaceView({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      {terminalAllowed && drawer.open ? (
+      {drawerShown ? (
         <Suspense fallback={null}>
           <TerminalDrawer
             runId={run.id}
             height={drawer.height}
             onHeightChange={(height) => updateDrawer({ height })}
             onClose={() => updateDrawer({ open: false })}
+            onMoveToColumn={() => {
+              updateDrawer({ open: false })
+              openBeside('terminal')
+            }}
             onOpenInBrowser={openInBrowser}
           />
         </Suspense>
@@ -736,14 +922,84 @@ function WorkspaceView({
   )
 }
 
+const noop = () => {}
+
+/** The layout on screen. Kept layouts stay in the DOM while hidden, so a lookup by slot inside the
+ *  stage must go through this or it can land on a hidden layout's composer or split button. */
+const VISIBLE_LAYOUT = '[data-slot="workspace-stage"] [data-slot="workspace-layout"][data-active]'
+
+/** How many recently visited layouts stay mounted, hidden, besides the active one. */
+const KEPT_LAYOUTS = 4
+
+/** A Terminal or Preview column holds a live socket or page; hidden, it would keep running. */
+function keepable(layout: WorkspaceLayout): boolean {
+  return layout.columns.every((column) => column.view !== 'terminal' && column.view !== 'browser')
+}
+
 /**
- * The Czat column: `TaskThreadRoute`'s own data doctrine, in a component that mounts only when a
- * layout actually shows the conversation.
- *
- * Its own component rather than hooks in `WorkspaceView` so a workspace of Changes and Files pays
- * for no transcript subscription at all — `useRunHistory` is the heaviest hook on this screen.
- * Two Czat columns each get their own history state, which is what makes their scroll positions
- * and "load older" pages independent, as two windows onto one transcript should be.
+ * The layouts to render: the active one plus the last few visited, kept mounted under a hidden
+ * `<Activity>` so switching back to one shows it as it was left — re-mounting a 46-file Changes
+ * view cost 330–480 ms of main thread per switch. In the state's own order, so a switch never
+ * moves a kept layout's DOM. Forgotten when the task changes.
+ */
+function useKeptLayouts(runId: string, active: string | null, all: readonly WorkspaceLayout[]): WorkspaceLayout[] {
+  const [kept, setKept] = useState<{ runId: string; names: readonly string[] }>({ runId, names: [] })
+  const names = kept.runId === runId ? kept.names : []
+  if (active !== null && names[0] !== active) {
+    setKept({ runId, names: [active, ...names.filter((name) => name !== active)].slice(0, KEPT_LAYOUTS + 1) })
+  }
+  return all.filter((layout) =>
+    layout.name === active || (names.includes(layout.name) && keepable(layout)),
+  )
+}
+
+function KeptLayout({
+  layout,
+  active,
+  actions,
+  renderView,
+  headerExtras,
+}: {
+  layout: WorkspaceLayout
+  active: boolean
+  actions: ColumnActions
+  renderView: (view: ViewId, index: number, column: WorkspaceColumn, layoutName: string) => ReactNode
+  headerExtras?: (view: ViewId, index: number) => ReactNode
+}) {
+  const name = layout.name
+  const render = useCallback(
+    (view: ViewId, index: number, column: WorkspaceColumn) => renderView(view, index, column, name),
+    [renderView, name],
+  )
+  // Hidden, its effects are cleaned up — queries stop polling, sockets close — and its state stays.
+  return (
+    <Activity mode={active ? 'visible' : 'hidden'}>
+      <div data-slot="workspace-layout" data-active={active ? '' : undefined} className="flex min-h-0 flex-1 flex-col">
+        <WorkspaceColumns
+          columns={layout.columns}
+          actions={actions}
+          renderView={render}
+          headerExtras={headerExtras}
+        />
+      </div>
+    </Activity>
+  )
+}
+
+function ColumnLoading({ title }: { title: string }) {
+  return (
+    <CenteredState
+      icon={<LoaderCircleIcon className="motion-safe:animate-spin" />}
+      tone="neutral"
+      heading="h2"
+      title={title}
+    />
+  )
+}
+
+/**
+ * The Chat column: the Session route's data doctrine in a component that mounts only when a
+ * layout shows the conversation, so a workspace of Changes and Files pays for no transcript.
  */
 export function ConversationColumn({
   run,
@@ -756,29 +1012,19 @@ export function ConversationColumn({
 }) {
   const history = useRunHistory(run.id)
   const thread = useMemo(
-    () => reduceThread(history.visibleEvents, { activeTurn: run.status === 'running' }),
-    [history.visibleEvents, run.status],
+    () => reduceThread(history.visibleEvents, { activeTurn: run.status === 'running', runner: run.runner }),
+    [history.visibleEvents, run.status, run.runner],
   )
   const currentThread = useMemo(
-    () => reduceThread(history.currentEvents, { activeTurn: run.status === 'running' }),
-    [history.currentEvents, run.status],
+    () => reduceThread(history.currentEvents, { activeTurn: run.status === 'running', runner: run.runner }),
+    [history.currentEvents, run.status, run.runner],
   )
-  // The two feeds can drift: a record update lost on the workspace stream leaves the thread
-  // showing Working… over a "run finished" transcript. The transcript is live here, so it
-  // arbitrates — same reason the Session route runs this.
   useRunRecordReconcile(run, history.visibleEvents)
 
   if (history.isPending) return <ThreadLoading />
 
-  /*
-   * A file path or a commit the agent names in its answer opens in a window beside the chat.
-   *
-   * By delegation, on the inline code the markdown already renders, rather than by a component of
-   * our own inside it: Streamdown's `code` renders fences and spans alike, and replacing it to
-   * reach the spans would put this in charge of every code block in the thread. A span is
-   * classified the first time the pointer reaches it and marked `data-open`, which is what the
-   * stylesheet draws as a link — so only the spans that DO open something ever look like it.
-   */
+  // Inline code naming a task file or commit opens beside the chat; classified on first hover and
+  // marked `data-open`, so only spans that do open something look like a link.
   const target = (event: { target: EventTarget | null }) => {
     const node = event.target instanceof Element ? event.target.closest('[data-streamdown="inline-code"]') : null
     if (!(node instanceof HTMLElement) || node.closest('[data-slot="user-message"]')) return null
@@ -820,17 +1066,9 @@ interface ThreadReference {
   value: string
 }
 
-/**
- * Is this inline code a file of the task or one of its commits?
- *
- * Deliberately narrow — a miss costs nothing, a false hit makes plain code look like a link:
- *  - a commit is 7–40 hex digits and nothing else, with at least one letter and one digit in it
- *    (so `1234567` and `deadbeef`-style words are not claimed on a guess of either kind alone);
- *  - a file is one whitespace-free path ending in an extension, optionally `:line[:col]`. A path
- *    under this task's worktree is made relative to it; any other absolute path is somewhere this
- *    cockpit cannot show, and is left alone.
- */
-function classifyReference(raw: string, worktree?: string): ThreadReference | null {
+/** Is this inline code a file of the task or one of its commits? Deliberately narrow — a miss costs
+ *  nothing, a false hit makes plain code look like a link. */
+export function classifyReference(raw: string, worktree?: string): ThreadReference | null {
   const text = raw.trim()
   if (text.length < 3 || text.length > 260 || /\s/.test(text)) return null
   if (/^[0-9a-f]{7,40}$/.test(text) && /[a-f]/.test(text) && /[0-9]/.test(text)) return { view: 'commits', value: text }
@@ -840,7 +1078,6 @@ function classifyReference(raw: string, worktree?: string): ThreadReference | nu
   path = path.replace(/^\.\//, '')
   if (path.startsWith('..')) return null
   if (!/^[\w@.+\-()[\]]+(?:\/[\w@.+\-()[\]]+)*\.[A-Za-z][A-Za-z0-9]{0,7}$/.test(path)) return null
-  // `v1.2`, `e.g`, `foo.bar` in prose: without a directory, only believe a real-looking filename.
   if (!path.includes('/') && !/\.(?:tsx?|jsx?|mjs|cjs|json|md|mdx|css|scss|html|ya?ml|toml|py|rs|go|rb|java|kt|swift|sh|sql|lock|txt|env|svg|png|jpe?g)$/i.test(path)) return null
   return { view: 'files', value: path }
 }

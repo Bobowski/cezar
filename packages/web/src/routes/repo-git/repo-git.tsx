@@ -13,6 +13,7 @@ import { RepoEmpty } from './repo-empty'
 import { RepoFilesSection } from './repo-files'
 import { RepoGitLoading } from './repo-git-loading'
 import { RepoSidebarHeader, type RepoTab } from './repo-sidebar'
+import { RepoSyncBar } from './repo-sync-bar'
 
 /**
  * `/git` — the repo view rebuilt on the task git view's own components (spec §"Session git
@@ -67,6 +68,8 @@ function RepoView({ repo, info, tab }: { repo: RepoResponse; info: RepoInfo; tab
   // Each section renders its own `<ContextSidebar>` (list and detail share state), led by this.
   const header = (extra?: React.ReactNode) => (
     <RepoSidebarHeader info={info} tab={tab}>
+      {/* Source-Control strip (spec 2026-10-19-repo-git-sync) beside the header's behind-chip. */}
+      <RepoSyncBar />
       {extra}
     </RepoSidebarHeader>
   )

@@ -148,7 +148,7 @@ export function MachineCard() {
             'mt-3 rounded-md border px-3 py-2 text-[13px]',
             sample.admission.state === 'critical'
               ? 'border-danger/40 text-danger'
-              : 'border-pending/40 text-pending',
+              : 'border-pending/40 text-pending-strong',
           )}
         >
           {sample.admission.state === 'critical'

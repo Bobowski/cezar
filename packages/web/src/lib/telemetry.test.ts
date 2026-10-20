@@ -82,13 +82,14 @@ describe('telemetry event relay contract', () => {
   it('takes only the closed labels of the workspace and terminal events', () => {
     const ok = (event: string, label: string) => telemetryEventInputSchema.safeParse({ event, label }).success
     expect(ok('terminal_opened', 'column')).toBe(true)
+    expect(ok('terminal_opened', 'tab')).toBe(true)
     expect(ok('terminal_opened', 'npm run dev')).toBe(false)
     expect(ok('terminal_tab_renamed', 'reset')).toBe(true)
     expect(ok('terminal_tab_renamed', 'dev server')).toBe(false)
     expect(ok('layout_changed', 'drop_replace')).toBe(true)
     expect(ok('layout_changed', 'Chat + Changes')).toBe(false)
-    expect(ok('full_view_toggled', 'narrow')).toBe(true)
-    expect(ok('full_view_toggled', 'tablet')).toBe(false)
+    expect(ok('full_view_entered', 'narrow')).toBe(true)
+    expect(ok('full_view_entered', 'tablet')).toBe(false)
   })
 })
 

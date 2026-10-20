@@ -209,7 +209,7 @@ export const telemetryEventInputSchema = z.discriminatedUnion('event', [
   /** The task workspace's columns changed, and by which gesture. */
   z.object({ event: z.literal('layout_changed'), label: layoutChangeSchema }),
   /** Full view was entered — on a wide screen, or one that shows a window at a time. */
-  z.object({ event: z.literal('full_view_toggled'), label: z.enum(['desktop', 'narrow']) }),
+  z.object({ event: z.literal('full_view_entered'), label: z.enum(['desktop', 'narrow']) }),
   /** ⌘K or ⌘P opened (spec 2026-10-17-task-palette). */
   z.object({ event: z.literal('palette_opened'), label: z.enum(PALETTE_KINDS) }),
   /** A ⌘P command ran from the palette — batched. */

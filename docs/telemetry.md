@@ -54,7 +54,7 @@ following the server then found it `recovered`, `not_applied`, `unreachable` or 
 `failed`), `terminal_opened` (how a task's terminal came on screen: the `drawer`, a `column`, or its
 `tab`), `terminal_tab_renamed` (`named` or `reset` — never the name), `layout_changed`
 (which gesture changed the task workspace's columns: `drop_insert`, `drop_replace`, `alt_click`,
-`switcher` or `column_closed_by_drop`), `full_view_toggled` (full view entered on a
+`switcher` or `column_closed_by_drop`), `full_view_entered` (full view entered on a
 `desktop` or a `narrow` screen), and the command palettes' use: `palette_opened` (`command` for ⌘K, `task` or
 `task_switch` for ⌘P), `task_command_run` and `task_shortcut_used` (which task command ran — from
 a ⌘P row or from its keyboard shortcut — as a fixed command name such as `pin`, `git:push` or

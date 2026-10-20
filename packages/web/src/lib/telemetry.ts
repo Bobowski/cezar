@@ -89,7 +89,7 @@ export function trackLayoutChanged(change: LayoutChange): void {
 }
 
 export function trackFullViewEntered(screen: 'desktop' | 'narrow'): void {
-  send('/api/v1/telemetry/event', { event: 'full_view_toggled', label: screen })
+  send('/api/v1/telemetry/event', { event: 'full_view_entered', label: screen })
 }
 
 /** One of the "Add project" dialogs was opened (New project, Clone from GitHub, Open local folder). */

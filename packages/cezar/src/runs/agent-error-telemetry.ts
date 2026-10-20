@@ -19,14 +19,30 @@ function maskToken(token: string): string {
   return token;
 }
 
+const MONTH = '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\.?';
+const CLOCK = '\\d{1,2}(?::\\d{2}){1,2}(?:\\s*[ap]\\.?m\\.?)?|\\d{1,2}\\s*[ap]\\.?m\\.?(?!\\w)';
+/** A reset instant — `3:10pm (UTC)`, `Oct 24, 9am (Europe/Warsaw)`, ISO, the `|<epoch>` marker —
+ *  with the zone it names: one per window and per user, so it split one limit into many groups. */
+const INSTANT_RE = new RegExp(
+  `\\b\\d{4}-\\d{2}-\\d{2}(?:[T ]\\d{2}:\\d{2}(?::\\d{2})?(?:\\.\\d+)?(?:Z|[+-]\\d{2}:?\\d{2})?)?` +
+    `|\\b(?:${MONTH}\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+(?:at\\s+)?)?(?:${CLOCK})(?:\\s*\\([^()\\n]{1,64}\\))?`,
+  'gi',
+);
+const EPOCH_MARKER_RE = /\|\s*\d{9,16}\b/g;
+const DELAY_RE = /\b\d{1,7}(\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?)\b)/gi;
+
 /** An agent's error text without the user's data it may quote: quoted values, emails, URLs and
- *  slash-bearing tokens (paths, branches, `owner/repo`). Unlike the toast scrubber the text after
- *  `: ` stays — in a vendor's message that is usually the part worth reading. */
+ *  slash-bearing tokens (paths, branches, `owner/repo`), and without the instants and delays that
+ *  vary per occurrence. Unlike the toast scrubber the text after `: ` stays — in a vendor's message
+ *  that is usually the part worth reading. */
 export function scrubAgentErrorMessage(message: string, backend: string): string {
   return message
     .slice(0, MAX_SCRUB_INPUT)
     .replace(PREFIX_RE, '')
     .replace(new RegExp(`^${backend}: `, 'i'), '')
+    .replace(INSTANT_RE, '<time>')
+    .replace(EPOCH_MARKER_RE, '|<time>')
+    .replace(DELAY_RE, '<n>$1')
     .replace(/“[^”]*”|‘[^’]*’|"[^"]*"|`[^`]*`|(?<!\w)'[^'\n]+'(?!\w)/g, '<value>')
     // A URL runs to the next whitespace — its query may carry `,` `;` or brackets (linear: nothing follows `\S+`).
     .replace(/\bhttps?:\/\/\S+/gi, '<url>')

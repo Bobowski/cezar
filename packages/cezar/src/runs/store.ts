@@ -9,26 +9,27 @@ import {
   openSync,
   readFileSync,
   readSync,
-  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { StreamRedaction } from './stream-redaction.ts';
+import { renameSyncWithRetry } from '../fs-rename.ts';
 import { collectSecretValues, redactDeep, redactSecrets } from '../core/secret-redaction.ts';
 // Sibling module, files only — a draft belongs to a run and is deleted with it (#939).
 import { deleteRunDrafts } from './drafts.ts';
 import { deleteRunLayouts, pruneOrphanLayouts } from './layouts.ts';
 import { failureKind, taskFailedLabel } from './failure-kind.ts';
 import { track } from '../telemetry.ts';
+import { reportAgentError } from './agent-error-telemetry.ts';
 // Pure, dependency-free reference helpers — the same sanity bound the marker parser applies.
 import { MAX_REF } from './task-refs.ts';
 // Type-only module (zod + nothing else), so this cannot cycle back into the store.
 import { workflowDefSchema } from '../workflows/types.ts';
 // A contract VALUE, like `workspaceUiStateSchema` in `workspace/migrations.ts`: the persisted
 // `dispatch` object and its wire half are literally the same schema, so they cannot drift.
-import { dispatchSchema, trackerAssociationSchema, trackerAutomationEventSchema } from '@open-mercato/cezar-contract';
+import { dispatchSchema, trackerAssociationSchema, trackerAutomationEventSchema, worktreeLifecycleProjectionSchema } from '@open-mercato/cezar-contract';
 
 import { RUNNER_IDS } from '../core/agent-runner.ts';
 
@@ -374,6 +375,9 @@ export const runRecordSchema = z.object({
   worktree: z.literal(false).optional(),
   /** Task worktree (spec 006) — absent for in-place runs and after explicit cleanup. */
   worktreePath: z.string().optional(),
+  worktreeLifecycle: worktreeLifecycleProjectionSchema.optional(),
+  /** An in-place run that switched the repo checkout to `branch` before it started. */
+  inPlaceBranch: z.literal(true).optional(),
   /** The task's own branch, created off `baseBranch`: `cez/<id8>` unless branch naming
    *  instructions named it (spec 2026-10-11-branch-naming-instructions) — read it, never recompute it. */
   branch: z.string().optional(),
@@ -471,6 +475,8 @@ const MAX_RUNS_KEPT = 300;
 /** Every save rewrites the whole index, and a live run touches its record at event rate. */
 const SAVE_DEBOUNCE_MS = 1_000;
 const MAX_ARCHIVED_KEPT = 500;
+/** Statuses the run manager still acts on — a record in one of them must outlive pruning. */
+const LIVE_STATUSES: ReadonlySet<string> = new Set<RunStatus>(['queued', 'running', 'waiting']);
 
 // Any host: GitHub Enterprise lives on arbitrary domains (`isGithubHost` can't be asked from a regex).
 const PR_URL_RE = /https:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+\/pull\/\d+/;
@@ -919,6 +925,8 @@ export function reconcileLoadedRun(run: RunRecord, opts?: { keepLive?: boolean }
  */
 export class RunStore extends EventEmitter {
   private runs = new Map<string, RunRecord>();
+  /** The backend of each run's latest session (`session.started`), naming its agent errors. */
+  private sessionBackends = new Map<string, string>();
   /** Ids this process removed on purpose — see `forget`, which is the only thing that writes it. */
   private forgotten = new Set<string>();
   private saveTimer: NodeJS.Timeout | null = null;
@@ -927,6 +935,9 @@ export class RunStore extends EventEmitter {
   private indexReadHealth: { state: 'complete' | 'unavailable'; omittedRuns: number; reason?: string } = { state: 'complete', omittedRuns: 0 };
 
   getIndexReadHealth() { return { ...this.indexReadHealth }; }
+
+  /** `open` could not create `runs/`: events stay live-only instead of failing every run. */
+  private eventsUnwritable = false;
 
   /** The repository this project IS (#945), armed after `open()` by `setRepoHandle`. Undefined
    *  until it arrives and `null` when it cannot be known — both mean "unscoped", which is
@@ -940,8 +951,16 @@ export class RunStore extends EventEmitter {
 
   /** See `reconcileLoadedRun` for what `keepLive` (#367) decides about live-looking rows. */
   static open(dataDir: string, opts?: { keepLive?: boolean }): RunStore {
-    mkdirSync(join(dataDir, 'runs'), { recursive: true });
     const store = new RunStore(dataDir);
+    // An uncreatable data dir (EPERM: Windows Controlled Folder Access, a read-only checkout) must
+    // not kill boot — the desktop shell relaunches into the same project every time (5af5aec6).
+    try {
+      mkdirSync(join(dataDir, 'runs'), { recursive: true });
+    } catch (err) {
+      store.eventsUnwritable = true;
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[cez] cannot create ${join(dataDir, 'runs')} (${message}); task history in this project will not be saved`);
+    }
     const indexPath = join(dataDir, 'runs.json');
     if (existsSync(indexPath)) {
       try {
@@ -1381,6 +1400,22 @@ export class RunStore extends EventEmitter {
     return count;
   }
 
+  private persistEvent(runId: string, event: RunEvent): void {
+    const line = `${JSON.stringify(event)}\n`;
+    if (!this.eventsUnwritable) {
+      appendFileSync(this.eventsPath(runId), line, 'utf8');
+      return;
+    }
+    // Degraded since `open` (already warned): retry, so access granted mid-session starts persisting.
+    try {
+      mkdirSync(join(this.dataDir, 'runs'), { recursive: true });
+      appendFileSync(this.eventsPath(runId), line, 'utf8');
+      this.eventsUnwritable = false;
+    } catch {
+      // live-only — the SSE stream still carries it
+    }
+  }
+
   appendEvent(runId: string, event: { type: string; stepId?: string; [key: string]: unknown }): RunEvent {
     const run = this.runs.get(runId);
     if (!run) throw new Error(`unknown run: ${runId}`);
@@ -1392,8 +1427,12 @@ export class RunStore extends EventEmitter {
     const full: RunEvent = this.redact({ ...event, seq, ts: new Date().toISOString() }, runId);
     // Sync append keeps event order without a write queue; local NDJSON
     // appends at agent-event rates are effectively free.
-    appendFileSync(this.eventsPath(runId), `${JSON.stringify(full)}\n`, 'utf8');
+    this.persistEvent(runId, full);
     this.emit('event', { runId, event: full });
+    if (full.type === 'session.started' && typeof full.backend === 'string') this.sessionBackends.set(runId, full.backend);
+    if ((full.type === 'error' || full.type === 'session.error') && typeof full.message === 'string') {
+      reportAgentError(this.sessionBackends.get(runId) ?? run.runner, { type: full.type, message: full.message, fatal: full.fatal });
+    }
     if (this.janitorSettled(run)) return full;
 
     // The janitor trick: agents print the PR URL after `gh pr create` — the
@@ -1799,15 +1838,26 @@ export class RunStore extends EventEmitter {
    *  which is exactly how long a deletion has to outlive its own index entry. */
   private forget(id: string): boolean {
     this.forgotten.add(id);
+    this.sessionBackends.delete(id);
     return this.runs.delete(id);
   }
 
+  /** A live run, and the dispatch parent/root of one, is never pruned: the run manager still
+   *  writes to it, and evicting a long-lived parent while it dispatched threw `unknown run`
+   *  (telemetry 73c6e796). The cap is a soft bound — live runs count toward it but never leave. */
   private pruneOldRuns(): void {
     const all = this.listRuns();
+    const pinned = new Set<string>();
+    for (const run of all) {
+      if (!LIVE_STATUSES.has(run.status)) continue;
+      pinned.add(run.id);
+      if (run.dispatch?.parentRunId) pinned.add(run.dispatch.parentRunId);
+      if (run.dispatch?.rootRunId) pinned.add(run.dispatch.rootRunId);
+    }
     const stalePool = [
       ...all.filter((r) => !r.archived).slice(MAX_RUNS_KEPT),
       ...all.filter((r) => r.archived).slice(MAX_ARCHIVED_KEPT),
-    ];
+    ].filter((r) => !pinned.has(r.id));
     for (const stale of stalePool) {
       this.forget(stale.id);
       try {
@@ -1837,7 +1887,7 @@ export class RunStore extends EventEmitter {
     const tmpPath = `${indexPath}.tmp`;
     try {
       writeFileSync(tmpPath, JSON.stringify(this.mergeWithIndexOnDisk(indexPath), null, pretty ? 2 : undefined), 'utf8');
-      renameSync(tmpPath, indexPath);
+      renameSyncWithRetry(tmpPath, indexPath);
     } catch (err) {
       if (throwOnError) throw new Error('Could not persist automation run provenance; the launch was not confirmed.');
       const message = err instanceof Error ? err.message : String(err);

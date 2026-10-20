@@ -7,13 +7,13 @@ import {
   SquareIcon,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useParams, useSearchParams } from 'react-router'
+import { Link as GlobalLink, useParams, useSearchParams } from 'react-router'
 
 import { Link, useNavigate } from '@/lib/project-router'
 
 import { createRun, getLaunchKey, putConfig, putUiState } from '@/api/client'
 import { useProjectScope } from '@/api/project-scope-context'
-import { hasAccountChoice, useAgentAccounts } from '@/api/agent-accounts'
+import { hasAccountChoice, useAgentAccounts, useSelectedAccountCheck } from '@/api/agent-accounts'
 import {
   queryKeys,
   useConfig,
@@ -254,6 +254,8 @@ export function NewTaskRoute() {
   )
     ? draft.agentProfile
     : null
+  // The account this task will actually run on — what the server's gate judges (ac53a6ef).
+  const accountCheck = useSelectedAccountCheck(displayRunner, agentProfile ?? repoAccount?.[displayRunner])
 
   // A cold /new load mounts the textarea disabled while provider status is checked. Restore
   // the route's autofocus contract once that check enables the form, but never steal focus if
@@ -466,6 +468,10 @@ export function NewTaskRoute() {
             : 'Connect an agent provider before starting a task.',
       )
     }
+    if (accountCheck.blocked !== null) {
+      const blocked = await accountCheck.verify()
+      if (blocked !== null) throw new Error(blocked)
+    }
     if (!sourcesReady) {
       // Rejection restores the draft — nothing typed is lost to a race with the pickers.
       throw new Error('Still loading workflows and skills — try again in a second.')
@@ -483,6 +489,8 @@ export function NewTaskRoute() {
         variants,
         images: submitted,
         worktree: worktreeOn,
+        newBranch: draft.newBranch,
+        branch: draft.branchName,
         autonomous: autonomousOn,
         generateFollowups: generateFollowupsOn,
         // #374: when the Inbox's "Run" sent us here, hand the entry's id back so the server
@@ -564,6 +572,7 @@ export function NewTaskRoute() {
               hasGit,
               dispatch: dispatchOn,
               autonomous: autonomousOn,
+              newBranch: draft.newBranch,
             })}
           </p>
         </header>
@@ -704,6 +713,14 @@ export function NewTaskRoute() {
                   onChange={(on) => update({ worktree: on })}
                 />
               ) : null}
+              {worktreeToggleShown && !worktreeOn ? (
+                <NewBranchToggle
+                  on={draft.newBranch === true}
+                  name={draft.branchName ?? ''}
+                  onChange={(on) => update({ newBranch: on })}
+                  onNameChange={(branchName) => update({ branchName })}
+                />
+              ) : null}
               <AutonomousToggle
                 on={autonomousOn}
                 onChange={(on) => update({ autonomous: on })}
@@ -762,6 +779,23 @@ export function NewTaskRoute() {
             </>
           }
         />
+
+        {accountCheck.blocked !== null ? (
+          <p
+            data-slot="account-signed-out"
+            role="alert"
+            className="mt-2 rounded-md border border-destructive/30 bg-destructive/[0.07] px-3 py-1.5 text-xs text-muted-foreground"
+          >
+            {accountCheck.blocked}{' '}
+            {/* Global settings sit outside every project scope — react-router's own Link. */}
+            <GlobalLink
+              to="/settings/global/accounts"
+              className="font-medium text-foreground underline underline-offset-2"
+            >
+              Agent accounts
+            </GlobalLink>
+          </p>
+        ) : null}
 
         {dispatchOn && (dispatchSettingsOpen || dispatchHintFlash) ? (
           <p
@@ -823,6 +857,55 @@ function WorktreeToggle({
       )}
       Worktree
     </button>
+  )
+}
+
+/** In-place on a new branch (spec 2026-10-19-repo-git-sync): shown only with the worktree off.
+ *  Checked forks the checkout onto `name` (or a generated branch) from the base first. */
+function NewBranchToggle({
+  on,
+  name,
+  onChange,
+  onNameChange,
+}: {
+  on: boolean
+  name: string
+  onChange: (on: boolean) => void
+  onNameChange: (name: string) => void
+}) {
+  return (
+    <span className="flex items-center gap-1">
+      <button
+        type="button"
+        role="checkbox"
+        aria-checked={on}
+        data-slot="new-branch-toggle"
+        onClick={() => onChange(!on)}
+        title={
+          on
+            ? 'Switches the repo checkout to a new branch from the base before the agent starts'
+            : 'Runs on whatever branch is checked out — check to start a new branch from the base'
+        }
+        className={cn(chipClass, on && 'border-primary/60 text-foreground')}
+      >
+        {on ? (
+          <CheckIcon aria-hidden="true" className="size-3 shrink-0 text-primary" />
+        ) : (
+          <SquareIcon aria-hidden="true" className="size-3 shrink-0 text-soft-foreground" />
+        )}
+        New branch
+      </button>
+      {on ? (
+        <input
+          aria-label="New branch name"
+          data-slot="new-branch-name"
+          value={name}
+          placeholder="feat/… (auto)"
+          onChange={(event) => onNameChange(event.target.value)}
+          className="h-6 w-36 rounded-md border border-input bg-card px-2 font-mono text-[11px] outline-none focus-visible:border-ring"
+        />
+      ) : null}
+    </span>
   )
 }
 

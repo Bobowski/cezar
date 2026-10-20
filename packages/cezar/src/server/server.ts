@@ -13,12 +13,13 @@ import { readTrackerAssociation, writeTrackerAssociation, clearTrackerAssociatio
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import {
   detectedUrlsSchema, discoveredCommandsSchema,
-  terminalCreateSchema, terminalInputSchema, terminalOutputQuerySchema, terminalOutputSchema,
+  startAppSetSchema, startAppStateSchema, terminalCreateSchema, terminalInputSchema, terminalOutputQuerySchema, terminalOutputSchema,
   terminalRenameSchema, terminalResizeSchema, terminalSessionParamsSchema, terminalSessionSchema, terminalStateSchema,
 } from '@open-mercato/cezar-contract';
 import { workspaceLayoutsResponseSchema, workspaceLayoutsSchema } from '@open-mercato/cezar-contract';
 import { deleteRunLayouts, readRunLayouts, writeRunLayouts } from '../runs/layouts.ts';
-import { discoverCommands } from './terminal/commands.ts';
+import { discoverCommands, installCommand } from './terminal/commands.ts';
+import { effectiveStartApp, readStartApp, writeStartApp } from '../start-app.ts';
 import { DetectedUrls } from './terminal/detected-urls.ts';
 import { processSnapshot } from './terminal/foreground.ts';
 import { loadPty } from './terminal/pty-module.ts';
@@ -46,7 +47,7 @@ import {
 } from '../automations/types.ts';
 import { trackerTriggerSchema, trackerAutomationOptionsSchema, trackerAutomationOptionsQuerySchema, automationScheduleSchema, localTimeZone, nextOccurrence } from '@open-mercato/cezar-contract';
 import type { IncomingMessage } from 'node:http';
-import { access, constants as fsConstants, mkdir, readFile, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { access, constants as fsConstants, mkdir, readFile, realpath, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -69,6 +70,7 @@ import {
   type RunIndexEntry,
   type RunsIndexResponse,
   type StarCountPayload,
+  designProxyRequestSchema,
   type WorkspaceConfigResponse,
   workspaceBrandingLogoResponseSchema,
   githubListQuerySchema,
@@ -95,6 +97,7 @@ import {
 import { dispatchInputSchema, dispatchIntentSchema, dispatchReportSchema } from '@open-mercato/cezar-contract';
 import { hasTaskOrAttachments, TASK_OR_ATTACHMENTS_ISSUE } from '@open-mercato/cezar-contract';
 import { detectEnvironment } from '../core/backend-detect.ts';
+import { resolveCursorAgentBin } from '../core/cursor-bin.ts';
 import { hostUsageSampler, type HostSampler } from '../core/host-usage.ts';
 import { RUNNER_IDS } from '../core/agent-runner.ts';
 import type { ContentBlock } from '../core/agent-runner.ts';
@@ -117,6 +120,7 @@ import {
   reportInconclusiveProbe,
   trackLoginNotOpened,
   trackLoginOpened,
+  trackUpdateOpened,
   watchLogin,
 } from './provider-telemetry.ts';
 import { RunnerModelCatalog } from '../core/runner-model-catalog.ts';
@@ -147,6 +151,7 @@ import { SkillsUpdateConflictError, SkillsUpdateCoordinator, SkillsUpdateService
 import { selfUpdateApplyRequestSchema, selfUpdateChannelRequestSchema, selfUpdateDevelopmentQuerySchema } from '@open-mercato/cezar-contract';
 import { SelfUpdateBusyError, SelfUpdateService } from '../self-update/service.ts';
 import { StarCountReader } from './star-count.ts';
+import { DesignProxies } from './preview/design-proxy.ts';
 import { getTeamSkillsCached, refreshTeamSkills, waitForTeamSkills } from '../skills-remote.ts';
 import { appendHandoffHeartbeat, handoffProgressExcerpt, readHandoff } from '../handoff.ts';
 import { markStarted, onTodosChanged, readTodos, removeTodo, todoTaskText, type TodoItem } from '../todos.ts';
@@ -187,6 +192,11 @@ import { toPastedContent, type PastedContent, type RunManager } from '../workflo
 import { deleteUpload, readUpload, writeUpload } from '../uploads.ts';
 import { branchesCheckedOutElsewhere, removeWorktree, worktreeDiff, worktreeDiffStat, worktreeSizeBytes } from '../git-worktree.ts';
 import { isReclaimable, reclaimWorktrees } from '../runs/retention.ts';
+import { worktreeLifecycleRoutes, lifecycleError } from './worktree-lifecycle.ts';
+import { readLifecycleConfigOrDefault, readLifecycleConfigRaw, lifecycleConfigFromRaw, withLifecycleConfigLock, applyLifecycleConfigUpdate, isLifecycleConfigTracked, LifecycleConfigError, TRACKED_CONFIG_ERROR } from '../worktree-lifecycle/config.ts';
+import { atomicLifecycleWrite, LifecycleStoreError } from '../worktree-lifecycle/store.ts';
+import { validateLifecycleCommand } from '../worktree-lifecycle/templates.ts';
+import { setConfigInputSchema, type WorktreeLifecycleInvalidation } from '@open-mercato/cezar-contract';
 import { getBranches, getCommit, getDiff, getLog, getRepoInfo, getStatus } from './git.ts';
 import {
   collectChanges,
@@ -257,9 +267,12 @@ import { checkoutRepo, type CloneRunner } from './checkout.ts';
 import { createProjectInputSchema } from '@open-mercato/cezar-contract';
 import { createProject, listGithubOwners, type CommandRunner } from './create-project.ts';
 import { ProjectContextError, ProjectContexts, type ProjectContext } from './project-context.ts';
+import { fetchRepo, pullRepo, pushRepo, repoSyncStatus, syncRepo, type SyncActionResult } from './repo-sync.ts';
+import type { RepoSync } from '@open-mercato/cezar-contract';
 import { reviewGateEnabled } from '../runs/review-gate.ts';
 import { readUiState, uiStatePath } from '../ui-state.ts';
 import { agentHomePaths, cezarHomeDir, expandTilde, isAbsolutePath } from '../paths.ts';
+import { renameWithRetry } from '../fs-rename.ts';
 import { isLoopbackHostHeader, normalizeHostname, resolveCapabilities } from './capabilities.ts';
 import { createSocketHub, type SocketHub, type WsUpgradeVerdict } from './ws.ts';
 import { applyKeepAlive } from './keep-alive.ts';
@@ -277,6 +290,7 @@ import {
   withResolvedClaudeBin,
 } from './open-in-app.ts';
 import { createDraftPr, type DraftPrOutcome } from './pr.ts';
+import { findBranchPr, resolvePrTarget } from './forge/github.ts';
 import {
   DEFAULT_TELEMETRY_URL,
   TELEMETRY_POLICY_VERSION,
@@ -402,6 +416,9 @@ export interface ServerDeps {
    *  Defaults to a reader that asks github.com at most once per ten seconds, paced to GitHub's rate limit, and caches the answer
    *  under `~/.cache/cez/`; tests inject their own so no suite ever reaches the network. */
   starCount?: { read(): Promise<StarCountPayload> };
+  /** The Design Mode proxies behind `POST /api/v1/preview/design-proxy` (src/server/preview/).
+   *  Injected by tests that need to close the listeners they opened. */
+  designProxies?: DesignProxies;
   /** WebSocket subscription hub (`/api/v1/ws`, src/server/ws.ts). `createApp`
    *  only registers topics on it — `startServer` builds one and attaches it
    *  to the HTTP server it binds. Optional so legacy callers/tests change
@@ -415,6 +432,25 @@ export interface ServerDeps {
   hostSampler?: HostSampler;
   /** Re-arm the workspace automation timer after definition mutations. */
   automationsChanged?: () => void;
+}
+
+/** Legacy destructive callers must opt into the recoverable operation API before mutation. */
+async function legacyLifecycleGate(project: ProjectContext, runId: string): Promise<boolean> {
+  if (project.manager.lifecycle) return project.manager.lifecycle.requiresGate(runId);
+  // Older embedded callers/test doubles have no coordinator; configured hooks still fail closed.
+  const { config } = await readLifecycleConfigOrDefault(project.root);
+  return config.afterCreate.length > 0 || config.beforeRemove.length > 0;
+}
+const LIFECYCLE_ENDPOINT_REQUIRED = 'Worktree scripts require a lifecycle operation; use /worktree-lifecycle/operations';
+
+async function withWorktreeMutation<T>(project: ProjectContext, runId: string, mutate: () => Promise<T>): Promise<T> {
+  return project.manager.lifecycle ? project.manager.lifecycle.withWorktreeMutation(runId, mutate) : mutate();
+}
+
+async function legacyWorktreeMutation<T>(project: ProjectContext, runId: string, mutate: () => Promise<T>): Promise<T> {
+  if (await legacyLifecycleGate(project, runId)) throw new Error(LIFECYCLE_ENDPOINT_REQUIRED);
+  // Unconfigured projects retain their original path without requiring writable lifecycle state.
+  return withWorktreeMutation(project, runId, mutate);
 }
 
 // ---- project-scoped routing (multi-project spec, step 2.2) -----------------
@@ -673,7 +709,8 @@ export type WorkspaceEventName =
   | 'checkout-progress'
   | 'provider-status'
   | 'automation-change'
-  | 'tracker-changed';
+  | 'tracker-changed'
+  | 'worktree-lifecycle';
 
 /**
  * The in-process bus for workspace-level SSE events. The registry-mutating
@@ -737,6 +774,10 @@ const startRunSchema = z
     // Composer worktree opt-out (#worktree-toggle): false runs in the repo
     // working tree. Ignored when variants > 1.
     worktree: z.boolean().optional(),
+    // With worktree:false, switch the checkout to a branch forked from base first
+    // (spec 2026-10-19-repo-git-sync); `branch` names it.
+    newBranch: z.boolean().optional(),
+    branch: z.string().trim().min(1).max(200).optional(),
     // Autonomous mode (#autonomous): the run never parks at `waiting` — it
     // auto-continues until the agent signals done. No "needs you" is raised.
     autonomous: z.boolean().optional(),
@@ -2094,10 +2135,16 @@ export function createApp(deps: ServerDeps) {
     return prefixed === null ? null : `cd '${cwd}' && ${prefixed}`;
   };
 
-  /** A registered project's realpath'd root, or null when the id is unknown. */
+  /** A project's realpath'd root, or null when the id is unknown. The boot project resolves to
+   *  `bootRoot` even without a registry row — `resolveProjectScope` serves it the same way, and a
+   *  repo booted into a non-empty registry is never registered (telemetry d81f8db7). */
   const projectRootFor = async (projectId: string): Promise<string | null> => {
     try {
-      return (await loadWorkspaceConfig()).projects.find((p) => p.id === projectId)?.root ?? null;
+      const registry = (await loadWorkspaceConfig()).projects;
+      const registered = registry.find((p) => p.id === projectId)?.root;
+      if (registered !== undefined) return registered;
+      if (projectId !== 'default' && projectId !== (await resolveBootProject(registry))) return null;
+      return await realpath(bootRoot).catch(() => bootRoot);
     } catch {
       return null;
     }
@@ -2259,7 +2306,39 @@ export function createApp(deps: ServerDeps) {
       trackLoginOpened(provider, row.status === 'unknown' ? 'unknown' : 'disconnected', sid);
       watchOpenedLogin(provider, { id: profile.id, isDefault: profile.isDefault, path: profile.isDefault ? null : profile.path }, sid);
       return c.json({ opened: true, command });
-    });
+    })
+
+    // Offered next to an "X or newer is required" agent error: hands the CLI's own self-update to
+    // a terminal, like Connect hands it the login.
+    .post(
+      '/providers/:provider/update',
+      paramZodValidator(z.object({ provider: providerParamSchema }), { message: 'unknown provider' }),
+      async (c) => {
+        const provider = c.req.valid('param').provider as ProviderId;
+        const sid = deviceSid(c.req.header('x-cezar-sid'));
+        const command = providerAuth.updateCommand(provider);
+        if (command === null) {
+          trackUpdateOpened(provider, 'unsupported', sid);
+          return c.json({ error: 'This agent has no update command of its own. Update it the way you installed it.' }, 409);
+        }
+        if (!capabilities().localHandoff) {
+          trackUpdateOpened(provider, 'hosted', sid);
+          return c.json({ error: 'Run this command on the machine hosting cezar.', command }, 409);
+        }
+        let opened = false;
+        try {
+          opened = await openTerminal(bootRoot, command);
+        } catch {
+          // Best-effort, as for Connect: the command is the fallback.
+        }
+        if (!opened) {
+          trackUpdateOpened(provider, 'no_terminal', sid);
+          return c.json({ error: 'No terminal emulator could be opened. Run this command manually.', command }, 409);
+        }
+        trackUpdateOpened(provider, 'opened', sid);
+        return c.json({ opened: true as const, command });
+      },
+    );
 
   // ---- chained family: agent profiles / accounts (workspace-level) ----------
   // Extra config dirs for a SECOND login of the same agent CLI (spec
@@ -2536,12 +2615,17 @@ export function createApp(deps: ServerDeps) {
     .get(
       '/workspace/agent-profiles/:id/status',
       paramZodValidator(z.object({ id: z.string() })),
-      queryZodValidator(z.object({ refresh: queryValue.refine((v) => v === undefined || v === '1') }), { message: 'refresh must be 1 when provided' }),
+      queryZodValidator(z.object({
+        refresh: queryValue.refine((v) => v === undefined || v === '1'),
+        recheck: queryValue.refine((v) => v === undefined || v === '1'),
+      }), { message: 'refresh and recheck must be 1 when provided' }),
       async (c) => {
         if (!capabilities().localHandoff) return c.json(hostedProfileRefusal, 409);
         const account = await accountById(c.req.param('id'));
         if (!account) return c.json({ error: `unknown account: ${c.req.param('id')}` }, 404);
-        const refresh = c.req.valid('query').refresh === '1';
+        const query = c.req.valid('query');
+        const recheck = query.recheck === '1';
+        const refresh = query.refresh === '1' || recheck;
         // The discovered account's row is the one `GET /api/v1/providers/status` owns, so it comes
         // from there — enablement included, which a bare probe does not know about.
         if (account.isDefault) {
@@ -2550,8 +2634,10 @@ export function createApp(deps: ServerDeps) {
           return c.json({ status: row ?? { provider: account.provider, status: 'unknown' as const } });
         }
         // "Check again" re-probes THIS account only — the other accounts' warm answers are not
-        // invalidated by asking about this one.
+        // invalidated by asking about this one. Only `recheck` (the pane's button) may lift a dead
+        // login; New task's verify-before-refuse re-probes with `refresh` alone (telemetry 9e4a95db).
         if (refresh) providerAuth.forgetProfileStatus(account.provider, account.id);
+        if (recheck) providerAuth.recheckProfileAuthFailure(account.provider, account.id);
         return c.json({
           status: await providerAuth.profileStatus(account.provider, {
             id: account.id,
@@ -2652,11 +2738,10 @@ export function createApp(deps: ServerDeps) {
         // checkout. No project to resolve, and therefore no 404 path.
         let root: string | null = null;
         if (projectId !== null) {
-          const resolvedId = projectId === 'default' ? await resolveBootProject() : projectId;
           // Keyed by repo ROOT, so the selection survives the registry being rebuilt and needs no
           // cross-reference into config.json. An unknown project is a 404 rather than an orphan
           // entry nobody will ever read.
-          root = await projectRootFor(resolvedId);
+          root = await projectRootFor(projectId);
           if (root === null) return c.json({ error: `unknown project: ${projectId}` }, 404);
         }
         // A user naming an account that does not exist gets told so — the opposite of how RUN
@@ -2727,8 +2812,9 @@ export function createApp(deps: ServerDeps) {
         }
         if (!removed) return c.json({ error: `unknown account: ${id}` }, 404);
         // Only this account's answer: it is about to stop existing, and holding it would let a
-        // re-added account with the same id read the deleted one's state.
-        providerAuth.forgetProfileStatus(removedProvider, id);
+        // re-added account with the same id read the deleted one's state — its incident included.
+        if (removedProvider) providerAuth.forgetProfile(removedProvider, id);
+        else providerAuth.forgetProfileStatus(removedProvider, id);
         return c.json({ removed: true as const, id });
       },
     );
@@ -2806,6 +2892,7 @@ export function createApp(deps: ServerDeps) {
             lastOpenedAt: '',
             source: 'local',
             unregistered: true,
+            ...((await shouldRegisterProject(root)) ? {} : { notAddable: true as const }),
             ...(await probeProjectStatus(root)),
           },
           ...projects,
@@ -3302,6 +3389,23 @@ export function createApp(deps: ServerDeps) {
   // cockpit's chip simply is not there rather than showing an error nobody asked for.
   const starCountRoutes = new Hono().get('/star-count', async (c) => c.json(await starCount.read()));
 
+  // ---- chained family: Design Mode (workspace-level) -----------------------
+  // Spec `.ai/specs/2026-10-09-design-mode.md`. Single-mount: the proxy mirrors a loopback dev
+  // server, which belongs to the machine, not to a project. The request's own `Host` is passed
+  // as forbidden beside the body's cockpit origin (they differ under the Vite dev proxy), so
+  // this server can never be mirrored.
+  const designProxies = deps.designProxies ?? new DesignProxies();
+  deps.onDispose?.(() => designProxies.closeAll());
+  const previewRoutes = new Hono().post('/preview/design-proxy', jsonZodValidator(designProxyRequestSchema), async (c) => {
+    if (!capabilities().designMode) {
+      return c.json({ error: 'Design Mode is not available on this cockpit' }, 409);
+    }
+    const host = c.req.header('host');
+    const opened = await designProxies.open({ ...c.req.valid('json'), forbidden: host ? [`http://${host}`] : [] });
+    if (!opened.ok) return c.json({ error: opened.reason }, 400);
+    return c.json({ origin: opened.origin });
+  });
+
   const selfUpdateRoutes = new Hono()
     .get('/workspace/self-update', async (c) => c.json(await selfUpdate.status()))
 
@@ -3319,7 +3423,7 @@ export function createApp(deps: ServerDeps) {
       return c.json(await selfUpdate.status());
     })
 
-    .post('/workspace/self-update/apply', jsonZodValidator(selfUpdateApplyRequestSchema, { message: 'body must be { version }' }), async (c) => {
+    .post('/workspace/self-update/apply', jsonZodValidator(selfUpdateApplyRequestSchema, { message: 'body must be { version, whenIdle? }' }), async (c) => {
       const { version: target } = c.req.valid('json');
       // SECURITY: a hosted cockpit may only move FORWARD. Installing a published package cannot
       // inject code, but installing an OLDER one can: every hosted-mode guard — the `/api/*`
@@ -3335,11 +3439,18 @@ export function createApp(deps: ServerDeps) {
         if (refusal) return c.json({ error: refusal }, 409);
       }
       try {
-        selfUpdate.apply(target);
+        if (c.req.valid('json').whenIdle) selfUpdate.scheduleWhenIdle(target);
+        else selfUpdate.apply(target);
       } catch (error) {
         if (error instanceof SelfUpdateBusyError) return c.json({ error: error.message }, 409);
         return c.json({ error: error instanceof Error ? error.message : String(error) }, 409);
       }
+      return c.json(await selfUpdate.status());
+    })
+
+    // Cancels a pending "update when idle"; a no-op when nothing is scheduled.
+    .delete('/workspace/self-update/scheduled', async (c) => {
+      selfUpdate.cancelScheduled();
       return c.json(await selfUpdate.status());
     });
 
@@ -3534,7 +3645,7 @@ export function createApp(deps: ServerDeps) {
       const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
       try {
         await writeFile(tmp, bytes, { mode: 0o600, flag: 'wx' });
-        await rename(tmp, path);
+        await renameWithRetry(tmp, path);
       } catch (error) {
         await unlink(tmp).catch(() => {});
         throw error;
@@ -4562,6 +4673,8 @@ export function createApp(deps: ServerDeps) {
         images,
         systemPrompt: parsed.data.systemPrompt,
         worktree: parsed.data.worktree,
+        newBranch: parsed.data.newBranch,
+        branch: parsed.data.branch,
         autonomous: parsed.data.autonomous,
         // Opt-in inbox (#471): the capability is the ceiling, so a client asking
         // for follow-ups on a server that has them off gets a plain `false`
@@ -4859,6 +4972,7 @@ export function createApp(deps: ServerDeps) {
       const id = c.req.param('id');
       const run = store.getRun(id);
       if (!run) return c.json({ error: 'not found' }, 404);
+      if (c.get('project').manager.lifecycle?.isBlocked(id)) return c.json({ error: 'Resolve the pending worktree lifecycle operation before opening its environment' }, 409);
       // Hosted mode: there is no "my machine" to open a terminal on. The UI
       // hides the button when localHandoff is false — this is defense in depth.
       if (!capabilities().localHandoff) {
@@ -4906,6 +5020,7 @@ export function createApp(deps: ServerDeps) {
       const id = c.req.param('id');
       const run = store.getRun(id);
       if (!run) return c.json({ error: 'not found' }, 404);
+      if (c.get('project').manager.lifecycle?.isBlocked(id)) return c.json({ error: 'Resolve the pending worktree lifecycle operation before opening its environment' }, 409);
       if (!capabilities().localHandoff) {
         return c.json(
           {
@@ -5118,6 +5233,19 @@ export function createApp(deps: ServerDeps) {
       return c.json(result.commit);
     })
 
+    // The run's whole path index — `/repo/tree` against the task's worktree. Backs the ⌘P
+    // palette's `#` file search (spec 2026-10-17-task-palette); `/runs/:id/files` serves the file.
+    .get('/runs/:id/tree', async (c) => {
+      const { root: repoRoot, store } = c.get('project');
+      const run = store.getRun(c.req.param('id'));
+      if (!run) return c.json({ error: 'not found' }, 404);
+      const workingDirectory = workingDirectoryOf(run, repoRoot);
+      if (!workingDirectory) return c.json({ error: NO_WORKTREE }, 409);
+      const result = await listRepoPaths(workingDirectory);
+      if (!result.ok) return c.json({ error: result.error }, 409);
+      return c.json({ paths: result.paths, truncated: result.truncated });
+    })
+
     // Files tab: directory listing (path omitted or a dir) or file content
     // (size-capped, binary flagged). Traversal-safe — readWorktreePath rejects
     // anything escaping the worktree. `raw=1` (R5 Step 1.6) serves the BYTES of
@@ -5194,7 +5322,9 @@ export function createApp(deps: ServerDeps) {
       const worktree = worktreeOf(run);
       if (!worktree) return c.json({ error: NO_WORKTREE }, 409);
       const parsed = { data: c.req.valid('json') };
-      const result = await commitAll(worktree, parsed.data.message);
+      let result;
+      try { result = await withWorktreeMutation(c.get('project'), run.id, () => commitAll(worktree, parsed.data.message)); }
+      catch (error) { return lifecycleError(c, error); }
       if (!result.ok) return c.json({ error: result.error }, 409);
       return c.json({ committed: true, sha: result.sha });
     })
@@ -5205,7 +5335,9 @@ export function createApp(deps: ServerDeps) {
       if (!run) return c.json({ error: 'not found' }, 404);
       const worktree = worktreeOf(run);
       if (!worktree) return c.json({ error: NO_WORKTREE }, 409);
-      const result = await pushCurrentBranch(worktree);
+      let result;
+      try { result = await withWorktreeMutation(c.get('project'), run.id, () => pushCurrentBranch(worktree)); }
+      catch (error) { return lifecycleError(c, error); }
       if (!result.ok) return c.json({ error: result.error }, 409);
       // A push is the event that changes what the chips say about this task's pull requests —
       // its checks start again, and its MERGEABILITY is recomputed from scratch. Both are cached
@@ -5269,7 +5401,9 @@ export function createApp(deps: ServerDeps) {
       if (!publish) {
         const branch = run.branch;
         publish = (async () => {
-          const outcome = await createDraftPr({ repoRoot, run, handoffText: readHandoff(dataDir, id), draft });
+          const outcome = await withWorktreeMutation(c.get('project'), id, () =>
+            createDraftPr({ repoRoot, run, handoffText: readHandoff(dataDir, id), draft }),
+          );
           if (!outcome.ok) return outcome;
           // A number the cockpit asked about BEFORE the pull request existed is cached as "this
           // repository has no such number" — which is exactly what a `CEZ:PR=901` marker declared
@@ -5291,11 +5425,34 @@ export function createApp(deps: ServerDeps) {
           .finally(() => prPublishes.delete(key));
         prPublishes.set(key, publish);
       }
-      const { outcome, branch } = await publish;
+      let published: Awaited<typeof publish>;
+      try {
+        published = await publish;
+      } catch (error) { return lifecycleError(c, error); }
+      const { outcome, branch } = published;
       if (!outcome.ok) {
         return c.json({ error: outcome.error, manual: `git merge ${branch}` }, 409);
       }
       return c.json({ url: outcome.url, dryRun: outcome.dryRun }, 201);
+    })
+
+    // Create PR by the task's agent: once its turn ends, the PR it opened is found by branch and
+    // recorded, even if the agent never declared `CEZ:PR`. Best-effort; the status stays.
+    .post('/runs/:id/pr/adopt', async (c) => {
+      const { root: repoRoot, store } = c.get('project');
+      const id = c.req.param('id');
+      const run = store.getRun(id);
+      if (!run) return c.json({ error: 'not found' }, 404);
+      if (run.pullRequestUrl) return c.json({ found: true as const, url: run.pullRequestUrl });
+      const worktree = worktreeOf(run);
+      const target = worktree ? await resolvePrTarget(run) : null;
+      const pr = worktree && target ? await findBranchPr(worktree, target) : null;
+      if (!pr) return c.json({ found: false as const });
+      forgetRefStatus(repoRoot, pr.number);
+      // Unlike `POST /pr`, the status stays: the agent's session, not the cockpit, owns the run.
+      store.updateRun(id, { pullRequestUrl: pr.url });
+      store.appendEvent(id, { type: 'note', message: `PR opened by the agent: ${pr.url}` });
+      return c.json({ found: true as const, url: pr.url });
     })
 
     // Archived tasks keep their worktree for inspection; this is the explicit
@@ -5306,12 +5463,16 @@ export function createApp(deps: ServerDeps) {
       const run = store.getRun(id);
       if (!run) return c.json({ error: 'not found' }, 404);
       if (manager.isActive(id)) return c.json({ error: 'run is active — cancel it first' }, 409);
-      // A shell must not outlive the directory it is standing in (spec §6).
-      stopTaskProcesses(id);
-      if (run.worktreePath) await removeWorktree(repoRoot, run.worktreePath, run.branch);
-      store.updateRun(id, { worktreePath: undefined, branch: undefined });
-      if (run.prHead) await manager.sweepPrHeadRefs();
-      return c.json({ removed: true });
+      try {
+        return await legacyWorktreeMutation(c.get('project'), id, async () => {
+          // A shell must not outlive the directory it is standing in (spec §6).
+          stopTaskProcesses(id);
+          if (run.worktreePath) await removeWorktree(repoRoot, run.worktreePath, run.branch);
+          store.updateRun(id, { worktreePath: undefined, branch: undefined });
+          if (run.prHead) await manager.sweepPrHeadRefs();
+          return c.json({ removed: true });
+        });
+      } catch (error) { return lifecycleError(c, error); }
     })
 
     .delete('/runs/:id', async (c) => {
@@ -5321,16 +5482,20 @@ export function createApp(deps: ServerDeps) {
       const run = store.getRun(id);
       if (!run) return c.json({ error: 'not found' }, 404);
       // Delete cleans up after itself: worktree + branch go with the run (spec 006), and so do its terminals.
-      stopTaskProcesses(id);
-      // Layouts go with the task, and only with it — archiving keeps them (spec §5.3).
-      deleteRunLayouts(dataDir, id);
-      if (run.worktreePath) await removeWorktree(repoRoot, run.worktreePath, run.branch);
-      const deleted = store.deleteRun(id);
-      // The run's `refs/cezar/pr/<n>` goes with the last run that needed it (Phase 3).
-      if (deleted && run.prHead) await manager.sweepPrHeadRefs();
-      if (!deleted) return c.json({ error: 'not found' }, 404);
-      track('task_deleted', { label: run.status }, { sid: deviceSid(c.req.header('x-cezar-sid')) });
-      return c.json({ deleted: true });
+      try {
+        return await legacyWorktreeMutation(c.get('project'), id, async () => {
+          stopTaskProcesses(id);
+          // Layouts go with the task, and only with it — archiving keeps them (spec §5.3).
+          deleteRunLayouts(dataDir, id);
+          if (run.worktreePath) await removeWorktree(repoRoot, run.worktreePath, run.branch);
+          const deleted = store.deleteRun(id);
+          // The run's `refs/cezar/pr/<n>` goes with the last run that needed it (Phase 3).
+          if (deleted && run.prHead) await manager.sweepPrHeadRefs();
+          if (!deleted) return c.json({ error: 'not found' }, 404);
+          track('task_deleted', { label: run.status }, { sid: deviceSid(c.req.header('x-cezar-sid')) });
+          return c.json({ deleted: true });
+        });
+      } catch (error) { return lifecycleError(c, error); }
     });
 
   // ---- chained family: in-task drafts (project-scoped) ----------------------
@@ -5559,14 +5724,29 @@ export function createApp(deps: ServerDeps) {
       appendHandoffHeartbeat(dataDir, winner.id, `picked from ${runs.length} variants`);
 
       for (const loser of losers) {
-        if (manager.isActive(loser.id)) manager.cancel(loser.id);
+        let removed = false;
+        let cleanupError: string | undefined;
+        // A shell must not outlive the directory it is standing in (spec §6).
         stopTaskProcesses(loser.id);
-        if (loser.worktreePath) await removeWorktree(repoRoot, loser.worktreePath, loser.branch);
-        store.updateRun(loser.id, { worktreePath: undefined, branch: undefined });
+        try {
+          const operation = manager.lifecycle ? await manager.lifecycle.discardVariant(loser.id) : null;
+          if (!operation) {
+            if (manager.cancelAndWait) {
+              if (!await manager.cancelAndWait(loser.id)) throw new Error('Variant process has not exited; worktree retained');
+            } else if (manager.isActive(loser.id)) {
+              manager.cancel(loser.id);
+              throw new Error('Variant cancellation requested; worktree retained until process exit is confirmed');
+            }
+            if (loser.worktreePath) await legacyWorktreeMutation(c.get('project'), loser.id, () => removeWorktree(repoRoot, loser.worktreePath!, loser.branch));
+            removed = !loser.worktreePath || !existsSync(loser.worktreePath);
+            if (!removed) throw new Error('Worktree removal did not complete');
+            store.updateRun(loser.id, { worktreePath: undefined, branch: undefined });
+          }
+        } catch (error) { cleanupError = error instanceof Error ? error.message : 'Cleanup needs attention'; }
         store.setArchived(loser.id, true);
         store.appendEvent(loser.id, {
           type: 'lifecycle',
-          message: `variant ${winner.variant ?? '?'} was picked — this variant is archived, its worktree removed`,
+          message: `variant ${winner.variant ?? '?'} was picked — this variant is archived; ${removed ? 'its worktree was removed' : cleanupError ? `cleanup needs attention: ${cleanupError}` : 'worktree cleanup is queued'}`,
         });
       }
       if (losers.some((loser) => loser.prHead)) await manager.sweepPrHeadRefs();
@@ -5689,7 +5869,7 @@ export function createApp(deps: ServerDeps) {
       const { root: repoRoot, store } = c.get('project');
       // The body is validated (an empty or `{}` one is accepted) but carries nothing this
       // handler reads; retention is best-effort, so 200 always.
-      const reclaimed = await reclaimWorktrees(repoRoot, store, await resolveWorktreeRetention(repoRoot));
+      const reclaimed = await reclaimWorktrees(repoRoot, store, await resolveWorktreeRetention(repoRoot), { lifecycle: c.get('project').manager.lifecycle });
       return c.json({ reclaimed });
     });
 
@@ -5937,7 +6117,7 @@ export function createApp(deps: ServerDeps) {
         // One detach bundle per attached project — the id guard makes a double
         // attach (connect-time snapshot vs. the built hook) impossible.
         const attached = new Map<string, { store: RunStore; detach: () => void }>();
-        const attach = (project: string, ctx: Pick<ProjectContext, 'store' | 'dataDir'>): void => {
+        const attach = (project: string, ctx: Pick<ProjectContext, 'store' | 'dataDir' | 'manager'>): void => {
           if (attached.has(project)) return;
           const { store, dataDir } = ctx;
           const onRun = (run: RunRecord) =>
@@ -5960,6 +6140,10 @@ export function createApp(deps: ServerDeps) {
           // Same opt-in gate as the per-project stream (#471): no capability, no
           // watcher — and each subscription is scoped to its own dataDir (2.3).
           const offTodos = capabilities().followups ? onTodosChanged(dataDir, () => void sendTodos()) : () => undefined;
+          const offLifecycle = ctx.manager.lifecycle?.onChange(event => {
+            const payload: WorktreeLifecycleInvalidation = { ...event, projectId: project };
+            void stream.writeSSE({ event: 'worktree-lifecycle', data: JSON.stringify(payload) });
+          });
           store.on('run', onRun);
           const offDeleted = onRunDeleted(store, onDeleted);
           attached.set(project, {
@@ -5968,6 +6152,7 @@ export function createApp(deps: ServerDeps) {
               store.off('run', onRun);
               offDeleted();
               offTodos();
+              offLifecycle?.();
             },
           });
         };
@@ -6494,6 +6679,28 @@ export function createApp(deps: ServerDeps) {
     overrideRules: z.boolean().optional().default(false),
   }).strict();
 
+  // Task branches are never a base: hide the named ones (no `cez/` prefix) by record. An in-place
+  // run's branch is the user's own checkout, so it stays listed.
+  const taskOwnedBranches = (store: ProjectContext['store']): Set<string> =>
+    new Set(store.listRuns().flatMap((r) => (r.branch && r.worktree !== false ? [r.branch] : [])));
+  const runRepoSyncAction = async (
+    project: ProjectContext,
+    action: (root: string) => Promise<SyncActionResult>,
+  ): Promise<{ error: string } | { message: string; sync: RepoSync }> => {
+    const info = await getRepoInfo(project.root);
+    if (!info) return { error: 'not a git repository' };
+    // A pull moves HEAD and the working files: never under an in-place run's agent.
+    if (action === pullRepo || action === syncRepo) {
+      const live = project.store
+        .listRuns()
+        .some((r) => r.worktree === false && (r.status === 'running' || r.status === 'waiting'));
+      if (live) return { error: 'an in-place task is running in this checkout — wait for it to finish' };
+    }
+    const result = await action(info.root);
+    if (!result.ok) return { error: result.error };
+    return { message: result.message, sync: await repoSyncStatus(info.root, taskOwnedBranches(project.store)) };
+  };
+
   // ---- chained family: repo / git (project-scoped) ----
   const repoRoutes = new Hono<ProjectApiEnv>()
     .get('/repo', async (c) => {
@@ -6508,8 +6715,7 @@ export function createApp(deps: ServerDeps) {
           checkedOutElsewhere: {},
           baseBranch: null,
         });
-      // Task branches are never a base: hide the named ones (no `cez/` prefix) by record.
-      const taskBranches = new Set(store.listRuns().flatMap((r) => (r.branch ? [r.branch] : [])));
+      const taskBranches = taskOwnedBranches(store);
       const [status, log, branches, held, config] = await Promise.all([
         getStatus(info.root),
         getLog(info.root),
@@ -6681,6 +6887,30 @@ export function createApp(deps: ServerDeps) {
       const result = await createOrSwitchBranch(info.root, parsed.data.name, parsed.data.from);
       if (!result.ok) return c.json({ error: result.error }, 409);
       return c.json({ branch: result.branch, created: result.created });
+    })
+
+    // Source-Control sync (spec 2026-10-19-repo-git-sync): offline status, explicit network.
+    .get('/repo/sync', async (c) => {
+      const { root: repoRoot, store } = c.get('project');
+      const info = await getRepoInfo(repoRoot);
+      if (!info) return c.json({ error: 'not a git repository' }, 409);
+      return c.json(await repoSyncStatus(info.root, taskOwnedBranches(store)));
+    })
+    .post('/repo/fetch', async (c) => {
+      const r = await runRepoSyncAction(c.get('project'), fetchRepo);
+      return 'error' in r ? c.json({ error: r.error }, 409) : c.json({ message: r.message, sync: r.sync });
+    })
+    .post('/repo/pull', async (c) => {
+      const r = await runRepoSyncAction(c.get('project'), pullRepo);
+      return 'error' in r ? c.json({ error: r.error }, 409) : c.json({ message: r.message, sync: r.sync });
+    })
+    .post('/repo/push', async (c) => {
+      const r = await runRepoSyncAction(c.get('project'), pushRepo);
+      return 'error' in r ? c.json({ error: r.error }, 409) : c.json({ message: r.message, sync: r.sync });
+    })
+    .post('/repo/sync', async (c) => {
+      const r = await runRepoSyncAction(c.get('project'), syncRepo);
+      return 'error' in r ? c.json({ error: r.error }, 409) : c.json({ message: r.message, sync: r.sync });
     });
 
   // An explicit "auto" default becomes `''` on the wire (#906): the empty id IS
@@ -6700,6 +6930,7 @@ export function createApp(deps: ServerDeps) {
   // The Settings → Agents knobs in one read (R6 Step 1.5) — an ADDITIVE
   // sibling of PUT /api/config below; /api/health keeps its protected shape.
   const configAnswer = async (repoRoot: string, config: CezConfig) => {
+    const lifecycle = await readLifecycleConfigOrDefault(repoRoot, { trust: false });
     const nativeModels = await readAgentModelDefaults(repoRoot);
     const modelsLocked = agentModelsLocked(repoRoot);
     return {
@@ -6726,6 +6957,7 @@ export function createApp(deps: ServerDeps) {
       // Count-based worktree retention (#483): keep the last N finished worktrees
       // on disk. 0 = unlimited. Always materialized (schema default 10).
       worktreeRetention: config.worktreeRetention,
+      ...(lifecycle.configured ? { worktreeLifecycle: lifecycle.config, worktreeLifecycleRevision: lifecycle.revision! } : {}),
       // Live title updates (task auto-naming spec): tri-state — null means "no
       // config key, the CEZ_TITLE_UPDATES env default (ON) decides".
       liveTitleUpdates: config.liveTitleUpdates ?? null,
@@ -6738,10 +6970,11 @@ export function createApp(deps: ServerDeps) {
   const configRoutes = new Hono<ProjectApiEnv>()
     .get('/config', async (c) => {
       const repoRoot = c.get('project').root;
-      return c.json(await configAnswer(repoRoot, await loadConfig(repoRoot)));
+      try { return c.json(await configAnswer(repoRoot, await loadConfig(repoRoot))); }
+      catch (error) { return lifecycleError(c, error); }
     })
 
-    .put('/config', jsonZodValidator(() => setConfigSchema), async (c) => {
+    .put('/config', jsonZodValidator(setConfigInputSchema), async (c) => {
       const { root: repoRoot, dataDir } = c.get('project');
       const parsed = { data: c.req.valid('json') };
       // The auto override is a model choice too (#906), so the fixed-model
@@ -6752,96 +6985,121 @@ export function createApp(deps: ServerDeps) {
       ) {
         return c.json({ error: AGENT_MODELS_LOCKED_ERROR }, 409);
       }
-      const configPath = join(dataDir, 'config.json');
-      let raw: Record<string, unknown> = {};
       try {
-        const existing: unknown = JSON.parse(await readFile(configPath, 'utf8'));
-        if (existing && typeof existing === 'object') raw = existing as Record<string, unknown>;
-      } catch {
-        // missing or malformed — start fresh
-      }
-      if (parsed.data.baseBranch !== undefined) {
-        if (parsed.data.baseBranch === null) delete raw.baseBranch;
-        else raw.baseBranch = parsed.data.baseBranch;
-      }
-      if (parsed.data.defaultRunner !== undefined) raw.defaultRunner = parsed.data.defaultRunner;
-      if (parsed.data.systemPrompt !== undefined) {
-        // '' and null both clear: an emptied textarea means "no extra prompt".
-        if (parsed.data.systemPrompt === null || parsed.data.systemPrompt === '') {
-          delete raw.systemPrompt;
-        } else {
-          raw.systemPrompt = parsed.data.systemPrompt;
+        const configPath = join(dataDir, 'config.json');
+        const save = async (locked: boolean) => {
+          let raw: Record<string, unknown> = {};
+          try { raw = await readLifecycleConfigRaw(repoRoot); }
+          catch (error) {
+            // Malformed or unreadable — start fresh, as before scripts existed. Unlocked (symlinked
+            // data dir) reads the file the way the old route did.
+            if (locked && !(error instanceof LifecycleConfigError)) throw error;
+            if (!locked) {
+              try {
+                const existing: unknown = JSON.parse(await readFile(configPath, 'utf8'));
+                if (existing && typeof existing === 'object' && !Array.isArray(existing)) raw = existing as Record<string, unknown>;
+              } catch { /* missing or malformed — start fresh */ }
+            }
+          }
+          lifecycleConfigFromRaw(raw); // An unrelated save cannot silently repair or reset unsupported hooks.
+          if (parsed.data.worktreeLifecycle !== undefined) {
+            if (parsed.data.worktreeLifecycleRevision === undefined) throw new Error('Reload settings before saving worktree scripts: revision is required');
+            if (parsed.data.worktreeLifecycle !== null) {
+              for (const entry of [...parsed.data.worktreeLifecycle.afterCreate, ...parsed.data.worktreeLifecycle.beforeRemove]) validateLifecycleCommand(entry.command);
+              const scripts = parsed.data.worktreeLifecycle.afterCreate.length + parsed.data.worktreeLifecycle.beforeRemove.length;
+              if (scripts > 0 && await isLifecycleConfigTracked(repoRoot)) throw new LifecycleConfigError(TRACKED_CONFIG_ERROR);
+            }
+            raw = applyLifecycleConfigUpdate(raw, parsed.data.worktreeLifecycle, parsed.data.worktreeLifecycleRevision);
+          }
+          if (parsed.data.baseBranch !== undefined) {
+            if (parsed.data.baseBranch === null) delete raw.baseBranch;
+            else raw.baseBranch = parsed.data.baseBranch;
+          }
+          if (parsed.data.defaultRunner !== undefined) raw.defaultRunner = parsed.data.defaultRunner;
+          if (parsed.data.systemPrompt !== undefined) {
+            // '' and null both clear: an emptied textarea means "no extra prompt".
+            if (parsed.data.systemPrompt === null || parsed.data.systemPrompt === '') {
+              delete raw.systemPrompt;
+            } else {
+              raw.systemPrompt = parsed.data.systemPrompt;
+            }
+          }
+          if (parsed.data.branchNaming !== undefined) {
+            // Same clearing rule as systemPrompt: an emptied textarea means `cez/<id8>` again.
+            if (parsed.data.branchNaming === null || parsed.data.branchNaming === '') {
+              delete raw.branchNaming;
+            } else {
+              raw.branchNaming = parsed.data.branchNaming;
+            }
+          }
+          if (parsed.data.maxParallel !== undefined) raw.maxParallel = parsed.data.maxParallel;
+          if (parsed.data.worktreeRetention !== undefined) {
+            // null clears back to the default (10); a number (including 0 = unlimited)
+            // is stored as-is.
+            if (parsed.data.worktreeRetention === null) delete raw.worktreeRetention;
+            else raw.worktreeRetention = parsed.data.worktreeRetention;
+          }
+          if (parsed.data.liveTitleUpdates !== undefined) {
+            if (parsed.data.liveTitleUpdates === null) delete raw.liveTitleUpdates;
+            else raw.liveTitleUpdates = parsed.data.liveTitleUpdates;
+          }
+          if (parsed.data.reviewGate !== undefined) {
+            if (parsed.data.reviewGate === null) delete raw.reviewGate;
+            else raw.reviewGate = parsed.data.reviewGate;
+          }
+          if (parsed.data.memoryLimitMb !== undefined) {
+            // null or 0 both mean "no ceiling" — drop the key back to the default.
+            if (parsed.data.memoryLimitMb === null || parsed.data.memoryLimitMb === 0) {
+              delete raw.memoryLimitMb;
+            } else {
+              raw.memoryLimitMb = parsed.data.memoryLimitMb;
+            }
+          }
+          if (parsed.data.defaultModels !== undefined) {
+            // Per-runner merge, so setting codex's preset never clobbers claude's.
+            const current =
+              raw.defaultModels && typeof raw.defaultModels === 'object'
+                ? { ...(raw.defaultModels as Record<string, unknown>) }
+                : {};
+            for (const [runner, model] of Object.entries(parsed.data.defaultModels)) {
+              if (model === undefined) continue;
+              if (model === null || model === '') delete current[runner];
+              else current[runner] = model;
+            }
+            if (Object.keys(current).length === 0) delete raw.defaultModels;
+            else raw.defaultModels = current;
+          }
+          if (parsed.data.defaultModelsAuto !== undefined) {
+            // Same per-runner merge as the presets above, and the same "store only a
+            // real opinion" rule: `false`/`null` deletes rather than persisting a
+            // key that means nothing (#906).
+            const current =
+              raw.defaultModelsAuto && typeof raw.defaultModelsAuto === 'object'
+                ? { ...(raw.defaultModelsAuto as Record<string, unknown>) }
+                : {};
+            for (const [runner, isAuto] of Object.entries(parsed.data.defaultModelsAuto)) {
+              if (isAuto === undefined) continue;
+              if (isAuto) current[runner] = true;
+              else delete current[runner];
+            }
+            if (Object.keys(current).length === 0) delete raw.defaultModelsAuto;
+            else raw.defaultModelsAuto = current;
+          }
+          if (locked) await atomicLifecycleWrite(configPath, raw);
+          else {
+            await mkdir(dataDir, { recursive: true });
+            await writeFile(configPath, `${JSON.stringify(raw, null, 2)}\n`, 'utf8');
+          }
+        };
+        // All config writers share this short lock with the transition's final revision check.
+        try { await withLifecycleConfigLock(repoRoot, () => save(true)); }
+        catch (error) {
+          // The lifecycle store refuses a symlinked data dir; settings without scripts still save.
+          if (!(error instanceof LifecycleStoreError) || parsed.data.worktreeLifecycle !== undefined) throw error;
+          await save(false);
         }
-      }
-      if (parsed.data.branchNaming !== undefined) {
-        // Same clearing rule as systemPrompt: an emptied textarea means `cez/<id8>` again.
-        if (parsed.data.branchNaming === null || parsed.data.branchNaming === '') {
-          delete raw.branchNaming;
-        } else {
-          raw.branchNaming = parsed.data.branchNaming;
-        }
-      }
-      if (parsed.data.maxParallel !== undefined) raw.maxParallel = parsed.data.maxParallel;
-      if (parsed.data.worktreeRetention !== undefined) {
-        // null clears back to the default (10); a number (including 0 = unlimited)
-        // is stored as-is.
-        if (parsed.data.worktreeRetention === null) delete raw.worktreeRetention;
-        else raw.worktreeRetention = parsed.data.worktreeRetention;
-      }
-      if (parsed.data.liveTitleUpdates !== undefined) {
-        if (parsed.data.liveTitleUpdates === null) delete raw.liveTitleUpdates;
-        else raw.liveTitleUpdates = parsed.data.liveTitleUpdates;
-      }
-      if (parsed.data.reviewGate !== undefined) {
-        if (parsed.data.reviewGate === null) delete raw.reviewGate;
-        else raw.reviewGate = parsed.data.reviewGate;
-      }
-      if (parsed.data.memoryLimitMb !== undefined) {
-        // null or 0 both mean "no ceiling" — drop the key back to the default.
-        if (parsed.data.memoryLimitMb === null || parsed.data.memoryLimitMb === 0) {
-          delete raw.memoryLimitMb;
-        } else {
-          raw.memoryLimitMb = parsed.data.memoryLimitMb;
-        }
-      }
-      if (parsed.data.defaultModels !== undefined) {
-        // Per-runner merge, so setting codex's preset never clobbers claude's.
-        const current =
-          raw.defaultModels && typeof raw.defaultModels === 'object'
-            ? { ...(raw.defaultModels as Record<string, unknown>) }
-            : {};
-        for (const [runner, model] of Object.entries(parsed.data.defaultModels)) {
-          if (model === undefined) continue;
-          if (model === null || model === '') delete current[runner];
-          else current[runner] = model;
-        }
-        if (Object.keys(current).length === 0) delete raw.defaultModels;
-        else raw.defaultModels = current;
-      }
-      if (parsed.data.defaultModelsAuto !== undefined) {
-        // Same per-runner merge as the presets above, and the same "store only a
-        // real opinion" rule: `false`/`null` deletes rather than persisting a
-        // key that means nothing (#906).
-        const current =
-          raw.defaultModelsAuto && typeof raw.defaultModelsAuto === 'object'
-            ? { ...(raw.defaultModelsAuto as Record<string, unknown>) }
-            : {};
-        for (const [runner, isAuto] of Object.entries(parsed.data.defaultModelsAuto)) {
-          if (isAuto === undefined) continue;
-          if (isAuto) current[runner] = true;
-          else delete current[runner];
-        }
-        if (Object.keys(current).length === 0) delete raw.defaultModelsAuto;
-        else raw.defaultModelsAuto = current;
-      }
-      try {
-        await mkdir(dataDir, { recursive: true });
-        await writeFile(configPath, `${JSON.stringify(raw, null, 2)}\n`, 'utf8');
-      } catch (err) {
-        return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
-      }
-      // Pre-R6 answer shape ({baseBranch, defaultRunner}) + additive R6 fields.
-      return c.json(await configAnswer(repoRoot, await loadConfig(repoRoot)));
+        return c.json(await configAnswer(repoRoot, await loadConfig(repoRoot)));
+      } catch (error) { return lifecycleError(c, error); }
     });
 
   // Set/clear the agents' config knobs (Settings → Agents; the Repo tab's
@@ -6849,50 +7107,6 @@ export function createApp(deps: ServerDeps) {
   // (skillsRepos…) survive and schema defaults are never materialized into
   // the file. All fields optional + additive: `null` (and `''` for the
   // R6 keys) clears a knob back to its default.
-  const modelPresetSchema = z.string().trim().max(200).nullable().optional();
-  const autoModelSchema = z.boolean().nullable().optional();
-  const setConfigSchema = z.object({
-    baseBranch: z.string().trim().min(1).max(200).nullable().optional(),
-    defaultRunner: z.enum(RUNNER_IDS).optional(),
-    systemPrompt: z.string().trim().max(20_000, 'must be at most 20000 characters').nullable().optional(),
-    // Branch naming instructions (spec 2026-10-11-branch-naming-instructions); null/'' clears.
-    branchNaming: z.string().trim().max(4_000, 'must be at most 4000 characters').nullable().optional(),
-    defaultModels: z
-      .object({
-        claude: modelPresetSchema,
-        codex: modelPresetSchema,
-        opencode: modelPresetSchema,
-        cursor: modelPresetSchema,
-        pi: modelPresetSchema,
-      })
-      .optional(),
-    // Per-runner "auto is the default" override (#906). Additive, and necessarily
-    // its own key: clearing a preset cannot express an explicit auto, because the
-    // answer then falls through to the coding agent's own settings file.
-    // `false`/`null` clears the override back to no opinion.
-    defaultModelsAuto: z
-      .object({
-        claude: autoModelSchema,
-        codex: autoModelSchema,
-        opencode: autoModelSchema,
-        pi: autoModelSchema,
-      })
-      .optional(),
-    // Concurrency + memory guard (Settings → Resources). maxParallel clamps to
-    // the schema's 1–16; memoryLimitMb null/0 clears the ceiling.
-    maxParallel: z.number().int().min(1).max(16).optional(),
-    memoryLimitMb: z.number().int().min(0).max(1_048_576).nullable().optional(),
-    // Worktree retention count (Settings → Resources, #483). 0 = unlimited;
-    // null clears the key back to the schema default (10). Unlike memoryLimitMb,
-    // 0 is a meaningful value (unlimited), so it is stored, not treated as clear.
-    worktreeRetention: z.number().int().min(0).max(1000).nullable().optional(),
-    // Live title updates toggle (Settings → Agents): null clears the key back
-    // to the env-default behavior.
-    liveTitleUpdates: z.boolean().nullable().optional(),
-    // Optional review gate toggle (Settings → Agents, #489): null clears the key
-    // back to the env-default behavior (OFF).
-    reviewGate: z.boolean().nullable().optional(),
-  });
   const setAgentConfigSchema = z.object({
     content: z.string().max(2_000_000),
     version: z.string().nullable(),
@@ -7122,14 +7336,41 @@ export function createApp(deps: ServerDeps) {
       return c.json(detectedUrlsSchema.parse({ urls }));
     })
     .get('/runs/:id/terminal/commands', async (c) => {
-      const { root: repoRoot, store } = c.get('project');
+      const { root: repoRoot, store, dataDir } = c.get('project');
       const run = store.getRun(c.req.param('id'));
       if (!run) return c.json({ error: 'not found' }, 404);
       // The task's own tree or nothing: suggesting the boot repo's scripts for a task would
       // offer commands that run against the wrong tree (spec §3.3). Same tree the terminal opens.
       const worktree = workingDirectoryOf(run, repoRoot);
-      const commands = worktree ? await discoverCommands(worktree) : [];
-      return c.json(discoveredCommandsSchema.parse({ commands }));
+      // A project with its own setup scripts (#1495) prepares its worktrees itself; the automatic
+      // install is only for the zero-config project that has none.
+      const setupScripts = (await readLifecycleConfigOrDefault(repoRoot)).config.afterCreate.length;
+      const [commands, install] = worktree
+        ? await Promise.all([discoverCommands(worktree), setupScripts > 0 ? null : installCommand(worktree)])
+        : [[], null];
+      const recipe = effectiveStartApp(await readStartApp(dataDir, repoRoot));
+      return c.json(
+        discoveredCommandsSchema.parse({ commands, ...(install ? { install } : {}), ...(recipe ? { recipe } : {}) }),
+      );
+    })
+    // The project's start recipe (spec `2026-10-09-design-mode` §7c): the team's in the repo
+    // config, the user's own in their registry entry. Writing one stores a command a terminal will
+    // later run, so it is refused wherever the terminal is.
+    .get('/start-app', async (c) => {
+      const { root, dataDir } = c.get('project');
+      return c.json(startAppStateSchema.parse(await readStartApp(dataDir, root)));
+    })
+    .put('/start-app', jsonZodValidator(startAppSetSchema), async (c) => {
+      const refusal = terminalPolicyRefusal(capabilities());
+      if (refusal) return c.json({ error: refusal }, 409);
+      const { root, dataDir } = c.get('project');
+      const { scope, recipe } = c.req.valid('json');
+      try {
+        if (!(await writeStartApp(dataDir, root, scope, recipe))) {
+          return c.json({ error: 'This project is not in your project list, so it cannot keep a recipe of your own.' }, 409);
+        }
+      } catch (error) { return c.json({ error: error instanceof Error ? error.message : 'The start recipe could not be saved' }, 409); }
+      return c.json(startAppStateSchema.parse(await readStartApp(dataDir, root)));
     })
     // Deliberately NOT policy-gated: stopping a shell is the one terminal action that reduces
     // exposure, and refusing it with the flag off would strand a running process tree with no
@@ -7170,6 +7411,7 @@ export function createApp(deps: ServerDeps) {
     .route('/', groupsRoutes)
     .route('/', openTargetsRoutes)
     .route('/', worktreesRoutes)
+    .route('/', worktreeLifecycleRoutes({ stopTaskProcesses }))
     .route('/', todosRoutes)
     .route('/', sseRoutes)
     .route('/', githubRoutes)
@@ -7223,6 +7465,7 @@ export function createApp(deps: ServerDeps) {
     projectId,
     id: run.id,
     title: run.title,
+    ...(run.worktreeLifecycle !== undefined ? { worktreeLifecycle: run.worktreeLifecycle } : {}),
     ...(run.titleSummary !== undefined ? { titleSummary: run.titleSummary } : {}),
     ...(run.titleOrigin !== undefined ? { titleOrigin: run.titleOrigin } : {}),
     status: run.status,
@@ -7435,8 +7678,10 @@ export function createApp(deps: ServerDeps) {
       '/telemetry/event',
       jsonZodValidator(telemetryEventInputSchema, { message: 'invalid event' }),
       (c) => {
-        const { event, label } = c.req.valid('json');
-        track(event, { label }, { sid: deviceSid(c.req.header('x-cezar-sid')) });
+        const body = c.req.valid('json');
+        // `value` only on the batched events, and only when sent — every other relay stays `{ label }`.
+        const value = 'value' in body ? body.value : undefined;
+        track(body.event, { label: body.label, ...(value !== undefined ? { value } : {}) }, { sid: deviceSid(c.req.header('x-cezar-sid')) });
         return c.body(null, 204);
       },
     )
@@ -7474,6 +7719,7 @@ export function createApp(deps: ServerDeps) {
     .route('/', skillsUpdateRoutes)
     .route('/', selfUpdateRoutes)
     .route('/', starCountRoutes)
+    .route('/', previewRoutes)
     .route('/', workspaceConfigRoutes)
     .route('/', workspaceSecretsRoutes)
     .route('/', fsBrowseRoutes)
@@ -7512,7 +7758,8 @@ export function createApp(deps: ServerDeps) {
   return routed;
 }
 
-export function startServer(deps: ServerDeps, port: number): ServerType {
+export function startServer(deps: ServerDeps, port: number): ServerType & { shutdownLifecycle(): Promise<void> } {
+  let shutdownPromise: Promise<void> | undefined;
   const workspaceEvents = deps.workspaceEvents ?? new WorkspaceEventBus();
   const skillsUpdate = deps.skillsUpdate ?? new SkillsUpdateService({ invalidateCatalog: refreshTeamSkills });
   // The subscription hub rides the same HTTP server (one port, zero config):
@@ -7641,6 +7888,7 @@ export function startServer(deps: ServerDeps, port: number): ServerType {
   });
   server.once('listening', () => {
     void listProjects().then((projects) => {
+      if (shutdownPromise) return;
       const all = projects.some((project) => project.root === deps.repoRoot)
         ? projects : [{ id: deps.bootProjectId ?? 'default', root: deps.repoRoot, status: 'ok' as const }, ...projects];
       coordinator.start(all);
@@ -7656,12 +7904,28 @@ export function startServer(deps: ServerDeps, port: number): ServerType {
           : sharedContexts.peek(project.id)?.store;
         if (automationStore && runStore) reconcileAutomationReceipts(automationStore, runStore);
         if (automationStore) rebaselineIdleAutomations(automationStore, (automationId, revision) => workspaceEvents.emit('automation-change', { project: project.id, automationId, revision }));
-      })).then(() => automationScheduler.start()).catch(() => undefined);
+      })).then(() => { if (!shutdownPromise) automationScheduler.start(); }).catch(() => undefined);
     }).catch(() => undefined);
   });
   server.once('close', () => { for (const cleanup of appCleanups) cleanup(); unsubscribe(); coordinator.stop(); automationScheduler.stop(); });
   socketHub.attach(server, (req) => verifyWsUpgrade(req, deps.bindHost));
-  return server;
+  return Object.assign(server, {
+    shutdownLifecycle(): Promise<void> {
+      if (shutdownPromise) return shutdownPromise;
+      // Stop HTTP admission and automatic task sources before draining detached scripts.
+      server.close();
+      coordinator.stop();
+      automationScheduler.stop();
+      shutdownPromise = (async () => {
+        const results = await Promise.allSettled([deps.manager.lifecycle.shutdown(), sharedContexts.shutdownAll()]);
+        deps.manager.dispose();
+        deps.store.flush({throwOnError: true});
+        const failure = results.find(result => result.status === 'rejected');
+        if (failure?.status === 'rejected') throw failure.reason;
+      })();
+      return shutdownPromise;
+    },
+  });
 }
 
 /**
@@ -7829,7 +8093,7 @@ export function resumeCommand(runner: string | undefined, sessionId: string): st
     case 'opencode':
       return `opencode --session ${sessionId}`;
     case 'cursor': {
-      const bin = quoteResumeBin(process.env.CEZ_CURSOR_AGENT_BIN ?? 'agent');
+      const bin = quoteResumeBin(resolveCursorAgentBin());
       return bin === null ? null : `${bin} --resume ${sessionId}`;
     }
     case 'pi':

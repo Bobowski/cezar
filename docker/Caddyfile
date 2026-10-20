@@ -1,0 +1,89 @@
+# cezar on a VPS (docs/docker.md § On a VPS): TLS for the cockpit and the preview gateway.
+# Generated port blocks: one per preview port, each forwarded to the gateway's own port.
+
+{$CEZ_DOMAIN} {
+	request_body {
+		max_size 32MB
+	}
+	reverse_proxy cezar:4321
+}
+
+{$CEZ_DOMAIN}:8500 {
+	reverse_proxy cezar:18500
+}
+
+{$CEZ_DOMAIN}:8501 {
+	reverse_proxy cezar:18501
+}
+
+{$CEZ_DOMAIN}:8502 {
+	reverse_proxy cezar:18502
+}
+
+{$CEZ_DOMAIN}:8503 {
+	reverse_proxy cezar:18503
+}
+
+{$CEZ_DOMAIN}:8504 {
+	reverse_proxy cezar:18504
+}
+
+{$CEZ_DOMAIN}:8505 {
+	reverse_proxy cezar:18505
+}
+
+{$CEZ_DOMAIN}:8506 {
+	reverse_proxy cezar:18506
+}
+
+{$CEZ_DOMAIN}:8507 {
+	reverse_proxy cezar:18507
+}
+
+{$CEZ_DOMAIN}:8508 {
+	reverse_proxy cezar:18508
+}
+
+{$CEZ_DOMAIN}:8509 {
+	reverse_proxy cezar:18509
+}
+
+{$CEZ_DOMAIN}:8510 {
+	reverse_proxy cezar:18510
+}
+
+{$CEZ_DOMAIN}:8511 {
+	reverse_proxy cezar:18511
+}
+
+{$CEZ_DOMAIN}:8512 {
+	reverse_proxy cezar:18512
+}
+
+{$CEZ_DOMAIN}:8513 {
+	reverse_proxy cezar:18513
+}
+
+{$CEZ_DOMAIN}:8514 {
+	reverse_proxy cezar:18514
+}
+
+{$CEZ_DOMAIN}:8515 {
+	reverse_proxy cezar:18515
+}
+
+{$CEZ_DOMAIN}:8516 {
+	reverse_proxy cezar:18516
+}
+
+{$CEZ_DOMAIN}:8517 {
+	reverse_proxy cezar:18517
+}
+
+{$CEZ_DOMAIN}:8518 {
+	reverse_proxy cezar:18518
+}
+
+{$CEZ_DOMAIN}:8519 {
+	reverse_proxy cezar:18519
+}

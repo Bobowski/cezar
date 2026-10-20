@@ -11,10 +11,9 @@ docker compose -f docker/compose.yml up -d --build
 
 Then open <http://localhost:4321>.
 
-> **Status: untested.** The image and compose file were written against cezar's hosted mode and
-> the preview gateway, both of which are tested — but the image itself has not been built or run
-> yet. Expect the first build to need a fix or two, and treat everything below as the intended
-> behaviour until this note is removed.
+> **Status:** the image builds and boots (inner Docker daemon, `claude`, `gh`, cezar's sign-in),
+> and the VPS overlay below serves the cockpit over TLS. The preview gateway behind it has not
+> been exercised end to end on a live VPS yet.
 
 ## First run
 
@@ -79,6 +78,27 @@ Upgrading is a rebuild: `docker compose -f docker/compose.yml up -d --build`. Th
   the agent on your own machine: it is isolation from accident, not from intent.
 - To run without the inner daemon, remove `privileged: true` and set `CEZ_DOCKER=0`. cezar runs;
   projects that need their own services will not start them.
+
+## On a VPS
+
+A Linux box with Docker, a domain whose `A` record points at it, and ports 80, 443 and
+8500-8519 open. The overlay `docker/compose.vps.yml` adds **Caddy**, which fetches a Let's
+Encrypt certificate and forwards the cockpit (`https://<domain>`) and the preview gateway
+(`https://<domain>:8500-8519`) to the container. Nothing else is installed on the host.
+
+```bash
+git clone https://github.com/open-mercato/cezar && cd cezar
+echo "CEZ_DOMAIN=agents.example.dev" > docker/.env
+docker compose -f docker/compose.yml -f docker/compose.vps.yml up -d --build
+docker compose -f docker/compose.yml exec -u node cezar cezar auth setup
+```
+
+The last command prints a one-time `/setup#code=…` link: open it on `https://<domain>` within
+15 minutes to create the owner account (password + authenticator app). Every request is behind
+that sign-in; the gateway's ports admit only a ticket the signed-in cockpit hands out.
+
+The VPS must allow privileged containers (a KVM VPS does; OpenVZ/LXC usually does not) —
+`docker run --rm --privileged docker:dind dockerd --version` tells you.
 
 ## Limits
 

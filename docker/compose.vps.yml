@@ -1,0 +1,30 @@
+# cezar on a VPS (docs/docker.md § On a VPS). An overlay on compose.yml:
+#
+#   docker compose -f docker/compose.yml -f docker/compose.vps.yml up -d --build
+#
+# Caddy is the only public surface: it fetches a Let's Encrypt certificate for CEZ_DOMAIN and
+# forwards the cockpit (443) and the preview gateway (8500-8519). cezar's own sign-in guards both.
+services:
+  cezar:
+    ports: !reset []
+    environment:
+      # The gateway listens on 185xx; browsers reach it through Caddy as 85xx.
+      - CEZ_PREVIEW_PORTS=18500-18519
+      - CEZ_PREVIEW_PUBLIC_PORTS=8500-8519
+
+  caddy:
+    image: caddy:2.10
+    restart: unless-stopped
+    depends_on: [cezar]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8500-8519:8500-8519"
+    environment:
+      - CEZ_DOMAIN=${CEZ_DOMAIN:?set CEZ_DOMAIN in docker/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy:/data
+
+volumes:
+  caddy:

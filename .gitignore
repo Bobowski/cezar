@@ -40,3 +40,6 @@ skills-lock.json
 .e2e/logs/
 .e2e/videos/
 .e2e/cez-home/
+
+# docker/compose.vps.yml reads its domain (and agent tokens) from here
+docker/.env

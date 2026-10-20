@@ -3,9 +3,8 @@
 #   docker compose -f docker/compose.yml up -d --build
 #   open http://localhost:4321
 #
-# Everything is published on the host's LOOPBACK only. cezar has no login of its own, and this
-# container hands out a shell; `127.0.0.1:` below is what keeps both on your machine. To reach it
-# from elsewhere, put an authenticated front in front of it — never widen these addresses.
+# Everything is published on the host's LOOPBACK only, and this container hands out a shell.
+# To reach it from elsewhere use compose.vps.yml (TLS + cezar's sign-in) — never widen these.
 name: cezar
 
 services:

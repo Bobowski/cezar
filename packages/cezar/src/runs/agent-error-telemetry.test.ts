@@ -112,6 +112,8 @@ describe('reportAgentError', () => {
   it('skips a usage limit auto-resume can schedule — the account\'s state, not a failure (telemetry 987e8238)', () => {
     reportAgentError('claude', { type: 'error', message: "You've hit your session limit · resets 3:10pm (UTC)" });
     reportAgentError('claude', { type: 'session.error', message: 'Claude AI usage limit reached|1760450400' });
+    // An hour-only clock in an IANA zone (telemetry cae3e9a6).
+    reportAgentError('claude', { type: 'error', message: "You've hit your session limit · resets 6pm (Europe/Warsaw)" });
     expect(reported()).toEqual([]);
   });
 

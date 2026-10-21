@@ -1,7 +1,32 @@
 # cezar on a VPS (docs/docker.md § On a VPS): TLS for the cockpit and the preview gateway.
-# Generated port blocks: one per preview port, each forwarded to the gateway's own port.
+# Preview blocks are generated: one per pool port, each forwarded to the gateway's own port.
+
+{
+	# One explicit redirect below: with the same host on 21 ports, the automatic one picks a
+	# preview port as its target.
+	auto_https disable_redirects
+}
+
+(tls_site) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+}
+
+http://{$CEZ_DOMAIN} {
+	redir https://{host}{uri} 308
+}
 
 {$CEZ_DOMAIN} {
+	import tls_site
+	# The cockpit is never framed; previews are framed BY it, so their blocks leave this alone.
+	header {
+		Content-Security-Policy "frame-ancestors 'none'"
+		X-Frame-Options DENY
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+	}
 	request_body {
 		max_size 32MB
 	}
@@ -9,81 +34,101 @@
 }
 
 {$CEZ_DOMAIN}:8500 {
+	import tls_site
 	reverse_proxy cezar:18500
 }
 
 {$CEZ_DOMAIN}:8501 {
+	import tls_site
 	reverse_proxy cezar:18501
 }
 
 {$CEZ_DOMAIN}:8502 {
+	import tls_site
 	reverse_proxy cezar:18502
 }
 
 {$CEZ_DOMAIN}:8503 {
+	import tls_site
 	reverse_proxy cezar:18503
 }
 
 {$CEZ_DOMAIN}:8504 {
+	import tls_site
 	reverse_proxy cezar:18504
 }
 
 {$CEZ_DOMAIN}:8505 {
+	import tls_site
 	reverse_proxy cezar:18505
 }
 
 {$CEZ_DOMAIN}:8506 {
+	import tls_site
 	reverse_proxy cezar:18506
 }
 
 {$CEZ_DOMAIN}:8507 {
+	import tls_site
 	reverse_proxy cezar:18507
 }
 
 {$CEZ_DOMAIN}:8508 {
+	import tls_site
 	reverse_proxy cezar:18508
 }
 
 {$CEZ_DOMAIN}:8509 {
+	import tls_site
 	reverse_proxy cezar:18509
 }
 
 {$CEZ_DOMAIN}:8510 {
+	import tls_site
 	reverse_proxy cezar:18510
 }
 
 {$CEZ_DOMAIN}:8511 {
+	import tls_site
 	reverse_proxy cezar:18511
 }
 
 {$CEZ_DOMAIN}:8512 {
+	import tls_site
 	reverse_proxy cezar:18512
 }
 
 {$CEZ_DOMAIN}:8513 {
+	import tls_site
 	reverse_proxy cezar:18513
 }
 
 {$CEZ_DOMAIN}:8514 {
+	import tls_site
 	reverse_proxy cezar:18514
 }
 
 {$CEZ_DOMAIN}:8515 {
+	import tls_site
 	reverse_proxy cezar:18515
 }
 
 {$CEZ_DOMAIN}:8516 {
+	import tls_site
 	reverse_proxy cezar:18516
 }
 
 {$CEZ_DOMAIN}:8517 {
+	import tls_site
 	reverse_proxy cezar:18517
 }
 
 {$CEZ_DOMAIN}:8518 {
+	import tls_site
 	reverse_proxy cezar:18518
 }
 
 {$CEZ_DOMAIN}:8519 {
+	import tls_site
 	reverse_proxy cezar:18519
 }

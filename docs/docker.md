@@ -12,8 +12,9 @@ docker compose -f docker/compose.yml up -d --build
 Then open <http://localhost:4321>.
 
 > **Status:** the image builds and boots (inner Docker daemon, `claude`, `gh`, cezar's sign-in),
-> and the VPS overlay below serves the cockpit over TLS. The preview gateway behind it has not
-> been exercised end to end on a live VPS yet.
+> and the VPS overlay below has been run end to end on a workstation (`CEZ_DOMAIN=localhost`):
+> sign-in, a real agent task in a worktree with its own services, and previews through the
+> gateway. It has not run on a live VPS with a public certificate yet.
 
 ## First run
 
@@ -75,14 +76,16 @@ Upgrading is a rebuild: `docker compose -f docker/compose.yml up -d --build`. Th
 
 ## Security, plainly
 
-- The cockpit and the preview ports are published on **`127.0.0.1` only**. cezar has no login of
-  its own and this container hands out a shell — do not change those addresses to `0.0.0.0`.
-  On a server, keep them on loopback and put an authenticated front in front
-  ([Remote access](reference.md#remote-access-host-cezar-on-a-server)).
+- Locally the cockpit and the preview ports are published on **`127.0.0.1` only** — this
+  container hands out a shell; never widen those addresses. On a server use
+  `compose.vps.yml`, which publishes nothing of cezar's and puts Caddy (TLS) and cezar's own
+  sign-in in front.
 - The container is **`privileged`**, for its inner Docker daemon. An agent's commands run as the
-  unprivileged user `node`, but that user can use the inner daemon, and a privileged container
-  is not a security boundary against the code running in it. Treat it as you would treat running
-  the agent on your own machine: it is isolation from accident, not from intent.
+  unprivileged user `node`, but that user drives the inner daemon, and a privileged container it
+  starts sees the host's block devices (verified: `docker run --privileged alpine ls /dev` lists
+  them). **Whoever controls an agent — you, or text the agent reads (an issue, a web page, a
+  dependency) — can become root on the host.** On a laptop that is the same trust you give any
+  agent; on a server it is the whole server. See [Security checklist](#security-checklist-for-a-vps).
 - To run without the inner daemon, remove `privileged: true` and set `CEZ_DOCKER=0`. cezar runs;
   projects that need their own services will not start them.
 
@@ -106,6 +109,47 @@ that sign-in; the gateway's ports admit only a ticket the signed-in cockpit hand
 
 The VPS must allow privileged containers (a KVM VPS does; OpenVZ/LXC usually does not) —
 `docker run --rm --privileged docker:dind dockerd --version` tells you.
+
+### Security checklist for a VPS
+
+Verified on the overlay (2026-10-21, `CEZ_DOMAIN=localhost`) unless marked **on the box**:
+
+| Check | Expected | How |
+| --- | --- | --- |
+| Only Caddy is published | `80`, `443`, `8500-8519`; cezar's container has no host ports | `docker ps` |
+| Every API route without a session | `401` (SSE, files, agent-config, health included) | `curl -k https://<domain>/api/v1/health` |
+| Cross-origin write, WS without session | `403` | |
+| HTTP | `308` to the same path on `https://<domain>` | `curl -I http://<domain>/x` |
+| Cockpit headers | HSTS, `frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff` | `curl -kI https://<domain>/` |
+| Sign-in throttling | `429` + `Retry-After` after five failures, forged `X-Forwarded-For` ignored | |
+| **On the box:** the address cezar records | your real IP, not a Docker gateway (`172.x.0.1`) | `docker compose … exec cezar tail /data/cezar/auth-audit.ndjson` after a sign-in from your phone. A gateway address means every client shares one throttle key, so a stranger's failures delay yours. |
+| Preview port without its cookie | `401`, also with a forged ticket | `curl -k https://<domain>:8500/` |
+| Preview targets | only loopback `http://`; never cezar, a pool port, another host | |
+| Cookies across preview ports | the app never receives `__Host-cez_session` and cannot overwrite it | |
+| Second account / setup link | refused once the owner exists | `cezar auth setup` |
+| Telemetry | nothing sent without a yes | |
+
+What the box itself needs:
+
+- **A VPS that runs cezar and nothing else.** No other sites, databases or credentials on it —
+  see the `privileged` note under [Security, plainly](#security-plainly).
+- **SSH by key only**, root login off. `cezar auth reset`/`setup` are run over SSH
+  (`docker compose -f docker/compose.yml exec -u node cezar cezar auth …`) — the box is the root
+  of trust for the cockpit's accounts.
+- **Firewall:** allow `22`, `80`, `443`, `8500-8519`. Docker opens published ports past `ufw`
+  on its own, so nothing else must be published: never add `ports:` to the `cezar` service.
+- **Backups.** The `data` volume holds the agents' and `gh` logins and the cockpit's accounts —
+  a backup of it is a secret; keep it encrypted and off the box:
+
+  ```bash
+  docker run --rm -v cezar_data:/data:ro -v "$PWD:/backup" alpine tar czf /backup/cezar-data.tgz -C /data .
+  ```
+
+  Restore is the same `tar xzf` into the volume (tested: identical files, `0600` kept). For
+  `projects` the backup is `git push` — anything not pushed lives only there. `docker` holds the
+  projects' service data, which seeds rebuild.
+- **Upgrading** is `git pull` and `docker compose -f docker/compose.yml -f docker/compose.vps.yml up -d --build`.
+  The volumes survive it: accounts, logins, projects and task history stay.
 
 ## Limits
 

@@ -151,3 +151,14 @@ describe('Project settings → Worktrees: keep-last-N-worktrees (#483)', () => {
     expect(puts()).toHaveLength(0)
   })
 })
+
+describe('Project settings → Worktrees: lifecycle scripts', () => {
+  // The editor once survived only as an import after a merge rewrote this section's layout.
+  it('renders the setup and cleanup script editor on the page', async () => {
+    serve()
+    renderAt('/settings/worktrees')
+    await waitFor(() => expect(document.querySelector('[data-slot="worktree-lifecycle-editor"]')).not.toBeNull())
+    expect(screen.getByText('After worktree creation')).toBeTruthy()
+    expect(screen.getByText('Before worktree removal')).toBeTruthy()
+  })
+})

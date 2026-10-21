@@ -126,6 +126,14 @@ function WorktreesForm({ config }: { config: ConfigResponse }) {
         </SettingsField>
       </SettingsGroup>
 
+      <SettingsGroup
+        title="Scripts"
+        description="Commands run in each task worktree: after it is created, and before it is removed or reclaimed."
+        bare
+      >
+        <WorktreeLifecycleEditor config={config} />
+      </SettingsGroup>
+
       <WorktreesPanel />
     </SettingsPane>
   )

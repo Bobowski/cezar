@@ -16,6 +16,7 @@ import { WorkspaceSemaphore } from '../workspace/semaphore.ts';
 import { isSafeGitRef } from '../git-refs.ts';
 import { createWorktree, createWorktreeWithOutcome, removeWorktree, worktreePathFor, branchFor } from '../git-worktree.ts';
 import { seedAgentConfigLocalLayer } from '../agent-config/seed.ts';
+import { seedWorktreeEnvFiles } from '../worktree-env.ts';
 import { collectSecretValues, redactSecrets } from '../core/secret-redaction.ts';
 import { LifecycleStore, LifecycleConflictError, LifecycleStoreError, withLifecycleFileLock } from './store.ts';
 import { readLifecycleConfig, readLifecycleConfigOrDefault, withLifecycleConfigLock } from './config.ts';
@@ -219,6 +220,9 @@ export class WorktreeLifecycleCoordinator {
           record.worktreePath = wt.path; record.branch = wt.branch;
           this.runs.updateRun(runId, {worktreePath: wt.path, branch: wt.branch, baseBranch: wt.baseBranch, worktreeReclaimedAt: undefined});
           await seedAgentConfigLocalLayer(this.root, wt.path).catch(() => []);
+          // Before setup, not after: seeding skips files that exist, so a setup that writes .env
+          // (a project bootstrap) would otherwise lock out the main checkout's integration keys.
+          await seedWorktreeEnvFiles(this.root, wt.path).catch(() => []);
           if (!prior && !wt.materialized && materialized) {
             // Enroll a legacy already-prepared directory for future teardown;
             // enabling hooks is not itself a creation event.

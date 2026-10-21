@@ -86,6 +86,17 @@ describe('RunManager worktree lifecycle admission', () => {
     await expect(exec('git', ['show-ref', '--verify', ref], {cwd: p.root})).rejects.toMatchObject({code: 128});
   });
 
+  it('seeds the main checkout env files before setup runs, so setup can build on them', async () => {
+    const p = await project();
+    writeFileSync(join(p.root, '.gitignore'), '.ai/cezar/\n.env\n');
+    writeFileSync(join(p.root, '.env'), 'STRIPE_SECRET_KEY=sk_test_main\n');
+    await writeLifecycleConfig(p.root, { afterCreate: [entry('cat .env > setup-saw-env 2>/dev/null || printf missing > setup-saw-env')], beforeRemove: [] }, null);
+    const run = p.manager.startRun(workflow, { task: 'env before setup', runner: 'claude' });
+    await wait(() => expect(p.store.getRun(run.id)?.status).toBe('done'));
+    const worktree = join(p.root, '.ai/cezar/worktrees', run.id);
+    expect(readFileSync(join(worktree, 'setup-saw-env'), 'utf8')).toBe('STRIPE_SECRET_KEY=sk_test_main\n');
+  });
+
   it('starts no agent until setup completed in its isolated worktree', async () => {
     const p = await project();
     await writeLifecycleConfig(p.root, { afterCreate: [entry('touch {{ root_path }}/setup-started; while [ ! -e {{ root_path }}/release ]; do sleep 0.02; done; printf prepared > setup-ready')], beforeRemove: [] }, null);

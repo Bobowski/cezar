@@ -92,7 +92,8 @@ export function KeyboardSection() {
             <p className="text-[13px] text-muted-foreground">
               Run a task’s commands from the keyboard while the task is open. {formatChord('Mod+P')} lists them all;
               press {apple ? '⇧↵' : 'Shift+Enter'} on a row there to set its shortcut. {apple ? '⌘' : 'Ctrl'} chords also
-              work while you type.
+              work while you type. {apple ? '⌥↑ / ⌥↓' : 'Alt+↑ / Alt+↓'} go to the previous / next task,{' '}
+              {apple ? '⌥⇧↑ / ⌥⇧↓' : 'Alt+Shift+↑ / Alt+Shift+↓'} to the previous / next one that needs you.
             </p>
           </div>
           <Button

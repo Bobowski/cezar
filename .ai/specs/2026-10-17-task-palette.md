@@ -39,6 +39,14 @@ layouts) lives in the run header behind the mouse, and only for the task on scre
   number (never for a chord such as ⌘C or the screenshot ⌘⇧4; a release the OS swallows is caught
   by the next key or pointer event without ⌘), so the strip shows which ⌘N is which; the `…` overflow menu always lists them. No bare-key shortcuts are added; rows show the existing workspace
   keys or their chord.
+- **Switching by arrow** (2026-10-21, Slack's channel keys): ⌥↑/⌥↓ open the previous/next task
+  in the sidebar's order (`sortRuns`, active view — Pinned, Needs you, Working, Recent), ⌥⇧↑/⌥⇧↓
+  the previous/next task that needs you (`isNeedsYouStatus`). From any page of the project on
+  screen; off the ring (the Tasks table, a task that no longer needs you) ↓ starts at the top and
+  ↑ at the bottom; wraps at the ends. Fires in text fields (it displaces only the paragraph
+  jump), not in the terminal or under a dialog. Not rebindable; the four chords are reserved.
+  `lib/task-ring.ts` is the ring, `lib/use-task-switch-shortcut.ts` the listener, mounted in
+  `AppShellContainer`. Telemetry: `task_switched` with `arrow`.
 
 ## Design
 

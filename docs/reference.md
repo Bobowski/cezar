@@ -538,6 +538,38 @@ DATABASE_NAME=app${CEZ_TASK_SLOT:+_$CEZ_TASK_SLOT}   # app, or app_3
 
 A slot is held for as long as the worktree directory exists and is free again once it is gone — nothing has to release it. The leases are plain files in `~/.cezar/task-slots/`; delete the directory and cezar hands the numbers out again.
 
+#### Task values in env files: `${{ … }}` references
+
+An app reads its `.env` itself, and no loader evaluates `$(( … ))`. So an env file may say what a
+value *is* instead of holding it, in a `#cezar` line right above the variable
+(spec `.ai/specs/2026-10-21-env-references.md`):
+
+```bash
+#cezar PORT=${{ task.port(0, 9000) }}
+PORT=9000
+#cezar DATABASE_URL=postgres://app:app@localhost:${{ task.port(2, 5432) }}/app${{ task.suffix }}
+DATABASE_URL=postgres://app:app@localhost:5432/app
+#cezar API_URL=http://localhost:${{ apps/api/.env:PORT }}
+API_URL=http://localhost:9000
+```
+
+cezar rewrites only the line under each `#cezar` line: in the main checkout when the file is saved in
+Settings → Environment (`PORT=9000`), and in every new task worktree when its env files are copied
+in — before setup scripts run — from that task's slot (`PORT=20300`, `…:20302/app_3` in slot 3).
+The app sees a comment and a plain value.
+
+| Reference | Main checkout | Task in slot *n* |
+| --- | --- | --- |
+| `task.port(k, default)` | `default` | `20000 + n×100 + k` (k 0–99; the same block as `CEZ_TASK_PORT_BASE`) |
+| `task.slot` / `task.suffix` / `task.id` | empty | `n` / `_n` / the run id |
+| `worktree.path` / `project.root` | the project root | the worktree / the project root |
+| `VAR` | that variable of the same file | the same, rendered |
+| `path/to/.env:VAR` | that variable of another env file of the project | the same, from the task's copy |
+
+`\${{` is a literal `${{`. An unknown reference or a cycle is refused on save with its line; at
+task time it leaves the main checkout's values and the task shows why. A task created before a
+reference was added keeps the file it was given.
+
 ### Troubleshooting: the agent's shell returns nothing
 
 **Symptom.** A task on the Claude backend keeps working, but every shell command

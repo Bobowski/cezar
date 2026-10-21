@@ -1,6 +1,6 @@
 # Env references — `${{ … }}` values that cezar fills per task
 
-> Status: **draft for owner review (2026-10-21).** Not implemented. Branch: `brutus`.
+> Status: **phase 1 implemented (2026-10-21)** — resolver, `#cezar` directives, render on save and on seeding. Phases 2–3 (variables-view UI, re-render action) open. Owner answers to §10: 1 `${{ … }}`, 2 annotated `.env`, 3 explicit re-render only, 4 fancy-fence-panels keeps `alignStation` for now. Branch: `brutus`.
 > Builds on: `2026-10-12-project-env-files.md` (Settings → Environment, the variables view),
 > `2026-10-10-worktree-env-seeding.md` (how env files reach a task), `2026-10-10-task-slots.md`
 > (`CEZ_TASK_SLOT`, `CEZ_TASK_PORT_BASE`), `2026-10-10-worktree-lifecycle-events.md` (seeding runs
@@ -93,8 +93,9 @@ DATABASE_URL=postgres://ffp:ffp@localhost:5432/ffp_medusa
 - The variables view shows one row: name, the **reference** as the value, the rendered value under
   it. Raw text shows both lines, as they are.
 
-A `#cezar` line whose next line is not an assignment of the same key is shown as a warning and
-left alone — never guessed at.
+A `#cezar` line whose key is not assigned anywhere in the file gets its assignment inserted right
+below it on the next render — writing the directive alone in Raw text is enough. A directive whose
+key is assigned somewhere else in the file is refused: which line it owns would be a guess.
 
 ### 3.1 Rejected alternatives
 
@@ -122,7 +123,12 @@ Cross-file references render in dependency order; a cycle (`A` → `B` → `A`, 
 itself through another file) is refused on save with the chain named, and at seed time leaves the
 assignment as it is in the main checkout, with a note on the task.
 
-## 5. Contract and code (sketch)
+## 5. Contract and code
+
+Phase 1 shipped without contract changes: `PUT /env-files` takes the annotated text as before, renders
+the main checkout values into it (refusing an unrenderable directive with 400 and its line), and
+re-renders other env files that read from it. The parser moved to `packages/contract/src/dotenv-lines.ts`.
+The preview route and the content fields below are phase 2.
 
 - `packages/contract/src/env-files.ts`: `EnvFileContent` gains `directives: { key, source }[]` and
   `rendered: string` (the file as this checkout's context renders it). `PUT /env-files` is

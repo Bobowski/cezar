@@ -73,6 +73,29 @@ describe('project env files (spec 2026-10-12-project-env-files)', () => {
     expect(list.files[0]?.missing).toEqual(['JWT_SECRET']);
   });
 
+  it('fills #cezar directives with the main checkout values on save (spec 2026-10-21-env-references)', async () => {
+    const saved = await writeEnvFile(repo, 'apps/api/.env', '#cezar PORT=${{ task.port(0, 9000) }}\n#cezar DB=app${{ task.suffix }}\nDB=stale\n', null);
+    expect(saved.ok && saved.value.content).toBe('#cezar PORT=${{ task.port(0, 9000) }}\nPORT=9000\n#cezar DB=app${{ task.suffix }}\nDB=app\n');
+    expect(readFileSync(join(repo, 'apps/api/.env'), 'utf8')).toBe('#cezar PORT=${{ task.port(0, 9000) }}\nPORT=9000\n#cezar DB=app${{ task.suffix }}\nDB=app\n');
+  });
+
+  it('refuses a directive it cannot render, naming the line, and writes nothing', async () => {
+    const refused = await writeEnvFile(repo, 'apps/api/.env', 'A=1\n#cezar B=${{ env.HOME }}\n', null);
+    expect(refused).toEqual({ ok: false, status: 400, error: expect.stringMatching(/apps\/api\/\.env, line 2: unknown reference "env.HOME"/) });
+    expect(existsSync(join(repo, 'apps/api/.env'))).toBe(false);
+  });
+
+  it('a file reading a value from the saved one follows it', async () => {
+    put('apps/web/.env', '#cezar API=http://localhost:${{ apps/api/.env:PORT }}\nAPI=http://localhost:1\n');
+    await writeEnvFile(repo, 'apps/api/.env', 'PORT=4000\n', null);
+    expect(readFileSync(join(repo, 'apps/web/.env'), 'utf8')).toBe('#cezar API=http://localhost:${{ apps/api/.env:PORT }}\nAPI=http://localhost:4000\n');
+  });
+
+  it('leaves a file without directives byte for byte', async () => {
+    await writeEnvFile(repo, 'apps/api/.env', 'A="x # y"\n# note\n', null);
+    expect(readFileSync(join(repo, 'apps/api/.env'), 'utf8')).toBe('A="x # y"\n# note\n');
+  });
+
   it('refuses a save over a file that changed since it was opened', async () => {
     put('apps/api/.env', 'A=1\n');
     const opened = await readEnvFile(repo, 'apps/api/.env');

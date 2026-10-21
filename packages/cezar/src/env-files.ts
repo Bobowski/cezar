@@ -5,7 +5,8 @@ import {
   ENV_FILE_MAX_BYTES, envFilePathIssue, isEnvFileName,
   type EnvFileContent, type EnvFileEntry, type EnvFilesList,
 } from '@open-mercato/cezar-contract';
-import { ENV_WALK_MAX_DEPTH, ENV_WALK_SKIP_DIRS, SERVICE_MANIFESTS, ignoredAmong, isDependencyVendorDir } from './worktree-env.ts';
+import { EnvReferenceError, hasDirectives, renderEnvFiles } from './env-references.ts';
+import { ENV_WALK_MAX_DEPTH, ENV_WALK_SKIP_DIRS, SERVICE_MANIFESTS, ignoredAmong, isDependencyVendorDir, projectEnvFiles, writeEnvText } from './worktree-env.ts';
 
 /**
  * The project's env files, listed and edited in the main checkout (spec
@@ -189,16 +190,37 @@ export async function readEnvFile(root: string, path: string): Promise<EnvFileRe
   return target.ok ? readTarget(root, path, target.value) : target;
 }
 
-/** Save `content` as `path`. `version` is what the editor loaded; a file that moved on is not overwritten. */
+/**
+ * The main checkout's render of every env file (spec 2026-10-21-env-references), with `path` as
+ * it is about to be saved: the saved text with its own directives filled in, and any OTHER file
+ * whose directives read from it. Without a directive anywhere this is only the walk.
+ */
+async function renderForSave(root: string, path: string, content: string): Promise<EnvFileResult<Map<string, string>>> {
+  const files = new Map<string, string>();
+  for (const rel of await projectEnvFiles(root)) {
+    if (rel === path) continue;
+    const text = await readText(join(root, rel));
+    if (text) files.set(rel, text.text);
+  }
+  files.set(path, content);
+  if (![...files.values()].some(hasDirectives)) return { ok: true, value: new Map() };
+  try {
+    return { ok: true, value: renderEnvFiles(files, { projectRoot: root, worktreePath: root }) };
+  } catch (error) {
+    if (error instanceof EnvReferenceError) return refuse(400, error.message);
+    throw error;
+  }
+}
+
+/** Save `submitted` as `path`. `version` is what the editor loaded; a file that moved on is not overwritten. */
 export async function writeEnvFile(
   root: string,
   path: string,
-  content: string,
+  submitted: string,
   version: string | null,
 ): Promise<EnvFileResult<EnvFileContent>> {
-  const bytes = Buffer.from(content, 'utf8');
-  if (bytes.length > ENV_FILE_MAX_BYTES) return refuse(400, `an env file is at most ${ENV_FILE_MAX_BYTES} bytes`);
-  if (content.includes('\0')) return refuse(400, 'an env file is text, without NUL');
+  if (Buffer.byteLength(submitted, 'utf8') > ENV_FILE_MAX_BYTES) return refuse(400, `an env file is at most ${ENV_FILE_MAX_BYTES} bytes`);
+  if (submitted.includes('\0')) return refuse(400, 'an env file is text, without NUL');
   const target = await resolveTarget(root, path);
   if (!target.ok) return target;
   const current = await readTarget(root, path, target.value);
@@ -206,6 +228,12 @@ export async function writeEnvFile(
   if (current.value.version !== version) {
     return refuse(409, `${path} changed on disk since it was opened — reload it before saving`);
   }
+  // `#cezar` directives are filled in with the main checkout's values before anything is written.
+  const rendered = await renderForSave(root, path, submitted);
+  if (!rendered.ok) return rendered;
+  const content = rendered.value.get(path) ?? submitted;
+  const bytes = Buffer.from(content, 'utf8');
+  if (bytes.length > ENV_FILE_MAX_BYTES) return refuse(400, `an env file is at most ${ENV_FILE_MAX_BYTES} bytes`);
   const tmp = `${target.value.abs}.${randomBytes(6).toString('hex')}.tmp`;
   try {
     await writeFile(tmp, bytes, { mode: 0o600, flag: 'wx' });
@@ -214,6 +242,10 @@ export async function writeEnvFile(
   } catch {
     await rm(tmp, { force: true }).catch(() => {});
     return refuse(409, `${path} could not be written — check the checkout's permissions`);
+  }
+  // Files that read a value from this one follow it; only their directive lines change.
+  for (const [rel, text] of rendered.value) {
+    if (rel !== path) await writeEnvText(join(root, rel), text).catch(() => {});
   }
   return { ok: true, value: { path, content, version: versionOf(bytes), template: current.value.template } };
 }

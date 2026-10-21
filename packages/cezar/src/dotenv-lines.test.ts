@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { addVariable, duplicateKeys, formatAssignment, parseEnv, removeLine, serializeEnv, setVariable } from './dotenv-lines'
+import { addVariable, duplicateKeys, formatAssignment, parseEnv, removeLine, serializeEnv, setVariable } from '@open-mercato/cezar-contract'
 
 const FILE = [
   '# Database',

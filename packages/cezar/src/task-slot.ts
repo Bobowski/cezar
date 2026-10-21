@@ -31,8 +31,8 @@ export const MAX_TASK_SLOTS = 99;
 
 /** Each slot's own block of a hundred ports, clear of the well-known dev ports below it and the
  *  ephemeral range above it (Linux starts at 32768). */
-const PORT_BLOCK_START = 20000;
-const PORT_BLOCK_SIZE = 100;
+export const PORT_BLOCK_START = 20000;
+export const PORT_BLOCK_SIZE = 100;
 
 interface Lease {
   runId: string;

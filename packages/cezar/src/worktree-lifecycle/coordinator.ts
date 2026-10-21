@@ -163,7 +163,7 @@ export class WorktreeLifecycleCoordinator {
     }
   }
   /** Caller already holds normal task admission. No second slot is acquired for setup. */
-  async prepare(runId: string, base: string, pendingLaunch: LifecyclePendingLaunch, signal?: AbortSignal, choice: LifecycleBranchChoice = {}): Promise<{ready: boolean; path: string; branch: string; baseBranch: string; operationId?: string; seeded?: string[]}> {
+  async prepare(runId: string, base: string, pendingLaunch: LifecyclePendingLaunch, signal?: AbortSignal, choice: LifecycleBranchChoice = {}): Promise<{ready: boolean; path: string; branch: string; baseBranch: string; operationId?: string; seeded?: string[]; seededEnv?: string[]}> {
     const initialBranch = choice.branch ?? branchFor(runId);
     this.runs.flush();
     const prior = await this.readRecord(runId);
@@ -189,6 +189,7 @@ export class WorktreeLifecycleCoordinator {
       return {ready: true, ...wt, seeded};
     }
     return this.store.withWorktreeLock(runId, async () => {
+      let seededEnv: string[] = [];
       let record = await this.store.readWorktree(runId);
       const materialized = existsSync(join(worktreePathFor(this.root, runId), '.git'));
       if (record?.preparedBy && materialized && !record.activeOperationId) return {ready: true, path: record.worktreePath, branch: record.branch ?? initialBranch, baseBranch: base};
@@ -222,7 +223,7 @@ export class WorktreeLifecycleCoordinator {
           await seedAgentConfigLocalLayer(this.root, wt.path).catch(() => []);
           // Before setup, not after: seeding skips files that exist, so a setup that writes .env
           // (a project bootstrap) would otherwise lock out the main checkout's integration keys.
-          await seedWorktreeEnvFiles(this.root, wt.path).catch(() => []);
+          seededEnv = await seedWorktreeEnvFiles(this.root, wt.path, process.env, runId).catch(() => []);
           if (!prior && !wt.materialized && materialized) {
             // Enroll a legacy already-prepared directory for future teardown;
             // enabling hooks is not itself a creation event.
@@ -242,7 +243,7 @@ export class WorktreeLifecycleCoordinator {
         operation.state = 'cancelled'; operation.finishedAt = now(); record.autoCleanupSuppressed = true; delete record.activeOperationId;
         await this.save(record, operation);
       }
-      return {ready: record.preparedBy !== undefined, path: record.worktreePath, branch: record.branch ?? initialBranch, baseBranch: base, operationId: operation.id};
+      return {ready: record.preparedBy !== undefined, path: record.worktreePath, branch: record.branch ?? initialBranch, baseBranch: base, operationId: operation.id, seededEnv};
     });
   }
   async reopenSetup(runId: string): Promise<void> {

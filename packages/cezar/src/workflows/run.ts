@@ -4252,11 +4252,11 @@ export class RunManager {
    * Seeds from this manager's project root: each multi-project context has its own
    * manager/repoRoot and must never copy another project's layer.
    */
-  private async seedWorktree(cwd: string): Promise<string[]> {
+  private async seedWorktree(cwd: string, runId: string): Promise<string[]> {
     const notes: string[] = [];
     const config = await seedAgentConfigLocalLayer(this.repoRoot, cwd).catch(() => []);
     if (config.length > 0) notes.push(`seeded personal agent config: ${config.join(', ')}`);
-    const envFiles = await seedWorktreeEnvFiles(this.repoRoot, cwd).catch(() => []);
+    const envFiles = await seedWorktreeEnvFiles(this.repoRoot, cwd, process.env, runId).catch(() => []);
     if (envFiles.length > 0) notes.push(`seeded env files from the main checkout: ${envFiles.join(', ')}`);
     return notes;
   }
@@ -4312,7 +4312,7 @@ export class RunManager {
         // The directory was deleted whole, untracked files included — so the tree needs what a
         // new worktree needs, or the resumed task comes back unable to start its own app.
         const rebuilt = this.store.getRun(runId)?.worktreePath;
-        for (const message of rebuilt ? await this.seedWorktree(rebuilt) : []) {
+        for (const message of rebuilt ? await this.seedWorktree(rebuilt, runId) : []) {
           this.store.appendEvent(runId, { type: 'note', message });
         }
       }
@@ -5070,7 +5070,8 @@ export class RunManager {
         emit({ type: 'note', message: `worktree ready — branch ${wt.branch} (base ${wt.baseBranch})` });
         if (wt.seeded?.length) emit({ type: 'note', message: `seeded personal agent config: ${wt.seeded.join(', ')}` });
         // The coordinator seeds the agent-config layer; env files come from this manager's own root.
-        const envFiles = await seedWorktreeEnvFiles(this.repoRoot, state.cwd).catch(() => []);
+        // With setup scripts the coordinator seeded (and rendered) before they ran; this finds them present.
+        const envFiles = [...(wt.seededEnv ?? []), ...await seedWorktreeEnvFiles(this.repoRoot, state.cwd, process.env, runId).catch(() => [])];
         if (envFiles.length > 0) emit({ type: 'note', message: `seeded env files from the main checkout: ${envFiles.join(', ')}` });
         this.armAutosave(runId, state);
       } catch (err) {

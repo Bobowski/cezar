@@ -1,7 +1,9 @@
 import { execFile } from 'node:child_process';
-import { copyFile, lstat, mkdir, readdir, rm } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { ensureExcluded, resolveCommonGitDir } from './agent-config/seed.ts';
+import { EnvReferenceError, hasDirectives, renderEnvFiles } from './env-references.ts';
+import { acquireTaskSlot } from './task-slot.ts';
 
 /**
  * Seed the project's gitignored env files into a run's worktree (spec
@@ -109,6 +111,45 @@ async function findEnvFiles(root: string): Promise<string[]> {
   return found;
 }
 
+/** The project's env files git ignores — the ones Settings → Environment lists and a task gets. */
+export async function projectEnvFiles(root: string): Promise<string[]> {
+  return ignoredAmong(root, await findEnvFiles(root));
+}
+
+/** Write `text` over `abs` privately and atomically, as a save from Settings does. */
+export async function writeEnvText(abs: string, text: string): Promise<void> {
+  const tmp = `${abs}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await writeFile(tmp, text, { mode: 0o600, flag: 'wx' });
+    await chmod(tmp, 0o600);
+    await rename(tmp, abs);
+  } finally {
+    await rm(tmp, { force: true }).catch(() => {});
+  }
+}
+
+/**
+ * Render the `#cezar` directives of the files just seeded, for this task (spec
+ * 2026-10-21-env-references). The slot is the one `taskSlotEnv` hands the task's processes —
+ * `acquireTaskSlot` is idempotent for (run, worktree) — so the file and the agent agree. On a
+ * reference that cannot be rendered every file keeps the main checkout's values, and the
+ * returned note says why.
+ */
+async function renderSeededEnvFiles(repoRoot: string, worktreeCwd: string, seeded: string[], runId: string | undefined, env: NodeJS.ProcessEnv): Promise<{ rendered: string[]; problem?: string }> {
+  const texts = new Map<string, string>();
+  for (const rel of seeded) texts.set(rel, await readFile(join(worktreeCwd, rel), 'utf8'));
+  if (![...texts.values()].some(hasDirectives)) return { rendered: [] };
+  const slot = runId ? acquireTaskSlot(runId, worktreeCwd, env) : undefined;
+  try {
+    const changed = renderEnvFiles(texts, { projectRoot: repoRoot, worktreePath: worktreeCwd, slot, runId });
+    for (const [rel, text] of changed) await writeEnvText(join(worktreeCwd, rel), text);
+    return { rendered: [...changed.keys()] };
+  } catch (error) {
+    if (error instanceof EnvReferenceError) return { rendered: [], problem: error.message };
+    throw error;
+  }
+}
+
 /** The subset git ignores in `cwd`. Tracked files are never reported — they are not subject to
  *  ignore rules — which is the property the seed relies on. */
 export async function ignoredAmong(cwd: string, paths: string[]): Promise<string[]> {
@@ -144,6 +185,8 @@ export async function seedWorktreeEnvFiles(
   repoRoot: string,
   worktreeCwd: string,
   env: NodeJS.ProcessEnv = process.env,
+  /** The task the worktree belongs to: its slot fills `${{ task.* }}` references. */
+  runId?: string,
 ): Promise<string[]> {
   if (!worktreeEnvSeedEnabled(env) || worktreeCwd === repoRoot) return [];
   try {
@@ -171,7 +214,11 @@ export async function seedWorktreeEnvFiles(
         await rm(dest, { force: true }).catch(() => {});
       }
     }
-    return seeded;
+    if (seeded.length === 0) return seeded;
+    const { rendered, problem } = await renderSeededEnvFiles(repoRoot, worktreeCwd, seeded, runId, env).catch(() => ({ rendered: [] as string[], problem: 'could not be read back' }));
+    const notes = seeded.map((rel) => (rendered.includes(rel) ? `${rel} (task values)` : rel));
+    if (problem) notes.push(`env references kept at the main checkout's values — ${problem}`);
+    return notes;
   } catch {
     return [];
   }

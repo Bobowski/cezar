@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { chmod, copyFile, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { ensureExcluded, resolveCommonGitDir } from './agent-config/seed.ts';
-import { EnvReferenceError, hasDirectives, renderEnvFiles } from './env-references.ts';
+import { EnvReferenceError, adoptDirectives, hasDirectives, renderEnvFiles } from './env-references.ts';
 import { acquireTaskSlot } from './task-slot.ts';
 
 /**
@@ -222,4 +222,41 @@ export async function seedWorktreeEnvFiles(
   } catch {
     return [];
   }
+}
+
+/**
+ * "Re-render in this task" (spec 2026-10-21-env-references §4): bring the main checkout's
+ * `#cezar` directives into the task's own env files and render them for the task's slot. Only
+ * the directive-owned assignments change; a file the task does not have is reported, not copied.
+ * Throws `EnvReferenceError` when a reference cannot be rendered — nothing is written then.
+ */
+export async function rerenderTaskEnvFiles(
+  repoRoot: string,
+  worktreeCwd: string,
+  runId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ changed: string[]; missing: string[]; slot: number | null }> {
+  const original = new Map<string, string>();
+  const texts = new Map<string, string>();
+  const missing: string[] = [];
+  for (const rel of await projectEnvFiles(repoRoot)) {
+    const main = await readFile(join(repoRoot, rel), 'utf8').catch(() => null);
+    const task = await readFile(join(worktreeCwd, rel), 'utf8').catch(() => null);
+    if (task === null) {
+      if (main !== null && hasDirectives(main)) missing.push(rel);
+      continue;
+    }
+    original.set(rel, task);
+    texts.set(rel, main !== null && hasDirectives(main) ? adoptDirectives(rel, main, task) : task);
+  }
+  const slot = acquireTaskSlot(runId, worktreeCwd, env);
+  const rendered = renderEnvFiles(texts, { projectRoot: repoRoot, worktreePath: worktreeCwd, slot, runId });
+  const changed: string[] = [];
+  for (const [rel, text] of texts) {
+    const next = rendered.get(rel) ?? text;
+    if (next === original.get(rel)) continue;
+    await writeEnvText(join(worktreeCwd, rel), next);
+    changed.push(rel);
+  }
+  return { changed, missing, slot: slot ?? null };
 }

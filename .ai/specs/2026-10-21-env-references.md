@@ -1,6 +1,6 @@
 # Env references — `${{ … }}` values that cezar fills per task
 
-> Status: **phases 1–2 implemented (2026-10-21)** — resolver, `#cezar` directives, render on save and on seeding; the variables view edits references (Add reference menu, rendered value per row, main checkout or a chosen task) through `POST /env-files/render`. Phase 3 (re-render action) open. Owner answers to §10: 1 `${{ … }}`, 2 annotated `.env`, 3 explicit re-render only, 4 fancy-fence-panels keeps `alignStation` for now. Branch: `brutus`.
+> Status: **phases 1–3 implemented (2026-10-21)** — resolver, `#cezar` directives, render on save and on seeding; the variables view edits references (Add reference menu, rendered value per row, main checkout or a chosen task) through `POST /env-files/render`. Phase 3: **Re-render in this task** beside the task picker (`POST /env-files/rerender`). Owner answers to §10: 1 `${{ … }}`, 2 annotated `.env`, 3 explicit re-render only, 4 fancy-fence-panels keeps `alignStation` for now. Branch: `brutus`.
 > Builds on: `2026-10-12-project-env-files.md` (Settings → Environment, the variables view),
 > `2026-10-10-worktree-env-seeding.md` (how env files reach a task), `2026-10-10-task-slots.md`
 > (`CEZ_TASK_SLOT`, `CEZ_TASK_PORT_BASE`), `2026-10-10-worktree-lifecycle-events.md` (seeding runs
@@ -129,6 +129,7 @@ Phase 1 shipped without contract changes: `PUT /env-files` takes the annotated t
 the main checkout values into it (refusing an unrenderable directive with 400 and its line), and
 re-renders other env files that read from it. The parser moved to `packages/contract/src/dotenv-lines.ts`.
 Phase 2 added `POST /env-files/render` ({path, content, runId?} → {rendered, values, slot}); a task's slot is read without being taken (`peekTaskSlot`). `EnvFileContent` did not need new fields: the cockpit parses directives from the text it already has.
+Phase 3 added `POST /env-files/rerender` ({runId} → {changed, missing, slot}): the main checkout's directives are adopted into the task's own copies (`adoptDirectives` moves only directive lines, so the task's hand edits stay), rendered for its slot (taken if it holds none, like seeding) and written; an unrenderable reference writes nothing. The action sits beside the editor's task picker rather than a task menu — that is where the user sees what the task would get — and is disabled while the file has unsaved edits, since it reads the saved files.
 
 - `packages/contract/src/env-files.ts`: `EnvFileContent` gains `directives: { key, source }[]` and
   `rendered: string` (the file as this checkout's context renders it). `PUT /env-files` is

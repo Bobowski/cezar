@@ -1,7 +1,7 @@
 import { BracesIcon, CheckIcon, EyeIcon, EyeOffIcon, PlusIcon, Trash2Icon } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 
-import { renderEnvFile } from '@/api/client'
+import { renderEnvFile, rerenderEnvFiles } from '@/api/client'
 import { useRuns } from '@/api/queries'
 import {
   ENV_KEY_PATTERN,
@@ -25,6 +25,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
+import { toast } from '@/components/ui/toaster'
 import { SettingsNote, SettingsSelect } from './settings-field'
 
 /** Masked like a password, but not one: password managers must not offer to save it. */
@@ -42,12 +43,14 @@ export interface OtherEnvFile { path: string; variables: string[] }
  * `#cezar` directive above the line, and shows what it renders to — in the main checkout, or for
  * a chosen task — from a dry render on the server.
  */
-export function EnvVariablesEditor({ path, text, template, otherFiles = [], onChange }: {
+export function EnvVariablesEditor({ path, text, template, otherFiles = [], saved = true, onChange }: {
   path: string
   text: string
   template: string | null
   /** The project's other env files and their variable names, for cross-file references. */
   otherFiles?: OtherEnvFile[]
+  /** The text is what the main checkout holds — re-rendering a task reads the saved files. */
+  saved?: boolean
   onChange: (text: string) => void
 }) {
   const lines = useMemo(() => parseEnv(text), [text])
@@ -77,6 +80,19 @@ export function EnvVariablesEditor({ path, text, template, otherFiles = [], onCh
     { value: MAIN, label: 'Main checkout' },
     ...(tasks.data ?? []).map((run) => ({ value: run.id, label: run.title || run.id.slice(0, 8) })),
   ]
+
+  // Spec §4: never automatic — a task may have changed its env on purpose.
+  const [rerendering, setRerendering] = useState(false)
+  const rerender = () => {
+    setRerendering(true)
+    rerenderEnvFiles({ runId: context })
+      .then(({ changed, missing }) => {
+        const note = missing.length > 0 ? ` · not in the task: ${missing.join(', ')}` : ''
+        toast(changed.length > 0 ? `Re-rendered ${changed.join(', ')} in this task${note}` : `The task already has these values${note}`)
+      })
+      .catch((error: Error) => toast(error.message, { tone: 'danger' }))
+      .finally(() => setRerendering(false))
+  }
 
   const toggle = (key: string) => setRevealed((current) => {
     const next = new Set(current)
@@ -116,7 +132,21 @@ export function EnvVariablesEditor({ path, text, template, otherFiles = [], onCh
       {usesReferences ? (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <SettingsNote>References show what they render to for</SettingsNote>
-          <SettingsSelect aria-label="Render references for" size="sm" value={context} options={contextOptions} onChange={setContext} />
+          <div className="flex items-center gap-2">
+            <SettingsSelect aria-label="Render references for" size="sm" value={context} options={contextOptions} onChange={setContext} />
+            {context !== MAIN ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={!saved || rerendering}
+                title={saved ? 'Write these values into the task’s own env files' : 'Save the file first — a task is re-rendered from the saved files'}
+                onClick={rerender}
+              >
+                Re-render in this task
+              </Button>
+            ) : null}
+          </div>
         </div>
       ) : null}
       {usesReferences && context !== MAIN && !preview.loading && !preview.error && preview.slot === null ? (

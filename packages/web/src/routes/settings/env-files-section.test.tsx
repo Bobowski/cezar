@@ -17,8 +17,8 @@ const LIST: EnvFilesList = {
   suggestions: ['apps/cms/.env'],
 }
 
-function setup(options: { list?: EnvFilesList; putStatus?: number; content?: string; renderReply?: (body: { content: string; runId?: string }) => Response } = {}) {
-  const { list = LIST, putStatus = 200, content = 'DATABASE_URL=postgres://secret\n', renderReply } = options
+function setup(options: { list?: EnvFilesList; putStatus?: number; content?: string; renderReply?: (body: { content: string; runId?: string }) => Response; runs?: unknown[] } = {}) {
+  const { list = LIST, putStatus = 200, content = 'DATABASE_URL=postgres://secret\n', renderReply, runs = [] } = options
   const calls: { method: string; url: string; body?: string }[] = []
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
@@ -37,7 +37,8 @@ function setup(options: { list?: EnvFilesList; putStatus?: number; content?: str
       const body = JSON.parse(String(init?.body)) as { content: string; runId?: string }
       return renderReply ? renderReply(body) : new Response(JSON.stringify({ rendered: body.content, values: [], slot: null }), { status: 200 })
     }
-    if (method === 'GET' && url.includes('/runs')) return new Response(JSON.stringify([]), { status: 200 })
+    if (method === 'POST' && url.includes('/env-files/rerender')) return new Response(JSON.stringify({ changed: ['apps/api/.env'], missing: [], slot: 2 }), { status: 200 })
+    if (method === 'GET' && url.includes('/runs')) return new Response(JSON.stringify(runs), { status: 200 })
     if (method === 'GET') return new Response(JSON.stringify(list), { status: 200 })
     if (method === 'PUT' && putStatus !== 200) return new Response(JSON.stringify({ error: 'changed on disk' }), { status: putStatus })
     if (method === 'PUT') return new Response(JSON.stringify({ path: 'apps/api/.env', content: 'x', version: 'v2', template: null }), { status: 200 })
@@ -205,6 +206,28 @@ describe('Environment settings', () => {
     await screen.findByText('apps/api/.env')
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
     expect((await screen.findByRole('alert')).textContent).toContain('NOPE is not set')
+  })
+
+  it('re-renders a chosen task from the saved file, and only once the draft is saved', async () => {
+    const calls = setup({
+      content: '#cezar PORT=${{ task.port(0, 9000) }}\nPORT=9000\n',
+      runs: [{ id: 'run-abc12345', title: 'Fix cart', status: 'review', worktreePath: '/wt/abc' }],
+    })
+    await screen.findByText('apps/api/.env')
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByLabelText('Value of PORT')
+    expect(screen.queryByRole('button', { name: 'Re-render in this task' })).toBeNull()
+    Element.prototype.scrollIntoView = vi.fn()
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Render references for' }), { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: 'Fix cart' }))
+    const button = await screen.findByRole('button', { name: 'Re-render in this task' }) as HTMLButtonElement
+    fireEvent.change(screen.getByLabelText('Value of PORT'), { target: { value: '${{ task.port(1, 9000) }}' } })
+    expect(button.disabled).toBe(true)
+    fireEvent.change(screen.getByLabelText('Value of PORT'), { target: { value: '${{ task.port(0, 9000) }}' } })
+    expect(button.disabled).toBe(false)
+    fireEvent.click(button)
+    await waitFor(() => expect(calls.some((call) => call.url.includes('/env-files/rerender'))).toBe(true))
+    expect(JSON.parse(calls.find((call) => call.url.includes('/env-files/rerender'))?.body ?? '{}')).toEqual({ runId: 'run-abc12345' })
   })
 
   it('offers no editing where the cockpit serves names only', async () => {

@@ -200,6 +200,7 @@ export function EnvFilesSection() {
                 path={open.path}
                 text={draft}
                 template={open.template}
+                saved={draft === open.content}
                 otherFiles={files.filter((file) => file.exists && file.path !== open.path).map((file) => ({ path: file.path, variables: file.variables }))}
                 onChange={(text) => { setDraft(text); setError(null) }}
               />

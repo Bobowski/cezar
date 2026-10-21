@@ -1,7 +1,7 @@
 import type { InferRequestType, InferResponseType } from 'hono/client';
 import { hc } from 'hono/client';
 import { expect, it } from 'vitest';
-import type { EnvFileContent, EnvFileQuery, EnvFileRender, EnvFilesErrorResponse, EnvFilesList, RenderEnvFileInput, SetEnvFileInput } from '@open-mercato/cezar-contract';
+import type { EnvFileContent, EnvFileQuery, EnvFileRender, EnvFilesRerender, RerenderEnvFilesInput, EnvFilesErrorResponse, EnvFilesList, RenderEnvFileInput, SetEnvFileInput } from '@open-mercato/cezar-contract';
 import type { AppType } from './app-type.ts';
 
 const client = hc<AppType>('http://127.0.0.1');
@@ -27,6 +27,11 @@ type Checks = [
   Assert<Mutual<EnvFilesErrorResponse, InferResponseType<typeof unscoped.render.$post, 400>>>,
   Assert<Mutual<EnvFilesErrorResponse, InferResponseType<typeof unscoped.render.$post, 404>>>,
   Assert<Mutual<EnvFilesErrorResponse, InferResponseType<typeof unscoped.render.$post, 409>>>,
+  Assert<Mutual<EnvFilesRerender, InferResponseType<typeof scoped.rerender.$post, 200>>>,
+  Assert<Mutual<RerenderEnvFilesInput, InferRequestType<typeof scoped.rerender.$post>['json']>>,
+  Assert<Mutual<EnvFilesErrorResponse, InferResponseType<typeof unscoped.rerender.$post, 400>>>,
+  Assert<Mutual<EnvFilesErrorResponse, InferResponseType<typeof unscoped.rerender.$post, 404>>>,
+  Assert<Mutual<EnvFilesErrorResponse, InferResponseType<typeof unscoped.rerender.$post, 409>>>,
 ];
 it('pins the env-files route types to the contract', () => {
   const checks: Checks | undefined = undefined;

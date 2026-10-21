@@ -7,7 +7,7 @@ import {
   trackerCandidatesQuerySchema, trackerListQuerySchema, trackerSearchQuerySchema, trackerItemQuerySchema, trackerReadScope, trackerRunLinkInputSchema, trackerRunIssueQuerySchema, trackerTransitionInputSchema,
   trackerCredentialsSchema, trackerConnectionCopyInputSchema, type TrackerConnectionSource, trackerItemParamsSchema, trackerAssociationInputSchema, type TrackerChangedEvent,
   secretParamsSchema, secretValueInputSchema, type SecretsList, type SecretValueInput,
-  envFileQuerySchema, renderEnvFileSchema, setEnvFileSchema, type EnvFilesList,
+  envFileQuerySchema, renderEnvFileSchema, rerenderEnvFilesSchema, setEnvFileSchema, type EnvFilesList,
   codeSearchQuerySchema, codeWatchQuerySchema, repoFilePathQuerySchema, type CodeWatch,
   repoSyncQuerySchema, type RepoPullResponse, type RepoSync,
   PROJECT_ICON_MAX_BYTES, setProjectIconSchema, type ProjectIconCandidates,
@@ -18,7 +18,7 @@ import {
 } from '@open-mercato/cezar-contract';
 import { SecretStore, SecretsError, type SecretScopeRef } from '../workspace/secrets.ts';
 import { listEnvFiles, previewEnvFile, readEnvFile, removeEnvFile, writeEnvFile } from '../env-files.ts';
-import type { EnvRenderContext } from '../env-references.ts';
+import { EnvReferenceError, type EnvRenderContext } from '../env-references.ts';
 import { discoverServiceCandidates } from '../services/discover.ts';
 import { listGithubRepos, originSlug, type GhApiRunner } from './github-repos.ts';
 import {
@@ -29,7 +29,7 @@ import { findIconCandidates, readProjectIcon, removeProjectIcons, saveProjectIco
 import { searchCheckout } from './code-search.ts';
 import { refreshRepoSync, watchRepoSync } from '../git-sync.ts';
 import { checkoutWatchSupported, watchCheckout } from './checkout-watch.ts';
-import { ignoredAmong } from '../worktree-env.ts';
+import { ignoredAmong, rerenderTaskEnvFiles } from '../worktree-env.ts';
 import { projectTerminalOwner } from './terminal/sessions.ts';
 import { ProjectServices, type ServiceProject } from '../services/manager.ts';
 import { E2E_SETUP_TASK, e2eCredentialsAmong, e2eSetupWorkflow, latestE2eSetupRun, readE2eStatus, setupInFlight } from '../e2e-setup.ts';
@@ -7095,6 +7095,19 @@ export function createApp(deps: ServerDeps) {
       const preview = await previewEnvFile(root, path, content, context);
       if (!preview.ok) return c.json({ error: preview.error }, preview.status);
       return c.json(preview.value, 200);
+    })
+    .post('/env-files/rerender', jsonZodValidator(rerenderEnvFilesSchema), async (c) => {
+      if (!trustedOperator(process.env, bindHost)) return c.json(envFilesRefusal, 409);
+      const { runId } = c.req.valid('json');
+      const root = c.get('project').root;
+      const worktree = c.get('project').store.getRun(runId)?.worktreePath;
+      if (!worktree || !existsSync(worktree)) return c.json({ error: `task ${runId} has no worktree in this project` }, 404);
+      try {
+        return c.json(await rerenderTaskEnvFiles(root, worktree, runId), 200);
+      } catch (error) {
+        if (error instanceof EnvReferenceError) return c.json({ error: error.message }, 400);
+        throw error;
+      }
     })
     .put('/env-files', jsonZodValidator(setEnvFileSchema), async (c) => {
       if (!trustedOperator(process.env, bindHost)) return c.json(envFilesRefusal, 409);

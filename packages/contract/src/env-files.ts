@@ -111,5 +111,20 @@ export const envFileRenderSchema = z.object({
 });
 export type EnvFileRender = z.infer<typeof envFileRenderSchema>;
 
+/**
+ * `POST /env-files/rerender` (spec 2026-10-21-env-references §4): bring the main checkout's
+ * `#cezar` directives into a task's env files and render them for its slot. `changed` are the
+ * files written; `missing` the files with references the task has no copy of.
+ */
+export const rerenderEnvFilesSchema = z.object({ runId: z.string().min(1).max(64) });
+export type RerenderEnvFilesInput = z.infer<typeof rerenderEnvFilesSchema>;
+
+export const envFilesRerenderSchema = z.object({
+  changed: z.array(z.string()),
+  missing: z.array(z.string()),
+  slot: z.number().int().nullable(),
+});
+export type EnvFilesRerender = z.infer<typeof envFilesRerenderSchema>;
+
 export const envFilesErrorSchema = z.object({ error: z.string() }).strict();
 export type EnvFilesErrorResponse = z.infer<typeof envFilesErrorSchema>;

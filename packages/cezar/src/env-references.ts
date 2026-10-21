@@ -106,6 +106,25 @@ export function readDirectives(path: string, text: string): Directive[] {
 
 export const hasDirectives = (text: string): boolean => /^#cezar\s/m.test(text);
 
+/**
+ * Bring the main checkout's directives into a task's copy of the file, for "Re-render in this
+ * task" (spec §4). Only directive lines move — each lands right above its key's assignment, or
+ * at the end for the render to fill — so every value the task changed by hand stays.
+ */
+export function adoptDirectives(path: string, mainText: string, taskText: string): string {
+  let lines = parseEnv(taskText);
+  for (const directive of readDirectives(path, mainText)) {
+    const raw = `${DIRECTIVE_PREFIX}${directive.key}=${directive.source}`;
+    const own = lines.findIndex((line) => line.kind === 'other' && DIRECTIVE.exec(line.raw.trimEnd())?.[1] === directive.key);
+    if (own >= 0) lines = lines.filter((_, index) => index !== own);
+    const at = lines.findIndex((line) => line.kind === 'var' && line.key === directive.key);
+    const directiveLine: EnvLine = { kind: 'other', raw };
+    // A key the task lacks gets its assignment from the render that follows (renderLines).
+    lines = at >= 0 ? [...lines.slice(0, at), directiveLine, ...lines.slice(at)] : [...lines, directiveLine];
+  }
+  return serializeEnv(lines);
+}
+
 function simpleValue(ref: EnvReference, context: EnvRenderContext): string {
   const inTask = context.slot !== undefined;
   switch (ref.kind) {

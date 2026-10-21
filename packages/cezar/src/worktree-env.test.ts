@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { taskSlotEnv } from './task-slot.ts';
-import { seedWorktreeEnvFiles } from './worktree-env.ts';
+import { rerenderTaskEnvFiles, seedWorktreeEnvFiles } from './worktree-env.ts';
 
 let repo: string;
 let wt: string;
@@ -172,5 +172,40 @@ describe('seedWorktreeEnvFiles', () => {
     } finally {
       rmSync(plain, { recursive: true, force: true });
     }
+  });
+});
+
+describe('rerenderTaskEnvFiles — "Re-render in this task" (spec 2026-10-21-env-references §4)', () => {
+  const env = { CEZ_HOME: process.env.CEZ_HOME };
+
+  it('brings a reference added after the task was seeded into its copy, keeping the task\'s own edits', async () => {
+    put(repo, '.env', 'PORT=9000\nDB=app\n');
+    makeWorktree();
+    await seedWorktreeEnvFiles(repo, wt, env, 'run-3');
+    // The task changed a value by hand; the main checkout then gained references.
+    put(wt, '.env', 'PORT=9000\nDB=app\nDEBUG=1\n');
+    put(repo, '.env', '#cezar PORT=${{ task.port(0, 9000) }}\nPORT=9000\nDB=app\n#cezar NAME=app${{ task.suffix }}\nNAME=app\n');
+
+    const result = await rerenderTaskEnvFiles(repo, wt, 'run-3', env);
+    const { CEZ_TASK_SLOT: slot, CEZ_TASK_PORT_BASE: base } = taskSlotEnv('run-3', wt, env);
+    expect(result).toEqual({ changed: ['.env'], missing: [], slot: Number(slot) });
+    expect(readFileSync(join(wt, '.env'), 'utf8')).toBe(`#cezar PORT=\${{ task.port(0, 9000) }}\nPORT=${base}\nDB=app\nDEBUG=1\n#cezar NAME=app\${{ task.suffix }}\nNAME=app_${slot}\n`);
+    expect(readFileSync(join(repo, '.env'), 'utf8')).toContain('PORT=9000\n');
+  });
+
+  it('reports a referencing file the task has no copy of, and writes nothing twice', async () => {
+    makeWorktree();
+    put(repo, '.env', '#cezar A=${{ task.slot }}\nA=0\n');
+    expect(await rerenderTaskEnvFiles(repo, wt, 'run-4', env)).toMatchObject({ changed: [], missing: ['.env'] });
+    expect(existsSync(join(wt, '.env'))).toBe(false);
+  });
+
+  it('throws on a reference it cannot render, leaving the task file as it was', async () => {
+    put(repo, '.env', 'A=1\n');
+    makeWorktree();
+    await seedWorktreeEnvFiles(repo, wt, env, 'run-5');
+    put(repo, '.env', '#cezar A=${{ NOPE }}\nA=1\n');
+    await expect(rerenderTaskEnvFiles(repo, wt, 'run-5', env)).rejects.toThrow(/NOPE is not set/);
+    expect(readFileSync(join(wt, '.env'), 'utf8')).toBe('A=1\n');
   });
 });

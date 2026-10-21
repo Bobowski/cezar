@@ -12,8 +12,6 @@ import { bareButton } from '@/components/bare-control'
 
 /** System Settings ▸ Privacy & Security ▸ Files & Folders. */
 const PRIVACY_SETTINGS_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders'
-const errorAction =
-  'inline-flex h-8 items-center gap-1.5 rounded-md border border-input bg-card px-2.5 font-medium text-foreground shadow-2xs hover:bg-muted hover:text-foreground'
 
 /** The folder a failed listing can step back to — the same path minus its last segment. */
 function parentOf(path: string): string | null {
@@ -94,17 +92,19 @@ export function FolderBrowser({
           ) : null}
           <div className="flex flex-wrap gap-2 text-[13px]">
             {path !== null && parentOf(path) !== null ? (
-              <Button variant="ghost" type="button" data-slot="fs-error-back" onClick={() => onEnter(parentOf(path)!)} className={cn(bareButton, errorAction)}>
+              <Button variant="outline" size="sm" type="button" data-slot="fs-error-back" onClick={() => onEnter(parentOf(path)!)}>
                 <CornerLeftUpIcon className="size-3.5" aria-hidden />
                 Back
               </Button>
             ) : null}
             {listing.error instanceof ApiError && listing.error.status === 403 ? (
               <>
-                <a data-slot="fs-privacy-settings" href={PRIVACY_SETTINGS_URL} target="_blank" rel="noreferrer" className={errorAction}>
-                  Open Privacy Settings
-                </a>
-                <Button variant="ghost" type="button" data-slot="fs-retry" onClick={() => void listing.refetch()} className={cn(bareButton, errorAction)}>
+                <Button variant="outline" size="sm" asChild>
+                  <a data-slot="fs-privacy-settings" href={PRIVACY_SETTINGS_URL} target="_blank" rel="noreferrer">
+                    Open Privacy Settings
+                  </a>
+                </Button>
+                <Button variant="outline" size="sm" type="button" data-slot="fs-retry" onClick={() => void listing.refetch()}>
                   Try again
                 </Button>
               </>

@@ -247,6 +247,26 @@ describe('the start recipe editor', () => {
     expect(await screen.findByRole('button', { name: 'Start app' })).not.toBeNull()
   })
 
+  it('switches to the personal recipe card, fills it, and saves it as personal', async () => {
+    api.getStartApp.mockResolvedValue({ project: { services: ['npm run dev'] }, personal: null, personalAvailable: true })
+    api.setStartApp.mockImplementation(async (body: { recipe: unknown }) => ({
+      project: { services: ['npm run dev'] },
+      personal: body.recipe,
+      personalAvailable: true,
+    }))
+    render(<RunAppPanel runId="r1" projectId="cezar" onOpen={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: /start recipe/i }))
+    const team = await screen.findByRole('radio', { name: /Team/ })
+    await waitFor(() => expect(team.getAttribute('aria-checked')).toBe('true'))
+    fireEvent.click(screen.getByRole('radio', { name: /Only me/ }))
+    expect(screen.getByRole('radio', { name: /Only me/ }).getAttribute('aria-checked')).toBe('true')
+    fireEvent.change(screen.getByRole('textbox', { name: 'Service 1' }), { target: { value: 'npm run dev -- --port 4000' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(api.setStartApp).toHaveBeenCalledWith({ scope: 'personal', recipe: { services: ['npm run dev -- --port 4000'] } }),
+    )
+  })
+
   it('refuses an address that is not http(s), and offers no personal recipe outside the registry', async () => {
     api.getStartApp.mockResolvedValue({ project: null, personal: null, personalAvailable: false })
     render(<RunAppPanel runId="r1" projectId="cezar" onOpen={() => {}} />)

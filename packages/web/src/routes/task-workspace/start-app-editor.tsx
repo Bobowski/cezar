@@ -12,7 +12,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { Field, FieldDescription, FieldError, FieldLabel, FieldLegend, FieldSet } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 
 const MAX_SERVICES = 5
@@ -111,40 +113,48 @@ export function StartAppEditor({
         </DialogHeader>
 
         <div className="flex flex-col gap-4">
-          <div role="radiogroup" aria-label="Who uses this recipe" className="grid grid-cols-2 gap-2">
+          {/* Radio cards, as in Settings → Appearance: a single-mode ToggleGroup is a real radiogroup. */}
+          <ToggleGroup
+            type="single"
+            aria-label="Who uses this recipe"
+            value={scope}
+            // Radix reports '' when the chosen card is clicked again; a radio card cannot be released.
+            onValueChange={(next) => {
+              if (next !== 'project' && next !== 'personal') return
+              setScope(next)
+              fill(state?.[next] ?? null)
+            }}
+            spacing={2}
+            className="grid w-full grid-cols-2 gap-2"
+          >
             {SCOPES.map((entry) => {
               const disabled = entry.scope === 'personal' && state?.personalAvailable === false
               const selected = scope === entry.scope
               return (
-                <button
+                <ToggleGroupItem
                   key={entry.scope}
-                  type="button"
-                  role="radio"
-                  aria-checked={selected}
+                  value={entry.scope}
                   disabled={disabled}
-                  onClick={() => {
-                    setScope(entry.scope)
-                    fill(state?.[entry.scope] ?? null)
-                  }}
                   className={cn(
-                    'flex flex-col gap-1 rounded-md border p-2.5 text-left text-xs transition-colors disabled:opacity-50',
-                    selected ? 'border-foreground/40 bg-muted' : 'border-border hover:bg-muted/50',
+                    'flex h-auto w-full min-w-0 flex-col items-start gap-1 rounded-md border bg-card p-2.5 text-left text-xs whitespace-normal shadow-xs transition-colors',
+                    'hover:bg-card hover:text-foreground data-[state=on]:bg-muted data-[state=on]:text-foreground',
+                    selected ? 'border-foreground/40' : 'border-border hover:border-soft-foreground',
                   )}
                 >
                   <span className="font-medium text-foreground">
                     {entry.title}
                     {state?.[entry.scope] ? <span className="ml-1.5 font-normal text-muted-foreground">· saved</span> : null}
                   </span>
-                  <span className="text-muted-foreground">
+                  <span className="font-normal text-muted-foreground">
                     {disabled ? 'This project is not in your project list.' : entry.detail}
                   </span>
-                </button>
+                </ToggleGroupItem>
               )
             })}
-          </div>
+          </ToggleGroup>
 
-          <fieldset className="flex flex-col gap-1.5">
-            <legend className="mb-1.5 text-xs font-medium text-foreground">Services</legend>
+          <FieldSet className="gap-1.5">
+            <FieldLegend variant="label" className="mb-1.5 text-xs">Services</FieldLegend>
             {services.map((service, index) => (
               <div key={index} className="flex items-center gap-1.5">
                 <Input
@@ -180,11 +190,12 @@ export function StartAppEditor({
               <PlusIcon aria-hidden="true" />
               Add service
             </Button>
-          </fieldset>
+          </FieldSet>
 
-          <label className="flex flex-col gap-1.5 text-xs">
-            <span className="font-medium text-foreground">Address to show (optional)</span>
+          <Field className="gap-1.5" data-invalid={addressInvalid || undefined}>
+            <FieldLabel htmlFor="start-app-address" className="text-xs">Address to show (optional)</FieldLabel>
             <Input
+              id="start-app-address"
               value={url}
               onChange={(event) => setUrl(event.target.value)}
               placeholder="http://localhost:5173 — empty: the first address a service prints"
@@ -193,14 +204,10 @@ export function StartAppEditor({
               spellCheck={false}
               className="h-8 font-mono text-xs md:text-xs"
             />
-            {addressInvalid ? <span className="text-danger">Start it with http:// or https://</span> : null}
-          </label>
+            {addressInvalid ? <FieldDescription className="text-xs text-danger">Start it with http:// or https://</FieldDescription> : null}
+          </Field>
 
-          {error ? (
-            <p role="alert" className="text-xs text-danger">
-              {error}
-            </p>
-          ) : null}
+          {error ? <FieldError className="text-xs">{error}</FieldError> : null}
         </div>
 
         <DialogFooter className="gap-2 sm:justify-between">

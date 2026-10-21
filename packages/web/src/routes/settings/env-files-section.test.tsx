@@ -57,7 +57,7 @@ describe('Environment settings', () => {
     const calls = setup()
     await screen.findByText('apps/api/.env')
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Raw text' }))
+    fireEvent.click(await screen.findByRole('radio', { name: 'Raw text' }))
     const editor = await screen.findByLabelText('Contents of apps/api/.env') as HTMLTextAreaElement
     expect(editor.value).toBe('DATABASE_URL=postgres://secret\n')
     fireEvent.change(editor, { target: { value: 'DATABASE_URL=postgres://new\n' } })
@@ -71,7 +71,7 @@ describe('Environment settings', () => {
     setup({ putStatus: 409 })
     await screen.findByText('apps/api/.env')
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Raw text' }))
+    fireEvent.click(await screen.findByRole('radio', { name: 'Raw text' }))
     const editor = await screen.findByLabelText('Contents of apps/api/.env') as HTMLTextAreaElement
     fireEvent.change(editor, { target: { value: 'PASTED=1\n' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save file' }))
@@ -83,7 +83,7 @@ describe('Environment settings', () => {
     setup()
     await screen.findByText('apps/web/.env')
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Raw text' }))
+    fireEvent.click(await screen.findByRole('radio', { name: 'Raw text' }))
     const editor = await screen.findByLabelText('Contents of apps/web/.env') as HTMLTextAreaElement
     expect(editor.value).toBe('')
     fireEvent.click(screen.getByRole('button', { name: 'Start from the example' }))
@@ -136,7 +136,7 @@ describe('Environment settings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     fireEvent.click(await screen.findByRole('button', { name: /Add 1 missing from the example/ }))
     expect(screen.getByLabelText('Value of API_URL')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Raw text' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Raw text' }))
     expect((screen.getByLabelText('Contents of apps/web/.env') as HTMLTextAreaElement).value).toBe('API_URL=\n')
     expect(calls.some((call) => call.method === 'PUT')).toBe(false)
   })

@@ -10,6 +10,7 @@ import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from '@/components/ui/toaster'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { EnvVariablesEditor } from './env-variables-editor'
 import { SettingsGroup, SettingsNote, SettingsPane } from './settings-field'
 
@@ -179,13 +180,20 @@ export function EnvFilesSection() {
             description={open.version === null ? 'A new file. It is written private (0600) and never committed.' : 'Saved to the main checkout. Tasks that already have a worktree keep their own copy.'}
             bare
           >
-            <div className="flex gap-1" role="group" aria-label="Editor view">
-              {(['variables', 'raw'] as const).map((mode) => (
-                <Button key={mode} type="button" size="sm" variant={view === mode ? 'secondary' : 'ghost'} aria-pressed={view === mode} onClick={() => setView(mode)}>
-                  {mode === 'variables' ? 'Variables' : 'Raw text'}
-                </Button>
-              ))}
-            </div>
+            <ToggleGroup
+              type="single"
+              variant="outline"
+              size="sm"
+              aria-label="Editor view"
+              value={view}
+              onValueChange={(next) => {
+                // Radio semantics: re-clicking the shown view keeps it.
+                if (next === 'variables' || next === 'raw') setView(next)
+              }}
+            >
+              <ToggleGroupItem value="variables">Variables</ToggleGroupItem>
+              <ToggleGroupItem value="raw">Raw text</ToggleGroupItem>
+            </ToggleGroup>
             {view === 'variables' ? (
               <EnvVariablesEditor key={open.path} path={open.path} text={draft} template={open.template} onChange={(text) => { setDraft(text); setError(null) }} />
             ) : (

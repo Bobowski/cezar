@@ -10,6 +10,7 @@ import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from '@/components/ui/toaster'
+import { EnvVariablesEditor } from './env-variables-editor'
 import { SettingsGroup, SettingsNote, SettingsPane } from './settings-field'
 
 /** The line under a path: what is in the file, or what it is waiting for. Names only. */
@@ -32,6 +33,8 @@ export function EnvFilesSection() {
   const [draft, setDraft] = useState('')
   const [newPath, setNewPath] = useState('')
   const [error, setError] = useState<string | null>(null)
+  // Both views edit the same text, so switching between them loses nothing.
+  const [view, setView] = useState<'variables' | 'raw'>('variables')
 
   const refresh = (projectId: string | null) =>
     queryClient.invalidateQueries({ queryKey: queryKeys.envFiles.allFor(projectId ?? '') })
@@ -176,6 +179,16 @@ export function EnvFilesSection() {
             description={open.version === null ? 'A new file. It is written private (0600) and never committed.' : 'Saved to the main checkout. Tasks that already have a worktree keep their own copy.'}
             bare
           >
+            <div className="flex gap-1" role="group" aria-label="Editor view">
+              {(['variables', 'raw'] as const).map((mode) => (
+                <Button key={mode} type="button" size="sm" variant={view === mode ? 'secondary' : 'ghost'} aria-pressed={view === mode} onClick={() => setView(mode)}>
+                  {mode === 'variables' ? 'Variables' : 'Raw text'}
+                </Button>
+              ))}
+            </div>
+            {view === 'variables' ? (
+              <EnvVariablesEditor key={open.path} path={open.path} text={draft} template={open.template} onChange={(text) => { setDraft(text); setError(null) }} />
+            ) : (
             <Textarea
               aria-label={`Contents of ${open.path}`}
               value={draft}
@@ -186,9 +199,10 @@ export function EnvFilesSection() {
               placeholder={'DATABASE_URL=\nAPI_KEY='}
               className="max-h-[60vh] min-h-48 overflow-auto font-mono text-[13px] whitespace-pre md:text-[13px]"
             />
+            )}
             <div className="flex flex-wrap items-center justify-end gap-3">
               {error ? <SettingsNote tone="danger" role="alert" className="mr-auto">{error}</SettingsNote> : null}
-              {open.template !== null && draft.trim() === '' ? (
+              {open.template !== null && draft.trim() === '' && view === 'raw' ? (
                 <Button type="button" variant="outline" onClick={() => setDraft(open.template ?? '')}>
                   Start from the example
                 </Button>

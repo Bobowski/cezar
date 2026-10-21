@@ -57,6 +57,7 @@ describe('Environment settings', () => {
     const calls = setup()
     await screen.findByText('apps/api/.env')
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Raw text' }))
     const editor = await screen.findByLabelText('Contents of apps/api/.env') as HTMLTextAreaElement
     expect(editor.value).toBe('DATABASE_URL=postgres://secret\n')
     fireEvent.change(editor, { target: { value: 'DATABASE_URL=postgres://new\n' } })
@@ -70,6 +71,7 @@ describe('Environment settings', () => {
     setup({ putStatus: 409 })
     await screen.findByText('apps/api/.env')
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Raw text' }))
     const editor = await screen.findByLabelText('Contents of apps/api/.env') as HTMLTextAreaElement
     fireEvent.change(editor, { target: { value: 'PASTED=1\n' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save file' }))
@@ -81,10 +83,62 @@ describe('Environment settings', () => {
     setup()
     await screen.findByText('apps/web/.env')
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Raw text' }))
     const editor = await screen.findByLabelText('Contents of apps/web/.env') as HTMLTextAreaElement
     expect(editor.value).toBe('')
     fireEvent.click(screen.getByRole('button', { name: 'Start from the example' }))
     expect(editor.value).toBe('API_URL=\n')
+  })
+
+  it('opens on the variables view with values masked until shown', async () => {
+    setup()
+    await screen.findByText('apps/api/.env')
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    const value = await screen.findByLabelText('Value of DATABASE_URL') as HTMLInputElement
+    expect(value.value).toBe('postgres://secret')
+    expect(value.type).toBe('password')
+    fireEvent.click(screen.getByRole('button', { name: 'Show DATABASE_URL' }))
+    expect((screen.getByLabelText('Value of DATABASE_URL') as HTMLInputElement).type).toBe('text')
+  })
+
+  it('edits one value and adds a variable, saving the file text', async () => {
+    const calls = setup()
+    await screen.findByText('apps/api/.env')
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    fireEvent.change(await screen.findByLabelText('Value of DATABASE_URL'), { target: { value: 'postgres://new' } })
+    fireEvent.click(screen.getByRole('button', { name: /New variable/ }))
+    fireEvent.change(screen.getByLabelText('New variable name'), { target: { value: 'API_KEY' } })
+    fireEvent.change(screen.getByLabelText('New variable value'), { target: { value: 'with space' } })
+    // Enter in the add row adds the variable; it does not submit (save) the file.
+    fireEvent.keyDown(screen.getByLabelText('New variable value'), { key: 'Enter' })
+    expect(calls.some((call) => call.method === 'PUT')).toBe(false)
+    expect(screen.getByLabelText('Value of API_KEY')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Save file' }))
+    await waitFor(() => expect(calls.some((call) => call.method === 'PUT')).toBe(true))
+    const put = calls.find((call) => call.method === 'PUT')
+    expect(JSON.parse(put?.body ?? '{}').content).toBe('DATABASE_URL=postgres://new\nAPI_KEY="with space"\n')
+  })
+
+  it('refuses an invalid or duplicate new name', async () => {
+    setup()
+    await screen.findByText('apps/api/.env')
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    fireEvent.click(await screen.findByRole('button', { name: /New variable/ }))
+    fireEvent.change(screen.getByLabelText('New variable name'), { target: { value: '1BAD' } })
+    expect((screen.getByRole('button', { name: /^Add$/ }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.change(screen.getByLabelText('New variable name'), { target: { value: 'DATABASE_URL' } })
+    expect(screen.getByText(/already set/)).toBeTruthy()
+  })
+
+  it('fills a new file with what its example asks for', async () => {
+    const calls = setup()
+    await screen.findByText('apps/web/.env')
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Add 1 missing from the example/ }))
+    expect(screen.getByLabelText('Value of API_URL')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Raw text' }))
+    expect((screen.getByLabelText('Contents of apps/web/.env') as HTMLTextAreaElement).value).toBe('API_URL=\n')
+    expect(calls.some((call) => call.method === 'PUT')).toBe(false)
   })
 
   it('offers no editing where the cockpit serves names only', async () => {

@@ -32,6 +32,13 @@ Settings → project → **Environment** lists the project's env files and edits
 - **Editing.** The file's text in a textarea; a new file can start from its example. Saving writes
   the main checkout, `0600`, tmp + rename. The editor sends the version it loaded and a file that
   changed since is refused, not merged.
+- **Variables view (2026-10-21).** The editor opens on one row per variable — name, masked value
+  with Show, Remove — and an add row (`VARIABLE_NAME`, `VALUE`, Add, Cancel); *Add N missing from
+  the example* fills what the example asks for. It edits the same text (`lib/dotenv-lines.ts`): a
+  line nobody changed is saved byte for byte — comments, `export `, quoting — and only an edited
+  value is re-quoted when it would not survive unquoted. Raw text stays one click away; a
+  multi-line value is read-only in the rows and edited there. Front-end only: the route, the
+  version check and the stored file are unchanged.
 - **Reaching a task.** Unchanged: `seedWorktreeEnvFiles` copies ignored env files into every NEW
   worktree and never overwrites. A task that already has a worktree keeps its copy — the cockpit
   says so on save.

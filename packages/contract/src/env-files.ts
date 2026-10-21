@@ -91,5 +91,25 @@ export const setEnvFileSchema = z.object({
 });
 export type SetEnvFileInput = z.infer<typeof setEnvFileSchema>;
 
+/**
+ * `POST /env-files/render` (spec 2026-10-21-env-references §5): what `content` would become in
+ * the main checkout, or — with `runId` — in that task's worktree. Nothing is written. `values`
+ * are the rendered values of the file's `#cezar` directives, in file order; `slot` is the task's
+ * slot (`null` for the main checkout, or a task that holds none).
+ */
+export const renderEnvFileSchema = z.object({
+  path: envFilePathSchema,
+  content: z.string().max(ENV_FILE_MAX_BYTES),
+  runId: z.string().min(1).max(64).optional(),
+});
+export type RenderEnvFileInput = z.infer<typeof renderEnvFileSchema>;
+
+export const envFileRenderSchema = z.object({
+  rendered: z.string(),
+  values: z.array(z.object({ key: z.string(), value: z.string() })),
+  slot: z.number().int().nullable(),
+});
+export type EnvFileRender = z.infer<typeof envFileRenderSchema>;
+
 export const envFilesErrorSchema = z.object({ error: z.string() }).strict();
 export type EnvFilesErrorResponse = z.infer<typeof envFilesErrorSchema>;

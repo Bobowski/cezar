@@ -2,10 +2,10 @@ import { createHash, randomBytes } from 'node:crypto';
 import { chmod, lstat, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
-  ENV_FILE_MAX_BYTES, envFilePathIssue, isEnvFileName,
-  type EnvFileContent, type EnvFileEntry, type EnvFilesList,
+  ENV_FILE_MAX_BYTES, envFilePathIssue, isEnvFileName, parseEnv,
+  type EnvFileContent, type EnvFileEntry, type EnvFileRender, type EnvFilesList,
 } from '@open-mercato/cezar-contract';
-import { EnvReferenceError, hasDirectives, renderEnvFiles } from './env-references.ts';
+import { EnvReferenceError, hasDirectives, readDirectives, renderEnvFiles, type EnvRenderContext } from './env-references.ts';
 import { ENV_WALK_MAX_DEPTH, ENV_WALK_SKIP_DIRS, SERVICE_MANIFESTS, ignoredAmong, isDependencyVendorDir, projectEnvFiles, writeEnvText } from './worktree-env.ts';
 
 /**
@@ -195,7 +195,7 @@ export async function readEnvFile(root: string, path: string): Promise<EnvFileRe
  * it is about to be saved: the saved text with its own directives filled in, and any OTHER file
  * whose directives read from it. Without a directive anywhere this is only the walk.
  */
-async function renderForSave(root: string, path: string, content: string): Promise<EnvFileResult<Map<string, string>>> {
+async function renderForSave(root: string, path: string, content: string, context: EnvRenderContext = { projectRoot: root, worktreePath: root }): Promise<EnvFileResult<Map<string, string>>> {
   const files = new Map<string, string>();
   for (const rel of await projectEnvFiles(root)) {
     if (rel === path) continue;
@@ -205,11 +205,28 @@ async function renderForSave(root: string, path: string, content: string): Promi
   files.set(path, content);
   if (![...files.values()].some(hasDirectives)) return { ok: true, value: new Map() };
   try {
-    return { ok: true, value: renderEnvFiles(files, { projectRoot: root, worktreePath: root }) };
+    return { ok: true, value: renderEnvFiles(files, context) };
   } catch (error) {
     if (error instanceof EnvReferenceError) return refuse(400, error.message);
     throw error;
   }
+}
+
+/**
+ * What `content` would render to, without writing anything: in the main checkout, or for a task
+ * (`context` with its worktree and slot) — the file a NEW seeding of that task would produce,
+ * since other files are read from the main checkout (spec 2026-10-21-env-references §5).
+ */
+export async function previewEnvFile(root: string, path: string, content: string, context: EnvRenderContext): Promise<EnvFileResult<EnvFileRender>> {
+  if (Buffer.byteLength(content, 'utf8') > ENV_FILE_MAX_BYTES) return refuse(400, `an env file is at most ${ENV_FILE_MAX_BYTES} bytes`);
+  const target = await resolveTarget(root, path);
+  if (!target.ok) return target;
+  const rendered = await renderForSave(root, path, content, context);
+  if (!rendered.ok) return rendered;
+  const text = rendered.value.get(path) ?? content;
+  const keys = new Set(readDirectives(path, content).map((directive) => directive.key));
+  const values = parseEnv(text).flatMap((line) => (line.kind === 'var' && keys.has(line.key) ? [{ key: line.key, value: line.value }] : []));
+  return { ok: true, value: { rendered: text, values, slot: context.slot ?? null } };
 }
 
 /** Save `submitted` as `path`. `version` is what the editor loaded; a file that moved on is not overwritten. */

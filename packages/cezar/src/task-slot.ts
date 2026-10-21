@@ -55,6 +55,22 @@ function readLease(path: string): Lease | null {
   return null;
 }
 
+/** The slot `runId`'s worktree already holds, without taking one — for a preview, which must
+ *  not reserve a number for a task that has not asked for it. Never throws. */
+export function peekTaskSlot(runId: string, worktree: string, env: NodeJS.ProcessEnv = process.env): number | undefined {
+  try {
+    const dir = slotsDir(env);
+    for (const name of readdirSync(dir)) {
+      const slot = /^(\d+)\.json$/.exec(name)?.[1];
+      const lease = slot ? readLease(join(dir, name)) : null;
+      if (lease?.runId === runId && lease.worktree === worktree) return Number(slot);
+    }
+  } catch {
+    // no slots directory yet
+  }
+  return undefined;
+}
+
 /**
  * The slot held by `runId`'s worktree, taking one when it holds none. `undefined` when no slot
  * can be had. Never throws.

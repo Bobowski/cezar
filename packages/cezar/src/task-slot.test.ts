@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { MAX_TASK_SLOTS, acquireTaskSlot, taskSlotEnv } from './task-slot.ts';
+import { MAX_TASK_SLOTS, acquireTaskSlot, peekTaskSlot, taskSlotEnv } from './task-slot.ts';
 
 let home: string;
 let trees: string;
@@ -23,6 +23,19 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(home, { recursive: true, force: true });
   rmSync(trees, { recursive: true, force: true });
+});
+
+describe('peekTaskSlot', () => {
+  it('reads the slot a task holds and never takes one', () => {
+    const a = tree('a');
+    expect(peekTaskSlot('a', a, env)).toBeUndefined();
+    expect(() => readdirSync(join(home, 'task-slots'))).toThrow(); // nothing created
+    acquireTaskSlot('b', tree('b'), env);
+    expect(acquireTaskSlot('a', a, env)).toBe(2);
+    expect(peekTaskSlot('a', a, env)).toBe(2);
+    expect(peekTaskSlot('a', tree('elsewhere'), env)).toBeUndefined();
+    expect(readdirSync(join(home, 'task-slots'))).toHaveLength(2);
+  });
 });
 
 describe('acquireTaskSlot', () => {

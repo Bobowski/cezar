@@ -7,7 +7,7 @@ import {
   trackerCandidatesQuerySchema, trackerListQuerySchema, trackerSearchQuerySchema, trackerItemQuerySchema, trackerReadScope, trackerRunLinkInputSchema, trackerRunIssueQuerySchema, trackerTransitionInputSchema,
   trackerCredentialsSchema, trackerConnectionCopyInputSchema, type TrackerConnectionSource, trackerItemParamsSchema, trackerAssociationInputSchema, type TrackerChangedEvent,
   secretParamsSchema, secretValueInputSchema, type SecretsList, type SecretValueInput,
-  envFileQuerySchema, setEnvFileSchema, type EnvFilesList,
+  envFileQuerySchema, renderEnvFileSchema, setEnvFileSchema, type EnvFilesList,
   codeSearchQuerySchema, codeWatchQuerySchema, repoFilePathQuerySchema, type CodeWatch,
   repoSyncQuerySchema, type RepoPullResponse, type RepoSync,
   PROJECT_ICON_MAX_BYTES, setProjectIconSchema, type ProjectIconCandidates,
@@ -17,7 +17,8 @@ import {
   e2eSetupInputSchema, type E2eStatus, taskActionSurfaceSchema,
 } from '@open-mercato/cezar-contract';
 import { SecretStore, SecretsError, type SecretScopeRef } from '../workspace/secrets.ts';
-import { listEnvFiles, readEnvFile, removeEnvFile, writeEnvFile } from '../env-files.ts';
+import { listEnvFiles, previewEnvFile, readEnvFile, removeEnvFile, writeEnvFile } from '../env-files.ts';
+import type { EnvRenderContext } from '../env-references.ts';
 import { discoverServiceCandidates } from '../services/discover.ts';
 import { listGithubRepos, originSlug, type GhApiRunner } from './github-repos.ts';
 import {
@@ -34,7 +35,7 @@ import { ProjectServices, type ServiceProject } from '../services/manager.ts';
 import { E2E_SETUP_TASK, e2eCredentialsAmong, e2eSetupWorkflow, latestE2eSetupRun, readE2eStatus, setupInFlight } from '../e2e-setup.ts';
 import { createTrackerService } from './tracker/index.ts';
 import { TrackerWatches } from './tracker/watch.ts';
-import { taskSlotEnv } from '../task-slot.ts';
+import { peekTaskSlot, taskSlotEnv } from '../task-slot.ts';
 import { discoverCommands, installCommand } from './terminal/commands.ts';
 import { effectiveStartApp, readStartApp, writeStartApp } from '../start-app.ts';
 import { DetectedUrls } from './terminal/detected-urls.ts';
@@ -7078,6 +7079,22 @@ export function createApp(deps: ServerDeps) {
       const read = await readEnvFile(c.get('project').root, c.req.valid('query').path);
       if (!read.ok) return c.json({ error: read.error }, read.status);
       return c.json(read.value, 200);
+    })
+    // Spec 2026-10-21-env-references §5: a dry render for the editor — main checkout, or a task's
+    // slot read without taking one. Values are the operator's own, behind the same gate as a read.
+    .post('/env-files/render', jsonZodValidator(renderEnvFileSchema), async (c) => {
+      if (!trustedOperator(process.env, bindHost)) return c.json(envFilesRefusal, 409);
+      const { path, content, runId } = c.req.valid('json');
+      const root = c.get('project').root;
+      let context: EnvRenderContext = { projectRoot: root, worktreePath: root };
+      if (runId !== undefined) {
+        const worktree = c.get('project').store.getRun(runId)?.worktreePath;
+        if (!worktree) return c.json({ error: `task ${runId} has no worktree in this project` }, 404);
+        context = { projectRoot: root, worktreePath: worktree, runId, slot: peekTaskSlot(runId, worktree) };
+      }
+      const preview = await previewEnvFile(root, path, content, context);
+      if (!preview.ok) return c.json({ error: preview.error }, preview.status);
+      return c.json(preview.value, 200);
     })
     .put('/env-files', jsonZodValidator(setEnvFileSchema), async (c) => {
       if (!trustedOperator(process.env, bindHost)) return c.json(envFilesRefusal, 409);

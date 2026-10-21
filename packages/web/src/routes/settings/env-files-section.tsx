@@ -195,7 +195,14 @@ export function EnvFilesSection() {
               <ToggleGroupItem value="raw">Raw text</ToggleGroupItem>
             </ToggleGroup>
             {view === 'variables' ? (
-              <EnvVariablesEditor key={open.path} path={open.path} text={draft} template={open.template} onChange={(text) => { setDraft(text); setError(null) }} />
+              <EnvVariablesEditor
+                key={open.path}
+                path={open.path}
+                text={draft}
+                template={open.template}
+                otherFiles={files.filter((file) => file.exists && file.path !== open.path).map((file) => ({ path: file.path, variables: file.variables }))}
+                onChange={(text) => { setDraft(text); setError(null) }}
+              />
             ) : (
             <Textarea
               aria-label={`Contents of ${open.path}`}

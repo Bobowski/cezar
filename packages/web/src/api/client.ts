@@ -177,7 +177,7 @@ import type {
   TrackerTransitionsResponse,
   TrackerItemsResponse,
   TrackerKind, TrackerCredentials, TrackerConnectionResponse, TrackerConnectionSourcesResponse,
-  SecretsList, SecretValueInput, EnvFileContent, EnvFilesList, SetEnvFileInput,
+  SecretsList, SecretValueInput, EnvFileContent, EnvFileRender, EnvFilesList, RenderEnvFileInput, SetEnvFileInput,
   DockerState, GithubReposResponse, ServicePatch, ServicePin, ServicePinInput, ServicesState,
   E2eStatus, E2eSetupInput, E2eSetupResponse,
 } from '@open-mercato/cezar-api-client'
@@ -1005,6 +1005,11 @@ export async function getEnvFileContent(path: string): Promise<EnvFileContent> {
 export async function saveEnvFile(input: SetEnvFileInput): Promise<EnvFileContent> {
   return unwrap(await cez.api.v1.p[':projectId']['env-files'].$put(
     { param: { projectId: queryScope() }, json: input }), '/env-files')
+}
+/** A dry render of an env file's `#cezar` references — main checkout, or a task (spec 2026-10-21-env-references). */
+export async function renderEnvFile(input: RenderEnvFileInput): Promise<EnvFileRender> {
+  return unwrap(await cez.api.v1.p[':projectId']['env-files'].render.$post(
+    { param: { projectId: queryScope() }, json: input }), '/env-files/render')
 }
 export async function removeEnvFile(path: string): Promise<void> {
   await expectNoContent(await cez.api.v1.p[':projectId']['env-files'].$delete(

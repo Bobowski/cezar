@@ -17,8 +17,8 @@ const LIST: EnvFilesList = {
   suggestions: ['apps/cms/.env'],
 }
 
-function setup(options: { list?: EnvFilesList; putStatus?: number } = {}) {
-  const { list = LIST, putStatus = 200 } = options
+function setup(options: { list?: EnvFilesList; putStatus?: number; content?: string; renderReply?: (body: { content: string; runId?: string }) => Response } = {}) {
+  const { list = LIST, putStatus = 200, content = 'DATABASE_URL=postgres://secret\n', renderReply } = options
   const calls: { method: string; url: string; body?: string }[] = []
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
@@ -28,11 +28,16 @@ function setup(options: { list?: EnvFilesList; putStatus?: number } = {}) {
       const existing = decodeURIComponent(url).includes('apps/api')
       return new Response(JSON.stringify({
         path: existing ? 'apps/api/.env' : 'apps/web/.env',
-        content: existing ? 'DATABASE_URL=postgres://secret\n' : '',
+        content: existing ? content : '',
         version: existing ? 'v1' : null,
         template: existing ? null : 'API_URL=\n',
       }), { status: 200 })
     }
+    if (method === 'POST' && url.includes('/env-files/render')) {
+      const body = JSON.parse(String(init?.body)) as { content: string; runId?: string }
+      return renderReply ? renderReply(body) : new Response(JSON.stringify({ rendered: body.content, values: [], slot: null }), { status: 200 })
+    }
+    if (method === 'GET' && url.includes('/runs')) return new Response(JSON.stringify([]), { status: 200 })
     if (method === 'GET') return new Response(JSON.stringify(list), { status: 200 })
     if (method === 'PUT' && putStatus !== 200) return new Response(JSON.stringify({ error: 'changed on disk' }), { status: putStatus })
     if (method === 'PUT') return new Response(JSON.stringify({ path: 'apps/api/.env', content: 'x', version: 'v2', template: null }), { status: 200 })
@@ -139,6 +144,67 @@ describe('Environment settings', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'Raw text' }))
     expect((screen.getByLabelText('Contents of apps/web/.env') as HTMLTextAreaElement).value).toBe('API_URL=\n')
     expect(calls.some((call) => call.method === 'PUT')).toBe(false)
+  })
+
+  it('adds a port reference from the menu: it replaces the bare port and writes a #cezar directive', async () => {
+    setup({ content: 'PORT=9000\n' })
+    await screen.findByText('apps/api/.env')
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    const trigger = await screen.findByRole('button', { name: 'Add reference to PORT' })
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Port for a service/ }))
+    expect((screen.getByLabelText('Value of PORT') as HTMLInputElement).value).toBe('${{ task.port(0, 9000) }}')
+    fireEvent.click(screen.getByRole('radio', { name: 'Raw text' }))
+    expect((screen.getByLabelText('Contents of apps/api/.env') as HTMLTextAreaElement).value).toBe('#cezar PORT=${{ task.port(0, 9000) }}\nPORT=9000\n')
+  })
+
+  it('a port reference over a selected port keeps that port for the main checkout', async () => {
+    setup({ content: 'DATABASE_URL=postgres://u@localhost:5432/db\n' })
+    await screen.findByText('apps/api/.env')
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    const value = await screen.findByLabelText('Value of DATABASE_URL') as HTMLInputElement
+    const at = value.value.indexOf('5432')
+    value.setSelectionRange(at, at + 4)
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Add reference to DATABASE_URL' }), { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Port for a service/ }))
+    expect((screen.getByLabelText('Value of DATABASE_URL') as HTMLInputElement).value).toBe('postgres://u@localhost:${{ task.port(0, 5432) }}/db')
+  })
+
+  it('shows what a reference renders to, for the main checkout', async () => {
+    const calls = setup({
+      content: '#cezar URL=http://localhost:${{ task.port(1, 3000) }}\nURL=http://localhost:3000\n',
+      renderReply: () => new Response(JSON.stringify({ rendered: '', values: [{ key: 'URL', value: 'http://localhost:3000' }], slot: null }), { status: 200 }),
+    })
+    await screen.findByText('apps/api/.env')
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(((await screen.findByLabelText('Value of URL')) as HTMLInputElement).value).toBe('http://localhost:${{ task.port(1, 3000) }}')
+    fireEvent.click(screen.getByRole('button', { name: 'Show URL' }))
+    await waitFor(() => expect(screen.getByLabelText('URL renders to').textContent).toBe('→ http://localhost:3000'))
+    const render = calls.find((call) => call.url.includes('/env-files/render'))
+    expect(JSON.parse(render?.body ?? '{}')).toEqual({ path: 'apps/api/.env', content: '#cezar URL=http://localhost:${{ task.port(1, 3000) }}\nURL=http://localhost:3000\n' })
+  })
+
+  it('a reference typed by hand becomes a directive; a plain value again drops it', async () => {
+    setup({ content: 'NAME=app\n' })
+    await screen.findByText('apps/api/.env')
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    fireEvent.change(await screen.findByLabelText('Value of NAME'), { target: { value: 'app${{ task.suffix }}' } })
+    fireEvent.click(screen.getByRole('radio', { name: 'Raw text' }))
+    expect((screen.getByLabelText('Contents of apps/api/.env') as HTMLTextAreaElement).value).toBe('#cezar NAME=app${{ task.suffix }}\nNAME=app\n')
+    fireEvent.click(screen.getByRole('radio', { name: 'Variables' }))
+    fireEvent.change(screen.getByLabelText('Value of NAME'), { target: { value: 'plain' } })
+    fireEvent.click(screen.getByRole('radio', { name: 'Raw text' }))
+    expect((screen.getByLabelText('Contents of apps/api/.env') as HTMLTextAreaElement).value).toBe('NAME=plain\n')
+  })
+
+  it('shows the server refusing a reference', async () => {
+    setup({
+      content: '#cezar A=${{ NOPE }}\nA=\n',
+      renderReply: () => new Response(JSON.stringify({ error: 'apps/api/.env: NOPE is not set in apps/api/.env' }), { status: 400 }),
+    })
+    await screen.findByText('apps/api/.env')
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect((await screen.findByRole('alert')).textContent).toContain('NOPE is not set')
   })
 
   it('offers no editing where the cockpit serves names only', async () => {

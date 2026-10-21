@@ -1,6 +1,6 @@
 # Env references — `${{ … }}` values that cezar fills per task
 
-> Status: **phase 1 implemented (2026-10-21)** — resolver, `#cezar` directives, render on save and on seeding. Phases 2–3 (variables-view UI, re-render action) open. Owner answers to §10: 1 `${{ … }}`, 2 annotated `.env`, 3 explicit re-render only, 4 fancy-fence-panels keeps `alignStation` for now. Branch: `brutus`.
+> Status: **phases 1–2 implemented (2026-10-21)** — resolver, `#cezar` directives, render on save and on seeding; the variables view edits references (Add reference menu, rendered value per row, main checkout or a chosen task) through `POST /env-files/render`. Phase 3 (re-render action) open. Owner answers to §10: 1 `${{ … }}`, 2 annotated `.env`, 3 explicit re-render only, 4 fancy-fence-panels keeps `alignStation` for now. Branch: `brutus`.
 > Builds on: `2026-10-12-project-env-files.md` (Settings → Environment, the variables view),
 > `2026-10-10-worktree-env-seeding.md` (how env files reach a task), `2026-10-10-task-slots.md`
 > (`CEZ_TASK_SLOT`, `CEZ_TASK_PORT_BASE`), `2026-10-10-worktree-lifecycle-events.md` (seeding runs
@@ -128,7 +128,7 @@ assignment as it is in the main checkout, with a note on the task.
 Phase 1 shipped without contract changes: `PUT /env-files` takes the annotated text as before, renders
 the main checkout values into it (refusing an unrenderable directive with 400 and its line), and
 re-renders other env files that read from it. The parser moved to `packages/contract/src/dotenv-lines.ts`.
-The preview route and the content fields below are phase 2.
+Phase 2 added `POST /env-files/render` ({path, content, runId?} → {rendered, values, slot}); a task's slot is read without being taken (`peekTaskSlot`). `EnvFileContent` did not need new fields: the cockpit parses directives from the text it already has.
 
 - `packages/contract/src/env-files.ts`: `EnvFileContent` gains `directives: { key, source }[]` and
   `rendered: string` (the file as this checkout's context renders it). `PUT /env-files` is

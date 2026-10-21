@@ -566,7 +566,7 @@ The app sees a comment and a plain value.
 | `VAR` | that variable of the same file | the same, rendered |
 | `path/to/.env:VAR` | that variable of another env file of the project | the same, from the task's copy |
 
-`\${{` is a literal `${{`. An unknown reference or a cycle is refused on save with its line; at
+In Settings → Environment the **{ }** button beside a value adds a reference — over the selected text, or replacing a value that is only a port, which then stays the main checkout's port — and each referencing row shows what it renders to, for the main checkout or a chosen task. `\${{` is a literal `${{`. An unknown reference or a cycle is refused on save with its line; at
 task time it leaves the main checkout's values and the task shows why. A task created before a
 reference was added keeps the file it was given.
 

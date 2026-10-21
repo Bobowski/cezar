@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, sym
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { envVariableNames, listEnvFiles, readEnvFile, removeEnvFile, writeEnvFile } from './env-files.ts';
+import { envVariableNames, listEnvFiles, previewEnvFile, readEnvFile, removeEnvFile, writeEnvFile } from './env-files.ts';
 
 let repo: string;
 
@@ -89,6 +89,26 @@ describe('project env files (spec 2026-10-12-project-env-files)', () => {
     put('apps/web/.env', '#cezar API=http://localhost:${{ apps/api/.env:PORT }}\nAPI=http://localhost:1\n');
     await writeEnvFile(repo, 'apps/api/.env', 'PORT=4000\n', null);
     expect(readFileSync(join(repo, 'apps/web/.env'), 'utf8')).toBe('#cezar API=http://localhost:${{ apps/api/.env:PORT }}\nAPI=http://localhost:4000\n');
+  });
+
+  it('previews a render for the main checkout and for a task slot, writing nothing', async () => {
+    put('apps/web/.env', 'PORT=4000\n');
+    const text = '#cezar PORT=${{ task.port(1, 3000) }}\n#cezar API=http://localhost:${{ apps/web/.env:PORT }}\nAPI=old\n';
+    const main = await previewEnvFile(repo, 'apps/api/.env', text, { projectRoot: repo, worktreePath: repo });
+    expect(main).toEqual({ ok: true, value: {
+      rendered: '#cezar PORT=${{ task.port(1, 3000) }}\nPORT=3000\n#cezar API=http://localhost:${{ apps/web/.env:PORT }}\nAPI=http://localhost:4000\n',
+      values: [{ key: 'PORT', value: '3000' }, { key: 'API', value: 'http://localhost:4000' }],
+      slot: null,
+    } });
+    const task = await previewEnvFile(repo, 'apps/api/.env', text, { projectRoot: repo, worktreePath: `${repo}-wt`, slot: 7, runId: 'r' });
+    expect(task.ok && task.value.values).toEqual([{ key: 'PORT', value: '20701' }, { key: 'API', value: 'http://localhost:4000' }]);
+    expect(task.ok && task.value.slot).toBe(7);
+    expect(existsSync(join(repo, 'apps/api/.env'))).toBe(false);
+  });
+
+  it('a preview names the line of a directive it cannot render', async () => {
+    expect(await previewEnvFile(repo, 'apps/api/.env', '#cezar A=${{ NOPE }}\n', { projectRoot: repo, worktreePath: repo }))
+      .toEqual({ ok: false, status: 400, error: 'apps/api/.env: NOPE is not set in apps/api/.env' });
   });
 
   it('leaves a file without directives byte for byte', async () => {

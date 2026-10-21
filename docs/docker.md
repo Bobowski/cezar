@@ -35,6 +35,13 @@ docker compose -f docker/compose.yml exec -u node cezar claude
 docker compose -f docker/compose.yml exec -u node cezar gh auth login
 ```
 
+**Tell git who you are**, once — agents' commits carry your identity already, but a commit you
+make in the cockpit's terminal needs it (kept in the `data` volume):
+
+```bash
+docker compose -f docker/compose.yml exec -u node cezar sh -c 'git config --global user.name "Your Name" && git config --global user.email you@example.com'
+```
+
 **Add a project.** In the cockpit, clone a repository — it lands in `/projects`, a volume. The
 cockpit is the editor, the terminal and the browser for it; there is no folder on your machine
 to open in something else, by design.

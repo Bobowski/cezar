@@ -19,8 +19,20 @@ export function lifecycleConfigFromRaw(raw: unknown): LifecycleConfigSnapshot {
   return { config: parsed.data, revision: createHash('sha256').update(JSON.stringify(value)).digest('hex'), configured: true };
 }
 
+/** Where scripts live when the shared config.json is committed: untracked, beside it (like
+ *  mcp.local.json). It wins when it carries the key, so a team's config.json can stay in git. */
+export const LOCAL_CONFIG_FILE = 'config.local.json';
+type ConfigFile = 'config.json' | typeof LOCAL_CONFIG_FILE;
+const configPath = (projectRoot: string, file: ConfigFile) => join(projectRoot, '.ai', 'cezar', file);
+
 export async function readLifecycleConfigRaw(projectRoot: string): Promise<Record<string, unknown>> {
-  const path = join(projectRoot, '.ai', 'cezar', 'config.json');
+  return readConfigObject(projectRoot, 'config.json');
+}
+export async function readLocalConfigRaw(projectRoot: string): Promise<Record<string, unknown>> {
+  return readConfigObject(projectRoot, LOCAL_CONFIG_FILE);
+}
+async function readConfigObject(projectRoot: string, file: ConfigFile): Promise<Record<string, unknown>> {
+  const path = configPath(projectRoot, file);
   await assertLifecyclePath(path, projectRoot);
   let text: string;
   try { text = await readFile(path, 'utf8'); }
@@ -35,34 +47,41 @@ export async function readLifecycleConfigRaw(projectRoot: string): Promise<Recor
   } catch { throw new LifecycleConfigError('Project configuration is malformed; worktree transition is paused'); }
 }
 const UNCONFIGURED: LifecycleConfigSnapshot = { config: { afterCreate: [], beforeRemove: [] }, revision: null, configured: false };
-export const TRACKED_CONFIG_ERROR = 'Worktree scripts in a git-tracked .ai/cezar/config.json are not run: scripts come only from local, untracked configuration. Untrack the file or remove its worktreeLifecycle key.';
+export const TRACKED_CONFIG_ERROR = 'Worktree scripts in a git-tracked .ai/cezar/config.local.json are not run: scripts come only from local, untracked configuration. Untrack the file.';
 
 /** A committed hook list would run on every clone with no consent (spec: local configuration only). */
-export async function isLifecycleConfigTracked(projectRoot: string): Promise<boolean> {
-  return promisify(execFile)('git', ['ls-files', '--error-unmatch', '--', join('.ai', 'cezar', 'config.json')], { cwd: projectRoot })
+export async function isLifecycleConfigTracked(projectRoot: string, file: ConfigFile = 'config.json'): Promise<boolean> {
+  return promisify(execFile)('git', ['ls-files', '--error-unmatch', '--', join('.ai', 'cezar', file)], { cwd: projectRoot })
     .then(() => true, () => false);
 }
 /** The scripts Cezar may execute. Fails closed on an invalid list; a committed list counts as none. */
 export async function readLifecycleConfig(projectRoot: string): Promise<LifecycleConfigSnapshot> {
-  return trusted(projectRoot, lifecycleConfigFromRaw(await readLifecycleConfigRaw(projectRoot)));
+  const source = await lifecycleSource(projectRoot);
+  return trusted(projectRoot, lifecycleConfigFromRaw(source.raw), source.file);
+}
+/** The file the scripts are read from: config.local.json when it carries the key, else config.json. */
+async function lifecycleSource(projectRoot: string): Promise<{ raw: Record<string, unknown>; file: ConfigFile }> {
+  const local = await readLocalConfigRaw(projectRoot);
+  if (Object.hasOwn(local, 'worktreeLifecycle')) return { raw: local, file: LOCAL_CONFIG_FILE };
+  return { raw: await readLifecycleConfigRaw(projectRoot), file: 'config.json' };
 }
 /** Zero-config read for "are scripts configured?": an unreadable or malformed file, or a symlinked
  *  data directory, means none — what `loadConfig` already degrades to. A present key still fails closed. */
 export async function readLifecycleConfigOrDefault(projectRoot: string, options: { trust?: boolean } = {}): Promise<LifecycleConfigSnapshot> {
-  let raw: Record<string, unknown>;
-  try { raw = await readLifecycleConfigRaw(projectRoot); }
+  let source: { raw: Record<string, unknown>; file: ConfigFile };
+  try { source = await lifecycleSource(projectRoot); }
   catch (error) {
     if (error instanceof LifecycleConfigError || error instanceof LifecycleStoreError) return UNCONFIGURED;
     throw error;
   }
-  const snapshot = lifecycleConfigFromRaw(raw);
+  const snapshot = lifecycleConfigFromRaw(source.raw);
   // Settings shows an untrusted (committed) list too, so the user can remove it.
-  return options.trust === false ? snapshot : trusted(projectRoot, snapshot);
+  return options.trust === false ? snapshot : trusted(projectRoot, snapshot, source.file);
 }
 // Treated as unconfigured rather than an error, so a repo that ships scripts keeps the zero-config path.
-async function trusted(projectRoot: string, snapshot: LifecycleConfigSnapshot): Promise<LifecycleConfigSnapshot> {
+async function trusted(projectRoot: string, snapshot: LifecycleConfigSnapshot, file: ConfigFile): Promise<LifecycleConfigSnapshot> {
   const scripts = snapshot.config.afterCreate.length + snapshot.config.beforeRemove.length;
-  return scripts > 0 && await isLifecycleConfigTracked(projectRoot) ? UNCONFIGURED : snapshot;
+  return scripts > 0 && await isLifecycleConfigTracked(projectRoot, file) ? UNCONFIGURED : snapshot;
 }
 export async function withLifecycleConfigLock<T>(projectRoot: string, action: () => Promise<T>): Promise<T> {
   const path = join(projectRoot, '.ai', 'cezar', 'config.lifecycle.lock');
@@ -94,10 +113,39 @@ export function applyLifecycleConfigUpdate(raw: Record<string, unknown>, config:
   }
   return next;
 }
+/**
+ * Saves scripts into config.local.json; call under withLifecycleConfigLock. `sharedRaw` is the
+ * caller's config.json object: an untracked one loses its key (the list moved) and the caller
+ * writes it back; a tracked one is the team's file and is never touched.
+ */
+export async function saveLifecycleConfigLocked(
+  projectRoot: string,
+  config: WorktreeLifecycleConfig | null,
+  expectedRevision: string | null,
+  sharedRaw: Record<string, unknown>,
+): Promise<{ snapshot: LifecycleConfigSnapshot; sharedChanged: boolean }> {
+  const local = await readLocalConfigRaw(projectRoot);
+  const base = { ...local };
+  const sharedHasKey = Object.hasOwn(sharedRaw, 'worktreeLifecycle');
+  // Revision and preserved future keys follow the list in force now, wherever it lives.
+  if (!Object.hasOwn(local, 'worktreeLifecycle') && sharedHasKey) base.worktreeLifecycle = sharedRaw.worktreeLifecycle;
+  const next = applyLifecycleConfigUpdate(base, config, expectedRevision);
+  const scripts = config ? config.afterCreate.length + config.beforeRemove.length : 0;
+  if (scripts > 0 && await isLifecycleConfigTracked(projectRoot, LOCAL_CONFIG_FILE)) throw new LifecycleConfigError(TRACKED_CONFIG_ERROR);
+  await atomicLifecycleWrite(configPath(projectRoot, LOCAL_CONFIG_FILE), next);
+  let sharedChanged = false;
+  if (sharedHasKey && !await isLifecycleConfigTracked(projectRoot)) {
+    delete sharedRaw.worktreeLifecycle;
+    delete sharedRaw.worktreeLifecycleRevision;
+    sharedChanged = true;
+  }
+  return { snapshot: lifecycleConfigFromRaw(next), sharedChanged };
+}
 export async function writeLifecycleConfig(projectRoot: string, config: WorktreeLifecycleConfig | null, expectedRevision: string | null): Promise<LifecycleConfigSnapshot> {
   return withLifecycleConfigLock(projectRoot, async () => {
-    const next = applyLifecycleConfigUpdate(await readLifecycleConfigRaw(projectRoot), config, expectedRevision);
-    await atomicLifecycleWrite(join(projectRoot, '.ai', 'cezar', 'config.json'), next);
-    return lifecycleConfigFromRaw(next);
+    const shared = await readLifecycleConfigRaw(projectRoot);
+    const { snapshot, sharedChanged } = await saveLifecycleConfigLocked(projectRoot, config, expectedRevision, shared);
+    if (sharedChanged) await atomicLifecycleWrite(configPath(projectRoot, 'config.json'), shared);
+    return snapshot;
   });
 }

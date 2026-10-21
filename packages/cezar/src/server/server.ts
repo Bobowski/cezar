@@ -222,7 +222,7 @@ import { deleteUpload, readUpload, writeUpload } from '../uploads.ts';
 import { branchesCheckedOutElsewhere, removeWorktree, worktreeDiff, worktreeDiffStat, worktreeSizeBytes } from '../git-worktree.ts';
 import { isReclaimable, reclaimWorktrees } from '../runs/retention.ts';
 import { worktreeLifecycleRoutes, lifecycleError } from './worktree-lifecycle.ts';
-import { readLifecycleConfigOrDefault, readLifecycleConfigRaw, lifecycleConfigFromRaw, withLifecycleConfigLock, applyLifecycleConfigUpdate, isLifecycleConfigTracked, LifecycleConfigError, TRACKED_CONFIG_ERROR } from '../worktree-lifecycle/config.ts';
+import { readLifecycleConfigOrDefault, readLifecycleConfigRaw, lifecycleConfigFromRaw, withLifecycleConfigLock, saveLifecycleConfigLocked, LifecycleConfigError } from '../worktree-lifecycle/config.ts';
 import { atomicLifecycleWrite, LifecycleStoreError } from '../worktree-lifecycle/store.ts';
 import { validateLifecycleCommand } from '../worktree-lifecycle/templates.ts';
 import { setConfigInputSchema, type WorktreeLifecycleInvalidation } from '@open-mercato/cezar-contract';
@@ -8145,10 +8145,13 @@ export function createApp(deps: ServerDeps) {
             if (parsed.data.worktreeLifecycleRevision === undefined) throw new Error('Reload settings before saving worktree scripts: revision is required');
             if (parsed.data.worktreeLifecycle !== null) {
               for (const entry of [...parsed.data.worktreeLifecycle.afterCreate, ...parsed.data.worktreeLifecycle.beforeRemove]) validateLifecycleCommand(entry.command);
-              const scripts = parsed.data.worktreeLifecycle.afterCreate.length + parsed.data.worktreeLifecycle.beforeRemove.length;
-              if (scripts > 0 && await isLifecycleConfigTracked(repoRoot)) throw new LifecycleConfigError(TRACKED_CONFIG_ERROR);
             }
-            raw = applyLifecycleConfigUpdate(raw, parsed.data.worktreeLifecycle, parsed.data.worktreeLifecycleRevision);
+            // Scripts go to the untracked config.local.json, so a committed config.json can stay
+            // shared; an untracked config.json loses its old copy of the list here.
+            const { sharedChanged } = await saveLifecycleConfigLocked(repoRoot, parsed.data.worktreeLifecycle, parsed.data.worktreeLifecycleRevision, raw);
+            // A scripts-only save leaves a committed config.json byte-for-byte alone.
+            const scriptsOnly = Object.keys(parsed.data).every((key) => key === 'worktreeLifecycle' || key === 'worktreeLifecycleRevision');
+            if (scriptsOnly && !sharedChanged) return;
           }
           if (parsed.data.baseBranch !== undefined) {
             if (parsed.data.baseBranch === null) delete raw.baseBranch;

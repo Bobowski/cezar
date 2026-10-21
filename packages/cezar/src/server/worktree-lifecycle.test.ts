@@ -103,11 +103,13 @@ describe('worktree lifecycle API', () => {
     const first=await request('/config',{worktreeLifecycle:config,worktreeLifecycleRevision:null,worktreeRetention:4},'PUT');
     expect(first.status).toBe(200);const saved=await first.json() as {worktreeLifecycleRevision:string};
     const raw=()=>JSON.parse(readFileSync(join(root,'.ai/cezar/config.json'),'utf8'));
-    expect(raw()).toMatchObject({custom:{keep:true},worktreeRetention:4,worktreeLifecycle:config});
+    const local=()=>JSON.parse(readFileSync(join(root,'.ai/cezar/config.local.json'),'utf8'));
+    expect(raw()).toEqual({custom:{keep:true},worktreeRetention:4});
+    expect(local()).toEqual({worktreeLifecycle:config});
     expect((await request('/config',{worktreeLifecycle:null,worktreeLifecycleRevision:null,worktreeRetention:9},'PUT')).status).toBe(409);
     expect(raw().worktreeRetention).toBe(4);
     expect((await request('/config',{worktreeLifecycle:{afterCreate:[script('echo "{{ root_path }}"')],beforeRemove:[]},worktreeLifecycleRevision:saved.worktreeLifecycleRevision},'PUT')).status).toBe(400);
-    expect(raw().worktreeLifecycle).toEqual(config);
+    expect(local().worktreeLifecycle).toEqual(config);
   });
   it('a malformed config.json degrades to defaults on a hook-free project, as before scripts existed (BC §3)',async()=>{
     const configPath=join(root,'.ai/cezar/config.json');writeFileSync(configPath,'{broken');
@@ -121,11 +123,29 @@ describe('worktree lifecycle API', () => {
     expect((await request('/config',{worktreeRetention:9},'PUT')).status).toBe(409);
     expect((await request(`/runs/${runId}/remove-worktree`,{})).status).toBe(409);expect(existsSync(path)).toBe(true);
   });
-  it('never saves or runs scripts from a git-tracked config.json',async()=>{
-    const configPath=join(root,'.ai/cezar/config.json');writeFileSync(configPath,JSON.stringify({worktreeRetention:3}));
+  it('saves scripts beside a git-tracked config.json, in config.local.json, and runs them from there',async()=>{
+    const configPath=join(root,'.ai/cezar/config.json');const shared=JSON.stringify({worktreeRetention:3});writeFileSync(configPath,shared);
     execFileSync('git',['add','-f',configPath],{cwd:root});
+    const res=await request('/config',{worktreeLifecycle:{afterCreate:[],beforeRemove:[script('touch {{ root_path }}/cleaned')]},worktreeLifecycleRevision:null},'PUT');
+    expect(res.status).toBe(200);
+    expect(readFileSync(configPath,'utf8')).toBe(shared); // the team's file is never rewritten
+    // The scripts are in force: removal is gated behind the lifecycle operation, as with any hooks.
+    const removal=await request(`/runs/${runId}/remove-worktree`,{});
+    expect(removal.status).toBe(409);expect(await removal.json()).toMatchObject({error:expect.stringContaining('/worktree-lifecycle/operations')});
+    expect(existsSync(path)).toBe(true);
+  });
+  it('never saves or runs scripts from a git-tracked config.local.json',async()=>{
+    const localPath=join(root,'.ai/cezar/config.local.json');writeFileSync(localPath,JSON.stringify({}));
+    execFileSync('git',['add','-f',localPath],{cwd:root});
     const res=await request('/config',{worktreeLifecycle:{afterCreate:[script('true')],beforeRemove:[]},worktreeLifecycleRevision:null},'PUT');
     expect(res.status).toBe(409);expect(await res.json()).toMatchObject({error:expect.stringContaining('git-tracked')});
+    writeFileSync(localPath,JSON.stringify({worktreeLifecycle:{afterCreate:[script('touch pwned')],beforeRemove:[script('touch {{ root_path }}/pwned')]}}));
+    expect((await request(`/runs/${runId}/remove-worktree`,{})).status).toBe(200);
+    expect(existsSync(join(root,'pwned'))).toBe(false);
+  });
+  it('never runs scripts from a git-tracked config.json',async()=>{
+    const configPath=join(root,'.ai/cezar/config.json');writeFileSync(configPath,JSON.stringify({worktreeRetention:3}));
+    execFileSync('git',['add','-f',configPath],{cwd:root});
     // A list committed by someone else is refused at execution, yet still shown so it can be removed.
     writeFileSync(configPath,JSON.stringify({worktreeLifecycle:{afterCreate:[script('touch pwned')],beforeRemove:[]}}));
     const shown=await (await request('/config')).json() as {worktreeLifecycle?:{afterCreate:unknown[]}};

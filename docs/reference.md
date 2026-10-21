@@ -870,7 +870,9 @@ worktree creation** prepares a new directory before the agent starts; **Before
 worktree removal** cleans up while its files still exist. Both lists default to
 empty. There is no required config file, global inheritance, environment switch,
 or command execution for projects without hooks. These are local settings for
-the selected project, saved under `worktreeLifecycle` in `.ai/cezar/config.json`.
+the selected project, saved under `worktreeLifecycle` in `.ai/cezar/config.local.json`
+— untracked, so a project that commits `.ai/cezar/config.json` keeps sharing it. A list
+saved earlier in an untracked `config.json` still runs and moves on the next save.
 Saving scripts does not execute them.
 
 Setup also runs when Continue recreates a reclaimed directory. Continuing in an

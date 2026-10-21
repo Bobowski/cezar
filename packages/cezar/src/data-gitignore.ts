@@ -31,6 +31,9 @@ export const DATA_GITIGNORE_ENTRIES = [
   'lifecycle/', // independent durable worktree preparation/cleanup history
   'config.lifecycle.lock/',
   'config.json.*.tmp',
+  // Worktree scripts (spec 2026-10-10-worktree-lifecycle-events): local consent, never shared.
+  'config.local.json',
+  'config.local.json.*.tmp',
   'tmp/', // per-run agent temp directories (#785)
   'drafts/', // unsent composer text + pasted screenshots (#939) — never in git history
   // Per-task workspace layouts (spec `2026-10-07-task-workspace` §5.3). A screen preference —

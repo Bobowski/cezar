@@ -166,7 +166,10 @@ Written by one version, read by the next, and hand-editable by design:
   an invalid `worktreeLifecycle` key, or one read while lifecycle records exist,
   pauses managed transitions rather than granting deletion. Scripts in a
   git-tracked `config.json` are never saved or run (they count as
-  unconfigured, so the hook-free path still applies). Config PUT omission preserves,
+  unconfigured, so the hook-free path still applies).
+  Since 2026-10-21 lists are saved to `.ai/cezar/config.local.json` (untracked); it wins
+  when it carries the key, else `config.json` is read as before, so existing lists keep
+  running. The file name and location are a user surface. Config PUT omission preserves,
   `null` clears, and a supplied object replaces both lists atomically under an
   expected revision; unrelated config keys survive. Stable entry UUIDs and exact
   execution fingerprints reconcile Retry against current saved commands, never

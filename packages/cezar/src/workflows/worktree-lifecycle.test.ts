@@ -149,7 +149,7 @@ describe('RunManager worktree lifecycle admission', () => {
     const run = p.manager.startRun(workflow, { task: 'config repair', runner: 'claude' });
     await wait(() => expect(p.store.getRun(run.id)?.status).toBe('waiting'));
     const record = await p.manager.lifecycle.store.readWorktree(run.id);
-    writeFileSync(join(p.root, '.ai/cezar/config.json'), '{malformed');
+    writeFileSync(join(p.root, '.ai/cezar/config.local.json'), '{malformed');
     expect(await p.manager.lifecycle.requiresGate(run.id)).toBe(true);
     await expect(readLifecycleConfig(p.root)).rejects.toThrow('malformed');
     await p.manager.lifecycle.reclaim(run.id);

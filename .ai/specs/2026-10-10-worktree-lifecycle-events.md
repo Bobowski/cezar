@@ -251,6 +251,8 @@ Extend existing `GET/PUT /config` with optional `worktreeLifecycle`. GET omits t
 
 Local config reads/writes preserve unrelated raw keys. Add an optional `worktreeLifecycleRevision` only when configured for optimistic edits; a lifecycle settings write includes its last-read revision (or `null` for absent). Stale lifecycle writes → 409; unrelated legacy config PUTs remain compatible. The runtime fingerprint check, not this UI revision alone, also detects direct file edits.
 
+**Where the lists live (2026-10-21).** A project may commit `.ai/cezar/config.json` on purpose — shared runner, prompt, retention — and committed lists are never run. So the lists are saved to `.ai/cezar/config.local.json`, untracked and in the data-directory ignore list (the `mcp.local.json` precedent). Reads take the key from `config.local.json` when it carries one — an empty list there included — and otherwise from `config.json`, so lists already saved there keep working. A save moves the list out of an untracked `config.json`; a committed `config.json` is never rewritten by a scripts-only save. A committed `config.local.json` is refused on save and ignored at execution, like a committed `config.json`. A malformed `config.local.json` fails closed; it never falls back to `config.json`.
+
 ### Lifecycle family
 
 Schema names below are contract exports; spelling is normative for implementation. IDs are validated bounded UUIDs except original run IDs, which use the existing run-id schema.

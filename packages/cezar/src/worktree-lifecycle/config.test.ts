@@ -8,13 +8,33 @@ import { worktreeLifecycleConfigSchema } from '@open-mercato/cezar-contract';
 
 let root: string;
 let path: string;
+let local: string;
 beforeEach(async () => {
   root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'cez-lifecycle-config-')));
   path = join(root, '.ai', 'cezar', 'config.json');
+  local = join(root, '.ai', 'cezar', 'config.local.json');
   await fs.mkdir(join(root, '.ai', 'cezar'), { recursive: true });
 });
 afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
 const entry = () => ({ id: randomUUID(), command: '  printf hello\n' });
+
+describe('config.local.json', () => {
+  it('reads a legacy list from an untracked config.json until one is saved locally', async () => {
+    const legacy = { afterCreate: [entry()], beforeRemove: [] };
+    await fs.writeFile(path, JSON.stringify({ worktreeLifecycle: legacy }));
+    expect((await readLifecycleConfig(root)).config).toEqual(legacy);
+  });
+  it('wins over config.json, including an intentionally empty local list', async () => {
+    await fs.writeFile(path, JSON.stringify({ worktreeLifecycle: { afterCreate: [entry()], beforeRemove: [] } }));
+    await fs.writeFile(local, JSON.stringify({ worktreeLifecycle: { afterCreate: [], beforeRemove: [] } }));
+    expect(await readLifecycleConfig(root)).toMatchObject({ configured: true, config: { afterCreate: [], beforeRemove: [] } });
+  });
+  it('a malformed local file fails closed instead of falling back to config.json', async () => {
+    await fs.writeFile(path, JSON.stringify({ worktreeLifecycle: { afterCreate: [], beforeRemove: [] } }));
+    await fs.writeFile(local, '{bad');
+    await expect(readLifecycleConfig(root)).rejects.toThrow('malformed');
+  });
+});
 
 describe('current lifecycle configuration', () => {
   it('distinguishes absent and intentionally empty from malformed/unreadable config', async () => {
@@ -22,24 +42,28 @@ describe('current lifecycle configuration', () => {
     const empty = await writeLifecycleConfig(root, { afterCreate: [], beforeRemove: [] }, null);
     expect(empty.configured).toBe(true);
     expect(empty.revision).not.toBeNull();
+    await fs.writeFile(local, '{bad');
+    await expect(readLifecycleConfig(root)).rejects.toThrow('malformed');
+    await fs.writeFile(local, '{"worktreeLifecycle":null}');
+    await expect(readLifecycleConfig(root)).rejects.toThrow('Invalid');
+    await fs.unlink(local);
+    await fs.mkdir(local);
+    await expect(readLifecycleConfig(root)).rejects.toThrow('cannot be read');
+    await fs.rmdir(local);
     await fs.writeFile(path, '{bad');
     await expect(readLifecycleConfig(root)).rejects.toThrow('malformed');
-    await fs.writeFile(path, '{"worktreeLifecycle":null}');
-    await expect(readLifecycleConfig(root)).rejects.toThrow('Invalid');
-    await fs.unlink(path);
-    await fs.mkdir(path);
-    await expect(readLifecycleConfig(root)).rejects.toThrow('cannot be read');
   });
   it('preserves raw unrelated/future config and authored whitespace while replacing both lists', async () => {
     const initial = entry();
     await fs.writeFile(path, JSON.stringify({ arbitraryFuture: { x: true }, defaultRunner: 'codex', worktreeLifecycle: { afterCreate: [initial], beforeRemove: [] } }));
     const current = await readLifecycleConfig(root);
     await writeLifecycleConfig(root, { afterCreate: [{ ...initial, name: 'new name' }], beforeRemove: [entry()] }, current.revision);
+    // An untracked config.json keeps everything else; the list moves to config.local.json.
     const raw = JSON.parse(await fs.readFile(path, 'utf8'));
-    expect(raw.arbitraryFuture).toEqual({ x: true });
-    expect(raw.defaultRunner).toBe('codex');
-    expect(raw.worktreeLifecycle.afterCreate[0]).toEqual({ ...initial, name: 'new name' });
-    expect(raw.worktreeLifecycle.beforeRemove).toHaveLength(1);
+    expect(raw).toEqual({ arbitraryFuture: { x: true }, defaultRunner: 'codex' });
+    const moved = JSON.parse(await fs.readFile(local, 'utf8'));
+    expect(moved.worktreeLifecycle.afterCreate[0]).toEqual({ ...initial, name: 'new name' });
+    expect(moved.worktreeLifecycle.beforeRemove).toHaveLength(1);
   });
   it('preserves unsupported lifecycle keys on disk and refuses to treat them as an empty gate', async () => {
     const text = JSON.stringify({ unrelated: true, worktreeLifecycle: { afterCreate: [], beforeRemove: [], futureHook: ['do cleanup'] } });
@@ -58,9 +82,9 @@ describe('current lifecycle configuration', () => {
       writeLifecycleConfig(root, { afterCreate: [], beforeRemove: [entry()] }, saved.revision),
     ]);
     expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
-    await fs.writeFile(path, JSON.stringify({ worktreeLifecycle: config }));
+    await fs.writeFile(local, JSON.stringify({ worktreeLifecycle: config }));
     const beforeEdit = await readLifecycleConfig(root);
-    await fs.writeFile(path, JSON.stringify({ worktreeLifecycle: { ...config, afterCreate: [{ ...config.afterCreate[0], command: 'changed' }] } }));
+    await fs.writeFile(local, JSON.stringify({ worktreeLifecycle: { ...config, afterCreate: [{ ...config.afterCreate[0], command: 'changed' }] } }));
     await expect(writeLifecycleConfig(root, config, beforeEdit.revision)).rejects.toThrow('changed');
   });
   it('allows explicit clear without resetting other config; rejects invalid IDs and limits', async () => {

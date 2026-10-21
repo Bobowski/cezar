@@ -61,10 +61,13 @@ ENV CEZ_HOME=/data/cezar \
     CEZ_PREVIEW_PORTS=8500-8519
 
 # cezar and its agents run as `node`, not root: an agent is arbitrary commands, and the Docker
-# daemon beside it is root. The group lets them use that daemon.
+# daemon beside it is root. The group lets them use that daemon. ~/.gitconfig points at the
+# volume too: an agent gets HOME but not GIT_CONFIG_GLOBAL (core/agent-env.ts allowlist), and
+# without it commits lose the identity and signing configured there.
 RUN usermod -aG docker node \
  && mkdir -p /data /projects && chown node:node /data /projects \
- && ln -s /data/ssh /home/node/.ssh
+ && ln -s /data/ssh /home/node/.ssh \
+ && ln -s /data/gitconfig /home/node/.gitconfig
 
 # Projects live in the /projects volume, not in ~ — the hosted default browse root.
 ENV CEZ_BROWSE_ROOT=/projects

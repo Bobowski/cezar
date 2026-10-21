@@ -63,7 +63,7 @@ A path is refused unless all of these hold, checked on every read, write and del
 | Values in the listing, masked? | No. | A name says what is configured; a mask says nothing more and is one bug from a leak. |
 | Contents in the query cache? | No. | Fetched when a file is opened, held in the editor's state, dropped on close. |
 | Push a save into existing worktrees? | No. | The seeding's rule: a task may have rewritten its env on purpose. |
-| Structured key/value form? | No — text. | Comments, ordering and quoting survive; pasting a whole file from another machine is the main use. |
+| Structured key/value form? | Rows over the text (2026-10-21), Raw text one click away. | Revised from "text only": the rows edit the same text line by line, so comments, ordering and quoting still survive, and pasting a whole file is still the Raw text view. |
 
 ## 5. Not in this spec
 

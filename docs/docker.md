@@ -94,12 +94,12 @@ Upgrading is a rebuild: `docker compose -f docker/compose.yml up -d --build`. Th
 A Linux box with Docker, a domain whose `A` record points at it, and ports 80, 443 and
 8500-8519 open. The overlay `docker/compose.vps.yml` adds **Caddy**, which fetches a Let's
 Encrypt certificate and forwards the cockpit (`https://<domain>`) and the preview gateway
-(`https://<domain>:8500-8519`) to the container. Nothing else is installed on the host.
+(`https://<domain>:8500-8519`) to the container. The host needs Docker and [Sysbox](#sysbox-the-inner-daemon-without-privileged), nothing else.
 
 ```bash
 git clone https://github.com/open-mercato/cezar && cd cezar
 echo "CEZ_DOMAIN=agents.example.dev" > docker/.env
-docker compose -f docker/compose.yml -f docker/compose.vps.yml up -d --build
+docker compose -f docker/compose.yml -f docker/compose.vps.yml -f docker/compose.sysbox.yml up -d --build
 docker compose -f docker/compose.yml exec -u node cezar cezar auth setup
 ```
 
@@ -107,8 +107,41 @@ The last command prints a one-time `/setup#code=…` link: open it on `https://<
 15 minutes to create the owner account (password + authenticator app). Every request is behind
 that sign-in; the gateway's ports admit only a ticket the signed-in cockpit hands out.
 
-The VPS must allow privileged containers (a KVM VPS does; OpenVZ/LXC usually does not) —
-`docker run --rm --privileged docker:dind dockerd --version` tells you.
+The VPS must be a full virtual machine (KVM — an OpenVZ/LXC container cannot run Sysbox or a
+nested daemon), with kernel 5.12 or newer.
+
+### Sysbox: the inner daemon without `privileged`
+
+On a VPS run the container under [Sysbox](https://github.com/nestybox/sysbox): its Docker
+daemon then lives in a user namespace, and a container an agent starts — `--privileged` or not —
+cannot reach the host. `docker/compose.sysbox.yml` switches the runtime; it goes last:
+
+```bash
+docker compose -f docker/compose.yml -f docker/compose.vps.yml -f docker/compose.sysbox.yml up -d --build
+```
+
+Install it once on the host (Ubuntu 22.04+/Debian 11+, kernel 5.12 or newer — `uname -r`), from
+the `.deb` on the project's [releases page](https://github.com/nestybox/sysbox/releases) for your
+architecture:
+
+```bash
+docker rm -f $(docker ps -aq)          # the installer restarts Docker; nothing may be running
+sudo apt-get install -y jq ./sysbox-ce_<version>.linux_amd64.deb
+sudo systemctl status sysbox --no-pager
+docker info | grep -i runtimes         # lists sysbox-runc
+```
+
+Prove it before you rely on it — every line is expected to behave as commented:
+
+```bash
+c="docker compose -f docker/compose.yml exec -u node cezar"
+$c docker info --format '{{.ServerVersion}}'                                   # the inner daemon runs
+$c docker run --rm --privileged alpine sh -c 'ls /dev | grep -E "^(sd|vd|nvme)"'   # prints nothing
+docker inspect cezar-cezar-1 --format '{{.HostConfig.Privileged}} {{.HostConfig.Runtime}}'  # false sysbox-runc
+```
+
+Without Sysbox (a workstation, Docker Desktop) leave the overlay out: the container stays
+`privileged`, with the reach described under [Security, plainly](#security-plainly).
 
 ### Security checklist for a VPS
 
@@ -131,8 +164,9 @@ Verified on the overlay (2026-10-21, `CEZ_DOMAIN=localhost`) unless marked **on 
 
 What the box itself needs:
 
-- **A VPS that runs cezar and nothing else.** No other sites, databases or credentials on it —
-  see the `privileged` note under [Security, plainly](#security-plainly).
+- **Sysbox** ([above](#sysbox-the-inner-daemon-without-privileged)), proven with its three checks.
+  Even so, keep the VPS for cezar alone: the agents and `gh` hold your logins, and a box that
+  serves nothing else has nothing else to lose.
 - **SSH by key only**, root login off. `cezar auth reset`/`setup` are run over SSH
   (`docker compose -f docker/compose.yml exec -u node cezar cezar auth …`) — the box is the root
   of trust for the cockpit's accounts.

@@ -1,0 +1,11 @@
+# cezar on a VPS without `privileged` (docs/docker.md § Sysbox). An overlay, last in the chain:
+#
+#   docker compose -f docker/compose.yml -f docker/compose.vps.yml -f docker/compose.sysbox.yml up -d --build
+#
+# Sysbox runs the container's own Docker daemon in a user namespace, so a container an agent
+# starts — even a `--privileged` one — cannot reach the host's devices. Needs sysbox-runc
+# installed on the host.
+services:
+  cezar:
+    privileged: false
+    runtime: sysbox-runc

@@ -7,7 +7,7 @@ import { createQueryClient } from '@/api/query-client'
 import type { RunRecord } from '@open-mercato/cezar-api-client'
 
 import * as telemetry from './telemetry'
-import { TaskSwitchShortcut } from './use-task-switch-shortcut'
+import { SWITCH_TASK_EVENT, TaskSwitchShortcut } from './use-task-switch-shortcut'
 
 vi.mock('@/lib/telemetry', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/telemetry')>()
@@ -120,6 +120,22 @@ describe('⌥↑ / ⌥↓', () => {
     await press('ArrowDown', { metaKey: true })
     await act(async () => {})
     expect(location()).toBe('/tasks/review')
+  })
+
+  it('the desktop shell’s global chord arrives as an event and walks the Needs-you ring', async () => {
+    await mount('/tasks/new')
+    const send = (detail: unknown) =>
+      act(() => {
+        window.dispatchEvent(new CustomEvent(SWITCH_TASK_EVENT, { detail }))
+      })
+    await send('next')
+    await waitFor(() => expect(location()).toBe('/tasks/waiting'))
+    await send('previous')
+    await waitFor(() => expect(location()).toBe('/tasks/review'))
+    await send('sideways')
+    await act(async () => {})
+    expect(location()).toBe('/tasks/review')
+    expect(telemetry.trackTaskSwitched).toHaveBeenCalledWith('arrow')
   })
 
   it('stay quiet under a dialog', async () => {

@@ -47,6 +47,12 @@ layouts) lives in the run header behind the mouse, and only for the task on scre
   jump), not in the terminal or under a dialog. Not rebindable; the four chords are reserved.
   `lib/task-ring.ts` is the ring, `lib/use-task-switch-shortcut.ts` the listener, mounted in
   `AppShellContainer`. Telemetry: `task_switched` with `arrow`.
+  **From any app**, in the desktop shell: ⌃⌥↑/⌃⌥↓ (`tauri-plugin-global-shortcut`,
+  `register_task_switch_shortcuts` in `packages/desktop/src-tauri/src/lib.rs`) raise the window
+  and dispatch `cezar:switch-task` with `previous`/`next`; the cockpit steps the Needs-you ring
+  as for ⌥⇧. ⌃⌥ rather than ⌥, because a global registration takes the chord from every app and
+  ⌥-arrows are every text field's paragraph jump. A chord another app already owns is logged and
+  skipped; a cockpit older than the event ignores it.
 
 ## Design
 

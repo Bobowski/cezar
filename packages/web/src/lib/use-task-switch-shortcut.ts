@@ -18,6 +18,10 @@ export function taskSwitchFromEvent(
   return { direction: event.key === 'ArrowUp' ? 'previous' : 'next', needsYouOnly: event.shiftKey }
 }
 
+/** The desktop shell's global ⌃⌥↑/⌃⌥↓ (packages/desktop, `register_task_switch_shortcuts`)
+ *  lands here with `detail` `'previous'` | `'next'`: the Needs-you ring, from any app. */
+export const SWITCH_TASK_EVENT = 'cezar:switch-task'
+
 /**
  * ⌥↑/⌥↓ and ⌥⇧↑/⌥⇧↓ — previous/next task, and previous/next task that needs you — on every
  * page of the project on screen. Fires while typing too (Slack's ⌥↑/↓ does, and a text field's
@@ -36,20 +40,36 @@ export function useTaskSwitchShortcut(): void {
   state.current = { pathname, runs: runs.data, navigate }
 
   React.useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const step = taskSwitchFromEvent(event)
-      if (!step || event.defaultPrevented) return
-      if (event.target instanceof HTMLElement && event.target.closest('.xterm')) return
-      if (shortcutsBlocked()) return
+    // False when there was nowhere to go — the caller decides what that means for its event.
+    const step = (direction: RingDirection, needsYouOnly: boolean): boolean => {
       const now = state.current
-      const target = stepTaskRing(taskRing(now.runs ?? [], step.needsYouOnly), taskIdFromPath(now.pathname), step.direction)
-      event.preventDefault()
-      if (target === null) return
+      const target = stepTaskRing(taskRing(now.runs ?? [], needsYouOnly), taskIdFromPath(now.pathname), direction)
+      if (target === null) return false
       trackTaskSwitched('arrow')
       now.navigate(`/tasks/${target}`)
+      return true
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      const chord = taskSwitchFromEvent(event)
+      if (!chord || event.defaultPrevented) return
+      if (event.target instanceof HTMLElement && event.target.closest('.xterm')) return
+      if (shortcutsBlocked()) return
+      event.preventDefault()
+      step(chord.direction, chord.needsYouOnly)
+    }
+    // From the shell the window was just raised: a dialog on screen is what the user came back
+    // to, so it keeps the keyboard and the press does nothing, as for the in-window chord.
+    const onSwitch = (event: Event) => {
+      const direction = (event as CustomEvent<unknown>).detail
+      if ((direction !== 'previous' && direction !== 'next') || shortcutsBlocked()) return
+      step(direction, true)
     }
     window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    window.addEventListener(SWITCH_TASK_EVENT, onSwitch)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener(SWITCH_TASK_EVENT, onSwitch)
+    }
   }, [])
 }
 

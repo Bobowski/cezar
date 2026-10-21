@@ -72,7 +72,9 @@ import {
 } from './new-task-autostart'
 import {
   clearStartedDraft,
+  autoLandsUnreviewed,
   composerRunModeNote,
+  explicitWorktreeFor,
   handOffComposition,
   readAttachments,
   readDraft,
@@ -88,6 +90,8 @@ import {
   pushRecentSource,
   resolveModel,
   resolveRunner,
+  looksLikeQuestion,
+  projectDefaultSource,
   resolveSource,
   startedRunPath,
   type TaskSource,
@@ -194,7 +198,19 @@ export function NewTaskRoute() {
     skills.data !== undefined && workflows.data !== undefined && !uiState.isPending
   // The draft's pick alone — a fresh `/new` selects nothing (see `resolveSource` for what the
   // persisted `lastTask` preselection was load-bearing for, and why it is gone).
-  const source = resolveSource(draft.source, skillList, workflowList)
+  // Trunk-based projects (spec 2026-10-20-trunk-based-projects): an in-place project offers
+  // the Ask chip, a trunk-based project asks on its own when the message is a question, and nothing
+  // picked falls back to the project's default (or Ask) skill.
+  const inPlaceByDefault = config.data?.taskWorkspace === 'in-place'
+  const askOffered = repo.data?.info != null && (inPlaceByDefault || config.data?.profile === 'trunk')
+  const askWanted =
+    askOffered &&
+    draft.variants <= 1 &&
+    draft.dispatch === null &&
+    (draft.readOnly ?? (config.data?.profile === 'trunk' && looksLikeQuestion(draft.text)))
+  const source =
+    resolveSource(draft.source, skillList, workflowList) ??
+    projectDefaultSource(config.data, askWanted, skillList)
   const selectedSkill = source?.source === 'skill'
     ? skillList.find((skill) => skill.name === source.ref)
     : undefined
@@ -323,14 +339,17 @@ export function NewTaskRoute() {
     hasGit,
     variants,
     explicitAutonomous: draft.autonomous,
-    explicitWorktree: draft.worktree,
+    explicitWorktree: explicitWorktreeFor(draft, config.data?.taskWorkspace),
     interactive: selectedSkill?.interactive,
-    configuredAutonomous:
+    configuredAutonomous: autoLandsUnreviewed(
       workspaceConfig.data?.composerDefaults?.autonomous
       ?? workspaceConfig.data?.composerDefaults?.inheritedAutonomous
       ?? 'source-dependent',
-    configuredWorktree:
-      workspaceConfig.data?.composerDefaults?.worktree
+      config.data?.landing === 'auto',
+    ),
+    configuredWorktree: config.data?.taskWorkspace
+      ? config.data.taskWorkspace === 'worktree'
+      : workspaceConfig.data?.composerDefaults?.worktree
       ?? workspaceConfig.data?.composerDefaults?.inheritedWorktree
       ?? true,
     // Nothing picked runs the plain built-in workflow, and the 'source-dependent' autonomy
@@ -338,7 +357,8 @@ export function NewTaskRoute() {
     source: source?.source ?? 'workflow',
     dispatch: dispatchOn,
   })
-  const worktreeOn = runMode.worktree
+  const askOn = askWanted && !dispatchOn && variants <= 1
+  const worktreeOn = runMode.worktree && !askOn
   const autonomousOn = runMode.autonomous
 
   // Follow-up generation (#444) is offered only while the server has the global inbox on
@@ -500,6 +520,8 @@ export function NewTaskRoute() {
         // generation for THIS task must not stop the entry it came from being marked started.
         todoId: deepLink.todo,
         dispatch,
+        readOnly: askOn,
+        inPlaceByDefault,
       }),
     )
     trackMessageSent('new_task')
@@ -573,6 +595,8 @@ export function NewTaskRoute() {
               dispatch: dispatchOn,
               autonomous: autonomousOn,
               newBranch: draft.newBranch,
+              readOnly: askOn,
+              autoLand: config.data?.landing === 'auto' && config.data.landingBlocked === null,
             })}
           </p>
         </header>
@@ -701,7 +725,10 @@ export function NewTaskRoute() {
                   extras (templates, dispatch) | WHERE it forks from. The dividers only
                   exist on md-and-up; a phone wraps the row and a divider mid-wrap is noise. */}
               <PillDivider />
-              {worktreeToggleShown ? (
+              {askOffered ? (
+                <AskToggle on={askOn} auto={draft.readOnly === undefined} onChange={(on) => update({ readOnly: on })} />
+              ) : null}
+              {worktreeToggleShown && !askOn ? (
                 <WorktreeToggle
                   on={worktreeOn}
                   disabled={worktreeForced}
@@ -710,10 +737,10 @@ export function NewTaskRoute() {
                       ? "Dispatch forks this task's commits — subtasks need a worktree"
                       : 'Parallel variants always use isolated worktrees'
                   }
-                  onChange={(on) => update({ worktree: on })}
+                  onChange={(on) => update({ worktree: on, worktreeBasis: config.data?.taskWorkspace ?? 'default' })}
                 />
               ) : null}
-              {worktreeToggleShown && !worktreeOn ? (
+              {worktreeToggleShown && !worktreeOn && !askOn ? (
                 <NewBranchToggle
                   on={draft.newBranch === true}
                   name={draft.branchName ?? ''}
@@ -818,6 +845,33 @@ export function NewTaskRoute() {
 /** The thin seam between the footer's pill clusters. Hidden on phones, where the row wraps. */
 function PillDivider() {
   return <span aria-hidden="true" className="mx-0.5 h-3.5 w-px shrink-0 bg-border max-md:hidden" />
+}
+
+/** The Ask chip (spec 2026-10-20-trunk-based-projects): a read-only question about the
+ *  checkout — no branch, no lease, nothing lands. */
+function AskToggle({ on, auto, onChange }: { on: boolean; auto: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={on}
+      data-slot="ask-toggle"
+      onClick={() => onChange(!on)}
+      title={
+        on
+          ? `Read-only question — answers from the checkout, changes nothing${auto ? ' (picked because the message is a question)' : ''}`
+          : 'Check to ask a read-only question instead of filing a change'
+      }
+      className={cn(chipClass, on && 'border-primary/60 text-foreground')}
+    >
+      {on ? (
+        <CheckIcon aria-hidden="true" className="size-3 shrink-0 text-primary" />
+      ) : (
+        <SquareIcon aria-hidden="true" className="size-3 shrink-0 text-soft-foreground" />
+      )}
+      Ask
+    </button>
+  )
 }
 
 /** Worktree opt-out toggle (#worktree-toggle): a checkbox-style chip for ordinary runs.

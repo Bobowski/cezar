@@ -740,12 +740,29 @@ never blocks startup; configured lifecycle transitions pause on malformed config
   "branchNaming": "your branch naming preferences",
                              // optional: task branches are named from the first prompt under these
                              // instructions (Settings → Instructions); absent = cez/<id8>
+  // Trunk-based projects (Settings → Tasks → Development model); every key optional:
+  "taskWorkspace": "in-place", // tasks work in the checkout, write tasks one at a time
+  "landing": "auto",           // finished in-place tasks commit, rebase, run requiredChecks, push
+                               // (ignored while this file is tracked by git)
+  "requiredChecks": ["npm test"],
+  "defaultSkill": "my-skill",   // composer preselect; "askSkill" for read-only Ask tasks
   "startApp": { "services": ["npm run api", "npm run web"], "url": "http://localhost:5173" }
                              // optional: what the Preview's Start app runs, each service in its own
                              // terminal tab; url = the address to show (absent: the first one printed).
                              // A `startApp` in your project entry of ~/.cezar/config.json wins.
 }
 ```
+
+**Trunk-based projects** (many small changes that should land straight on the
+base branch — a docs or notes repo, a config repo, a solo project): set
+**Settings → Tasks → Development model** to *Trunk-based*. Tasks then run in the
+repo checkout instead of a worktree, write tasks take turns so two tasks never
+conflict. A finished task waits for your review in Changes; reply with
+corrections, then **Finish** commits, rebases on the remote, runs
+`requiredChecks` and pushes to the base branch. Autonomous tasks land on their
+own. A failed rebase or check goes back to the agent. The composer's **Ask** chip starts a
+read-only question: no branch, no lease, runs beside a write task. Spec:
+`.ai/specs/2026-10-20-trunk-based-projects.md`.
 
 Put the same `"modelsLocked": true` key in `~/.cezar/config.json` to apply it
 to every registered project. When the key is absent or `false` in both config

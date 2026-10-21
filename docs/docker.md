@@ -192,5 +192,5 @@ What the box itself needs:
   the backend in a second Browser tab to learn its gateway address and point the app at it.
 - The image ships Node 22. A project that pins another version can switch with `n auto` (reads
   `.nvmrc`) from the terminal, as root: `docker compose exec cezar n 20`.
-- Only the Claude Code CLI is preinstalled. Other agent CLIs can be installed with
+- Claude Code and Codex CLIs are preinstalled. Other agent CLIs can be installed with
   `docker compose exec cezar npm i -g …`; they are gone after a rebuild.

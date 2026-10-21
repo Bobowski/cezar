@@ -39,7 +39,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # yarn and pnpm at whatever version a project pins; `n` for a project that pins its Node
 # (`n auto` reads .nvmrc); the agent cezar drives by default.
 RUN corepack enable \
- && npm install -g --no-audit --no-fund n @anthropic-ai/claude-code
+ && npm install -g --no-audit --no-fund n @anthropic-ai/claude-code @openai/codex
 
 COPY --from=build /out/*.tgz /tmp/cezar.tgz
 RUN npm install -g --no-audit --no-fund /tmp/cezar.tgz && rm /tmp/cezar.tgz

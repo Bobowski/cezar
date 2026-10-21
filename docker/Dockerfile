@@ -66,6 +66,9 @@ RUN usermod -aG docker node \
  && mkdir -p /data /projects && chown node:node /data /projects \
  && ln -s /data/ssh /home/node/.ssh
 
+# Projects live in the /projects volume, not in ~ — the hosted default browse root.
+ENV CEZ_BROWSE_ROOT=/projects
+
 COPY docker/entrypoint.sh /usr/local/bin/cezar-entrypoint
 RUN chmod +x /usr/local/bin/cezar-entrypoint
 

@@ -30,7 +30,7 @@ test('the release tarball installs and runs the dry-run CLI workflow', { timeout
     assert.ok(record, 'npm pack should describe the generated tarball');
 
     const packagedPaths = new Set(record.files.map((file) => file.path));
-    for (const requiredPath of ['dist/index.js', 'web/dist/index.html', 'scripts/mock-claude.mjs', 'README.md']) {
+    for (const requiredPath of ['dist/index.js', 'web/dist/index.html', 'scripts/mock-claude.mjs', 'README.md', 'dist/impact/template.html', 'skills/change-impact/SKILL.md']) {
       assert.ok(packagedPaths.has(requiredPath), `release tarball should contain ${requiredPath}`);
     }
     assert.equal(packagedPaths.has('src/index.ts'), false, 'release tarball should not contain TypeScript sources');
@@ -62,6 +62,14 @@ test('the release tarball installs and runs the dry-run CLI workflow', { timeout
     });
     assert.match(help.stdout, /cezar — local cockpit/);
     assert.match(help.stdout, /cezar run "<task>"/);
+
+    // The installed CLI renders an impact report from its packed template (spec 2026-10-22).
+    const impact = await execFile(process.execPath, [cliPath, 'impact', 'render', '--demo', '--out', join(root, 'impact-demo.html')], {
+      cwd: consumerDir,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    assert.match(impact.stdout, /^ok: .*impact-demo\.html \(2 views\)/);
+    assert.match(await readFile(join(root, 'impact-demo.html'), 'utf8'), /Created by the Open Mercato Team/);
 
     const fixtureRepo = join(root, 'fixture-repo');
     await mkdir(fixtureRepo);

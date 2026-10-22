@@ -130,7 +130,7 @@ export interface Integration {
 
 `IntegrationManifest` (served at `GET /integrations/providers`) carries: `label`, `icon` key,
 `anchor` kinds, `connections` it supports in preference order (e.g. `['cli','token']`), the CLI
-descriptor (`bin`, minimum version, install hints per platform, `authStatus`/`login` argv,
+descriptor (`bin`, minimum version, install hints per platform with an install-weight note (e.g. `az` is a large Python install), `authStatus`/`login` argv,
 docs URL), the token form fields (schema-driven: name, label, secret?, validation regex), the
 **vocabulary** (`workItem: 'issue' | 'ticket' | 'work item'`, `changeRequest: 'pull request' |
 'merge request'`, key format example `#123` / `PROJ-42` / `!17` / `AB#1234`), the facets it
@@ -221,6 +221,7 @@ designed so that it can be added without reshaping the seam.
 | --- | --- | --- | --- |
 | `cli` | The vendor CLI's own store (keychain / config file) | `gh`, `glab`, `az` + `azure-devops` extension, `acli` | cezar shells out with a fixed argv, `--json`/`-F json`/`--output json`, cwd = project root, bounded timeout, zod at the boundary. ENOENT → `{ available:false, reason:'Install <cli>' }`. |
 | `token` | Managed per-project dotenv in `cezarHomeDir()/integration-connections/` | Linear, Jira (Cloud API token / Data Center PAT), any provider when the CLI is absent | The existing `tracker-connections` store generalized and renamed; the old directory is read in place (no migration of secrets, no fallback to `process.env`). |
+| `cli` (brokered) | The vendor CLI; cezar holds a **short-lived** token it minted, in memory only | Azure DevOps Services (`az account get-access-token`), possibly Jira `acli` | For vendors whose CLI has no usable API passthrough. The token never touches disk, logs, run records or agent env, and is re-minted on expiry. |
 
 A provider declares its strategies in preference order and the resolver picks the first that is
 ready. Each provider spec documents the vendor CLI research, including why a CLI was rejected
@@ -245,14 +246,15 @@ New file `packages/contract/src/integrations.ts`; types inferred, api-client re-
 - `workItemDetailSchema`: item + `body` (Markdown), `bodyLoss?` (truncated/unsupported content
   disclosure, from the tracker spec), `thread?` (comments + timeline events with an allowlisted
   kind union that is a superset of `ForgeTimelineEventKind`).
-- `integrationAvailabilitySchema`: `{ available, reason?, connection: 'cli'|'token'|null, cli?: { bin, found, version?, signedIn? } }` — `reason` is human copy, never a vendor error body.
+- `integrationAvailabilitySchema`: `{ available, reason?, connection: 'cli'|'token'|null, degraded?: string, cli?: { bin, found, version?, signedIn? } }` — `reason` is human copy, never a vendor error body; `degraded` flags a working but slower/limited transport (e.g. no rate-limit headers) so health and automations can slow down truthfully.
 - Change-request status/merge/diff/checks reuse the existing `github.ts` contract shapes,
   re-exported under neutral names (`ChangeRequestMergeState = GithubPrMergeState` structurally);
   GitHub-specific fields become optional where another vendor cannot supply them.
 - **Auto-merge** (GitHub auto-merge, GitLab merge-when-pipeline-succeeds, ADO auto-complete) is
   decided once here: merge-state gains `autoMerge?: { available: boolean; enabled: boolean }`, the
   neutral merge body gains `autoMerge?: boolean`, and the neutral merge response adds a non-merged
-  success branch `{ merged: false, autoMergeEnabled: true, … }` with status 200.
+  success branch `{ merged: false, autoMergeEnabled: true, … }` with status 200, and a `{ merged: false, queued: true, … }`
+  branch for vendors whose completion is asynchronous (ADO PR completion).
   `githubMergeResponseSchema` (`merged: z.literal(true)`) is frozen and untouched — the frozen
   GitHub route never sends that branch.
 
@@ -301,7 +303,9 @@ UI phase.
   `githubView` additively).
 - **Lists:** one list component over `WorkItem`. Filter chips come from the manifest
   (Issues / Pull requests for code hosts; status categories for trackers). Server-side search
-  always; no local filtering pretending to be search.
+  always; no local filtering pretending to be search. Search depth is a per-facet capability
+  (`search: 'full' | 'id-only'`) — Azure Repos has no PR title search — and the UI says so instead
+  of faking it.
 - **Detail + hand-to-agent:** one composer (`lib/work-item-task.ts`) generalizing
   `github-task.ts` and `tracker-task.ts`; the prompt heading uses the manifest vocabulary and the
   item `key`. The existing tier-2 worded patterns in `task-refs.ts` stay intact for GitHub.
@@ -314,8 +318,9 @@ UI phase.
 `runs/store.ts` (`PR_URL_RE`, `ISSUE_URL_RE`) and `runs/task-refs.ts` hard-code github.com. Each
 manifest contributes `referencePatterns`: URL patterns (host-parametrized for self-managed),
 worded patterns, and a `key` pattern (`[A-Z][A-Z0-9]+-\d+` for Jira, `AB#\d+` for ADO, `!\d+` for
-GitLab MRs). `extractTaskRefs` runs every pattern of the project's integrations; numeric `#N`
-stays GitHub/GitLab-issue only when that provider is the code host. `RunRecord` gains optional
+GitLab MRs). `extractTaskRefs` runs every pattern of the project's integrations; bare `#N`
+takes the **code host's native meaning** (GitHub/GitLab issue, Azure DevOps work item) and is never
+claimed by a scope-anchored work source. `RunRecord` gains optional
 `workItemRefs?: { integrationId, providerId, itemId, key, url, kind }[]`; existing `prNumber`-style
 fields remain and are populated for the code host. Old records parse unchanged.
 

@@ -9,7 +9,8 @@
 > [Linear](2026-10-22-integration-linear.md).
 > Supersedes the "separate migration" deferral in
 > [2026-09-18-jira-linear-tracker-browsing](2026-09-18-jira-linear-tracker-browsing.md) and the
-> seam half of #847. Related: #1085, #1484.
+> seam half of #847 (and its unmerged spec PR #848; implementation PR #1226 is prior art on the
+> old seam). Related: #1085, #1484.
 > API names below are proposed contracts, not existing capabilities.
 
 ## TLDR
@@ -148,7 +149,14 @@ absent → review gate offers "Push branch" only).
   to (`gh auth status --hostname`, `glab auth status`, `az devops configure --list`), which is how
   self-managed GitLab / GitHub Enterprise / Azure DevOps Server are found **without a host table
   the user must write**. An explicit host override is optional (`integrations.json`), never
-  required.
+  required. "Signed in to" is read **synchronously from the CLI's own host config file with a
+  short TTL** (the `github-hosts.ts` pattern), never by spawning `auth status` per request. Those
+  files can hold plaintext tokens, so parsers are a zod *pick* of host keys only; a token value is
+  never kept, logged or cached.
+- A remote anchor carries the **full project path** (GitLab subgroups `group/sub/repo`, ADO
+  `org/project/_git/repo`) and an **instance base** (scheme, web port, relative URL root such as
+  `https://intranet.acme/gitlab/`) supplied by the connection, not guessed from the remote URL.
+  `parseRemote` in `git-remotes.ts` drops both today and is fixed in phase 1.
 - **Scope-anchored providers** (`jira`, `linear`, ADO Boards) need a user choice — Settings →
   Integrations → Connect → pick project/team (the existing paginated picker). No scope is ever
   guessed.
@@ -236,6 +244,12 @@ New file `packages/contract/src/integrations.ts`; types inferred, api-client re-
 - Change-request status/merge/diff/checks reuse the existing `github.ts` contract shapes,
   re-exported under neutral names (`ChangeRequestMergeState = GithubPrMergeState` structurally);
   GitHub-specific fields become optional where another vendor cannot supply them.
+- **Auto-merge** (GitHub auto-merge, GitLab merge-when-pipeline-succeeds, ADO auto-complete) is
+  decided once here: merge-state gains `autoMerge?: { available: boolean; enabled: boolean }`, the
+  neutral merge body gains `autoMerge?: boolean`, and the neutral merge response adds a non-merged
+  success branch `{ merged: false, autoMergeEnabled: true, … }` with status 200.
+  `githubMergeResponseSchema` (`merged: z.literal(true)`) is frozen and untouched — the frozen
+  GitHub route never sends that branch.
 
 ### Routes
 
@@ -324,7 +338,9 @@ The reason to run GitHub + Jira together: a task launched from `PROJ-42` produce
 - Event vocabulary is provider-neutral where semantics match (`work_item.created`,
   `work_item.status_changed`, `work_item.labeled`, `change_request.opened`,
   `change_request.review_requested`, `change_request.review_submitted`), each provider advertising
-  only events it can **verify from history** (tracker spec rule).
+  only events it can **verify from history** (tracker spec rule). No state-diff fallback: an
+  event the vendor keeps no history for (e.g. GitLab reviewer-requested) is simply not offered
+  by that provider, and the editor says so.
 - Template tokens: new `item.*` namespace (`item.key`, `item.title`, `item.url`, `item.labels`,
   `item.provider`, `item.event`); `github.*` and `tracker.*` keep working as aliases.
 - The poll cycle, receipts, leases and baselining (`event-poll-cycle.ts`, `scheduler.ts`) are
@@ -339,6 +355,10 @@ The reason to run GitHub + Jira together: a task launched from `PROJ-42` produce
   behavior and is opt-in for every new provider.
 - `core/secret-redaction.ts`: manifests contribute token patterns (`glpat-…`, `lin_api_…`,
   `ATATT…`); a test asserts every manifest's pattern is registered.
+- `workflows/run.ts` PR nodes (`createDraftPr`, `commentOnPr`, `updatePr`, `commentOnIssue`,
+  wait-for-CI) call `forge/github.ts` directly today; they route through the code-host
+  integration's `publish`/`changeRequests`/`link` facets, and a node whose facet is absent fails
+  with a clear "not supported by <provider>" step error.
 - `checkout.ts`: clone goes through the `clone` facet; `parseRepoRef` accepts any host a provider
   recognises; the ownership-proof and target-path rules are unchanged.
 

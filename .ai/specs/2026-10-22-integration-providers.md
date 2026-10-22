@@ -69,7 +69,7 @@ provider is one directory plus a registry line — not a cross-package change.
 | **Provider** | A plugin module: `github`, `gitlab`, `azure-devops`, `jira`, `linear`. Static code. |
 | **Integration** | One connected instance of a provider inside one project: provider + anchor + connection. A project has 0..n. |
 | **Anchor** | What an integration is bound to. `remote` = discovered from a git remote (GitHub/GitLab repo, ADO repo). `scope` = user-selected vendor container (Jira project, Linear team, ADO project's Boards). |
-| **Connection** | How cezar authenticates: `cli` (vendor CLI owns the credential) or `token` (managed per-project credential record). |
+| **Connection** | How cezar authenticates — site/host + account + secret: `cli` (vendor CLI owns the credential) or `token` (managed per-project credential record). Separate from the integration: several integrations (two Jira projects on one site) share one connection. |
 | **Work item** | Normalized issue / ticket / work item. |
 | **Change request** | Normalized pull request (GitHub, ADO) / merge request (GitLab). |
 | **Facet** | A capability group a provider may implement (below). Absent facet = truthful "not supported", never a 5xx. |
@@ -219,9 +219,9 @@ designed so that it can be added without reshaping the seam.
 
 | Strategy | Who holds the credential | Used by | Notes |
 | --- | --- | --- | --- |
-| `cli` | The vendor CLI's own store (keychain / config file) | `gh`, `glab`, `az` + `azure-devops` extension, `acli` | cezar shells out with a fixed argv, `--json`/`-F json`/`--output json`, cwd = project root, bounded timeout, zod at the boundary. ENOENT → `{ available:false, reason:'Install <cli>' }`. |
-| `token` | Managed per-project dotenv in `cezarHomeDir()/integration-connections/` | Linear, Jira (Cloud API token / Data Center PAT), any provider when the CLI is absent | The existing `tracker-connections` store generalized and renamed; the old directory is read in place (no migration of secrets, no fallback to `process.env`). |
-| `cli` (brokered) | The vendor CLI; cezar holds a **short-lived** token it minted, in memory only | Azure DevOps Services (`az account get-access-token`), possibly Jira `acli` | For vendors whose CLI has no usable API passthrough. The token never touches disk, logs, run records or agent env, and is re-minted on expiry. |
+| `cli` | The vendor CLI's own store (keychain / config file) | `gh`, `glab`, `az` + `azure-devops` extension | cezar shells out with a fixed argv, `--json`/`-F json`/`--output json`, cwd = project root, bounded timeout, zod at the boundary. ENOENT → `{ available:false, reason:'Install <cli>' }`. |
+| `token` | Managed per-project dotenv in `cezarHomeDir()/integration-connections/<sha256(root)>/<connectionId>.env` (legacy `tracker-connections/<sha256(root)>.env` is read in place as connection `legacy`) | Linear, Jira (Cloud API token / Data Center PAT), any provider when the CLI is absent | The existing `tracker-connections` store generalized and renamed; the old directory is read in place (no migration of secrets, no fallback to `process.env`). |
+| `cli` (brokered) | The vendor CLI; cezar holds a **short-lived** token it minted, in memory only | Azure DevOps Services (`az account get-access-token`) | For vendors whose CLI has no usable API passthrough. The token never touches disk, logs, run records or agent env, and is re-minted on expiry. |
 
 A provider declares its strategies in preference order and the resolver picks the first that is
 ready. Each provider spec documents the vendor CLI research, including why a CLI was rejected
@@ -276,7 +276,9 @@ validated with the middleware trio:
 | `POST /runs/:id/change-request` | publish through the code host (today's `POST /runs/:id/pr` stays, delegating) |
 
 `/api/v1/github*` and `/api/v1/tracker*` keep their paths and shapes and become thin adapters over
-the GitHub integration and the first scope-anchored integration respectively. They are
+the GitHub integration and the **legacy** scope-anchored integration respectively — the one derived
+from `tracker.json`, else the first scope-anchored entry in `integrations.json` order; a stored entry
+matching `tracker.json`'s association shadows it rather than duplicating it. They are
 deprecated in BACKWARD_COMPATIBILITY.md but not removed. `forgeInfoSchema.kind` in `health.ts`
 widens from `z.literal('github')` to the remote-anchored subset of the provider enum (a type change
 for `git-actions.ts`, shipped in the same commit).
@@ -317,7 +319,8 @@ UI phase.
 
 `runs/store.ts` (`PR_URL_RE`, `ISSUE_URL_RE`) and `runs/task-refs.ts` hard-code github.com. Each
 manifest contributes `referencePatterns`: URL patterns (host-parametrized for self-managed),
-worded patterns, and a `key` pattern (`[A-Z][A-Z0-9]+-\d+` for Jira, `AB#\d+` for ADO, `!\d+` for
+worded patterns, and a `key` pattern (Jira: the contract's `^[A-Z][A-Z0-9_]*-[1-9]\d*$`, matched **only for project
+keys of connected integrations** so `UTF-8` and `ISO-9001` never become refs; `AB#\d+` for ADO, `!\d+` for
 GitLab MRs). `extractTaskRefs` runs every pattern of the project's integrations; bare `#N`
 takes the **code host's native meaning** (GitHub/GitLab issue, Azure DevOps work item) and is never
 claimed by a scope-anchored work source. `RunRecord` gains optional
@@ -329,7 +332,9 @@ fields remain and are populated for the code host. Old records parse unchanged.
 The reason to run GitHub + Jira together: a task launched from `PROJ-42` produces a PR on GitHub.
 
 - The publish facet accepts `linkedWorkItems` from the run's refs; the PR body gets a footer the
-  work source understands (`PROJ-42` smart-commit key for Jira, `AB#1234` for ADO, `Fixes #12` for
+  work source understands, and a work-source manifest may also contribute a **title prefix** —
+  Jira's development panel reads the PR title and branch name, never the body, so the key goes in the
+  title by default (`PROJ-42` for Jira, `AB#1234` for ADO, `Fixes #12` for
   GitHub/GitLab, Linear's `Fixes TEAM-12` magic word) — each work-source manifest supplies its
   footer template.
 - Optional `link` facet: on publish, add a remote link / comment on the work item ("cezar opened

@@ -138,7 +138,7 @@ export const TASK_COMMAND_LABELS = [
   'git:commit', 'git:commit-push', 'git:push', 'git:create-pr', 'git:create-draft-pr',
   'git:update-branch', 'git:resolve-conflicts', 'git:fix-checks', 'open-pr',
   'view:session', 'view:graph', 'view:changes', 'view:commits', 'view:files', 'view:browser',
-  'view:terminal', 'view:notes', 'tab',
+  'view:assets', 'view:terminal', 'view:notes', 'tab',
   'layout', 'layout:new', 'full-view', 'split', 'terminal', 'terminal-column',
   'open', 'open:terminal-resume',
   'copy:link', 'copy:branch', 'copy:path', 'copy:resume', 'copy:pr', 'copy:id',

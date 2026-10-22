@@ -76,6 +76,11 @@ const TerminalDrawer = lazy(() =>
   import('./terminal-drawer').then((m) => ({ default: m.TerminalDrawer })),
 )
 
+/** Lazy: most visits never open a task's published pages. */
+const AssetsColumn = lazy(() =>
+  import('../task-assets/assets-view').then((m) => ({ default: m.AssetsView })),
+)
+
 /** Lazy for the same reason: the graph carries `@xyflow/react` and its layout engine. */
 const GraphColumn = lazy(() =>
   import('../workflow-graph/task-graph').then((m) => ({ default: m.TaskGraphView })),
@@ -85,7 +90,7 @@ const GraphColumn = lazy(() =>
  * `/tasks/:id` — the task workspace (spec `.ai/specs/2026-10-07-task-workspace.md`): the run
  * header, its route tabs replaced by the saved-layout strip, and one to three resizable columns
  * below. Each column embeds an existing view; `embedded` drops that view's own header and nothing
- * else. `/changes`, `/files`, `/commits`, `/graph`, `/preview` and `/terminal` render this route with `view`
+ * else. `/changes`, `/files`, `/commits`, `/graph`, `/preview`, `/assets` and `/terminal` render this route with `view`
  * set, which opens that view as a card and leaves every saved layout alone (§5.3).
  */
 export function TaskWorkspaceRoute({ view }: { view?: ViewId }) {
@@ -148,7 +153,7 @@ export function TaskWorkspaceRoute({ view }: { view?: ViewId }) {
 function DeepLinkLoading({ view }: { view?: ViewId }) {
   if (view === 'files') return <GitTabLoading tab="files" />
   if (view === 'terminal') return <GitTabLoading tab="terminal" />
-  if (view === 'browser') return <GitTabLoading tab="preview" />
+  if (view === 'browser' || view === 'assets') return <GitTabLoading tab="preview" />
   if (view === 'changes' || view === 'commits' || view === 'graph') return <GitTabLoading tab="changes" />
   return <ThreadLoading />
 }
@@ -655,6 +660,13 @@ function WorkspaceView({
           return (
             <Suspense fallback={<ColumnLoading title="Loading graph…" />}>
               <GraphColumn run={run} embedded />
+            </Suspense>
+          )
+        case 'assets':
+          // A layout of the Assets view alone keeps its selection in the URL; a split one does not.
+          return (
+            <Suspense fallback={<ColumnLoading title="Loading assets…" />}>
+              <AssetsColumn runId={run.id} routed={column.width >= 100} />
             </Suspense>
           )
         case 'terminal':

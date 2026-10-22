@@ -399,6 +399,23 @@ export const AppRoutes = memo(function AppRoutes() {
             </Suspense>
           }
         />
+        {/* Spec 2026-10-22-html-artifacts-and-impact: `:name` is the open asset. */}
+        <Route
+          path="tasks/:id/assets"
+          element={
+            <Suspense fallback={<GitTabLoading tab="preview" />}>
+              <TaskWorkspaceRoute view="assets" />
+            </Suspense>
+          }
+        />
+        <Route
+          path="tasks/:id/assets/:name"
+          element={
+            <Suspense fallback={<GitTabLoading tab="preview" />}>
+              <TaskWorkspaceRoute view="assets" />
+            </Suspense>
+          }
+        />
         <Route
           path="tasks/:id/terminal"
           element={

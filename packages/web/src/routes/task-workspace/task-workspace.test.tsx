@@ -172,7 +172,7 @@ describe('the task workspace (main)', () => {
     await ready()
 
     // Changes second; Terminal last, as a tab that toggles the drawer.
-    expect(cardNames()).toEqual(['Chat', 'Changes', 'Commits', 'Files', 'Preview', 'Terminal'])
+    expect(cardNames()).toEqual(['Chat', 'Changes', 'Commits', 'Files', 'Preview', 'Assets', 'Terminal'])
     expect(activeCard()).toBe('Chat')
     // One strip, never both: the old route links are gone from the header.
     expect(screen.queryByRole('link', { name: 'Changes' })).toBeNull()
@@ -194,7 +194,7 @@ describe('the task workspace (main)', () => {
 
     fireEvent.keyDown(window, { key: 'Meta', metaKey: true })
     // The six views, then Notes — saved layouts are not numbered.
-    await waitFor(() => expect(hints()).toEqual(['1', '2', '3', '4', '5', '6', '7']))
+    await waitFor(() => expect(hints()).toEqual(['1', '2', '3', '4', '5', '6', '7', '8']))
     fireEvent.keyUp(window, { key: 'Meta' })
     await waitFor(() => expect(hints()).toEqual([]))
     vi.unstubAllGlobals()

@@ -49,6 +49,7 @@ import {
   getRunDiff,
   getRunDrafts,
   getRunArtifacts,
+  getRunArtifactText,
   getRunFile,
   getRunHandoff,
   getRuns,
@@ -198,6 +199,9 @@ export const queryKeys = {
     file: (id: string, path: string) => [queryScope(), 'runs', 'files', id, path] as const,
     /** Under `runs`, so the reconnect reconcile (`runs.all`) refetches it too. */
     artifacts: (id: string) => [queryScope(), 'runs', 'artifacts', id] as const,
+    /** Keyed by `updatedAt`: a rewritten file is a new key, so the SSE listing alone refreshes it. */
+    artifactText: (id: string, name: string, updatedAt: string) =>
+      [queryScope(), 'runs', 'artifact-text', id, name, updatedAt] as const,
     handoff: (id: string) => [queryScope(), 'runs', 'handoff', id] as const,
     /** Unsent drafts for one task (#939). Read once per visit and never refetched in the
      *  background — see `useRunDrafts`. */
@@ -1212,6 +1216,17 @@ export function useRunArtifacts(id: string | undefined) {
     queryFn: ({ signal }) => getRunArtifacts(id as string, { signal }),
     enabled: Boolean(id),
     retry: false,
+  })
+}
+
+/** A markdown/JSON artifact's text, for the Assets view. */
+export function useRunArtifactText(id: string, name: string | undefined, updatedAt: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.runs.artifactText(id, name ?? '', updatedAt ?? ''),
+    queryFn: ({ signal }) => getRunArtifactText(id, name as string, { signal }),
+    enabled: name !== undefined && updatedAt !== undefined,
+    retry: false,
+    staleTime: Infinity,
   })
 }
 

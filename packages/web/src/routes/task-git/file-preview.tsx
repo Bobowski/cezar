@@ -242,7 +242,7 @@ function useFileTokens(path: string, text: string): SynToken[][] {
   return highlightSync(text, lang)?.tokens ?? plain
 }
 
-function CodeLines({ path, text }: { path: string; text: string }) {
+export function CodeLines({ path, text }: { path: string; text: string }) {
   const tokens = useFileTokens(path, text)
   return (
     <div

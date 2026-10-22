@@ -348,6 +348,7 @@ describe('request shapes', () => {
   it('hands out the raw artifact URL, the name encoded as one segment', () => {
     expect(runArtifactRawUrl('run-1', 'impact.html')).toBe('/api/v1/runs/run-1/artifacts/impact.html')
     expect(runArtifactRawUrl('run-1', 'a b.html')).toBe('/api/v1/runs/run-1/artifacts/a%20b.html')
+    expect(runArtifactRawUrl('run-1', 'impact.html', 2)).toBe('/api/v1/runs/run-1/artifacts/impact.html?v=2')
   })
 
   it('forwards an abort signal to fetch', async () => {

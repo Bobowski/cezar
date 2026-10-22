@@ -50,6 +50,10 @@ import type {
   CancelResponse,
   ChangesPayload,
   RunArtifactsResponse,
+  ArtifactsBySubjectResponse,
+  ImpactSubjectInput,
+  StartImpactInput,
+  StartImpactResponse,
   CheckoutProjectInput,
   CreateProjectInput,
   GithubOwnersResponse,
@@ -180,6 +184,7 @@ import {
   queryScope,
   runHistoryContextSchema,
   runHistoryPageSchema,
+  artifactsBySubjectResponseSchema,
   githubOwnersResponseSchema,
 } from '@open-mercato/cezar-api-client'
 import type { Ok, OkJson } from '@open-mercato/cezar-api-client'
@@ -1284,8 +1289,39 @@ export function getRunArtifactText(id: string, name: string, opts?: ReadOptions)
 
 /** One artifact's raw bytes, for an iframe/`<img>`/new tab — never fetched here. HTML is served
  *  with a CSP `sandbox` header, so even opened directly it gets an opaque origin (spec Q3). */
-export function runArtifactRawUrl(id: string, name: string): string {
-  return apiPath(runPath(id, `/artifacts/${encodeURIComponent(name)}`))
+export function runArtifactRawUrl(id: string, name: string, version?: number): string {
+  const kept = version === undefined ? '' : `?v=${version}`
+  return apiPath(runPath(id, `/artifacts/${encodeURIComponent(name)}${kept}`))
+}
+
+/** `pr:<n>` / `spec:<path>` — the `GET /artifacts?subject=` spelling of a subject. */
+export function impactSubjectKey(subject: ImpactSubjectInput): string {
+  return subject.kind === 'pr' ? `pr:${subject.number}` : `spec:${subject.path}`
+}
+
+/** Start an `assess-impact` run on a PR or a spec; the server resolves and pins the subject.
+ *  409/404 carry one human line (no gh, PR not open, spec not committed…). */
+export async function startImpact(input: StartImpactInput): Promise<StartImpactResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].impact.$post({ param: { projectId: queryScope() }, json: input }),
+    '/impact',
+  )
+}
+
+/** The newest run that assessed this subject, its artifacts, versions and staleness. */
+export async function getImpactForSubject(
+  subject: ImpactSubjectInput,
+  opts?: ReadOptions,
+): Promise<ArtifactsBySubjectResponse> {
+  const key = impactSubjectKey(subject)
+  return unwrapValidated(
+    await cez.api.v1.p[':projectId'].artifacts.$get(
+      { param: { projectId: queryScope() }, query: { subject: key } },
+      init(opts),
+    ),
+    `/artifacts?subject=${encodeURIComponent(key)}`,
+    artifactsBySubjectResponseSchema,
+  )
 }
 
 /** The variant-compare data (spec 010): one entry per variant of the group, with the legacy

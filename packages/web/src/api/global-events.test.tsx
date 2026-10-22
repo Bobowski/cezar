@@ -1259,6 +1259,31 @@ describe('useGlobalEvents — artifacts', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
+  it('keeps the kept versions, and patches an impact control showing that run', () => {
+    client.setQueryData(queryKeys.runs.artifacts('r1'), { artifacts: [], truncated: false })
+    const subject = {
+      run: { id: 'r1', status: 'running', title: 't', createdAt: '2026-10-22T10:00:00.000Z' },
+      subject: { kind: 'pr', number: 12, headSha: 'abc' },
+      artifacts: [],
+      truncated: false,
+      stale: false,
+    }
+    const other = { ...subject, run: { ...subject.run, id: 'r2' } }
+    client.setQueryData(queryKeys.runs.impactSubject('pr:12'), subject)
+    client.setQueryData(queryKeys.runs.impactSubject('pr:13'), other)
+    const { source } = mount()
+    const versions = [{ version: 1, updatedAt: '2026-10-22T10:00:00.000Z', files: ['impact.html'] }]
+    source.emit(
+      'artifacts',
+      JSON.stringify({ type: 'artifacts', runId: 'r1', artifacts: [artifact('impact.html')], truncated: false, versions, project: BOOT }),
+    )
+
+    expect(client.getQueryData(queryKeys.runs.artifacts('r1'))).toEqual({ artifacts: [artifact('impact.html')], truncated: false, versions })
+    expect(client.getQueryData(queryKeys.runs.impactSubject('pr:12'))).toEqual({ ...subject, artifacts: [artifact('impact.html')], versions })
+    expect(client.getQueryData(queryKeys.runs.impactSubject('pr:13'))).toEqual(other)
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
   it('creates no cache for a run nobody opened, and ignores another project', () => {
     client.setQueryData(queryKeys.runs.artifacts('r1'), { artifacts: [], truncated: false })
     const { source } = mount()

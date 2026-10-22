@@ -3,7 +3,12 @@ import { lifecycleQueryKeys } from './worktree-lifecycle'
 import { dashboardProjectTransition, dashboardTransition } from './dashboard-truth'
 import { dashboardWorkspaceUsageSchema } from '@open-mercato/cezar-api-client'
 import { dashboardLive } from './dashboard-live'
-import { runArtifactsEventSchema, trackerChangedEventSchema, type RunArtifactsResponse } from '@open-mercato/cezar-api-client'
+import {
+  runArtifactsEventSchema,
+  trackerChangedEventSchema,
+  type ArtifactsBySubjectResponse,
+  type RunArtifactsResponse,
+} from '@open-mercato/cezar-api-client'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { createContext, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
 
@@ -675,14 +680,19 @@ export function useGlobalEvents(usage: UsageStore, url: string = SSE_URL): void 
         try { payload = JSON.parse((event as MessageEvent<string>).data) } catch { return }
         const parsed = runArtifactsEventSchema.safeParse(payload)
         if (!parsed.success) return
-        const { project, runId, artifacts, truncated } = parsed.data
+        const { project, runId, artifacts, truncated, versions } = parsed.data
         if (project !== undefined && project !== activeProject(queryClient)) {
           inactiveProjectRefresher.onEvent(project)
           return
         }
+        const listing: RunArtifactsResponse = { artifacts, truncated, ...(versions ? { versions } : {}) }
         const key = queryKeys.runs.artifacts(runId)
-        if (queryClient.getQueryData(key) === undefined) return
-        queryClient.setQueryData<RunArtifactsResponse>(key, { artifacts, truncated })
+        if (queryClient.getQueryData(key) !== undefined) queryClient.setQueryData<RunArtifactsResponse>(key, listing)
+        // An impact control showing this run (Assessing… → Open impact) takes the same listing.
+        queryClient.setQueriesData<ArtifactsBySubjectResponse>(
+          { queryKey: queryKeys.runs.impactSubjects },
+          (answer) => (answer?.run?.id === runId ? patchSubjectListing(answer, listing) : answer),
+        )
       })
 
       for (const name of WORKSPACE_EVENT_NAMES) {
@@ -887,3 +897,10 @@ export function useRunUsage(runId: string | undefined): ProcessUsage | undefined
 
 const noopSubscribe = (): (() => void) => () => undefined
 const getEmptyUsage = (): Record<string, ProcessUsage> => EMPTY_USAGE
+
+/** A subject answer with its run's listing replaced (the frame is the WHOLE listing). */
+function patchSubjectListing(answer: ArtifactsBySubjectResponse, listing: RunArtifactsResponse): ArtifactsBySubjectResponse {
+  if (answer.run === null) return answer
+  const { versions: _old, ...rest } = answer
+  return { ...rest, artifacts: listing.artifacts, truncated: listing.truncated, ...(listing.versions ? { versions: listing.versions } : {}) }
+}

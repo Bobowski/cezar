@@ -1,9 +1,10 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createQueryClient } from '@/api/query-client'
+import { queryKeys } from '@/api/queries'
 import { resetViewMemory } from '@/lib/view-memory'
 import type { ApiRun, HealthResponse } from '@open-mercato/cezar-api-client'
 
@@ -23,6 +24,8 @@ vi.mock('../workflow-graph/task-graph', () => ({
 const { TaskWorkspaceRoute, classifyReference } = await import('./task-workspace')
 
 let hostLayouts: Record<string, unknown> = {}
+/** `GET /runs/r1/artifacts` (spec 2026-10-22-html-artifacts-and-impact). */
+let hostArtifacts: { artifacts: unknown[]; truncated: boolean } = { artifacts: [], truncated: false }
 /** `~/.cezar/ui-state.json`: where layouts saved for every task live (`savedLayouts`). */
 let hostUiState: Record<string, unknown> = {}
 
@@ -30,6 +33,7 @@ beforeEach(() => {
   localStorage.clear()
   hostLayouts = {}
   hostUiState = {}
+  hostArtifacts = { artifacts: [], truncated: false }
   // jsdom lays nothing out; give the strip room so it does not fold every card into `…`.
   vi.spyOn(Element.prototype, 'clientWidth', 'get').mockReturnValue(2000)
 })
@@ -104,6 +108,7 @@ function stubFetch({ terminal = true }: { terminal?: boolean } = {}) {
         return jsonResponse({ files: [], stat: { adds: 0, dels: 0, files: 0 } })
       }
       if (method === 'GET' && path.startsWith(`/api/v1/runs/${RUN.id}/commits`)) return jsonResponse({ commits: [] })
+      if (method === 'GET' && path === `/api/v1/runs/${RUN.id}/artifacts`) return jsonResponse(hostArtifacts)
       if (method === 'GET' && path.startsWith(`/api/v1/runs/${RUN.id}/files`)) {
         return jsonResponse({ type: 'dir', path: '', entries: [] })
       }
@@ -622,5 +627,50 @@ describe('classifyReference', () => {
     expect(classifyReference('3f7eaf02')).toEqual({ view: 'commits', value: '3f7eaf02' })
     expect(classifyReference('/etc/passwd')).toBeNull()
     expect(classifyReference('e.g')).toBeNull()
+  })
+})
+
+describe('the task workspace — Assets (spec 2026-10-22-html-artifacts-and-impact)', () => {
+  const DEMO = { name: 'demo.html', kind: 'html', title: 'Dry-run demo', size: 10, updatedAt: '2026-10-22T10:00:00.000Z' }
+  const NOTES = { name: 'notes.md', kind: 'markdown', title: 'Notes', size: 10, updatedAt: '2026-10-22T11:00:00.000Z' }
+  const badge = () => document.querySelector('[data-fixed="assets"] [data-slot="tab-badge"]')?.textContent ?? null
+
+  it('deep-links to the Assets view, framing the published page, with a count on its tab', async () => {
+    stubFetch()
+    hostArtifacts = { artifacts: [DEMO], truncated: false }
+    renderWorkspace('assets' as ViewId)
+    await ready()
+    await waitFor(() => expect(document.querySelector('iframe[title="Dry-run demo"]')).not.toBeNull())
+    expect(activeCard()).toBe('Assets1')
+    expect(badge()).toBe('1')
+  })
+
+  it('the listing the SSE frame replaces bumps the tab badge live', async () => {
+    stubFetch()
+    hostArtifacts = { artifacts: [DEMO], truncated: false }
+    const client = createQueryClient()
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/tasks/r1']}>
+          <Routes>
+            <Route path="/tasks/:id" element={<TaskWorkspaceRoute />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await ready()
+    await waitFor(() => expect(badge()).toBe('1'))
+    act(() => {
+      client.setQueryData(queryKeys.runs.artifacts('r1'), { artifacts: [DEMO, NOTES], truncated: false })
+    })
+    await waitFor(() => expect(badge()).toBe('2'))
+  })
+
+  it('shows no badge while the run has published nothing', async () => {
+    stubFetch()
+    renderWorkspace()
+    await ready()
+    await waitFor(() => expect(document.querySelector('[data-fixed="assets"]')).not.toBeNull())
+    expect(badge()).toBeNull()
   })
 })

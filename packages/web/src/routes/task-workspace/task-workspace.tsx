@@ -11,7 +11,7 @@ import { Activity, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useS
 import { useNavigationType, useParams } from 'react-router'
 
 import { ApiError } from '@/api/client'
-import { useHealth, useMarkRunSeen, useRun } from '@/api/queries'
+import { useHealth, useMarkRunSeen, useRun, useRunArtifacts } from '@/api/queries'
 import { useRunHistory } from '@/api/run-history'
 import type { ApiRun } from '@open-mercato/cezar-api-client'
 import { CenteredState } from '@/components/centered-state'
@@ -368,6 +368,10 @@ function WorkspaceView({
     [drawerShown, terminalColumnShown],
   )
 
+  // The Assets tab's count — the listing the SSE `artifacts` frame keeps live.
+  const assetCount = useRunArtifacts(run.id).data?.artifacts?.length ?? 0
+  const badges = useMemo(() => (assetCount > 0 ? { assets: assetCount } : undefined), [assetCount])
+
   // Memoized: `RunHeader` is memo'd on prop identity.
   const tabs = useMemo(
     () => (
@@ -391,9 +395,11 @@ function WorkspaceView({
         onColumnDropClose={closeColumnByDrop}
         keyHints={keyHints}
         showKeyHints={keysHeld}
+        badges={badges}
       />
     ),
     [
+      badges,
       cardLayouts,
       layouts.state.active,
       fixedViews,

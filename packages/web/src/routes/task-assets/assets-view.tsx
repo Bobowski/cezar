@@ -100,7 +100,7 @@ export function AssetsView({ runId, routed }: { runId: string; routed: boolean }
   }
 
   return (
-    <section data-slot="assets-view" className="flex min-h-0 flex-1 flex-col bg-background">
+    <section data-slot="assets-view" className="flex h-full min-h-0 flex-col bg-background">
       <div
         data-slot="assets-toolbar"
         role="toolbar"

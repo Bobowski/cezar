@@ -7,6 +7,7 @@ Everything the [README](../README.md) leaves out: the full configuration, every 
 - [Multiple projects, one cockpit](#multiple-projects-one-cockpit)
 - [Workflow format](#workflow-format)
 - [How it runs agents](#how-it-runs-agents) (environment variables, troubleshooting)
+- [Impact reports: `cez impact`](#impact-reports-cez-impact)
 - [Talking to a running cockpit](#talking-to-a-running-cockpit) (`cez runs`, `cez task`, `cez automation`, the HTTP API)
 - [Coding agent backends](#coding-agent-backends)
 - [Remote access (host cezar on a server)](#remote-access-host-cezar-on-a-server)
@@ -541,6 +542,37 @@ the disk holding the repo. `CEZ_AGENT_TMPDIR=0` turns the whole mechanism off �
 per-task directory and pre-spawn check alike — and hands agents the host
 `TMPDIR` again, which is the way out if the check itself is wrong on your
 platform.
+
+---
+
+## Impact reports: `cez impact`
+
+`cez impact` validates and renders a change-impact report: an architect's and product
+owner's view of a pull request or a spec (spec
+[`2026-10-22-html-artifacts-and-impact`](../.ai/specs/2026-10-22-html-artifacts-and-impact.md)).
+It is local. It needs no running cockpit and no `CEZ_API_URL`, never fetches and never
+checks anything out. Paths default to `$CEZ_ARTIFACTS_DIR` when it is set, otherwise the
+current directory.
+
+```bash
+cez impact evidence --base main --head HEAD    # commit-pinned evidence.json for a range
+cez impact evidence --pr 123                   # the PR's exact base/head SHAs, via gh
+cez impact evidence --spec .ai/specs/x.md      # spec text, its blob SHA at HEAD, cited paths
+cez impact render                              # review.json (model v4) → impact.html
+cez impact render --input r.json --out r.html
+cez impact render --demo                       # the made-up example → impact-demo.html
+```
+
+- **`evidence`** writes `evidence.json`: the pinned comparison, the changed files, context
+  documents, and `public_surface_candidates` (changed paths that look like a public API in
+  their ecosystem: package exports, OpenAPI, Shopware/PHP routes, events, `services.xml`,
+  entity definitions, migrations, CLI, env, config). A commit that is not available locally
+  is reported, not fetched. `--repo <dir>` points it at another checkout.
+- **`render`** validates the model and prints `ok: <file> (N views)`. An invalid model prints
+  one `path: problem` line per issue, exits `1` and writes nothing, so an older report is
+  never overwritten by a broken one. Usage errors exit `2`.
+- The report is one self-contained HTML file with a strict CSP that allows no network. It
+  follows the system theme; `impact.html#theme=dark` or `#theme=light` forces one.
 
 ---
 

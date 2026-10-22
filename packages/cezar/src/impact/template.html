@@ -248,6 +248,20 @@ dialog::backdrop{background:var(--backdrop)}
 .ev .loc{font-family:var(--mono);font-size:11px;margin:6px 0;color:var(--muted-fg);overflow-wrap:anywhere}
 .ev p{font-size:13px;color:var(--muted-fg);white-space:pre-wrap;overflow-wrap:anywhere}
 .nojs{padding:24px}
+/* what changed since the previous version (R4) */
+.changes{background:var(--card);border:1px solid var(--border);border-left:3px solid var(--violet);border-radius:10px;padding:12px 16px;display:flex;flex-direction:column;gap:10px}
+.changes h2{font-size:15px;font-weight:600}
+.chg-group{display:flex;flex-direction:column;gap:6px}
+.chg-group ul{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
+.chg{display:inline-flex;align-items:baseline;gap:6px;font-size:12px;color:var(--muted-fg);border:1px solid var(--border-strong);border-radius:999px;padding:2px 10px;max-width:100%;text-align:left;overflow-wrap:anywhere}
+button.chg:hover{color:var(--fg);border-color:var(--primary)}
+.chg-g{font-family:var(--mono);font-weight:600}
+.chg-k{font-family:var(--mono);font-size:10.5px;color:var(--soft-fg)}
+.chg.added .chg-g,.lb.chg-added{color:var(--success)}.chg.changed .chg-g,.lb.chg-changed{color:var(--pending-ink)}
+.chg.removed{border-style:dashed;color:var(--soft-fg);text-decoration:line-through;text-decoration-color:var(--soft-fg)}.chg.removed .chg-g,.lb.chg-removed{color:var(--danger-ink)}
+.chg-more,.chg-none{font-size:12px;color:var(--soft-fg);align-self:center}
+.rev{display:inline-block;vertical-align:middle;font:600 9.5px/1.5 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--violet);border:1px solid color-mix(in srgb,var(--violet) 45%,transparent);border-radius:999px;padding:0 6px;margin-left:6px}
+.flash{outline:2px solid var(--violet);outline-offset:3px;transition:outline-color .6s}
 @media (max-width:1100px){.map-layout{grid-template-columns:minmax(0,1fr)}.inspector{border-left:0;border-top:1px solid var(--border)}.compare .boards{grid-template-columns:minmax(640px,1fr)}.compare .board-wrap+.board-wrap{border-left:0;border-top:1px solid var(--border)}.fit-row{grid-template-columns:160px minmax(0,1fr) minmax(0,1fr)}}
 @media (max-width:760px){.wrap{padding:0 16px 32px;gap:32px}.rp-nav .nav-in{padding:6px 16px 0}.facts,.decision,.flow-cols,.flow-out{grid-template-columns:1fr}.flow-col+.flow-col{border-left:0;border-top:1px solid var(--border)}.fit-row{grid-template-columns:1fr;gap:6px}.credit{display:none}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -264,10 +278,11 @@ dialog::backdrop{background:var(--backdrop)}
       <div class="top-actions"><span class="credit">Created by the Open Mercato Team · <a href="https://github.com/open-mercato/open-mercato" target="_blank" rel="noopener noreferrer">GitHub ↗</a></span><button class="btn" id="all-evidence" type="button">All evidence</button></div>
     </div>
     <div><h1 id="review-title"></h1><p class="sub" id="review-subtitle"></p></div>
+    __WHAT_CHANGED__
     <p class="summary" id="summary"></p>
     <div class="facts" id="facts" aria-label="The three things to know"></div>
     <div class="decision">
-      <div class="dec-card"><span class="lb">Recommendation · the agent’s reading, not an approval</span><h2 id="decision-label"></h2><p id="decision-rationale"></p><div class="srcs" id="decision-evidence"></div></div>
+      <div class="dec-card" id="decision-card"><span class="lb">Recommendation · the agent’s reading, not an approval</span><h2 id="decision-label"></h2><p id="decision-rationale"></p><div class="srcs" id="decision-evidence"></div></div>
       <ol class="conditions" id="conditions" aria-label="Conditions to settle"></ol>
     </div>
     <p class="scope" id="scope-note"></p>
@@ -580,7 +595,41 @@ function renderJudgment(){
 }
 
 // ---- selection, ask bridge, keyboard ---------------------------------------------------------
-function applySel(){document.querySelectorAll("[data-ref]").forEach(el=>el.classList.toggle("sel",selectedRef!==null&&el.dataset.ref===selectedRef));}
+function applySel(){document.querySelectorAll("[data-ref]").forEach(el=>el.classList.toggle("sel",selectedRef!==null&&el.dataset.ref===selectedRef));markRevised();}
+
+// ---- what changed (R4): the strip is rendered server-side; it also names the revised elements --
+const revKey=(kind,id)=>kind+"\u0000"+id;
+const revised=new Set([...document.querySelectorAll("#what-changed [data-goto]")].map(b=>revKey(b.dataset.gotoKind,b.dataset.goto)));
+const revTag='<span class="rev">Revised</span>';
+function tagRevised(host){if(host&&!host.querySelector(":scope>.rev"))host.insertAdjacentHTML("beforeend",revTag);}
+function markRevised(){
+  if(!revised.size)return;
+  document.querySelectorAll("[data-ref]").forEach(el=>{
+    if(!revised.has(revKey(el.dataset.kind,el.dataset.ref)))return;
+    el.classList.add("revised");
+    if(el.namespaceURI!=="http://www.w3.org/1999/xhtml")return; // an SVG edge: the text list carries its tag
+    tagRevised(el.tagName==="TR"?el.cells[0]:el.querySelector("h3")||el.querySelector("strong")||el.querySelector(".nk")||el.querySelector(".lb")||el);
+  });
+  views.forEach((v,i)=>{if(revised.has(revKey("view",v.id)))tagRevised(document.querySelector("#view-"+i+" h3"));});
+  if(revised.has(revKey("decision","decision")))tagRevised($("decision-card").querySelector(".lb"));
+  if(revised.has(revKey("summary","summary")))tagRevised($("summary"));
+}
+function goTo(kind,id){
+  let el=null;
+  if(kind==="view"){const i=views.findIndex(v=>v.id===id);el=i>=0?$("view-"+i):null;}
+  else if(kind==="decision")el=$("decision-card");
+  else if(kind==="summary")el=$("summary");
+  else{
+    if(kind==="flow"||kind==="flow-step"){const i=review.flows.findIndex(f=>kind==="flow"?f.id===id:id.startsWith(f.id+"/"));if(i>=0&&i!==flowIndex){flowIndex=i;renderFlow();}}
+    if(kind==="node"){const i=viewIndexOf(id);if(i>=0){boards[i].selected=id;if(boards[i].mode==="before")boards[i].mode="after";renderMap(i);}}
+    el=[...document.querySelectorAll("[data-ref]")].find(x=>x.dataset.kind===kind&&x.dataset.ref===id)||null;
+    if(el){selectedRef=id;}
+  }
+  applySel();
+  if(!el)return;
+  el.scrollIntoView({behavior:reduced?"auto":"smooth",block:"center"});
+  el.classList.add("flash");setTimeout(()=>el.classList.remove("flash"),1600);
+}
 function postRef(el){
   if(!framed)return;
   window.parent.postMessage({type:"cezar.artifact.ref",ref:el.dataset.ref,label:(el.dataset.label||el.dataset.ref).slice(0,200)},"*");
@@ -595,6 +644,7 @@ function activate(el){
 document.addEventListener("click",ev=>{
   const t=ev.target;if(!(t instanceof Element))return;
   const evb=t.closest("[data-evidence]");if(evb){showEvidence([evb.dataset.evidence]);return;}
+  const go=t.closest("[data-goto]");if(go){goTo(go.dataset.gotoKind,go.dataset.goto);return;}
   const nav=t.closest("[data-target]");if(nav){scrollToId(nav.dataset.target);return;}
   const jump=t.closest("[data-jump]");if(jump){scrollToId(jump.dataset.jump);return;}
   const exp=t.closest("[data-expand]");if(exp){toggleApi(exp);return;}
@@ -612,7 +662,7 @@ document.addEventListener("keydown",ev=>{
   ev.preventDefault();el.dispatchEvent(new MouseEvent("click",{bubbles:true}));
 });
 
-renderCapabilities();renderMaps();renderApi();renderFlow();renderJudgment();spy();
+renderCapabilities();renderMaps();renderApi();renderFlow();renderJudgment();markRevised();spy();
 let previousWidth=document.documentElement.clientWidth;
 window.addEventListener("resize",()=>{const width=document.documentElement.clientWidth;if(width!==previousWidth){previousWidth=width;renderMaps();renderFlow();applySel();}});
 </script>

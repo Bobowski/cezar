@@ -55,6 +55,29 @@ describe('runImpactCommand', () => {
     expect(existsSync(join(repo.root, 'impact.html'))).toBe(true);
   });
 
+  it('render says how many elements changed since the previous version', async () => {
+    repo = fixtureRepo();
+    const demo = JSON.parse(readFileSync(new URL('./demo-review.json', import.meta.url), 'utf8'));
+    writeFileSync(join(repo.root, 'review.json'), JSON.stringify(demo));
+    const { ctx, out } = context(repo.root);
+    expect(await runImpactCommand(['render'], ctx)).toBe(0);
+    expect(await runImpactCommand(['render'], ctx)).toBe(0);
+    demo.capabilities[0].title = 'Edited';
+    writeFileSync(join(repo.root, 'review.json'), JSON.stringify(demo));
+    expect(await runImpactCommand(['render'], ctx)).toBe(0);
+    demo.tradeoffs.splice(0, 1);
+    demo.fit[0].status = 'tension';
+    writeFileSync(join(repo.root, 'review.json'), JSON.stringify(demo));
+    expect(await runImpactCommand(['render'], ctx)).toBe(0);
+    const html = join(repo.root, 'impact.html');
+    expect(out).toEqual([
+      `ok: ${html} (2 views)`,
+      `ok: ${html} (2 views) · 0 changes since v1`,
+      `ok: ${html} (2 views) · 1 change since v2`,
+      `ok: ${html} (2 views) · 2 changes since v3`,
+    ]);
+  });
+
   it('an invalid model exits 1 with one issue per line and writes nothing', async () => {
     repo = fixtureRepo();
     const demo = JSON.parse(readFileSync(new URL('./demo-review.json', import.meta.url), 'utf8'));

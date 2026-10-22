@@ -3,6 +3,7 @@ import {
   DownloadIcon,
   ExternalLinkIcon,
   FileIcon,
+  HistoryIcon,
   LayersIcon,
   LoaderCircleIcon,
   PanelLeftCloseIcon,
@@ -11,12 +12,12 @@ import {
   ShieldCheckIcon,
   TriangleAlertIcon,
 } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { useParams } from 'react-router'
 
 import { runArtifactRawUrl } from '@/api/client'
 import { useRunArtifacts, useRunArtifactText } from '@/api/queries'
-import type { RunArtifact } from '@open-mercato/cezar-api-client'
+import type { ApiRun, RunArtifact, RunArtifactVersion } from '@open-mercato/cezar-api-client'
 import { CenteredState } from '@/components/centered-state'
 import { useResolvedTheme } from '@/components/theme-provider'
 import { Button } from '@/components/ui/button'
@@ -44,6 +45,8 @@ import {
   readViewFocus,
   writeViewFocus,
 } from './assets-model'
+import { useArtifactRefBridge, type ArtifactReference } from './artifact-bridge'
+import { AssetsAskComposer } from './ask-composer'
 
 export const ASSETS_EMPTY_TITLE = 'No assets yet'
 export const ASSETS_EMPTY_SUBTITLE =
@@ -57,7 +60,7 @@ export const ASSETS_EMPTY_SUBTITLE =
  * URL (`tasks/:id/assets/:name`). In a split layout it stays local — navigating there would swap
  * the user's arrangement for the Assets tab.
  */
-export function AssetsView({ runId, routed }: { runId: string; routed: boolean }) {
+export function AssetsView({ runId, routed, run }: { runId: string; routed: boolean; run?: ApiRun }) {
   const listing = useRunArtifacts(runId)
   const params = useParams<{ name?: string }>()
   const navigate = useNavigate()
@@ -76,6 +79,21 @@ export function AssetsView({ runId, routed }: { runId: string; routed: boolean }
 
   const [focus, setFocus] = useFocus()
   const [reloads, setReloads] = useState(0)
+
+  // An older kept revision of the open file (R4), or undefined for the current one. Belongs to the
+  // file it was picked on: switching asset returns to current.
+  const [picked, setPicked] = useState<{ name: string; version: number } | undefined>(undefined)
+  const versions = current?.kind === 'html' ? versionsOf(listing.data?.versions, current.name) : []
+  const newest = versions.at(-1)?.version
+  const viewing =
+    picked && current && picked.name === current.name && picked.version !== newest && versions.some((v) => v.version === picked.version)
+      ? picked.version
+      : undefined
+
+  // The Ask bridge (R4): a reference from THIS frame becomes a chip, nothing more.
+  const frameRef = useRef<HTMLIFrameElement | null>(null)
+  const [reference, setReference] = useState<ArtifactReference | null>(null)
+  useArtifactRefBridge(frameRef, setReference)
 
   if (listing.isPending) {
     return (
@@ -122,6 +140,27 @@ export function AssetsView({ runId, routed }: { runId: string; routed: boolean }
             sandboxed
           </span>
         ) : null}
+        {current && versions.length > 1 ? (
+          <VersionMenu
+            versions={versions}
+            viewing={viewing}
+            onSelect={(version) => setPicked(version === newest ? undefined : { name: current.name, version })}
+          />
+        ) : null}
+        {viewing !== undefined ? (
+          <span data-slot="assets-viewing-version" className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            Viewing v{viewing}
+            <span aria-hidden="true">—</span>
+            <button
+              type="button"
+              data-action="assets-version-current"
+              onClick={() => setPicked(undefined)}
+              className="font-medium text-foreground underline underline-offset-2"
+            >
+              back to current
+            </button>
+          </span>
+        ) : null}
         {listing.data.truncated ? (
           <span className="hidden text-[11px] text-muted-foreground md:inline">Showing the first 64 files</span>
         ) : null}
@@ -144,7 +183,7 @@ export function AssetsView({ runId, routed }: { runId: string; routed: boolean }
               <Button asChild variant="ghost" size="icon-sm" className="text-muted-foreground">
                 <a
                   data-action="assets-open"
-                  href={runArtifactRawUrl(runId, current.name)}
+                  href={runArtifactRawUrl(runId, current.name, viewing)}
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label="Open in new tab"
@@ -156,7 +195,7 @@ export function AssetsView({ runId, routed }: { runId: string; routed: boolean }
               <Button asChild variant="ghost" size="icon-sm" className="text-muted-foreground">
                 <a
                   data-action="assets-download"
-                  href={runArtifactRawUrl(runId, current.name)}
+                  href={runArtifactRawUrl(runId, current.name, viewing)}
                   download={current.name}
                   aria-label="Download"
                   title="Download"
@@ -181,7 +220,13 @@ export function AssetsView({ runId, routed }: { runId: string; routed: boolean }
         </div>
       </div>
       {current ? (
-        <AssetBody key={`${current.name}@${current.updatedAt}#${reloads}`} runId={runId} artifact={current} />
+        <AssetBody
+          key={`${current.name}@${current.updatedAt}#${reloads}v${viewing ?? ''}`}
+          runId={runId}
+          artifact={current}
+          version={viewing}
+          frameRef={frameRef}
+        />
       ) : (
         <CenteredState
           icon={<LayersIcon />}
@@ -191,7 +236,59 @@ export function AssetsView({ runId, routed }: { runId: string; routed: boolean }
           subtitle={ASSETS_EMPTY_SUBTITLE}
         />
       )}
+      {run && current ? (
+        <AssetsAskComposer run={run} reference={reference} onClearReference={() => setReference(null)} />
+      ) : null}
     </section>
+  )
+}
+
+/** The kept revisions that hold `name`, oldest first (the listing's own order). */
+function versionsOf(all: readonly RunArtifactVersion[] | undefined, name: string): RunArtifactVersion[] {
+  return (all ?? []).filter((version) => version.files.includes(name))
+}
+
+/** R4's version menu: `vN · age`, newest first; the newest is the current file. */
+function VersionMenu({
+  versions,
+  viewing,
+  onSelect,
+}: {
+  versions: readonly RunArtifactVersion[]
+  viewing: number | undefined
+  onSelect: (version: number) => void
+}) {
+  const newest = versions.at(-1)
+  const shown = viewing ?? newest?.version
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          data-action="assets-versions"
+          aria-label={`Version v${shown} — pick another version`}
+          className="h-7 gap-1 px-2 text-[12px] text-muted-foreground"
+        >
+          <HistoryIcon aria-hidden="true" className="size-3.5" />
+          v{shown}
+          {newest && viewing === undefined ? <span className="hidden sm:inline">· {shortAge(newest.updatedAt)} ago</span> : null}
+          <ChevronDownIcon aria-hidden="true" className="size-3.5 opacity-60" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-56">
+        <DropdownMenuLabel>Versions</DropdownMenuLabel>
+        <DropdownMenuRadioGroup value={String(shown)} onValueChange={(value) => onSelect(Number(value))}>
+          {[...versions].reverse().map((version) => (
+            <DropdownMenuRadioItem key={version.version} value={String(version.version)} data-version={version.version}>
+              v{version.version} · {shortAge(version.updatedAt)} ago
+              {version.version === newest?.version ? <span className="ml-auto text-[11px] text-muted-foreground">current</span> : null}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -259,15 +356,27 @@ function AssetSwitcher({
 
 /** One asset, by kind. Keyed by name + `updatedAt` + reloads above, so a rewrite or Reload
  *  remounts it — the frame re-requests the page. */
-function AssetBody({ runId, artifact }: { runId: string; artifact: RunArtifact }) {
+function AssetBody({
+  runId,
+  artifact,
+  version,
+  frameRef,
+}: {
+  runId: string
+  artifact: RunArtifact
+  /** A kept revision (`?v=`), or undefined for the current file. */
+  version?: number
+  frameRef?: RefObject<HTMLIFrameElement | null>
+}) {
   const theme = useResolvedTheme()
-  const raw = runArtifactRawUrl(runId, artifact.name)
+  const raw = runArtifactRawUrl(runId, artifact.name, version)
   switch (artifact.kind) {
     case 'html':
       // Never `srcdoc`, never `allow-same-origin`: the served page carries its own CSP sandbox too
       // (spec Q3), and `#theme=` lets the page match the cockpit without reaching into it.
       return (
         <iframe
+          ref={frameRef}
           data-slot="assets-frame"
           title={artifactLabel(artifact)}
           src={`${raw}#theme=${theme}`}

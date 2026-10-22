@@ -76,3 +76,16 @@ export const runSubjectSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('spec'), path: z.string(), blobSha: z.string() }),
 ]);
 export type RunSubject = z.infer<typeof runSubjectSchema>;
+
+/**
+ * The ONE message an Assets frame may post to the cockpit (spec R4, "Ask and correct"): a
+ * reference to a report element, which only becomes a removable chip in the docked composer.
+ * `label` is unbounded here on purpose — the cockpit caps it at 200 chars rather than dropping
+ * the whole reference over a long title.
+ */
+export const artifactRefMessageSchema = z.object({
+  type: z.literal('cezar.artifact.ref'),
+  ref: z.string().min(1).max(128),
+  label: z.string(),
+});
+export type ArtifactRefMessage = z.infer<typeof artifactRefMessageSchema>;

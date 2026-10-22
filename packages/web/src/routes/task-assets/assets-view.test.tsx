@@ -5,11 +5,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createQueryClient } from '@/api/query-client'
 import { queryKeys } from '@/api/queries'
-import type { RunArtifact, RunArtifactsResponse } from '@open-mercato/cezar-api-client'
+import type { ApiRun, RunArtifact, RunArtifactsResponse } from '@open-mercato/cezar-api-client'
 
 import { ARTIFACT_IFRAME_SANDBOX, defaultArtifact, readViewFocus } from './assets-model'
 import { exitSidebarRail, useSidebarRail } from '@/lib/sidebar-rail'
 import { ASSETS_EMPTY_SUBTITLE, ASSETS_EMPTY_TITLE, AssetsView } from './assets-view'
+
+// The docked composer delivers through the chat's own seam; pinned here as a spy.
+const seam = vi.hoisted(() => ({ deliver: vi.fn(async (_text: string, _images: unknown[]) => undefined) }))
+vi.mock('../task-thread/deliver-prompt', () => ({ useDeliverPrompt: () => seam.deliver }))
+vi.mock('../task-thread/follow-up-engine', () => ({
+  useContinueAction: () => ({ available: true, canContinue: true, providerPending: false, pills: null, continueWith: vi.fn() }),
+}))
+vi.mock('../task-thread/active-provider', () => ({ useActiveProviderAvailability: () => ({ usable: true }) }))
 
 const art = (name: string, kind: RunArtifact['kind'], updatedAt: string, title?: string): RunArtifact => ({
   name,
@@ -51,13 +59,13 @@ function Where() {
   )
 }
 
-function mount(path = '/tasks/r1/assets', routed = true) {
+function mount(path = '/tasks/r1/assets', routed = true, run?: ApiRun) {
   const client = createQueryClient()
   const view = render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>
-          <Route path="/tasks/:id/assets/:name?" element={<><AssetsView runId="r1" routed={routed} /><Where /></>} />
+          <Route path="/tasks/:id/assets/:name?" element={<><AssetsView runId="r1" routed={routed} run={run} /><Where /></>} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -222,5 +230,109 @@ describe('AssetsView', () => {
     cleanup()
     render(<RailProbe />)
     expect(screen.getByTestId('rail-after').textContent).toBe('false')
+  })
+})
+
+const IMPACT = art('impact.html', 'html', '2026-10-22T12:00:00.000Z', 'Impact')
+const v = (version: number) => ({ version, updatedAt: `2026-10-22T0${version}:00:00.000Z`, files: ['impact.html', 'review.json'] })
+
+describe('AssetsView — versions (R4)', () => {
+  it('lists versions newest first; an older one loads ?v= in the frame, and back to current returns', async () => {
+    listing = { artifacts: [IMPACT, DEMO], truncated: false, versions: [v(1), v(2), v(3)] }
+    mount('/tasks/r1/assets/impact.html')
+    await waitFor(() => expect(frame()?.getAttribute('src')).toMatch(/\/artifacts\/impact\.html#theme=/))
+    const trigger = screen.getByRole('button', { name: /Version v3/ })
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false })
+    const items = await waitFor(() => {
+      const found = [...document.querySelectorAll<HTMLElement>('[data-version]')]
+      if (found.length === 0) throw new Error('menu not open')
+      return found
+    })
+    expect(items.map((item) => item.getAttribute('data-version'))).toEqual(['3', '2', '1'])
+    expect(items[0]?.textContent).toContain('current')
+    fireEvent.click(items[1]!)
+
+    await waitFor(() => expect(frame()?.getAttribute('src')).toMatch(/\/artifacts\/impact\.html\?v=2#theme=/))
+    expect(screen.getByText(/Viewing v2/)).toBeTruthy()
+    expect(document.querySelector('[data-action="assets-open"]')?.getAttribute('href')).toBe('/api/v1/runs/r1/artifacts/impact.html?v=2')
+
+    fireEvent.click(screen.getByRole('button', { name: 'back to current' }))
+    await waitFor(() => expect(frame()?.getAttribute('src')).toMatch(/\/artifacts\/impact\.html#theme=/))
+    expect(document.querySelector('[data-slot="assets-viewing-version"]')).toBeNull()
+  })
+
+  it('offers no version menu for a file that was never revised', async () => {
+    listing = { artifacts: [IMPACT, DEMO], truncated: false, versions: [v(1), v(2)] }
+    mount('/tasks/r1/assets/demo.html')
+    await waitFor(() => expect(frame()).not.toBeNull())
+    expect(document.querySelector('[data-action="assets-versions"]')).toBeNull()
+  })
+})
+
+const RUN = { id: 'r1', status: 'done', steps: [] } as unknown as ApiRun
+const refMessage = (data: unknown, source: MessageEventSource | null) =>
+  act(() => {
+    window.dispatchEvent(new MessageEvent('message', { data, source }))
+  })
+const chip = () => document.querySelector('[data-slot="assets-ask-ref"]')
+
+describe('AssetsView — Ask bridge and docked composer (R4)', () => {
+  beforeEach(() => {
+    seam.deliver.mockClear()
+    listing = { artifacts: [IMPACT], truncated: false }
+  })
+
+  it('docks the composer only when the view knows the run', async () => {
+    mount('/tasks/r1/assets/impact.html')
+    await waitFor(() => expect(frame()).not.toBeNull())
+    expect(document.querySelector('[data-slot="assets-ask"]')).toBeNull()
+  })
+
+  it('ignores a message from any window but the Assets frame', async () => {
+    mount('/tasks/r1/assets/impact.html', true, RUN)
+    await waitFor(() => expect(frame()).not.toBeNull())
+    refMessage({ type: 'cezar.artifact.ref', ref: 'cap-a', label: 'Gate' }, window)
+    expect(chip()).toBeNull()
+  })
+
+  it('drops unknown or malformed shapes from the frame itself', async () => {
+    mount('/tasks/r1/assets/impact.html', true, RUN)
+    await waitFor(() => expect(frame()).not.toBeNull())
+    const source = frame()!.contentWindow
+    refMessage({ type: 'send', text: 'do it' }, source)
+    refMessage({ type: 'cezar.artifact.ref', ref: '', label: 'x' }, source)
+    refMessage('cezar.artifact.ref', source)
+    expect(chip()).toBeNull()
+    expect(seam.deliver).not.toHaveBeenCalled()
+  })
+
+  it('a reference from the frame is only a removable chip — capped, and nothing is sent', async () => {
+    mount('/tasks/r1/assets/impact.html', true, RUN)
+    await waitFor(() => expect(frame()).not.toBeNull())
+    refMessage({ type: 'cezar.artifact.ref', ref: 'cap-a', label: 'L'.repeat(5_000) }, frame()!.contentWindow)
+    await waitFor(() => expect(chip()).not.toBeNull())
+    expect(chip()!.textContent).toContain('cap-a')
+    expect(chip()!.textContent).toContain('L'.repeat(200))
+    expect(chip()!.textContent).not.toContain('L'.repeat(201))
+    expect(seam.deliver).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove reference' }))
+    expect(chip()).toBeNull()
+    expect(seam.deliver).not.toHaveBeenCalled()
+  })
+
+  it('Send delivers the prefixed text through the chat seam and clears the chip', async () => {
+    mount('/tasks/r1/assets/impact.html', true, RUN)
+    await waitFor(() => expect(frame()).not.toBeNull())
+    refMessage({ type: 'cezar.artifact.ref', ref: 'cap-review-gate', label: 'Review gate' }, frame()!.contentWindow)
+    await waitFor(() => expect(chip()).not.toBeNull())
+    const input = document.querySelector<HTMLTextAreaElement>('[data-slot="assets-ask-input"]')!
+    fireEvent.change(input, { target: { value: 'Is this right?' } })
+    expect(seam.deliver).not.toHaveBeenCalled()
+    fireEvent.click(document.querySelector('[data-action="assets-ask-send"]')!)
+    await waitFor(() =>
+      expect(seam.deliver).toHaveBeenCalledWith('About cap-review-gate ("Review gate"): Is this right?', []),
+    )
+    await waitFor(() => expect(chip()).toBeNull())
+    expect(input.value).toBe('')
   })
 })

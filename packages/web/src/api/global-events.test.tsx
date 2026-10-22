@@ -1234,3 +1234,40 @@ describe('worktree lifecycle SSE invalidations', () => {
     expect(client.getQueryState(key)?.isInvalidated).toBe(false)
   })
 })
+
+describe('useGlobalEvents — artifacts', () => {
+  const artifact = (name: string, updatedAt = '2026-10-22T10:00:00.000Z') => ({
+    name,
+    kind: 'html' as const,
+    title: name,
+    size: 10,
+    updatedAt,
+  })
+  const frame = (runId: string, names: string[], project: string | undefined = BOOT) =>
+    JSON.stringify({ type: 'artifacts', runId, artifacts: names.map((name) => artifact(name)), truncated: false, project })
+
+  it('replaces the cached listing for that run — never merges', () => {
+    client.setQueryData(queryKeys.runs.artifacts('r1'), { artifacts: [artifact('old.html')], truncated: true })
+    const { source } = mount()
+
+    source.emit('artifacts', frame('r1', ['demo.html', 'notes.md']))
+
+    expect(client.getQueryData(queryKeys.runs.artifacts('r1'))).toEqual({
+      artifacts: [artifact('demo.html'), artifact('notes.md')],
+      truncated: false,
+    })
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('creates no cache for a run nobody opened, and ignores another project', () => {
+    client.setQueryData(queryKeys.runs.artifacts('r1'), { artifacts: [], truncated: false })
+    const { source } = mount()
+
+    source.emit('artifacts', frame('r2', ['demo.html']))
+    source.emit('artifacts', frame('r1', ['demo.html'], 'some-other-project'))
+    source.emit('artifacts', '{not json')
+
+    expect(client.getQueryData(queryKeys.runs.artifacts('r2'))).toBeUndefined()
+    expect(client.getQueryData(queryKeys.runs.artifacts('r1'))).toEqual({ artifacts: [], truncated: false })
+  })
+})

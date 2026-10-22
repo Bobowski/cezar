@@ -3,7 +3,7 @@ import { lifecycleQueryKeys } from './worktree-lifecycle'
 import { dashboardProjectTransition, dashboardTransition } from './dashboard-truth'
 import { dashboardWorkspaceUsageSchema } from '@open-mercato/cezar-api-client'
 import { dashboardLive } from './dashboard-live'
-import { trackerChangedEventSchema } from '@open-mercato/cezar-api-client'
+import { runArtifactsEventSchema, trackerChangedEventSchema, type RunArtifactsResponse } from '@open-mercato/cezar-api-client'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { createContext, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
 
@@ -664,6 +664,25 @@ export function useGlobalEvents(usage: UsageStore, url: string = SSE_URL): void 
         clearTimeout(lifecycleTimer)
         lifecycleTimer = setTimeout(refreshLifecycle, 100)
         lifecycleMaxTimer ??= setTimeout(refreshLifecycle, 1000)
+      })
+
+      // A run's artifact listing changed (spec 2026-10-22-html-artifacts-and-impact). The frame is
+      // the WHOLE listing, so it replaces the cached answer; only a cache someone opened is patched.
+      current.addEventListener('artifacts', (event) => {
+        if (disposed || source !== current) return
+        lastFrameAt = Date.now()
+        let payload: unknown
+        try { payload = JSON.parse((event as MessageEvent<string>).data) } catch { return }
+        const parsed = runArtifactsEventSchema.safeParse(payload)
+        if (!parsed.success) return
+        const { project, runId, artifacts, truncated } = parsed.data
+        if (project !== undefined && project !== activeProject(queryClient)) {
+          inactiveProjectRefresher.onEvent(project)
+          return
+        }
+        const key = queryKeys.runs.artifacts(runId)
+        if (queryClient.getQueryData(key) === undefined) return
+        queryClient.setQueryData<RunArtifactsResponse>(key, { artifacts, truncated })
       })
 
       for (const name of WORKSPACE_EVENT_NAMES) {

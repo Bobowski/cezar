@@ -48,6 +48,7 @@ import {
   getRunGitStatus,
   getRunDiff,
   getRunDrafts,
+  getRunArtifacts,
   getRunFile,
   getRunHandoff,
   getRuns,
@@ -195,6 +196,8 @@ export const queryKeys = {
     changes: (id: string) => [queryScope(), 'runs', 'changes', id] as const,
     gitStatus: (id: string) => [queryScope(), 'runs', 'git-status', id] as const,
     file: (id: string, path: string) => [queryScope(), 'runs', 'files', id, path] as const,
+    /** Under `runs`, so the reconnect reconcile (`runs.all`) refetches it too. */
+    artifacts: (id: string) => [queryScope(), 'runs', 'artifacts', id] as const,
     handoff: (id: string) => [queryScope(), 'runs', 'handoff', id] as const,
     /** Unsent drafts for one task (#939). Read once per visit and never refetched in the
      *  background — see `useRunDrafts`. */
@@ -1197,6 +1200,17 @@ export function useRunFile(id: string | undefined, path: string | undefined) {
     queryKey: queryKeys.runs.file(id ?? '', path ?? ''),
     queryFn: ({ signal }) => getRunFile(id as string, path as string, { signal }),
     enabled: Boolean(id) && path !== undefined,
+    retry: false,
+  })
+}
+
+/** A run's published artifacts. Kept live by the `artifacts` SSE frame, which REPLACES this
+ *  answer (global-events.tsx) — so no polling here. */
+export function useRunArtifacts(id: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.runs.artifacts(id ?? ''),
+    queryFn: ({ signal }) => getRunArtifacts(id as string, { signal }),
+    enabled: Boolean(id),
     retry: false,
   })
 }

@@ -49,6 +49,7 @@ import type {
   CancelAutoResumeResponse,
   CancelResponse,
   ChangesPayload,
+  RunArtifactsResponse,
   CheckoutProjectInput,
   CreateProjectInput,
   GithubOwnersResponse,
@@ -1263,6 +1264,23 @@ export async function getRunFile(id: string, path: string, opts?: ReadOptions): 
  *  Scoped here rather than in send() — this URL is handed to an `<img>`, never fetched. */
 export function runFileRawUrl(id: string, path: string): string {
   return apiPath(runPath(id, `/files?path=${encodeURIComponent(path)}&raw=1`))
+}
+
+/** The files the run's agent published for the user (spec 2026-10-22-html-artifacts-and-impact). */
+export async function getRunArtifacts(id: string, opts?: ReadOptions): Promise<RunArtifactsResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].runs[':id'].artifacts.$get(
+      { param: { projectId: queryScope(), id: encodeURIComponent(id) } },
+      init(opts),
+    ),
+    runPath(id, '/artifacts'),
+  )
+}
+
+/** One artifact's raw bytes, for an iframe/`<img>`/new tab — never fetched here. HTML is served
+ *  with a CSP `sandbox` header, so even opened directly it gets an opaque origin (spec Q3). */
+export function runArtifactRawUrl(id: string, name: string): string {
+  return apiPath(runPath(id, `/artifacts/${encodeURIComponent(name)}`))
 }
 
 /** The variant-compare data (spec 010): one entry per variant of the group, with the legacy

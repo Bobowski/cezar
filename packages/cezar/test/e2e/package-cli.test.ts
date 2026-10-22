@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile as execFileCallback } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -80,7 +80,8 @@ test('the release tarball installs and runs the dry-run CLI workflow', { timeout
     await writeFile(join(consumerDir, '.ai', 'cezar', 'config.json'), '{"skillsRepos": []}\n', 'utf8');
     const shipped = (await discoverSkills(consumerDir)).find((skill) => skill.name === 'change-impact');
     assert.equal(shipped?.source, 'builtin');
-    assert.equal(shipped?.path, join(packageRoot, 'skills', 'change-impact', 'SKILL.md'));
+    // realpath: the import resolves through a symlinked tmpdir (macOS /tmp → /private/tmp).
+    assert.equal(shipped?.path, join(await realpath(packageRoot), 'skills', 'change-impact', 'SKILL.md'));
 
     const fixtureRepo = join(root, 'fixture-repo');
     await mkdir(fixtureRepo);

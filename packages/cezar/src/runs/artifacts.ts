@@ -1,7 +1,7 @@
 import { watch, type FSWatcher } from 'node:fs';
 import { lstat, open, readdir } from 'node:fs/promises';
 import { extname, join } from 'node:path';
-import { ARTIFACT_NAME_RE, type RunArtifact, type RunArtifactKind } from '@open-mercato/cezar-contract';
+import { ARTIFACT_NAME_RE, type RunArtifact, type RunArtifactKind, type RunArtifactVersion } from '@open-mercato/cezar-contract';
 import { imageMimeType } from '../server/git-changes.ts';
 
 /**
@@ -19,6 +19,56 @@ const WATCH_DEBOUNCE_MS = 300;
 export interface ArtifactListing {
   artifacts: RunArtifact[];
   truncated: boolean;
+  versions?: RunArtifactVersion[];
+}
+
+/** Kept revisions live under `<dir>/.versions/<n>/` (spec R4); the scan's dotfile skip hides them. */
+export const VERSIONS_DIR = '.versions';
+const MAX_VERSIONS = 100;
+
+/** The directory of revision `version`. */
+export function artifactVersionDir(dir: string, version: number): string {
+  return join(dir, VERSIONS_DIR, String(version));
+}
+
+async function realDir(path: string): Promise<boolean> {
+  try {
+    return (await lstat(path)).isDirectory(); // lstat: a symlinked directory is refused
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Revision `version`'s directory when both `.versions` and `.versions/<n>` are real directories,
+ * else null. The agent can write here, so a planted symlink must never lead a read elsewhere.
+ */
+export async function existingVersionDir(dir: string, version: number): Promise<string | null> {
+  if (!(await realDir(join(dir, VERSIONS_DIR)))) return null;
+  const vdir = artifactVersionDir(dir, version);
+  return (await realDir(vdir)) ? vdir : null;
+}
+
+/** Kept revisions, oldest first (the newest 100). Never throws; no `.versions` is `[]`. */
+export async function listArtifactVersions(dir: string): Promise<RunArtifactVersion[]> {
+  if (!(await realDir(join(dir, VERSIONS_DIR)))) return [];
+  let names: string[];
+  try {
+    names = await readdir(join(dir, VERSIONS_DIR));
+  } catch {
+    return [];
+  }
+  const numbers = names.filter((name) => /^[1-9][0-9]{0,5}$/.test(name)).map(Number).sort((a, b) => a - b);
+  const versions: RunArtifactVersion[] = [];
+  for (const version of numbers.slice(-MAX_VERSIONS)) {
+    const vdir = await existingVersionDir(dir, version);
+    if (!vdir) continue;
+    const { artifacts } = await scanArtifacts(vdir);
+    if (artifacts.length === 0) continue;
+    const newest = artifacts.reduce((a, b) => (a.updatedAt >= b.updatedAt ? a : b));
+    versions.push({ version, updatedAt: newest.updatedAt, files: artifacts.map((a) => a.name).sort() });
+  }
+  return versions;
 }
 
 /** `CEZ_ARTIFACTS_CDN=0` closes the CDN script allowlist (owner decision O1: default on). */
@@ -118,7 +168,8 @@ export async function scanArtifacts(dir: string): Promise<ArtifactListing> {
       updatedAt: new Date(file.mtimeMs).toISOString(),
     });
   }
-  return { artifacts, truncated: files.length > MAX_ARTIFACTS };
+  const versions = await listArtifactVersions(dir);
+  return { artifacts, truncated: files.length > MAX_ARTIFACTS, ...(versions.length ? { versions } : {}) };
 }
 
 /**

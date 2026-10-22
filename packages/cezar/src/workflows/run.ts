@@ -90,6 +90,7 @@ import { loadWorkflows, newerCatalogWorkflow } from './load.ts';
 import type { QueuedMessage, RunRecord, RunStore, StepState } from '../runs/store.ts';
 import { artifactsDir } from '../runs/store.ts';
 import { artifactsPromptPart, scanArtifacts, watchArtifacts } from '../runs/artifacts.ts';
+import { backstopRender } from '../impact/publish.ts';
 // Task dispatch (spec 2026-09-10-dispatch). Every import below is inert unless the feature is
 // ON *and* the run carries a `dispatch`: `dispatchOf()` is the single gate, and a run without one
 // takes byte-for-byte the path it took before this feature existed.
@@ -2221,7 +2222,7 @@ export class RunManager {
     // The terminal rescan: whatever the last turn wrote after its own turn end still shows up.
     state?.artifactsWatch?.close();
     if (state) state.artifactsWatch = undefined;
-    void this.rescanArtifacts(runId);
+    void this.rescanArtifacts(runId, { render: true });
     this.active.delete(runId);
     // Session result has settled and its sink has flushed before terminal cleanup.
     this.store.clearRunSecrets(runId);
@@ -2349,10 +2350,14 @@ export class RunManager {
 
   /**
    * Rescan a run's artifacts and publish the listing when it changed. The ONE helper both
-   * turn-end handlers, the watcher and the terminal transition call (spec Q2).
+   * turn-end handlers, the watcher and the terminal transition call (spec Q2). `render` (turn
+   * ends and the terminal transition, never the watcher, which fires mid-write) first runs the
+   * impact backstop: a `review.json` newer than its `impact.html` is rendered here.
    */
-  async rescanArtifacts(runId: string): Promise<void> {
-    const listing = await scanArtifacts(artifactsDir(this.dataDir, runId));
+  async rescanArtifacts(runId: string, options: { render?: boolean } = {}): Promise<void> {
+    const dir = artifactsDir(this.dataDir, runId);
+    if (options.render) await backstopRender(dir);
+    const listing = await scanArtifacts(dir);
     const signature = JSON.stringify(listing);
     const previous = this.artifactSignatures.get(runId) ?? JSON.stringify({ artifacts: [], truncated: false });
     if (signature === previous) return;
@@ -4343,7 +4348,7 @@ export class RunManager {
         sink.flushAll();
         turnText = this.store.redactRunText(runId, turnText);
         void this.recordTurnEnd(runId, turnText, state); // titleSummary + diffStat (#389)
-        void this.rescanArtifacts(runId); // the guarantee behind the watcher (spec 2026-10-22-html-artifacts Q2)
+        void this.rescanArtifacts(runId, { render: true }); // the guarantee behind the watcher (spec 2026-10-22-html-artifacts Q2), plus the impact backstop
         const sessionOpen = !state.cancelled && state.session?.open;
         // Did the backend end this turn purely to compact its own context (#955)? Absent on
         // every runner that has no such signal, and on every recording written before the
@@ -6405,7 +6410,7 @@ export class RunManager {
         sink.flushAll();
         turnText = this.store.redactRunText(runId, turnText);
         void this.recordTurnEnd(runId, turnText, state); // titleSummary + diffStat (#389)
-        void this.rescanArtifacts(runId); // the guarantee behind the watcher (spec 2026-10-22-html-artifacts Q2)
+        void this.rescanArtifacts(runId, { render: true }); // the guarantee behind the watcher (spec 2026-10-22-html-artifacts Q2), plus the impact backstop
         const sessionOpen = !state.cancelled && state.session?.open;
         // The twin of `runContinuation`'s read — see there for why the field is absent on
         // every runner and every recording that predates it (#955).

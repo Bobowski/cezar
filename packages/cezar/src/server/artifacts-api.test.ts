@@ -160,6 +160,39 @@ describe('GET /runs/:id/artifacts[/:name]', () => {
     expect((await apiRequest(app, '/api/v1/runs/nope/artifacts/a.html')).status).toBe(404);
   });
 
+  // Kept revisions (spec R4): `?v=<n>` serves `.versions/<n>/` through the same membership guard.
+  it('serves a kept version with identical headers and lists the versions', async () => {
+    writeFileSync(join(dir, 'impact.html'), '<title>v2</title>');
+    mkdirSync(join(dir, '.versions/1'), { recursive: true });
+    writeFileSync(join(dir, '.versions/1/impact.html'), '<title>v1</title>');
+    writeFileSync(join(dir, '.versions/1/review.json'), '{}');
+    const current = await get('/impact.html');
+    const old = await get('/impact.html?v=1');
+    expect(old.status).toBe(200);
+    expect(await old.text()).toBe('<title>v1</title>');
+    expect(await current.text()).toBe('<title>v2</title>');
+    for (const header of ['content-type', 'content-security-policy', 'x-content-type-options', 'referrer-policy', 'cross-origin-resource-policy', 'cache-control']) {
+      expect(old.headers.get(header), header).toBe(current.headers.get(header));
+    }
+    const list = runArtifactsResponseSchema.parse(await (await get('')).json());
+    expect(list.versions).toEqual([{ version: 1, updatedAt: expect.any(String), files: ['impact.html', 'review.json'] }]);
+    expect(list.artifacts.map((a) => a.name)).toEqual(['impact.html']);
+  });
+
+  it('404s an unknown version, 400s a malformed one, and never follows a planted .versions symlink', async () => {
+    writeFileSync(join(dir, 'impact.html'), '<p>now</p>');
+    expect((await get('/impact.html?v=7')).status).toBe(404);
+    expect((await get('/impact.html?v=0')).status).toBe(400);
+    expect((await get('/impact.html?v=..')).status).toBe(400);
+    mkdirSync(join(outside, '1'));
+    writeFileSync(join(outside, '1/secret.html'), '<p>secret</p>');
+    symlinkSync(outside, join(dir, '.versions'));
+    const res = await get('/secret.html?v=1');
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain('secret</p>');
+    expect(runArtifactsResponseSchema.parse(await (await get('')).json()).versions).toBeUndefined();
+  });
+
   it('answers an empty listing when the directory does not exist yet', async () => {
     rmSync(dir, { recursive: true, force: true });
     const body = runArtifactsResponseSchema.parse(await (await get('')).json());

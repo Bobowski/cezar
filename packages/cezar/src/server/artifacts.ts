@@ -2,7 +2,7 @@ import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import type { RunArtifact, RunArtifactsEvent } from '@open-mercato/cezar-contract';
+import type { RunArtifact, RunArtifactsEvent, RunArtifactVersion } from '@open-mercato/cezar-contract';
 import { imageMimeType } from './git-changes.ts';
 
 /**
@@ -93,6 +93,7 @@ export interface ArtifactsBusPayload {
   runId: string;
   artifacts: RunArtifact[];
   truncated: boolean;
+  versions?: RunArtifactVersion[];
 }
 
 /** The `artifacts` SSE frame; `project` only on the workspace stream. */
@@ -102,6 +103,7 @@ export function artifactsFrame(payload: ArtifactsBusPayload, project?: string): 
     runId: payload.runId,
     artifacts: payload.artifacts,
     truncated: payload.truncated,
+    ...(payload.versions?.length ? { versions: payload.versions } : {}),
     ...(project !== undefined ? { project } : {}),
   };
 }

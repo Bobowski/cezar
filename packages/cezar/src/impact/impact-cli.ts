@@ -4,10 +4,11 @@
  * working with CEZ_DISPATCH=0 and outside a cockpit. Paths default to `$CEZ_ARTIFACTS_DIR`, then
  * the current directory.
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { basename, dirname, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { collectEvidence, type CommandRunner, type EvidenceRequest } from './evidence.ts';
+import { IMPACT_HTML, publishImpact, writeAtomic } from './publish.ts';
 import { loadDemoReview, renderReview } from './render.ts';
 import { formatIssue } from './validate.ts';
 
@@ -33,14 +34,6 @@ function defaultDir(ctx: ImpactCliContext): string {
   return resolve(ctx.cwd, ctx.env.CEZ_ARTIFACTS_DIR || '.');
 }
 
-/** Write via tmp + rename so a watcher never sees a half-written report. */
-function writeAtomic(path: string, content: string): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, content, 'utf8');
-  renameSync(tmp, path);
-}
-
 export async function runImpactCommand(argv: string[], ctx: ImpactCliContext): Promise<number> {
   const [sub, ...rest] = argv;
   if (sub === undefined || sub === '-h' || sub === '--help' || sub === 'help') {
@@ -49,7 +42,7 @@ export async function runImpactCommand(argv: string[], ctx: ImpactCliContext): P
   }
   try {
     if (sub === 'evidence') return await evidenceCommand(rest, ctx);
-    if (sub === 'render') return renderCommand(rest, ctx);
+    if (sub === 'render') return await renderCommand(rest, ctx);
   } catch (error) {
     // parseArgs rejects unknown flags with a TypeError; that is a usage problem, not a crash.
     ctx.error(`cez impact ${sub}: ${error instanceof Error ? error.message : String(error)}`);
@@ -100,7 +93,7 @@ async function evidenceCommand(args: string[], ctx: ImpactCliContext): Promise<n
   return 0;
 }
 
-function renderCommand(args: string[], ctx: ImpactCliContext): number {
+async function renderCommand(args: string[], ctx: ImpactCliContext): Promise<number> {
   const { values } = parseArgs({
     args,
     options: { input: { type: 'string' }, out: { type: 'string' }, demo: { type: 'boolean', default: false } },
@@ -112,10 +105,10 @@ function renderCommand(args: string[], ctx: ImpactCliContext): number {
   }
   const dir = defaultDir(ctx);
   let model: unknown;
+  let text: string | undefined;
   if (values.demo) model = loadDemoReview();
   else {
     const input = values.input ? resolve(ctx.cwd, values.input) : resolve(dir, 'review.json');
-    let text: string;
     try {
       text = readFileSync(input, 'utf8');
     } catch {
@@ -135,7 +128,9 @@ function renderCommand(args: string[], ctx: ImpactCliContext): number {
     return 1;
   }
   const out = values.out ? resolve(ctx.cwd, values.out) : resolve(dir, values.demo ? 'impact-demo.html' : 'impact.html');
-  writeAtomic(out, result.html);
+  // The report itself is versioned (spec R4) exactly as the server's backstop does it.
+  if (basename(out) === IMPACT_HTML) await publishImpact(dirname(out), result.html, text ?? `${JSON.stringify(model, null, 2)}\n`);
+  else writeAtomic(out, result.html);
   const views = result.model.architecture.views.length;
   ctx.log(`ok: ${out} (${views} view${views === 1 ? '' : 's'})`);
   return 0;

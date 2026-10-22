@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { artifactsDir, RunStore, type RunRecord } from '../runs/store.ts';
 import { RunManager } from './run.ts';
+import { ASSESS_IMPACT_WORKFLOW } from './templates.ts';
 import type { WorkflowDef } from './types.ts';
 
 // The watcher only adds speed (spec Q2); it is silenced here so each case proves the turn-end
@@ -106,5 +107,17 @@ describe('artifacts rescan at turn end', () => {
     const before = published.length;
     await manager.rescanArtifacts(record.id);
     expect(published.length).toBe(before);
+  }, 40_000);
+
+  // The backstop (spec 2026-10-22 § Impact renderer): the dry-run mock leaves only review.json;
+  // the turn-end rescan validates and renders it, and the run's diff stays empty.
+  it('renders a review.json the turn left behind into impact.html, version 1', async () => {
+    const record = manager.startRun(ASSESS_IMPACT_WORKFLOW, { task: 'Assess the impact of the spec .ai/specs/x.md' });
+    currentId = record.id;
+    await waitFor(() => published.some((p) => p.names.includes('impact.html')), 30_000);
+    const dir = artifactsDir(join(repoRoot, '.ai/cezar'), record.id);
+    expect(existsSync(join(dir, 'review.json'))).toBe(true);
+    expect(existsSync(join(dir, '.versions/1/impact.html'))).toBe(true);
+    expect(existsSync(join(dir, 'impact.errors.txt'))).toBe(false);
   }, 40_000);
 });

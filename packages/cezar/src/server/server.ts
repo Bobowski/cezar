@@ -157,7 +157,7 @@ import { appendHandoffHeartbeat, handoffProgressExcerpt, readHandoff } from '../
 import { markStarted, onTodosChanged, readTodos, removeTodo, todoTaskText, type TodoItem } from '../todos.ts';
 import type { RunEvent, RunRecord, RunStatus, RunStore } from '../runs/store.ts';
 import { artifactsDir } from '../runs/store.ts';
-import { artifactsCdnEnabled, scanArtifacts } from '../runs/artifacts.ts';
+import { artifactsCdnEnabled, existingVersionDir, scanArtifacts } from '../runs/artifacts.ts';
 import { artifactHeaders, artifactsFrame, openArtifact, type ArtifactsBusPayload } from './artifacts.ts';
 import {
   HistoryCursorError,
@@ -188,6 +188,7 @@ import {
   runHistoryQuerySchema,
   runIdParamSchema,
   artifactNameParamSchema,
+  artifactFileQuerySchema,
   setRunDraftInputSchema,
   repoFileQuerySchema,
   type DeleteDraftResponse,
@@ -5280,11 +5281,15 @@ export function createApp(deps: ServerDeps) {
 
     // One artifact's bytes. Membership in a FRESH scan is the traversal guard (the scan lists
     // only regular, non-dot files), the same idea as `repoIndexContains`.
-    .get('/runs/:id/artifacts/:name', paramZodValidator(artifactNameParamSchema), async (c) => {
+    // `?v=<n>` serves kept revision n (spec R4) from `.versions/<n>/`, same guard, same headers.
+    .get('/runs/:id/artifacts/:name', paramZodValidator(artifactNameParamSchema), queryZodValidator(artifactFileQuerySchema), async (c) => {
       const { dataDir, store } = c.get('project');
       const { id, name } = c.req.valid('param');
       if (!store.getRun(id)) return c.json({ error: 'not found' }, 404);
-      const dir = artifactsDir(dataDir, id);
+      const { v } = c.req.valid('query');
+      const runDir = artifactsDir(dataDir, id);
+      const dir = v === undefined ? runDir : await existingVersionDir(runDir, Number(v));
+      if (!dir) return c.json({ error: 'artifact not found' }, 404);
       const artifact = (await scanArtifacts(dir)).artifacts.find((each) => each.name === name);
       const stream = artifact ? await openArtifact(dir, name) : null;
       if (!artifact || !stream) return c.json({ error: 'artifact not found' }, 404);

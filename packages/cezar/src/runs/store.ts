@@ -29,7 +29,7 @@ import { MAX_REF } from './task-refs.ts';
 import { workflowDefSchema } from '../workflows/types.ts';
 // A contract VALUE, like `workspaceUiStateSchema` in `workspace/migrations.ts`: the persisted
 // `dispatch` object and its wire half are literally the same schema, so they cannot drift.
-import type { RunArtifact } from '@open-mercato/cezar-contract';
+import type { RunArtifact, RunArtifactVersion } from '@open-mercato/cezar-contract';
 import { dispatchSchema, runSubjectSchema, trackerAssociationSchema, trackerAutomationEventSchema, worktreeLifecycleProjectionSchema } from '@open-mercato/cezar-contract';
 
 import { RUNNER_IDS } from '../core/agent-runner.ts';
@@ -1854,7 +1854,7 @@ export class RunStore extends EventEmitter {
   }
 
   /** Fan a changed artifact listing out to the SSE streams (spec 2026-10-22-html-artifacts). */
-  publishArtifacts(runId: string, listing: { artifacts: RunArtifact[]; truncated: boolean }): void {
+  publishArtifacts(runId: string, listing: { artifacts: RunArtifact[]; truncated: boolean; versions?: RunArtifactVersion[] }): void {
     if (!this.runs.has(runId)) return;
     this.emit('artifacts', { runId, ...listing });
   }

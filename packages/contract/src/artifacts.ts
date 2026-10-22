@@ -20,10 +20,27 @@ export const runArtifactSchema = z.object({
 });
 export type RunArtifact = z.infer<typeof runArtifactSchema>;
 
-/** `GET /runs/:id/artifacts`. `truncated`: the directory held more than the 64-file cap. */
+/**
+ * One kept revision under `.versions/<version>/` (spec R4): a successful impact render archives
+ * the report and the model it came from. The highest `version` is the one served without `?v=`.
+ */
+export const runArtifactVersionSchema = z.object({
+  version: z.number().int().positive(),
+  /** When the revision was cut, ISO-8601. */
+  updatedAt: z.string(),
+  /** The file names `?v=<version>` can serve. */
+  files: z.array(z.string()),
+});
+export type RunArtifactVersion = z.infer<typeof runArtifactVersionSchema>;
+
+/**
+ * `GET /runs/:id/artifacts`. `truncated`: the directory held more than the 64-file cap.
+ * `versions` (oldest first) only when at least one revision was kept.
+ */
 export const runArtifactsResponseSchema = z.object({
   artifacts: z.array(runArtifactSchema),
   truncated: z.boolean(),
+  versions: z.array(runArtifactVersionSchema).optional(),
 });
 export type RunArtifactsResponse = z.infer<typeof runArtifactsResponseSchema>;
 
@@ -34,6 +51,12 @@ export const artifactNameParamSchema = z.object({
   name: z.string().regex(ARTIFACT_NAME_RE),
 });
 export type ArtifactNameParam = z.infer<typeof artifactNameParamSchema>;
+
+/** `GET /runs/:id/artifacts/:name?v=<n>` — serve kept revision `n` (spec R4), same headers. */
+export const artifactFileQuerySchema = z.object({
+  v: z.string().regex(/^[1-9][0-9]{0,5}$/).optional(),
+});
+export type ArtifactFileQuery = z.infer<typeof artifactFileQuerySchema>;
 
 /**
  * The `artifacts` SSE frame, on `/api/v1/events` and `/api/v1/workspace/events` (where `project`

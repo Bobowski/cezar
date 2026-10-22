@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
-import { assertCezarHomeWriteIsSandboxed, cezarHomeDir } from '../paths.ts';
+import { assertCezarHomeWriteIsSandboxed, cezarHomeDir, cezBinPath } from '../paths.ts';
 import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 import {
   parseAskMarker,
@@ -1462,7 +1462,8 @@ export class RunManager {
       ...(apiUrl && this.projectId ? { CEZ_PROJECT_ID: this.projectId } : {}),
       // The cockpit's OWN entrypoint, so an agent runs `node "$CEZ_BIN" task …` and never an older
       // `cez` that happens to be on its PATH without the command (observed on the first live run).
-      ...(apiUrl && process.env.CEZ_BIN ? { CEZ_BIN: process.env.CEZ_BIN } : {}),
+      // Always set: `cez impact` is local and must work with dispatch off (spec 2026-10-22 Q7).
+      CEZ_BIN: cezBinPath(),
       // The tree directory — brief, notes, inbox — for a run in a dispatch tree only.
       ...(dispatch ? { CEZ_TREE_DIR: treeDir(this.dataDir, dispatch.rootRunId) } : {}),
     };

@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { scanArtifacts } from '../runs/artifacts.ts';
 import { runImpactCommand } from './impact-cli.ts';
+import type { ReviewModel } from './model.ts';
 import { backstopRender, IMPACT_ERRORS, IMPACT_HTML, publishImpact, REVIEW_JSON } from './publish.ts';
+import { validateReview } from './validate.ts';
 
 /**
  * The backstop render and report versions (spec 2026-10-22-html-artifacts-and-impact, Backstop +
@@ -13,7 +15,12 @@ import { backstopRender, IMPACT_ERRORS, IMPACT_HTML, publishImpact, REVIEW_JSON 
  */
 
 const demoText = readFileSync(new URL('./demo-review.json', import.meta.url), 'utf8');
-const demo = () => JSON.parse(demoText) as { meta: { title: string }; capabilities: Array<{ evidence: string[] }> };
+const demo = () => JSON.parse(demoText) as ReviewModel;
+const valid = (input: unknown = demo()): ReviewModel => {
+  const result = validateReview(input);
+  if (!result.ok) throw new Error('invalid model');
+  return result.model;
+};
 
 let dir: string;
 beforeEach(() => {
@@ -105,17 +112,18 @@ describe('versions', () => {
   it('never writes through a planted .versions symlink', async () => {
     const elsewhere = mkdtempSync(join(tmpdir(), 'cez-impact-elsewhere-'));
     symlinkSync(elsewhere, join(dir, '.versions'));
-    expect(await publishImpact(dir, '<p>r</p>', '{}')).toEqual({ version: 1 });
+    expect(await publishImpact(dir, valid(), '{}')).toEqual({ version: 1 });
     expect(existsSync(join(elsewhere, '1'))).toBe(false);
-    expect(read('.versions/1/impact.html')).toBe('<p>r</p>');
+    expect(read('.versions/1/impact.html')).toBe(read(IMPACT_HTML));
     rmSync(elsewhere, { recursive: true, force: true });
   });
 
   it('a report that predates versioning is archived before the first versioned render', async () => {
     writeFileSync(join(dir, IMPACT_HTML), '<p>legacy</p>');
-    expect(await publishImpact(dir, '<p>new</p>', '{}')).toEqual({ version: 2 });
+    expect(await publishImpact(dir, valid(), '{}')).toEqual({ version: 2 });
     expect(read('.versions/1/impact.html')).toBe('<p>legacy</p>');
-    expect(read(IMPACT_HTML)).toBe('<p>new</p>');
+    expect(read(IMPACT_HTML)).toContain('Created by the Open Mercato Team');
+    expect(read(IMPACT_HTML)).not.toContain('id="what-changed"'); // the legacy version has no model
   });
 
   it('`cez impact render` cuts versions through the same helper as the backstop', async () => {
@@ -130,5 +138,45 @@ describe('versions', () => {
     mkdirSync(join(dir, 'x'));
     expect(await runImpactCommand(['render', '--demo', '--out', 'x/demo.html'], ctx)).toBe(0);
     expect(existsSync(join(dir, 'x/.versions'))).toBe(false);
+  });
+});
+
+describe('what changed (R4)', () => {
+  it('compares with the previous version\'s model; the first version has nothing to compare with', async () => {
+    const first = await publishImpact(dir, valid(), demoText);
+    expect(first).toEqual({ version: 1 });
+    expect(read(IMPACT_HTML)).not.toContain('id="what-changed"');
+    const revised = demo();
+    revised.capabilities[0]!.title = 'Revised capability';
+    revised.api_changes.push({ ...revised.api_changes[1]!, id: 'api-added', name: 'addedSurface()' });
+    expect(await publishImpact(dir, valid(revised), JSON.stringify(revised))).toEqual({ version: 2, changes: { count: 2, since: 1 } });
+    const html = read(IMPACT_HTML);
+    expect(html).toContain('What changed in v2');
+    expect(html).toContain(`data-goto="${revised.capabilities[0]!.id}" data-goto-kind="capability" data-change="changed"`);
+    expect(html).toContain('data-goto="api-added" data-goto-kind="api" data-change="added"');
+  });
+
+  it('an invalid, unparsable or missing previous model renders without a diff', async () => {
+    for (const previous of ['{ nope', JSON.stringify({ ...demo(), schema_version: 3 })]) {
+      rmSync(join(dir, '.versions'), { recursive: true, force: true });
+      writeFileSync(join(dir, IMPACT_HTML), '<p>old</p>');
+      await publishImpact(dir, valid(), demoText); // v1 = legacy html, v2 = this
+      writeFileSync(join(dir, '.versions/2/review.json'), previous);
+      expect(await publishImpact(dir, valid(), demoText)).toEqual({ version: 3 });
+      expect(read(IMPACT_HTML)).not.toContain('id="what-changed"');
+    }
+    rmSync(join(dir, '.versions/3/review.json'));
+    expect(await publishImpact(dir, valid(), demoText)).toEqual({ version: 4 });
+  });
+
+  it('the backstop renders the diff too', async () => {
+    writeFileSync(join(dir, REVIEW_JSON), demoText);
+    expect(await backstopRender(dir)).toBe('rendered');
+    age(IMPACT_HTML);
+    const revised = demo();
+    revised.questions.splice(0, 1);
+    writeFileSync(join(dir, REVIEW_JSON), JSON.stringify(revised));
+    expect(await backstopRender(dir)).toBe('rendered');
+    expect(read(IMPACT_HTML)).toContain('data-change="removed"');
   });
 });

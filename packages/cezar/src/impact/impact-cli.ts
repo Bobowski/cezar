@@ -9,8 +9,8 @@ import { basename, dirname, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { collectEvidence, type CommandRunner, type EvidenceRequest } from './evidence.ts';
 import { IMPACT_HTML, publishImpact, writeAtomic } from './publish.ts';
-import { loadDemoReview, renderReview } from './render.ts';
-import { formatIssue } from './validate.ts';
+import { loadDemoReview, renderImpact } from './render.ts';
+import { formatIssue, validateReview } from './validate.ts';
 
 export interface ImpactCliContext {
   cwd: string;
@@ -122,16 +122,19 @@ async function renderCommand(args: string[], ctx: ImpactCliContext): Promise<num
       return 1;
     }
   }
-  const result = renderReview(model);
+  const result = validateReview(model);
   if (!result.ok) {
     for (const issue of result.issues) ctx.error(formatIssue(issue));
     return 1;
   }
   const out = values.out ? resolve(ctx.cwd, values.out) : resolve(dir, values.demo ? 'impact-demo.html' : 'impact.html');
   // The report itself is versioned (spec R4) exactly as the server's backstop does it.
-  if (basename(out) === IMPACT_HTML) await publishImpact(dirname(out), result.html, text ?? `${JSON.stringify(model, null, 2)}\n`);
-  else writeAtomic(out, result.html);
+  let since = '';
+  if (basename(out) === IMPACT_HTML) {
+    const { changes } = await publishImpact(dirname(out), result.model, text ?? `${JSON.stringify(model, null, 2)}\n`);
+    if (changes) since = ` · ${changes.count} change${changes.count === 1 ? '' : 's'} since v${changes.since}`;
+  } else writeAtomic(out, renderImpact(result.model));
   const views = result.model.architecture.views.length;
-  ctx.log(`ok: ${out} (${views} view${views === 1 ? '' : 's'})`);
+  ctx.log(`ok: ${out} (${views} view${views === 1 ? '' : 's'})${since}`);
   return 0;
 }

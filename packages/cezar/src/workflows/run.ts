@@ -1,5 +1,5 @@
 import { WorktreeLifecycleCoordinator } from '../worktree-lifecycle/coordinator.ts';
-import type { TrackerAssociation } from '@open-mercato/cezar-contract';
+import type { RunSubject, TrackerAssociation } from '@open-mercato/cezar-contract';
 import { TrackerAgentBindingError } from '../server/tracker/agent-credentials.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -831,6 +831,9 @@ export interface StartRunInput {
    * forces a worktree — testing a PR in the user's own checkout would test the wrong tree.
    */
   forkRef?: { sha: string; label: string; pr: RunRecord['prHead'] & object; prUrl: string; untrusted: boolean };
+  /** What an impact run assesses, pinned by `POST /impact` (spec 2026-10-22-html-artifacts-and-
+   *  impact Q10). Internal like `forkRef`: `POST /runs` has no such field. */
+  subject?: RunSubject;
 }
 
 /**
@@ -1588,6 +1591,7 @@ export class RunManager {
       this.store.updateRun(run.id, { inPlaceBranch: true, ...(input.branch ? { branch: input.branch } : {}) });
     }
     if (run.worktree === false && input.readOnly) this.store.updateRun(run.id, { readOnly: true });
+    if (input.subject) this.store.updateRun(run.id, { subject: input.subject });
     // A pull-request head run (spec 2026-10-06-agentic-e2e-checks Phase 3): the fetched sha is
     // recorded as the fork point BEFORE the run is queued, so `execute` — and a restart that
     // revives the queued run — forks from it through the "recorded fork point wins" rule rather

@@ -278,7 +278,10 @@ validated with the middleware trio:
 `/api/v1/github*` and `/api/v1/tracker*` keep their paths and shapes and become thin adapters over
 the GitHub integration and the **legacy** scope-anchored integration respectively — the one derived
 from `tracker.json`, else the first scope-anchored entry in `integrations.json` order; a stored entry
-matching `tracker.json`'s association shadows it rather than duplicating it. They are
+matching `tracker.json`'s association shadows it rather than duplicating it. The GitHub adapter
+is selected by **provider id**, not by the code-host role, and serves the frozen shapes **directly**
+(no `WorkItem → GithubItem` round-trip). Both adapters are proven by **wire goldens captured from
+the current handlers before any code moves**. They are
 deprecated in BACKWARD_COMPATIBILITY.md but not removed. `forgeInfoSchema.kind` in `health.ts`
 widens from `z.literal('github')` to the remote-anchored subset of the provider enum (a type change
 for `git-actions.ts`, shipped in the same commit).
@@ -296,9 +299,12 @@ Add `integrations.json` to `ensureDataGitignore`.
 The whole interface may change; these are the constraints, mockups belong to the GitHub spec's
 UI phase.
 
-- **Nav:** `GitHub` and `Tracker` merge into one **Issues** item (icon = generic; label stays
-  "GitHub" when GitHub is the only integration, to keep today's look). Route
-  `/p/:projectId/issues/:integrationId?`. `/github` and `/tracker` redirect.
+- **One integration = no visible change:** `GitHub` label, `/github/*` URLs, no switcher.
+- **Nav:** with two or more integrations (or one that is not GitHub), `GitHub` and `Tracker` merge
+  into one **Issues** item. Routes `/p/:projectId/issues/:iid`, `/issues/:iid/i/:itemId` (work item)
+  and `/issues/:iid/cr/:itemId` (change request — keeps GitLab `#12` and `!12` apart); `/github/*`
+  and `/tracker/*` deep links redirect only then. `projects[].integrations?` lets the sidebar gate
+  the item without network. Design and wireframes: [GitHub spec](2026-10-22-integration-github.md).
 - **Provider switcher:** a segmented control / tab strip of connected integrations with provider
   icon + scope (`GitHub · open-mercato/cezar`, `Jira · PROJ`), plus `+ Connect` leading to
   Settings → Integrations. Selection persists in ui-state (`issuesView.integrationId`, replacing
@@ -313,12 +319,16 @@ UI phase.
   item `key`. The existing tier-2 worded patterns in `task-refs.ts` stay intact for GitHub.
 - **"All" view (phase 4, optional):** merged feed across integrations sorted by `updatedAt`,
   only once each provider's list is cursor-stable.
-- **Settings → Integrations** replaces Settings → Issue tracker: catalog + readiness + connect.
+- **Settings → Integrations** (the existing `integrations` section, today holding the e2e "Test
+  frameworks" card) gains an **Issues & code** first tab — catalog + readiness + connect — and
+  absorbs Settings → Issue tracker.
 
 ## Run bookkeeping and task references
 
-`runs/store.ts` (`PR_URL_RE`, `ISSUE_URL_RE`) and `runs/task-refs.ts` hard-code github.com. Each
-manifest contributes `referencePatterns`: URL patterns (host-parametrized for self-managed),
+`runs/store.ts` (`PR_URL_RE`, `ISSUE_URL_RE`) and `runs/task-refs.ts` only know GitHub's URL shapes
+(those regexes are already host-agnostic and stay exactly as they are — narrowing them to known
+hosts would drop chips). Each new provider's manifest contributes `referencePatterns`: URL patterns
+(host-parametrized for self-managed),
 worded patterns, and a `key` pattern (Jira: the contract's `^[A-Z][A-Z0-9_]*-[1-9]\d*$`, matched **only for project
 keys of connected integrations** so `UTF-8` and `ISO-9001` never become refs; `AB#\d+` for ADO, `!\d+` for
 GitLab MRs). `extractTaskRefs` runs every pattern of the project's integrations; bare `#N`

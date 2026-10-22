@@ -88,6 +88,8 @@ import { createOrSwitchBranch } from '../server/git-changes.ts';
 import { getHeadCommit, getRepoInfo } from '../server/git.ts';
 import { loadWorkflows, newerCatalogWorkflow } from './load.ts';
 import type { QueuedMessage, RunRecord, RunStore, StepState } from '../runs/store.ts';
+import { artifactsDir } from '../runs/store.ts';
+import { artifactsPromptPart } from '../runs/artifacts.ts';
 // Task dispatch (spec 2026-09-10-dispatch). Every import below is inert unless the feature is
 // ON *and* the run carries a `dispatch`: `dispatchOf()` is the single gate, and a run without one
 // takes byte-for-byte the path it took before this feature existed.
@@ -897,6 +899,8 @@ export function agentDirectories(
   // brief, its notes, its inbox. Same rule as TMPDIR: the env names it, so the file tools must
   // reach it.
   if (env.CEZ_TREE_DIR) dirs.push(env.CEZ_TREE_DIR);
+  // The artifacts directory (spec 2026-10-22-html-artifacts): named in every step's prompt.
+  if (env.CEZ_ARTIFACTS_DIR) dirs.push(env.CEZ_ARTIFACTS_DIR);
   return dirs;
 }
 
@@ -1446,6 +1450,7 @@ export class RunManager {
       CEZ_HANDOFF_FILE: handoffPath(this.dataDir, runId),
       CEZ_TASK_ID: runId,
       CEZ_TODOS_FILE: generateFollowups ? todosPath(this.dataDir) : '',
+      CEZ_ARTIFACTS_DIR: artifactsDir(this.dataDir, runId),
       ...agentTmpEnv(this.dataDir, runId),
       // Task dispatch (spec 2026-09-10-dispatch): where the `cez task` CLI reaches this server and
       // which project the run belongs to. Absent (not empty) while the feature is off, so the env
@@ -2314,6 +2319,18 @@ export class RunManager {
    */
   private prepareAutomationsSession(state: ActiveRun): void {
     state.automationsPrompt = automationsReachable() ? AUTOMATIONS_PROMPT : undefined;
+  }
+
+  /**
+   * The artifacts directory for this owner (spec 2026-10-22-html-artifacts-and-impact), created
+   * at BOTH `ActiveRun` construction sites; never throws.
+   */
+  private prepareArtifactsSession(runId: string, _state: ActiveRun): void {
+    try {
+      mkdirSync(artifactsDir(this.dataDir, runId), { recursive: true });
+    } catch {
+      // a read-only data dir: no artifacts, the run itself is unaffected
+    }
   }
 
   /**
@@ -4201,6 +4218,7 @@ export class RunManager {
     // a run that quietly degrades into an ordinary task.
     this.prepareDispatchSession(runId, state);
     this.prepareAutomationsSession(state);
+    this.prepareArtifactsSession(runId, state);
 
     // Cancellation may have retired this continuation while its async preparation was running.
     // Do not let the late promise make a durably cancelled run look active again.
@@ -4562,6 +4580,7 @@ export class RunManager {
             dispatchPromptPart(state.dispatchPrompt, record?.systemPrompt),
             state.automationsPrompt,
             record?.systemPrompt,
+            artifactsPromptPart(artifactsDir(this.dataDir, runId)),
             generateFollowups ? HANDOFF_INSTRUCTIONS : HANDOFF_ONLY_INSTRUCTIONS,
           ),
           userPrompt: attachments.length
@@ -4971,6 +4990,7 @@ export class RunManager {
     // twin is in `runContinuation`.
     this.prepareDispatchSession(runId, state);
     this.prepareAutomationsSession(state);
+    this.prepareArtifactsSession(runId, state);
     let runError: string | null = null;
     let idleFailed = false;
     // `startRun` already persisted the task's attachments so a queued bubble can render them
@@ -6624,6 +6644,7 @@ export class RunManager {
             dispatchPromptPart(state.dispatchPrompt, extraSystemPrompt),
             state.automationsPrompt,
             extraSystemPrompt,
+            artifactsPromptPart(artifactsDir(this.dataDir, runId)),
             followupsEnabled() && input.generateFollowups !== false
               ? HANDOFF_INSTRUCTIONS
               : HANDOFF_ONLY_INSTRUCTIONS,

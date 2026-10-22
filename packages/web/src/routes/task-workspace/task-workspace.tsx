@@ -70,6 +70,8 @@ import { useWorkspaceLayouts } from './use-workspace-layouts'
 import { AvailableViewsContext } from './view-picker'
 import { ViewDropZones } from './view-drop-zones'
 import { WorkspaceColumns, type ColumnActions } from './workspace-columns'
+import { IMPACT_FILE, impactAssetsPath } from '../task-assets/impact-model'
+import { useImpactAutoSwitch } from '../task-assets/use-impact-auto-switch'
 
 /** Lazy: xterm is the heaviest thing on this screen, and most visits never open a shell. */
 const TerminalDrawer = lazy(() =>
@@ -369,7 +371,15 @@ function WorkspaceView({
   )
 
   // The Assets tab's count — the listing the SSE `artifacts` frame keeps live.
-  const assetCount = useRunArtifacts(run.id).data?.artifacts?.length ?? 0
+  const artifactListing = useRunArtifacts(run.id).data
+  const assetCount = artifactListing?.artifacts?.length ?? 0
+  useImpactAutoSwitch(
+    run,
+    Array.isArray(artifactListing?.artifacts)
+      ? artifactListing.artifacts.some((artifact) => artifact.name === IMPACT_FILE)
+      : undefined,
+    () => navigate(impactAssetsPath(run.id)),
+  )
   const badges = useMemo(() => (assetCount > 0 ? { assets: assetCount } : undefined), [assetCount])
 
   // Memoized: `RunHeader` is memo'd on prop identity.
@@ -672,7 +682,7 @@ function WorkspaceView({
           // A layout of the Assets view alone keeps its selection in the URL; a split one does not.
           return (
             <Suspense fallback={<ColumnLoading title="Loading assets…" />}>
-              <AssetsColumn runId={run.id} routed={column.width >= 100} />
+              <AssetsColumn runId={run.id} run={run} routed={column.width >= 100} />
             </Suspense>
           )
         case 'terminal':

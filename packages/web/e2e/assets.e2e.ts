@@ -1,5 +1,5 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -58,6 +58,7 @@ let bootProject: string
 let runId: string
 
 const scoped = (path: string) => `/p/${bootProject}${path}`
+const SPEC = '.ai/specs/2026-10-23-demo.md'
 
 beforeAll(async () => {
   dataRoot = mkdtempSync(join(tmpdir(), 'cezar-e2e-assets-'))
@@ -66,6 +67,9 @@ beforeAll(async () => {
   git('config', 'user.email', 'e2e@cezar.test')
   git('config', 'user.name', 'cezar e2e')
   writeFileSync(join(dataRoot, 'README.md'), '# assets e2e fixture repo\n', 'utf8')
+  // A committed spec, so Git → Files offers Assess impact on it (step 11).
+  mkdirSync(join(dataRoot, '.ai/specs'), { recursive: true })
+  writeFileSync(join(dataRoot, SPEC), '# Demo spec\n\nAdd a thing.\n', 'utf8')
   git('add', '.')
   git('commit', '-qm', 'init')
 
@@ -134,4 +138,36 @@ describe('the Assets view against a live dry run', () => {
     browser.waitForFunction(`location.pathname.endsWith('/assets/demo.html')`)
     browser.waitForFunction(`document.querySelector('[data-slot="assets-frame"]') !== null`)
   })
+})
+
+describe('Assess impact on a spec against a live dry run (step 11)', () => {
+  it('POST /impact starts a run whose report the Files header then opens', async () => {
+    const started = await fetch(`${baseUrl}/api/v1/impact`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ subject: { kind: 'spec', path: SPEC } }),
+    })
+    expect(started.status).toBe(201)
+    const { runId: impactRun } = (await started.json()) as { runId: string }
+    // The dry-run mock writes the demo review.json; the backstop renders impact.html at turn end.
+    let names: string[] = []
+    for (let attempt = 0; attempt < 120 && !names.includes('impact.html'); attempt += 1) {
+      await new Promise((r) => setTimeout(r, 500))
+      const answer = (await (await fetch(`${baseUrl}/api/v1/artifacts?subject=${encodeURIComponent(`spec:${SPEC}`)}`)).json()) as {
+        run: { id: string } | null
+        artifacts: { name: string }[]
+      }
+      if (answer.run?.id === impactRun) names = answer.artifacts.map((artifact) => artifact.name)
+    }
+    expect(names).toContain('impact.html')
+    await waitForStatus(baseUrl, impactRun, ['waiting', 'review', 'done'])
+
+    browser.goto(`${baseUrl}${scoped(`/git/files/${SPEC}`)}`)
+    browser.waitForFunction(`document.querySelector('[data-action="impact-open"]') !== null`)
+    expect(browser.text('[data-slot="impact-meta"]')).toMatch(/ago/)
+    browser.screenshot(`${artifactsDir}/impact-files-header.png`)
+    browser.click('[data-action="impact-open"]')
+    browser.waitForFunction(`location.pathname.endsWith('/tasks/${impactRun}/assets/impact.html')`)
+    browser.waitForFunction(`document.querySelector('[data-slot="assets-frame"]') !== null`)
+  }, 120_000)
 })

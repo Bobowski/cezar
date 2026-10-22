@@ -1,4 +1,4 @@
-import { cleanup, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { Link as RouterLink, MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -1061,5 +1061,31 @@ describe('Dashboard active navigation', () => {
     const link = screen.getByRole('link', { name: 'Dashboard' })
     expect(link.getAttribute('aria-current')).toBeNull()
     expect(link.classList.contains('bg-muted')).toBe(false)
+  })
+})
+
+describe('AppShell — Focus rail (spec 2026-10-22-html-artifacts-and-impact, R2)', () => {
+  it('folds the sidebar to an icon rail while a view holds it, and the rail asks the holder to let go', async () => {
+    const { holdSidebarRail } = await import('@/lib/sidebar-rail')
+    renderShell('/tasks/r1/assets')
+    expect(sidebar()).toBeTruthy()
+
+    const onExit = vi.fn()
+    let release = () => {}
+    act(() => {
+      release = holdSidebarRail(onExit)
+    })
+    expect(document.querySelector('[data-slot="sidebar"]')).toBeNull()
+    const rail = document.querySelector('[data-slot="sidebar-rail"]') as HTMLElement
+    expect(rail).toBeTruthy()
+    // The rail still navigates: every nav item as an icon link, Tasks lit for a task URL.
+    expect(within(rail).getByRole('link', { name: 'Tasks' }).getAttribute('aria-current')).toBe('page')
+
+    fireEvent.click(within(rail).getByRole('button', { name: 'Show sidebar' }))
+    expect(onExit).toHaveBeenCalledTimes(1)
+
+    act(() => release())
+    expect(sidebar()).toBeTruthy()
+    expect(document.querySelector('[data-slot="sidebar-rail"]')).toBeNull()
   })
 })

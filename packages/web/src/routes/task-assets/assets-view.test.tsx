@@ -7,7 +7,8 @@ import { createQueryClient } from '@/api/query-client'
 import { queryKeys } from '@/api/queries'
 import type { RunArtifact, RunArtifactsResponse } from '@open-mercato/cezar-api-client'
 
-import { ARTIFACT_IFRAME_SANDBOX, defaultArtifact } from './assets-model'
+import { ARTIFACT_IFRAME_SANDBOX, defaultArtifact, readViewFocus } from './assets-model'
+import { exitSidebarRail, useSidebarRail } from '@/lib/sidebar-rail'
 import { ASSETS_EMPTY_SUBTITLE, ASSETS_EMPTY_TITLE, AssetsView } from './assets-view'
 
 const art = (name: string, kind: RunArtifact['kind'], updatedAt: string, title?: string): RunArtifact => ({
@@ -42,7 +43,12 @@ function stubFetch() {
 }
 
 function Where() {
-  return <span data-testid="where">{useLocation().pathname}</span>
+  return (
+    <>
+      <span data-testid="where">{useLocation().pathname}</span>
+      <span data-testid="rail">{String(useSidebarRail())}</span>
+    </>
+  )
 }
 
 function mount(path = '/tasks/r1/assets', routed = true) {
@@ -57,6 +63,10 @@ function mount(path = '/tasks/r1/assets', routed = true) {
     </QueryClientProvider>,
   )
   return { ...view, client }
+}
+
+function RailProbe() {
+  return <span data-testid="rail-after">{String(useSidebarRail())}</span>
 }
 
 const frame = () => document.querySelector<HTMLIFrameElement>('[data-slot="assets-frame"]')
@@ -185,5 +195,32 @@ describe('AssetsView', () => {
     expect(open?.getAttribute('target')).toBe('_blank')
     expect(open?.getAttribute('rel')).toContain('noopener')
     expect(document.querySelector('[data-action="assets-download"]')?.getAttribute('download')).toBe('demo.html')
+  })
+
+  it('Focus folds the sidebar while Assets is shown, is remembered for the view, and lets go on unmount', async () => {
+    const { unmount } = mount()
+    await waitFor(() => expect(frame()).not.toBeNull())
+    const toggle = screen.getByRole('button', { name: 'Focus' })
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    fireEvent.click(toggle)
+    expect(screen.getByRole('button', { name: 'Leave focus' }).getAttribute('aria-pressed')).toBe('true')
+    expect(readViewFocus('assets')).toBe(true)
+    expect(screen.getByTestId('rail').textContent).toBe('true')
+
+    // The rail's own expand button turns Focus off for the view.
+    act(() => exitSidebarRail())
+    expect(screen.getByRole('button', { name: 'Focus' }).getAttribute('aria-pressed')).toBe('false')
+    expect(readViewFocus('assets')).toBe(false)
+    expect(screen.getByTestId('rail').textContent).toBe('false')
+
+    // Remembered for the view: the next visit opens focused…
+    fireEvent.click(screen.getByRole('button', { name: 'Focus' }))
+    unmount()
+    mount()
+    await waitFor(() => expect(screen.getByTestId('rail').textContent).toBe('true'))
+    // …and nothing holds the rail once the view is gone.
+    cleanup()
+    render(<RailProbe />)
+    expect(screen.getByTestId('rail-after').textContent).toBe('false')
   })
 })

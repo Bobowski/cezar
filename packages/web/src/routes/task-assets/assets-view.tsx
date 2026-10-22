@@ -5,11 +5,13 @@ import {
   FileIcon,
   LayersIcon,
   LoaderCircleIcon,
+  PanelLeftCloseIcon,
+  PanelLeftOpenIcon,
   RotateCwIcon,
   ShieldCheckIcon,
   TriangleAlertIcon,
 } from 'lucide-react'
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router'
 
 import { runArtifactRawUrl } from '@/api/client'
@@ -28,6 +30,8 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { shortAge } from '@/lib/format'
 import { useNavigate } from '@/lib/project-router'
+import { holdSidebarRail } from '@/lib/sidebar-rail'
+import { cn } from '@/lib/utils'
 
 import { CodeLines } from '../task-git/file-preview'
 import { Markdown } from '../task-thread/markdown'
@@ -37,6 +41,8 @@ import {
   byNewest,
   KIND_LABELS,
   pickArtifact,
+  readViewFocus,
+  writeViewFocus,
 } from './assets-model'
 
 export const ASSETS_EMPTY_TITLE = 'No assets yet'
@@ -45,7 +51,7 @@ export const ASSETS_EMPTY_SUBTITLE =
 
 /**
  * The task's Assets view (spec 2026-10-22-html-artifacts-and-impact § UI/UX, R2): ONE toolbar row —
- * the asset switcher, Open, Download, Reload — and the asset at full width below it.
+ * the asset switcher, Focus, Open, Download, Reload — and the asset at full width below it.
  *
  * `routed`: the view fills its layout on its own (the Assets tab), so the selection lives in the
  * URL (`tasks/:id/assets/:name`). In a split layout it stays local — navigating there would swap
@@ -68,6 +74,7 @@ export function AssetsView({ runId, routed }: { runId: string; routed: boolean }
     [navigate, routed, runId],
   )
 
+  const [focus, setFocus] = useFocus()
   const [reloads, setReloads] = useState(0)
 
   if (listing.isPending) {
@@ -119,6 +126,19 @@ export function AssetsView({ runId, routed }: { runId: string; routed: boolean }
           <span className="hidden text-[11px] text-muted-foreground md:inline">Showing the first 64 files</span>
         ) : null}
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            data-action="assets-focus"
+            aria-pressed={focus}
+            aria-label={focus ? 'Leave focus' : 'Focus'}
+            title={focus ? 'Leave focus — bring the sidebar back' : 'Focus — fold the sidebar to icons while Assets is open'}
+            className={cn('text-muted-foreground', focus && 'bg-muted text-foreground')}
+            onClick={() => setFocus(!focus)}
+          >
+            {focus ? <PanelLeftOpenIcon aria-hidden="true" /> : <PanelLeftCloseIcon aria-hidden="true" />}
+          </Button>
           {current ? (
             <>
               <Button asChild variant="ghost" size="icon-sm" className="text-muted-foreground">
@@ -173,6 +193,21 @@ export function AssetsView({ runId, routed }: { runId: string; routed: boolean }
       )}
     </section>
   )
+}
+
+/** Focus (R2), remembered per view in this browser; held only while this view is mounted and
+ *  visible — a hidden kept layout's effects are cleaned up, which releases the rail. */
+function useFocus(): [boolean, (on: boolean) => void] {
+  const [focus, setFocusState] = useState(() => readViewFocus('assets'))
+  const setFocus = useCallback((on: boolean) => {
+    writeViewFocus('assets', on)
+    setFocusState(on)
+  }, [])
+  useEffect(() => {
+    if (!focus) return
+    return holdSidebarRail(() => setFocus(false))
+  }, [focus, setFocus])
+  return [focus, setFocus]
 }
 
 function AssetSwitcher({

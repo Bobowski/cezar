@@ -62,7 +62,7 @@ Design review round 2 (2026-10-22). The owner and the team asked for these on th
 | Q8 | What does the impact run check out? | **PR:** a normal worktree forked from the PR head, through the existing `pr-head.ts` resolver (`refs/cezar/pr/<n>`). **Spec:** a normal worktree off the base branch. **Never** a `readOnly` run. | `readOnly` restricts tools to `Read/Grep/Glob` (`landing.ts:292`), and the agent needs Bash (`cez impact …`, `git`) and Write (`review.json`). Evidence must be pinned to exact commits that exist locally, and `pr-head.ts` is exactly the fetch that provides them. |
 | Q9 | A new generic `createRun` field, or a dedicated route? | **A dedicated `POST /impact`** that resolves the subject server-side and creates the run. `createRun`'s contract is unchanged. | Resolving the PR head and pinning the spec's blob sha both have to happen on the server. Widening `createRunInputBaseSchema` with `prHead` would expose a fetch-from-GitHub capability to every caller. |
 | Q10 | How is the "Open impact" link found? | **`RunRecord.subject`** (new, optional): `{kind:'pr', number, headSha} \| {kind:'spec', path, blobSha}`. A `GET /artifacts?subject=` route returns the latest matching run's artifacts. | No scan of artifact contents and no second index file. A rerun simply becomes the latest. The pinned `headSha`/`blobSha` lets the UI say **stale** when the PR or spec has moved since. |
-| Q11 | Does the impact task end at a review gate with a diff? | It ends at `review` like every task. Its diff is empty by construction (it writes nothing in the worktree), so the gate shows the impact report instead of "No changes". No draft PR is offered for a run whose `subject` is set and whose diff is empty. | Never auto-merge, never invent a PR. The review gate stays the single terminal-success surface. |
+| Q11 | Does the impact task end at a review gate with a diff? | **It follows the existing review-gate setting**: with the gate off (the default) it ends `done`, with it on it reaches `review` even with an empty diff. Either way no draft PR is offered for a run with a `subject` (both Draft PR buttons hidden, `POST /runs/:id/pr` 409s). Follow-ups still work, because a message to a `done` run continues it. | Changing the gate's default for one feature would be replacing a working mechanism (AGENTS.md § Changing a mechanism). Never auto-merge, never invent a PR. |
 
 ## 📝 Problem Statement
 
@@ -351,7 +351,7 @@ resumes it (`deliverMessage`), like any task.
   card is enough.
 
 **GitHub tab → PR detail.**
-- The header gains **Assess impact**. It is disabled with a reason when `gh` is unavailable.
+- The control group sits above the merge box (where the merge decision is made). It is disabled with a reason when `gh` is unavailable.
 - If a subject match exists, the button becomes **Open impact** with meta text such as
   `abc1234 · 2 h ago` and a secondary **Re-assess**.
 - A **Stale** chip appears when the PR head has moved since.

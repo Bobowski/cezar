@@ -1,417 +1,513 @@
-# Integration provider: GitLab (gitlab.com + self-managed)
+# Integration provider: GitLab (GitLab.com, Dedicated, self-managed)
 
-> Slug: `integration-gitlab` · Updated: 2026-10-22 · Status: draft for review.
-> Builds on the binding umbrella spec [integration-providers](2026-10-22-integration-providers.md)
-> (manifest, facets, anchors, connections, contract, routes, Issues view, automations, linking).
-> **Supersedes the GitLab half of #847** and its spec PR #848
-> (`2026-08-10-forge-provider-adapters.md`, never merged). It takes the live-verified evidence of
-> PR #1226 (glab 1.118 vs gitlab.com) and of the downstream fork described in
-> [#1226 (comment)](https://github.com/open-mercato/cezar/pull/1226#issuecomment-6217599142)
-> (self-managed GitLab 19.x CE) as input; code from #1226 may be ported, its `ForgeDriver` shape is not.
-
-## Evidence legend
-
-Every vendor claim carries one tag:
-
-- **[docs]** — stated by the cited official documentation. Web tools were unavailable in the
-  session that wrote this spec, so these were **not re-fetched on 2026-10-22**; the implementer
-  re-checks each against the URL before relying on it (one checklist item in Phase G0).
-- **[live]** — observed against a real instance in #1226 (gitlab.com, glab 1.118) or the downstream
-  fork (self-managed 19.x CE). Strongest evidence we have.
-- **[local]** — verified on the writing machine (`brew info glab` → stable **1.124.0**, 2026-10-22).
-- **[assumption]** — design inference; must be proved by a test or a live check before shipping.
+> Slug: `integration-gitlab` · Updated: 2026-10-22.
+> Status: draft for review. Provider spec under the umbrella
+> [integration-providers](2026-10-22-integration-providers.md) — binding for the seam, contract,
+> routes, persistence and phasing; this file only says how GitLab fills it.
+> Supersedes the GitLab half of #847 (its seam half is the umbrella). Related: #698, #1383.
+> Every vendor claim cites a doc. **[V]** = verified against the vendor's docs source on
+> 2026-10-22; **[A]** = assumption to confirm during implementation.
 
 ## TLDR
 
-- One provider directory `packages/cezar/src/integrations/gitlab/`, **remote-anchored**, role
-  **code host** + **work source**. Facets: `workItems`, `changeRequests`, `merge`, `publish`,
-  `clone`, `automation`, `link`, `agentAccess` — every one of them.
-- **Connection: `cli` (glab) first, `token` (PAT → REST v4) second.** Both drive the **same REST v4
-  client**: glab is used as an authenticated *transport* (`glab api --hostname H …`), not as a set
-  of human-oriented subcommands. One zod schema set, two transports, identical normalized output.
-- Self-managed is first class: host discovered from glab's own config / `GITLAB_HOST` / the token
-  store (no host table to write), **subgroups** carried as a full project path, **relative URL
-  roots** (`https://intranet.acme/gitlab/`) taken from the instance base the connection reports,
-  **self-signed CAs** inherited from glab's per-host `ca_cert` or, for tokens, an optional CA file.
-- Draft MR is created by `POST /projects/:id/merge_requests` (JSON response, `web_url`) — no stdout
-  URL scraping. Merge supports **auto-merge (merge when pipeline succeeds)**, squash, approvals.
-- Automations advertise only events provable from GitLab history (resource events, `created_at`,
-  `merged_at`); reviewer events wait (§ Open questions).
+`gitlab` is a **remote-anchored code host** provider: issues, merge requests (MRs), notes,
+label/state resource events for the timeline, pipelines → checks glyphs, MR diffs, merge
+(including auto-merge "when checks pass" and approval state), draft-MR publish from a run branch,
+clone, and automation events. It works on GitLab.com, GitLab Dedicated and self-managed
+instances, including **subgroups** (`group/sub/sub2/repo`), **non-root instance paths**
+(`https://intra.acme/gitlab/…`) and **private CAs**.
+
+Connection preference: **`cli` (glab) first, `token` (PAT via the managed credential store)
+second.** Both run the **same REST v4 requests through one client** with two transports —
+`glab api` for `cli`, `fetch`/`node:https` with `PRIVATE-TOKEN` for `token` — so there is one
+zod schema set, one normalizer and one fixture set. `glab` porcelain is used only where it adds
+something the API cannot: `glab auth status` (readiness), `glab auth login` (terminal handoff) and
+`glab repo clone`.
 
 ## Problem
 
-A team on gitlab.com or a self-managed GitLab gets plain-git cezar: no issues/MR browsing, no draft
-MR from the review gate, no CI glyphs, no merge, no clone, no automations, and run bookkeeping drops
-every `/-/merge_requests/N` link because `runs/store.ts` and `runs/task-refs.ts` match `github.com`
-only. #847 asked for this in August; #1226 implemented it on the old `ForgeDriver` seam and proved
-the GitLab mechanics live, but the umbrella spec replaces that seam, and #1226 left merge,
-automations, sub-path instances and the `workflows/run.ts` PR nodes uncovered.
+- A GitLab remote today resolves to `forge: null` (`forge/index.ts` `forgeKindOfHost`): no Issues
+  tab, no Create PR, no merge, no PR chip, no automations. #847 is the oldest open forge request.
+- `parseRemote` (`git-remotes.ts`) keeps only the **last two path segments** — a subgroup remote
+  `gitlab.com/acme/platform/api` becomes `platform/api`, the wrong project.
+- Run bookkeeping (`runs/store.ts` `PR_URL_RE`/`ISSUE_URL_RE`, `runs/task-refs.ts`) only knows
+  `/<owner>/<repo>/pull/N`; GitLab's `/-/merge_requests/N` matches nothing, so a GitLab run loses
+  its chip and `#N` prefix silently.
+- Self-managed is the common GitLab deployment, and its realities (any hostname, sub-path installs,
+  self-signed CAs, custom PAT prefixes, admin-tuned rate limits) must be designed in, not patched.
 
 ## Non-goals
 
-- Epics, iterations, boards, OKRs, requirements, vulnerability reports, CI job control (retry/play),
-  the Web IDE, GitLab Duo. Issues + MRs + pipelines-as-glyphs only.
-- GitLab **work-item** types other than issue/task/incident (the Issues REST API covers those).
-- Creating issues, editing MRs beyond draft→ready, approving MRs from cezar (a cezar user approving
-  their own agent's MR defeats the gate; out of scope by design).
-- Webhooks / system hooks. Polling only (umbrella non-goal).
-- Gitea/Forgejo (GitLab-API-*incompatible*), GitLab API v3 or GitLab < 15.0 (see § Compatibility floor).
+- Epics, boards, iterations, milestones as first-class lists; CI job control (retry/cancel/play);
+  merge trains as a UI; approval-rule editing; GitLab Duo. (Merge-train routing still happens
+  server-side when the project enables it — § Merge.)
+- `skip_tls_verify` in token mode (never). Users who need it can set it inside `glab`, their call.
+- Webhooks. Polling only (umbrella).
+- GitLab < 16.0 — `glab` itself only supports 16.0+ ([glab README §Requirements][glab-readme]) **[V]**;
+  the token transport may work on older servers but is not tested there.
 
 ## Vendor research
 
-### The CLI: `glab`
+### `glab` — the official GitLab CLI
 
-| Question | Finding | Tag |
+| Property | Finding | Source |
 | --- | --- | --- |
-| Official? | Yes. Started as `profclems/glab`, adopted by GitLab in 2022; lives at [gitlab.com/gitlab-org/cli](https://gitlab.com/gitlab-org/cli), docs at [docs.gitlab.com/cli](https://docs.gitlab.com/cli/). Maintained by GitLab staff, frequent releases (1.118 in #1226's run, 1.124.0 in Homebrew today). | [docs] [live] [local] |
-| Install | macOS/Linux `brew install glab`; Windows `winget install glab.glab` / `scoop install glab`; Linux `.deb`/`.rpm` from the [releases page](https://gitlab.com/gitlab-org/cli/-/releases), distro packages (Arch, Alpine, Nix, snap) are community. No official apt repo. [Install docs](https://gitlab.com/gitlab-org/cli#installation). | [docs] [local: brew] |
-| Auth | `glab auth login --hostname H` (interactive; token paste or OAuth browser flow for gitlab.com), `--stdin` for a piped token; `glab auth status [--hostname H]`. [auth docs](https://docs.gitlab.com/cli/auth/). | [docs] [live] |
-| Credential storage | `config.yml` in glab's config dir — `~/.config/glab-cli/` (`GLAB_CONFIG_DIR` overrides; `%APPDATA%` on Windows), per-host block with `token`, `api_host`, `api_protocol`, `git_protocol`. Token is **plaintext in that file** unless the user chose the OS keyring at login. [config docs](https://docs.gitlab.com/cli/config/). | [docs] |
-| Env | `GITLAB_TOKEN` (also `GITLAB_ACCESS_TOKEN`, `OAUTH_TOKEN`), `GITLAB_HOST` / `GL_HOST`, `GLAB_CONFIG_DIR`, `NO_COLOR`. The old `NO_PROMPT` variable is **deprecated** — #1226 hit this live. [env docs](https://docs.gitlab.com/cli/#environment-variables). | [docs] [live] |
-| Self-managed / TLS | Any host via `--hostname`/`GITLAB_HOST`; per-host `ca_cert` (custom CA bundle) and `skip_tls_verify` keys, set with `glab config set ca_cert /path --host H`. [config docs](https://docs.gitlab.com/cli/config/set/). | [docs] |
-| Relative URL root | glab's `api_host` may carry a path; `glab auth status` prints a `REST API Endpoint: https://host/gitlab/api/v4/` line — the fork reads the instance base from it. | [live: fork] [docs] |
-| JSON output | `glab issue list`, `glab mr list`, `glab mr view`, `glab repo view` take `--output json` (`-F json` on some commands; the short flags **differ between `issue list` and `mr list`** — use the long form). JSON is the raw REST object. | [live] [docs] |
-| Raw passthrough | `glab api <endpoint>` — REST and `glab api graphql -f query=…`; `-X` method, `-f`/`-F` fields (`-F` types numbers/booleans, `@file` reads a file), `-H` headers, `--paginate`, `-i/--include` (status line + headers), `--hostname H`; placeholders `:id`, `:fullpath`, `:branch` resolved from the cwd's repo. [api docs](https://docs.gitlab.com/cli/api/). | [docs] [live] |
-| Pagination | `--paginate` emits **one JSON array per page** (not a merged array); GraphQL needs `$endCursor`. | [live: fork] [docs] |
-| Error signalling | `glab api` exits **0 on an HTTP 404**, error only on stderr (`glab: 404 Not Found (HTTP 404)`); high-level commands print boxed errors on stderr. Exit code alone is not trustworthy. | [live] |
-| Rate limits | gitlab.com: authenticated API ~2,000 req/min per user, 429 with `RateLimit-*`/`Retry-After` headers ([gitlab.com limits](https://docs.gitlab.com/user/gitlab_com/#rate-limits-on-gitlabcom)); self-managed: admin-configured, often off ([user & IP limits](https://docs.gitlab.com/administration/settings/user_and_ip_rate_limits/)). | [docs] |
-| Gaps | No JSON from `glab mr create`/`mr merge` (prints a URL / prose); no batched pipeline status; no "list hosts" JSON (`auth status` is prose on stderr, exits non-zero when any host is logged out); `--no-editor` on `mr create` *adds* a prompt in 1.118. | [live] |
+| Status | Official GitLab project since 2022 (adopted from `profclems/glab`), `gitlab.com/gitlab-org/cli`. Weekly releases: v1.122.0 (2026-10-09), v1.123.0 (10-13), **v1.124.0 (2026-10-20)**. **[V]** | [README][glab-readme], [releases API][glab-releases] |
+| Server support | GitLab 16.0+ officially. **[V]** | [README][glab-readme] |
+| Install | macOS/Linux: `brew install glab` (the only *officially supported* manager). Windows: `winget install glab.glab`, `choco install glab`, `scoop install glab`. Linux: `sudo snap install glab` (+ `snap connect glab:password-manager-service` for keyring), WakeMeOps apt repo, nixpkgs, Arch, Alpine, `mise`, `asdf`; release binaries/build from source. **[V]** | [installation options][glab-install] |
+| Credential store | OS keyring by default (macOS Keychain, Windows Credential Manager, Secret Service); plaintext `config.yml` when no keyring, `--insecure-storage`, or CI. `GITLAB_TOKEN` / `GITLAB_ACCESS_TOKEN` / `OAUTH_TOKEN` override stored credentials. **[V]** | [`glab auth login`][glab-login], [authentication][glab-auth] |
+| Config location | `$GLAB_CONFIG_DIR/config.yml` → `~/.config/glab-cli/config.yml` (legacy, checked first on every OS) → `$XDG_CONFIG_HOME/glab-cli/config.yml` (macOS `~/Library/Application Support/glab-cli/`, Windows `%LOCALAPPDATA%\glab-cli\`) → `/etc/xdg/glab-cli/config.yml`; per-repo `.git/glab-cli/config.yml`. **[V]** | [configuration][glab-config] |
+| Host selection | Inside a repo: the GitLab remote's host; else `GITLAB_HOST`/`GITLAB_URI`/`GL_HOST`; else config `host`; else `gitlab.com`. An env host "always wins, and glab errors if no remote matches it". **[V]** | [`glab config`][glab-config-cmd] |
+| Self-managed knobs (per host) | `api_host`, `api_protocol`, **`subfolder`** (non-root installs, nested allowed, HTTP only), **`ca_cert`**, `client_cert`/`client_key` (mTLS), `skip_tls_verify`, `ssh_host`, `proxy`, `custom_headers`. Env twins: `GITLAB_SUBFOLDER`, `GLAB_CA_CERT`, `GITLAB_API_HOST`… **[V]** | [`glab config`][glab-config-cmd] |
+| Prompts / noise | `GLAB_NO_PROMPT=1`, `GLAB_CHECK_UPDATE=false`, `GLAB_DISPLAY_HYPERLINKS=false`, `GLAB_SEND_TELEMETRY=0` (glab sends usage data **to the user's own instance** when on). **[V]** | [`glab config`][glab-config-cmd] |
+| Raw API | `glab api <endpoint\|graphql>`: placeholders `:fullpath :id :branch :group :namespace :repo :user :username` from the cwd repo; `--hostname`; `-X`; `-f/-F` fields; `--input`; `-i` headers; `--paginate` (REST and GraphQL with `$endCursor` + `pageInfo`); `--output json\|ndjson`. **[V]** | [`glab api`][glab-api] |
+| JSON porcelain | `glab mr list/view`, `glab issue view`, `glab auth status`: `-F/--output json`. **`glab issue list` differs: `-O/--output json`, while its `-F` is `--output-format details\|ids\|urls`.** `glab mr create` has **no** JSON output. **[V]** | [mr list][glab-mr-list], [issue list][glab-issue-list], [mr create][glab-mr-create] |
+| Merge trap | `glab mr merge` **defaults `--auto-merge=true`** while a pipeline runs; `--sha` guards the head. **[V]** | [`glab mr merge`][glab-mr-merge] |
+| Readiness | `glab auth status [--hostname H] [--all] --output json`; it *verifies* (network). **[V]** (JSON field names **[A]**) | [`glab auth status`][glab-auth-status] |
 
-### REST v4 / GraphQL endpoints used
+### GitLab REST v4 facts the design leans on
 
-Base `<instance>/api/v4`, project addressed by **URL-encoded full path** (`group%2Fsub%2Frepo`)
-([REST basics](https://docs.gitlab.com/api/rest/#namespaced-paths)). Auth header
-`PRIVATE-TOKEN: glpat-…` for the token transport ([auth](https://docs.gitlab.com/api/rest/authentication/)).
-Offset pagination `page`/`per_page` ≤ 100 with `X-Next-Page`
-([pagination](https://docs.gitlab.com/api/rest/#pagination)). GraphQL at `/api/graphql`
-([GraphQL](https://docs.gitlab.com/api/graphql/)). Endpoint list is in the facet table below; each
-row cites its API page.
+- `:id` accepts the numeric id **or the URL-encoded full path** (`acme%2Fplatform%2Fapi`) — this is
+  what makes subgroups free. **[V]** ([REST namespaced paths][rest-index])
+- Offset pagination, `per_page` max **100**, `x-next-page`/`x-total` headers; keyset on selected
+  endpoints. **[V]** ([REST pagination][rest-index])
+- Auth header `PRIVATE-TOKEN: <token>`. **[V]** ([REST authentication][rest-auth])
+- MRs: `detailed_merge_status` (supersedes deprecated `merge_status`), `draft`, `user_notes_count`,
+  `head_pipeline`, `diff_refs.{base,start,head}_sha`. **[V]** ([MR API][mr-api])
+- `GET …/merge_requests/:iid/changes` is **deprecated (v5 removal)**; use `GET …/diffs`
+  (`collapsed`, `too_large` since 18.4). **[V]** ([MR API][mr-api])
+- Merge: `PUT …/merge` with `sha`, `squash`, `auto_merge`, `should_remove_source_branch`;
+  `merge_when_pipeline_succeeds` **deprecated in 17.11** for `auto_merge`. Errors: 400 *SHA must
+  be provided* (group/instance setting since 19.2), 401, 405 *cannot merge*, 409 *SHA does not
+  match*. Auto-merge routes to the merge train where enabled (19.1). **[V]** ([MR API § Merge][mr-api])
+- Merge method is a **project** setting (`merge_method`: `merge | rebase_merge | ff`;
+  `squash_option`: `never | always | default_on | default_off`), not a per-merge choice. **[V]**
+  ([projects API][projects-api])
+- Approvals: `GET …/approvals` (`approved`, `approvals_left`, `approved_by`; CE returns only
+  `approved`, `approved_by`, `user_can_approve`, `user_has_approved`); `GET …/approval_state`
+  (Premium rules). **[V]** ([MR approvals API][approvals-api])
+- Timeline sources: `resource_label_events` (issues, MRs), `resource_state_events` (issues, MRs);
+  notes carry `system: true` for system notes. No structured assignee/rename events in REST **[A]**.
+  ([label events][label-events], [state events][state-events], [notes][notes-api])
+- Reviewers: `GET …/merge_requests/:iid/reviewers` → `{ user, state, created_at }`, states include
+  `unreviewed`, `reviewed`; `requested_changes` appears as a `detailed_merge_status`. Full state
+  list **[A]**. ([MR API § reviewers][mr-api])
+- Pipeline statuses: `created waiting_for_resource preparing waiting_for_callback pending running
+  success failed canceling canceled skipped manual scheduled`. **[V]** ([pipelines API][pipelines-api])
+- Rate limits: GitLab.com per-plan, per-user/top-level-group burst + sustained limits;
+  unauthenticated 60/min; self-managed admin-configurable. 429 + `Retry-After` **[V]**/`RateLimit-*`
+  headers **[A]**. ([GitLab.com rate limits][com-rate-limits], [REST rate limits][rest-index])
+- Token prefixes: `glpat-` (personal, project, group, impersonation), `gldt-`, `glrt-`, `glcbt-`,
+  `glptt-`, `glft-`, `glimt-`, `glagent-`, `glwt-`, `glsoat-`, `glffct-`, `gloas-`. **The PAT
+  prefix is configurable on self-managed.** **[V]** ([token prefixes][tokens])
+- Default closing pattern (`Closes #4`, `Fixes`, `Resolves`, `Implements`), cross-project
+  `Closes group/project#4`. **[V]** ([managing issues][closing])
 
-### Recommendation: **both — `cli` (glab) preferred, `token` fallback**
+### Recommendation: `cli` then `token`, one REST client underneath
 
-1. **`cli` first.** Official, maintained, owns the credential (cezar holds nothing — the property
-   GitHub relies on), already solves self-managed hosts, custom CAs and relative roots, and
-   `glab api` reaches **every** endpoint we need, so no facet is CLI-blocked. Using `glab api` (not
-   `glab issue list`) as the transport keeps one REST schema set, makes errors parseable via
-   `--include`, and dodges the per-command flag drift seen live.
-2. **`token` second**, through the managed per-project store (umbrella § Connection strategies),
-   for: machines where glab cannot be installed (locked-down Windows, hosted cockpit), a CI-run
-   cockpit, and users who refuse a plaintext `config.yml`. Fields: instance URL, PAT, optional CA file.
-3. **Plain git tier (no glab, no token):** discovery still shows the GitLab remote (*"Sign in to
-   gitlab.acme.internal"*), clone uses `git clone`, and publish may fall back to GitLab **push
-   options** (`git push -o merge_request.create -o merge_request.draft …`,
-   [push options](https://docs.gitlab.com/topics/git/commit/#push-options-for-merge-requests)) —
-   the MR URL is read from the `remote:` lines. [docs][assumption: `draft` option availability per version]
+`glab` is official, weekly-released, on every package manager, keeps the secret in the OS keyring
+and already solves the hardest self-managed problems (subfolder, CA, mTLS, proxy, API host
+override) in a per-host config the user owns. That preserves the "cezar never holds a credential"
+posture #847 asked for, and makes on-prem zero-config for anyone who already uses `glab`.
 
-## Mapping onto the umbrella facets
+But the porcelain is uneven (flag spelling differs between `issue list` and `mr list`; `mr create`
+prints text; `mr merge` auto-merges by default), and its JSON is the REST object anyway **[A]**.
+So cezar calls **`glab api` for every vendor read and write**, and porcelain only for readiness,
+login and clone. The `token` transport then sends the *identical* requests to
+`<baseUrl>/api/v4/…` — no second integration, only a second transport. `token` exists for:
+machines that can't install `glab`, CI-like hosts, users who prefer a scoped project/group access
+token, and headless/remote cockpits.
 
-### Anchor and discovery (zero-network)
+## Mapping onto the umbrella seam
 
-`discover()` classifies every remote. A remote's host is GitLab when, in order:
-
-1. it is `gitlab.com` (well-known);
-2. it is a host key in glab's `config.yml` or equals `GITLAB_HOST`/`GL_HOST` — read **synchronously**
-   with a 30 s TTL exactly like `packages/cezar/src/github-hosts.ts` does for `gh`'s `hosts.yml`
-   (the fork asked for this in place of `auth status` subprocesses, #1226 Q2). The parser is a zod
-   **pick** of `hosts.<h>.{api_host, api_protocol}`; the `token` value is never read into a variable
-   that outlives the parse, never logged, never cached;
-3. it is the host of a stored `gitlab` token connection;
-4. otherwise, a first DNS label `gitlab` (`gitlab.acme.com`) yields a **candidate** shown in Settings
-   → Integrations as *"Looks like GitLab — sign in"*, never an active integration (same "a name is a
-   guess" rule as `github-hosts.ts`).
-
-`glab auth status` (async, off the request path, at most once per 10 min) only refreshes signed-in
-state and the `REST API Endpoint:` base; it never gates classification.
-
-**Project path and instance base.** `ParsedRemote` gains an additive `path` (all segments) — the
-current last-two-segments parse loses subgroups. For an HTTPS remote under a relative root
-(`https://intranet.acme/gitlab/grp/sub/app.git`) the path is ambiguous (`gitlab` could be a group);
-it is resolved by stripping the **instance base path** the connection knows (glab `api_host` /
-`REST API Endpoint`, or the token form's instance URL). SSH remotes never carry the root. The web
-origin (scheme, port, root) comes from the connection, never from an SSH remote's host/port.
-Anchor: `{ kind:'remote', remote, host, path: 'grp/sub/app' }`; integration id `gitlab`
-(`gitlab-2` for a second GitLab remote). [assumption, pinned by `discover.test.ts` fixtures]
-
-### Transport (`integrations/gitlab/transport.ts`)
+### Manifest
 
 ```ts
-interface GitlabTransport {           // both return parsed JSON + headers, or a typed failure
-  rest(method: 'GET'|'POST'|'PUT', path: string, fields?: Record<string,string|number|boolean>): Promise<GlResponse>;
-  graphql(query: string, variables: Record<string, unknown>): Promise<GlResponse>;
-}
+// packages/cezar/src/integrations/gitlab/manifest.ts (data, served at GET /integrations/providers)
+{ id: 'gitlab', label: 'GitLab', icon: 'gitlab', anchors: ['remote'], connections: ['cli', 'token'],
+  cli: { bin: 'glab', minVersion: '1.60.0' /* [A] — pin to the release that has `auth status --output json` */,
+         install: { darwin: 'brew install glab', linux: 'brew install glab  # or: sudo snap install glab',
+                    win32: 'winget install glab.glab' },
+         authStatus: ['auth', 'status', '--hostname', '{host}', '--output', 'json'],
+         login: ['auth', 'login', '--hostname', '{host}'], docsUrl: 'https://docs.gitlab.com/cli/' },
+  tokenFields: [ { name: 'baseUrl', label: 'Instance URL', example: 'https://gitlab.acme.internal/gitlab' },
+                 { name: 'token', label: 'Access token', secret: true },
+                 { name: 'caFile', label: 'CA certificate (PEM path, optional)' } ],
+  vocabulary: { workItem: 'issue', changeRequest: 'merge request', issueKey: '#12', changeRequestKey: '!17' },
+  facets: ['workItems', 'changeRequests', 'merge', 'publish', 'automation', 'link', 'clone', 'agentAccess'],
+  env: ['GITLAB_TOKEN', 'GITLAB_ACCESS_TOKEN', 'GITLAB_HOST', 'GITLAB_URI', 'GL_HOST', 'GLAB_CONFIG_DIR'],
+  redaction: [/\bgl(?:pat|dt|rtr?|cbt|ptt|ft|imt|agent|wt|soat|ffct|oas)-[A-Za-z0-9_-]{20,}/],
+  referencePatterns: /* § Run bookkeeping */ }
 ```
 
-- **GlabTransport:** `execFile('glab', ['api', '--hostname', host, '--include', '-X', M, path, ...fields])`
-  via `integrations/shared/cli-exec.ts`; cwd = project root; env adds `GLAB_NO_PROMPT`-equivalent
-  only after G0 confirms the current name [assumption], `NO_COLOR=1`, `GIT_TERMINAL_PROMPT=0`;
-  stdin closed. The status line from `--include` decides success, so the exit-0-on-404 quirk cannot
-  leak; `RateLimit-Remaining`/`Retry-After`/`X-Next-Page` come from the same headers. Fields always
-  as separate argv elements (`-f key=value`, `-F` for typed), never a shell string; a body field
-  longer than 64 KB goes through `-F description=@<tmpfile>` [docs].
-- **HttpTransport:** `integrations/shared/http-transport.ts` (today's `tracker/transport.ts`):
-  `PRIVATE-TOKEN` header, deadline, size cap, no cross-origin redirect, cooldown on 429. Custom CA:
-  `NODE_EXTRA_CA_CERTS` already works process-wide [docs: Node]; the connection's optional `caFile`
-  is read once into an undici `Agent({ connect: { ca } })` scoped to that connection. There is **no**
-  "skip TLS verify" toggle in cezar — a user who needs it sets it in glab, where it is their call.
-- Page loop owned by cezar (`page`, `per_page=100`, stop on empty `X-Next-Page`), bounded by a
-  per-call budget like GitHub's timeline loop; `--paginate` is not used.
+### Anchor, discovery and host classification (zero network)
 
-### Facet → command table
+`discover()` classifies every remote. A host is GitLab when, in precedence order:
 
-`P` = `projects/<enc(path)>`. Every row runs through either transport; the argv column shows the glab form.
+1. `integrations.json` overrides it (`{ host, provider: 'gitlab', baseUrl? }`) — optional, never required;
+2. a `token` connection record names it;
+3. `glab` knows it: top-level keys of `hosts:` in the first existing glab `config.yml` from the
+   search order above **[A: key layout]**, plus `GITLAB_HOST`/`GITLAB_URI`/`GL_HOST` — read as a
+   file, like `github-hosts.ts` reads `gh`'s `hosts.yml` (30 s TTL, never throws);
+4. it is `gitlab.com`.
 
-| Facet / op | glab argv (`glab api --hostname H --include …`) | JSON fields used | API docs |
-| --- | --- | --- | --- |
-| availability | `user` (+ `version` once/day) | `username`; `version` | [users](https://docs.gitlab.com/api/users/#retrieve-the-current-user), [version](https://docs.gitlab.com/api/version/) |
-| project | `P` | `id`, `path_with_namespace`, `web_url`, `default_branch`, `merge_method`, `squash_option`, `only_allow_merge_if_pipeline_succeeds`, `forked_from_project.id` | [projects](https://docs.gitlab.com/api/projects/#retrieve-a-project) |
-| workItems.list | `P/issues?state=opened&scope=all&order_by=updated_at&sort=desc&with_labels_details=true&per_page=50&page=N[&search=q&in=title,description][&labels=a,b]` | `iid`, `title`, `state`, `author.username`, `assignees[].username`, `labels[].{name,color}`, `created_at`, `updated_at`, `web_url`, `user_notes_count`, `description` | [issues](https://docs.gitlab.com/api/issues/#list-project-issues) |
-| workItems.get | `P/issues/:iid` | as above + `closed_at`, `issue_type` | same |
-| workItems.thread | `P/issues/:iid/notes?sort=asc&order_by=created_at`, `P/issues/:iid/resource_label_events`, `…/resource_state_events`, `…/resource_milestone_events` | notes: `id`,`body`,`author`,`created_at`,`system`; events: `action`,`label.name`,`state`,`created_at`,`user` | [notes](https://docs.gitlab.com/api/notes/), [label events](https://docs.gitlab.com/api/resource_label_events/), [state events](https://docs.gitlab.com/api/resource_state_events/) |
-| changeRequests.list/search | `P/merge_requests?state=opened\|merged\|closed\|all&…` (same params) | issue fields + `draft`, `source_branch`, `target_branch`, `sha`, `merged_at`, `reviewers[]` | [MRs](https://docs.gitlab.com/api/merge_requests/#list-project-merge-requests) |
-| changeRequests.thread | `P/merge_requests/:iid/discussions`, resource events as above, `…/approvals` | `notes[].position` (diff comments), `resolvable/resolved`; approvals `approved_by[].user` | [discussions](https://docs.gitlab.com/api/discussions/), [approvals](https://docs.gitlab.com/api/merge_request_approvals/) |
-| status by branch | `P/merge_requests?source_branch=B&state=all&order_by=created_at&sort=desc&per_page=5` | newest `iid`, `state`, `draft`, `web_url` | MRs |
-| changes (diff) | `P/merge_requests/:iid/diffs?per_page=50&page=N` (GitLab ≥ 15.7; `…/changes` is deprecated) | `old_path`, `new_path`, `new_file`, `renamed_file`, `deleted_file`, `diff`, `collapsed`, `too_large`, `generated_file` | [list MR diffs](https://docs.gitlab.com/api/merge_requests/#list-merge-request-diffs) |
-| checks (glyphs, batched) | `graphql` `project(fullPath:$p){ mergeRequests(iids:$iids){ nodes{ iid headPipeline{ status } } } }` | `iid`, `headPipeline.status` | [GraphQL MergeRequest](https://docs.gitlab.com/api/graphql/reference/#mergerequest) |
-| checks (merge panel) | `P/merge_requests/:iid` → `head_pipeline.id`; `P/pipelines/:id/jobs?per_page=100` | `name`, `status`, `allow_failure`, `web_url` | [jobs](https://docs.gitlab.com/api/jobs/#list-pipeline-jobs) |
-| merge.state | `P/merge_requests/:iid` (+ `…/approvals`) | `detailed_merge_status`, `has_conflicts`, `draft`, `blocking_discussions_resolved`, `merge_when_pipeline_succeeds`, `sha`, `user.can_merge` | [MR detail](https://docs.gitlab.com/api/merge_requests/#get-single-mr), [merge status](https://docs.gitlab.com/api/merge_requests/#merge-status) |
-| merge.merge | `-X PUT P/merge_requests/:iid/merge -f sha=<head> -F squash=… -F should_remove_source_branch=… [-F auto_merge=true]` | `state`, `merge_commit_sha`, `squash_commit_sha`, `web_url` | [merge an MR](https://docs.gitlab.com/api/merge_requests/#merge-a-merge-request) |
-| merge.cancelAuto | `-X POST P/merge_requests/:iid/cancel_merge_when_pipeline_succeeds` | `merge_when_pipeline_succeeds` | same page |
-| publish (draft MR) | `-X POST P_src/merge_requests -f source_branch=B -f target_branch=T -f title="Draft: …" -F description=@tmp -F remove_source_branch=true [-F target_project_id=N]` | `iid`, `web_url` | [create MR](https://docs.gitlab.com/api/merge_requests/#create-mr) |
-| publish → ready | `graphql` `mutation{ mergeRequestSetDraft(input:{projectPath:$p, iid:$i, draft:false}){ errors } }` | `errors` | [mutation](https://docs.gitlab.com/api/graphql/reference/#mutationmergerequestsetdraft) |
-| clone | `glab repo clone <path> <dir> -- --progress` (cli); `git clone <https url>` (token / none) | — | [repo clone](https://docs.gitlab.com/cli/repo/clone/) |
-| link (opt-in) | `-X POST P/issues/:iid/notes -F body=@tmp` | `id` | notes |
-| automation | see § Automations | | |
+A bare `gitlab.*` hostname is **not** a signal (same rule `github-hosts.ts` applies to
+`github.*`). A host claimed by both GitHub and GitLab rules goes to the explicit override, else
+GitHub (today's behaviour cannot regress). No `glab` spawn and no HTTP happen in discovery.
 
-**Normalization notes** (each a fixture test):
-- `WorkItem.id` = `iid` as string; `key` = `#12` (issue) / `!17` (MR); `kind` from endpoint.
-  `state`: `opened`→`open`, `closed`→`closed`, `merged`→`merged`, `opened`+`draft`→`draft`;
-  `locked` → `open` with `stateLabel:'locked'`. `state=closed` on MRs **excludes merged** [live] —
-  the "closed" filter queries both where the UI means "not open".
-- Body: GitLab Flavored Markdown passes through; relative upload links (`/uploads/…`) are absolutized
-  against the **project** web URL; `bodyLoss` set for `[[_TOC_]]`, embedded diagrams. [docs: GLFM]
-- Thread: `system:true` notes become timeline events only when no resource event covers the same
-  change (resource events win; system-note prose is localized and never parsed for semantics).
-- Diffs: no `---`/`+++` headers, count `+`/`-` positionally [live]; `collapsed`/`too_large`/empty
-  `diff` → `truncated:true`, never `0/0` [live]. Same caps as GitHub (`DIFF_CAP` family).
-- Pipeline glyph: `success`→passing; `failed`→failing; `created`,`waiting_for_resource`,`preparing`,
-  `pending`,`running`,`scheduled`,`waiting_for_callback`→pending; `canceled`,`canceling`,`skipped`,
-  `manual` and no pipeline→`null` [live]. GraphQL returns the enum upper-case — lower-cased first.
+**Subgroups.** `ParsedRemote` gains an additive `path: string[]` (all namespace segments + repo,
+`.git` stripped); `owner`/`repo` keep their last-two meaning for GitHub callers. GitLab uses
+`fullPath = path.join('/')` everywhere and sends it URL-encoded as `:id`.
 
-### Merge facet
+**Non-root instance paths.** An HTTPS remote `https://intra.acme/gitlab/acme/api.git` is ambiguous
+(`gitlab/acme/api` vs subfolder `gitlab` + `acme/api`); an SSH remote never carries the subfolder.
+Resolution: the subfolder comes from (a) the token record's `baseUrl`, (b) glab's per-host
+`subfolder` config, (c) the override. Absent all three, `availability()` (the first network-allowed
+call) probes `GET projects/:encodedPath` for each split of an HTTPS remote's path, longest project
+path first, **at most 3 requests**, and caches the winner per project; SSH remotes with no known
+subfolder report `available:false, reason:'GitLab is installed under a sub-path? Set it with glab config set subfolder … --host <host>'`.
 
-Maps onto the existing `githubPrMergeStateSchema` fields (umbrella: reused under neutral names):
+**Project identity.** `availability()` resolves `GET projects/:encodedFullPath` once → numeric
+`id`, `path_with_namespace`, `web_url`, `merge_method`, `squash_option`, `default_branch`,
+`forked_from_project.id`. Every later request uses the numeric id (survives renames mid-session);
+`web_url` becomes the source of every link — never string-built from the remote.
 
-| cezar field | GitLab source |
-| --- | --- |
-| `mergeable` | `has_conflicts` → `conflicting`; `detailed_merge_status` `checking`/`unchecked` → `unknown`; else `mergeable` |
-| `reviewDecision` | `approvals.approved` + `approvals_left` → `approved` / `review-required`; any reviewer `requested_changes` (17.x+) → `changes-requested` [assumption: field availability on Free] |
-| `methods`/`defaultMethod` | project `merge_method` (`merge`/`rebase_merge`/`ff`) + `squash_option` (`always`/`default_on`/`default_off`/`never`) → `merge`, `squash`, `rebase` (ff/rebase_merge both map to `rebase`) |
-| `eligibility`/`blockers` | `detailed_merge_status` [docs: merge status values]: `mergeable`→ready; `ci_still_running`,`checking`→pending; `not_approved`,`discussions_not_resolved`,`draft_status`,`ci_must_pass`,`need_rebase`,`conflict`,`blocked_status`,`requested_changes`,`external_status_checks`→blocked (one blocker each, code = the GitLab value); `not_open`→terminal; unknown values → `unknown` with the raw code |
-| `canMerge` | `user.can_merge` |
-| `canOverride` | always `false` — GitLab has no admin-bypass merge via REST |
+### Transports
 
-**Auto-merge.** GitLab's "merge when pipeline succeeds" (renamed *auto-merge*) needs one additive,
-provider-neutral field pair that GitHub can also fill: `autoMerge?: { available: boolean,
-enabled: boolean }` in merge-state and `autoMerge?: boolean` in the merge request body. When the
-pipeline is running and `autoMerge` is requested, cezar sends `auto_merge=true` on instances that
-accept it, else `merge_when_pipeline_succeeds=true` (chosen from `version`, cached per host)
-[assumption: the exact version the rename landed; G0 verifies]. Response `merged:false,
-autoMergeEnabled:true` needs the 200 branch of the merge response widened — **an umbrella contract
-change** (see report suggestions), because today it pins `merged: z.literal(true)`.
+```ts
+// integrations/gitlab/client.ts
+interface GitlabTransport {           // both never throw past the client; map to GitlabError
+  request(method, path, { query?, body?, signal? }): Promise<{ status, headers, json }>;
+}
+glabTransport(host, cwd)   // execFile('glab', ['api', '--hostname', host, '-X', method, '-i', path, ...fields])
+tokenTransport(record)     // fetch(`${baseUrl}/api/v4/${path}`, { headers: { 'PRIVATE-TOKEN': token } })
+```
 
-HTTP mapping of refusals: `405`/`406` → 409 with the blocker list; `409` (sha mismatch) → 409
-"the branch moved"; `401`/`403` → 403 with the connection hint. Always pass `sha` so a moved head
-never merges unseen code.
+- `glab` env: inherited env minus nothing secret-adding, plus `GLAB_NO_PROMPT=1`,
+  `GLAB_CHECK_UPDATE=false`, `GLAB_DISPLAY_HYPERLINKS=false`, `GLAB_SEND_TELEMETRY=0`,
+  `NO_COLOR=1`. `-i` gives status + `x-next-page` + `Retry-After`. Timeout 20 s, stdout cap 8 MiB.
+  Exit with "401"/"authentication" → `signedIn:false`; ENOENT → `Install glab`.
+- **We never use `--paginate`** (unbounded). Pagination is explicit `page`/`per_page=100` with a
+  per-facet page cap and the shared time budget (`integrations/shared/cursor.ts`).
+- Token transport: shared `http-transport.ts` (deadline, size cap, cooldown, **no cross-origin
+  redirects** — a redirect would leak `PRIVATE-TOKEN`). A `caFile` becomes a per-connection
+  `node:https` `Agent({ ca })`; never `rejectUnauthorized:false`, never `NODE_EXTRA_CA_CERTS`
+  mutation. `baseUrl` must be `https:` unless the host is loopback.
+- Rate limiting: per-integration budget in the shared arbiter; on 429 honour `Retry-After`, put
+  the integration in cooldown, surface `reason: 'GitLab rate limit — retrying in Ns'`.
 
-### Publish facet
+### Facet → request table
 
-Same prelude as GitHub (`preparePublish`: final autosave, conflicted-worktree refusal, push to the
-push remote via `resolveTaskRemotes`). Then **one REST call** returns `web_url` — no regex over glab
-output. Target branch = `run.baseBranch` normalized, default branch for a raw SHA. **Fork MRs**: when
-the push remote's project differs from the base remote's, create on the source project with
-`target_project_id` (looked up from the base project; cached). Title prefixed `Draft: `
-([draft MRs](https://docs.gitlab.com/user/project/merge_requests/drafts/)); description carries the
-cross-provider footer (§ Linking). The URL is validated against the instance origin before it is
-stored on the run.
+All paths are relative to `/api/v4/`; `P` = numeric project id. CLI argv is
+`glab api --hostname <host> -i [-X M] <path> [-f k=v …]`; the token transport sends the same.
+Porcelain rows are marked.
 
-### Clone facet
-
-`parseRepoRef` accepts `https://<gitlab host>[/<root>]/<path>` and `<host>/<path>` for any host
-discovery recognises, with subgroups; the one-segment target-directory rule and `cleanupCheckout`'s
-ownership proof stay untouched. cli: `glab repo clone` (configures glab as git credential helper so
-fetch/push keep working [live #1226]); token/none: `git clone` with `GIT_TERMINAL_PROMPT=0` — the
-PAT is **never** written into the clone URL or `.git/config`.
-
-### Agent access and redaction
-
-Manifest env names: `GITLAB_TOKEN`, `GITLAB_HOST`, `GLAB_CONFIG_DIR` — forwarded **only** when the
-run opts in (umbrella). Redaction pattern for every documented prefix
-([token prefixes](https://docs.gitlab.com/security/tokens/#token-prefixes)) [docs]:
-`\bgl(?:pat|oas|dt|rt|rtr|cbt|ptt|ft|imt|agent|soat|ffct|wt)-[0-9A-Za-z_\-.]{20,}\b`.
-
-## Connection and auth
-
-| Strategy | Ready when | Settings flow |
+| Facet / operation | Request | Fields used |
 | --- | --- | --- |
-| `cli` | `glab` on PATH, version ≥ **1.50** [assumption: oldest with `api --hostname` + `--include` behaving as pinned], host signed in | Install (manifest hints: brew / winget / scoop / release `.deb`/`.rpm`) → **Sign in** opens `glab auth login --hostname <host>` in the user's terminal (`open-in-terminal.ts`) |
-| `token` | managed record for the host exists and `GET /user` succeeds | write-only form: **Instance URL** (https, may include a path, e.g. `https://intranet.acme/gitlab`), **Access token** (secret; scopes `api` — `read_api` suffices for read-only, publish/merge then show "needs `api` scope"), **CA file** (optional absolute path) |
+| readiness (cli) | porcelain `glab auth status --hostname <host> --output json` | signed-in flag, user **[A]** |
+| availability + identity | `GET projects/<urlencoded fullPath>` | `id path_with_namespace web_url default_branch merge_method squash_option forked_from_project.id` |
+| issues list | `GET projects/P/issues?state=opened&order_by=updated_at&per_page=100&page=N` | `iid title author.username created_at updated_at labels[] assignees[].username web_url user_notes_count state` |
+| MRs list | `GET projects/P/merge_requests?state=opened&order_by=updated_at&per_page=100&page=N` | above + `draft source_branch target_branch` |
+| search (any state) | same two with `state=all&search=<q>&in=title,description` | as list |
+| label colours | `GET projects/P/labels?per_page=100&include_ancestor_groups=true` | `name color` |
+| lazy checks + diffstat (list rows) | `POST graphql` `project(fullPath){ mergeRequests(iids:[…]){ nodes{ iid headPipeline{status} diffStatsSummary{additions deletions} } } }` **[A: field names]** | → `checks`, `additions`, `deletions` |
+| detail | `GET projects/P/issues/:iid` / `merge_requests/:iid` | `description` (Markdown, 8 000-char cap as today) |
+| thread: comments | `GET …/:iid/notes?sort=asc&order_by=created_at&per_page=100` (≤5 pages) | `id body author created_at system` — `system:true` dropped |
+| thread: labels | `GET …/:iid/resource_label_events` | `action add\|remove label.{name,color} user created_at` → `labeled/unlabeled` |
+| thread: state | `GET …/:iid/resource_state_events` | `state closed\|reopened\|merged user created_at` → `closed/reopened/merged` |
+| thread: commits (MR) | `GET projects/P/merge_requests/:iid/commits` | `id title author_name created_at` → `committed` |
+| branch → MR status | `GET projects/P/merge_requests?source_branch=<b>&state=all&order_by=updated_at&per_page=5` then `GET …/:iid` | `iid web_url state draft head_pipeline.status` |
+| MR diff | `GET projects/P/merge_requests/:iid/diffs?per_page=100&page=N` (≤3 pages = 300 files) | `old_path new_path new_file renamed_file deleted_file diff too_large collapsed` |
+| merge state | `GET …/:iid` + `GET …/:iid/approvals` + `GET projects/P/pipelines/:pid/jobs?per_page=100` | § Merge |
+| merge | `PUT projects/P/merge_requests/:iid/merge` `sha squash auto_merge` | `state merged_at merge_commit_sha squash_commit_sha` |
+| cancel auto-merge | `POST projects/P/merge_requests/:iid/cancel_merge_when_pipeline_succeeds` **[A: 19.x rename]** | — |
+| publish | `POST projects/<push project>/merge_requests` | § Publish |
+| clone (cli) | porcelain `glab repo clone <web_url> <dir> -- --progress` | — |
+| clone (token / no glab) | `git clone <remote url as given>` | — |
+| automation poll | § Automations | |
 
-Docs for scopes: [PAT scopes](https://docs.gitlab.com/user/profile/personal_access_tokens/#personal-access-token-scopes).
-A group/project access token works the same (it is a PAT-shaped `glpat-`). OAuth tokens via glab
-are opaque to cezar. Expired token → reason *"GitLab rejected the token for <host> (401) — run
-`glab auth login --hostname <host>`"* [live: readable reason].
+### `workItems` + `changeRequests`
 
-## Contract additions (GitLab-specific, on top of the umbrella)
+- `WorkItem` mapping: issue `{ id: String(iid), key: '#'+iid, kind:'issue' }`, MR
+  `{ id: String(iid), key: '!'+iid, kind:'change_request', state: draft ? 'draft' : opened→'open' |
+  merged→'merged' | closed|locked→'closed' }`; `commentCount = user_notes_count`.
+- **Ids are IIDs** (project-scoped), never global `id`. Work-item ids in routes are URL-segment
+  safe by construction.
+- No legacy adapter: `/api/v1/github*` stays GitHub-only and never serves a GitLab integration;
+  GitLab is reachable only through `/integrations/*`.
+- Server-side search always; a GitLab `search` shorter than 3 characters is rejected by GitLab
+  **[A]** — the route answers an empty result with `reason`, not an error.
+- Confidential issues are returned only when the identity can read them; nothing to do.
+- Body Markdown is GitLab-flavoured; render through the existing Markdown renderer. Relative
+  upload links (`/uploads/…`) are rewritten against the project `web_url`; images stay links
+  (no authenticated fetch through cezar).
 
-All in `packages/contract/src/integrations.ts`; none touch frozen `/github*` shapes.
+### Checks glyphs (pipelines)
 
-- `integrationProviderIdSchema` already contains `gitlab`.
-- `gitlabTokenFieldsSchema = { instanceUrl: httpsUrl (path allowed, no query/fragment), token: string.min(20), caFile?: absolute path }` — served through the manifest's schema-driven form.
-- `changeRequestMergeStateSchema` (neutral name): **additive** `autoMerge?`, `approvals?: { required: number|null, given: number, approvedBy: string[] }`.
-- Merge body: additive `autoMerge?: boolean`; response 200 branch gains `merged: false` + `autoMergeEnabled: true` (umbrella decision).
-- `forgeInfoSchema.kind` / `backendCheckSchema.name` / `projects[].forge` gain `gitlab` / `glab`
-  (umbrella-owned widenings; listed so GitLab's PR does not forget them).
+`head_pipeline.status` → glyph: `success` → `passing`; `failed` → `failing`; `created
+waiting_for_resource preparing waiting_for_callback pending running scheduled canceling` →
+`pending`; `canceled skipped manual` → `null` (rendered as "no result", same as GitHub's
+neutral). No pipeline → `null`. `head_pipeline` absent because the identity can't view pipelines
+→ glyph absent (distinct from `null`, as in `ForgeTimelineEvent.checks`).
 
-## UI specifics
+### `merge`
 
-- Switcher label `GitLab · grp/sub/app`; self-managed shows the host (`GitLab · gitlab.acme.internal · grp/app`).
-- Vocabulary from manifest: "merge request", key `!17`; filter chips *Issues / Merge requests*; MR
-  rows show `Draft`, pipeline glyph, approvals `2/3`.
-- Merge panel: method picker from project settings; **"Merge when pipeline succeeds"** button
-  replaces "Merge" while the pipeline is running and `autoMerge.available`; "Cancel auto-merge"
-  when enabled.
-- Detail links: issues open `/-/issues/N` (GitLab 19 redirects to `/-/work_items/N` [live]); MR
-  changes link `/-/merge_requests/N/diffs` [live].
-- Bookmarklet matcher covers GitLab URL shapes on recognised hosts (gitlab.com CSP verified to allow
-  navigation [live #1226]; self-managed CSP is admin-set — unverified).
-- `clone-project-dialog.tsx` placeholder lists the recognised hosts.
+`ChangeRequestMergeState` (umbrella re-export of `ForgePrMergeState`) is filled as:
+
+| Field | GitLab source |
+| --- | --- |
+| `mergeable` | `detailed_merge_status`: `mergeable` → `mergeable`; `conflict`, `need_rebase` → `conflicting`; `checking unchecked preparing approvals_syncing` → `unknown`; everything else → `mergeable` with a blocker |
+| `reviewDecision` | approvals `approved` → `approved`; status `requested_changes` → `changes-requested`; `not_approved` → `review-required`; else `unknown` |
+| `checks` / `checksTier` | jobs of `head_pipeline` → one row each (`name`, status→state, `required: !allow_failure`, `web_url`) = `detailed`; only `head_pipeline.status` readable = `aggregate`; none = `none` |
+| `methods` / `defaultMethod` | `['merge']`, plus `'squash'` unless `squash_option = never`; only `['squash']` when `always`; default `squash` for `always/default_on`. **`rebase` is never offered** — GitLab's rebase is a project merge method or a separate `PUT …/rebase`, not a per-merge choice |
+| `blockers` | every other `detailed_merge_status` value, verbatim code + human copy (`ci_must_pass`, `discussions_not_resolved`, `draft_status`, `not_approved`, `merge_time`, `jira_association_missing`, `locked_paths`, `title_regex`, …) |
+| `eligibility` | `mergeable` → `ready`; `ci_still_running` → `pending`; `not_open` → `terminal`; 401/403 → `unauthorized`; blockers → `blocked` |
+| `canOverride` | always `false` — GitLab has no admin-bypass merge in the API |
+
+Additive optional fields (contract, § Contract): `approvals?: { approved, left: number|null,
+approvedBy: string[] }`, `autoMerge?: { enabled: boolean, available: boolean }`,
+`mergeMethodLabel?: 'merge commit' | 'merge commit with semi-linear history' | 'fast-forward'`.
+
+Merge always sends `sha = expectedHeadSha` (GitLab may *require* it — 19.2 setting), never uses
+`glab mr merge` (its `--auto-merge` default would silently schedule instead of merge). Status
+mapping: 200 + `state:merged` → `merged:true`; 200 + still `opened` with auto-merge set →
+`{ merged:false, scheduled:true }`; 401 → 403; 405 → 409 `not-mergeable` + fresh `current`;
+409 → 409 `head-moved`; 400 → 409 with GitLab's message; 5xx/transport → 502.
+
+The merge panel offers **Merge** and, when the head pipeline is not finished, **Merge when
+checks pass** (`auto_merge=true`; label copy "Set to auto-merge"), plus **Cancel auto-merge** when
+scheduled. Approving is out of scope for phase 3 (a review action on the user's behalf);
+`approvals` is read-only.
+
+### `publish` (draft MR from a run branch)
+
+Same pipeline as `createDraftPr` up to the push (autosave commit → `git push -u <push remote>
+<branch>` via `resolveTaskRemotes`); then:
+
+```
+POST projects/<source project id>/merge_requests
+  source_branch=<branch> target_branch=<run base branch> title="Draft: <title>"
+  description=<handoff body + linked-work-item footer> remove_source_branch=<omit → project default>
+  target_project_id=<base project id>   # only when push remote ≠ base remote (fork flow)
+```
+
+- Draft is the `Draft:` title prefix (GitLab's canonical draft marker) **[A: whether create also
+  accepts a `draft` param on the server's version]**; publishing *ready* omits it.
+- The response JSON yields `web_url` and `iid` — **no URL scraping**.
+- 409 "Another open merge request already exists for this source branch" → look up that MR by
+  `source_branch` and return its URL (`ok:true`), matching the idempotent GitHub behaviour.
+- `CEZ_DRY_RUN=1` returns `https://gitlab.example.com/acme/platform/api/-/merge_requests/1`.
+
+### `clone`
+
+`parseRepoRef` (umbrella: any host a provider recognises) accepts `https://<gitlab host>/<path…>`,
+`git@<host>:<path…>.git`, and `<host>/<path…>`; a bare `group/repo` stays GitHub-only (ambiguous).
+`cli` → `glab repo clone <url> <dir> -- --progress` (uses glab's git protocol + credential setup);
+otherwise plain `git clone <url>`. **A token is never embedded in a clone URL.** Target-path and
+ownership-proof rules in `checkout.ts` are unchanged.
+
+### `link` (as work source, and as code host for other work sources)
+
+- Footer when GitLab is the **work source** and code host: `Closes #12`; when the code host is a
+  different GitLab project: `Closes group/project#12`; when the code host is another provider
+  (GitHub/ADO), the footer is a plain link — GitLab cannot close across vendors.
+- When GitLab is the **code host** for Jira/Linear/ADO work items, the MR body carries the work
+  source's footer (umbrella). GitLab's own Jira integration, if the admin enabled it, picks up the
+  key; cezar does nothing extra.
+- Optional backlink (opt-in, off): `POST projects/P/issues/:iid/notes body="cezar opened !17"`.
+
+### `agentAccess`
+
+Agents inherit the user's `PATH` and `HOME`, so a signed-in `glab` already works inside a run,
+exactly as `gh` does. Forwarding `GITLAB_TOKEN`/`GITLAB_HOST` into the agent env is **opt-in per
+integration** (umbrella rule). A `token` connection's secret is never forwarded by default.
+
+### Redaction
+
+`core/secret-redaction.ts` gains the manifest pattern above. Because a self-managed **PAT prefix is
+configurable** ([tokens][tokens]), the redactor also registers the **exact value** of every stored
+GitLab token at load time (and `glab auth status --show-token` is never called).
 
 ## Automations
 
-Event source `integrations/gitlab/events.ts` implements `AutomationEventSource` over the shared poll
-cycle (cursor, receipts, leases, baselining unchanged). Advertised events — **each verified from
-history**, per the umbrella rule:
+`integration` automation kind, `providerId: 'gitlab'`. Each event is advertised only if verifiable
+from history:
 
-| Neutral event | Candidate query | Verification |
+| Neutral event | GitLab verification | GitHub-kind analogue |
 | --- | --- | --- |
-| `work_item.created` | `P/issues?created_after=<cursor>&order_by=created_at&sort=asc` | `created_at` > cursor |
-| `work_item.labeled` / `.unlabeled` | for each filter label: `P/issues?labels=<L>&state=opened&updated_after=<cursor − lookback>` **plus** the stored membership set diff (GitLab does not always bump `updated_at` on label changes [live]) | `resource_label_events` row `action=add/remove`, `label.name=L`, `created_at` > cursor |
-| `work_item.status_changed` | `P/issues?updated_after=<cursor>` | `resource_state_events` (`closed`/`reopened`) after cursor |
-| `change_request.opened` | `P/merge_requests?created_after=<cursor>` | `created_at` |
-| `change_request.merged` / `.closed` | `P/merge_requests?state=merged\|closed&updated_after=<cursor>` | `merged_at` / `resource_state_events` |
+| `work_item.created` | issue `created_at` ≥ baseline | `issue.opened` |
+| `work_item.labeled` / `work_item.unlabeled` | `resource_label_events` `action add/remove`, `created_at` | `issue.labeled/unlabeled` |
+| `work_item.status_changed` | `resource_state_events` `closed/reopened` | — |
+| `change_request.opened` | MR `created_at` ≥ baseline | `pull_request.opened` |
+| `change_request.merged` / `change_request.closed` | MR `resource_state_events` `merged/closed` | `pull_request.merged/closed` |
+| `change_request.review_requested` | `reviewers[].created_at` ≥ baseline **[A: the timestamp is assignment time]** | `pull_request.review_requested` |
+| not advertised | re-review request, review submitted/approved (no timestamped history in REST) | `pull_request.rereview_requested`, `pull_request.reviewed` |
 
-Not advertised in phase 3: `change_request.review_requested` and `review_submitted` — reviewer
-assignment has no resource-event history in REST (only localized system notes) [assumption — see
-open question 2]. Template tokens: `item.*` (umbrella) plus `item.namespace` (full project path) and
-`item.iid`; `github.*` aliases are **not** populated for GitLab events (would lie about the source).
-The fork's per-issue "one live task" and `Retry-After`/`RateLimit-Reset` cooldown carry over.
-Budget: ≤ 2 list calls + ≤ 20 event calls per poll per integration, under gitlab.com's limit by two
-orders of magnitude.
+Poll (per enabled automation, bounded): `GET projects/P/issues|merge_requests?updated_after=<checkpoint>&order_by=updated_at&sort=asc&state=all&per_page=100`
+→ for each candidate, fetch only the resource-event stream its trigger needs. Checkpoint =
+`updated_at` + `iid` tiebreaker; `complete:false` when a page cap hits. Filters: `labels`,
+`author`, `assignee`, `reviewer`, `draft`. Template tokens `item.*` (`item.key` = `#12`/`!17`).
+`checkout: 'pr-head'` maps to fetching `refs/merge-requests/<iid>/head` **[A]** from the base remote.
 
-## Run bookkeeping reference patterns
+## Run bookkeeping
 
-Manifest `referencePatterns` (host set = discovered GitLab hosts + their instance roots):
+`referencePatterns` (host list = every GitLab host the project's integrations know, with the
+optional subfolder):
 
-- URL: `https?://<host>(?::\d+)?<root>/(?<path>[^\s]+?)/-/(?<kind>merge_requests|issues|work_items)/(?<n>\d+)` — `work_items` [live, 19.x].
-- Keys: `!\d+` (MR), `<path>!\d+`, `<path>#\d+`; bare `#\d+` only when GitLab is the code host (umbrella).
-- Worded: `merge request !N`, `MR !N`, `merge request #N` [live: fork], and the hand-off heading
-  `Address GitLab merge request !N` / `Fix GitLab issue #N` — `lib/work-item-task.ts` and
-  `task-refs.ts` change in one commit (documented coupling).
-- `RunRecord.workItemRefs` entries `{ providerId:'gitlab', itemId:'17', key:'!17', kind:'change_request', url }`.
+- MR URL: `https?://<host>(/<subfolder>)?/(?:[\w.-]+/)+[\w.-]+/-/merge_requests/(\d+)`
+- Issue URL: `…/-/issues/(\d+)` and `…/-/work_items/(\d+)` **[A: newer issue URLs]**
+- Worded: `\b(?:merge\s+request|MR)\s*!?\s*(\d+)` and `!(\d+)` (MR); `#(\d+)` = issue only when
+  GitLab is the code host.
+- Hand-off wording (in `lib/work-item-task.ts`, coupled to `task-refs.ts` in the same commit):
+  "Address GitLab merge request !N", "Fix GitLab issue #N".
 
-## Cross-provider linking
+`RunRecord.prNumber`/`prUrl` are populated for a GitLab MR (it is the code host's change request);
+`workItemRefs` gets `{ providerId:'gitlab', key:'!17', kind:'change_request' }`.
 
-As a **work source**, GitLab supplies the footer `Closes <path>#<iid>` when the code host is GitLab
-(same project → `Closes #12`), and a plain URL line when the code host is another provider (GitLab
-cannot close an issue from a GitHub PR). Closing keywords per
-[default closing pattern](https://docs.gitlab.com/user/project/issues/managing_issues/#default-closing-pattern) [docs].
-As a **code host**, GitLab's MR description carries the other work source's footer (`PROJ-42`,
-`AB#1234`, `Fixes TEAM-12`); GitLab's own Jira integration then links it when the instance has it
-configured [docs: [Jira issue integration](https://docs.gitlab.com/integration/jira/)].
-`link` facet (opt-in, off by default): note on the issue "cezar opened !17".
+## Contract additions (GitLab-specific, all additive)
+
+In `packages/contract/src/integrations.ts` / `github.ts` re-exports:
+
+- `changeRequestMergeStateSchema`: optional `approvals`, `autoMerge`, `mergeMethodLabel`.
+- Merge body: optional `autoMerge?: boolean`; merge result: new `{ merged:false, scheduled:true,
+  number, url }` variant; `POST …/change-requests/:itemId/merge/cancel-auto` (capability-gated).
+- `integrationAvailabilitySchema.cli` already covers `glab`; add optional `instance?: { baseUrl,
+  version? }` (version from `GET version` only on explicit refresh **[A]**).
+- `backendCheckSchema.name` gains `'glab'` (manifest-driven, umbrella).
+- `forgeInfoSchema.kind` gains `'gitlab'` (umbrella widening).
+- Token connection record: `{ provider:'gitlab', baseUrl (https URL, may include path), token,
+  caFile? }`; `baseUrl`'s host must equal the remote host or the override.
+
+## Cockpit
+
+- Switcher entry `GitLab · acme/platform/api` (full path, middle-truncated).
+- Filter chips **Issues / Merge requests**; MR rows show `!17`, a *Draft* badge, pipeline glyph.
+- Detail: thread interleaves notes + label/state events + commits; no review rows in phase 3
+  (honest gap, shown as approval summary in the merge panel instead).
+- Merge panel: approvals `2 of 3 · approved by …`, merge-method label, auto-merge button.
+- Review gate: **Create MR** / **View MR** (vocabulary from manifest).
+- Settings → Integrations → GitLab card: hosts found (from remotes), per host *glab missing /
+  signed out / signed in* with **Install glab** and **Sign in** (`glab auth login --hostname <host>`
+  in the user's terminal), or **Use a token** form (Instance URL, token, CA file). Token scope copy:
+  `read_api` for browsing; `api` for publish/merge.
+- Clone dialog accepts GitLab URLs (placeholder lists both).
 
 ## Dry-run fixtures
 
-`integrations/gitlab/fixtures/` — **raw REST JSON** (what both transports return), so one set feeds
-dry-run and tests: `project.json` (subgroup path), `issues.page1/2.json`, `mrs.json` (draft, merged,
-fork MR), `notes.json` (+ system notes), `label-events.json`, `state-events.json`,
-`mr-detail.{mergeable,ci_running,not_approved,conflict}.json`, `approvals.json`, `diffs.json`
-(collapsed + too_large rows), `pipelines.graphql.json`, `create-mr.json`, `merge.{ok,405,409}.json`,
-`auth-status.{ok,logged-out,subpath}.txt`, `glab-config.yml` (with a fake token that must never
-appear in any output). `CEZ_DRY_RUN=1` uses a fixture transport; draft MR returns
-`<base>/-/merge_requests/777`.
+`packages/cezar/src/integrations/gitlab/fixtures/`: `project.json` (subgroup path, `merge_method`),
+`issues.json`, `merge-requests.json` (draft, merged, pipeline states), `notes.json` (with system
+notes to drop), `label-events.json`, `state-events.json`, `diffs.json` (incl. `too_large`),
+`approvals.json` (CE and Premium shapes), `jobs.json`, `merge-405.json`, `merge-409.json`,
+`auth-status.json`. `CEZ_DRY_RUN=1` serves them through a fixture transport — the same seam as
+`glabTransport`/`tokenTransport`.
 
-## Implementation phases (umbrella phase 3)
+## Implementation steps (umbrella phase 3)
 
-Prereq: umbrella phase 1 (seam, registry, shared plumbing) merged.
-
-- **G0 — verification spike (no product code):** re-check every **[docs]** row against its URL;
-  record glab's prompt-suppression env name, the auto-merge param/version, `--include` output
-  format; capture real fixtures from gitlab.com and one self-managed instance under a sub-path.
-- **G1 — read path:** `integrations/gitlab/{index.ts,manifest.ts,discover.ts,transport.ts,schemas.ts,normalize.ts}`;
-  `git-remotes.ts` additive `path`; `gitlab-hosts.ts` (sync config read, mirrors `github-hosts.ts`);
-  registry line in `integrations/registry.ts`; workItems + changeRequests (list/search/get/thread/diff/checks).
-- **G2 — code host:** `publish.ts`, `merge.ts` (+ auto-merge contract fields), status-by-branch,
-  `clone` in `server/checkout.ts`, `workflows/run.ts` PR nodes (`createDraftPr`, `commentOnPr`,
-  wait-for-CI) routed through the code-host integration — the gap the fork named.
-- **G3 — host tooling:** `core/backend-detect.ts` `glab` probe from the manifest,
-  `server-install/steps.ts` glab install/remove, `core/agent-env.ts` opt-in names,
-  `core/secret-redaction.ts` pattern, `runs/store.ts` + `runs/task-refs.ts` patterns, bookmarklet.
-- **G4 — automations:** `events.ts`, event options, cockpit trigger editor shows GitLab events.
-- **G5 — token transport:** `HttpTransport` + Settings form + CA file; conformance suite run twice
-  (glab fixture transport and HTTP mock) over the same fixtures.
-
-Each phase is shippable alone; without glab and without a token the project stays plain-git.
+1. **3a Remote parsing + classification** — `git-remotes.ts` (`ParsedRemote.path`), new
+   `gitlab-hosts.ts` (mirror of `github-hosts.ts`), `forge/index.ts` `forgeKindOfHost` → `'gitlab'`
+   via the registry; tests for subgroups, ports, `ssh://`, scp, subfolder ambiguity.
+2. **3b Client + transports** — `integrations/gitlab/{client,transport-glab,transport-token,schemas,normalize}.ts`;
+   zod over every response; error mapping; pagination caps.
+3. **3c Read facets** — `workItems`, `changeRequests`, thread, diff, checks; Issues view entry;
+   bookkeeping patterns in `runs/store.ts` + `runs/task-refs.ts`.
+4. **3d Write facets** — `publish`, `merge` (+ auto-merge, cancel), `clone` (`checkout.ts`),
+   Settings card, `server-install/steps.ts` glab install hints, `backend-detect.ts` glab probe,
+   redaction, `.env.example` only if a `CEZ_*` var is added (none planned).
+5. **3e Automations** — `integrations/gitlab/events.ts` implementing `AutomationEventSource`.
 
 ## Tests
 
-- `integrations/conformance.test.ts` (umbrella) passes for `gitlab` with both transports.
-- `gitlab/discover.test.ts`: gitlab.com; self-managed via config.yml / `GITLAB_HOST`; token-store host;
-  `gitlab.*` name → candidate only; subgroup paths; relative root ambiguity resolved by instance base;
-  SSH vs HTTPS port/scheme; **no file read beyond config.yml, no network** (spy).
-- `gitlab/transport.test.ts`: exit-0 404 → not-found; 429 → cooldown from `Retry-After`; field
-  argv never shell-joined; large description via tmpfile; CA agent built only when `caFile` set;
-  token never present in errors, logs, cache files.
-- `gitlab/normalize.test.ts`: every state/glyph/merge-status mapping row above; `state=closed`
-  excludes merged; collapsed diffs → truncated.
-- `gitlab/publish.test.ts`: same-project and fork MR; URL host validation; conflicted worktree refusal.
-- `gitlab/events.test.ts`: label added without `updated_at` bump still fires once; baseline does not
-  replay history; unverifiable candidate dropped.
-- `runs/task-refs.test.ts`, `runs/store.test.ts`: MR/issue/work_items URLs under a sub-path host.
-- `secret-redaction.test.ts`: every manifest pattern registered (umbrella test) + each GitLab prefix.
-- E2E: `packages/web/e2e/issues.e2e.ts` GitLab dry-run project — switcher, MR list, merge panel.
-- Regression-proof rule (AGENTS.md): each **[live]** quirk test is shown red without its fix.
+- `integrations/gitlab/*.test.ts`: fixture → normalized shapes for every row of the request table;
+  pipeline → glyph table; `detailed_merge_status` → mergeable/eligibility table; merge status-code
+  table; publish 409-existing; fork publish sets `target_project_id`.
+- Transport: glab argv snapshot (no `--paginate`, env flags present, `-i` parsed), ENOENT /
+  signed-out / 429 mapping; token transport refuses cross-origin redirect, uses `caFile`, never
+  disables TLS verification.
+- Discovery: no `glab` spawn and no network (spy), glab `config.yml` parsing across the search
+  order, `GITLAB_HOST`, GitHub-vs-GitLab precedence, `gitlab.corp` not classified.
+- Subfolder probe: ≤3 requests, cached, SSH-without-subfolder reason.
+- Bookkeeping: MR/issue URLs with subgroups + subfolder, `!N`, coexisting GitHub URLs untouched.
+- Redaction: every prefix + exact-value registration for a custom-prefix PAT.
+- Umbrella conformance suite runs the GitLab fixtures; `route-parity`, `contract-parity*`,
+  `typed-bodies` cover the merge/cancel-auto additions. E2E: Issues view against GitLab dry-run.
+- Regression proof per AGENTS.md: the bookkeeping and `parseRemote` tests fail with the source
+  change stashed.
 
-## Compatibility floor and backward compatibility
+## Backward compatibility
 
-- Supported: gitlab.com and self-managed **GitLab ≥ 15.7** (MR `diffs` endpoint,
-  `detailed_merge_status` from 15.6) [docs]. Older instances: availability `reason` names the
-  version; read paths that do not need those endpoints still work [assumption].
-- No frozen route changes; `/api/v1/github*` never serves GitLab data (GitLab is reachable only via
-  `/integrations/*`). Additive widenings as listed in § Contract.
-- `.ai/cezar/integrations.json` holds only optional host/role overrides; nothing GitLab-specific is
-  required. Token records live in the umbrella's managed store; `ensureDataGitignore` unchanged.
-- #1226 users: none on main; its `forge-hosts.json` cache is not read (discovery is now sync).
+- `ParsedRemote.path` is additive; `owner`/`repo` semantics unchanged for every existing caller.
+- A GitLab remote previously yielded `forge: null`; it now yields `'gitlab'` — the widened enum is
+  the umbrella's breaking-type change, shipped with its consumers.
+- `/api/v1/github*` never serves GitLab data. No frozen shape changes.
+- GitHub-host precedence keeps every GitHub/GHES project classified exactly as today.
+- No new config file, no new required env var; `integrations.json` entries optional.
 
 ## Acceptance criteria
 
-1. With glab signed in to gitlab.com and no config, a gitlab.com repo (incl. a subgroup) shows
-   **GitLab** in the Issues switcher with issues and MRs, threads with label/state events, CI glyphs
-   and diffs — zero cezar settings touched.
-2. The same on a self-managed instance at `https://host/gitlab/` with a private CA configured in glab.
-3. Review gate creates a **draft MR** (same-project and fork) and the run records `!N` and its URL.
-4. Merge panel merges, squashes, and enables/cancels auto-merge; a moved head is refused.
-5. A token-only connection (no glab) passes the same conformance suite.
-6. A GitLab issue-label automation fires once per label add and never on baseline history.
-7. No GitLab token appears in logs, run transcripts, cache files or API responses (test-enforced).
-8. `CEZ_DRY_RUN=1` exercises every facet offline.
+- A repo whose `origin` is `git@gitlab.com:acme/platform/api.git`, with `glab` signed in and no
+  cezar config, shows GitLab issues and MRs, opens a draft MR from a run, shows its pipeline
+  glyph, and merges it with a head-SHA guard.
+- The same on `https://intra.acme/gitlab/acme/api.git` with a private CA, via glab's `subfolder` +
+  `ca_cert` — and via a token connection with `baseUrl` + `caFile`.
+- Merge on a running pipeline offers "Merge when checks pass"; the result reports *scheduled*,
+  never a false *merged*.
+- A GitLab run keeps its MR chip and `!N` prefix; GitHub runs unchanged.
+- Discovery and health never spawn `glab` or make a request; `CEZ_DRY_RUN=1` exercises all facets.
 
 ## Open questions
 
-1. **Auto-merge contract:** widen the merge response's 200 branch (`merged:false, autoMergeEnabled`)
-   or add a separate `POST …/auto-merge` route? (This spec proposes the former; umbrella owns it.)
-2. **Reviewer events:** poll the `reviewers` array as a state diff (not history-verifiable, so it
-   would bend the umbrella rule), or wait for a GitLab history endpoint? Proposed: wait.
-3. **`skip_tls_verify`:** should the token transport ever offer it? Proposed: no — glab path only.
-4. **Approvals on GitLab Free:** expose `approvals` only when the endpoint returns rules, or always?
-5. **Push-option publish** (no glab, no token): ship it in G2 or defer until asked?
+1. Phase 3 has no review rows in the MR thread (REST has no timestamped review history). Accept,
+   or add GraphQL / parse English system notes ("approved this merge request")?
+2. Offer **Approve** in the merge panel (`POST …/approve` with `sha`)? It is a review on the
+   user's behalf — proposed out of scope.
+3. Should GitLab issues on **another** project/group (the `-g group` scope `glab` supports) be a
+   scope-anchored work source? Proposed: later, as a `scope` anchor on the same provider.
+4. Minimum `glab` version to pin (`auth status --output json` availability) — measure in 3b.
+
+[glab-readme]: https://gitlab.com/gitlab-org/cli/-/blob/main/README.md
+[glab-releases]: https://gitlab.com/gitlab-org/cli/-/releases
+[glab-install]: https://gitlab.com/gitlab-org/cli/-/blob/main/docs/installation_options.md
+[glab-login]: https://docs.gitlab.com/cli/auth/login/
+[glab-auth]: https://docs.gitlab.com/cli/authentication/
+[glab-auth-status]: https://docs.gitlab.com/cli/auth/status/
+[glab-config]: https://docs.gitlab.com/cli/configuration/
+[glab-config-cmd]: https://docs.gitlab.com/cli/config/
+[glab-api]: https://docs.gitlab.com/cli/api/
+[glab-mr-list]: https://docs.gitlab.com/cli/mr/list/
+[glab-mr-create]: https://docs.gitlab.com/cli/mr/create/
+[glab-mr-merge]: https://docs.gitlab.com/cli/mr/merge/
+[glab-issue-list]: https://docs.gitlab.com/cli/issue/list/
+[rest-index]: https://docs.gitlab.com/api/rest/
+[rest-auth]: https://docs.gitlab.com/api/rest/authentication/
+[mr-api]: https://docs.gitlab.com/api/merge_requests/
+[projects-api]: https://docs.gitlab.com/api/projects/
+[approvals-api]: https://docs.gitlab.com/api/merge_request_approvals/
+[label-events]: https://docs.gitlab.com/api/resource_label_events/
+[state-events]: https://docs.gitlab.com/api/resource_state_events/
+[notes-api]: https://docs.gitlab.com/api/notes/
+[pipelines-api]: https://docs.gitlab.com/api/pipelines/
+[com-rate-limits]: https://docs.gitlab.com/user/gitlab_com/rate_limits/
+[tokens]: https://docs.gitlab.com/security/tokens/
+[closing]: https://docs.gitlab.com/user/project/issues/managing_issues/
+
+## Appendix: live evidence carried over from #1226
+
+A second, independently written draft of this spec (task b10c058f) drew on the live runs of
+PR #1226 (glab 1.118 against gitlab.com) and the downstream fork on self-managed 19.x CE
+([#1226 comment](https://github.com/open-mercato/cezar/pull/1226#issuecomment-6217599142)).
+Its findings that this spec must also honor:
+
+- `glab api` **exits 0 on an HTTP 404** and reports only on stderr. Always call it with
+  `--include` and decide success from the status line, never from the exit code. Test: exit-0 404 → not-found.
+- `glab api --paginate` emits **one JSON array per page**, not a merged array; the parser reads a
+  stream of arrays.
+- `glab mr create --no-editor` still prompted in 1.118 — one more reason publish uses
+  `POST projects/:id/merge_requests` through `glab api`.
+- The old `NO_PROMPT` env var is deprecated; use `GLAB_NO_PROMPT=1`.
+- **Plain-git tier** (no glab, no token): the remote still shows as "Sign in to <host>", clone uses
+  `git clone`, and publish may fall back to GitLab push options
+  (`git push -o merge_request.create -o merge_request.draft`,
+  [push options](https://docs.gitlab.com/topics/git/commit/#push-options-for-merge-requests)), reading the MR
+  URL from the `remote:` lines. [assumption: `merge_request.draft` availability per version]
+- This spec supersedes the GitLab half of #847 and its unmerged spec PR #848. Code from #1226 may be
+  ported; its `ForgeDriver` shape is not.

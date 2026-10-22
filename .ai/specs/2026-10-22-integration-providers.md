@@ -1,6 +1,6 @@
 # Integration providers — one pluggable seam for issues and pull requests
 
-> Slug: `integration-providers` · Updated: 2026-10-22.
+> Slug: `integration-providers` · Issue: #1614 · Updated: 2026-10-22.
 > Status: draft for review. Umbrella spec; provider specs build on it:
 > [GitHub](2026-10-22-integration-github.md) ·
 > [GitLab](2026-10-22-integration-gitlab.md) ·

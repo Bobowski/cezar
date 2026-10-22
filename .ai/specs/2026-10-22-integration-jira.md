@@ -1,6 +1,6 @@
 # Integration provider: Jira (Cloud, Data Center/Server)
 
-> Slug: `integration-jira` · Updated: 2026-10-22.
+> Slug: `integration-jira` · Issue: #1618 · Updated: 2026-10-22.
 > Status: draft for review. Provider spec under the umbrella
 > [integration-providers](2026-10-22-integration-providers.md), which is binding for the seam,
 > contract, routes, persistence and phasing. This file only says how Jira fills it.

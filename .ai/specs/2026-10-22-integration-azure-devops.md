@@ -1,6 +1,6 @@
 # Integration provider: Azure DevOps (Services + Server)
 
-> Slug: `integration-azure-devops` · Updated: 2026-10-22 · Status: draft for review.
+> Slug: `integration-azure-devops` · Issue: #1617 · Updated: 2026-10-22 · Status: draft for review.
 > Builds on the binding umbrella spec [integration-providers](2026-10-22-integration-providers.md)
 > (manifest, facets, anchors, connections, contract, routes, Issues view, automations, linking).
 > Sibling for shape and shared decisions: [GitLab](2026-10-22-integration-gitlab.md).

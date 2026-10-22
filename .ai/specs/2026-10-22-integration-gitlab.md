@@ -1,6 +1,6 @@
 # Integration provider: GitLab (GitLab.com, Dedicated, self-managed)
 
-> Slug: `integration-gitlab` · Updated: 2026-10-22.
+> Slug: `integration-gitlab` · Issue: #1616 · Updated: 2026-10-22.
 > Status: draft for review. Provider spec under the umbrella
 > [integration-providers](2026-10-22-integration-providers.md) — binding for the seam, contract,
 > routes, persistence and phasing; this file only says how GitLab fills it.

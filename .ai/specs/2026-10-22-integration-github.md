@@ -1,6 +1,6 @@
 # Integration provider: GitHub (github.com, ghe.com, Enterprise Server) — the reference migration
 
-> Slug: `integration-github` · Updated: 2026-10-22 · Status: draft for review.
+> Slug: `integration-github` · Issue: #1615 · Updated: 2026-10-22 · Status: draft for review.
 > Builds on the binding umbrella spec [integration-providers](2026-10-22-integration-providers.md).
 > Siblings: [GitLab](2026-10-22-integration-gitlab.md) · [Azure DevOps](2026-10-22-integration-azure-devops.md) ·
 > Jira · Linear. **Owns** the umbrella's phase-1 GitHub migration, the **Issues view + provider

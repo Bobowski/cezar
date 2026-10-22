@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 const execFile = promisify(execFileCallback);
@@ -70,6 +70,17 @@ test('the release tarball installs and runs the dry-run CLI workflow', { timeout
     });
     assert.match(impact.stdout, /^ok: .*impact-demo\.html \(2 views\)/);
     assert.match(await readFile(join(root, 'impact-demo.html'), 'utf8'), /Created by the Open Mercato Team/);
+
+    // The bundled change-impact skill is discovered from the INSTALLED layout, as source builtin.
+    const { discoverSkills } = (await import(pathToFileURL(join(packageRoot, 'dist', 'skills.js')).href)) as {
+      discoverSkills: (repo: string) => Promise<Array<{ name: string; source: string; path: string }>>;
+    };
+    // `skillsRepos: []` — no team repo is cloned in the background.
+    await mkdir(join(consumerDir, '.ai', 'cezar'), { recursive: true });
+    await writeFile(join(consumerDir, '.ai', 'cezar', 'config.json'), '{"skillsRepos": []}\n', 'utf8');
+    const shipped = (await discoverSkills(consumerDir)).find((skill) => skill.name === 'change-impact');
+    assert.equal(shipped?.source, 'builtin');
+    assert.equal(shipped?.path, join(packageRoot, 'skills', 'change-impact', 'SKILL.md'));
 
     const fixtureRepo = join(root, 'fixture-repo');
     await mkdir(fixtureRepo);

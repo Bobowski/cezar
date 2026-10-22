@@ -523,6 +523,11 @@ describe('systemPrompt end-to-end (dry run)', () => {
       'mock: implemented the change',
     );
 
+    // The first session published the dry-run page; the Continue session must get the same
+    // directory (env + prompt line) at its own construction site (spec 2026-10-22-html-artifacts).
+    const demo = join(artifactsDir(join(repoRoot, '.ai/cezar'), id), 'demo.html');
+    expect(existsSync(demo)).toBe(true);
+    rmSync(demo);
     expect(manager.continueRun(id, { text: 'continue without generating follow-ups' })).toEqual({
       ok: true,
     });
@@ -535,6 +540,9 @@ describe('systemPrompt end-to-end (dry run)', () => {
       composeSystemPrompt(CONFIG_PROMPT, artifactsLine(repoRoot, id), HANDOFF_ONLY_INSTRUCTIONS),
     );
     expect(capturedSystemPrompt(1)).not.toContain('CEZ_TODOS_FILE');
+    const demoDeadline = Date.now() + 10_000;
+    while (!existsSync(demo) && Date.now() < demoDeadline) await new Promise((r) => setTimeout(r, 50));
+    expect(existsSync(demo)).toBe(true);
     expect(existsSync(todosFile)).toBe(false);
     expect(existsSync(inheritedTodos)).toBe(false);
   }, 30_000);

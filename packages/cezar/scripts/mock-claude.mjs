@@ -138,6 +138,26 @@ function writeHandoffAndTodo() {
   }
 }
 
+// Spec 2026-10-22-html-artifacts: publish a self-contained page into CEZ_ARTIFACTS_DIR, so a
+// dry run (and the e2e suite) sees the whole artifacts path work.
+const DEMO_ARTIFACT_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Dry-run demo report</title>
+<style>body{font:15px/1.5 system-ui,sans-serif;margin:2rem;color:#1a1a1a;background:#fafafa}
+@media (prefers-color-scheme:dark){body{color:#eee;background:#151515}}h1{font-size:1.4rem}</style>
+</head><body><h1>Dry-run demo report</h1>
+<p>The mock agent wrote this page into its artifacts directory.</p>
+<p id="clock"></p><script>document.getElementById('clock').textContent = 'Rendered at ' + new Date().toLocaleTimeString();</script>
+</body></html>
+`;
+function writeDemoArtifact() {
+  try {
+    const dir = process.env.CEZ_ARTIFACTS_DIR;
+    if (dir) writeFileSync(`${dir}/demo.html`, DEMO_ARTIFACT_HTML, 'utf8');
+  } catch {
+    // best effort — a missing directory just means no demo page
+  }
+}
+
 async function respond(userText, imageCount) {
   turn += 1;
   await pace(250);
@@ -524,6 +544,7 @@ async function respond(userText, imageCount) {
       // read-only cwd — the mock still works, just without a diff
     }
     writeHandoffAndTodo();
+    writeDemoArtifact();
     emit({
       type: 'assistant',
       message: {

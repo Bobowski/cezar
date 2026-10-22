@@ -334,21 +334,27 @@ keys of connected integrations** so `UTF-8` and `ISO-9001` never become refs; `A
 GitLab MRs). `extractTaskRefs` runs every pattern of the project's integrations; bare `#N`
 takes the **code host's native meaning** (GitHub/GitLab issue, Azure DevOps work item) and is never
 claimed by a scope-anchored work source. `RunRecord` gains optional
-`workItemRefs?: { integrationId, providerId, itemId, key, url, kind }[]`; existing `prNumber`-style
+`workItemRefs?: { integrationId, providerId, itemId, key, url, kind, launchedFrom? }[]`; existing `prNumber`-style
 fields remain and are populated for the code host. Old records parse unchanged.
 
 ## Cross-provider linking
 
 The reason to run GitHub + Jira together: a task launched from `PROJ-42` produces a PR on GitHub.
 
-- The publish facet accepts `linkedWorkItems` from the run's refs; the PR body gets a footer the
-  work source understands, and a work-source manifest may also contribute a **title prefix** —
-  Jira's development panel reads the PR title and branch name, never the body, so the key goes in the
-  title by default (`PROJ-42` for Jira, `AB#1234` for ADO, `Fixes #12` for
-  GitHub/GitLab, Linear's `Fixes TEAM-12` magic word) — each work-source manifest supplies its
-  footer template.
-- Optional `link` facet: on publish, add a remote link / comment on the work item ("cezar opened
-  PR …"). Opt-in per integration, off by default (it is a vendor write).
+- The publish facet accepts `linkedWorkItems` from the run's refs. Each work-source manifest
+  supplies two templates:
+  - a **title prefix** — the bare key (`PROJ-42`, `ENG-12`, `AB#1234`). Jira's development panel
+    reads only the PR title and branch name, so the key goes in the title by default;
+  - a **description footer** — magic words go in the body, because GitHub Enterprise and GitLab read
+    them only in the description (`Fixes #12`, Linear `Fixes ENG-12`, ADO `AB#1234`).
+- Closing words (`Fixes`, `Closes`) apply **only to the item the run was launched from**
+  (`workItemRefs[].launchedFrom`); every other ref gets a non-closing word (`Refs`).
+- `workItemDetail.vcsBranchHint?` (e.g. Linear `Issue.branchName`) feeds the existing branch-naming
+  hints, so the vendor recognises the branch too.
+- Optional `link` facet: on publish, add a remote link / attachment / comment on the work item
+  ("cezar opened PR …"). Opt-in per integration, off by default (it is a vendor write). One shared
+  settings shape and one retry route for every provider:
+  `POST /integrations/:iid/items/:itemId/links`.
 - Agent-requested status transitions (existing Jira capability via `agent-credentials.ts`) move
   under `link` with the same opt-in rules.
 
@@ -369,7 +375,8 @@ The reason to run GitHub + Jira together: a task launched from `PROJ-42` produce
 - Template tokens: new `item.*` namespace (`item.key`, `item.title`, `item.url`, `item.labels`,
   `item.provider`, `item.event`); `github.*` and `tracker.*` keep working as aliases.
 - The poll cycle, receipts, leases and baselining (`event-poll-cycle.ts`, `scheduler.ts`) are
-  reused as is. Per-provider rate budgets replace `GithubRequestArbiter`'s GitHub-only budget.
+  reused as is. Per-provider rate budgets replace `GithubRequestArbiter`'s GitHub-only budget, keyed by **vendor
+  account** rather than connection (Linear meters all of a user's keys together).
 
 ## Host tooling, agent env, redaction
 

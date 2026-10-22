@@ -156,7 +156,9 @@ import { getTeamSkillsCached, refreshTeamSkills, waitForTeamSkills } from '../sk
 import { appendHandoffHeartbeat, handoffProgressExcerpt, readHandoff } from '../handoff.ts';
 import { markStarted, onTodosChanged, readTodos, removeTodo, todoTaskText, type TodoItem } from '../todos.ts';
 import type { RunEvent, RunRecord, RunStatus, RunStore } from '../runs/store.ts';
-import { artifactsFrame, type ArtifactsBusPayload } from './artifacts.ts';
+import { artifactsDir } from '../runs/store.ts';
+import { artifactsCdnEnabled, scanArtifacts } from '../runs/artifacts.ts';
+import { artifactHeaders, artifactsFrame, openArtifact, type ArtifactsBusPayload } from './artifacts.ts';
 import {
   HistoryCursorError,
   deriveRunContextEvents,
@@ -185,6 +187,7 @@ import {
   runEventsQuerySchema,
   runHistoryQuerySchema,
   runIdParamSchema,
+  artifactNameParamSchema,
   setRunDraftInputSchema,
   repoFileQuerySchema,
   type DeleteDraftResponse,
@@ -5264,6 +5267,28 @@ export function createApp(deps: ServerDeps) {
       const result = await listRepoPaths(workingDirectory);
       if (!result.ok) return c.json({ error: result.error }, 409);
       return c.json({ paths: result.paths, truncated: result.truncated });
+    })
+
+    // Run artifacts (spec 2026-10-22-html-artifacts-and-impact § Serving): what the agent wrote
+    // into `.ai/cezar/artifacts/<runId>/`, listed fresh on every request.
+    .get('/runs/:id/artifacts', paramZodValidator(runIdParamSchema), async (c) => {
+      const { dataDir, store } = c.get('project');
+      const { id } = c.req.valid('param');
+      if (!store.getRun(id)) return c.json({ error: 'not found' }, 404);
+      return c.json(await scanArtifacts(artifactsDir(dataDir, id)));
+    })
+
+    // One artifact's bytes. Membership in a FRESH scan is the traversal guard (the scan lists
+    // only regular, non-dot files), the same idea as `repoIndexContains`.
+    .get('/runs/:id/artifacts/:name', paramZodValidator(artifactNameParamSchema), async (c) => {
+      const { dataDir, store } = c.get('project');
+      const { id, name } = c.req.valid('param');
+      if (!store.getRun(id)) return c.json({ error: 'not found' }, 404);
+      const dir = artifactsDir(dataDir, id);
+      const artifact = (await scanArtifacts(dir)).artifacts.find((each) => each.name === name);
+      const stream = artifact ? await openArtifact(dir, name) : null;
+      if (!artifact || !stream) return c.json({ error: 'artifact not found' }, 404);
+      return c.body(stream, 200, artifactHeaders(artifact, artifactsCdnEnabled()));
     })
 
     // Files tab: directory listing (path omitted or a dir) or file content

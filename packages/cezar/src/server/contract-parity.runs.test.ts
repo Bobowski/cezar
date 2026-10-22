@@ -23,6 +23,7 @@ import type {
   removeWorktreeResponseSchema,
   runCommitsResponseSchema,
   runRecordSchema,
+  runArtifactsResponseSchema,
 } from '@open-mercato/cezar-contract';
 import type { AppType } from './app-type.ts';
 
@@ -76,6 +77,7 @@ describe('src/contract/runs.ts matches the runs routes exactly', () => {
   type AdoptPr200 = InferResponseType<Run['pr']['adopt']['$post'], 200>;
   type RemoveWorktree200 = InferResponseType<Run['remove-worktree']['$post'], 200>;
   type DeleteRun200 = InferResponseType<Run['$delete'], 200>;
+  type Artifacts200 = InferResponseType<Run['artifacts']['$get'], 200>;
 
   type _Checks = [
     // the record, in both of its two forms
@@ -118,6 +120,7 @@ describe('src/contract/runs.ts matches the runs routes exactly', () => {
     Assert<Exact<z.infer<typeof gitPushResponseSchema>, GitPush200>>,
     Assert<Exact<z.infer<typeof gitStatusResponseSchema>, GitStatus200>>,
     Assert<Exact<z.infer<typeof removeWorktreeResponseSchema>, RemoveWorktree200>>,
+    Assert<Exact<z.infer<typeof runArtifactsResponseSchema>, Artifacts200>>,
   ];
 
   it('is enforced by tsc, not at runtime', () => {

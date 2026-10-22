@@ -156,6 +156,7 @@ import { getTeamSkillsCached, refreshTeamSkills, waitForTeamSkills } from '../sk
 import { appendHandoffHeartbeat, handoffProgressExcerpt, readHandoff } from '../handoff.ts';
 import { markStarted, onTodosChanged, readTodos, removeTodo, todoTaskText, type TodoItem } from '../todos.ts';
 import type { RunEvent, RunRecord, RunStatus, RunStore } from '../runs/store.ts';
+import { artifactsFrame, type ArtifactsBusPayload } from './artifacts.ts';
 import {
   HistoryCursorError,
   deriveRunContextEvents,
@@ -6119,10 +6120,14 @@ export function createApp(deps: ServerDeps) {
           }
           void stream.writeSSE({ event: 'usage', data: JSON.stringify(owned) });
         });
+        const onArtifacts = (listing: ArtifactsBusPayload) =>
+          void stream.writeSSE({ event: 'artifacts', data: JSON.stringify(artifactsFrame(listing)) });
         store.on('run', onRun);
+        store.on('artifacts', onArtifacts);
         const offDeleted = onRunDeleted(store, onDeleted);
         stream.onAbort(() => {
           store.off('run', onRun);
+          store.off('artifacts', onArtifacts);
           offDeleted();
           offTodos();
           offUsage();
@@ -6168,12 +6173,16 @@ export function createApp(deps: ServerDeps) {
             const payload: WorktreeLifecycleInvalidation = { ...event, projectId: project };
             void stream.writeSSE({ event: 'worktree-lifecycle', data: JSON.stringify(payload) });
           });
+          const onArtifacts = (listing: ArtifactsBusPayload) =>
+            void stream.writeSSE({ event: 'artifacts', data: JSON.stringify(artifactsFrame(listing, project)) });
           store.on('run', onRun);
+          store.on('artifacts', onArtifacts);
           const offDeleted = onRunDeleted(store, onDeleted);
           attached.set(project, {
             store,
             detach: () => {
               store.off('run', onRun);
+              store.off('artifacts', onArtifacts);
               offDeleted();
               offTodos();
               offLifecycle?.();

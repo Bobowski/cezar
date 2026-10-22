@@ -89,7 +89,7 @@ import { getHeadCommit, getRepoInfo } from '../server/git.ts';
 import { loadWorkflows, newerCatalogWorkflow } from './load.ts';
 import type { QueuedMessage, RunRecord, RunStore, StepState } from '../runs/store.ts';
 import { artifactsDir } from '../runs/store.ts';
-import { artifactsPromptPart } from '../runs/artifacts.ts';
+import { artifactsPromptPart, scanArtifacts, watchArtifacts } from '../runs/artifacts.ts';
 // Task dispatch (spec 2026-09-10-dispatch). Every import below is inert unless the feature is
 // ON *and* the run carries a `dispatch`: `dispatchOf()` is the single gate, and a run without one
 // takes byte-for-byte the path it took before this feature existed.
@@ -560,6 +560,9 @@ interface ActiveRun {
   /** Registry snapshot used to expand `/skill` follow-ups before a backend can
    *  mistake them for its own slash commands (#676). */
   skills?: Skill[];
+  /** The artifacts directory watcher while this owner is live (spec 2026-10-22-html-artifacts);
+   *  set at BOTH construction sites by `prepareArtifactsSession`, closed in `dropActive`. */
+  artifactsWatch?: { close: () => void };
   /** The attachment library actually granted to this session at spawn (#987). A library that
    *  appears later must not be advertised to a session whose fixed grant was absent. */
   grantedAttachmentLibrary?: string;
@@ -2214,6 +2217,10 @@ export class RunManager {
     this.waiting.delete(runId);
     this.leaveMonitoring(runId);
     if (state) this.clearMonitoringWakeTimer(state, runId);
+    // The terminal rescan: whatever the last turn wrote after its own turn end still shows up.
+    state?.artifactsWatch?.close();
+    if (state) state.artifactsWatch = undefined;
+    void this.rescanArtifacts(runId);
     this.active.delete(runId);
     // Session result has settled and its sink has flushed before terminal cleanup.
     this.store.clearRunSecrets(runId);
@@ -2322,15 +2329,34 @@ export class RunManager {
   }
 
   /**
-   * The artifacts directory for this owner (spec 2026-10-22-html-artifacts-and-impact), created
-   * at BOTH `ActiveRun` construction sites; never throws.
+   * The artifacts directory for this owner (spec 2026-10-22-html-artifacts-and-impact): created,
+   * and watched while live. Called from BOTH `ActiveRun` construction sites; never throws.
    */
-  private prepareArtifactsSession(runId: string, _state: ActiveRun): void {
+  private prepareArtifactsSession(runId: string, state: ActiveRun): void {
+    const dir = artifactsDir(this.dataDir, runId);
     try {
-      mkdirSync(artifactsDir(this.dataDir, runId), { recursive: true });
+      mkdirSync(dir, { recursive: true });
     } catch {
-      // a read-only data dir: no artifacts, the run itself is unaffected
+      return; // a read-only data dir: no artifacts, the run itself is unaffected
     }
+    state.artifactsWatch?.close();
+    state.artifactsWatch = watchArtifacts(dir, () => void this.rescanArtifacts(runId));
+  }
+
+  /** Last published listing per run, so an unchanged rescan stays silent on the SSE bus. */
+  private readonly artifactSignatures = new Map<string, string>();
+
+  /**
+   * Rescan a run's artifacts and publish the listing when it changed. The ONE helper both
+   * turn-end handlers, the watcher and the terminal transition call (spec Q2).
+   */
+  async rescanArtifacts(runId: string): Promise<void> {
+    const listing = await scanArtifacts(artifactsDir(this.dataDir, runId));
+    const signature = JSON.stringify(listing);
+    const previous = this.artifactSignatures.get(runId) ?? JSON.stringify({ artifacts: [], truncated: false });
+    if (signature === previous) return;
+    this.artifactSignatures.set(runId, signature);
+    this.store.publishArtifacts(runId, listing);
   }
 
   /**
@@ -4316,6 +4342,7 @@ export class RunManager {
         sink.flushAll();
         turnText = this.store.redactRunText(runId, turnText);
         void this.recordTurnEnd(runId, turnText, state); // titleSummary + diffStat (#389)
+        void this.rescanArtifacts(runId); // the guarantee behind the watcher (spec 2026-10-22-html-artifacts Q2)
         const sessionOpen = !state.cancelled && state.session?.open;
         // Did the backend end this turn purely to compact its own context (#955)? Absent on
         // every runner that has no such signal, and on every recording written before the
@@ -6377,6 +6404,7 @@ export class RunManager {
         sink.flushAll();
         turnText = this.store.redactRunText(runId, turnText);
         void this.recordTurnEnd(runId, turnText, state); // titleSummary + diffStat (#389)
+        void this.rescanArtifacts(runId); // the guarantee behind the watcher (spec 2026-10-22-html-artifacts Q2)
         const sessionOpen = !state.cancelled && state.session?.open;
         // The twin of `runContinuation`'s read — see there for why the field is absent on
         // every runner and every recording that predates it (#955).

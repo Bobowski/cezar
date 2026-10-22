@@ -135,7 +135,7 @@ import {
 import { extractTaskRefs, refineTaskRefs, titleRefNumber } from '../runs/task-refs.ts';
 import { parseTaskMarkers, stripTaskMarkers } from '../runs/task-markers.ts';
 import { autoNamingActive, generateRunName, liveTitleUpdatesEnabled, NAMER_TIMEOUT_MS, postValidateTitle } from '../runs/auto-name.ts';
-import { reviewGateEnabled } from '../runs/review-gate.ts';
+import { assessedWithoutChanges, diffHasChanges, reviewGateEnabled } from '../runs/review-gate.ts';
 import { resolveProfileEnvForRoot } from '../workspace/agent-profiles.ts';
 import { DEFAULT_AGENT_ACCOUNT_ID } from '../workspace/agent-accounts.ts';
 import { WorkspaceSemaphore, type AccountHolds } from '../workspace/semaphore.ts';
@@ -7457,9 +7457,10 @@ export class RunManager {
     const run = this.store.getRun(runId);
     if (!run?.worktreePath || !existsSync(run.worktreePath)) return false;
     const diff = await worktreeDiff(run.worktreePath, run.baseBranch ?? 'HEAD');
-    const hasDiff = diff.trim().length > 0 && !diff.startsWith('(diff failed');
+    // An impact run's diff is empty by construction; its report is what the gate reviews (Q11).
+    const reviewable = diffHasChanges(diff) || assessedWithoutChanges(run, diff);
     const config = await loadConfig(this.repoRoot);
-    return hasDiff && reviewGateEnabled(config) && run.autonomous !== true;
+    return reviewable && reviewGateEnabled(config) && run.autonomous !== true;
   }
 
   /**

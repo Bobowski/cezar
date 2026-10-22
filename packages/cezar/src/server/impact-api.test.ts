@@ -114,4 +114,28 @@ describe('Assess Impact routes', () => {
     expect(await bySubject('spec:.ai/specs/other.md')).toEqual({ run: null, subject: null, artifacts: [], truncated: false, stale: null });
     expect((await apiRequest(app, '/api/v1/artifacts?subject=nope')).status).toBe(400);
   }, 60_000);
+
+  // Q11: the impact task still reaches the review gate with its empty diff, but no draft PR.
+  it('a spec impact run parks at review (gate on) and offers no draft PR', async () => {
+    const savedGate = process.env.CEZ_REVIEW_GATE;
+    process.env.CEZ_REVIEW_GATE = '1';
+    try {
+      const res = await post({ subject: { kind: 'spec', path: '.ai/specs/feature.md' } });
+      const { runId } = startImpactResponseSchema.parse(await res.json());
+      // The mock parks at `waiting`; a done marker settles the step.
+      await waitFor(() => ['waiting', 'review', 'done'].includes(store.getRun(runId)?.status ?? ''));
+      if (store.getRun(runId)?.status === 'waiting') {
+        const sent = await apiRequest(app, `/api/v1/runs/${runId}/messages`, { method: 'POST', body: JSON.stringify({ text: 'mock:done' }), headers: { 'content-type': 'application/json' } });
+        expect(sent.status).toBe(200);
+      }
+      await waitFor(() => !manager.isActive(runId) && ['review', 'done'].includes(store.getRun(runId)?.status ?? ''));
+      expect(store.getRun(runId)?.status).toBe('review');
+      const pr = await apiRequest(app, `/api/v1/runs/${runId}/pr`, { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } });
+      expect(pr.status).toBe(409);
+      expect(await pr.json()).toEqual({ error: 'this task assessed impact and changed nothing — there is no pull request to open' });
+    } finally {
+      if (savedGate === undefined) delete process.env.CEZ_REVIEW_GATE;
+      else process.env.CEZ_REVIEW_GATE = savedGate;
+    }
+  }, 60_000);
 });

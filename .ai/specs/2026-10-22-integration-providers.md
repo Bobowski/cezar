@@ -157,6 +157,10 @@ absent → review gate offers "Push branch" only).
   `org/project/_git/repo`) and an **instance base** (scheme, web port, relative URL root such as
   `https://intranet.acme/gitlab/`) supplied by the connection, not guessed from the remote URL.
   `parseRemote` in `git-remotes.ts` drops both today and is fixed in phase 1.
+- **Host classification precedence** when two providers could claim a host, stated once here:
+  user override in `integrations.json` > a CLI signed in to that host > well-known host. A host
+  name that merely *looks* like a vendor (`gitlab.acme.com`) is at most a "sign in?" suggestion in
+  Settings, never an active integration.
 - **Scope-anchored providers** (`jira`, `linear`, ADO Boards) need a user choice — Settings →
   Integrations → Connect → pick project/team (the existing paginated picker). No scope is ever
   guessed.
@@ -224,8 +228,9 @@ where it was (e.g. no official Linear CLI).
 
 Shared plumbing extracted from `forge/github.ts` into `integrations/shared/`:
 `cli-exec.ts` (cwd-scoped execFile, timeout, output cap, ENOENT/auth mapping, env scrubbing),
-`http-transport.ts` (today's `tracker/transport.ts`: deadline, size caps, cooldown, no unsafe
-redirects), `cursor.ts` (signed cursors bound to integration + query), `cache.ts` (keyed by
+`http-transport.ts` (today's `tracker/transport.ts`: deadline, size caps, cooldown; a
+per-connection CA file option for private CAs, never a TLS-off switch; **no cross-origin
+redirects** on token transports, which would leak the auth header), `cursor.ts` (signed cursors bound to integration + query), `cache.ts` (keyed by
 `project + integrationId + query`, never module-global — the `detectCache` singleton bug #847
 names), and `markdown.ts` (ADF/HTML → Markdown converters, with loss disclosure).
 
@@ -354,7 +359,9 @@ The reason to run GitHub + Jira together: a task launched from `PROJ-42` produce
   `GITLAB_TOKEN`/`GITLAB_HOST`, `AZURE_DEVOPS_EXT_PAT`, …). Forwarding keeps today's GitHub
   behavior and is opt-in for every new provider.
 - `core/secret-redaction.ts`: manifests contribute token patterns (`glpat-…`, `lin_api_…`,
-  `ATATT…`); a test asserts every manifest's pattern is registered.
+  `ATATT…`); a test asserts every manifest's pattern is registered. Patterns are not enough
+  (a self-managed GitLab PAT prefix is configurable), so the **exact values** held in the managed
+  credential store are also registered with the redactor when a connection loads.
 - `workflows/run.ts` PR nodes (`createDraftPr`, `commentOnPr`, `updatePr`, `commentOnIssue`,
   wait-for-CI) call `forge/github.ts` directly today; they route through the code-host
   integration's `publish`/`changeRequests`/`link` facets, and a node whose facet is absent fails

@@ -268,7 +268,8 @@
       .connect-error {
         color: #f87171;
       }
-      .hidden {
+      .hidden,
+      .button.hidden {
         display: none;
       }
     </style>
@@ -306,8 +307,8 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
             <span id="retry-label">Restart cezar</span>
           </button>
-          <button id="change-server" class="button hidden" type="button">Change server…</button>
-          <button id="use-local" class="button hidden" type="button">Use this computer</button>
+          <button id="change-server" class="button restart hidden" type="button">Change server…</button>
+          <button id="use-local" class="button restart hidden" type="button">Use this computer</button>
         </div>
         <form id="connect" class="connect hidden">
           <label>

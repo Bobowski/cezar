@@ -3369,6 +3369,17 @@ export async function fetchPrHeadSha(repoRoot: string, number: number): Promise<
   return sha;
 }
 
+/**
+ * The head sha `fetchPrHeadSha` would answer from cache alone — `undefined` when only a `gh` call
+ * could tell. For list routes (the project Assets page), which must never shell out per row.
+ */
+export function peekPrHeadSha(repoRoot: string, number: number): string | null | undefined {
+  const merge = mergeStateCache.get(`${repoRoot}:${number}`);
+  if (merge && Date.now() - merge.at < MERGE_CACHE_MS && merge.value.available) return merge.value.mergeState.headSha;
+  const hit = prHeadCache.get(`${repoRoot}\0${number}`);
+  return hit && Date.now() - hit.at < PR_HEAD_CACHE_MS ? hit.sha : undefined;
+}
+
 export function evictGithubProjectCaches(repoRoot: string): void {
   prHeadCache.forEach((_value, key) => {
     if (key.startsWith(`${repoRoot}\0`)) prHeadCache.delete(key);

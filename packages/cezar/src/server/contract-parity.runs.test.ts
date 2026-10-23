@@ -26,6 +26,7 @@ import type {
   runArtifactsResponseSchema,
   startImpactResponseSchema,
   artifactsBySubjectResponseSchema,
+  projectAssetsResponseSchema,
 } from '@open-mercato/cezar-contract';
 import type { AppType } from './app-type.ts';
 
@@ -82,6 +83,7 @@ describe('src/contract/runs.ts matches the runs routes exactly', () => {
   type Artifacts200 = InferResponseType<Run['artifacts']['$get'], 200>;
   type Impact201 = InferResponseType<typeof client.api.v1.impact.$post, 201>;
   type BySubject200 = InferResponseType<typeof client.api.v1.artifacts.$get, 200>;
+  type Assets200 = InferResponseType<typeof client.api.v1.assets.$get, 200>;
 
   type _Checks = [
     // the record, in both of its two forms
@@ -128,6 +130,7 @@ describe('src/contract/runs.ts matches the runs routes exactly', () => {
     // Assess Impact (spec 2026-10-22-html-artifacts-and-impact)
     Assert<Exact<z.infer<typeof startImpactResponseSchema>, Impact201>>,
     Assert<Exact<z.infer<typeof artifactsBySubjectResponseSchema>, BySubject200>>,
+    Assert<Exact<z.infer<typeof projectAssetsResponseSchema>, Assets200>>,
   ];
 
   it('is enforced by tsc, not at runtime', () => {

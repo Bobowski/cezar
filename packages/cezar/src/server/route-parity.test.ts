@@ -186,6 +186,7 @@ describe('project-route alias parity (unprefixed vs /api/v1/p/<boot> vs /api/v1/
       'GET /repo/commit/:sha',
       'POST /impact',
       'GET /artifacts',
+      'GET /assets',
     ]) {
       expect(keys, expected).toContain(expected);
     }
@@ -255,6 +256,7 @@ describe('project-route alias parity (unprefixed vs /api/v1/p/<boot> vs /api/v1/
     await expectParity('/impact', json('POST', { subject: { kind: 'spec', path: 'README.md' } }));
     await expectParity('/artifacts?subject=pr:42');
     await expectParity('/artifacts?subject=spec:.ai/specs/x.md');
+    await expectParity('/assets');
   });
 
   /** Read one SSE response until its first ping, then hang up. */

@@ -160,6 +160,7 @@ import { artifactsDir } from '../runs/store.ts';
 import { artifactsCdnEnabled, existingVersionDir, scanArtifacts } from '../runs/artifacts.ts';
 import { artifactHeaders, artifactsFrame, openArtifact, type ArtifactsBusPayload } from './artifacts.ts';
 import { newestSubjectRun, parseSubjectQuery, resolveImpactSubject, subjectStale } from '../impact/launch.ts';
+import { listProjectAssets } from '../runs/project-assets.ts';
 import type { RunArtifact } from '@open-mercato/cezar-contract';
 import { ASSESS_IMPACT_WORKFLOW } from '../workflows/templates.ts';
 import {
@@ -301,7 +302,7 @@ import {
   withResolvedClaudeBin,
 } from './open-in-app.ts';
 import { createDraftPr, type DraftPrOutcome } from './pr.ts';
-import { findBranchPr, resolvePrTarget } from './forge/github.ts';
+import { findBranchPr, peekPrHeadSha, resolvePrTarget } from './forge/github.ts';
 import {
   DEFAULT_TELEMETRY_URL,
   TELEMETRY_POLICY_VERSION,
@@ -5355,6 +5356,16 @@ export function createApp(deps: ServerDeps) {
         ...(listing.versions?.length ? { versions: listing.versions } : {}),
         stale,
       });
+    })
+
+    // The project Assets page (spec 2026-10-22-html-artifacts-and-impact, Phase 3). A PR's head is
+    // read from cache only: a list route never calls GitHub, so an uncached PR is `stale: null`.
+    .get('/assets', async (c) => {
+      const { root: repoRoot, dataDir, store } = c.get('project');
+      const listing = await listProjectAssets(dataDir, store.listRuns(), (subject) =>
+        subjectStale(repoRoot, subject, { prHeadSha: async (root, number) => peekPrHeadSha(root, number) ?? null }),
+      );
+      return c.json(listing);
     })
 
     // Files tab: directory listing (path omitted or a dir) or file content

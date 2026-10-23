@@ -36,3 +36,4 @@ export * from './terminal.ts';
 export * from './workspace-layouts.ts';
 export * from './artifacts.ts';
 export * from './impact.ts';
+export * from './assets.ts';

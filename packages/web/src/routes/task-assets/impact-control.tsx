@@ -113,7 +113,7 @@ export function ImpactControl({
             <span
               data-slot="impact-stale"
               title="The subject changed since this assessment"
-              className="rounded-full border border-warning/50 bg-warning/10 px-2 py-0.5 font-medium text-warning"
+              className="rounded-full border border-pending-strong/45 bg-pending-strong/10 px-2 py-0.5 font-medium text-pending-strong"
             >
               Stale
             </span>

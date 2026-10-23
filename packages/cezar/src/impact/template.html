@@ -405,7 +405,7 @@ window.addEventListener("scroll",()=>{if(spyQueued)return;spyQueued=true;request
 
 // ---- capabilities -------------------------------------------------------------------------
 function renderCapabilities(){
-  $("caps").innerHTML=review.capabilities.map(c=>{const home=views.findIndex(v=>v.id===c.home_view);return '<div class="card cap"'+refAttrs(c.id,"capability","Capability · "+c.title)+' tabindex="0" aria-pressed="'+(capability===c.id)+'">'+ask+'<span class="st '+c.status+'">'+E(statusText[c.status])+'</span><h3>'+E(c.title)+'</h3><p>'+E(c.after)+'</p><p class="was">'+E(L.before)+': '+E(c.before)+'</p>'+(home>=0?'<button type="button" class="jump" data-jump="view-'+home+'">Show in map '+(home+1)+' →</button>':"")+'</div>';}).join("");
+  $("caps").innerHTML=review.capabilities.map(c=>{const home=views.findIndex(v=>v.id===c.home_view);return '<div class="card cap"'+refAttrs(c.id,"capability","Capability · "+c.title)+' tabindex="0" aria-pressed="'+(capability===c.id)+'">'+ask+'<span class="st '+E(c.status)+'">'+E(statusText[c.status])+'</span><h3>'+E(c.title)+'</h3><p>'+E(c.after)+'</p><p class="was">'+E(L.before)+': '+E(c.before)+'</p>'+(home>=0?'<button type="button" class="jump" data-jump="view-'+home+'">Show in map '+(home+1)+' →</button>':"")+'</div>';}).join("");
 }
 
 // ---- architecture views: before/after/compare boards ------------------------------------------
@@ -505,7 +505,7 @@ function drawBoard(board,state,index){
     if(!absent){button.dataset.ref=n.id;button.dataset.kind="node";button.dataset.view=String(index);button.dataset.label=("Component · "+n.label).slice(0,200);}
     button.setAttribute("aria-label",n.label+" — "+(state==="before"?L.before:L.after));button.title=n.kind+" · "+n.label;
     button.setAttribute("aria-pressed",String(boards[index].selected===n.id&&!absent));
-    button.innerHTML='<span class="nk">'+E(n.kind)+'</span><span class="nt">'+E(n.label)+'</span><span class="st '+(absent?"unchanged":cls)+'">'+(absent?(state==="before"?(isSpec?"Not built yet":"Does not exist yet"):"Gone from this flow"):E(statusText[cls]))+'</span>';
+    button.innerHTML='<span class="nk">'+E(n.kind)+'</span><span class="nt">'+E(n.label)+'</span><span class="st '+(absent?"unchanged":E(cls))+'">'+(absent?(state==="before"?(isSpec?"Not built yet":"Does not exist yet"):"Gone from this flow"):E(statusText[cls]))+'</span>';
     board.appendChild(button);
   });
 }
@@ -515,7 +515,7 @@ function renderInspector(index){
   const relationships=scoped.filter(e=>e.from===n.id||e.to===n.id);
   const state=mode==="before"?"before":"after";
   const elsewhere=members.map((other,i)=>i!==index&&other.has(n.id)?(i+1)+" · "+views[i].title:null).filter(Boolean);
-  $("inspector-"+index).innerHTML='<span class="lb">Selected component</span><div><span class="st '+n.status+'">'+E(statusText[n.status])+'</span></div><h4>'+E(n.label)+'</h4><div class="kind">'+E(n.kind)+'</div><dl><dt class="lb">'+E(L.before)+'</dt><dd>'+E(n.before)+'</dd><dt class="lb">'+E(L.after)+'</dt><dd>'+E(n.after)+'</dd></dl><p class="impact">'+E(n.impact)+'</p><ul class="relations">'+relationships.map(e=>'<li><b>'+E(nodeById.get(e.from).label)+' → '+E(nodeById.get(e.to).label)+'</b><br>'+E(stateLabel(e,state))+(mode==="compare"?" · "+E(statusText[e.status]):"")+'</li>').join("")+'</ul>'+(elsewhere.length?'<p class="also">Also drawn in: '+E(elsewhere.join(" · "))+'</p>':"")+sources(n.evidence);
+  $("inspector-"+index).innerHTML='<span class="lb">Selected component</span><div><span class="st '+E(n.status)+'">'+E(statusText[n.status])+'</span></div><h4>'+E(n.label)+'</h4><div class="kind">'+E(n.kind)+'</div><dl><dt class="lb">'+E(L.before)+'</dt><dd>'+E(n.before)+'</dd><dt class="lb">'+E(L.after)+'</dt><dd>'+E(n.after)+'</dd></dl><p class="impact">'+E(n.impact)+'</p><ul class="relations">'+relationships.map(e=>'<li><b>'+E(nodeById.get(e.from).label)+' → '+E(nodeById.get(e.to).label)+'</b><br>'+E(stateLabel(e,state))+(mode==="compare"?" · "+E(statusText[e.status]):"")+'</li>').join("")+'</ul>'+(elsewhere.length?'<p class="also">Also drawn in: '+E(elsewhere.join(" · "))+'</p>':"")+sources(n.evidence);
 }
 function renderMap(index){
   const view=views[index],mode=boards[index].mode;
@@ -541,7 +541,7 @@ function renderApi(){
   let n=0;
   $("api").innerHTML='<div class="tblwrap"><table class="api"><thead><tr><th scope="col">Name</th><th scope="col">Change</th><th scope="col">Breaking</th><th scope="col">Migration</th><th scope="col"><span class="sr-only">Details</span></th></tr></thead><tbody>'
     +groups.map(g=>{const brk=g.rows.filter(a=>a.breaking===true).length;return '<tr class="grp"><th colspan="5" scope="colgroup">'+E(surfaceText[g.s])+' · '+g.rows.length+(brk?' · '+brk+' breaking':"")+'</th></tr>'
-      +g.rows.map(a=>{const i=n++;return '<tr'+refAttrs(a.id,"api","Public API · "+a.name)+' tabindex="0"><td><code>'+E(a.name)+'</code></td><td><span class="st '+a.status+'">'+E(statusText[a.status])+'</span></td><td>'+pill(a)+'</td><td>'+(a.migration?E(a.migration):"—")+'</td><td><button type="button" class="expand" data-expand="api-detail-'+i+'" aria-expanded="false" aria-controls="api-detail-'+i+'">Details</button></td></tr>'
+      +g.rows.map(a=>{const i=n++;return '<tr'+refAttrs(a.id,"api","Public API · "+a.name)+' tabindex="0"><td><code>'+E(a.name)+'</code></td><td><span class="st '+E(a.status)+'">'+E(statusText[a.status])+'</span></td><td>'+pill(a)+'</td><td>'+(a.migration?E(a.migration):"—")+'</td><td><button type="button" class="expand" data-expand="api-detail-'+i+'" aria-expanded="false" aria-controls="api-detail-'+i+'">Details</button></td></tr>'
         +'<tr class="detail" id="api-detail-'+i+'" hidden><td colspan="5"><dl>'
         +(a.before?'<dt class="lb">'+E(L.before)+'</dt><dd>'+E(a.before)+'</dd>':"")
         +(a.after?'<dt class="lb">'+E(L.after)+'</dt><dd>'+E(a.after)+'</dd>':"")
@@ -590,7 +590,7 @@ function renderFlow(){
 // ---- judgment -------------------------------------------------------------------------------
 function renderJudgment(){
   $("tradeoff-list").innerHTML=review.tradeoffs.length?review.tradeoffs.map(t=>'<article class="card tradeoff"'+refAttrs(t.id,"tradeoff","Trade-off · "+t.title)+' tabindex="0">'+ask+'<h3>'+E(t.title)+'</h3><div class="ti"><span class="lb pro">+ Benefit</span><p>'+E(t.pro)+'</p></div><div class="ti"><span class="lb con">− Cost</span><p>'+E(t.con)+'</p></div><div class="alt"><span class="lb">Alternative · mitigation</span><p>'+E(t.alternative)+'</p>'+sources(t.evidence)+'</div></article>').join(""):'<p class="empty card">No trade-offs were recorded.</p>';
-  $("fit-list").innerHTML=review.fit.map(f=>'<div class="card fit-row"'+refAttrs(f.id,"fit","Fit · "+f.title)+' tabindex="0">'+ask+'<div><h3>'+E(f.title)+'</h3><span class="fs '+f.status+'">'+E(fitText[f.status])+'</span></div><div><span class="lb">The rule or the goal</span><p>'+E(f.rule)+'</p></div><div><span class="lb">How this measures up</span><p>'+E(f.assessment)+'</p>'+sources(f.evidence)+'</div></div>').join("");
+  $("fit-list").innerHTML=review.fit.map(f=>'<div class="card fit-row"'+refAttrs(f.id,"fit","Fit · "+f.title)+' tabindex="0">'+ask+'<div><h3>'+E(f.title)+'</h3><span class="fs '+E(f.status)+'">'+E(fitText[f.status])+'</span></div><div><span class="lb">The rule or the goal</span><p>'+E(f.rule)+'</p></div><div><span class="lb">How this measures up</span><p>'+E(f.assessment)+'</p>'+sources(f.evidence)+'</div></div>').join("");
   $("question-list").innerHTML=review.questions.length?review.questions.map(q=>'<article class="card question"'+refAttrs(q.id,"question","Question · "+q.question)+' tabindex="0">'+ask+'<span class="lb">For: '+E(q.owner)+'</span><h3>'+E(q.question)+'</h3><p>'+E(q.why)+'</p>'+sources(q.evidence)+'</article>').join(""):'<p class="empty card">No open questions were recorded.</p>';
 }
 

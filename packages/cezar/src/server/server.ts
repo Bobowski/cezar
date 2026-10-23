@@ -219,11 +219,12 @@ import {
   type DeleteDraftResponse,
 } from '@open-mercato/cezar-contract';
 import { toPastedContent, type PastedContent, type RunManager } from '../workflows/run.ts';
+import { checkoutGitStatus } from '../workflows/landing.ts';
 import { deleteUpload, readUpload, writeUpload } from '../uploads.ts';
 import { branchesCheckedOutElsewhere, removeWorktree, worktreeDiff, worktreeDiffStat, worktreeSizeBytes } from '../git-worktree.ts';
 import { isReclaimable, reclaimWorktrees } from '../runs/retention.ts';
 import { worktreeLifecycleRoutes, lifecycleError } from './worktree-lifecycle.ts';
-import { readLifecycleConfigOrDefault, readLifecycleConfigRaw, lifecycleConfigFromRaw, withLifecycleConfigLock, saveLifecycleConfigLocked, LifecycleConfigError } from '../worktree-lifecycle/config.ts';
+import { readLifecycleConfigOrDefault, readLifecycleConfigRaw, lifecycleConfigFromRaw, withLifecycleConfigLock, saveLifecycleConfigLocked, isLifecycleConfigTracked, LifecycleConfigError } from '../worktree-lifecycle/config.ts';
 import { atomicLifecycleWrite, LifecycleStoreError } from '../worktree-lifecycle/store.ts';
 import { validateLifecycleCommand } from '../worktree-lifecycle/templates.ts';
 import { setConfigInputSchema, type WorktreeLifecycleInvalidation } from '@open-mercato/cezar-contract';
@@ -836,6 +837,8 @@ const startRunSchema = z
     // (spec 2026-10-19-repo-git-sync); `branch` names it.
     newBranch: z.boolean().optional(),
     branch: z.string().trim().min(1).max(200).optional(),
+    // A read-only Ask task (spec 2026-10-20-trunk-based-projects): in place, no lease, no writes.
+    readOnly: z.boolean().optional(),
     // Autonomous mode (#autonomous): the run never parks at `waiting` — it
     // auto-continues until the agent signals done. No "needs you" is raised.
     autonomous: z.boolean().optional(),
@@ -2752,12 +2755,17 @@ export function createApp(deps: ServerDeps) {
     .get(
       '/workspace/agent-profiles/:id/status',
       paramZodValidator(z.object({ id: z.string() })),
-      queryZodValidator(z.object({ refresh: queryValue.refine((v) => v === undefined || v === '1') }), { message: 'refresh must be 1 when provided' }),
+      queryZodValidator(z.object({
+        refresh: queryValue.refine((v) => v === undefined || v === '1'),
+        recheck: queryValue.refine((v) => v === undefined || v === '1'),
+      }), { message: 'refresh and recheck must be 1 when provided' }),
       async (c) => {
         if (!capabilities().localHandoff) return c.json(hostedProfileRefusal, 409);
         const account = await accountById(c.req.param('id'));
         if (!account) return c.json({ error: `unknown account: ${c.req.param('id')}` }, 404);
-        const refresh = c.req.valid('query').refresh === '1';
+        const query = c.req.valid('query');
+        const recheck = query.recheck === '1';
+        const refresh = query.refresh === '1' || recheck;
         // The discovered account's row is the one `GET /api/v1/providers/status` owns, so it comes
         // from there — enablement included, which a bare probe does not know about.
         if (account.isDefault) {
@@ -2766,8 +2774,10 @@ export function createApp(deps: ServerDeps) {
           return c.json({ status: row ?? { provider: account.provider, status: 'unknown' as const } });
         }
         // "Check again" re-probes THIS account only — the other accounts' warm answers are not
-        // invalidated by asking about this one.
+        // invalidated by asking about this one. Only `recheck` (the pane's button) may lift a dead
+        // login; New task's verify-before-refuse re-probes with `refresh` alone (telemetry 9e4a95db).
         if (refresh) providerAuth.forgetProfileStatus(account.provider, account.id);
+        if (recheck) providerAuth.recheckProfileAuthFailure(account.provider, account.id);
         return c.json({
           status: await providerAuth.profileStatus(account.provider, {
             id: account.id,
@@ -3064,6 +3074,7 @@ export function createApp(deps: ServerDeps) {
             lastOpenedAt: '',
             source: 'local',
             unregistered: true,
+            ...((await shouldRegisterProject(root)) ? {} : { notAddable: true as const }),
             ...(await probeProjectStatus(root)),
           },
           ...projects,
@@ -4977,6 +4988,7 @@ export function createApp(deps: ServerDeps) {
         worktree: parsed.data.worktree,
         newBranch: parsed.data.newBranch,
         branch: parsed.data.branch,
+        ...(parsed.data.readOnly ? { readOnly: true } : {}),
         autonomous: parsed.data.autonomous,
         // Opt-in inbox (#471): the capability is the ceiling, so a client asking
         // for follow-ups on a server that has them off gets a plain `false`
@@ -5302,6 +5314,20 @@ export function createApp(deps: ServerDeps) {
       return c.json({ finished: true });
     })
 
+    // An in-place task's Commit to the base branch (spec 2026-10-20-trunk-based-projects).
+    .post('/runs/:id/land', async (c) => {
+      const { store, manager } = c.get('project');
+      const id = c.req.param('id');
+      if (!store.getRun(id)) return c.json({ error: 'not found' }, 404);
+      const answer = await manager.land(id);
+      return c.json({
+        outcome: answer.outcome,
+        message: answer.message,
+        ...(answer.sha !== undefined ? { sha: answer.sha } : {}),
+        ...(answer.pushed !== undefined ? { pushed: answer.pushed } : {}),
+      });
+    })
+
     // "Continue" (spec 003): reopen a finished run's session in-process.
     .post('/runs/:id/continue', jsonZodValidator(continueSchema, { absent: ({}) }), async (c) => {
       const { root: repoRoot, store, manager } = c.get('project');
@@ -5614,6 +5640,7 @@ export function createApp(deps: ServerDeps) {
         runStartedAt: run.startedAt,
         // A read-only GET against the user's real checkout must never modify its index.
         intentToAdd: run.worktreePath ? undefined : false,
+        excludeCezarData: !run.worktreePath,
       });
       if (!result.ok) return c.json({ error: result.error }, 409);
       return c.json(result.changes);
@@ -5864,8 +5891,13 @@ export function createApp(deps: ServerDeps) {
       const run = store.getRun(c.req.param('id'));
       if (!run) return c.json({ error: 'not found' }, 404);
       const worktree = worktreeOf(run);
-      if (!worktree) return c.json({ error: NO_WORKTREE }, 409);
-      const result = await worktreeGitStatus(worktree, run.baseBranch);
+      // An in-place write task answers for the checkout itself, against its upstream (spec
+      // 2026-10-20-trunk-based-projects) — its git step is Commit to the base branch.
+      const inPlace = !worktree && run.worktree === false && !run.readOnly;
+      if (!worktree && !inPlace) return c.json({ error: NO_WORKTREE }, 409);
+      const result = worktree
+        ? await worktreeGitStatus(worktree, run.baseBranch)
+        : await checkoutGitStatus(c.get('project').root);
       if (!result.ok) return c.json({ error: result.error }, 409);
       return c.json({ uncommitted: result.uncommitted, unpushed: result.unpushed, behind: result.behind, ahead: result.ahead });
     })
@@ -8133,6 +8165,17 @@ export function createApp(deps: ServerDeps) {
       // Optional review gate (#489): tri-state — null means "no config key, the
       // CEZ_REVIEW_GATE env default (OFF) decides".
       reviewGate: config.reviewGate ?? null,
+      profile: config.profile ?? null,
+      taskWorkspace: config.taskWorkspace ?? null,
+      landing: config.landing ?? null,
+      landingBlocked:
+        config.landing === 'auto' && (await isLifecycleConfigTracked(repoRoot).catch(() => true))
+          ? 'auto-land is not honored: .ai/cezar/config.json is tracked by git, and only local configuration can grant it'
+          : null,
+      requiredChecks: config.requiredChecks ?? [],
+      defaultSkill: config.defaultSkill ?? null,
+      askSkill: config.askSkill ?? null,
+      teamSkills: config.skillsRepos.length > 0,
     };
   };
   // ---- chained family: per-repo config (project-scoped) ----
@@ -8218,6 +8261,21 @@ export function createApp(deps: ServerDeps) {
           if (parsed.data.reviewGate !== undefined) {
             if (parsed.data.reviewGate === null) delete raw.reviewGate;
             else raw.reviewGate = parsed.data.reviewGate;
+          }
+          // Trunk-based keys (spec 2026-10-20-trunk-based-projects): null or '' clears.
+          for (const key of ['profile', 'taskWorkspace', 'landing', 'defaultSkill', 'askSkill'] as const) {
+            const value = parsed.data[key];
+            if (value === undefined) continue;
+            if (value === null || value === '') delete raw[key];
+            else raw[key] = value;
+          }
+          if (parsed.data.requiredChecks !== undefined) {
+            if (!parsed.data.requiredChecks?.length) delete raw.requiredChecks;
+            else raw.requiredChecks = parsed.data.requiredChecks;
+          }
+          if (parsed.data.teamSkills === false) raw.skillsRepos = [];
+          else if (parsed.data.teamSkills === true && Array.isArray(raw.skillsRepos) && raw.skillsRepos.length === 0) {
+            delete raw.skillsRepos;
           }
           if (parsed.data.memoryLimitMb !== undefined) {
             // null or 0 both mean "no ceiling" — drop the key back to the default.

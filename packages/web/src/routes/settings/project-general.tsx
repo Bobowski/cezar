@@ -102,7 +102,7 @@ export function ProjectGeneral({ capabilities }: { capabilities?: Partial<Pick<C
           <SettingsField
             title="This folder is not in your project list"
             hint="cezar is serving this folder because you started it here — starting cezar somewhere new never adds it to your project list for you. Adding it keeps it in the sidebar between runs and gives it a registry entry to hold settings like the task cap. Nothing on disk changes either way."
-            control={<AddBootProjectButton root={project.root} name={project.name} />}
+            control={<AddBootProjectButton root={project.root} name={project.name} notAddable={project.notAddable === true} />}
           />
         </SettingsGroup>
       ) : null}

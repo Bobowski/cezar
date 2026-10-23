@@ -19,8 +19,8 @@
 //! port wildcard (the cockpit's port is picked at launch), so the narrowing happens HERE: every
 //! command refuses a caller that is not the splash or the cockpit on the port this shell
 //! spawned (`caller_is_trusted`) — the failure page's `restart_app` and `send_error_report` the
-//! splash alone (`caller_is_splash`) — and the window itself never navigates to another local server
-//! (`is_own_origin`). A dev server on `localhost:3000` is somebody else's page.
+//! splash alone (`caller_is_splash`) — and the window itself never stays on another local server
+//! (`is_own_origin`, enforced at page load: the navigation hook also sees the Preview's iframes). A dev server on `localhost:3000` is somebody else's page.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -71,6 +71,8 @@ struct Shell {
     supervising: AtomicBool,
     /// Set once the failure page's "Restart cezar" is under way; a second click does nothing.
     restarting: AtomicBool,
+    /// The last page of ours the window finished loading — where it returns after a foreign page.
+    cockpit_url: Mutex<Option<url::Url>>,
 }
 
 /// Runs at document start on EVERY page the window loads — the splash and, after navigation,
@@ -80,7 +82,9 @@ struct Shell {
 const INIT_SCRIPT: &str = r#"
   (function () {
     var platform = "__PLATFORM__";
-    window.__CEZ_DESKTOP__ = { platform: platform };
+    // `microphone`: this shell is entitled to it — an older macOS one refuses every dictation
+    // (telemetry c55c7b0b), so the cockpit disables the mic there instead.
+    window.__CEZ_DESKTOP__ = { platform: platform, microphone: true };
     // At document start the root element may not exist yet; the flag is a convenience, the
     // rest of this script is not.
     if (document.documentElement) document.documentElement.dataset.cezDesktop = platform;
@@ -207,6 +211,7 @@ fn platform_name() -> &'static str {
 
 fn build_main_window(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<WebviewWindow> {
     let shell_for_navigation = shell.clone();
+    let shell_for_page_load = shell.clone();
     let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("Cezar")
         .inner_size(1360.0, 900.0)
@@ -226,15 +231,32 @@ fn build_main_window(app: &AppHandle, shell: &Arc<Shell>) -> tauri::Result<Webvi
             open_url(url.as_str());
             tauri::webview::NewWindowResponse::Deny
         })
-        // Same-window navigation stays inside the cockpit (and the splash); a link to anywhere
-        // else — another server on this machine included — is handed to the browser. The shell
-        // is the cockpit, not a general browser, and a page it shows holds its IPC grants.
+        // wry asks this for EVERY frame on macOS and Linux, with no way to tell which one — so a
+        // web address must pass here, or the task Preview's iframe can never load. A web page
+        // reaching the WINDOW itself is caught at `on_page_load` below instead.
         .on_navigation(move |url| {
-            if is_own_origin(url, shell_for_navigation.port.load(Ordering::SeqCst)) {
+            if is_own_origin(url, shell_for_navigation.port.load(Ordering::SeqCst)) || may_be_a_frame(url) {
                 return true;
             }
             open_url(url.as_str());
             false
+        })
+        // Main frame only. The window stays the cockpit (and the splash): any other page —
+        // another server on this machine included — is handed to the browser and the window goes
+        // back to where it was. The shell is not a general browser.
+        .on_page_load(move |window, payload| {
+            let url = payload.url();
+            if is_own_origin(url, shell_for_page_load.port.load(Ordering::SeqCst)) {
+                if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                    *shell_for_page_load.cockpit_url.lock().unwrap() = Some(url.clone());
+                }
+                return;
+            }
+            open_url(url.as_str());
+            let back = shell_for_page_load.cockpit_url.lock().unwrap().clone();
+            if let Some(back) = back.or_else(|| url::Url::parse(app_origin()).ok()) {
+                let _ = window.navigate(back);
+            }
         });
     // macOS: no title text; the traffic lights keep their NATIVE placement (a standard title bar
     // is 28pt tall and puts them at the system offset) and float over the 28px band the cockpit
@@ -568,6 +590,7 @@ pub fn run() {
         update_available: Mutex::new(None),
         supervising: AtomicBool::new(false),
         restarting: AtomicBool::new(false),
+        cockpit_url: Mutex::new(None),
     });
     let shell_for_setup = shell.clone();
     let shell_for_menu = shell.clone();
@@ -1726,6 +1749,12 @@ fn is_own_origin(url: &url::Url, port: u16) -> bool {
     }
 }
 
+/// What an iframe of the cockpit may load — the task Preview frames any web page. Everything
+/// else (`mailto:`, `file:`, …) is the browser's or the OS's to open.
+fn may_be_a_frame(url: &url::Url) -> bool {
+    matches!(url.scheme(), "http" | "https" | "about" | "blob" | "data")
+}
+
 /// The guard every IPC command starts with: the page asking must be one of ours. The capability
 /// cannot express this (it grants loopback on any port), so the commands do.
 fn caller_is_trusted(window: &WebviewWindow, shell: &Shell) -> bool {
@@ -2101,6 +2130,20 @@ mod tests {
     }
 
     #[test]
+    fn the_bundle_may_use_the_microphone_it_advertises() {
+        // telemetry c55c7b0b: hardened runtime + no usage strings = every dictation `not-allowed`.
+        let dir = env!("CARGO_MANIFEST_DIR");
+        let read = |name: &str| std::fs::read_to_string(format!("{dir}/{name}")).unwrap();
+        let conf: serde_json::Value = serde_json::from_str(&read("tauri.conf.json")).unwrap();
+        let entitlements = conf["bundle"]["macOS"]["entitlements"].as_str().unwrap();
+        assert!(read(entitlements).contains("com.apple.security.device.audio-input"));
+        let info = read("Info.plist");
+        assert!(info.contains("NSMicrophoneUsageDescription"));
+        assert!(info.contains("NSSpeechRecognitionUsageDescription"));
+        assert!(INIT_SCRIPT.contains("microphone: true"));
+    }
+
+    #[test]
     fn the_legacy_inset_spares_what_the_shell_adds() {
         let rule = INIT_SCRIPT.split("padding-top:28px!important").next().unwrap();
         let selector = rule.rsplit("style.textContent").next().unwrap();
@@ -2139,6 +2182,17 @@ mod tests {
         assert!(!is_own_origin(&url("https://example.com/"), 4321));
         // No sidecar yet: nothing on loopback is trusted.
         assert!(!is_own_origin(&url("http://127.0.0.1:4321/"), 0));
+    }
+
+    /// The Preview's iframe goes through the navigation hook too; refusing it there left every
+    /// framed dev server blank in the app while it worked in a browser.
+    #[test]
+    fn a_frame_may_load_any_web_page_but_not_other_schemes() {
+        assert!(may_be_a_frame(&url("http://localhost:5177/#1")));
+        assert!(may_be_a_frame(&url("https://example.com/")));
+        assert!(may_be_a_frame(&url("about:blank")));
+        assert!(!may_be_a_frame(&url("mailto:someone@example.com")));
+        assert!(!may_be_a_frame(&url("file:///etc/passwd")));
     }
 
     #[test]

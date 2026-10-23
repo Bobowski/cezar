@@ -161,6 +161,7 @@ const CONFIG: ConfigResponse = {
   worktreeRetention: 10,
   liveTitleUpdates: null,
   reviewGate: null,
+  profile: null, taskWorkspace: null, landing: null, landingBlocked: null, requiredChecks: [], defaultSkill: null, askSkill: null, teamSkills: true,
 }
 
 const WORKSPACE_CONFIG: WorkspaceConfigResponse = {
@@ -2413,5 +2414,69 @@ describe('the Dispatch toggle', () => {
     fireEvent.change(textarea(), { target: { value: 'Server says no' } })
     await startTask()
     expect(postedBody()).not.toHaveProperty('dispatch')
+  })
+})
+
+describe('trunk-based projects (spec 2026-10-20-trunk-based-projects)', () => {
+  const TRUNK_SKILLS: Skill[] = [
+    ...SKILLS,
+    { name: 'ingest', description: 'File a note', body: '', path: '/p/ingest.md', source: 'ai' },
+    { name: 'ask', description: 'Answer from the notes', body: '', path: '/p/ask.md', source: 'ai' },
+  ]
+  const TRUNK_CONFIG: Partial<ConfigResponse> = {
+    profile: 'trunk',
+    taskWorkspace: 'in-place',
+    landing: 'auto',
+    defaultSkill: 'ingest',
+    askSkill: 'ask',
+  }
+  const note = () => document.querySelector('[data-slot="run-mode-note"]')?.textContent
+
+  it('files a note in place with the default skill', async () => {
+    serve({ config: TRUNK_CONFIG, skills: TRUNK_SKILLS })
+    renderNewTask()
+    await pillReady('ingest')
+    expect(note()).toContain('review the changes, then Commit lands them on the base branch')
+    fireEvent.change(textarea(), { target: { value: '1on1 with Bjorn, I owe him the deck by Friday' } })
+    await startTask()
+    expect(postedBody()).toMatchObject({
+      worktree: false,
+      steps: [{ skill: 'ingest' }],
+    })
+    expect(postedBody()).not.toHaveProperty('readOnly')
+    // The default skill must not make the task autonomous: that would land it unreviewed.
+    expect(postedBody()).not.toHaveProperty('autonomous')
+  })
+
+  it('asks a question read-only with the Ask skill', async () => {
+    serve({ config: TRUNK_CONFIG, skills: TRUNK_SKILLS })
+    renderNewTask()
+    await pillReady('ingest')
+    fireEvent.change(textarea(), { target: { value: "what's open with Daniel?" } })
+    await waitFor(() => expect(document.querySelector('[data-slot="ask-toggle"]')?.getAttribute('aria-checked')).toBe('true'))
+    expect(document.querySelector('[data-slot="worktree-toggle"]')).toBeNull()
+    await startTask()
+    expect(postedBody()).toMatchObject({ readOnly: true, steps: [{ skill: 'ask' }] })
+    expect(postedBody()).not.toHaveProperty('worktree')
+  })
+
+  it('lets the project default win over a Worktree choice remembered from before it changed', async () => {
+    localStorage.setItem('cez-new-task-draft', JSON.stringify({ worktree: true }))
+    serve({ config: TRUNK_CONFIG, skills: TRUNK_SKILLS })
+    renderNewTask()
+    await pillReady('ingest')
+    await openRunOptions()
+    const chip = () => document.querySelector('[data-slot="worktree-toggle"]')
+    expect(chip()?.getAttribute('aria-checked')).toBe('false')
+    // Ticking it now is a choice made under this setting, so it sticks.
+    fireEvent.click(chip() as HTMLButtonElement)
+    await waitFor(() => expect(chip()?.getAttribute('aria-checked')).toBe('true'))
+  })
+
+  it('leaves a branch-per-task project without the Ask chip', async () => {
+    serve()
+    renderNewTask()
+    await pillReady()
+    expect(document.querySelector('[data-slot="ask-toggle"]')).toBeNull()
   })
 })

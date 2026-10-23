@@ -436,7 +436,13 @@ function ProjectRow({
       </TableCell>
       <TableCell className="pr-3 text-right">
         {project.unregistered ? (
-          <AddBootProjectButton root={project.root} name={project.name} disabled={disabled} compact />
+          <AddBootProjectButton
+            root={project.root}
+            name={project.name}
+            disabled={disabled}
+            notAddable={project.notAddable === true}
+            compact
+          />
         ) : (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -487,12 +493,15 @@ export function AddBootProjectButton({
   name,
   disabled = false,
   compact = false,
+  notAddable = false,
 }: {
   root: string
   name: string
   disabled?: boolean
   /** Icon-only, for a table's narrow actions cell. */
   compact?: boolean
+  /** The server refuses this folder (`$HOME`, a task worktree): explain instead of 400-ing. */
+  notAddable?: boolean
 }) {
   const register = useRegisterProject()
   return (
@@ -502,8 +511,12 @@ export function AddBootProjectButton({
       size={compact ? 'icon-sm' : 'sm'}
       data-action="project-add-boot"
       aria-label={`Add ${name} to your projects`}
-      title="cezar is serving this folder — save it to your projects"
-      disabled={disabled || register.isPending}
+      title={
+        notAddable
+          ? 'Your home directory or a cezar task worktree cannot be a project — start cezar in a project folder, or use Open local folder'
+          : 'cezar is serving this folder — save it to your projects'
+      }
+      disabled={disabled || notAddable || register.isPending}
       onClick={() =>
         register.mutate(root, {
           onSuccess: () => toast(`${name} added to your projects`),

@@ -14,6 +14,7 @@ import {
   ListPlusIcon,
   SlidersHorizontalIcon,
   SplitIcon,
+  SquareIcon,
   ZapIcon,
   type LucideIcon,
 } from 'lucide-react'
@@ -88,7 +89,9 @@ import {
 } from './new-task-autostart'
 import {
   clearStartedDraft,
+  autoLandsUnreviewed,
   composerRunModeNote,
+  explicitWorktreeFor,
   handOffComposition,
   readAttachments,
   readDraft,
@@ -104,6 +107,8 @@ import {
   pushRecentSource,
   resolveModel,
   resolveRunner,
+  looksLikeQuestion,
+  projectDefaultSource,
   resolveSource,
   startedRunPath,
   type TaskSource,
@@ -211,7 +216,19 @@ export function NewTaskRoute() {
     skills.data !== undefined && workflows.data !== undefined && !uiState.isPending
   // The draft's pick alone — a fresh `/new` selects nothing (see `resolveSource` for what the
   // persisted `lastTask` preselection was load-bearing for, and why it is gone).
-  const source = resolveSource(draft.source, skillList, workflowList)
+  // Trunk-based projects (spec 2026-10-20-trunk-based-projects): an in-place project offers
+  // the Ask chip, a trunk-based project asks on its own when the message is a question, and nothing
+  // picked falls back to the project's default (or Ask) skill.
+  const inPlaceByDefault = config.data?.taskWorkspace === 'in-place'
+  const askOffered = repo.data?.info != null && (inPlaceByDefault || config.data?.profile === 'trunk')
+  const askWanted =
+    askOffered &&
+    draft.variants <= 1 &&
+    draft.dispatch === null &&
+    (draft.readOnly ?? (config.data?.profile === 'trunk' && looksLikeQuestion(draft.text)))
+  const source =
+    resolveSource(draft.source, skillList, workflowList) ??
+    projectDefaultSource(config.data, askWanted, skillList)
   const selectedSkill = source?.source === 'skill'
     ? skillList.find((skill) => skill.name === source.ref)
     : undefined
@@ -340,14 +357,17 @@ export function NewTaskRoute() {
     hasGit,
     variants,
     explicitAutonomous: draft.autonomous,
-    explicitWorktree: draft.worktree,
+    explicitWorktree: explicitWorktreeFor(draft, config.data?.taskWorkspace),
     interactive: selectedSkill?.interactive,
-    configuredAutonomous:
+    configuredAutonomous: autoLandsUnreviewed(
       workspaceConfig.data?.composerDefaults?.autonomous
       ?? workspaceConfig.data?.composerDefaults?.inheritedAutonomous
       ?? 'source-dependent',
-    configuredWorktree:
-      workspaceConfig.data?.composerDefaults?.worktree
+      config.data?.landing === 'auto',
+    ),
+    configuredWorktree: config.data?.taskWorkspace
+      ? config.data.taskWorkspace === 'worktree'
+      : workspaceConfig.data?.composerDefaults?.worktree
       ?? workspaceConfig.data?.composerDefaults?.inheritedWorktree
       ?? true,
     // Nothing picked runs the plain built-in workflow, and the 'source-dependent' autonomy
@@ -355,7 +375,8 @@ export function NewTaskRoute() {
     source: source?.source ?? 'workflow',
     dispatch: dispatchOn,
   })
-  const worktreeOn = runMode.worktree
+  const askOn = askWanted && !dispatchOn && variants <= 1
+  const worktreeOn = runMode.worktree && !askOn
   const autonomousOn = runMode.autonomous
 
   // Follow-up generation (#444) is offered only while the server has the global inbox on
@@ -517,6 +538,8 @@ export function NewTaskRoute() {
         // generation for THIS task must not stop the entry it came from being marked started.
         todoId: deepLink.todo,
         dispatch,
+        readOnly: askOn,
+        inPlaceByDefault,
       }),
     )
     trackMessageSent('new_task')
@@ -597,6 +620,8 @@ export function NewTaskRoute() {
               dispatch: dispatchOn,
               autonomous: autonomousOn,
               newBranch: draft.newBranch,
+              readOnly: askOn,
+              autoLand: config.data?.landing === 'auto' && config.data.landingBlocked === null,
             })}
           </p>
         </header>
@@ -733,6 +758,12 @@ export function NewTaskRoute() {
                 options={models.map((m) => ({ value: m.id, label: m.label, desc: m.desc }))}
                 status={modelCatalogStatus(displayRunner, catalog.data, catalog.isError)}
               />
+              {/* The Ask chip (spec 2026-10-20-trunk-based-projects) is a WHAT, not a HOW: a read-only
+                  question about the checkout instead of a change — so it sits beside the run
+                  pills, not inside Options. */}
+              {askOffered ? (
+                <AskToggle on={askOn} auto={draft.readOnly === undefined} onChange={(on) => update({ readOnly: on })} />
+              ) : null}
               {/* Everything else about HOW the run happens, one click away and each with a line
                   that says what it does. */}
               <Popover>
@@ -793,7 +824,7 @@ export function NewTaskRoute() {
                         ))}
                       </ToggleGroup>
                     </OptionRow>
-                    {worktreeToggleShown ? (
+                    {worktreeToggleShown && !askOn ? (
                       <OptionRow
                         icon={GitForkIcon}
                         title="Isolated worktree"
@@ -810,11 +841,11 @@ export function NewTaskRoute() {
                           data-slot="worktree-toggle"
                           checked={worktreeOn}
                           disabled={worktreeForced}
-                          onCheckedChange={(on) => update({ worktree: on })}
+                          onCheckedChange={(on) => update({ worktree: on, worktreeBasis: config.data?.taskWorkspace ?? 'default' })}
                         />
                       </OptionRow>
                     ) : null}
-                    {worktreeToggleShown && !worktreeOn ? (
+                    {worktreeToggleShown && !worktreeOn && !askOn ? (
                       <OptionRow
                         slot="new-branch-option"
                         icon={GitBranchPlusIcon}
@@ -971,6 +1002,33 @@ export function NewTaskRoute() {
         <Suggestions onPick={(text) => update({ text })} />
       </div>
     </div>
+  )
+}
+
+/** The Ask chip (spec 2026-10-20-trunk-based-projects): a read-only question about the
+ *  checkout — no branch, no lease, nothing lands. */
+function AskToggle({ on, auto, onChange }: { on: boolean; auto: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={on}
+      data-slot="ask-toggle"
+      onClick={() => onChange(!on)}
+      title={
+        on
+          ? `Read-only question — answers from the checkout, changes nothing${auto ? ' (picked because the message is a question)' : ''}`
+          : 'Check to ask a read-only question instead of filing a change'
+      }
+      className={cn(chipClass, on && 'border-primary/60 text-foreground')}
+    >
+      {on ? (
+        <CheckIcon aria-hidden="true" className="size-3 shrink-0 text-primary" />
+      ) : (
+        <SquareIcon aria-hidden="true" className="size-3 shrink-0 text-soft-foreground" />
+      )}
+      Ask
+    </button>
   )
 }
 

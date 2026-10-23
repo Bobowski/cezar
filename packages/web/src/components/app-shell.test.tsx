@@ -142,6 +142,7 @@ describe('AppShell', () => {
       'Inbox',
       'Git',
       'GitHub',
+      'Assets',
       'Automations',
       'Skills',
       'Workflows',
@@ -153,6 +154,7 @@ describe('AppShell', () => {
       '/inbox',
       '/git',
       '/github',
+      '/assets',
       '/automations',
       '/skills',
       '/workflows',
@@ -189,6 +191,7 @@ describe('AppShell', () => {
       ['/', 'Tasks'],
       ['/git', 'Git'],
       ['/skills', 'Skills'],
+      ['/assets', 'Assets'],
       // Tasks stays lit while a task thread is open (spec's "Task list & table").
       ['/tasks/abc123', 'Tasks'],
     ]
@@ -1080,6 +1083,8 @@ describe('AppShell — Focus rail (spec 2026-10-22-html-artifacts-and-impact, R2
     expect(rail).toBeTruthy()
     // The rail still navigates: every nav item as an icon link, Tasks lit for a task URL.
     expect(within(rail).getByRole('link', { name: 'Tasks' }).getAttribute('aria-current')).toBe('page')
+    // The project Assets page (Phase 3) is in the rail as well as the expanded nav.
+    expect(within(rail).getByRole('link', { name: 'Assets' }).getAttribute('href')).toBe('/assets')
 
     fireEvent.click(within(rail).getByRole('button', { name: 'Show sidebar' }))
     expect(onExit).toHaveBeenCalledTimes(1)

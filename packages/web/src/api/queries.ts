@@ -50,6 +50,7 @@ import {
   getRunDrafts,
   getRunArtifacts,
   getImpactForSubject,
+  getProjectAssets,
   impactSubjectKey,
   startImpact,
   getRunArtifactText,
@@ -209,6 +210,10 @@ export const queryKeys = {
     impactSubject: (subjectKey: string) => [queryScope(), 'runs', 'impact-subject', subjectKey] as const,
     get impactSubjects() {
       return [queryScope(), 'runs', 'impact-subject'] as const
+    },
+    /** The project Assets page; the `artifacts` SSE frame invalidates it (global-events.tsx). */
+    get projectAssets() {
+      return [queryScope(), 'runs', 'project-assets'] as const
     },
     /** Keyed by `updatedAt`: a rewritten file is a new key, so the SSE listing alone refreshes it. */
     artifactText: (id: string, name: string, updatedAt: string) =>
@@ -1249,6 +1254,16 @@ export function useImpactForSubject(subject: ImpactSubjectInput | null) {
     queryKey: queryKeys.runs.impactSubject(subject ? impactSubjectKey(subject) : ''),
     queryFn: ({ signal }) => getImpactForSubject(subject as ImpactSubjectInput, { signal }),
     enabled: subject !== null,
+    retry: false,
+  })
+}
+
+/** Every artifact across the project's runs (the project Assets page). Event-driven, never a
+ *  poll: the `artifacts` frame invalidates it, and it sits under `runs` for the reconnect reconcile. */
+export function useProjectAssets() {
+  return useQuery({
+    queryKey: queryKeys.runs.projectAssets,
+    queryFn: ({ signal }) => getProjectAssets({ signal }),
     retry: false,
   })
 }

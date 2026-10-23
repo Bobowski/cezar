@@ -1295,4 +1295,16 @@ describe('useGlobalEvents — artifacts', () => {
     expect(client.getQueryData(queryKeys.runs.artifacts('r2'))).toBeUndefined()
     expect(client.getQueryData(queryKeys.runs.artifacts('r1'))).toEqual({ artifacts: [], truncated: false })
   })
+
+  it('marks the project Assets page stale for its own project only (Phase 3)', () => {
+    client.setQueryData(queryKeys.runs.projectAssets, { assets: [], truncated: false })
+    const { source } = mount()
+    const state = () => client.getQueryState(queryKeys.runs.projectAssets)
+
+    source.emit('artifacts', frame('r1', ['demo.html'], 'some-other-project'))
+    expect(state()?.isInvalidated).toBe(false)
+
+    source.emit('artifacts', frame('r1', ['demo.html']))
+    expect(state()?.isInvalidated).toBe(true)
+  })
 })

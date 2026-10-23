@@ -51,6 +51,7 @@ import type {
   ChangesPayload,
   RunArtifactsResponse,
   ArtifactsBySubjectResponse,
+  ProjectAssetsResponse,
   ImpactSubjectInput,
   StartImpactInput,
   StartImpactResponse,
@@ -186,6 +187,7 @@ import {
   runHistoryPageSchema,
   artifactsBySubjectResponseSchema,
   githubOwnersResponseSchema,
+  projectAssetsResponseSchema,
 } from '@open-mercato/cezar-api-client'
 import type { Ok, OkJson } from '@open-mercato/cezar-api-client'
 import type { ClientResponse } from 'hono/client'
@@ -1321,6 +1323,15 @@ export async function getImpactForSubject(
     ),
     `/artifacts?subject=${encodeURIComponent(key)}`,
     artifactsBySubjectResponseSchema,
+  )
+}
+
+/** Every artifact across the project's runs, newest first (the project Assets page, Phase 3). */
+export async function getProjectAssets(opts?: ReadOptions): Promise<ProjectAssetsResponse> {
+  return unwrapValidated(
+    await cez.api.v1.p[':projectId'].assets.$get({ param: { projectId: queryScope() } }, init(opts)),
+    '/assets',
+    projectAssetsResponseSchema,
   )
 }
 

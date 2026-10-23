@@ -693,6 +693,8 @@ export function useGlobalEvents(usage: UsageStore, url: string = SSE_URL): void 
           { queryKey: queryKeys.runs.impactSubjects },
           (answer) => (answer?.run?.id === runId ? patchSubjectListing(answer, listing) : answer),
         )
+        // The project Assets page's rows carry run facts the frame does not, so it refetches.
+        void queryClient.invalidateQueries({ queryKey: queryKeys.runs.projectAssets })
       })
 
       for (const name of WORKSPACE_EVENT_NAMES) {

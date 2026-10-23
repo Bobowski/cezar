@@ -1,3 +1,34 @@
+# Unreleased — weekly draft (2026-10-23)
+
+<!-- Merged into `main` after the 0.16 release cut (#1531, 2026-10-19 19:56 UTC) through 2026-10-23 16:00 UTC. Fixes already shipped in 0.16.0/0.16.1 through their backports are left out. -->
+
+## Highlights
+<!-- TODO: Highlights — maintainer editorial review before release. -->
+
+## ✨ Features
+- ✨ Schedule a task from the composer — at a date and time, or after a Claude/Codex usage window resets — and manage scheduled tasks from the Tasks view (fixes #1340). (#1434) *(@matwiatrzyk)*
+- ✨ Trunk-based development model per project: tasks work in the checkout, park for review, and Commit straight to the base branch. (#1597) *(@patzick)*
+- ✨ Answer an agent's question card with your own text (**Other…**) or ask it for more context (**Need more info**). (#1605) *(@pat-lewczuk)*
+
+## 🔒 Security
+- 🔒 Manage agent accounts on an authenticated self-hosted cockpit behind `CEZ_REMOTE_AGENT_ACCOUNTS=1` (off by default), with posted account folders confined to `CEZ_BROWSE_ROOT`. (#1631) *(@piotrchabros)*
+- 🔒 Accept IPv4-mapped IPv6 loopback authorities in the request-origin guard while rejecting malformed dotted tails (fixes #575). (#1371) *(@pat-lewczuk)*
+
+## 🐛 Fixes
+- 🐛 Stop processes a task leaves running once it settles, and on boot for tasks that settled while cezar was down (fixes #1411). (#1419) *(@pat-lewczuk)*
+- 🐛 Run `gh` without a session bus it would have to start, so no orphaned `dbus-daemon` is left behind per call. (#1469) *(@michalgacek-espeo)*
+- 🐛 Show relative file links in transcripts as their path instead of `[blocked]`. (#1425) *(@matgren)*
+- 🐛 Keep the GitHub tab for a recognized remote while the forge probe is cold or failing (fixes #1412). (#1427) *(@alwoodm)*
+- 🐛 Name OpenCode 2.x instead of failing every run with a bare `POST /session → 405`. (#1573) *(@pat-lewczuk)*
+- 🐛 Don't fail an OpenCode run whose server starts slowly or prints its URL on stderr or as `localhost`. (#1537) *(@patzick)*
+- 🐛 Respawn `opencode serve` on a fresh port when the random one is already taken. (#1585) *(@patzick)*
+- 🐛 Stop reporting an OpenCode CLI that fails to start as unrecognized output. (#1574) *(@pat-lewczuk)*
+- 🐛 Surface a Codex `turn/completed` whose status is `failed` as a turn error instead of a silent empty turn. (#1571) *(@matgren)*
+- 🐛 Don't hand a dispatched child or a workflow step another runner's model. (#1592) *(@pat-lewczuk)*
+- 🐛 Retry a transient transport failure on background reads before raising an error toast. (#1575) *(@pat-lewczuk)*
+- 🐛 Keep the thread still while the composer autosizes. (#1606) *(@patzick)*
+- 🐛 Forward `Host` with its port in the `ubuntu-vps` nginx vhost, so writes through a forwarded port pass the same-origin guard. (#1570) *(@krzysztofr)*
+
 # 0.16.1 (2026-10-20)
 
 <!-- Release notes generated using configuration in .github/release.yml at c2d4ba0cb8769bb05640755fd18ccbf1016c836c -->

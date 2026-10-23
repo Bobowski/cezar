@@ -2226,7 +2226,10 @@ export class RunManager {
     // The terminal rescan: whatever the last turn wrote after its own turn end still shows up.
     state?.artifactsWatch?.close();
     if (state) state.artifactsWatch = undefined;
-    void this.rescanArtifacts(runId, { render: true });
+    // The signature is forgotten after it: one per run ever ended would otherwise never leave memory.
+    void this.rescanArtifacts(runId, { render: true }).finally(() => {
+      if (!this.active.has(runId)) this.artifactSignatures.delete(runId);
+    });
     this.active.delete(runId);
     // Session result has settled and its sink has flushed before terminal cleanup.
     this.store.clearRunSecrets(runId);

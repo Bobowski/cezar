@@ -11,6 +11,7 @@
 import { execFile } from 'node:child_process';
 import type { ImpactSubjectInput, RunSubject } from '@open-mercato/cezar-contract';
 import { resolvePrHead, runCommand, type CommandRunner } from '../automations/pr-head.ts';
+import { resolveBaseRef } from '../git-worktree.ts';
 import type { RunRecord } from '../runs/store.ts';
 import { fetchPrHeadSha, resolveRepoHandle } from '../server/forge/github.ts';
 import { repoIndexContains } from '../server/git-changes.ts';
@@ -106,6 +107,9 @@ async function resolvePr(root: string, number: number, deps: ImpactDeps): Promis
     return { ok: false, status: 409, error: resolution.reason.split('\n')[0]!.slice(0, 500) };
   }
   const { head } = resolution;
+  // `cez impact evidence --pr` pins GitHub's base tip, which the head fetch does not bring and
+  // the forkRef path never refreshes; best effort, a failed fetch leaves the evidence to say so.
+  if (!dry) await resolveBaseRef(root, head.baseRef).catch(() => null);
   const title = head.title?.replace(/\s+/g, ' ').trim();
   return {
     ok: true,

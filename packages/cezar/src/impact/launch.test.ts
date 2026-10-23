@@ -143,6 +143,31 @@ describe('PR subject — guards', () => {
     expect((await run('git', ['rev-parse', 'refs/cezar/pr/42'], { cwd: root })).stdout.trim()).toBe(head);
   });
 
+  it('refreshes the base branch, so the evidence can pin a base tip the clone had not fetched', async () => {
+    const remote = mkdtempSync(join(tmpdir(), 'cez-impact-remote-'));
+    const other = mkdtempSync(join(tmpdir(), 'cez-impact-other-'));
+    try {
+      await run('git', ['clone', '-q', '--bare', root, remote]);
+      await run('git', ['remote', 'add', 'origin', remote], { cwd: root });
+      await run('git', ['fetch', '-q', 'origin'], { cwd: root });
+      // main moves on GitHub after the user's last fetch.
+      await run('git', ['clone', '-q', remote, other]);
+      writeFileSync(join(other, 'later.md'), '# later\n');
+      await run('git', ['add', '-A'], { cwd: other });
+      await run('git', [...GIT_ID, 'commit', '-q', '-m', 'later'], { cwd: other });
+      await run('git', ['push', '-q', 'origin', 'main'], { cwd: other });
+      const tip = (await run('git', ['rev-parse', 'HEAD'], { cwd: other })).stdout.trim();
+      const missing = await run('git', ['cat-file', '-e', `${tip}^{commit}`], { cwd: root }).then(() => false, () => true);
+      expect(missing).toBe(true);
+
+      expect(await resolveImpactSubject(root, { kind: 'pr', number: 42 }, deps(github(pull())))).toMatchObject({ ok: true });
+      expect((await run('git', ['rev-parse', 'origin/main'], { cwd: root })).stdout.trim()).toBe(tip);
+    } finally {
+      rmSync(remote, { recursive: true, force: true });
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
   it('CEZ_DRY_RUN=1 skips gh and the fetch: the fixture head is HEAD', async () => {
     const calls: string[] = [];
     const spy: CommandRunner = async (command, args, cwd) => {

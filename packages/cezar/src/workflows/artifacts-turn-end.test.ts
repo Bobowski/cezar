@@ -109,6 +109,15 @@ describe('artifacts rescan at turn end', () => {
     expect(published.length).toBe(before);
   }, 40_000);
 
+  it('forgets a run\'s listing signature once its owner is gone', async () => {
+    const record = manager.startRun(SINGLE_STEP, { task: 'mock:done first pass', worktree: false });
+    currentId = record.id;
+    await waitFor(() => ['done', 'review'].includes(status(record.id) ?? ''));
+    await waitFor(() => published.some((p) => p.names.includes('demo.html')), 5_000);
+    const signatures = (manager as unknown as { artifactSignatures: Map<string, string> }).artifactSignatures;
+    await waitFor(() => !signatures.has(record.id), 5_000);
+  }, 40_000);
+
   // The backstop (spec 2026-10-22 § Impact renderer): the dry-run mock leaves only review.json;
   // the turn-end rescan validates and renders it, and the run's diff stays empty.
   it('renders a review.json the turn left behind into impact.html, version 1', async () => {

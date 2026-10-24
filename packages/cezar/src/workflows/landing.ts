@@ -233,10 +233,14 @@ async function commitTask(
   const unresolved = await unresolvedConflicts(root, status.stdout);
   if (unresolved) return { result: 'failed', error: `refusing to commit: ${unresolved}` };
   // Everything the task left: what an agent staged is incidental (spec 2026-10-24-git-view §4).
-  // An exclude pathspec makes `git add` exit 1 whenever .gitignore covers anything under
-  // .ai/cezar (#1597), so stage the tree, then unstage all of .ai/cezar — tracked edits included.
-  const add = await run(root, ['add', '-A', '--', '.']);
+  // The exclude pathspec never opens .ai/cezar, but `git add` exits 1 when .gitignore covers it
+  // (#1597); only then stage the whole tree and rely on the unstage below.
+  const probe = await run(root, ['add', '--dry-run', '-A', ...PATHSPEC]);
+  const ignored = !probe.ok && (await run(root, ['check-ignore', '-q', '--no-index', '.ai/cezar'])).ok;
+  if (!probe.ok && !ignored) return { result: 'failed', error: reason(probe, 'git add failed') };
+  const add = await run(root, ['add', '-A', ...(ignored ? ['--', '.'] : PATHSPEC)]);
   if (!add.ok) return { result: 'failed', error: reason(add, 'git add failed') };
+  // Whatever an agent staged under .ai/cezar itself never lands either.
   const unstage = await run(root, ['reset', '-q', '--', '.ai/cezar']);
   if (!unstage.ok) {
     // Never leave .ai/cezar staged for whoever commits next: put the whole index back to HEAD.

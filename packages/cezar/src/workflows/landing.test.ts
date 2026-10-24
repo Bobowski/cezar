@@ -139,6 +139,23 @@ describe('landInPlace', () => {
     expect(git(checkout, 'status', '--porcelain', '-uall')).toBe('?? .ai/cezar/workflows/w.yaml');
   });
 
+  it('stages with the exclude pathspec unless .gitignore covers .ai/cezar, and never lands what an agent staged there', async () => {
+    const adds: string[] = [];
+    const recording: GitRun = (cwd, args) => {
+      if (args[0] === 'add' && args[1] !== '--dry-run') adds.push(args.join(' '));
+      return realGit(cwd, args);
+    };
+    execFileSync('mkdir', ['-p', join(checkout, '.ai/cezar')]);
+    writeFileSync(join(checkout, '.ai/cezar/config.json'), '{}\n');
+    git(checkout, 'add', '.ai/cezar/config.json');
+    writeFileSync(join(checkout, 'person.md'), 'Bjorn\n');
+    expect(await landInPlace(checkout, { describe: async () => 'one', checks: [], git: recording })).toMatchObject({ result: 'landed', files: ['person.md'] });
+    writeFileSync(join(checkout, '.gitignore'), '.ai/cezar/\n');
+    expect(await landInPlace(checkout, { describe: async () => 'two', checks: [], git: recording })).toMatchObject({ result: 'landed', files: ['.gitignore'] });
+    expect(adds).toEqual(['add -A -- . :(exclude).ai/cezar', 'add -A -- .']);
+    expect(git(checkout, 'ls-files', '.ai')).toBe('');
+  });
+
   it("when unstaging .ai/cezar fails, leaves nothing staged and fails the landing with git's message", async () => {
     execFileSync('mkdir', ['-p', join(checkout, '.ai/cezar')]);
     writeFileSync(join(checkout, '.ai/cezar/config.json'), '{}\n');

@@ -222,7 +222,7 @@ import { toPastedContent, type PastedContent, type RunManager } from '../workflo
 import { checkoutGitStatus } from '../workflows/landing.ts';
 import { deleteUpload, readUpload, writeUpload } from '../uploads.ts';
 import { branchesCheckedOutElsewhere, removeWorktree, worktreeDiff, worktreeDiffStat, worktreeSizeBytes } from '../git-worktree.ts';
-import { githubTracesOf, headShaOf } from '../runs/github-traces.ts';
+import { headShaOf } from '../runs/github-traces.ts';
 import { automationWebhookRoutes, HookIndex, hookRoutes, wakeGithubPolls, type HookProject } from './automation-webhook.ts';
 import { isReclaimable, reclaimWorktrees } from '../runs/retention.ts';
 import { worktreeLifecycleRoutes, lifecycleError } from './worktree-lifecycle.ts';
@@ -4679,7 +4679,7 @@ export function createApp(deps: ServerDeps) {
             timeZone: localTimeZone(),
             store,
             github: { owner: remote.owner, repo: remote.repo, poller: new GithubPoller({ host: remote.host }) },
-            traces: () => githubTracesOf(project.store.listRuns()),
+            traces: () => project.store.githubTraces(),
             launch: parsed.data.mode === 'execute'
               ? (definition, candidate, receiptId) => launchAutomationRun({ root: project.root, manager: project.manager, store: project.store, definition, candidate, receiptId, dispatchEnabled: capabilities().dispatch })
               : undefined,
@@ -5920,7 +5920,13 @@ export function createApp(deps: ServerDeps) {
       const worktree = worktreeOf(run);
       if (!worktree) return c.json({ error: NO_WORKTREE }, 409);
       let result;
-      try { result = await withWorktreeMutation(c.get('project'), run.id, () => pushCurrentBranch(worktree)); }
+      // The sha is a trace BEFORE the push (spec 2026-10-23-github-events §6): a poll the push's
+      // own webhook wakes must already know it.
+      const recordHead = async () => {
+        const sha = await headShaOf(worktree);
+        if (sha) store.recordGithubTraces(run.id, { shas: [sha] });
+      };
+      try { result = await withWorktreeMutation(c.get('project'), run.id, async () => { await recordHead(); return pushCurrentBranch(worktree); }); }
       catch (error) { return lifecycleError(c, error); }
       if (!result.ok) return c.json({ error: result.error }, 409);
       // A push is the event that changes what the chips say about this task's pull requests —
@@ -5929,8 +5935,6 @@ export function createApp(deps: ServerDeps) {
       // minute of "Ready to merge" for a branch that has just been rewritten) about a push the
       // user watched this server make.
       for (const number of runPrNumbers(run)) forgetRefStatus(repoRoot, number);
-      const pushedSha = await headShaOf(worktree);
-      if (pushedSha) c.get('project').store.recordGithubTraces(run.id, { shas: [pushedSha] });
       return c.json({
         pushed: true,
         branch: result.branch,
@@ -5992,14 +5996,15 @@ export function createApp(deps: ServerDeps) {
       if (!publish) {
         const branch = run.branch;
         publish = (async () => {
+          // A trace before the push, after the pre-PR autosave (spec 2026-10-23-github-events §6).
+          const recordHead = async () => {
+            const pushedSha = run.worktreePath ? await headShaOf(run.worktreePath) : undefined;
+            if (pushedSha) store.recordGithubTraces(id, { shas: [pushedSha] });
+          };
           const outcome = await withWorktreeMutation(c.get('project'), id, () =>
-            createDraftPr({ repoRoot, run, handoffText: readHandoff(dataDir, id), draft }),
+            createDraftPr({ repoRoot, run, handoffText: readHandoff(dataDir, id), draft, beforePush: recordHead }),
           );
           if (!outcome.ok) return outcome;
-          if (run.worktreePath && !outcome.dryRun) {
-            const pushedSha = await headShaOf(run.worktreePath);
-            if (pushedSha) store.recordGithubTraces(id, { shas: [pushedSha] });
-          }
           // A number the cockpit asked about BEFORE the pull request existed is cached as "this
           // repository has no such number" — which is exactly what a `CEZ:PR=901` marker declared
           // ahead of the push looks like. It exists now.
@@ -9127,7 +9132,7 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
         },
         onChange: (automationId, revision) =>
           workspaceEvents.emit('automation-change', { project: projectId, automationId, revision }),
-        traces: async () => githubTracesOf((await contextOf()).store.listRuns()),
+        traces: async () => (await contextOf()).store.githubTraces(),
         launch: async (definition, candidate, receiptId) => {
           const context = await contextOf();
           return launchAutomationRun({ root: context.root, manager: context.manager, store: context.store, definition, candidate, receiptId, dispatchEnabled });

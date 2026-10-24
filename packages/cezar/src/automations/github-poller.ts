@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { z } from 'zod';
 import type { GithubAutomationDefinition, AutomationEvent } from './types.ts';
 import { ACTIVITY_EVENTS, pollActivity } from './github-activity.ts';
+import type { GithubTraces } from '../runs/github-traces.ts';
 
 const execFileAsync = promisify(execFile);
 const HARD_CANDIDATE_CAP = 100;
@@ -127,7 +128,7 @@ export interface GithubPollOptions {
   activity?: GithubActivityState;
   /** cezar's own traces (spec 2026-10-23-github-events §6): shas its runs pushed and comment ids
    *  they posted. A candidate whose source is one of them is dropped. */
-  traces?: { shas: ReadonlySet<string>; comments: ReadonlySet<number> };
+  traces?: GithubTraces;
 }
 
 /** The widest budget one poll may be given — the `/search/issues` page ceiling. */

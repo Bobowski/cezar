@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { GithubActivityState, GithubCandidate } from './github-poller.ts';
 import type { AutomationEvent, GithubAutomationDefinition } from './types.ts';
+import { commentFingerprint, type GithubTraces } from '../runs/github-traces.ts';
 
 /**
  * The seven activity sources of spec 2026-10-23-github-events §3 — what happens INSIDE an issue or
@@ -229,7 +230,7 @@ export async function pollActivity(input: {
   since?: string;
   maxRecords: number;
   state: GithubActivityState;
-  traces?: { shas: ReadonlySet<string>; comments: ReadonlySet<number> };
+  traces?: GithubTraces;
   run: GhRun;
   /** The shared filters (`matchesFilters`), passed in so nothing is imported back from the poller. */
   matches: (candidate: GithubCandidate) => boolean;
@@ -243,7 +244,8 @@ export async function pollActivity(input: {
   const filters = definition.filters;
   const since = input.since ?? new Date(Date.now() - filters.lookbackDays * 86_400_000).toISOString();
   const ownSha = (sha: string) => input.traces?.shas.has(sha.toLowerCase()) ?? false;
-  const ownComment = (id: number) => input.traces?.comments.has(id) ?? false;
+  const ownComment = (id: number, body: string | null | undefined) => !!input.traces
+    && (input.traces.comments.has(id) || (!!body && !!input.traces.bodies?.has(commentFingerprint(body))));
   const allowForks = definition.task.allowForkHeads === true;
   const etagsIn = state.etags ?? {};
   // Keys this module owns are rebuilt every poll, so a sha that left the open-PR set takes its
@@ -390,7 +392,7 @@ export async function pollActivity(input: {
       const event: AutomationEvent = pull ? 'pull_request.commented' : 'issue.commented';
       const number = Number(row.issue_url?.match(/\/issues\/(\d+)$/)?.[1]);
       if (!events.has(event) || !Number.isInteger(number) || number <= 0) continue;
-      if (!atOrAfter(row.created_at, since) || ownComment(row.id)) continue;
+      if (!atOrAfter(row.created_at, since) || ownComment(row.id, row.body)) continue;
       const item = await itemOf(number, pull);
       if (!item || (item.fork && !allowForks)) continue;
       const candidate: GithubCandidate = {
@@ -413,7 +415,7 @@ export async function pollActivity(input: {
       group.push(observation);
       const number = Number(row.pull_request_url?.match(/\/pulls\/(\d+)$/)?.[1]);
       if (!Number.isInteger(number) || number <= 0) continue;
-      if (!atOrAfter(row.created_at, since) || ownComment(row.id)) continue;
+      if (!atOrAfter(row.created_at, since) || ownComment(row.id, row.body)) continue;
       const item = await itemOf(number, true);
       if (!item || (item.fork && !allowForks)) continue;
       const candidate: GithubCandidate = {

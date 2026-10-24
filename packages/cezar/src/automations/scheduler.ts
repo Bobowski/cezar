@@ -1,5 +1,5 @@
 import { runEventPollCycle, launchEventCandidate } from './event-poll-cycle.ts';
-import type { GithubTraces } from '../runs/github-traces.ts';
+import { isOwnTrace, type GithubTraces } from '../runs/github-traces.ts';
 import type { AutomationCoordinator } from './coordinator.ts';
 import { POLL_RECORD_CEILING } from './github-poller.ts';
 import type { GithubCandidate, GithubPoller, GithubPollResult } from './github-poller.ts';
@@ -170,6 +170,10 @@ export class ProjectAutomationScheduler {
   }
 
   private async launch(definition: GithubAutomationDefinition, candidate: GithubCandidate): Promise<void> {
+    // Read again at the moment of decision: a push or comment cezar made while the poll was in
+    // flight is a trace now, though it was not when the poll began (spec 2026-10-23-github-events §6).
+    const traces = await this.handle.traces?.();
+    if (traces && isOwnTrace(candidate, traces, definition.filters.includeOwnPushes)) return;
     if (this.hasRecentReviewRequestReceipt(definition, candidate)) {
       this.handle.store.appendLog({ automationId: definition.id, revision: definition.revision, event: candidate.event, result: 'duplicate', reason: 'A durable receipt already exists for this automation and pull request review-request burst.', githubNumber: candidate.number, githubTitle: candidate.title, githubUrl: candidate.url });
       return;

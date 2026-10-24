@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { commentIdsIn, githubTracesOf, mergeTraces, POSTED_COMMENTS_CAP, PUSHED_SHAS_CAP, toolTraces } from './github-traces.ts';
+import { commentFingerprint, commentIdsIn, githubTracesOf, isOwnTrace, isPushCommand, mergeTraces, POSTED_COMMENTS_CAP, PUSHED_SHAS_CAP, toolTraces } from './github-traces.ts';
 import { RunStore } from './store.ts';
 
 const sha = (n: number) => n.toString(16).padStart(40, '0');
@@ -25,6 +25,19 @@ describe('github traces (spec 2026-10-23-github-events §6)', () => {
     expect(toolTraces({ input: { command: 'echo git-push-helper' } }).pushed).toBe(false);
     // A failed call left nothing behind.
     expect(toolTraces({ input: { command: 'git push' }, status: 'failed' }).pushed).toBe(false);
+  });
+
+  it('knows a push as it starts, and its own events by sha, id or the body being posted', () => {
+    expect(isPushCommand({ command: 'git commit -am x && git push origin HEAD' })).toBe(true);
+    expect(isPushCommand({ command: 'git status' })).toBe(false);
+    expect(commentFingerprint('Done.\r\n\nSee  above ')).toBe(commentFingerprint('Done. See above'));
+    const traces = { shas: new Set([sha(1)]), comments: new Set([5]), bodies: new Set([commentFingerprint('posting now')]) };
+    expect(isOwnTrace({ event: 'push', headSha: sha(1).toUpperCase() }, traces)).toBe(true);
+    expect(isOwnTrace({ event: 'check_suite.completed', headSha: sha(1) }, traces)).toBe(true);
+    expect(isOwnTrace({ event: 'check_suite.completed', headSha: sha(1) }, traces, true)).toBe(false);
+    expect(isOwnTrace({ event: 'pull_request.commented', headSha: sha(1), comment: { id: 6, body: 'a human' } }, traces)).toBe(false);
+    expect(isOwnTrace({ event: 'pull_request.commented', comment: { id: 5 } }, traces)).toBe(true);
+    expect(isOwnTrace({ event: 'issue.commented', comment: { id: 7, body: 'posting  now' } }, traces)).toBe(true);
   });
 
   it('deduplicates and caps, newest last', () => {

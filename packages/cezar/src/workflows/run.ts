@@ -79,7 +79,7 @@ import { isLifecycleConfigTracked } from '../worktree-lifecycle/config.ts';
 import { generateCommitMessage } from './commit-message.ts';
 import { hasUnlanded, landInPlace, landingPromptPart, READ_ONLY_PROMPT, READ_ONLY_TOOLS, type LandResult } from './landing.ts';
 import { deleteRunLayouts } from '../runs/layouts.ts';
-import { headShaOf, toolTraces } from '../runs/github-traces.ts';
+import { headShaOf, isPushCommand, toolTraces } from '../runs/github-traces.ts';
 import {
   autosaveCommit,
   branchFor,
@@ -6037,16 +6037,17 @@ export class RunManager {
           return 'created';
         }
         const title = node.title ? render(node.title) : undefined;
+        const worktreePath = run.worktreePath;
         const outcome = await createDraftPr({
           repoRoot: this.repoRoot,
           run: title ? { ...run, title } : run,
           handoffText: readHandoff(this.dataDir, runId),
+          ...(worktreePath ? { beforePush: () => this.recordPushedHead(runId, worktreePath) } : {}),
         });
         if (!outcome.ok) {
           note(`draft PR failed — ${outcome.error}`, 'danger');
           return 'failed';
         }
-        if (run.worktreePath) await this.recordPushedHead(runId, run.worktreePath);
         this.store.updateRun(runId, { pullRequestUrl: outcome.url });
         const number = /\/pull\/(\d+)/.exec(outcome.url)?.[1];
         if (number) this.store.recordPrRef(runId, { number: Number(number), url: outcome.url, origin: 'created' });
@@ -6060,7 +6061,9 @@ export class RunManager {
           note('no PR on this task to comment on', 'danger');
           return 'failed';
         }
-        const res = await commentOnPr(this.repoRoot, number, render(node.body));
+        const body = render(node.body);
+        this.store.notePostingComment(body);
+        const res = await commentOnPr(this.repoRoot, number, body);
         if (!res.ok) {
           note(`PR comment failed — ${res.error}`, 'danger');
           return 'failed';
@@ -6117,12 +6120,12 @@ export class RunManager {
           return 'failed';
         }
         await autosaveCommit(state.cwd, 'pre-PR');
+        await this.recordPushedHead(runId, state.cwd);
         const res = await pushBranch(state.cwd, run.branch);
         if (!res.ok) {
           note(`push failed — ${res.error}`, 'danger');
           return 'failed';
         }
-        await this.recordPushedHead(runId, state.cwd);
         note(`pushed ${run.branch}`);
         return 'done';
       }
@@ -6172,11 +6175,14 @@ export class RunManager {
           note('no issue on this task to comment on (set one on the node)', 'danger');
           return 'failed';
         }
-        const res = await commentOnIssue(this.repoRoot, issue, render(node.body));
+        const body = render(node.body);
+        this.store.notePostingComment(body);
+        const res = await commentOnIssue(this.repoRoot, issue, body);
         if (!res.ok) {
           note(`issue comment failed — ${res.error}`, 'danger');
           return 'failed';
         }
+        if (res.commentId !== undefined) this.store.recordGithubTraces(runId, { comments: [res.commentId] });
         outputs.set(node.id, { issue });
         note(`commented on issue #${issue}`);
         return 'done';
@@ -7119,6 +7125,8 @@ export class RunManager {
       state.skillMissingReported = true;
       track('skill_missing_in_session', { label: state.sessionBackend ?? 'unknown' });
     }
+    // A push is recorded as it STARTS as well, so its own webhook-woken poll already knows it.
+    if (event.type === 'item.started' && event.item.kind === 'tool' && isPushCommand(event.item.input)) void this.recordPushedHead(runId, state.cwd);
     if (event.type === 'item.completed' && event.item.kind === 'tool') this.recordToolTraces(runId, state.cwd, event.item);
     sink.handle(event);
     // Work observed ends the rest, whoever started the turn: a parked Claude session wakes itself
@@ -7546,6 +7554,7 @@ export class RunManager {
       since: run?.baseBranch,
       checks: policy.checks,
       env,
+      beforePush: (sha) => this.store.recordGithubTraces(runId, { shas: [sha] }),
     });
     const at = new Date().toISOString();
     if (outcome.result === 'landed') {

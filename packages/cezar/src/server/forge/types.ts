@@ -273,6 +273,9 @@ export interface DraftPrInput {
   handoffText: string;
   /** Open it as a draft. Absent = draft — what every caller got before this flag existed. */
   draft?: boolean;
+  /** Called right BEFORE the branch is pushed, so the pushed sha is cezar's own trace before
+   *  GitHub can announce it (spec 2026-10-23-github-events §6). */
+  beforePush?: () => Promise<void>;
 }
 
 /** Purpose-specific creation feed; independent of open lists and relevance search. */

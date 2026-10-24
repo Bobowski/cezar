@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 /**
  * cezar's own traces on GitHub (spec 2026-10-23-github-events §6): the shas a run pushed and the
@@ -12,6 +13,33 @@ export const POSTED_COMMENTS_CAP = 100;
 export interface GithubTraces {
   shas: ReadonlySet<string>;
   comments: ReadonlySet<number>;
+  /** Fingerprints of comment bodies cezar is posting right now (`commentFingerprint`): the id is
+   *  known only once GitHub answers, and a poll in flight may read the comment before that. */
+  bodies?: ReadonlySet<string>;
+}
+
+/** A comment body's identity, robust to GitHub's whitespace normalisation and to the poller's own
+ *  cap on what it keeps of a body. */
+export function commentFingerprint(body: string): string {
+  const normalized = body.replace(/[\s\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 1_000);
+  return createHash('sha256').update(normalized).digest('hex');
+}
+
+/** Whether `candidate` came from cezar's own push or comment — asked when the poll reads it AND
+ *  again when it is decided, since a trace can land while a long poll is in flight. */
+export function isOwnTrace(
+  candidate: { event: string; headSha?: string; comment?: { id: number; body?: string } },
+  traces: GithubTraces,
+  includeOwnPushes = false,
+): boolean {
+  if (candidate.comment) {
+    return traces.comments.has(candidate.comment.id)
+      || (candidate.comment.body !== undefined && !!traces.bodies?.has(commentFingerprint(candidate.comment.body)));
+  }
+  const sha = candidate.headSha?.toLowerCase();
+  if (!sha || !traces.shas.has(sha)) return false;
+  if (candidate.event === 'pull_request.synchronize' || candidate.event === 'push') return true;
+  return candidate.event === 'check_suite.completed' && !includeOwnPushes;
 }
 
 /** `#issuecomment-N` (conversation) and `#discussion_rN` (review) comment ids in `text`. */
@@ -39,6 +67,12 @@ const PUSH_RE = /(?:^|[\s;&|(])git\s+(?:-[cC]\s+\S+\s+|--\S+\s+)*push\b/;
 const GH_COMMENT_RE = /\bgh\s+(?:pr|issue)\s+comment\b/;
 const GH_API_POST_COMMENT_RE = /\bgh\s+api\b[^\n]*\/comments\b/;
 const POST_RE = /(?:-X|--method)[\s=]*POST\b|\s-[fF]\s+body=|--(?:raw-)?field[\s=]+body=/i;
+
+/** A tool call that runs `git push` — recorded when it STARTS too, so the sha is a trace before
+ *  GitHub can announce the push. */
+export function isPushCommand(input: unknown): boolean {
+  return PUSH_RE.test(commandOf(input));
+}
 
 /**
  * What one finished tool call left on GitHub: whether it was a `git push` (the caller reads the
@@ -71,14 +105,17 @@ export function mergeTraces(
 }
 
 /** Every trace across a project's runs — what one poll compares candidates against. */
-export function githubTracesOf(runs: Iterable<{ pushedShas?: string[]; postedComments?: number[] }>): GithubTraces {
+export function githubTracesOf(
+  runs: Iterable<{ pushedShas?: string[]; postedComments?: number[] }>,
+  bodies?: ReadonlySet<string>,
+): GithubTraces {
   const shas = new Set<string>();
   const comments = new Set<number>();
   for (const run of runs) {
     for (const sha of run.pushedShas ?? []) shas.add(sha);
     for (const id of run.postedComments ?? []) comments.add(id);
   }
-  return { shas, comments };
+  return bodies?.size ? { shas, comments, bodies } : { shas, comments };
 }
 
 /** `HEAD` of a checkout, or undefined — never throws (a trace is best-effort). */

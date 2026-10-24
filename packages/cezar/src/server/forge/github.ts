@@ -2732,6 +2732,7 @@ export async function createDraftPr(input: DraftPrInput): Promise<DraftPrOutcome
   const { ahead } = await baseDivergence(worktree, run.baseBranch);
   if (ahead === 0) return { ok: false, error: nothingToPropose(branch, prBase) };
 
+  await input.beforePush?.().catch(() => undefined);
   const push = await execTool(['push', '-u', remotes.push, branch], worktree, 'git', PUSH_TIMEOUT_MS);
   if (!push.ok) {
     return { ok: false, error: `git push failed — ${tail(push.stderr) || 'unknown error'}` };
@@ -2953,11 +2954,14 @@ export async function commentOnIssue(
   repoRoot: string,
   number: number,
   body: string,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<{ ok: true; commentId?: number } | { ok: false; error: string }> {
   if (process.env.CEZ_DRY_RUN === '1') return { ok: true };
   const res = await execTool(['issue', 'comment', String(number), '--body', body], repoRoot, 'gh', 60_000);
   if (res.notFound) return { ok: false, error: 'gh is not installed' };
-  if (res.ok) return { ok: true };
+  if (res.ok) {
+    const id = Number(/#issuecomment-(\d+)/.exec(res.stdout)?.[1]);
+    return Number.isSafeInteger(id) && id > 0 ? { ok: true, commentId: id } : { ok: true };
+  }
   return { ok: false, error: (res.stderr || res.stdout).trim().split('\n')[0] || 'gh issue comment failed' };
 }
 

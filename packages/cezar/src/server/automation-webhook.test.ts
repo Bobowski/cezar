@@ -237,6 +237,22 @@ describe('registration through gh api', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it('keeps the registered hook when re-registering at a new URL fails, and drops the old one only after success', async () => {
+    const previous = { version: 1 as const, ...newWebhookIdentity(), githubHookId: 7, repo: 'acme/demo', url: 'https://old.example/api/v1/hooks/github/x', registeredAt: '2026-10-01T00:00:00.000Z' };
+    writeWebhook(dataDir, previous);
+    const refusing = routes({ run: async (args) => { if (args.includes('POST')) throw new Error('HTTP 422: Validation failed'); return ''; } });
+    const failed = await refusing.app.request('/api/v1/automation-webhook', { method: 'POST', headers: host });
+    expect(failed.status).toBe(409);
+    // GitHub still has hook 7 calling the old URL, so cezar still knows it.
+    expect(readWebhook(dataDir)).toMatchObject({ hookId: previous.hookId, secret: previous.secret, githubHookId: 7 });
+
+    const calls: string[] = [];
+    const { app } = routes({ run: async (args) => { calls.push(args.join(' ')); return args.includes('POST') ? '{"id":9}' : ''; } });
+    expect((await app.request('/api/v1/automation-webhook', { method: 'POST', headers: host })).status).toBe(200);
+    expect(readWebhook(dataDir)).toMatchObject({ githubHookId: 9 });
+    expect(calls.findIndex((call) => call.includes('POST'))).toBeLessThan(calls.findIndex((call) => call.includes('DELETE') && call.includes('hooks/7')));
+  });
+
   it('leaves no half-registered hook when GitHub refuses', async () => {
     const { app } = routes({ run: async () => { throw new Error('HTTP 403: Resource not accessible'); } });
     const response = await app.request('/api/v1/automation-webhook', { method: 'POST', headers: host });

@@ -207,7 +207,8 @@ export function automationWebhookRoutes(deps: WebhookRouteDeps) {
     .get('/automation-webhook', async (c) => c.json({ webhook: await status(c.get('project'), originOf(c)) }))
 
     // Register (or re-register at a new URL): a fresh id and secret, written BEFORE GitHub is
-    // asked, because GitHub pings the hook the moment it exists.
+    // asked, because GitHub pings the hook the moment it exists. A previous file comes back if
+    // GitHub refuses, and its hook is removed only once the new one exists.
     .post('/automation-webhook', async (c) => {
       const project = c.get('project');
       const origin = originOf(c);
@@ -221,17 +222,20 @@ export function automationWebhookRoutes(deps: WebhookRouteDeps) {
       const identity = newWebhookIdentity();
       const url = `${origin}${routeOf(identity.hookId)}`;
       try {
-        if (previous?.githubHookId !== undefined && !deps.dryRun?.()) {
-          await deleteGithubHook({ ...remote, githubHookId: previous.githubHookId, run: deps.run });
-        }
         writeWebhook(project.dataDir, { version: 1, ...identity, repo: `${remote.owner}/${remote.repo}`, url });
         deps.changed();
         const githubHookId = deps.dryRun?.() ? 1 : await registerGithubHook({ ...remote, url, secret: identity.secret, run: deps.run });
         writeWebhook(project.dataDir, { ...readWebhook(project.dataDir)!, githubHookId, registeredAt: new Date().toISOString() });
       } catch (error) {
-        rmSync(webhookPath(project.dataDir), { force: true });
+        // The hook GitHub already has keeps its file: losing `githubHookId` would orphan it.
+        if (previous) writeWebhook(project.dataDir, previous);
+        else rmSync(webhookPath(project.dataDir), { force: true });
         deps.changed();
         return c.json({ error: `GitHub refused the webhook: ${failure(error)}` }, 409);
+      }
+      if (previous?.githubHookId !== undefined && !deps.dryRun?.()) {
+        // Best-effort: an old hook that survives calls a route id no file holds any more (a 404).
+        await deleteGithubHook({ ...remote, githubHookId: previous.githubHookId, run: deps.run }).catch(() => undefined);
       }
       return c.json({ webhook: await status(project, origin) });
     })

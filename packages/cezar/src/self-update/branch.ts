@@ -8,7 +8,7 @@
 
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 
@@ -37,10 +37,14 @@ export function sourceLockPath(env: NodeJS.ProcessEnv = process.env): string {
 /** A holder whose start time cannot be checked and that has held the lock this long is a pid
  *  that was reused, not a build. A holder whose start time matches is never stale. */
 const SOURCE_LOCK_STALE_MS = 2 * 60 * 60_000;
+/** A lock file that does not parse is one still being written, while it is this young. */
+const SOURCE_LOCK_UNPARSED_MS = 10_000;
+/** The holder of a lock that names no pid yet. */
+const UNKNOWN_HOLDER = 0;
 
 export class BranchBusyError extends Error {
   constructor(pid: number) {
-    super(`another cezar (pid ${pid}) is building in the updater's clone — try again once it finishes`);
+    super(`another cezar${pid > 0 ? ` (pid ${pid})` : ''} is building in the updater's clone — try again once it finishes`);
   }
 }
 
@@ -79,7 +83,11 @@ function readLock(path: string): string | null {
 function lockHolder(path: string, text: string): number | null {
   const [pidText, atText, startText, token] = text.trim().split(/\r?\n/).map((line) => line.trim());
   const pid = Number(pidText);
-  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  if (!pidText || !Number.isSafeInteger(pid) || pid <= 0) {
+    // Mid-write (an older cezar's `wx`, or a filesystem without hard links): live while young.
+    const mtime = lockMtime(path);
+    return mtime !== null && Date.now() - mtime < SOURCE_LOCK_UNPARSED_MS ? UNKNOWN_HOLDER : null;
+  }
   // Our own pid: held by this very process, or left by an earlier one the pid was recycled from.
   if (pid === process.pid) return token === LOCK_TOKEN ? pid : null;
   try {
@@ -104,18 +112,36 @@ function lockMtime(path: string): number | null {
   }
 }
 
-/** Take the source lock (the skills updater's pattern: `wx`, pid + time, stale when dead). */
+/** Create `path` holding `text` only if it does not exist, and never visible half-written: the
+ *  text goes to a temp file first and is hard-linked into place (a rename would clobber a holder).
+ *  Where the filesystem has no hard links, `wx` + write — the unparsed-lock rule covers the gap. */
+function createLockFile(path: string, text: string): void {
+  const tmp = `${path}.${process.pid}.${LOCK_TOKEN}.tmp`;
+  writeFileSync(tmp, text, { mode: 0o600 });
+  try {
+    linkSync(tmp, path);
+    return;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'EEXIST' || (code !== 'EPERM' && code !== 'ENOTSUP' && code !== 'EOPNOTSUPP' && code !== 'EXDEV' && code !== 'ENOSYS')) throw error;
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+  const fd = openSync(path, 'wx', 0o600);
+  try {
+    writeSync(fd, text);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Take the source lock (the skills updater's pattern: exclusive create, pid + time, stale when dead). */
 function acquireSourceLock(env: NodeJS.ProcessEnv): () => void {
   const path = sourceLockPath(env);
   mkdirSync(cezarHomeDir(env), { recursive: true });
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const fd = openSync(path, 'wx', 0o600);
-      try {
-        writeSync(fd, `${process.pid}\n${Date.now()}\n${processStartTicks('self') ?? ''}\n${LOCK_TOKEN}\n`);
-      } finally {
-        closeSync(fd);
-      }
+      createLockFile(path, `${process.pid}\n${Date.now()}\n${processStartTicks('self') ?? ''}\n${LOCK_TOKEN}\n`);
       const mine = readLock(path);
       // Never remove a lock someone took over after ours went stale.
       return () => {

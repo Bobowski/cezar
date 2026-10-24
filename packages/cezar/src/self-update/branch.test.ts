@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -681,6 +681,23 @@ winner
     expect(sourceLockHolder(env)).toBeNull();
     writeFileSync(join(home, 'source.lock'), `${process.ppid}\n${Date.now()}\n`);
     expect(sourceLockHolder(env)).toBe(process.ppid);
+  });
+
+  it('counts a lock that does not parse yet as held while it is young, and takes it over after', () => {
+    mkdirSync(home, { recursive: true });
+    const path = sourceLockPath(env);
+    // Another process between its exclusive create and its write.
+    writeFileSync(path, '');
+    expect(sourceLockHolder(env)).toBe(0);
+    expect(() => service().source.lock(BRANCH)).toThrow(/another cezar is building/);
+    expect(readFileSync(path, 'utf8')).toBe('');
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(path, old, old);
+    expect(sourceLockHolder(env)).toBeNull();
+    const release = service().source.lock(BRANCH);
+    expect(sourceLockHolder(env)).toBe(process.pid);
+    expect(readdirSync(home).filter((name) => name.includes('source.lock.'))).toEqual([]);
+    release();
   });
 
   it('counts its own lock as held after two hours: the token proves it', () => {

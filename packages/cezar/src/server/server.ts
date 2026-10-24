@@ -30,7 +30,7 @@ import {
 } from '../services/docker.ts';
 import {
   buildImages, buildVolumes, judgeDir, parseImageList, parseReclaimed, parseSystemDf, parseSystemDfVerbose, parseVolumeList,
-  planReclaim, readDisk, stepKey, volumesByStack, withImageIds, worktreeRunOf, type StatFs,
+  planReclaim, readDisk, removeStackByLabel, stepKey, volumesByStack, withImageIds, worktreeRunOf, type StatFs,
 } from '../services/docker-manage.ts';
 import { DockerLogFollowers, dockerSpawn, type DockerSpawn } from '../services/docker-logs.ts';
 import { MIN_SECRET_LEN } from '../core/secret-redaction.ts';
@@ -78,7 +78,7 @@ import {
 import { trackerTriggerSchema, trackerAutomationOptionsSchema, trackerAutomationOptionsQuerySchema, automationScheduleSchema, localTimeZone, nextOccurrence } from '@open-mercato/cezar-contract';
 import type { IncomingMessage } from 'node:http';
 import { access, constants as fsConstants, mkdir, readFile, realpath, rename, stat, statfs, unlink, writeFile } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Hono, type Context } from 'hono';
@@ -7544,14 +7544,14 @@ export function createApp(deps: ServerDeps) {
       if (!listed.ok) return c.json({ error: listed.reason }, 409);
       const member = listed.containers.find((entry) => entry.stack === name);
       if (!member) return c.json({ error: 'no such stack' }, 404);
-      // Run where the stack's compose file is, so compose reads it; else nowhere a stray compose.yml could be picked up.
+      const volumes = c.req.valid('json').volumes === true;
+      // A gone (or unjudged) dir: compose would search for a file wherever it ran, so the labels drive removal.
       const inDir = judgeDir(member.dir) === 'exists';
-      const cwd = inDir ? member.dir! : tmpdir();
       // The files it was started with (`-f a -f b`), when every one is still there — a missing one fails compose outright.
       const files = inDir && member.configFiles.length > 0 && member.configFiles.every((file) => judgeDir(file) === 'exists') ? member.configFiles : [];
-      const result = await docker([
-        'compose', '-p', name, ...files.flatMap((file) => ['-f', file]), 'down', ...(c.req.valid('json').volumes ? ['--volumes'] : []),
-      ], { cwd, timeoutMs: 180_000 });
+      const result = inDir
+        ? await docker(['compose', '-p', name, ...files.flatMap((file) => ['-f', file]), 'down', ...(volumes ? ['--volumes'] : [])], { cwd: member.dir!, timeoutMs: 180_000 })
+        : await removeStackByLabel(docker, name, { volumes });
       dockerChanged();
       if (!result.ok) return c.json({ error: result.reason }, 409);
       return c.json(dockerOk, 200);
@@ -7688,10 +7688,9 @@ export function createApp(deps: ServerDeps) {
           result.log.push(`skipped ${key}: no longer in the plan`);
           continue;
         }
-        const args = step.kind === 'stack' ? ['compose', '-p', step.name, 'down', '--volumes']
-          : step.kind === 'container' ? ['rm', step.id]
-            : step.kind === 'dangling-images' ? ['image', 'prune', '-f'] : ['builder', 'prune', '-f'];
-        const ran = await docker(args, { cwd: tmpdir(), timeoutMs: 300_000 });
+        // A planned stack's dir is gone by definition: removed by its labels, never by a compose that searches for a file.
+        const ran = step.kind === 'stack' ? await removeStackByLabel(docker, step.name, { volumes: true })
+          : await docker(step.kind === 'container' ? ['rm', step.id] : step.kind === 'dangling-images' ? ['image', 'prune', '-f'] : ['builder', 'prune', '-f'], { timeoutMs: 300_000 });
         if (!ran.ok) {
           result.log.push(`${item.label}: ${ran.reason}`);
           continue;

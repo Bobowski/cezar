@@ -4,7 +4,7 @@ import {
   type DockerDataRoot, type DockerDisk, type DockerDiskEntry, type DockerDiskKind, type DockerImage, type DockerReclaimItem,
   type DockerStack, type DockerUser, type DockerVolume,
 } from '@open-mercato/cezar-contract';
-import type { DockerExec, ListedContainer } from './docker.ts';
+import type { DockerExec, DockerResult, ListedContainer } from './docker.ts';
 
 /**
  * Docker management (spec `2026-10-23-docker-management`): images, volumes, disk usage and the
@@ -296,3 +296,33 @@ export async function readDisk(exec: DockerExec, statfs: StatFs): Promise<Docker
 /** The step a plan item stands for, as one comparable string. */
 export const stepKey = (step: DockerReclaimItem['step']): string =>
   step.kind === 'stack' ? `stack:${step.name}` : step.kind === 'container' ? `container:${step.id}` : step.kind;
+
+const ids = (stdout: string): string[] => stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+
+/**
+ * Tear a compose stack down by its `com.docker.compose.project` label alone — what `down` would
+ * remove, with no compose file read. For a stack whose files are gone: compose with no `-f`
+ * searches the cwd and its parents, and a file planted there could name anything.
+ */
+export async function removeStackByLabel(exec: DockerExec, name: string, options: { volumes: boolean }): Promise<DockerResult> {
+  const filter = ['--filter', `label=com.docker.compose.project=${name}`];
+  const containers = await exec(['ps', '-a', '-q', '--no-trunc', ...filter]);
+  if (!containers.ok) return containers;
+  if (ids(containers.stdout).length > 0) {
+    // `-v` takes the anonymous volumes along, as `down --volumes` does.
+    const removed = await exec(['rm', '-f', ...(options.volumes ? ['-v'] : []), ...ids(containers.stdout)], { timeoutMs: 180_000 });
+    if (!removed.ok) return removed;
+  }
+  const networks = await exec(['network', 'ls', '-q', ...filter]);
+  if (!networks.ok) return networks;
+  if (ids(networks.stdout).length > 0) {
+    const removed = await exec(['network', 'rm', ...ids(networks.stdout)], { timeoutMs: 60_000 });
+    if (!removed.ok) return removed;
+  }
+  if (!options.volumes) return { ok: true, stdout: '' };
+  const volumes = await exec(['volume', 'ls', '-q', ...filter]);
+  if (!volumes.ok) return volumes;
+  if (ids(volumes.stdout).length === 0) return { ok: true, stdout: '' };
+  const removed = await exec(['volume', 'rm', ...ids(volumes.stdout)], { timeoutMs: 120_000 });
+  return removed;
+}

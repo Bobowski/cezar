@@ -59,6 +59,13 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
   const exec: DockerExec = async (args, options) => {
     calls.push({ args: args.join(' '), cwd: options?.cwd });
     const command = args.slice(0, 2).join(' ');
+    // What a stack's compose labels name, the way `--filter label=…` reads them.
+    const label = args.find((arg) => arg.startsWith('label=com.docker.compose.project='))?.split('=').pop();
+    if (label !== undefined) {
+      if (args[0] === 'ps') return { ok: true, stdout: ps().split('\n').map((line) => line.split('\t')).filter((cells) => cells[6] === label).map((cells) => `${cells[0]}\n`).join('') };
+      if (command === 'network ls') return { ok: true, stdout: `${label}_default\n` };
+      if (command === 'volume ls') return { ok: true, stdout: `${label}_pg\n` };
+    }
     if (args[0] === 'ps') return { ok: true, stdout: ps() };
     if (command === 'container inspect') return { ok: true, stdout: [C('a'), C('b'), C('c')].map((id) => `${id}\tsha256:${I('1a')}`).join('\n') };
     if (command === 'image ls') return { ok: true, stdout: fixture('image-ls.ndjson') + extraImages };
@@ -85,7 +92,7 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     return { id: project.id, instance };
   };
   const json = (method: string, body: unknown) => ({ method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  const ran = () => calls.map((call) => call.args).filter((args) => !/^(ps|volume ls|image ls|container inspect|system df|info)/.test(args));
+  const ran = () => calls.map((call) => call.args).filter((args) => !/^(ps|volume ls|network ls|image ls|container inspect|system df|info)/.test(args));
 
   it('names a stack’s task, its volumes and whether its dir is still there', async () => {
     const { instance } = await app();
@@ -115,12 +122,11 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     const down = await apiRequest(instance, '/api/v1/docker/stacks/mine/down', json('POST', { volumes: true }));
     expect(dockerOkSchema.parse(await down.json())).toEqual({ ok: true });
     expect(await (await apiRequest(instance, '/api/v1/docker/stacks/gone/down', json('POST', {}))).json()).toEqual({ ok: true });
-    const downs = calls.filter((call) => call.args.startsWith('compose -p'));
-    // `gone` named a file that no longer exists: compose would fail on it, so the labels alone drive `down`.
-    expect(downs).toEqual([
+    expect(calls.filter((call) => call.args.startsWith('compose -p'))).toEqual([
       { args: `compose -p mine -f ${join(root, 'compose.yml')} -f ${join(root, 'compose.dev.yml')} down --volumes`, cwd: root },
-      { args: 'compose -p gone down', cwd: tmpdir() },
     ]);
+    // `gone`'s dir is gone: compose is never run where it could find someone else's file, the labels drive removal.
+    expect(ran().slice(1)).toEqual([`rm -f ${C('b')}`, 'network rm gone_default']);
     expect((await apiRequest(instance, '/api/v1/docker/stacks/nope/down', json('POST', {}))).status).toBe(404);
     expect((await apiRequest(instance, '/api/v1/docker/stacks/mine/down', json('POST', { volumes: 'yes' }))).status).toBe(400);
   });
@@ -170,7 +176,9 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     const result = dockerReclaimResultSchema.parse(await (await apiRequest(instance, '/api/v1/docker/reclaim', json('POST', {
       steps: [{ kind: 'build-cache' }, { kind: 'stack', name: 'gone' }, { kind: 'stack', name: 'live' }, { kind: 'dangling-images' }],
     }))).json());
-    expect(ran()).toEqual(['compose -p gone down --volumes', 'image prune -f', 'builder prune -f']);
+    // A Reclaim stack's dir is gone by definition: removed by its labels, never by a compose that searches for a file.
+    expect(ran()).toEqual([`rm -f -v ${C('b')}`, 'network rm gone_default', 'volume rm gone_pg', 'image prune -f', 'builder prune -f']);
+    expect(calls.some((call) => call.args.startsWith('compose'))).toBe(false);
     expect(result.log).toContain('skipped stack:live: no longer in the plan');
     expect(result.freedBytes).toBe(plan.items[2]!.bytes + 120_000_000 + 1_200_000_000);
     expect((await apiRequest(instance, '/api/v1/docker/reclaim', json('POST', { steps: [{ kind: 'stack', name: '--x' }] }))).status).toBe(400);

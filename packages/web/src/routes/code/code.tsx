@@ -36,6 +36,7 @@ import { SidebarContent, SidebarHeader, useSidebar } from '@/components/ui/sideb
 import { toast } from '@/components/ui/toaster'
 import { useNavigate } from '@/lib/project-router'
 import { runTitle } from '@/lib/task-groups'
+import { clientSurface } from '@/lib/telemetry'
 import { cn } from '@/lib/utils'
 import { FILE_DRAG_TYPE } from '@/routes/repo-git/repo-files'
 import { isImagePath } from '@/routes/task-git/worktree-files'
@@ -73,6 +74,10 @@ const MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator
 const KEY_NAMES: Record<string, [mac: string, other: string]> = { Mod: ['⌘', 'Ctrl'], Shift: ['⇧', 'Shift'], Alt: ['⌥', 'Alt'], Ctrl: ['⌃', 'Ctrl'] }
 /** A shortcut as the menus print it. */
 const keys = (...parts: string[]) => parts.map((part) => KEY_NAMES[part]?.[MAC ? 0 : 1] ?? part).join(MAC ? '' : '+')
+/** New page: Ctrl/Cmd+T reaches the page only in the desktop shell; a browser keeps it, so Alt+T. */
+const newPageKeys = (beside: boolean) => keys(clientSurface() === 'desktop' ? 'Mod' : 'Alt', ...(beside ? ['Shift'] : []), 'T')
+/** The Code page's bottom panel: a terminal there owns its own Alt keys (readline's Alt+T). */
+const inPanel = (target: EventTarget | null) => target instanceof Element && target.closest('[data-slot="code-panel"]') !== null
 const encodePath = (path: string) => path.split('/').map(encodeURIComponent).join('/')
 const isMarkdown = (path: string) => /\.(md|markdown|mdx)$/i.test(path)
 const dirOf = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '')
@@ -463,8 +468,8 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
     { id: 'view.wrap', title: 'View: Toggle Word Wrap', shortcut: keys('Alt', 'Z'), run: () => setLayout((state) => ({ ...state, wrap: !state.wrap })) },
     { id: 'view.split', title: 'View: Split Editor Right', shortcut: keys('Mod', '\\'), disabled: !activeTab, run: () => { if (activeTab) setLayout((state) => openToSide(state, activeTab)) } },
     { id: 'view.markdown', title: 'Markdown: Toggle Preview', shortcut: keys('Mod', 'Shift', 'V'), disabled: !active || !isMarkdown(active), run: () => { if (active) toggleRendered(active) } },
-    { id: 'view.browser', title: 'Browser: New Page', shortcut: keys('Mod', 'T'), run: () => newPage() },
-    { id: 'view.browserSide', title: 'Browser: New Page to the Side', shortcut: keys('Mod', 'Shift', 'T'), run: () => newPage(true) },
+    { id: 'view.browser', title: 'Browser: New Page', shortcut: newPageKeys(false), run: () => newPage() },
+    { id: 'view.browserSide', title: 'Browser: New Page to the Side', shortcut: newPageKeys(true), run: () => newPage(true) },
     { id: 'view.agent', title: 'Agent: Open Agent', shortcut: keys('Mod', 'L'), run: () => openAgentTab(tree.kind === 'run' ? tree.runId : null) },
     { id: 'view.agentSide', title: 'Agent: Open Agent to the Side', run: () => openAgentTab(tree.kind === 'run' ? tree.runId : null, true) },
     { id: 'view.agentNew', title: 'Agent: New Task', run: () => openAgentTab(null) },
@@ -495,9 +500,10 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
       else if (plain && letter === 'b') hit('view.sidebar')
       else if (plain && letter === 'j') hit('view.panel')
       else if (plain && letter === 'l') hit('view.agent')
-      // A browser keeps Ctrl+T for itself (the desktop shell hands it over); Alt+T always arrives.
-      else if ((plain && letter === 't') || (event.altKey && !mod && !event.shiftKey && event.code === 'KeyT')) hit('view.browser')
-      else if ((mod && event.shiftKey && !event.altKey && letter === 't') || (event.altKey && !mod && event.shiftKey && event.code === 'KeyT')) hit('view.browserSide')
+      // A browser keeps Ctrl+T for itself (the desktop shell hands it over); Alt+T always arrives,
+      // except in the terminal panel, whose shell reads it.
+      else if ((plain && letter === 't') || (event.altKey && !mod && !event.shiftKey && event.code === 'KeyT' && !inPanel(event.target))) hit('view.browser')
+      else if ((mod && event.shiftKey && !event.altKey && letter === 't') || (event.altKey && !mod && event.shiftKey && event.code === 'KeyT' && !inPanel(event.target))) hit('view.browserSide')
       else if (event.key === 'F11' || (event.ctrlKey && event.metaKey && letter === 'f')) hit('view.fullscreen')
       else if (plain && event.key === '\\') hit('view.split')
       else if (mod && event.shiftKey && letter === 'f') hit('search.files')
@@ -791,7 +797,7 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
         ) : null}
         {layout.wrap ? <span className="shrink-0 px-1">Wrap</span> : null}
         {active ? <span data-slot="code-language" className="shrink-0 px-1">{languageOf(active)}</span> : null}
-        <IconTooltip label={`Open a page of the app (${keys('Mod', 'T')})`} side="top">
+        <IconTooltip label={`Open a page of the app (${newPageKeys(false)})`} side="top">
           <Button variant="ghost" size="icon-xs" aria-label="Open browser" onClick={() => newPage()}><GlobeIcon aria-hidden="true" /></Button>
         </IconTooltip>
         <IconTooltip label={`Toggle panel (${keys('Mod', 'J')})`} side="top">

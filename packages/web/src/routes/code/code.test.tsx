@@ -452,6 +452,38 @@ describe('Browser tabs as pages (spec 2026-10-24-code-page-browser-tabs)', () =>
     await waitFor(() => expect(document.activeElement).toBe(groups()[1]?.querySelector('input[aria-label="Address"]')))
   })
 
+  it('shows the shortcut that works where it runs: Alt+T in a browser, Ctrl+T in the desktop shell', async () => {
+    const shortcuts = async () => {
+      fireEvent.keyDown(window, { key: 'F1' })
+      await waitFor(() => expect(document.querySelector('[data-slot="code-command-palette"]')).not.toBeNull())
+      const options = [...document.querySelectorAll('[role=option]')].map((option) => option.textContent ?? '')
+      return [options.find((text) => text.startsWith('Browser: New Page to the Side')), options.find((text) => text.startsWith('Browser: New Page') && !text.includes('Side'))]
+    }
+    setup()
+    await view()
+    expect(await shortcuts()).toEqual(['Browser: New Page to the SideAlt+Shift+T', 'Browser: New PageAlt+T'])
+    cleanup()
+    vi.stubGlobal('__CEZ_DESKTOP__', true)
+    setup()
+    await view()
+    expect(await shortcuts()).toEqual(['Browser: New Page to the SideCtrl+Shift+T', 'Browser: New PageCtrl+T'])
+  })
+
+  it('leaves Alt+T to the terminal panel while it has focus', async () => {
+    setup({ terminal: true })
+    await view()
+    fireEvent.keyDown(window, { key: 'j', ctrlKey: true })
+    const panel = await waitFor(() => { const found = document.querySelector('[data-slot="code-panel"]'); expect(found).not.toBeNull(); return found as HTMLElement })
+    const inside = panel.querySelector('button') as HTMLElement
+    fireEvent.keyDown(inside, { key: '†', code: 'KeyT', altKey: true })
+    fireEvent.keyDown(inside, { key: 'T', code: 'KeyT', altKey: true, shiftKey: true })
+    expect(tabsOf(0)).toEqual(['app.ts'])
+    expect(groups()).toHaveLength(1)
+    // Anywhere else on the page it opens one.
+    fireEvent.keyDown(window, { key: '†', code: 'KeyT', altKey: true })
+    await waitFor(() => expect(tabsOf(0)).toEqual(['app.ts', 'Browser']))
+  })
+
   it('refuses an address that is not the project\'s app, inline, with a way to open it in the browser', async () => {
     setup()
     await view()

@@ -26,7 +26,9 @@
 >   so history, Design Mode and unsent notes survive. A task's tree offers that task's Run app;
 >   the main checkout offers the terminal. On a hosted cockpit the gateway's own 502 page says it.
 > - **Ctrl/Cmd+T** is the browser's own outside the desktop shell, so `Alt+T` / `Alt+Shift+T`
->   (the page's Alt forms, as `Alt+W`) do the same, and the palette has both commands.
+>   (the page's Alt forms, as `Alt+W`) do the same, and the palette has both commands. Menus
+>   print the form that works there (`Ctrl+T` only in the desktop shell), and `Alt+T` inside the
+>   terminal panel is the shell's.
 > - **Suggestions**: a task tree's terminal-detected addresses, the main checkout's services'
 >   addresses; the project terminal's `GET /repo/terminal/urls` joins `useDetectedAddresses`.
 > - **For the terminal spec**: `openBrowserTab(layout, url, { beside })` in `code-state.ts`, and

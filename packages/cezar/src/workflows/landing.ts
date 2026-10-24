@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { CEZAR_DATA_EXCLUDE } from '../data-gitignore.ts';
 import { gitHasIdentity, unresolvedConflicts } from '../git-worktree.ts';
+import { serializeLanding } from '../server/repo-sync.ts';
 
 /**
  * Auto-land for in-place tasks (spec 2026-10-20-trunk-based-projects): commit what the task
@@ -102,7 +103,13 @@ async function changedFiles(root: string, range: string): Promise<string[]> {
   return res.ok ? res.stdout.split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 200) : [];
 }
 
-export async function landInPlace(root: string, options: LandOptions): Promise<LandResult> {
+/** Every landing holds the checkout's one queue, so no Git-page action moves HEAD between its
+ *  commit, checks and push (spec 2026-10-24-git-view §4). */
+export function landInPlace(root: string, options: LandOptions): Promise<LandResult> {
+  return serializeLanding(root, () => landUnlocked(root, options));
+}
+
+async function landUnlocked(root: string, options: LandOptions): Promise<LandResult> {
   const head = await git(root, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const branch = head.stdout.trim();
   if (!head.ok || !branch || branch === 'HEAD') {

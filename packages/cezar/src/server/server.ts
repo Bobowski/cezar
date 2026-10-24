@@ -327,7 +327,7 @@ import { checkoutRepo, type CloneRunner } from './checkout.ts';
 import { createProjectInputSchema } from '@open-mercato/cezar-contract';
 import { createProject, listGithubOwners, type CommandRunner } from './create-project.ts';
 import { ProjectContextError, ProjectContexts, type ProjectContext } from './project-context.ts';
-import { fetchRepo, pullRepo, pushRepo, repoSyncStatus, syncRepo, type SyncActionResult } from './repo-sync.ts';
+import { fetchRepo, landingInProgress, pullRepo, pushRepo, repoSyncStatus, syncRepo, type SyncActionResult } from './repo-sync.ts';
 import {
   abortOperation, checkoutBranch, cherryPick, commitIndex, compareWithCurrent, continueOperation, deleteBranch,
   discardPaths, fetchRemote, listRemotes, listStashes, mergeBranch, pushBranch, rebaseOnto, renameBranch, repoGraph,
@@ -8474,6 +8474,8 @@ export function createApp(deps: ServerDeps) {
     if (options.movesTree && inPlaceTaskBusy(project)) {
       return { error: 'an in-place task is running in this checkout — wait for it to finish' };
     }
+    // Nothing awaits between this and `work` joining the checkout's queue (`serializeLanding`).
+    if (landingInProgress(root)) return { error: 'a landing is in progress in this checkout — try again once it is done' };
     const result = await work(root);
     if (result.ok !== true) return { error: (result as { error: string }).error };
     ringRepoViews(project.id);

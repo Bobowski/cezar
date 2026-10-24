@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { RepoGitActionResponse, RepoGraph, RepoIndex, RepoRemotes } from '@open-mercato/cezar-contract';
 import { RunStore } from '../runs/store.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
+import { landInPlace } from '../workflows/landing.ts';
 import type { RunManager } from '../workflows/run.ts';
 import { apiRequest } from './loopback-request.testkit.ts';
 import { createApp } from './server.ts';
@@ -91,6 +92,44 @@ describe('the Git page routes', () => {
     const res = await apiRequest(app, '/api/v1/repo/branch/other/checkout', { method: 'POST' });
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error: string }).error).toMatch(/in-place task/);
+  });
+
+  it('a Git-page action refuses while a landing holds the checkout, so the push lands main’s own commit', async () => {
+    // The landing's pathspec names .ai/cezar, which `git add` refuses when .gitignore ignores .ai/.
+    writeFileSync(join(repo, '.gitignore'), 'node_modules/\n');
+    g(repo, 'commit', '-q', '-am', 'stop ignoring .ai');
+    g(repo, 'push', '-q');
+    g(repo, 'branch', 'other');
+    writeFileSync(join(repo, 'a.txt'), 'landed\n');
+    let checking!: () => void;
+    const inChecks = new Promise<void>((resolve) => (checking = resolve));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const landing = landInPlace(repo, {
+      describe: async () => 'the landing',
+      checks: ['slow check'],
+      runCheck: async () => {
+        checking();
+        await gate;
+        return { ok: true, output: '' };
+      },
+    });
+    await inChecks;
+    const checkout = await apiRequest(app, '/api/v1/repo/branch/other/checkout', { method: 'POST' });
+    expect(checkout.status).toBe(409);
+    expect(((await checkout.json()) as { error: string }).error).toMatch(/landing is in progress/);
+    const stage = await apiRequest(app, '/api/v1/repo/stage', {
+      method: 'POST',
+      body: JSON.stringify({ paths: ['a.txt'] }),
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(stage.status).toBe(409);
+    release();
+    expect(await landing).toMatchObject({ result: 'landed', branch: 'main', pushed: true });
+    expect(g(repo, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('main');
+    expect(g(repo, 'log', '-1', '--format=%s', 'origin/main').trim()).toBe('the landing');
+    // Once the landing is done the same action goes through.
+    expect((await apiRequest(app, '/api/v1/repo/branch/other/checkout', { method: 'POST' })).status).toBe(200);
   });
 
   it('stage → index → commit through the API, the body validated as middleware', async () => {

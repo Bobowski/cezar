@@ -118,7 +118,7 @@ gateway that `CEZ_PREVIEW_PORTS` already configures for the VPS image.
   chunk can carry a whole line, and the shell forks it while `ps` starts). That is what keeps a
   password a running `sudo`/`ssh` reads out of the file; a host with no readable process table
   (Windows) therefore keeps no history. The check never holds a keystroke: it runs beside the
-  write, and an answer later than 300 ms keeps nothing. A bare Enter, a Ctrl+C or a space-led
+  write, and keeps nothing when its own `ps` takes over 300 ms from its start, or the answer (a wait behind a running `ps` included) over 600 ms from the line's first word. A bare Enter, a Ctrl+C or a space-led
   line asks nothing; one `ps` runs at a time per host, a burst shares the one read queued behind
   it (never a read begun before it asked), and a `ps` past 300 ms is killed. Each line of a chunk is judged alone, and
   only a chunk's first line can have met a prompt: a pasted `ssh host⏎passw0rd⏎` keeps

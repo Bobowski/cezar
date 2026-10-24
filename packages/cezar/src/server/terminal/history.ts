@@ -6,6 +6,7 @@ import { z } from 'zod';
 
 import { SECRET_NAME_RE, redactSecrets } from '../../core/secret-redaction.ts';
 import { atomicWriteJson } from '../../workspace/config.ts';
+import { FRESH_SNAPSHOT_TIMEOUT_MS } from './foreground.ts';
 
 /**
  * The Code terminal's per-project history (spec `.ai/specs/2026-10-24-code-page-terminal.md`
@@ -20,7 +21,7 @@ import { atomicWriteJson } from '../../workspace/config.ts';
  * "At its prompt" is a process-table read started on the line's first word and never awaited
  * by any keystroke (one shared `ps` per host, `freshSnapshotReader`): the shell has no child
  * then, or only the line's own command (one chunk can carry a whole line, and the shell forks it
- * while `ps` starts). An answer later than `PROMPT_CHECK_TIMEOUT_MS` keeps nothing.
+ * while `ps` starts). An answer later than `PROMPT_CHECK_CAP_MS` keeps nothing.
  *
  * A secret-named assignment (`export GITHUB_TOKEN=…`) is stored with its value as `***`. What the
  * shell itself reads is kept as bash's own history keeps it: a heredoc body, and the answer to a
@@ -206,9 +207,9 @@ export async function readTerminalHistory(dataDir: string, secrets: readonly str
   return foldHistory([], [...new Set(lines)].reverse());
 }
 
-/** A prompt check slower than this keeps nothing: the keystroke never waited for it, and a late
- *  answer may describe a shell that has moved on. */
-export const PROMPT_CHECK_TIMEOUT_MS = 300;
+/** A prompt check slower than this keeps nothing. Each `ps` is cut at 300 ms from its own start
+ *  (`FRESH_SNAPSHOT_TIMEOUT_MS`); this caps the wait behind a running one as well (spec §9). */
+export const PROMPT_CHECK_CAP_MS = 2 * FRESH_SNAPSHOT_TIMEOUT_MS;
 
 /** The secret values a stored line is scrubbed of, read when the line is decided. */
 export type HistorySecrets = () => Promise<readonly string[]>;
@@ -328,7 +329,7 @@ export class TerminalHistory {
     let promptPassed = false;
     for (const event of state.line.events(data)) {
       if (event.kind === 'begin') {
-        state.check = promptPassed || state.replaced ? null : { found: withTimeout(children(), PROMPT_CHECK_TIMEOUT_MS), at: this.now() };
+        state.check = promptPassed || state.replaced ? null : { found: withTimeout(children(), PROMPT_CHECK_CAP_MS), at: this.now() };
         promptPassed = true;
         continue;
       }

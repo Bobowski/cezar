@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { HISTORY_CAP, PROMPT_CHECK_TIMEOUT_MS, TerminalHistory, TypedLine, foldHistory, historyLine, readTerminalHistory } from './history.ts';
+import { freshSnapshotReader } from './foreground.ts';
+import { HISTORY_CAP, PROMPT_CHECK_CAP_MS, TerminalHistory, TypedLine, foldHistory, historyLine, readTerminalHistory } from './history.ts';
 
 describe('TypedLine (spec 2026-10-24-code-page-terminal §3.3)', () => {
   it('submits plain typing, with backspace applied, one keystroke at a time', () => {
@@ -203,7 +204,7 @@ describe('TerminalHistory', () => {
     history.typed(dataDir, 's1', 'pwd\r', async () => null);
     const started = Date.now();
     await history.flushed();
-    expect(Date.now() - started).toBeLessThan(PROMPT_CHECK_TIMEOUT_MS + 500);
+    expect(Date.now() - started).toBeLessThan(PROMPT_CHECK_CAP_MS + 500);
     expect(await readTerminalHistory(dataDir)).toEqual([]);
   });
 
@@ -229,6 +230,21 @@ describe('TerminalHistory', () => {
     history.typed(dataDir, 's1', 'ls\r', async () => [], async () => ['old-env-secret-value']);
     await history.flushed();
     expect(readFileSync(join(dataDir, 'terminal-history.json'), 'utf8')).not.toMatch(/ghp_d|hunter2|old-env-secret-value/);
+  });
+
+  it('times a queued check from when its read starts, not from the ask, within an overall cap', async () => {
+    // Each `ps` takes 250 ms; the second session's read waits behind the first one's.
+    const reader = freshSnapshotReader(() => new Promise((resolve) => setTimeout(() => resolve([]), 250)));
+    const history = new TerminalHistory();
+    const children = async () => ((await reader()) === null ? null : []);
+    history.typed(dataDir, 's1', 'ls\r', children);
+    history.typed(dataDir, 's2', 'pwd\r', children);
+    // A check that never answers still lets go by the cap.
+    history.typed(dataDir, 's3', 'make\r', () => new Promise(() => {}));
+    const started = Date.now();
+    await history.flushed();
+    expect(Date.now() - started).toBeLessThan(PROMPT_CHECK_CAP_MS + 300);
+    expect(await readTerminalHistory(dataDir)).toEqual(['pwd', 'ls']);
   });
 
   it('reads a damaged file as what it can salvage, and a missing one as empty', async () => {

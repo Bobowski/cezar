@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest'
 
 import {
   agentTab, browserTab, bufferFrom, closeOthers, closeTab, DEFAULT_LAYOUT, diffTab, EMPTY_TABS, focusedGroup, isDiffTab, isDirty, isFileTab, keepTab,
-  languageOf, lineMarksFromPatch, loadDraft, loadLayout, MAX_GROUPS, openAgent, openBrowser, openPaths, openTab, openToSide,
-  pruneTools, reconcile, resolveConflict, retargetTab, saveDraft, saveLayout, stepTab, tabFile, tabLabel, updateGroup,
-  updateGroups, type Buffer, type CodeLayout, type Storage,
+  languageOf, lineMarksFromPatch, loadDraft, loadLayout, MAX_GROUPS, openAgent, openBrowserTab, openPaths, openTab, openToSide,
+  browserTabs, focusBrowserTab, pagesOf, pruneTools, reconcile, resolveConflict, restorePages, retargetTab, saveDraft, saveLayout,
+  savedPagesFor, stepTab, tabFile, tabLabel, updateGroup, updateGroups, withPages, type Buffer, type CodeLayout, type Storage,
 } from './code-state'
 
 const memory = (): Storage & { map: Map<string, string> } => {
@@ -71,7 +71,7 @@ describe('what survives a reload', () => {
     const layout: CodeLayout = {
       groups: [{ tabs: [{ path: 'a.ts', preview: false }], active: 'a.ts' }, { tabs: [{ path: 'browser:b1', preview: false }], active: 'browser:b1' }],
       sizes: [70, 30], focused: 1, sidebar: 'scm', panel: 'terminal', panelSize: 40,
-      browsers: { b1: { tabs: ['http://localhost:3000/'], active: 0 } }, agents: {}, wrap: true,
+      browsers: { b1: { url: 'http://localhost:3000/' } }, agents: {}, wrap: true,
     }
     saveLayout(storage, 'p', 'main', layout)
     expect(loadLayout(storage, 'p', 'main')).toEqual(layout)
@@ -160,15 +160,15 @@ describe('editor groups', () => {
     expect(tabLabel('src/app.ts')).toBe('app.ts')
     expect(isFileTab('src/app.ts')).toBe(true)
     expect(isFileTab(diffTab('src/app.ts')) || isFileTab(browserTab('b1'))).toBe(false)
-    expect(tabLabel(browserTab('b1'), { b1: { tabs: ['http://localhost:3000/eu'], active: 0 } })).toBe('localhost:3000')
-    expect(tabLabel(browserTab('b1'), { b1: { tabs: [''], active: 0 } })).toBe('Browser')
+    expect(tabLabel(browserTab('b1'), { b1: { url: 'http://localhost:3000/eu' } })).toBe('localhost:3000/eu')
+    expect(tabLabel(browserTab('b1'), { b1: { url: '' } })).toBe('Browser')
   })
 
   it('opens a browser as a tab of the focused group and forgets its state when it closes', () => {
-    const opened = openBrowser(one('a.ts'), 'b1', 'http://localhost:3000/')
+    const opened = openBrowserTab(one('a.ts'), 'http://localhost:3000/', { id: 'b1' })
     expect(shape(opened)).toEqual([['a.ts', 'browser:b1']])
     expect(opened.groups[0]?.active).toBe('browser:b1')
-    expect(opened.browsers).toEqual({ b1: { tabs: ['http://localhost:3000/'], active: 0 } })
+    expect(opened.browsers).toEqual({ b1: { url: 'http://localhost:3000/' } })
     expect(pruneTools(opened)).toBe(opened)
     expect(pruneTools(updateGroup(opened, 0, (group) => closeTab(group, 'browser:b1'))).browsers).toEqual({})
   })
@@ -214,5 +214,68 @@ describe('what a diff says about lines', () => {
     expect(languageOf('Dockerfile')).toBe('Dockerfile')
     expect(languageOf('apps/api/.env.local')).toBe('Environment')
     expect(languageOf('LICENSE')).toBe('Plain Text')
+  })
+})
+
+describe('Browser tabs as pages (spec 2026-10-24-code-page-browser-tabs)', () => {
+  const one = (...paths: string[]): CodeLayout => ({ ...DEFAULT_LAYOUT, groups: [{ tabs: paths.map((path) => ({ path, preview: false })), active: paths[0] ?? null }] })
+  const shape = (layout: CodeLayout) => layout.groups.map((group) => group.tabs.map((tab) => tab.path))
+  const A = 'http://localhost:3000/'
+  const B = 'http://localhost:3000/admin'
+
+  it('opens, opens beside and closes pages keeping their order', () => {
+    let layout = openBrowserTab(one('a.ts'), A, { id: 'b1' })
+    layout = openBrowserTab(layout, B, { id: 'b2' })
+    expect(shape(layout)).toEqual([['a.ts', 'browser:b1', 'browser:b2']])
+    layout = openBrowserTab(layout, '', { id: 'b3', beside: true })
+    expect(shape(layout)).toEqual([['a.ts', 'browser:b1', 'browser:b2'], ['browser:b3']])
+    expect(layout.focused).toBe(1)
+    expect(layout.sizes).toEqual([50, 50])
+    layout = pruneTools(updateGroup(layout, 0, (group) => closeTab(group, 'browser:b1')))
+    expect(browserTabs(layout)).toEqual([{ id: 'b2', url: B, group: 0 }, { id: 'b3', url: '', group: 1 }])
+    expect(focusBrowserTab(layout, 'b2')).toMatchObject({ focused: 0, groups: [{ active: 'browser:b2' }, {}] })
+  })
+
+  it('serializes each page\'s url, reads the old { tabs, active } shape, and drops a non-loopback address', () => {
+    const storage = memory()
+    const layout = openBrowserTab(openBrowserTab(one('a.ts'), B, { id: 'b1' }), 'https://cez.example.com:8502/', { id: 'b2', beside: true })
+    saveLayout(storage, 'p', 'main', layout)
+    expect(loadLayout(storage, 'p', 'main').browsers).toEqual({ b1: { url: B }, b2: { url: '' } })
+    storage.setItem('cez:code:layout:p:main', JSON.stringify({
+      groups: [{ tabs: [{ path: 'browser:b1' }, { path: 'browser:b2' }, { path: 'browser:b3' }], active: 'browser:b1' }],
+      browsers: { b1: { tabs: ['x', B], active: 1 }, b2: { tabs: ['https://example.com/'], active: 0 }, b3: { url: 'javascript:alert(1)' } },
+    }))
+    expect(loadLayout(storage, 'p', 'main').browsers).toEqual({ b1: { url: B }, b2: { url: '' }, b3: { url: '' } })
+  })
+
+  it('names a page by host:port and path, with the gateway port it is shown through', () => {
+    expect(tabLabel(browserTab('b1'), { b1: { url: B } }, {}, { b1: 'https://cez.example.com:8502' })).toBe('localhost:3000/admin → :8502')
+  })
+
+  it('sends the server only pages with a loopback address, with their group', () => {
+    const layout = openBrowserTab(openBrowserTab(openBrowserTab(one('a.ts'), A, { id: 'b1' }), '', { id: 'b2' }), B, { id: 'b3', beside: true })
+    expect(pagesOf(layout)).toEqual([{ id: 'b1', url: A, group: 0 }, { id: 'b3', url: B, group: 1 }])
+  })
+
+  it('restores the server\'s pages: its addresses win, a page closed elsewhere closes, a new one opens in its group', () => {
+    const local = openBrowserTab(openBrowserTab(openBrowserTab(one('a.ts'), A, { id: 'b1' }), B, { id: 'b2' }), '', { id: 'b3' })
+    expect(restorePages(local, undefined)).toBe(local)
+    const restored = restorePages(local, [{ id: 'b1', url: B, group: 0 }, { id: 'b9', url: A, group: 1 }])
+    expect(shape(restored)).toEqual([['a.ts', 'browser:b1', 'browser:b3'], ['browser:b9']])
+    expect(restored.browsers).toEqual({ b1: { url: B }, b3: { url: '' }, b9: { url: A } })
+    // A fresh device: nothing local, two pages side by side.
+    const fresh = restorePages(DEFAULT_LAYOUT, [{ id: 'b1', url: A, group: 0 }, { id: 'b2', url: B, group: 1 }])
+    expect(shape(fresh)).toEqual([['browser:b1'], ['browser:b2']])
+    expect(fresh.focused).toBe(0)
+  })
+
+  it('keeps the server\'s list per checkout, this one first, salvaging bad entries', () => {
+    const raw = [{ tree: 'run-1', pages: [{ id: 'b1', url: A, group: 0 }] }, { tree: 'main', pages: [{ id: 'b1', url: 'https://example.com/', group: 0 }, { id: 'b2', url: B, group: 0 }] }, 'junk']
+    expect(savedPagesFor(raw, 'main')).toEqual([{ id: 'b2', url: B, group: 0 }])
+    expect(savedPagesFor(raw, 'run-2')).toBeUndefined()
+    expect(savedPagesFor(undefined, 'main')).toBeUndefined()
+    expect(withPages(raw, 'main', [])).toEqual([{ tree: 'main', pages: [] }, { tree: 'run-1', pages: [{ id: 'b1', url: A, group: 0 }] }])
+    const many = Array.from({ length: 12 }, (_, at) => ({ tree: `run-${at}`, pages: [] }))
+    expect(withPages(many, 'main', [])).toHaveLength(8)
   })
 })

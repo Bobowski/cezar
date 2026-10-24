@@ -3,6 +3,11 @@
  * open, what each buffer holds against what is on disk, and what survives a reload. Kept apart
  * from the component so every transition is a unit test.
  */
+import {
+  codePageSchema, codePagesTreeSchema, MAX_CODE_PAGE_TREES, MAX_CODE_PAGES, type CodePage, type CodePagesTree,
+} from '@open-mercato/cezar-api-client'
+
+import { keepableAddress, pageTitle } from './code-pages'
 
 /** One open file. `preview` is the italic tab a single click reuses until it is kept. */
 export interface CodeTab {
@@ -108,10 +113,10 @@ const draftKey = (projectId: string, tree: string, path: string) => `cez:code:dr
 export type CodePanel = 'terminal' | 'services'
 export type CodeSidebar = 'explorer' | 'search' | 'scm'
 
-/** A browser tab's own tabs and which is showing — the task workspace's `BrowserState`. */
+/** A Browser tab: ONE page (spec 2026-10-24-code-page-browser-tabs §2). `url` is the address it
+ *  last loaded; `''` is a blank tab. */
 export interface CodeBrowser {
-  tabs: string[]
-  active: number
+  url: string
 }
 
 /** As many groups as fit a screen; past this a split opens in the neighbour instead. */
@@ -214,27 +219,107 @@ export const isToolTab = (path: string): boolean => isBrowserTab(path) || isAgen
 /** A tab that IS a file in the editor — the only kind with a buffer, a path and a draft. */
 export const isFileTab = (path: string): boolean => !isDiffTab(path) && !isToolTab(path)
 export const tabFile = (path: string): string => (isDiffTab(path) ? path.slice(DIFF_PREFIX.length) : path)
-/** `agentTitles` names the task each agent tab shows, by tab id; absent is the new-task form. */
-export const tabLabel = (path: string, browsers: Record<string, CodeBrowser> = {}, agentTitles: Record<string, string> = {}): string => {
+/**
+ * `agentTitles` names the task each agent tab shows, by tab id; absent is the new-task form.
+ * `gateways` is the preview-gateway origin each Browser tab is framed through on a hosted cockpit.
+ */
+export const tabLabel = (
+  path: string, browsers: Record<string, CodeBrowser> = {}, agentTitles: Record<string, string> = {}, gateways: Record<string, string> = {},
+): string => {
   if (isAgentTab(path)) return agentTitles[agentId(path)] ?? 'New task'
-  if (isBrowserTab(path)) {
-    const browser = browsers[browserId(path)]
-    const url = browser?.tabs[browser.active] ?? ''
-    try {
-      return url ? new URL(url).host : 'Browser'
-    } catch {
-      return 'Browser'
-    }
-  }
+  if (isBrowserTab(path)) return pageTitle(browsers[browserId(path)]?.url ?? '', gateways[browserId(path)])
   const file = tabFile(path)
   const name = file.slice(file.lastIndexOf('/') + 1)
   return isDiffTab(path) ? `${name} (Working Tree)` : name
 }
 
-/** A new browser tab in the focused group, optionally already at `url`. */
-export function openBrowser(layout: CodeLayout, id: string, url?: string): CodeLayout {
-  const browsers = { ...layout.browsers, [id]: { tabs: [url ?? ''], active: 0 } }
-  return updateGroup({ ...layout, browsers }, layout.focused, (group) => openTab(group, browserTab(id), true))
+/** A fresh id for a tool tab (`browser:<id>`, `agent:<id>`). */
+export const newTabId = (): string => Math.random().toString(36).slice(2, 10) || 'tab'
+
+/**
+ * Open a Browser tab at `url` (`''`: blank) — the ONE way the Code page opens a page: Ctrl/Cmd+T,
+ * the palette, and the terminal's links and strips (spec 2026-10-24-code-page-terminal §3.1–3.2).
+ * `beside` puts it in a new group to the right of the focused one, as `openToSide` does a file.
+ * The address is NOT checked here: callers pass what `appAddress` (code-pages.ts) accepted.
+ */
+export function openBrowserTab(layout: CodeLayout, url: string, options: { beside?: boolean; id?: string } = {}): CodeLayout {
+  const id = options.id ?? newTabId()
+  const next = { ...layout, browsers: { ...layout.browsers, [id]: { url } } }
+  return options.beside ? openToSide(next, browserTab(id)) : updateGroup(next, next.focused, (group) => openTab(group, browserTab(id), true))
+}
+
+/** Every Browser tab, left to right and in tab order, with the group it sits in. */
+export function browserTabs(layout: CodeLayout): Array<{ id: string; url: string; group: number }> {
+  return layout.groups.flatMap((group, at) => group.tabs.filter((tab) => isBrowserTab(tab.path)).map((tab) => {
+    const id = browserId(tab.path)
+    return { id, url: layout.browsers[id]?.url ?? '', group: at }
+  }))
+}
+
+/** Show the Browser tab `id` (its group gains focus). */
+export function focusBrowserTab(layout: CodeLayout, id: string): CodeLayout {
+  const at = layout.groups.findIndex((group) => group.tabs.some((tab) => tab.path === browserTab(id)))
+  return at === -1 ? layout : updateGroup({ ...layout, focused: at }, at, (group) => ({ ...group, active: browserTab(id) }))
+}
+
+// ---- the server's copy of the pages (spec 2026-10-24-code-page-browser-tabs §3 Persistence) -----
+
+/** What the server keeps for this layout: each page with an address worth keeping, in order. */
+export function pagesOf(layout: CodeLayout): CodePage[] {
+  const pages: CodePage[] = []
+  for (const tab of browserTabs(layout)) {
+    if (pages.length >= MAX_CODE_PAGES || !keepableAddress(tab.url) || !/^[a-z0-9]{1,16}$/.test(tab.id)) continue
+    pages.push({ id: tab.id, url: tab.url, group: Math.min(tab.group, MAX_GROUPS - 1) })
+  }
+  return pages
+}
+
+/** This checkout's saved pages, salvaged entry by entry (a hand-edited file must not cost the rest);
+ *  `undefined` when this checkout was never saved. */
+export function savedPagesFor(raw: unknown, tree: string): CodePage[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const entry = (raw as unknown[]).find((each): each is { tree: string; pages: unknown } => (each as { tree?: unknown } | null)?.tree === tree)
+  if (!entry || !Array.isArray(entry.pages)) return undefined
+  return entry.pages.flatMap((page: unknown) => {
+    const parsed = codePageSchema.safeParse(page)
+    return parsed.success ? [parsed.data] : []
+  })
+}
+
+/** The whole `codePages` value with this checkout's pages first — the PUT is a shallow merge. */
+export function withPages(raw: unknown, tree: string, pages: CodePage[]): CodePagesTree[] {
+  const others = (Array.isArray(raw) ? raw as unknown[] : []).flatMap((each) => {
+    const parsed = codePagesTreeSchema.safeParse(each)
+    return parsed.success && parsed.data.tree !== tree ? [parsed.data] : []
+  })
+  return [{ tree, pages: pages.slice(0, MAX_CODE_PAGES) }, ...others].slice(0, MAX_CODE_PAGE_TREES)
+}
+
+/**
+ * Fold the server's pages into the layout this browser remembered. The server is the newer word
+ * (another device may have opened, moved or closed pages): a tab it knows takes its address, a
+ * tab with an address it does not know was closed elsewhere and closes, and a page only it knows
+ * opens in its group — a new group to the right when this layout has fewer. A blank tab is never
+ * on the server and stays. `saved === undefined` (never saved) leaves the layout alone.
+ */
+export function restorePages(layout: CodeLayout, saved: readonly CodePage[] | undefined): CodeLayout {
+  if (saved === undefined) return layout
+  const byId = new Map(saved.map((page) => [page.id, page]))
+  let next: CodeLayout = { ...layout, browsers: { ...layout.browsers } }
+  for (const tab of browserTabs(layout)) {
+    const page = byId.get(tab.id)
+    if (page) next.browsers[tab.id] = { url: page.url }
+    else if (tab.url !== '') next = updateGroups(next, (group) => closeTab(group, browserTab(tab.id)))
+  }
+  const open = new Set(browserTabs(next).map((tab) => tab.id))
+  for (const page of saved) {
+    if (open.has(page.id)) continue
+    const browsers = { ...next.browsers, [page.id]: { url: page.url } }
+    next = page.group < next.groups.length
+      ? updateGroup({ ...next, browsers }, page.group, (group) => openTab(group, browserTab(page.id), true))
+      : openToSide({ ...next, browsers, focused: next.groups.length - 1 }, browserTab(page.id))
+  }
+  return pruneTools({ ...next, focused: Math.min(layout.focused, next.groups.length - 1) })
 }
 
 /**
@@ -273,14 +358,16 @@ function reviveGroup(raw: unknown): TabsState | null {
   return { tabs, active }
 }
 
+/** `{ url }`, or the first shape (`{ tabs, active }`, a browser with tabs of its own). Only a
+ *  loopback address comes back (§5): anything else returns as a blank tab. */
 function reviveBrowsers(raw: unknown, open: ReadonlySet<string>): Record<string, CodeBrowser> {
   const out: Record<string, CodeBrowser> = {}
   if (!raw || typeof raw !== 'object') return out
-  for (const [id, value] of Object.entries(raw as Record<string, Partial<CodeBrowser> | null>)) {
-    if (!open.has(id) || !value || !Array.isArray(value.tabs)) continue
-    const tabs = value.tabs.filter((url): url is string => typeof url === 'string').slice(0, 12)
-    if (tabs.length === 0) continue
-    out[id] = { tabs, active: typeof value.active === 'number' && value.active >= 0 && value.active < tabs.length ? value.active : 0 }
+  for (const [id, value] of Object.entries(raw as Record<string, { url?: unknown; tabs?: unknown; active?: unknown } | null>)) {
+    if (!open.has(id) || !value) continue
+    const legacy = Array.isArray(value.tabs) ? value.tabs[typeof value.active === 'number' ? value.active : 0] ?? value.tabs[0] : undefined
+    const url = typeof value.url === 'string' ? value.url : typeof legacy === 'string' ? legacy : ''
+    out[id] = { url: keepableAddress(url) ? url : '' }
   }
   return out
 }

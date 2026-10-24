@@ -1,7 +1,12 @@
-import { XIcon } from 'lucide-react'
-import { useCallback, useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { PlugZapIcon, TerminalIcon, XIcon } from 'lucide-react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
-import type { ApiRun } from '@open-mercato/cezar-api-client'
+import { isLoopbackPageAddress, queryScope, type ApiRun } from '@open-mercato/cezar-api-client'
+import { getRunTerminalUrls, getServices } from '@/api/client'
+import type { CodeTree } from '@/api/code'
+import { queryKeys, useHealth } from '@/api/queries'
+import { CenteredState } from '@/components/centered-state'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from '@/components/ui/toaster'
@@ -9,8 +14,49 @@ import { messageWithDesignPicks, pickLabel, type NewDesignPick } from '@/routes/
 import { BrowserView, type DesignMark } from '@/routes/task-workspace/browser-view'
 import { DesignNotePopup } from '@/routes/task-workspace/design-note-popup'
 import { useDesignNotes } from '@/routes/task-workspace/design-notes'
+import type { BrowserState } from '@/routes/task-workspace/layout-state'
+import { RunAppPanel } from '@/routes/task-workspace/run-app'
 
+import { answers, appAddress, cockpitLocation, pageSuggestions } from './code-pages'
 import type { CodeBrowser } from './code-state'
+
+/**
+ * Open a page of the project's app in a Browser tab of the Code page — for anything rendered
+ * inside it (the terminal's address strip and links, spec 2026-10-24-code-page-terminal §3.1–3.2).
+ * Answers false, opening nothing, for an address a Browser tab may not show (§3 Scope): the
+ * caller opens that one in a new window instead. `beside`: in a new group to the right.
+ */
+export type OpenBrowserTab = (url: string, options?: { beside?: boolean }) => boolean
+export const OpenBrowserTabContext = createContext<OpenBrowserTab>(() => false)
+export const useOpenBrowserTab = (): OpenBrowserTab => useContext(OpenBrowserTabContext)
+
+/**
+ * The addresses to suggest for a new page: what this checkout's processes printed. A task's tree
+ * reads its terminals' detected addresses; the main checkout reads its services'. The project
+ * terminal's own list (`GET /repo/terminal/urls`, terminal spec §4) joins here once it exists.
+ */
+export function useDetectedAddresses(tree: CodeTree): string[] {
+  const terminal = useHealth().data?.capabilities?.terminal === true
+  const runId = tree.kind === 'run' ? tree.runId : null
+  const runUrls = useQuery({
+    queryKey: ['code', 'addresses', queryScope(), runId],
+    queryFn: () => getRunTerminalUrls(runId as string),
+    enabled: terminal && runId !== null,
+    staleTime: 5_000,
+  })
+  const services = useQuery({
+    queryKey: queryKeys.services.list(),
+    queryFn: ({ signal }) => getServices({ signal }),
+    enabled: terminal && runId === null,
+  })
+  return useMemo(() => {
+    const entries = runId !== null ? runUrls.data?.urls ?? [] : (services.data?.services ?? []).flatMap((service) => service.urls ?? [])
+    // Known to answer first, then not probed yet, then known to be down.
+    const rank = (running: boolean | null) => (running === true ? 0 : running === null ? 1 : 2)
+    const ordered = [...entries].sort((a, b) => rank(a.running) - rank(b.running)).map((entry) => entry.url)
+    return pageSuggestions(ordered, cockpitLocation())
+  }, [runId, runUrls.data, services.data])
+}
 
 /**
  * A browser in an editor tab (spec 2026-10-11-code-page): the app the project serves, beside its
@@ -18,7 +64,7 @@ import type { CodeBrowser } from './code-state'
  * for an agent — a message to the task the agent pane shows, or, with none chosen, a NEW task.
  */
 export function CodeBrowserTab({
-  state, onChange, run, onStartTask,
+  state, onChange, run, onStartTask, tree, focusAddress = 0, suggestions, onGateway, onShowTerminal,
 }: {
   state: CodeBrowser
   onChange: (state: CodeBrowser) => void
@@ -26,20 +72,142 @@ export function CodeBrowserTab({
   run: ApiRun | null
   /** Start a task from one note's text. Resolves once the task exists. */
   onStartTask: (message: string) => Promise<void>
+  /** The checkout the page shows — a task's tree offers that task's Run app on a dead address. */
+  tree: CodeTree
+  /** Bumped to put the cursor in the address bar (Ctrl/Cmd+T). */
+  focusAddress?: number
+  suggestions: readonly string[]
+  onGateway: (origin: string | null) => void
+  /** Open the Code page's terminal panel; absent where the terminal is not allowed. */
+  onShowTerminal?: () => void
 }) {
-  return run ? <TaskBrowser key={run.id} state={state} onChange={onChange} run={run} /> : <NewTaskBrowser state={state} onChange={onChange} onStartTask={onStartTask} />
+  const health = useHealth()
+  const local = health.data?.capabilities?.preview ?? true
+  const terminal = health.data?.capabilities?.terminal === true
+  const [shown, setShown] = useState(false)
+  const listening = useListening(state.url, local && !shown)
+  const view: ViewProps = { state, onChange, focusAddress, suggestions, onGateway }
+  // A saved address nothing answers at any more (§3 Persistence): the address is kept, and the
+  // page comes back on its own once the app is up again.
+  if (listening === 'no') {
+    return (
+      <NothingListening
+        url={state.url}
+        onEdit={() => setShown(true)}
+        runApp={tree.kind === 'run' && terminal
+          ? <RunAppPanel runId={tree.runId} projectId={queryScope()} onOpen={(url) => { onChange({ url }); setShown(true) }} {...(onShowTerminal ? { onShowTerminal } : {})} />
+          : null}
+        {...(onShowTerminal ? { onShowTerminal } : {})}
+      />
+    )
+  }
+  if (listening === 'asking') return <p className="grid flex-1 place-items-center text-xs text-soft-foreground">Loading…</p>
+  return run ? <TaskBrowser key={run.id} {...view} run={run} /> : <NewTaskBrowser {...view} onStartTask={onStartTask} />
+}
+
+interface ViewProps {
+  state: CodeBrowser
+  onChange: (state: CodeBrowser) => void
+  focusAddress: number
+  suggestions: readonly string[]
+  onGateway: (origin: string | null) => void
+}
+
+/** How often a dead saved address is asked again — one opaque request to a loopback port. */
+const RELISTEN_MS = 3_000
+/** A port that neither answers nor refuses in this long is left to the view's own load timeout. */
+const LISTEN_TIMEOUT_MS = 2_500
+
+/** Whether anything answers at `url` — asked only for a loopback address on a LOCAL cockpit. */
+function useListening(url: string, enabled: boolean): 'asking' | 'yes' | 'no' {
+  const ask = enabled && url !== '' && isLoopbackPageAddress(url)
+  const [answer, setAnswer] = useState<{ url: string; up: boolean } | null>(null)
+  useEffect(() => {
+    if (!ask) return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const probe = async () => {
+      const controller = new AbortController()
+      const giveUp = setTimeout(() => controller.abort(), LISTEN_TIMEOUT_MS)
+      const up = await answers(url, controller.signal).then((ok) => ok || controller.signal.aborted)
+      clearTimeout(giveUp)
+      if (cancelled) return
+      setAnswer({ url, up })
+      if (!up) timer = setTimeout(() => void probe(), RELISTEN_MS)
+    }
+    void probe()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [ask, url])
+  if (!ask) return 'yes'
+  return answer?.url !== url ? 'asking' : answer.up ? 'yes' : 'no'
+}
+
+function NothingListening({ url, onEdit, runApp, onShowTerminal }: { url: string; onEdit: () => void; runApp: React.ReactNode; onShowTerminal?: () => void }) {
+  return (
+    <div data-slot="code-browser-dead" className="flex min-h-0 flex-1 flex-col overflow-auto">
+      <CenteredState
+        icon={<PlugZapIcon />}
+        tone="neutral"
+        heading="h2"
+        title="Nothing is listening"
+        subtitle="This page was open here before, but nothing answers at its address now. Start the app and it comes back on its own."
+        actions={(
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <code className="rounded-md bg-muted px-2 py-1 font-mono text-xs text-foreground">{url}</code>
+            <Button type="button" variant="outline" size="sm" onClick={onEdit}>Edit the address</Button>
+            {onShowTerminal ? <Button type="button" variant="outline" size="sm" onClick={onShowTerminal}><TerminalIcon aria-hidden="true" />Open the terminal</Button> : null}
+          </div>
+        )}
+      />
+      {runApp}
+    </div>
+  )
+}
+
+const toBrowserState = (state: CodeBrowser): BrowserState => ({ tabs: [state.url], active: 0 })
+const fromBrowserState = (state: BrowserState): CodeBrowser => ({ url: state.tabs[state.active] ?? state.tabs[0] ?? '' })
+
+/** The Code page's rule for the address bar (§3 Scope), worded for the inline refusal. */
+function checkAddress(url: string): { ok: true; url: string } | { ok: false; message: string } {
+  const checked = appAddress(url, cockpitLocation())
+  if (checked.ok) return checked
+  return {
+    ok: false,
+    message: checked.reason === 'cockpit'
+      ? 'That is this cockpit. A Browser tab shows the project’s own app.'
+      : 'A Browser tab shows the project’s own app — a local address or its preview. For anything else, open it in your browser.',
+  }
+}
+
+const EMPTY_SUBTITLE = 'Enter the address of the project’s app, e.g. localhost:3000.'
+
+/** The props every Code browser hands `BrowserView`. */
+function useViewProps({ state, onChange, focusAddress, suggestions, onGateway }: ViewProps) {
+  const change = useCallback((next: BrowserState) => onChange(fromBrowserState(next)), [onChange])
+  return {
+    singleTab: true,
+    state: toBrowserState(state),
+    onChange: change,
+    checkAddress,
+    suggestions,
+    focusAddress,
+    onGateway,
+    emptySubtitle: EMPTY_SUBTITLE,
+  } as const
 }
 
 /** Notes for an existing task: the task workspace's own notes, receipts and all. */
-function TaskBrowser({ state, onChange, run }: { state: CodeBrowser; onChange: (state: CodeBrowser) => void; run: ApiRun }) {
+function TaskBrowser({ run, ...props }: ViewProps & { run: ApiRun }) {
   const notes = useDesignNotes(run)
   const { addDraft, discard, note: noteFor, marks } = notes
   const escape = useCallback((mark: string) => { if (noteFor(mark)?.phase === 'draft') discard(mark) }, [discard, noteFor])
+  const view = useViewProps(props)
   return (
     <BrowserView
-      singleTab
-      state={state}
-      onChange={onChange}
+      {...view}
       onPickElement={addDraft}
       designMarks={marks}
       onDesignEscape={escape}
@@ -66,7 +234,8 @@ const pathOf = (url: string): string | undefined => {
 }
 
 /** Notes with no task behind them yet: sending one is what creates the task. */
-function NewTaskBrowser({ state, onChange, onStartTask }: { state: CodeBrowser; onChange: (state: CodeBrowser) => void; onStartTask: (message: string) => Promise<void> }) {
+function NewTaskBrowser({ onStartTask, ...props }: ViewProps & { onStartTask: (message: string) => Promise<void> }) {
+  const view = useViewProps(props)
   const [drafts, setDrafts] = useState<Draft[]>([])
   const [busy, setBusy] = useState(false)
   const marks = useMemo<DesignMark[]>(
@@ -83,9 +252,7 @@ function NewTaskBrowser({ state, onChange, onStartTask }: { state: CodeBrowser; 
 
   return (
     <BrowserView
-      singleTab
-      state={state}
-      onChange={onChange}
+      {...view}
       onPickElement={add}
       designMarks={marks}
       onDesignEscape={discard}

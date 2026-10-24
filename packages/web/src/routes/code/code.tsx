@@ -6,13 +6,13 @@ import {
 import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router'
 
-import { queryScope, type ApiRun, type ChangedFile } from '@open-mercato/cezar-api-client'
-import { ApiError, createRun } from '@/api/client'
+import { queryScope, type ApiRun, type ChangedFile, type CodePage, type UiState } from '@open-mercato/cezar-api-client'
+import { ApiError, createRun, putUiState } from '@/api/client'
 import {
   codeFileRawUrl, getCodeChanges, getCodeFile, getCodeTree, getCodeWatch, renameCodeFile, saveCodeFile, treeKey, type CodeTree,
 } from '@/api/code'
 import { useHostTransport } from '@/api/host-usage'
-import { queryKeys, useHealth, useRepo, useRuns } from '@/api/queries'
+import { queryKeys, useHealth, useRepo, useRuns, useUiState } from '@/api/queries'
 import { subscribeTopic } from '@/api/ws'
 import type { CursorPosition, LineMark } from '@/components/code-mirror-editor'
 import { ContextSidebar } from '@/components/context-sidebar'
@@ -42,16 +42,17 @@ import { isImagePath } from '@/routes/task-git/worktree-files'
 import { Markdown } from '@/routes/task-thread/markdown'
 
 import { AgentTab, DEFAULT_AGENT_WORKFLOW } from './code-agent'
-import { CodeBrowserTab } from './code-browser'
+import { CodeBrowserTab, OpenBrowserTabContext, useDetectedAddresses, type OpenBrowserTab } from './code-browser'
 import { MenuItems, type MenuItem } from './code-menu'
 import { CommandPalette, FileDialog, QuickOpen, type CodeCommand, type FileAction } from './code-palette'
+import { appAddress, cockpitLocation, pageTitle } from './code-pages'
 import { CodePanelView } from './code-panel'
 import { ExplorerView, ScmView, SearchView, type ExplorerTarget } from './code-sidebar'
 import {
-  agentId, browserId, bufferFrom, closeOthers, closeTab, diffTab, focusedGroup, isAgentTab, isBrowserTab, isDiffTab, isDirty, isFileTab,
-  isToolTab, keepTab, languageOf, lineMarksFromPatch, loadDraft, loadLayout, MIN_GROUP_SIZE, openAgent, openBrowser, openPaths, openTab,
-  openToSide, pruneTools, reconcile,
-  resolveConflict, retargetTab, saveDraft, saveLayout, stepTab, tabFile, tabLabel, updateGroup, updateGroups, type Buffer, type CodeBrowser,
+  agentId, browserId, browserTabs, bufferFrom, closeOthers, closeTab, diffTab, focusBrowserTab, focusedGroup, isAgentTab, isBrowserTab, isDiffTab,
+  isDirty, isFileTab, isToolTab, keepTab, languageOf, lineMarksFromPatch, loadDraft, loadLayout, MIN_GROUP_SIZE, newTabId, openAgent, openBrowserTab,
+  openPaths, openTab, openToSide, pagesOf, pruneTools, reconcile, resolveConflict, restorePages, retargetTab, saveDraft, saveLayout, savedPagesFor,
+  stepTab, tabFile, tabLabel, updateGroup, updateGroups, withPages, type Buffer, type CodeBrowser,
   type CodeLayout, type CodePanel, type CodeSidebar, type TabsState,
 } from './code-state'
 
@@ -166,6 +167,30 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
   const branch = tree.kind === 'main' ? repo.data?.info?.branch : run?.branch
 
   useEffect(() => saveLayout(storage(), projectId, key, pruneTools(layout)), [layout, projectId, key])
+
+  // The pages also live on the server, per project (spec 2026-10-24-code-page-browser-tabs §3):
+  // folded in once its answer arrives, and written back only after that — never over an answer
+  // this page has not read. A failed read leaves the pages to this browser alone.
+  const uiState = useUiState()
+  const [pagesRestored, setPagesRestored] = useState(false)
+  useEffect(() => {
+    if (pagesRestored || !uiState.isSuccess) return
+    setLayout((state) => restorePages(state, savedPagesFor(uiState.data.codePages, key)))
+    setPagesRestored(true)
+  }, [key, pagesRestored, uiState.data, uiState.isSuccess])
+  const pagesJson = JSON.stringify(pagesOf(layout))
+  useEffect(() => {
+    if (!pagesRestored) return
+    const timer = setTimeout(() => {
+      const cached = queryClient.getQueryData<UiState>(queryKeys.uiState)
+      if (JSON.stringify(savedPagesFor(cached?.codePages, key) ?? null) === pagesJson) return
+      const codePages = withPages(cached?.codePages, key, JSON.parse(pagesJson) as CodePage[])
+      queryClient.setQueryData<UiState>(queryKeys.uiState, (prev) => ({ ...prev, codePages }))
+      // Layout is state: a failed write costs another device the latest pages, nothing more.
+      putUiState({ codePages }).then((merged) => queryClient.setQueryData(queryKeys.uiState, merged), () => {})
+    }, 400)
+    return () => clearTimeout(timer)
+  }, [key, pagesJson, pagesRestored, queryClient])
 
   // The focused file's path IS the page's address, replaced rather than pushed (as `/git/files`).
   useEffect(() => {
@@ -319,9 +344,29 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
     else if (!shell.open) shell.setOpen(true)
   }
   const toggleSidebar = () => (fullscreen ? setSidebarHidden((hidden) => !hidden) : shell.toggleSidebar())
-  const openBrowserTab = (url?: string) => setLayout((state) => openBrowser(state, Math.random().toString(36).slice(2, 10), url))
+  /** Where Ctrl/Cmd+T last asked for the cursor: that tab's address bar. */
+  const [addressFocus, setAddressFocus] = useState<{ id: string; nonce: number } | null>(null)
+  const [gateways, setGateways] = useState<Record<string, string>>({})
+  /** A new page — blank, with the cursor in its address bar — here or beside (spec §3). */
+  const newPage = (beside = false) => {
+    const id = newTabId()
+    setLayout((state) => openBrowserTab(state, '', { beside, id }))
+    setAddressFocus((previous) => ({ id, nonce: (previous?.nonce ?? 0) + 1 }))
+  }
+  const openPage: OpenBrowserTab = useCallback((url, options = {}) => {
+    const checked = appAddress(url, cockpitLocation())
+    if (!checked.ok) return false
+    setLayout((state) => openBrowserTab(state, checked.url, { beside: options.beside ?? false }))
+    return true
+  }, [])
   const setBrowser = (id: string, next: CodeBrowser) => setLayout((state) => ({ ...state, browsers: { ...state.browsers, [id]: next } }))
-  const newId = () => Math.random().toString(36).slice(2, 10)
+  const setGateway = useCallback((id: string, origin: string | null) => setGateways((all) => {
+    if ((all[id] ?? null) === origin) return all
+    const { [id]: _gone, ...rest } = all
+    return origin === null ? rest : { ...rest, [id]: origin }
+  }), [])
+  const detected = useDetectedAddresses(tree)
+  const newId = newTabId
   /** An agent tab for `runId` (`null`: a new task) — the one already showing it, if there is one. */
   const openAgentTab = (runId: string | null, side = false) => setLayout((state) => openAgent(state, newId(), runId, side))
 
@@ -412,7 +457,8 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
     { id: 'view.wrap', title: 'View: Toggle Word Wrap', shortcut: keys('Alt', 'Z'), run: () => setLayout((state) => ({ ...state, wrap: !state.wrap })) },
     { id: 'view.split', title: 'View: Split Editor Right', shortcut: keys('Mod', '\\'), disabled: !activeTab, run: () => { if (activeTab) setLayout((state) => openToSide(state, activeTab)) } },
     { id: 'view.markdown', title: 'Markdown: Toggle Preview', shortcut: keys('Mod', 'Shift', 'V'), disabled: !active || !isMarkdown(active), run: () => { if (active) toggleRendered(active) } },
-    { id: 'view.browser', title: 'Browser: Open in a New Tab', run: () => openBrowserTab() },
+    { id: 'view.browser', title: 'Browser: New Page', shortcut: keys('Mod', 'T'), run: () => newPage() },
+    { id: 'view.browserSide', title: 'Browser: New Page to the Side', shortcut: keys('Mod', 'Shift', 'T'), run: () => newPage(true) },
     { id: 'view.agent', title: 'Agent: Open Agent', shortcut: keys('Mod', 'L'), run: () => openAgentTab(tree.kind === 'run' ? tree.runId : null) },
     { id: 'view.agentSide', title: 'Agent: Open Agent to the Side', run: () => openAgentTab(tree.kind === 'run' ? tree.runId : null, true) },
     { id: 'view.agentNew', title: 'Agent: New Task', run: () => openAgentTab(null) },
@@ -443,6 +489,9 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
       else if (plain && letter === 'b') hit('view.sidebar')
       else if (plain && letter === 'j') hit('view.panel')
       else if (plain && letter === 'l') hit('view.agent')
+      // A browser keeps Ctrl+T for itself (the desktop shell hands it over); Alt+T always arrives.
+      else if ((plain && letter === 't') || (event.altKey && !mod && !event.shiftKey && event.code === 'KeyT')) hit('view.browser')
+      else if ((mod && event.shiftKey && !event.altKey && letter === 't') || (event.altKey && !mod && event.shiftKey && event.code === 'KeyT')) hit('view.browserSide')
       else if (event.key === 'F11' || (event.ctrlKey && event.metaKey && letter === 'f')) hit('view.fullscreen')
       else if (plain && event.key === '\\') hit('view.split')
       else if (mod && event.shiftKey && letter === 'f') hit('search.files')
@@ -535,6 +584,18 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
   const dialogPath = dialog !== null && (dialog.kind === 'rename' || dialog.kind === 'delete') ? dialog.path : null
   const dialogFile = dialogPath !== null ? files[dialogPath] : undefined
   const buffer = current?.status === 'ready' ? current.buffer : null
+  // The palette's pages (spec §3): the open ones by title, and every detected address to open.
+  const pageGroups = [
+    {
+      heading: 'Pages',
+      items: browserTabs(layout).map((page) => ({
+        id: `page:${page.id}`,
+        title: pageTitle(page.url, gateways[page.id]) + (layout.groups.length > 1 ? ` · group ${page.group + 1}` : ''),
+        run: () => setLayout((state) => focusBrowserTab(state, page.id)),
+      })),
+    },
+    { heading: 'Open page', items: detected.map((url) => ({ id: `open:${url}`, title: pageTitle(url), run: () => { openPage(url) } })) },
+  ]
   const recent = useMemo(() => [...new Set(layout.groups.flatMap((each) => each.tabs.filter((tab) => !isToolTab(tab.path)).map((tab) => tabFile(tab.path))))], [layout.groups])
 
   const VIEWS: Array<{ view: CodeSidebar; label: string; icon: typeof FilesIcon; badge?: number }> = [
@@ -601,6 +662,7 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
   )
 
   return (
+    <OpenBrowserTabContext.Provider value={openPage}>
     <div
       data-route="code"
       data-tree={key}
@@ -645,6 +707,11 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
                           changed={changedByPath}
                           lineMarks={lineMarks}
                           browsers={layout.browsers}
+                          gateways={gateways}
+                          addressFocus={addressFocus}
+                          suggestions={detected}
+                          onGateway={setGateway}
+                          onShowTerminal={terminalAllowed ? () => togglePanel('terminal') : undefined}
                           agentRun={agentRun}
                           agents={layout.agents}
                           agentTitles={agentTitles}
@@ -718,8 +785,8 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
         ) : null}
         {layout.wrap ? <span className="shrink-0 px-1">Wrap</span> : null}
         {active ? <span data-slot="code-language" className="shrink-0 px-1">{languageOf(active)}</span> : null}
-        <IconTooltip label="Open a browser tab" side="top">
-          <Button variant="ghost" size="icon-xs" aria-label="Open browser" onClick={() => openBrowserTab()}><GlobeIcon aria-hidden="true" /></Button>
+        <IconTooltip label={`Open a page of the app (${keys('Mod', 'T')})`} side="top">
+          <Button variant="ghost" size="icon-xs" aria-label="Open browser" onClick={() => newPage()}><GlobeIcon aria-hidden="true" /></Button>
         </IconTooltip>
         <IconTooltip label={`Toggle panel (${keys('Mod', 'J')})`} side="top">
           <Button variant="ghost" size="icon-xs" aria-label="Toggle panel" aria-pressed={layout.panel !== null} disabled={!terminalAllowed} onClick={() => togglePanel(layout.panel === null ? 'terminal' : null)}><PanelBottomIcon aria-hidden="true" /></Button>
@@ -763,7 +830,7 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
         </AlertDialogContent>
       </AlertDialog>
       <QuickOpen open={quickOpen} paths={paths} recent={recent} onClose={() => setQuickOpen(false)} onPick={(path) => open(path)} />
-      <CommandPalette open={palette} commands={commands} onClose={() => setPalette(false)} />
+      <CommandPalette open={palette} commands={commands} groups={pageGroups} onClose={() => setPalette(false)} />
       <FileDialog
         tree={tree}
         action={dialog}
@@ -774,12 +841,14 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
         onDone={afterFileOp}
       />
     </div>
+    </OpenBrowserTabContext.Provider>
   )
 }
 
 /** One editor group: its tab strip, the path of the active file, and whatever that file is. */
 function EditorGroup({
-  index, group, focused, split, tree, files, changed, lineMarks, browsers, agentRun, agents, agentTitles, runs, lastFile, onAgentSelect,
+  index, group, focused, split, tree, files, changed, lineMarks, browsers, gateways, addressFocus, suggestions, onGateway, onShowTerminal, agentRun,
+  agents, agentTitles, runs, lastFile, onAgentSelect,
   onAgentStart, wrap, fileEdit, rendered, reveal, gotoLine, find,
   menuFor, onDrop, onFocus, onActivate, onKeep, onClose, onEdit, onCursor, onSave, onReload, onToggleRendered, onSplit, onBrowser, onStartTask,
   loadFileText,
@@ -793,6 +862,13 @@ function EditorGroup({
   changed: ReadonlyMap<string, ChangedFile>
   lineMarks: ReadonlyMap<string, ReadonlyMap<number, LineMark>>
   browsers: Record<string, CodeBrowser>
+  /** The preview-gateway origin each Browser tab is framed through (hosted), by tab id. */
+  gateways: Record<string, string>
+  /** The Browser tab whose address bar Ctrl/Cmd+T asked for, and the ask's count. */
+  addressFocus: { id: string; nonce: number } | null
+  suggestions: readonly string[]
+  onGateway: (id: string, origin: string | null) => void
+  onShowTerminal: (() => void) | undefined
   /** The task the agent pane shows — where a browser tab's Design Mode notes go. */
   agentRun: ApiRun | null
   /** Agent tabs: the task each shows, its title, and what picking or starting one does. */
@@ -882,7 +958,7 @@ function EditorGroup({
           {group.tabs.map((each) => {
             const opened = files[each.path]
             const dirty = isFileTab(each.path) && opened?.status === 'ready' && isDirty(opened.buffer)
-            const label = tabLabel(each.path, browsers, agentTitles)
+            const label = tabLabel(each.path, browsers, agentTitles, gateways)
             return (
               <ContextMenu key={each.path}>
                 <ContextMenuTrigger asChild>
@@ -890,7 +966,7 @@ function EditorGroup({
                     data-slot="code-tab"
                     data-active={each.path === tab ? 'true' : undefined}
                     data-dirty={dirty ? 'true' : undefined}
-                    title={isBrowserTab(each.path) ? 'Browser' : isAgentTab(each.path) ? 'Agent' : tabFile(each.path)}
+                    title={isBrowserTab(each.path) ? browsers[browserId(each.path)]?.url || 'Browser' : isAgentTab(each.path) ? 'Agent' : tabFile(each.path)}
                     onAuxClick={(event) => { if (event.button === 1) onClose(each.path) }}
                     draggable
                     onDragStart={(event) => {
@@ -959,10 +1035,16 @@ function EditorGroup({
         {tab !== null && browser ? (
           <div data-slot="code-browser" className="flex min-w-0 flex-1 flex-col">
             <CodeBrowserTab
-              state={browsers[browserId(tab)] ?? { tabs: [''], active: 0 }}
+              key={tab}
+              state={browsers[browserId(tab)] ?? { url: '' }}
               onChange={(state) => onBrowser(browserId(tab), state)}
               run={agentRun}
               onStartTask={onStartTask}
+              tree={tree}
+              focusAddress={addressFocus?.id === browserId(tab) ? addressFocus.nonce : 0}
+              suggestions={suggestions}
+              onGateway={(origin) => onGateway(browserId(tab), origin)}
+              {...(onShowTerminal ? { onShowTerminal } : {})}
             />
           </div>
         ) : tab !== null && agent ? (

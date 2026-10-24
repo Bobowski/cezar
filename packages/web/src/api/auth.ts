@@ -1,7 +1,10 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import type {
+  ApiTokensResponse,
   AuthDevicesResponse,
+  CreateApiTokenBody,
+  CreateApiTokenResponse,
   AuthPasswordBody,
   AuthSessionResponse,
   AuthSetupBeginBody,
@@ -18,6 +21,7 @@ import { ApiError, cez, unwrap } from './client'
 export const authQueryKeys = {
   session: ['auth', 'session'] as const,
   devices: ['auth', 'devices'] as const,
+  tokens: ['auth', 'tokens'] as const,
 }
 
 /** What a cockpit shows when it cannot ask: an older server, or one that is not answering. The
@@ -108,6 +112,23 @@ export async function revokeOtherDevices(): Promise<number> {
 
 export async function changePassword(input: AuthPasswordBody): Promise<number> {
   return (await unwrap(await cez.api.v1.auth.password.$post({ json: input }), '/auth/password')).revoked
+}
+
+export async function fetchApiTokens(signal?: AbortSignal): Promise<ApiTokensResponse> {
+  return unwrap(await cez.api.v1.auth.tokens.$get({}, { init: { signal } }), '/auth/tokens')
+}
+
+/** The owner's API tokens (spec 2026-10-24-cezar-mcp-server §4). */
+export function useApiTokens() {
+  return useQuery({ queryKey: authQueryKeys.tokens, queryFn: ({ signal }) => fetchApiTokens(signal) })
+}
+
+export async function createApiToken(input: CreateApiTokenBody): Promise<CreateApiTokenResponse> {
+  return unwrap(await cez.api.v1.auth.tokens.$post({ json: input }), '/auth/tokens')
+}
+
+export async function revokeApiToken(id: string): Promise<void> {
+  await unwrap(await cez.api.v1.auth.tokens[':id'].$delete({ param: { id } }), '/auth/tokens/:id')
 }
 
 export async function regenerateRecoveryCodes(code: string): Promise<string[]> {

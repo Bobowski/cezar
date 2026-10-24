@@ -40,6 +40,7 @@ import {
   SettingsNote,
   SettingsPane,
 } from './settings-field'
+import { ApiTokensGroup } from './api-tokens-group'
 
 /**
  * Settings → Security (spec 2026-10-12-cockpit-authentication §8). Global: an account belongs to
@@ -69,6 +70,7 @@ export function SecuritySection() {
       <PasswordGroup />
       <RecoveryGroup />
       <DevicesGroup />
+      <ApiTokensGroup />
     </SettingsPane>
   )
 }

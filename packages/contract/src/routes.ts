@@ -21,6 +21,7 @@ import {
   automationsResponseSchema,
   automationTemplatesResponseSchema,
   dashboardAutomationsSchema,
+  trackerAutomationOptionsSchema,
 } from './automations.ts';
 import {
   dashboardFeedSchema,
@@ -364,7 +365,7 @@ export const routeContracts = {
   'GET /tracker/association': { summary: 'Which tracker project this project is linked to.', response: trackerAssociationResponseSchema },
   'PUT /tracker/association': { summary: 'Link this project to a tracker project.', response: trackerAssociationSavedResponseSchema, destructive: true },
   'DELETE /tracker/association': { summary: 'Unlink this project from its tracker project.', response: trackerClearedResponseSchema, destructive: true },
-  'GET /tracker/automation-options': { summary: 'What a tracker automation can watch and filter on.' },
+  'GET /tracker/automation-options': { summary: 'What a tracker automation can watch and filter on.', response: trackerAutomationOptionsSchema },
   'GET /tracker/candidates': { summary: 'Tracker projects this project can be linked to.', response: trackerCandidatesResponseSchema },
   'GET /tracker/connection': { summary: 'The project\'s tracker connection (no secrets).', response: trackerConnectionResponseSchema },
   'PUT /tracker/connection': { summary: 'Connect the project to an issue tracker.', response: trackerConnectionResponseSchema, destructive: true },

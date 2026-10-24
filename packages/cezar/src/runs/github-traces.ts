@@ -12,11 +12,14 @@ import { resolve } from 'node:path';
 export const PUSHED_SHAS_CAP = 50;
 export const POSTED_COMMENTS_CAP = 100;
 /** Bodies of comments cezar posted or was posting (`commentFingerprint`), kept a day: far longer
- *  than any poll or retry, short enough to never shadow a human who later writes the same words. */
+ *  than any poll or retry, short enough to never shadow a human who later writes the same words —
+ *  and scoped to the PR or issue it went to, when the call names one. */
 export const POSTED_BODIES_CAP = 100;
 export const POSTED_BODY_TTL_MS = 24 * 60 * 60_000;
 
-export type PostedCommentBody = { hash: string; at: string };
+export type PostedCommentBody = { hash: string; at: string; number?: number };
+/** A body fingerprint to add, with the PR/issue number it was posted on when that is known. */
+export type CommentBodyTrace = { hash: string; number?: number };
 
 /** The fields a run record carries for its traces. */
 export interface RunTraceFields {
@@ -31,8 +34,18 @@ export interface GithubTraces {
   shas: ReadonlySet<string>;
   comments: ReadonlySet<number>;
   /** Fingerprints of comment bodies cezar posted or is posting (`commentFingerprint`): the id is
-   *  known only once GitHub answers, and a failed call may never report it at all. */
+   *  known only once GitHub answers, and a failed call may never report it at all. Keyed
+   *  `<number>:<hash>` for the item it went to, or `<hash>` when that is unknown (`bodyKey`). */
   bodies?: ReadonlySet<string>;
+}
+
+const bodyKey = (entry: CommentBodyTrace) => entry.number === undefined ? entry.hash : `${entry.number}:${entry.hash}`;
+
+/** Whether `body`, on item `number`, is one cezar posted or is posting. */
+export function isOwnCommentBody(traces: GithubTraces, body: string, number?: number): boolean {
+  if (!traces.bodies?.size) return false;
+  const hash = commentFingerprint(body);
+  return traces.bodies.has(hash) || (number !== undefined && traces.bodies.has(bodyKey({ hash, number })));
 }
 
 /** Bidi controls (U+202A–U+202E, U+2066–U+2069) and zero-width characters (U+200B–U+200D,
@@ -49,13 +62,13 @@ export function commentFingerprint(body: string): string {
 /** Whether `candidate` came from cezar's own push or comment — asked when the poll reads it AND
  *  again when it is decided, since a trace can land while a long poll is in flight. */
 export function isOwnTrace(
-  candidate: { event: string; headSha?: string; comment?: { id: number; body?: string } },
+  candidate: { event: string; number?: number; headSha?: string; comment?: { id: number; body?: string } },
   traces: GithubTraces,
   includeOwnPushes = false,
 ): boolean {
   if (candidate.comment) {
     return traces.comments.has(candidate.comment.id)
-      || (candidate.comment.body !== undefined && !!traces.bodies?.has(commentFingerprint(candidate.comment.body)));
+      || (candidate.comment.body !== undefined && isOwnCommentBody(traces, candidate.comment.body, candidate.number));
   }
   const sha = candidate.headSha?.toLowerCase();
   if (!sha || !traces.shas.has(sha)) return false;
@@ -224,11 +237,25 @@ export function postingCommentBody(input: unknown, cwd?: string): string | undef
   return undefined;
 }
 
+/**
+ * The PR or issue number a comment-posting call targets: `gh pr|issue comment <n|url>` or a
+ * `repos/o/r/(issues|pulls)/<n>/…` endpoint. `undefined` when it names none (the current branch's PR).
+ */
+export function postingCommentTarget(input: unknown): number | undefined {
+  const command = commandOf(input);
+  if (!command || !postsComment(command)) return undefined;
+  const endpoint = /\brepos\/[^/\s]+\/[^/\s]+\/(?:issues|pulls)\/(\d{1,10})\/(?:comments|reviews)\b/.exec(command);
+  const cli = /\bgh\s+(?:pr|issue)\s+(?:comment|review)\s+(?:\S*\/(?:pull|issues)\/)?#?(\d{1,10})(?=[\s;&|)#]|$)/.exec(command);
+  const number = Number((endpoint ?? cli)?.[1]);
+  return Number.isSafeInteger(number) && number > 0 ? number : undefined;
+}
+
 /** The record fields after adding `add`, deduplicated and capped; `undefined` when nothing changed.
- *  `bodies` are fingerprints; adding one refreshes it and drops the expired ones. */
+ *  `bodies` are fingerprints, each for one item or none; adding one refreshes it and drops the
+ *  expired ones. */
 export function mergeTraces(
   run: RunTraceFields,
-  add: { shas?: readonly string[]; comments?: readonly number[]; bodies?: readonly string[] },
+  add: { shas?: readonly string[]; comments?: readonly number[]; bodies?: readonly CommentBodyTrace[] },
   now = Date.now(),
 ): RunTraceFields | undefined {
   const patch: RunTraceFields = {};
@@ -240,13 +267,19 @@ export function mergeTraces(
   const posted = run.postedComments ?? [];
   const freshIds = ids.filter((id, index) => !posted.includes(id) && ids.indexOf(id) === index);
   if (freshIds.length) patch.postedComments = [...posted, ...freshIds].slice(-POSTED_COMMENTS_CAP);
-  const live = new Set((run.postedCommentBodies ?? []).filter((entry) => liveBody(entry, now)).map((entry) => entry.hash));
+  const live = new Set((run.postedCommentBodies ?? []).filter((entry) => liveBody(entry, now)).map(bodyKey));
   // A body still kept is not written again: every update of a tool item re-reads the same command.
-  const hashes = [...new Set((add.bodies ?? []).filter((hash) => /^[0-9a-f]{64}$/.test(hash) && !live.has(hash)))];
-  if (hashes.length) {
+  const fresh = new Map<string, CommentBodyTrace>();
+  for (const entry of add.bodies ?? []) {
+    if (!/^[0-9a-f]{64}$/.test(entry.hash)) continue;
+    const scoped = entry.number !== undefined && Number.isSafeInteger(entry.number) && entry.number > 0
+      ? { hash: entry.hash, number: entry.number } : { hash: entry.hash };
+    if (!live.has(bodyKey(scoped))) fresh.set(bodyKey(scoped), scoped);
+  }
+  if (fresh.size) {
     const at = new Date(now).toISOString();
-    const kept = (run.postedCommentBodies ?? []).filter((entry) => liveBody(entry, now) && !hashes.includes(entry.hash));
-    patch.postedCommentBodies = [...kept, ...hashes.map((hash) => ({ hash, at }))].slice(-POSTED_BODIES_CAP);
+    const kept = (run.postedCommentBodies ?? []).filter((entry) => liveBody(entry, now) && !fresh.has(bodyKey(entry)));
+    patch.postedCommentBodies = [...kept, ...[...fresh.values()].map((entry) => ({ ...entry, at }))].slice(-POSTED_BODIES_CAP);
   }
   return patch.pushedShas || patch.postedComments || patch.postedCommentBodies ? patch : undefined;
 }
@@ -259,7 +292,7 @@ export function githubTracesOf(runs: Iterable<RunTraceFields>, now = Date.now())
   for (const run of runs) {
     for (const sha of run.pushedShas ?? []) shas.add(sha);
     for (const id of run.postedComments ?? []) comments.add(id);
-    for (const entry of run.postedCommentBodies ?? []) if (liveBody(entry, now)) bodies.add(entry.hash);
+    for (const entry of run.postedCommentBodies ?? []) if (liveBody(entry, now)) bodies.add(bodyKey(entry));
   }
   return bodies.size ? { shas, comments, bodies } : { shas, comments };
 }

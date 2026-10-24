@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { commentFingerprint, commentIdsIn, githubTracesOf, isOwnTrace, isPushCommand, mergeTraces, POSTED_BODIES_CAP, POSTED_COMMENTS_CAP, postingCommentBody, pushedRefsIn, PUSHED_SHAS_CAP, settlePush, toolTraces } from './github-traces.ts';
+import { commentFingerprint, commentIdsIn, githubTracesOf, isOwnTrace, isPushCommand, mergeTraces, POSTED_BODIES_CAP, POSTED_COMMENTS_CAP, postingCommentBody, postingCommentTarget, pushedRefsIn, PUSHED_SHAS_CAP, settlePush, toolTraces } from './github-traces.ts';
 import { RunStore } from './store.ts';
 
 const sha = (n: number) => n.toString(16).padStart(40, '0');
@@ -156,7 +156,7 @@ describe('RunStore.recordGithubTraces', () => {
     const store = RunStore.open(dir);
     const run = store.createRun({ title: 't', workflow: 'quick-task', task: 't', steps: [] });
     const now = Date.parse('2026-10-24T10:00:00.000Z');
-    store.notePostingComment(run.id, 'Fixed in the latest push.', now);
+    store.notePostingComment(run.id, 'Fixed in the latest push.', undefined, now);
     store.flush({ throwOnError: true });
     const reopened = RunStore.open(dir);
     const own = { event: 'pull_request.commented', comment: { id: 9, body: 'Fixed in  the latest push.\r\n' } };
@@ -169,9 +169,37 @@ describe('RunStore.recordGithubTraces', () => {
   it('bounds the kept bodies and drops expired ones when it adds', () => {
     const now = Date.parse('2026-10-24T10:00:00.000Z');
     const old = { hash: 'a'.repeat(64), at: new Date(now - 25 * 60 * 60_000).toISOString() };
-    const patch = mergeTraces({ postedCommentBodies: [old] }, { bodies: ['b'.repeat(64)] }, now);
+    const patch = mergeTraces({ postedCommentBodies: [old] }, { bodies: [{ hash: 'b'.repeat(64) }] }, now);
     expect(patch?.postedCommentBodies).toEqual([{ hash: 'b'.repeat(64), at: new Date(now).toISOString() }]);
-    const many = mergeTraces({}, { bodies: Array.from({ length: POSTED_BODIES_CAP + 3 }, (_, n) => n.toString(16).padStart(64, '0')) }, now);
+    const many = mergeTraces({}, { bodies: Array.from({ length: POSTED_BODIES_CAP + 3 }, (_, n) => ({ hash: n.toString(16).padStart(64, '0') })) }, now);
     expect(many?.postedCommentBodies).toHaveLength(POSTED_BODIES_CAP);
+  });
+
+  it('scopes a body to the PR or issue it was posted on — project-wide only when that is unknown', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cezar-traces-')); dirs.push(dir);
+    const store = RunStore.open(dir);
+    const run = store.createRun({ title: 't', workflow: 'quick-task', task: 't', steps: [] });
+    const now = Date.parse('2026-10-24T10:00:00.000Z');
+    store.notePostingComment(run.id, 'Thanks, fixed.', 8, now);
+    store.notePostingComment(run.id, 'Rebased.', undefined, now);
+    store.flush({ throwOnError: true });
+    const traces = RunStore.open(dir).githubTraces(now + 60_000);
+    const said = (body: string, number?: number) => isOwnTrace({ event: 'pull_request.commented', ...(number === undefined ? {} : { number }), comment: { id: 1, body } }, traces);
+    expect(said('Thanks, fixed.', 8)).toBe(true);
+    // The same words from someone on another PR are theirs.
+    expect(said('Thanks, fixed.', 9)).toBe(false);
+    expect(said('Rebased.', 9)).toBe(true);
+    // Re-noting the same body on the same item is no write; on another item it is.
+    expect(mergeTraces(store.getRun(run.id)!, { bodies: [{ hash: commentFingerprint('Thanks, fixed.'), number: 8 }] }, now)).toBeUndefined();
+    expect(mergeTraces(store.getRun(run.id)!, { bodies: [{ hash: commentFingerprint('Thanks, fixed.'), number: 9 }] }, now)?.postedCommentBodies).toHaveLength(3);
+  });
+
+  it('reads the PR or issue a comment-posting command targets', () => {
+    expect(postingCommentTarget({ command: 'gh pr comment 12 --body "x"' })).toBe(12);
+    expect(postingCommentTarget({ command: 'gh issue comment https://github.com/acme/demo/issues/7 -b x' })).toBe(7);
+    expect(postingCommentTarget({ command: 'gh api repos/acme/demo/issues/31/comments -f body=x' })).toBe(31);
+    expect(postingCommentTarget({ command: 'gh api -X POST repos/acme/demo/pulls/5/comments -f body=x' })).toBe(5);
+    expect(postingCommentTarget({ command: 'gh pr comment --body "x"' })).toBeUndefined();
+    expect(postingCommentTarget({ command: 'gh pr view 12' })).toBeUndefined();
   });
 });

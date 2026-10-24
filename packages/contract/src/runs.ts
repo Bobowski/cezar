@@ -301,8 +301,9 @@ export const runRecordSchema = z.object({
    *  treat as triggers (spec 2026-10-23-github-events §6). */
   pushedShas: z.array(z.string()).max(50).optional(),
   postedComments: z.array(z.number()).max(100).optional(),
-  /** Fingerprints of comment bodies it posted or was posting, each kept 24 hours. */
-  postedCommentBodies: z.array(z.object({ hash: z.string(), at: z.string() })).max(100).optional(),
+  /** Fingerprints of comment bodies it posted or was posting, each kept 24 hours, with the PR or
+   *  issue number it went to when the call named one. */
+  postedCommentBodies: z.array(z.object({ hash: z.string(), at: z.string(), number: z.number().optional() })).max(100).optional(),
   createdAt: z.string(),
   startedAt: z.string().optional(),
   finishedAt: z.string().optional(),

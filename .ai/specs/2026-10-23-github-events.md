@@ -193,7 +193,10 @@ the text above, and why:
   body is a trace BEFORE it is posted: its fingerprint goes on the run record
   (`postedCommentBodies`, at most 100, each kept 24 hours), so a poll that reads the comment
   before its id comes back — or after a restart — still knows it, and a candidate matches by id
-  or by body. For the agent's own tool calls the body is read off the command as the call starts
+  or by body. A body is scoped to the PR or issue the call names (`gh pr comment 12`,
+  `repos/o/r/issues/12/comments`, the graph node's number): the same words on another item are
+  someone else's. Only a call that names no item (`gh pr comment` on the current branch) keeps
+  a project-wide fingerprint. For the agent's own tool calls the body is read off the command as the call starts
   (`--body`, `--body-file`, a heredoc, `gh api … -f body=`), and both it and any comment id the
   output prints are kept whatever the call's final status: `gh pr comment … && git push` fails
   after it posted.

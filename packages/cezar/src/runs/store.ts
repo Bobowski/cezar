@@ -331,7 +331,7 @@ export const runRecordSchema = z.object({
   pushedShas: z.array(z.string()).max(PUSHED_SHAS_CAP).optional().catch(undefined),
   postedComments: z.array(z.number()).max(POSTED_COMMENTS_CAP).optional().catch(undefined),
   /** Fingerprints of bodies it posted or was posting, each kept 24 h (`POSTED_BODY_TTL_MS`). */
-  postedCommentBodies: z.array(z.object({ hash: z.string(), at: z.string() })).max(POSTED_BODIES_CAP).optional().catch(undefined),
+  postedCommentBodies: z.array(z.object({ hash: z.string(), at: z.string(), number: z.number().int().positive().optional() })).max(POSTED_BODIES_CAP).optional().catch(undefined),
   /**
    * Exact deadline at which a run stopped by a provider USAGE LIMIT resumes itself
    * (spec 2026-08-03-auto-resume-after-usage-limit) — the reset instant the provider named plus a
@@ -1655,7 +1655,7 @@ export class RunStore extends EventEmitter {
   }
 
   /** Remember shas this run pushed and comments it posted (spec 2026-10-23-github-events §6). */
-  recordGithubTraces(runId: string, add: { shas?: readonly string[]; comments?: readonly number[]; bodies?: readonly string[] }, now = Date.now()): void {
+  recordGithubTraces(runId: string, add: Parameters<typeof mergeTraces>[1], now = Date.now()): void {
     const run = this.runs.get(runId);
     if (!run) return;
     const patch = mergeTraces(run, add, now);
@@ -1670,10 +1670,11 @@ export class RunStore extends EventEmitter {
     this.updateRun(runId, { pushedShas: run.pushedShas.filter((entry) => entry !== wanted) });
   }
 
-  /** A comment this run is ABOUT to post: its body is a trace before GitHub returns the id, and
-   *  stays one on the record — across a restart — whether or not the id ever comes back. */
-  notePostingComment(runId: string, body: string, now = Date.now()): void {
-    this.recordGithubTraces(runId, { bodies: [commentFingerprint(body)] }, now);
+  /** A comment this run is ABOUT to post on PR/issue `number` (when known): its body is a trace
+   *  before GitHub returns the id, and stays one on the record — across a restart — whether or not
+   *  the id ever comes back. */
+  notePostingComment(runId: string, body: string, number?: number, now = Date.now()): void {
+    this.recordGithubTraces(runId, { bodies: [{ hash: commentFingerprint(body), ...(number === undefined ? {} : { number }) }] }, now);
   }
 
   /** Every trace across this project's runs. */

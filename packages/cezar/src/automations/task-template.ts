@@ -11,7 +11,7 @@ import { normalizeCommentBody } from './github-activity.ts';
 import type { ScheduleOccurrence } from './schedule-runner.ts';
 import type { TrackerAutomationCandidate } from './tracker-poller.ts';
 import { resolvePrHead, type CommandRunner } from './pr-head.ts';
-import { automationHold, cachedRunActivity, deliverAutomationMessage, findOwningRun, githubSelfLogin, type DeliveryMark } from './owning-run.ts';
+import { automationHold, cachedRunActivity, deliverAutomationMessage, findOwningRun, githubSelfLogin, launchCapHold, type DeliveryMark } from './owning-run.ts';
 import type { AutomationDefinition, GithubAutomationDefinition, ScheduleAutomationDefinition, TrackerAutomationDefinition } from './types.ts';
 
 const GITHUB_PLACEHOLDERS = new Set([
@@ -281,6 +281,9 @@ export async function launchAutomationRun(options: {
         options.store.flush({ throwOnError: true });
         return { runId: owner.id, delivered: true, ...(warning ? { note: warning } : {}) };
       }
+      // The replacement is a new run like any other: the hourly launch cap holds it too.
+      const capped = launchCapHold(definition, candidate, runs);
+      if (capped) throw new AutomationLaunchOutcome('held', `${capped.reason} The owning run ${owner.id} could not take the message (${outcome.error}).`);
       const note = `The owning run ${owner.id} could not take the message (${outcome.error}); a new run was launched instead.${warning ? ` ${warning}` : ''}`;
       const launched = await launchNewAutomationRun(options);
       return { ...launched, note };

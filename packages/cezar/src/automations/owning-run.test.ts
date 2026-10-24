@@ -152,6 +152,27 @@ describe('deliver: owning-run, end to end through the receipt and the log', () =
     expect(launched.runId).toBe(started[0]);
     expect(launched.note).toContain('no agent session to resume');
   });
+
+  it('the new run that replaces a failed delivery counts toward the hourly launch cap, and is held over it', async () => {
+    const { root, runs, automations, manager, started } = await setup();
+    const owner = runs.createRun({ title: 'made the PR', workflow: 'quick-task', task: 't', steps: [] });
+    runs.updateRun(owner.id, { prNumber: 8, worktreePath: join(root, 'wt') });
+    (manager as unknown as { continueRun: () => unknown }).continueRun = () => ({ ok: false, error: 'no agent session to resume' });
+    const capped = { ...definition, filters: { ...definition.filters, maxRecords: 1 } };
+    const fire = (suite: number) => {
+      const event = { ...candidate, eventId: `acme/demo:check_suite:${suite}`, tieBreaker: `suite:${suite}` };
+      return launchEventCandidate({
+        store: automations, definition: capped, receipt: { eventId: event.eventId, candidate: event },
+        log: { event: event.event, githubNumber: 8 },
+        launch: (receiptId) => launchAutomationRun({ root, manager, store: runs, definition: capped, candidate: event, receiptId }),
+      });
+    };
+    await fire(1);
+    await fire(2);
+    expect(started).toHaveLength(1);
+    expect(automations.latestReceipts().get('ci:acme/demo:check_suite:2')).toMatchObject({ status: 'held' });
+    expect(automations.logs({ automationId: 'ci' })[0]?.reason).toContain('launch-cap');
+  });
 });
 
 describe('owning-run delivery never feeds a run its own reply, nor an unbounded stream (§11)', () => {

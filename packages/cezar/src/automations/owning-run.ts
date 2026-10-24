@@ -205,6 +205,20 @@ export type AutomationHold = { result: 'held' | 'warning'; reason: string };
 /** The log row's word when `gh api user` cannot answer (#4 of the 2026-10-24 review). */
 export const SELF_LOGIN_UNREADABLE = 'warning: cannot read the gh login; self-comment guard inactive (only the traces decide).';
 
+/** `held` once this automation launched `maxRecords` runs for the candidate's item in the last
+ *  hour (§11) — for a comment, and for the new run that replaces a delivery the owner refused. */
+export function launchCapHold(definition: GithubAutomationDefinition, candidate: GithubCandidate, runs: readonly RunRecord[], now = Date.now()): AutomationHold | undefined {
+  const cap = definition.filters.maxRecords;
+  const repo = candidate.repo.toLowerCase();
+  const launches = new Set(runs.filter((run) => {
+    const about = itemOf(run.automation?.githubUrl);
+    return run.automation?.automationId === definition.id && about?.repo === repo && about.number === candidate.number
+      && now - Date.parse(run.createdAt) < DELIVERY_CAP_WINDOW_MS;
+  }).map((run) => run.automation!.receiptId)).size;
+  if (launches < cap) return undefined;
+  return { result: 'held', reason: `launch-cap: this automation already launched ${launches} runs for ${candidate.comment ? 'comments on ' : ''}#${candidate.number} in the last hour (cap ${cap}, the automation's maxRecords) — held until the window frees.` };
+}
+
 /**
  * Why an event must NOT go out now, or `undefined` (spec 2026-10-23-github-events §11) — into its
  * owning run (`owner`), or, for a comment, as a new run. The traces decide first (the scheduler
@@ -233,7 +247,6 @@ export async function automationHold(input: {
   const { definition, candidate, owner } = input;
   const now = input.now ?? Date.now();
   const cap = definition.filters.maxRecords;
-  const recent = (at: string) => now - Date.parse(at) < DELIVERY_CAP_WINDOW_MS;
   const item = { repo: candidate.repo.toLowerCase(), number: candidate.number };
   if (owner) {
     const delivered = input.activity(owner.id).deliveries.filter(({ mark, at }) =>
@@ -241,11 +254,8 @@ export async function automationHold(input: {
         && mark.repo?.toLowerCase() === item.repo && now - at < DELIVERY_CAP_WINDOW_MS).length;
     if (delivered >= cap) return { result: 'held', reason: `delivery-cap: ${delivered} events of this automation already went into run ${owner.id} for #${candidate.number} in the last hour (cap ${cap}, the automation's maxRecords) — held until the window frees.` };
   } else if (candidate.comment) {
-    const launches = new Set(input.runs.filter((run) => {
-      const about = itemOf(run.automation?.githubUrl);
-      return run.automation?.automationId === definition.id && about?.repo === item.repo && about.number === item.number && recent(run.createdAt);
-    }).map((run) => run.automation!.receiptId)).size;
-    if (launches >= cap) return { result: 'held', reason: `launch-cap: this automation already launched ${launches} runs for comments on #${candidate.number} in the last hour (cap ${cap}, the automation's maxRecords) — held until the window frees.` };
+    const capped = launchCapHold(definition, candidate, input.runs, now);
+    if (capped) return capped;
   }
   const comment = candidate.comment;
   if (!comment || definition.filters.allowSelfComments === true) return undefined;

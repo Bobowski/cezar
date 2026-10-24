@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { queryScope, type ApiRun, type CodeSearchMatch, type HealthResponse, type WorktreeEntry } from '@open-mercato/cezar-api-client'
+import { queryScope, setApiScope, type ApiRun, type CodeSearchMatch, type HealthResponse, type WorktreeEntry } from '@open-mercato/cezar-api-client'
 import { createQueryClient } from '@/api/query-client'
 import { Toaster, resetToasts } from '@/components/ui/toaster'
 import { ShellWithSidebar } from '@/test/shell-with-sidebar'
@@ -23,11 +23,11 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-const health = (fileEdit: boolean): HealthResponse => ({
+const health = (fileEdit: boolean, terminal = false, preview = true): HealthResponse => ({
   version: '0.0.0-test', projects: [], bootProject: 'default', repoRoot: '/repo',
   repo: { root: '/repo', branch: 'main' }, checks: [], defaultRunner: 'claude',
   forge: { kind: 'github', available: false },
-  capabilities: { localHandoff: true, terminal: false, preview: true, designMode: true, fileEdit, tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true, followups: false, singleProject: false, automations: false, dispatch: false },
+  capabilities: { localHandoff: true, terminal, preview, designMode: true, fileEdit, tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true, followups: false, singleProject: false, automations: false, dispatch: false },
 } as HealthResponse)
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 const entry = (path: string, content: string, hash: string): WorktreeEntry => ({ type: 'file', path, size: content.length, binary: false, tooLarge: false, content, hash, editable: true })
@@ -38,7 +38,15 @@ interface Sent { method: string; path: string; body?: unknown }
 
 const RUN = { id: 'run-1', task: 'Fix the header', title: 'Fix the header', status: 'done', archived: false, createdAt: '2026-10-12T10:00:00Z', worktreePath: '/w/run-1', workflow: 'quick-task' } as unknown as ApiRun
 
-function setup(options: { fileEdit?: boolean; at?: string; disk?: { content: string; hash: string }; putStatus?: number; runs?: ApiRun[] } = {}) {
+function setup(options: {
+  fileEdit?: boolean; at?: string; disk?: { content: string; hash: string }; putStatus?: number; runs?: ApiRun[]
+  /** What `GET /ui-state` answers; `terminal` turns the capability on; `dead`: addresses nothing listens at. */
+  uiState?: unknown; terminal?: boolean; services?: unknown; dead?: string[]
+  /** Held until it settles: the `GET` and the `PUT` of `/ui-state`. */
+  uiStateRead?: Promise<void>; uiStateWrite?: Promise<void>
+  /** A hosted cockpit, whose loopback pages go through the preview gateway. */
+  hosted?: boolean
+} = {}) {
   const disk = options.disk ?? { content: 'one\n', hash: 'h1' }
   const sent: Sent[] = []
   const state = { disk, putStatus: options.putStatus ?? 200 }
@@ -46,11 +54,17 @@ function setup(options: { fileEdit?: boolean; at?: string; disk?: { content: str
     const path = String(input)
     const method = init.method ?? 'GET'
     sent.push({ method, path, body: typeof init.body === 'string' ? JSON.parse(init.body) : undefined })
-    if (path === '/api/v1/health') return json(health(options.fileEdit ?? true))
+    if (path === '/api/v1/health') return json(health(options.fileEdit ?? true, options.terminal ?? false, options.hosted !== true))
+    if (options.dead?.includes(path)) throw new TypeError('Failed to fetch')
+    if (method === 'GET' && path === '/api/v1/ui-state') { await options.uiStateRead; return json(options.uiState ?? {}) }
+    if (method === 'PUT' && path === '/api/v1/ui-state') { await options.uiStateWrite; return json({ ...(options.uiState as object | undefined), ...(JSON.parse(String(init.body)) as object) }) }
+    if (path === '/api/v1/services') return json(options.services ?? { available: false, reason: null, services: [], candidates: [], lastRunning: [], topic: 'services' })
     if (path === '/api/v1/repo/tree') return json({ paths: ['README.md', 'src/app.ts'], truncated: false })
     if (path === '/api/v1/repo/changes') return json({ files: [{ path: 'src/app.ts', status: 'modified', adds: 1, dels: 0, binary: false, patch: PATCH }], stat: { files: 1, adds: 1, dels: 0 } })
     if (path === '/api/v1/repo') return json({ info: { root: '/repo', branch: 'main' }, status: [], log: [], branches: ['main'], baseBranch: null })
     if (path === '/api/v1/repo/watch') return json({ topic: null })
+    if (method === 'POST' && path === '/api/v1/preview/design-proxy') return json({ origin: 'http://127.0.0.1:47000' })
+    if (method === 'POST' && path === '/api/v1/preview/gateway') return json({ origin: 'http://cockpit.test:47100', ticket: 't1', ticketParam: 'cez_ticket' })
     if (method === 'GET' && path === '/api/v1/runs') return json(options.runs ?? [])
     if (method === 'POST' && path === '/api/v1/runs') return json({ ...RUN, id: 'new-run', task: (JSON.parse(String(init.body)) as { task: string }).task }, 201)
     if (path === '/api/v1/workflows') return json({ workflows: [], issues: [] })
@@ -61,8 +75,9 @@ function setup(options: { fileEdit?: boolean; at?: string; disk?: { content: str
     }
     return json({})
   }))
+  const client = createQueryClient()
   render(
-    <QueryClientProvider client={createQueryClient()}>
+    <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[options.at ?? '/code/src/app.ts']}>
         <ShellWithSidebar>
           <Routes>
@@ -74,7 +89,7 @@ function setup(options: { fileEdit?: boolean; at?: string; disk?: { content: str
       </MemoryRouter>
     </QueryClientProvider>,
   )
-  return { sent, state }
+  return { sent, state, client }
 }
 
 const view = async () => {
@@ -422,5 +437,284 @@ describe('Code page as an editor (VS Code-like)', () => {
     fireEvent.drop(groups()[1]!, drag({ 'application/x-cezar-tab': JSON.stringify({ tab: 'README.md', from: 0 }) }))
     await waitFor(() => expect(tabsOf(1)).toEqual(['app.ts', 'README.md']))
     expect(tabsOf(0)).toEqual(['app.ts'])
+  })
+})
+
+describe('Browser tabs as pages (spec 2026-10-24-code-page-browser-tabs)', () => {
+  const groups = () => [...document.querySelectorAll('[data-slot="code-group"]')]
+  const tabsOf = (index: number) => [...(groups()[index]?.querySelectorAll('[data-slot="code-tab"]') ?? [])].map((tab) => tab.textContent)
+  const address = () => document.querySelector('[data-slot="code-browser"] input[aria-label="Address"]') as HTMLInputElement | null
+  const SAVED = { codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }, { id: 'b2', url: 'http://localhost:3000/', group: 1 }] }] }
+
+  it('opens a page on Ctrl/Cmd+T with the cursor in its address bar, and one beside on Ctrl/Cmd+Shift+T', async () => {
+    setup()
+    await view()
+    fireEvent.keyDown(window, { key: 't', ctrlKey: true })
+    await waitFor(() => expect(tabsOf(0)).toEqual(['app.ts', 'Browser']))
+    await waitFor(() => expect(document.activeElement).toBe(address()))
+    fireEvent.keyDown(window, { key: 'T', ctrlKey: true, shiftKey: true })
+    await waitFor(() => expect(groups()).toHaveLength(2))
+    expect(tabsOf(1)).toEqual(['Browser'])
+    await waitFor(() => expect(document.activeElement).toBe(groups()[1]?.querySelector('input[aria-label="Address"]')))
+  })
+
+  it('shows the shortcut that works where it runs: Alt+T in a browser, Ctrl+T in the desktop shell', async () => {
+    const shortcuts = async () => {
+      fireEvent.keyDown(window, { key: 'F1' })
+      await waitFor(() => expect(document.querySelector('[data-slot="code-command-palette"]')).not.toBeNull())
+      const options = [...document.querySelectorAll('[role=option]')].map((option) => option.textContent ?? '')
+      return [options.find((text) => text.startsWith('Browser: New Page to the Side')), options.find((text) => text.startsWith('Browser: New Page') && !text.includes('Side'))]
+    }
+    setup()
+    await view()
+    expect(await shortcuts()).toEqual(['Browser: New Page to the SideAlt+Shift+T', 'Browser: New PageAlt+T'])
+    cleanup()
+    vi.stubGlobal('__CEZ_DESKTOP__', true)
+    setup()
+    await view()
+    expect(await shortcuts()).toEqual(['Browser: New Page to the SideCtrl+Shift+T', 'Browser: New PageCtrl+T'])
+  })
+
+  it('leaves Alt+T to the terminal panel while it has focus', async () => {
+    setup({ terminal: true })
+    await view()
+    fireEvent.keyDown(window, { key: 'j', ctrlKey: true })
+    const panel = await waitFor(() => { const found = document.querySelector('[data-slot="code-panel"]'); expect(found).not.toBeNull(); return found as HTMLElement })
+    const inside = panel.querySelector('button') as HTMLElement
+    fireEvent.keyDown(inside, { key: '†', code: 'KeyT', altKey: true })
+    fireEvent.keyDown(inside, { key: 'T', code: 'KeyT', altKey: true, shiftKey: true })
+    expect(tabsOf(0)).toEqual(['app.ts'])
+    expect(groups()).toHaveLength(1)
+    // Anywhere else on the page it opens one.
+    fireEvent.keyDown(window, { key: '†', code: 'KeyT', altKey: true })
+    await waitFor(() => expect(tabsOf(0)).toEqual(['app.ts', 'Browser']))
+  })
+
+  it('refuses an address that is not the project\'s app, inline, with a way to open it in the browser', async () => {
+    setup()
+    await view()
+    fireEvent.click(screen.getByRole('button', { name: 'Open browser' }))
+    const input = await waitFor(() => { expect(address()).not.toBeNull(); return address() as HTMLInputElement })
+    fireEvent.change(input, { target: { value: 'https://example.com/docs' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    const refusal = await waitFor(() => { const found = document.querySelector('[data-slot="browser-refused-address"]'); expect(found).not.toBeNull(); return found as HTMLElement })
+    expect(refusal.textContent).toContain('open it in your browser')
+    expect(refusal.querySelector('a')?.getAttribute('href')).toBe('https://example.com/docs')
+    expect(refusal.querySelector('a')?.getAttribute('rel')).toContain('noopener')
+    expect([...refusal.querySelectorAll('button')].map((button) => button.textContent)).toContain('Copy address')
+    expect(document.querySelector('[data-slot="code-browser"] iframe')).toBeNull()
+    // A local address is taken.
+    fireEvent.change(input, { target: { value: 'localhost:5173/admin' } })
+    expect(document.querySelector('[data-slot="browser-refused-address"]')).toBeNull()
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    await waitFor(() => expect(document.querySelector('[data-slot="code-browser"] iframe')?.getAttribute('src')).toBe('http://localhost:5173/admin'))
+    // jsdom's own origin is the cockpit here: framing it in itself is refused too.
+    fireEvent.change(input, { target: { value: window.location.origin } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    await waitFor(() => expect(document.querySelector('[data-slot="browser-refused-address"]')?.textContent).toContain('That is this cockpit'))
+  })
+
+  it('brings the saved pages back on reload, side by side, and writes a closed one back', async () => {
+    const { sent } = setup({ at: '/code', uiState: SAVED })
+    await waitFor(() => expect(tabsOf(0)).toEqual(['localhost:3000/admin']))
+    expect(tabsOf(1)).toEqual(['localhost:3000'])
+    await waitFor(() => expect(document.querySelector('[data-slot="code-browser"] iframe')?.getAttribute('src')).toBe('http://localhost:3000/admin'))
+    expect(sent.some((request) => request.method === 'PUT' && request.path === '/api/v1/ui-state')).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Close localhost:3000' }))
+    await waitFor(() => expect(sent.find((request) => request.method === 'PUT' && request.path === '/api/v1/ui-state')?.body).toEqual({
+      codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }] }],
+    }))
+  })
+
+  it('writes the pages\' answer to the project they were saved for, after a move to another one', async () => {
+    let answer = () => {}
+    const { sent, client } = setup({ at: '/code', uiState: SAVED, uiStateWrite: new Promise<void>((resolve) => { answer = resolve }) })
+    await waitFor(() => expect(tabsOf(1)).toEqual(['localhost:3000']))
+    fireEvent.click(screen.getByRole('button', { name: 'Close localhost:3000' }))
+    await waitFor(() => expect(sent.some((request) => request.method === 'PUT' && request.path === '/api/v1/ui-state')).toBe(true))
+    const written = queryScope()
+    setApiScope('elsewhere')
+    try {
+      await act(async () => { answer() })
+      await waitFor(() => expect(client.getQueryData([written, 'ui-state'])).toMatchObject({ codePages: [{ tree: 'main', pages: [{ id: 'b1' }] }] }))
+      expect((client.getQueryData(['elsewhere', 'ui-state']) as { codePages?: unknown } | undefined)?.codePages).toBeUndefined()
+    } finally {
+      setApiScope(null)
+    }
+  })
+
+  it('forgets a page\'s gateway origin once its view is no longer shown', async () => {
+    window.localStorage.setItem(`cez:code:layout:${queryScope()}:main`, JSON.stringify({
+      groups: [{ tabs: [{ path: 'src/app.ts', preview: false }, { path: 'browser:b1', preview: false }], active: 'browser:b1' }],
+      focused: 0,
+      browsers: { b1: { url: 'http://localhost:3000/admin' } },
+    }))
+    setup({ at: '/code', hosted: true })
+    await waitFor(() => expect(tabsOf(0)).toEqual(['app.ts', 'localhost:3000/admin → :47100']))
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /app\.ts/ }))
+    await waitFor(() => expect(tabsOf(0)).toEqual(['app.ts', 'localhost:3000/admin']))
+  })
+
+  it('switching back to a page found answering neither asks again nor shows "Loading…"', async () => {
+    window.localStorage.setItem(`cez:code:layout:${queryScope()}:main`, JSON.stringify({
+      groups: [{ tabs: [{ path: 'src/app.ts', preview: false }, { path: 'browser:b1', preview: false }], active: 'browser:b1' }],
+      focused: 0,
+      browsers: { b1: { url: 'http://localhost:3000/admin' } },
+    }))
+    const { sent } = setup({ at: '/code' })
+    const probes = () => sent.filter((request) => request.path === 'http://localhost:3000/admin').length
+    await waitFor(() => expect(probes()).toBe(1))
+    await waitFor(() => expect(document.querySelector('[data-slot="code-browser-asking"]')).toBeNull())
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /app\.ts/ }))
+    await waitFor(() => expect(document.querySelector('[data-slot="code-browser"]')).toBeNull())
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /localhost:3000/ }))
+    await waitFor(() => expect(document.querySelector('[data-slot="code-browser"]')).not.toBeNull())
+    expect(document.querySelector('[data-slot="code-browser-asking"]')).toBeNull()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(probes()).toBe(1)
+  })
+
+  it('sends the write it is holding when the page goes, rather than dropping it with its timer', async () => {
+    const { sent } = setup({ at: '/code', uiState: SAVED })
+    await waitFor(() => expect(tabsOf(1)).toEqual(['localhost:3000']))
+    fireEvent.click(screen.getByRole('button', { name: 'Close localhost:3000' }))
+    cleanup()
+    await waitFor(() => expect(sent.find((request) => request.method === 'PUT' && request.path === '/api/v1/ui-state')?.body).toEqual({
+      codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }] }],
+    }))
+  })
+
+  it('keeps a page closed before the server\'s list arrived closed, and writes the close back', async () => {
+    window.localStorage.setItem(`cez:code:layout:${queryScope()}:main`, JSON.stringify({
+      groups: [{ tabs: [{ path: 'browser:b1', preview: false }, { path: 'browser:b2', preview: false }], active: 'browser:b2' }],
+      focused: 0,
+      browsers: { b1: { url: 'http://localhost:3000/admin' }, b2: { url: 'http://localhost:3000/' } },
+      onServer: ['b1', 'b2'],
+    }))
+    let read = () => {}
+    const { sent } = setup({ at: '/code', uiState: SAVED, uiStateRead: new Promise<void>((resolve) => { read = resolve }) })
+    await waitFor(() => expect(tabsOf(0)).toEqual(['localhost:3000/admin', 'localhost:3000']))
+    fireEvent.click(screen.getByRole('button', { name: 'Close localhost:3000' }))
+    await waitFor(() => expect(tabsOf(0)).toEqual(['localhost:3000/admin']))
+    await act(async () => { read() })
+    await waitFor(() => expect(sent.find((request) => request.method === 'PUT' && request.path === '/api/v1/ui-state')?.body).toEqual({
+      codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }] }],
+    }))
+    expect(groups()).toHaveLength(1)
+    expect(tabsOf(0)).toEqual(['localhost:3000/admin'])
+  })
+
+  it('merges the server\'s pages: one opened here and not saved yet stays and is written, one closed elsewhere closes', async () => {
+    window.localStorage.setItem(`cez:code:layout:${queryScope()}:main`, JSON.stringify({
+      groups: [{ tabs: [{ path: 'browser:b1', preview: false }, { path: 'browser:b2', preview: false }, { path: 'browser:b5', preview: false }], active: 'browser:b1' }],
+      focused: 0,
+      browsers: { b1: { url: 'http://localhost:3000/admin' }, b2: { url: 'http://localhost:4000/' }, b5: { url: 'http://localhost:5000/x' } },
+      onServer: ['b1', 'b2'],
+    }))
+    const { sent } = setup({ at: '/code', uiState: { codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }] }] } })
+    await waitFor(() => expect(tabsOf(0)).toEqual(['localhost:3000/admin', 'localhost:5000/x']))
+    await waitFor(() => expect(sent.find((request) => request.method === 'PUT' && request.path === '/api/v1/ui-state')?.body).toEqual({
+      codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }, { id: 'b5', url: 'http://localhost:5000/x', group: 0 }] }],
+    }))
+    // The round-trip answered: b5 is now known to be on the server.
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(`cez:code:layout:${queryScope()}:main`) ?? '{}').onServer).toEqual(['b1', 'b5']))
+  })
+
+  it('lists the open pages and the detected addresses in the palette', async () => {
+    const services = {
+      available: true, reason: null, candidates: [], lastRunning: [], topic: 'services',
+      services: [{ id: 's1', name: 'web', command: 'npm run dev', cwd: '', status: 'running', exitCode: null, reason: null, startedAt: null, topic: null,
+        urls: [{ url: 'http://localhost:5173/', lastSeenAt: '2026-10-24T10:00:00Z', running: true }, { url: 'https://example.com/', lastSeenAt: '2026-10-24T10:00:00Z', running: true }] }],
+    }
+    setup({ at: '/code', uiState: SAVED, terminal: true, services })
+    await waitFor(() => expect(tabsOf(1)).toEqual(['localhost:3000']))
+    fireEvent.keyDown(window, { key: 'F1' })
+    await waitFor(() => expect(document.querySelector('[data-slot="code-command-palette"]')).not.toBeNull())
+    const heading = (name: string) => [...document.querySelectorAll('[cmdk-group]')].find((group) => group.querySelector('[cmdk-group-heading]')?.textContent === name)
+    await waitFor(() => expect(heading('Open page')).toBeTruthy())
+    expect([...heading('Pages')!.querySelectorAll('[role=option]')].map((option) => option.textContent)).toEqual(['localhost:3000/admin · group 1', 'localhost:3000 · group 2'])
+    expect([...heading('Open page')!.querySelectorAll('[role=option]')].map((option) => option.textContent)).toEqual(['localhost:5173'])
+    fireEvent.click(heading('Open page')!.querySelector('[role=option]')!)
+    await waitFor(() => expect(tabsOf(0)).toEqual(['localhost:3000/admin', 'localhost:5173']))
+  })
+
+  it('navigating inside a page on a local cockpit keeps the view: no probe, history and Design Mode survive', async () => {
+    const { sent } = setup()
+    await view()
+    fireEvent.click(screen.getByRole('button', { name: 'Open browser' }))
+    const go = async (url: string) => {
+      const input = await waitFor(() => { expect(address()).not.toBeNull(); return address() as HTMLInputElement })
+      fireEvent.change(input, { target: { value: url } })
+      fireEvent.submit(input.closest('form') as HTMLFormElement)
+      const frame = await waitFor(() => {
+        const found = document.querySelector('[data-slot="code-browser"] iframe')
+        expect(found?.getAttribute('src')).toContain(new URL(url).pathname)
+        return found as HTMLIFrameElement
+      })
+      fireEvent.load(frame)
+      await waitFor(() => expect(tabsOf(0)).toContain(`localhost:5173${new URL(url).pathname}`))
+    }
+    await go('http://localhost:5173/a')
+    const shown = document.querySelector('[data-slot="browser-view"]')
+    fireEvent.click(document.querySelector('[data-slot="browser-design-toggle"]') as HTMLElement)
+    await waitFor(() => expect(document.querySelector('[data-slot="browser-design-toggle"]')?.getAttribute('aria-pressed')).toBe('true'))
+    await go('http://localhost:5173/b')
+    expect(document.querySelector('[data-slot="browser-view"]')).toBe(shown)
+    expect(document.querySelector('[data-slot="browser-design-toggle"]')?.getAttribute('aria-pressed')).toBe('true')
+    expect((screen.getByRole('button', { name: 'Back' }) as HTMLButtonElement).disabled).toBe(false)
+    // The user's own navigation is never probed.
+    expect(sent.some((request) => request.path.startsWith('http://localhost:5173'))).toBe(false)
+  })
+
+  it('shows "Nothing is listening" for a saved address that no longer answers, keeping the address', async () => {
+    setup({ at: '/code', uiState: { codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }] }] }, dead: ['http://localhost:3000/admin'] })
+    const dead = await waitFor(() => { const found = document.querySelector('[data-slot="code-browser-dead"]'); expect(found).not.toBeNull(); return found as HTMLElement })
+    expect(dead.textContent).toContain('Nothing is listening')
+    expect(dead.textContent).toContain('http://localhost:3000/admin')
+    expect(tabsOf(0)).toEqual(['localhost:3000/admin'])
+    fireEvent.click(screen.getByRole('button', { name: 'Edit the address' }))
+    await waitFor(() => expect(address()?.value).toBe('http://localhost:3000/admin'))
+  })
+
+  it('lays "Nothing is listening" over the mounted view, and Try again brings the page back in it', async () => {
+    const dead = ['http://localhost:3000/admin']
+    setup({ at: '/code', uiState: { codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }] }] }, dead })
+    await waitFor(() => expect(document.querySelector('[data-slot="code-browser-dead"]')).not.toBeNull())
+    const shown = document.querySelector('[data-slot="browser-view"]')
+    expect(shown).not.toBeNull()
+    dead.length = 0
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(document.querySelector('[data-slot="code-browser-dead"]')).toBeNull())
+    expect(document.querySelector('[data-slot="browser-view"]')).toBe(shown)
+    expect(document.querySelector('[data-slot="code-browser"] iframe')?.getAttribute('src')).toBe('http://localhost:3000/admin')
+  })
+
+  it('asks a dead saved address again every 3 s, and reloads the page in place once it answers', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const dead = ['http://localhost:3000/admin']
+      const { sent } = setup({ at: '/code', uiState: { codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }] }] }, dead })
+      const asked = () => sent.filter((request) => request.path === 'http://localhost:3000/admin').length
+      const frame = () => document.querySelector('[data-slot="code-browser"] iframe')
+      await waitFor(() => expect(document.querySelector('[data-slot="code-browser-dead"]')).not.toBeNull())
+      const shown = document.querySelector('[data-slot="browser-view"]')
+      const before = frame()
+      const first = asked()
+      // Still down: asked again on its own, and still says so.
+      await act(() => vi.advanceTimersByTimeAsync(3_000))
+      await waitFor(() => expect(asked()).toBe(first + 1))
+      expect(document.querySelector('[data-slot="code-browser-dead"]')).not.toBeNull()
+      expect(frame()).toBe(before)
+      // The app is up: the next ask finds it, and the page reloads in the same view.
+      dead.length = 0
+      await act(() => vi.advanceTimersByTimeAsync(3_000))
+      await waitFor(() => expect(document.querySelector('[data-slot="code-browser-dead"]')).toBeNull())
+      expect(asked()).toBe(first + 2)
+      expect(document.querySelector('[data-slot="browser-view"]')).toBe(shown)
+      await waitFor(() => expect(frame()).not.toBe(before))
+      expect(frame()?.getAttribute('src')).toBe('http://localhost:3000/admin')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

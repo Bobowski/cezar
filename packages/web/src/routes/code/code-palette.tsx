@@ -46,37 +46,42 @@ export function QuickOpen({ open, paths, recent, onClose, onPick }: { open: bool
   )
 }
 
+/** More things to list under their own heading — the open pages and the pages to open (spec
+ *  2026-10-24-code-page-browser-tabs §3). Matched by title like the commands. */
+export interface CodeCommandGroup {
+  heading: string
+  items: readonly CodeCommand[]
+}
+
 /** Ctrl/Cmd+Shift+P: everything the page can do, by name. */
-export function CommandPalette({ open, commands, onClose }: { open: boolean; commands: readonly CodeCommand[]; onClose: () => void }) {
+export function CommandPalette({ open, commands, groups = [], onClose }: { open: boolean; commands: readonly CodeCommand[]; groups?: readonly CodeCommandGroup[]; onClose: () => void }) {
   const [query, setQuery] = useState('')
   useEffect(() => { if (open) setQuery('') }, [open])
-  const results = useMemo(() => {
-    const words = query.toLowerCase().split(/\s+/).filter(Boolean)
-    return commands.filter((command) => words.every((word) => command.title.toLowerCase().includes(word)))
-  }, [commands, query])
+  const words = useMemo(() => query.toLowerCase().split(/\s+/).filter(Boolean), [query])
+  const matches = (command: CodeCommand) => words.every((word) => command.title.toLowerCase().includes(word))
+  const results = commands.filter(matches)
+  const extra = groups.map((group) => ({ heading: group.heading, items: group.items.filter(matches) })).filter((group) => group.items.length > 0)
+  const pick = (command: CodeCommand) => (
+    <CommandItem
+      key={command.id}
+      value={command.id}
+      disabled={command.disabled}
+      // After the dialog has closed: a command that focuses the editor must not lose
+      // to the dialog handing focus back.
+      onSelect={() => { onClose(); setTimeout(command.run, 0) }}
+    >
+      {command.title}
+      {command.shortcut ? <CommandShortcut>{command.shortcut}</CommandShortcut> : null}
+    </CommandItem>
+  )
   return (
     <CommandDialog open={open} onOpenChange={(next) => { if (!next) onClose() }} title="Command Palette" description="Type a command" filter={keepAll} showCloseButton={false} className="top-[22%] translate-y-0">
       <div data-slot="code-command-palette" className="contents">
         <CommandInput value={query} onValueChange={setQuery} placeholder="Type a command" />
         <CommandList>
           <CommandEmpty>Nothing matches.</CommandEmpty>
-          {results.length > 0 ? (
-            <CommandGroup heading="Commands">
-              {results.map((command) => (
-                <CommandItem
-                  key={command.id}
-                  value={command.id}
-                  disabled={command.disabled}
-                  // After the dialog has closed: a command that focuses the editor must not lose
-                  // to the dialog handing focus back.
-                  onSelect={() => { onClose(); setTimeout(command.run, 0) }}
-                >
-                  {command.title}
-                  {command.shortcut ? <CommandShortcut>{command.shortcut}</CommandShortcut> : null}
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          ) : null}
+          {results.length > 0 ? <CommandGroup heading="Commands">{results.map(pick)}</CommandGroup> : null}
+          {extra.map((group) => <CommandGroup key={group.heading} heading={group.heading}>{group.items.map(pick)}</CommandGroup>)}
         </CommandList>
       </div>
     </CommandDialog>

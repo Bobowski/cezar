@@ -67,6 +67,13 @@ describe('a loopback address on a hosted cockpit', () => {
     expect(frame()).toBeNull()
   })
 
+  it('reports the gateway origin it frames through, for a tab title (Code page browser tabs §3)', async () => {
+    const onGateway = vi.fn()
+    render(<BrowserView state={{ tabs: [APP], active: 0 }} onChange={() => {}} onGateway={onGateway} />)
+    await waitFor(() => expect(onGateway).toHaveBeenLastCalledWith(GATEWAY))
+    expect(onGateway).toHaveBeenCalledWith(null)
+  })
+
   it('leaves an address that is not local alone', async () => {
     renderView('https://github.com/')
     expect(frame()!.getAttribute('src')).toBe('https://github.com/')

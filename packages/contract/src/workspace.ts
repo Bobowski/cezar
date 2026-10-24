@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { worktreeLifecycleConfigSchema } from './worktree-lifecycle.ts';
 import { type Runner, runnerSchema } from './health.ts';
-import { MAX_SAVED_WORKSPACE_LAYOUTS, savedWorkspaceLayoutSchema } from './workspace-layouts.ts';
+import { codePagesSchema, MAX_SAVED_WORKSPACE_LAYOUTS, savedWorkspaceLayoutSchema } from './workspace-layouts.ts';
 
 /**
  * The workspace + settings families: `~/.cezar/config.json`'s settings slice, both GUI-pref bags
@@ -211,6 +211,9 @@ export const uiStateSchema = z.looseObject({
     .optional(),
   /** The open-mercato/skills promo banner (#391), dismissed for good. Legacy — retained so old files round-trip. */
   dismissedSkillsBanner: z.boolean().optional(),
+  /** The Code page's open Browser tabs per checkout (spec 2026-10-24-code-page-browser-tabs).
+   *  Absent → never saved; the cockpit salvages entry by entry on read. */
+  codePages: codePagesSchema.optional(),
 });
 export type UiState = z.infer<typeof uiStateSchema>;
 

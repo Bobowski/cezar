@@ -1,6 +1,39 @@
 # Browser tabs on the Code page — several pages, one page per tab, remembered per project
 
-> Status: proposed (2026-10-24), not built. Branch: `brutus`.
+> Status: built (2026-10-24). Branch: `brutus`.
+>
+> As built, where it differs from the text below:
+> - **Where the pages live.** The Code layout was never on the server — it is per browser in
+>   localStorage (`cez:code:layout:<project>:<tree>`), and `workspaceLayoutsSchema` is the TASK
+>   workspace's. The pages therefore go to the per-repo ui-state (`GET/PUT /ui-state`, key
+>   `codePages`: `[{ tree, pages: [{ id, url, group }] }]`, ≤ 8 checkouts × 12 pages, schema in
+>   `contract/src/workspace-layouts.ts`) — per project on the server, per checkout like the rest
+>   of the layout, no new route. The localStorage layout keeps `{ url }` per Browser tab (the old
+>   `{ tabs, active }` still parses). On load the server's list wins: its addresses replace local
+>   ones, a page it once held (named in a read or a save's answer — the layout's `onServer`) and
+>   lists no more closes, a page opened here and not saved yet stays pending and is written, a
+>   page only it lists opens in its group (a new group to the right on a fresh device). Nothing is
+>   written back before that read has answered.
+> - **Only loopback addresses are persisted** (server-enforced): a gateway address is this
+>   session's port; its loopback twin is what is kept, and gets a fresh ticket on restore.
+> - **The scope rule is new**, not the task Preview's (the Preview column accepts any http(s)
+>   address and is unchanged): loopback (`0.0.0.0` read as `localhost`) or, on a hosted cockpit,
+>   the gateway — the cockpit's scheme and host on another port — and never the cockpit itself.
+> - **"Nothing is listening" is new too**: a framed refused connection fires `load` like any page,
+>   so on a LOCAL cockpit a saved loopback address is probed first (one `no-cors` request, again
+>   every 3 s while dead). Only an address set from outside the view is probed (a restore, Try
+>   again), never the user's own navigation, and the state is laid over the still-mounted view,
+>   so history, Design Mode and unsent notes survive. A task's tree offers that task's Run app;
+>   the main checkout offers the terminal. On a hosted cockpit the gateway's own 502 page says it.
+> - **Ctrl/Cmd+T** is the browser's own outside the desktop shell, so `Alt+T` / `Alt+Shift+T`
+>   (the page's Alt forms, as `Alt+W`) do the same, and the palette has both commands. Menus
+>   print the form that works there (`Ctrl+T` only in the desktop shell), and `Alt+T` inside the
+>   terminal panel is the shell's.
+> - **Suggestions**: a task tree's terminal-detected addresses, the main checkout's services'
+>   addresses; the project terminal's `GET /repo/terminal/urls` joins `useDetectedAddresses`.
+> - **For the terminal spec**: `openBrowserTab(layout, url, { beside })` in `code-state.ts`, and
+>   `useOpenBrowserTab()(url, { beside })` from `code-browser.tsx` inside the page (false for an
+>   address a Browser tab may not show — open that one in a new window).
 > Builds on: `2026-10-11-code-page.md` (the owner's decision: "a browser tab is one page";
 > `BrowserView`'s `singleTab`), `2026-10-13-unified-settings.md` (layout state per project on
 > the server: `workspace-layouts.ts`), `2026-10-24-code-page-terminal.md` (what opens a tab).

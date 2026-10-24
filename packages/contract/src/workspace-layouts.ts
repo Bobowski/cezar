@@ -86,3 +86,49 @@ export const savedWorkspaceLayoutSchema = z.object({
     .max(MAX_WORKSPACE_COLUMNS),
 });
 export type SavedWorkspaceLayout = z.infer<typeof savedWorkspaceLayoutSchema>;
+
+/**
+ * The Code page's Browser tabs (spec `.ai/specs/2026-10-24-code-page-browser-tabs.md` §3–4): each
+ * open page's address and place, per checkout, so a reload or another device brings them back.
+ *
+ * Kept under `codePages` in the per-repo ui-state (`GET/PUT /ui-state`), not in the task layouts
+ * above: the Code page is the project's, not a task's. Only LOOPBACK addresses are stored (§5) —
+ * a gateway origin is a port this session was handed, and its loopback twin gets a fresh ticket
+ * on restore. Sized so the whole value stays under the ui-state body limit.
+ */
+export const MAX_CODE_PAGES = 12;
+export const MAX_CODE_PAGE_TREES = 8;
+export const MAX_CODE_PAGE_URL_LENGTH = 1024;
+
+const OCTET = '(25[0-5]|2[0-4]\\d|1?\\d?\\d)';
+/** `localhost`, `*.localhost`, 127.0.0.0/8 and `[::1]` — anchored, so `127.0.0.1.example.com` is not one. */
+const LOOPBACK_HOSTNAME = new RegExp(`^(localhost|([a-z0-9-]+\\.)+localhost|127\\.${OCTET}\\.${OCTET}\\.${OCTET}|\\[::1\\])$`, 'i');
+
+export const codePageUrlSchema = z
+  .url({ protocol: /^https?$/, hostname: LOOPBACK_HOSTNAME })
+  .max(MAX_CODE_PAGE_URL_LENGTH)
+  .refine((url) => !/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i.test(url), 'no credentials in a page address');
+
+/** An http(s) loopback address with no credentials — what a Code Browser tab may persist. */
+export const isLoopbackPageAddress = (url: string): boolean => codePageUrlSchema.safeParse(url).success;
+
+export const codePageSchema = z.object({
+  /** The tab's id in the Code layout (`browser:<id>`). */
+  id: z.string().regex(/^[a-z0-9]{1,16}$/),
+  url: codePageUrlSchema,
+  /** The editor group it sits in, left to right. */
+  group: z.number().int().min(0).max(3),
+});
+export type CodePage = z.infer<typeof codePageSchema>;
+
+/** One checkout's pages, in order. An EMPTY list is "none open", which is not "never saved". */
+export const codePagesTreeSchema = z.object({
+  /** `main`, or a task's run id. */
+  tree: z.string().min(1).max(64),
+  pages: z.array(codePageSchema).max(MAX_CODE_PAGES),
+});
+export type CodePagesTree = z.infer<typeof codePagesTreeSchema>;
+
+/** Most recently written checkout first. */
+export const codePagesSchema = z.array(codePagesTreeSchema).max(MAX_CODE_PAGE_TREES);
+export type CodePages = z.infer<typeof codePagesSchema>;

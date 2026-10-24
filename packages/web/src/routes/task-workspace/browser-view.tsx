@@ -1,6 +1,8 @@
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
+  CopyIcon,
+  ExternalLinkIcon,
   GlobeIcon,
   MousePointerClickIcon,
   PlusIcon,
@@ -8,7 +10,7 @@ import {
   TriangleAlertIcon,
   XIcon,
 } from 'lucide-react'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 
 import { openDesignProxy, openPreviewGateway } from '@/api/client'
 import { useHealth } from '@/api/queries'
@@ -75,6 +77,12 @@ export function BrowserView({
   renderEmpty,
   sourceRoots = NO_ROOTS,
   designToolbar,
+  checkAddress,
+  suggestions,
+  focusAddress = 0,
+  onGateway,
+  emptySubtitle,
+  reloadSignal = 0,
 }: {
   state: BrowserState
   /** Persisted into the column (spec §7). Called only for changes worth keeping — a successful
@@ -112,6 +120,20 @@ export function BrowserView({
   sourceRoots?: readonly string[]
   /** Design Mode's own controls beside its toggle — the Queue chip, Start task with N notes. */
   designToolbar?: React.ReactNode
+  /** Which addresses this view may load (the Code page: the project's own app only — spec
+   *  `2026-10-24-code-page-browser-tabs` §3 Scope). A refusal is shown under the bar with a way
+   *  to open the address in the user's own browser instead. Absent: any http(s) address. */
+  checkAddress?: (url: string) => { ok: true; url: string } | { ok: false; message: string }
+  /** Addresses to offer under the bar (detected ones), and as buttons in an empty tab. */
+  suggestions?: readonly string[]
+  /** Bumped to put the cursor in the address bar. */
+  focusAddress?: number
+  /** The preview-gateway origin the page is framed through on a hosted cockpit, or null. */
+  onGateway?: (origin: string | null) => void
+  /** What an empty tab says under its title. */
+  emptySubtitle?: string
+  /** Bumped by the host to reload the address shown — a page that was not answering is back. */
+  reloadSignal?: number
 }) {
   const tabs = state.tabs.length > 0 ? state.tabs : ['']
   const active = Math.min(state.active, tabs.length - 1)
@@ -261,6 +283,19 @@ export function BrowserView({
   const refused = viaGateway?.reason !== undefined
   // Asked for but not answered yet: nothing is framed, least of all the address itself.
   const awaitingGateway = remoteLoopback && viaGateway === null
+  const gatewayOrigin = viaGateway?.src ? new URL(viaGateway.src).origin : null
+  const reportGateway = useRef(onGateway)
+  reportGateway.current = onGateway
+  useEffect(() => reportGateway.current?.(gatewayOrigin), [gatewayOrigin])
+
+  /** The last address `checkAddress` refused, shown under the bar until the next attempt. */
+  const [refusal, setRefusal] = useState<{ url: string; message: string } | null>(null)
+  const addressRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (focusAddress > 0) addressRef.current?.focus()
+  }, [focusAddress])
+  const suggestionsId = useId()
+
 
   // Asked for but not answered yet: nothing is framed, so the page is not loaded directly only to
   // be loaded again a moment later through the mirror.
@@ -435,6 +470,14 @@ export function BrowserView({
     if (!design) setProxy(null)
   }, [design])
 
+  const reloadTarget = useRef(target)
+  reloadTarget.current = target
+  useEffect(() => {
+    if (reloadSignal === 0 || reloadTarget.current === '') return
+    setStatus('loading')
+    setReloadToken((token) => token + 1)
+  }, [reloadSignal])
+
   // A page that never fires `load` is the only failure an embedder can detect at all.
   useEffect(() => {
     if (status !== 'loading' || target === '' || refused) return
@@ -444,8 +487,15 @@ export function BrowserView({
 
   const commit = useCallback(
     (raw: string) => {
-      const url = normalizeAddress(raw)
-      if (url === null) return
+      const normalized = normalizeAddress(raw)
+      if (normalized === null) return
+      const checked = checkAddress ? checkAddress(normalized) : { ok: true as const, url: normalized }
+      if (!checked.ok) {
+        setRefusal({ url: normalized, message: checked.message })
+        return
+      }
+      setRefusal(null)
+      const url = checked.url
       releaseMirror()
       setTarget(url)
       setDraft(url)
@@ -462,7 +512,7 @@ export function BrowserView({
         return { ...byTab, [active]: { stack, position: stack.length - 1 } }
       })
     },
-    [active, current, releaseMirror],
+    [active, checkAddress, current, releaseMirror],
   )
 
   /** Back (`-1`) and Forward (`+1`) — a move along this tab's own stack. */
@@ -627,13 +677,25 @@ export function BrowserView({
           }}
         >
           <Input
+            ref={addressRef}
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => {
+              setDraft(event.target.value)
+              setRefusal(null)
+            }}
             placeholder="Enter an address, e.g. http://localhost:3000"
             aria-label="Address"
+            aria-invalid={refusal !== null ? true : undefined}
             spellCheck={false}
+            autoComplete="off"
+            {...(suggestions && suggestions.length > 0 ? { list: suggestionsId } : {})}
             className="h-8 text-[13px] focus-visible:ring-ring/30 md:text-[13px] dark:bg-card"
           />
+          {suggestions && suggestions.length > 0 ? (
+            <datalist id={suggestionsId} data-slot="browser-suggestions">
+              {suggestions.map((url) => <option key={url} value={url} />)}
+            </datalist>
+          ) : null}
         </form>
         {designAllowed ? (
           // The one control in this toolbar that is not navigation, and the only one a user has
@@ -660,6 +722,36 @@ export function BrowserView({
         {designAllowed ? designToolbar : null}
       </div>
 
+      {refusal ? (
+        <div
+          role="alert"
+          data-slot="browser-refused-address"
+          className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/70 px-3 py-1.5 text-xs text-soft-foreground"
+        >
+          <span className="min-w-0 flex-1">{refusal.message}</span>
+          <Button asChild variant="outline" size="xs">
+            <a href={refusal.url} target="_blank" rel="noopener noreferrer">
+              <ExternalLinkIcon aria-hidden="true" />
+              Open it in your browser
+            </a>
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            onClick={() => {
+              void navigator.clipboard?.writeText(refusal.url).then(
+                () => toast('Address copied'),
+                () => toast('Could not copy', { tone: 'danger' }),
+              )
+            }}
+          >
+            <CopyIcon aria-hidden="true" />
+            Copy address
+          </Button>
+        </div>
+      ) : null}
+
       <div ref={areaRef} className="relative min-h-0 flex-1">
         {refused ? (
           <CenteredState
@@ -677,7 +769,18 @@ export function BrowserView({
             tone="neutral"
             heading="h2"
             title="Empty tab"
-            subtitle="Enter an address above. Any will do — including the app running in this task's terminal."
+            subtitle={emptySubtitle ?? "Enter an address above. Any will do — including the app running in this task's terminal."}
+            {...(suggestions && suggestions.length > 0 ? {
+              actions: (
+                <div data-slot="browser-suggested" className="flex flex-wrap justify-center gap-1.5">
+                  {suggestions.map((url) => (
+                    <Button key={url} type="button" variant="outline" size="xs" className="font-mono" onClick={() => commit(url)}>
+                      {tabLabel(url)}
+                    </Button>
+                  ))}
+                </div>
+              ),
+            } : {})}
           />
         ) : (
           <>

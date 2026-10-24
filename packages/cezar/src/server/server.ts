@@ -18,6 +18,7 @@ import {
   githubReposQuerySchema, type GithubReposResponse,
   serviceLogsQuerySchema, serviceParamsSchema, servicePatchSchema, servicePinInputSchema, type ServiceLogs, type ServicesState,
   e2eSetupInputSchema, type E2eStatus, taskActionSurfaceSchema,
+  codePagesSchema,
 } from '@open-mercato/cezar-contract';
 import { SecretStore, SecretsError, type SecretScopeRef } from '../workspace/secrets.ts';
 import { listEnvFiles, previewEnvFile, readEnvFile, removeEnvFile, writeEnvFile } from '../env-files.ts';
@@ -1072,6 +1073,10 @@ const uiStateSchema = z
     // Retained for backward compatibility — the banner is gone; `.passthrough()` would preserve
     // the key regardless, but keep it typed.
     dismissedSkillsBanner: z.boolean().optional(),
+    // The Code page's Browser tabs per checkout (spec 2026-10-24-code-page-browser-tabs §4):
+    // loopback addresses only, bounded so the whole value fits the body limit. The cockpit PUTs
+    // the whole list because the merge below is shallow.
+    codePages: codePagesSchema.optional(),
   })
   .passthrough();
 

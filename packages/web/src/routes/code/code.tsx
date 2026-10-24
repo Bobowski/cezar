@@ -183,7 +183,9 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
     if (!pagesRestored) return
     const timer = setTimeout(() => {
       const cached = queryClient.getQueryData<UiState>(queryKeys.uiState)
-      if (JSON.stringify(savedPagesFor(cached?.codePages, key) ?? null) === pagesJson) return
+      const saved = savedPagesFor(cached?.codePages, key)
+      // A checkout never saved and still without pages is not worth a slot on the server.
+      if (JSON.stringify(saved ?? []) === pagesJson) return
       const codePages = withPages(cached?.codePages, key, JSON.parse(pagesJson) as CodePage[])
       queryClient.setQueryData<UiState>(queryKeys.uiState, (prev) => ({ ...prev, codePages }))
       // Layout is state: a failed write costs another device the latest pages, nothing more.

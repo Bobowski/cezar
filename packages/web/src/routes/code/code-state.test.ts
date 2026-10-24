@@ -277,5 +277,8 @@ describe('Browser tabs as pages (spec 2026-10-24-code-page-browser-tabs)', () =>
     expect(withPages(raw, 'main', [])).toEqual([{ tree: 'main', pages: [] }, { tree: 'run-1', pages: [{ id: 'b1', url: A, group: 0 }] }])
     const many = Array.from({ length: 12 }, (_, at) => ({ tree: `run-${at}`, pages: [] }))
     expect(withPages(many, 'main', [])).toHaveLength(8)
+    // Past the cap a checkout with no pages goes first, so main's pages are not pushed out by visits.
+    const full = [{ tree: 'run-0', pages: [] }, ...Array.from({ length: 7 }, (_, at) => ({ tree: `run-${at + 1}`, pages: [{ id: 'b1', url: A, group: 0 }] }))]
+    expect(withPages(full, 'main', [{ id: 'b1', url: B, group: 0 }]).map((entry) => entry.tree)).toEqual(['main', 'run-1', 'run-2', 'run-3', 'run-4', 'run-5', 'run-6', 'run-7'])
   })
 })

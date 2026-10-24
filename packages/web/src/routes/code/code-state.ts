@@ -292,7 +292,14 @@ export function withPages(raw: unknown, tree: string, pages: CodePage[]): CodePa
     const parsed = codePagesTreeSchema.safeParse(each)
     return parsed.success && parsed.data.tree !== tree ? [parsed.data] : []
   })
-  return [{ tree, pages: pages.slice(0, MAX_CODE_PAGES) }, ...others].slice(0, MAX_CODE_PAGE_TREES)
+  const all = [{ tree, pages: pages.slice(0, MAX_CODE_PAGES) }, ...others]
+  // Past the cap, a checkout with no pages goes before one with pages, oldest first.
+  while (all.length > MAX_CODE_PAGE_TREES) {
+    let empty = all.length - 1
+    while (empty > 0 && (all[empty]?.pages.length ?? 0) > 0) empty -= 1
+    all.splice(empty > 0 ? empty : all.length - 1, 1)
+  }
+  return all
 }
 
 /**

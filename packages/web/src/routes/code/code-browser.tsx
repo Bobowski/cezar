@@ -82,10 +82,12 @@ export function CodeBrowserTab({
   onShowTerminal?: () => void
 }) {
   const health = useHealth()
-  const local = health.data?.capabilities?.preview ?? true
+  // Never probed before the cockpit is known to be local: on a hosted one the viewer's own
+  // machine is not the app's.
+  const local = health.data?.capabilities?.preview === true
   const terminal = health.data?.capabilities?.terminal === true
   const [shown, setShown] = useState(false)
-  const listening = useListening(state.url, local && !shown)
+  const listening = useListening(state.url, local && !shown, health.data !== undefined)
   const view: ViewProps = { state, onChange, focusAddress, suggestions, onGateway }
   // A saved address nothing answers at any more (§3 Persistence): the address is kept, and the
   // page comes back on its own once the app is up again.
@@ -119,7 +121,7 @@ const RELISTEN_MS = 3_000
 const LISTEN_TIMEOUT_MS = 2_500
 
 /** Whether anything answers at `url` — asked only for a loopback address on a LOCAL cockpit. */
-function useListening(url: string, enabled: boolean): 'asking' | 'yes' | 'no' {
+function useListening(url: string, enabled: boolean, known: boolean): 'asking' | 'yes' | 'no' {
   const ask = enabled && url !== '' && isLoopbackPageAddress(url)
   const [answer, setAnswer] = useState<{ url: string; up: boolean } | null>(null)
   useEffect(() => {
@@ -141,6 +143,7 @@ function useListening(url: string, enabled: boolean): 'asking' | 'yes' | 'no' {
       if (timer) clearTimeout(timer)
     }
   }, [ask, url])
+  if (!known && url !== '') return 'asking'
   if (!ask) return 'yes'
   return answer?.url !== url ? 'asking' : answer.up ? 'yes' : 'no'
 }

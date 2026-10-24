@@ -21,7 +21,7 @@
  * rebuilds it — state, never configuration.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { z } from 'zod';
 
@@ -213,6 +213,21 @@ export const FRESH_MARKER = '.fresh';
 /** `versions/.running`: the install the last-booted server runs, so another process's prune
  *  never removes it from under that server once `current` has moved on. */
 export const RUNNING_MARKER = '.running';
+
+/** The uid owning the managed layout when it is not `uid` (null when it is, when the platform has
+ *  no uids, or when there is no layout yet to own). */
+export function foreignInstallOwner(env: NodeJS.ProcessEnv = process.env, uid = process.getuid?.()): number | null {
+  if (uid === undefined) return null;
+  for (const dir of [versionsDir(env), dirname(versionsDir(env))]) {
+    try {
+      const owner = statSync(dir).uid;
+      return owner === uid ? null : owner;
+    } catch {
+      // Not there yet: the next one up decides.
+    }
+  }
+  return null;
+}
 
 export function recordServerRunning(id: string, env: NodeJS.ProcessEnv = process.env): void {
   try {

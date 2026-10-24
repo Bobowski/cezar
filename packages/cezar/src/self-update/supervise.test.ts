@@ -315,22 +315,30 @@ describe.skipIf(!haveShell)('the container launcher', () => {
     chmodSync(join(dir, 'bin', 'node'), 0o755);
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
-  const launch = (uid: number, ...args: string[]) => {
+  const launchWith = (extra: NodeJS.ProcessEnv, uid: number, ...args: string[]) => {
     writeFileSync(join(dir, 'bin', 'id'), `#!/bin/sh\necho ${uid}\n`);
     chmodSync(join(dir, 'bin', 'id'), 0o755);
-    return spawnSync('sh', [LAUNCHER, ...args], {
-      encoding: 'utf8',
-      env: { ...process.env, PATH: `${join(dir, 'bin')}:${process.env.PATH ?? ''}`, CEZ_HOME: join(dir, 'home') },
-    });
+    const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${join(dir, 'bin')}:${process.env.PATH ?? ''}`, CEZ_HOME: join(dir, 'home'), ...extra };
+    if (!('CEZ_ENTRYPOINT' in extra)) delete env.CEZ_ENTRYPOINT;
+    return spawnSync('sh', [LAUNCHER, ...args], { encoding: 'utf8', env });
   };
+  const launch = (uid: number, ...args: string[]) => launchWith({}, uid, ...args);
 
-  it('refuses update, install, use and link as root, with the -u node hint', () => {
-    for (const command of ['update', 'install', 'use', 'link']) {
+  it('refuses update, install, use, link and serve as root, with the -u node hint', () => {
+    for (const command of ['update', 'install', 'use', 'link', 'serve']) {
       const run = launch(0, command);
       expect(run.status).toBe(1);
       expect(run.stderr).toContain(`docker compose exec -u node cezar cezar ${command}`);
       expect(run.stdout).toBe('');
     }
+    // The bare command is `serve` too.
+    expect(launch(0).stderr).toContain('docker compose exec -u node cezar cezar serve');
+  });
+
+  it('lets the entrypoint start serve as root (it drops to node itself)', () => {
+    const run = launchWith({ CEZ_ENTRYPOINT: '1' }, 0, 'serve');
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain(' serve');
   });
 
   it('runs everything else as root, and update as node', () => {

@@ -38,6 +38,7 @@ import {
   CURRENT_LINK,
   detectInstallKind,
   findInstalled,
+  foreignInstallOwner,
   isBranchInstallId,
   linkCheckout,
   listInstalled,
@@ -618,9 +619,16 @@ export class SelfUpdateService {
     }
   }
 
-  /** The serving process records the install it runs, for prunes run by other processes. */
-  recordRunning(): void {
-    if (this.runningId) recordServerRunning(this.runningId, this.env);
+  /** The serving process records the install it runs, for prunes run by other processes — only
+   *  as the install's owner: a root `serve` would leave a marker the owner's server cannot rewrite. */
+  recordRunning(uid = process.getuid?.()): void {
+    if (!this.runningId) return;
+    const owner = foreignInstallOwner(this.env, uid);
+    if (owner !== null) {
+      console.log(`cezar: not marking ${this.runningId} as the running build — this process is uid ${uid}, the install belongs to uid ${owner}`);
+      return;
+    }
+    recordServerRunning(this.runningId, this.env);
   }
 
   /** Keep the newest `BRANCH_BUILDS_KEPT` branch builds; never the active one, `previous`, the

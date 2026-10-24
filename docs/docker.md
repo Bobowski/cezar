@@ -110,7 +110,7 @@ services stay up, and boot recovery resumes the agents.
   needs no credentials; a private one uses the container's `gh` login or `/data/ssh`.
   From a shell, `docker compose -f docker/compose.yml exec -u node cezar cezar update` follows the
   same branch (`--check` only reports). Always `-u node`: the launcher refuses `update`, `install`,
-  `use` and `link` as root, which would leave a root-owned `/data/cezar/source` the server cannot
+  `use`, `link` and `serve` as root, which would leave a root-owned `/data/cezar/source` or `versions/` entry the server cannot
   write. Nothing is saved on boot — `CEZ_UPDATE_*` and a rebuilt image's branch are followed until
   you pick a channel in the dialog, which then wins.
 

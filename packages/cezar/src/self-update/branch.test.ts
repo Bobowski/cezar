@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -589,6 +589,21 @@ describe('applying a branch build', () => {
     svc.apply(target);
     await vi.waitFor(() => expect(restart).toHaveBeenCalled(), { timeout: 15_000 });
     expect(readdirSync(join(home, 'versions'))).toContain(running);
+  });
+
+  it('records the running build only as the install\'s owner, never as another user (root)', async () => {
+    const { running } = await prepared();
+    const owner = statSync(join(home, 'versions')).uid;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      service().recordRunning(owner + 1);
+      expect(existsSync(join(home, 'versions', '.running'))).toBe(false);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('not marking'));
+    } finally {
+      log.mockRestore();
+    }
+    service().recordRunning(owner);
+    expect(readFileSync(join(home, 'versions', '.running'), 'utf8').trim()).toBe(running);
   });
 
   it('a CLI `cezar update` never prunes the build the live server runs from', async () => {

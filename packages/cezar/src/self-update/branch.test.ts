@@ -497,6 +497,26 @@ describe('applying a branch build', () => {
     expect(readdirSync(join(home, 'versions'))).not.toContain('0.17.0+11111111');
   });
 
+  it('never prunes the build this server runs from, even when current moved under it', async () => {
+    const { running, target } = await prepared();
+    for (const [n, day] of [
+      ['11111111', '02'],
+      ['22222222', '03'],
+      ['33333333', '04'],
+    ] as const) {
+      fakeInstall(`0.17.0+${n}`, { version: '0.17.0', source: 'branch', installedAt: `2026-10-${day}T00:00:00.000Z`, commit: { sha: n, subject: '', at: `2026-10-${day}T00:00:00.000Z`, branch: 'brutus' } });
+    }
+    const { deps } = stubs();
+    const restart = vi.fn();
+    const svc = service({ ...deps, restart });
+    // `cezar use` from a shell while this server runs `running`: neither current nor previous is it.
+    activate('0.17.0+33333333', env);
+    activate('0.17.0+22222222', env);
+    svc.apply(target);
+    await vi.waitFor(() => expect(restart).toHaveBeenCalled(), { timeout: 15_000 });
+    expect(readdirSync(join(home, 'versions'))).toContain(running);
+  });
+
   it('never builds, or swaps the remote, while another process builds in the clone', async () => {
     const { running, target } = await prepared();
     const { calls, deps } = stubs();

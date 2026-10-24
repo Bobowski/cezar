@@ -605,9 +605,10 @@ export class SelfUpdateService {
     }
   }
 
-  /** Keep the newest `BRANCH_BUILDS_KEPT` branch builds; never the active one or `previous`. */
+  /** Keep the newest `BRANCH_BUILDS_KEPT` branch builds; never the active one, `previous`, or
+   *  the one this process runs from (`current` may have moved under it, e.g. `cezar use`). */
   private pruneBranchBuilds(log: (line: string) => void): void {
-    const keep = new Set([activeId(this.env), previousId(this.env)]);
+    const keep = new Set([activeId(this.env), previousId(this.env), this.runningId]);
     const builds = listInstalled(this.env).filter((entry) => entry.source === 'branch');
     for (const entry of builds.slice(BRANCH_BUILDS_KEPT)) {
       if (keep.has(entry.id)) continue;

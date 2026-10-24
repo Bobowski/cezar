@@ -23,6 +23,7 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
   let store: RunStore;
   let calls: Array<{ args: string; cwd?: string }>;
   let liveRun: string;
+  let extraImages: string;
   beforeEach(() => {
     root = realpathSync(mkdtempSync(join(tmpdir(), 'cez-docker-manage-')));
     vi.stubEnv('CEZ_HOME', join(root, 'home'));
@@ -34,6 +35,7 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     liveRun = run.id;
     mkdirSync(join(root, '.ai/cezar/worktrees', liveRun), { recursive: true });
     calls = [];
+    extraImages = '';
   });
   afterEach(() => {
     store.flush();
@@ -54,7 +56,7 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     const command = args.slice(0, 2).join(' ');
     if (args[0] === 'ps') return { ok: true, stdout: ps() };
     if (command === 'container inspect') return { ok: true, stdout: [C('a'), C('b'), C('c')].map((id) => `${id}\tsha256:${I('1a')}`).join('\n') };
-    if (command === 'image ls') return { ok: true, stdout: fixture('image-ls.ndjson') };
+    if (command === 'image ls') return { ok: true, stdout: fixture('image-ls.ndjson') + extraImages };
     if (command === 'volume ls') return { ok: true, stdout: volumes };
     if (command === 'system df') return { ok: true, stdout: args.includes('-v') ? fixture('system-df-v.json') : fixture('system-df.ndjson') };
     if (command === 'info --format') return { ok: true, stdout: '/var/lib/docker\n' };
@@ -123,6 +125,19 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     expect((await apiRequest(instance, '/api/v1/docker/volumes/nope', { method: 'DELETE' })).status).toBe(404);
     expect((await apiRequest(instance, '/api/v1/docker/volumes/--all', { method: 'DELETE' })).status).toBe(400);
     expect((await apiRequest(instance, `/api/v1/docker/containers/${C('a')}?force=yes`, { method: 'DELETE' })).status).toBe(400);
+  });
+
+  it('removes an image by its exact id or a unique prefix, and refuses an ambiguous one', async () => {
+    const twin = `1a1a1a1a1a1a${'f'.repeat(52)}`;
+    extraImages = `\n${JSON.stringify({ ID: `sha256:${twin}`, Repository: 'twin', Tag: 'latest', Size: '1MB', CreatedAt: '' })}`;
+    const { instance } = await app();
+    const ambiguous = await apiRequest(instance, `/api/v1/docker/images/${I('1a').slice(0, 12)}`, { method: 'DELETE' });
+    expect(ambiguous.status).toBe(409);
+    expect((await ambiguous.json() as { error: string }).error).toMatch(/ambiguous/);
+    expect(ran()).toEqual([]);
+    expect((await apiRequest(instance, `/api/v1/docker/images/${twin}`, { method: 'DELETE' })).status).toBe(200);
+    expect((await apiRequest(instance, `/api/v1/docker/images/${twin.slice(0, 13)}`, { method: 'DELETE' })).status).toBe(200);
+    expect(ran().every((args) => args.endsWith(twin))).toBe(true);
   });
 
   it('plans Reclaim and runs only the steps the plan still holds', async () => {

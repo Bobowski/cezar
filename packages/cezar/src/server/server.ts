@@ -7568,7 +7568,11 @@ export function createApp(deps: ServerDeps) {
       const { id } = c.req.valid('param');
       const list = await docker(['image', 'ls', '--no-trunc', '--format', 'json']);
       if (!list.ok) return c.json({ error: list.reason }, 409);
-      const image = parseImageList(list.stdout).find((entry) => entry.id.startsWith(id));
+      const rows = parseImageList(list.stdout);
+      // An exact id, else a prefix only one image has — never the first of several it matches.
+      const matches = rows.some((entry) => entry.id === id) ? rows.filter((entry) => entry.id === id) : rows.filter((entry) => entry.id.startsWith(id));
+      if (matches.length > 1) return c.json({ error: `image id ${id} is ambiguous: ${matches.length} images start with it` }, 409);
+      const image = matches[0];
       if (!image) return c.json({ error: 'no such image' }, 404);
       return dockerRemove(c, ['image', 'rm', ...(c.req.valid('query').force === '1' ? ['-f'] : []), image.id]);
     })

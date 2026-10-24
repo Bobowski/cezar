@@ -82,7 +82,9 @@ export function withoutFrameBusting(answer: Record<string, string | string[]>, p
       out[name] = value;
       continue;
     }
-    for (const policy of Array.isArray(value) ? value : [value]) {
+    // Node joins repeated CSP headers with `,`, which is also the policy-list separator; no
+    // directive value may contain one, so the split is exact.
+    for (const policy of (Array.isArray(value) ? value : [value]).flatMap((each) => each.split(','))) {
       const directives = policy.split(';').map((directive) => directive.trim()).filter((directive) => directive !== '' && !/^frame-ancestors(\s|$)/i.test(directive));
       if (directives.length > 0) policies.push(directives.join('; '));
     }

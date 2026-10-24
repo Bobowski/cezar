@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { PreviewGateways, TICKET_PARAM } from './gateway.ts';
+import { PreviewGateways, TICKET_PARAM, withoutFrameBusting } from './gateway.ts';
 import { PICKER_PATH } from './picker-script.ts';
 
 /**
@@ -37,6 +37,13 @@ async function enter(designMode: boolean): Promise<{ origin: string; cookie: str
 
 beforeEach(async () => {
   app = createServer((req, res) => {
+    if (req.url === '/two-policies') {
+      // Two CSP header lines: Node hands them over joined by a comma.
+      res.setHeader('content-type', 'text/plain');
+      res.setHeader('content-security-policy', ["default-src 'self'", "frame-ancestors 'none'; img-src *"]);
+      res.writeHead(200).end('2');
+      return;
+    }
     if (req.url === '/script.js') {
       res.writeHead(200, { 'content-type': 'application/javascript', 'x-frame-options': 'DENY' }).end('1');
       return;
@@ -121,5 +128,26 @@ describe('a gateway slot in design mode', () => {
     const second = await enter(true);
     expect(second.origin).toBe(first.origin);
     expect(gateways.size).toBe(1);
+  });
+});
+
+describe('withoutFrameBusting', () => {
+  const COCKPIT = 'https://cockpit.example';
+
+  it('removes frame-ancestors from a comma-joined policy list as well as a semicolon-joined one', () => {
+    const out = withoutFrameBusting({ 'content-security-policy': "default-src 'self', frame-ancestors 'none'; img-src *" }, COCKPIT);
+    expect(out['content-security-policy']).toBe(`default-src 'self', img-src *, frame-ancestors ${COCKPIT}`);
+  });
+
+  it('drops a policy that only forbade framing, and keeps one it cannot read', () => {
+    const out = withoutFrameBusting({ 'content-security-policy': ["frame-ancestors 'none'", 'sandbox allow-scripts'] }, COCKPIT);
+    expect(out['content-security-policy']).toBe(`sandbox allow-scripts, frame-ancestors ${COCKPIT}`);
+  });
+
+  it('strips it through the gateway when the app sends two policy headers', async () => {
+    const { origin, cookie } = await enter(true);
+    const res = await fetch(`${origin}/two-policies`, { headers: { cookie } });
+    expect(await res.text()).toBe('2');
+    expect(res.headers.get('content-security-policy')).toBe("default-src 'self', img-src *, frame-ancestors http://127.0.0.1:4321");
   });
 });

@@ -120,7 +120,7 @@ gateway that `CEZ_PREVIEW_PORTS` already configures for the VPS image.
   (Windows) therefore keeps no history. The check never holds a keystroke: it runs beside the
   write, and keeps nothing when its own `ps` takes over 300 ms from its start, or the answer (a wait behind a running `ps` included) over 600 ms from the line's first word. A bare Enter, a Ctrl+C or a space-led
   line asks nothing; one `ps` runs at a time per host, a burst shares the one read queued behind
-  it (never a read begun before it asked), and a `ps` past 300 ms is killed; while three killed ones have not exited (D-state), none is spawned and nothing is kept. Each line of a chunk is judged alone, and
+  it (never a read begun before it asked), and a `ps` past 300 ms is killed; while three killed ones have not closed (D-state; counted from the kill until the child's `close`, not until its read answers), none is spawned and nothing is kept. Each line of a chunk is judged alone, and
   only a chunk's first line can have met a prompt: a pasted `ssh host⏎passw0rd⏎` keeps
   `ssh host`, and nothing begun after an Enter, Ctrl+C or Ctrl+Z in the same chunk is checked —
   `⏎hunter2⏎` finishing an earlier line keeps only that line. What the table cannot see is ruled by text: after `exec …` nothing is kept again
@@ -131,7 +131,20 @@ gateway that `CEZ_PREVIEW_PORTS` already configures for the VPS image.
   (arrow-key) `read -s` or `exec` line is unknown text and sets no rule. A line led by a space is not kept
   (bash's `ignorespace`). A `NAME=value` (or `export NAME=value`) whose name looks like a
   credential — the transcript redactor's `SECRET_NAME_RE`, plus `PASS`/`PWD`/`KEY`/`PIN` as a
-  name part — is stored as `NAME=***`. What the shell itself reads is kept as bash's own history
+  name part — is stored as `NAME=***`, the whole shell word masked (`$(cat ~/t)`, `${…}`,
+  backticks and quotes included). The same `redactHistoryLine` also masks, as `***`: the value of
+  an `Authorization`/`Proxy-Authorization`/`Cookie`/`PRIVATE-TOKEN`/`Api-Key` header or any
+  `X-…token|key|secret|auth…` one; URL userinfo (`https://***@`, and any `user:pass@`); a
+  secret-named query parameter (`?access_token=`, `&token=`, `&key=`); a secret-named flag,
+  `=`-joined or (for names ending in password/passwd/token/secret/api-key) spaced; curl's
+  `-u user:pw` and `-uuser:pw` password; a secret-named `--from-literal` key's value; the spaced
+  short password of `sshpass -p`, `docker`/`podman`/`helm`… `login -p`, `redis-cli -a` and the
+  `mysql` family's `-p` (glued `-pX` too); whatever `echo`/`printf`/`<<<` feeds a `--…token|password…`
+  flag, `--stdin` or `sudo -S`; and a line that is only one 60+ character hex or base64 word (a
+  pasted token) as `***` whole. The values of the host's environment secrets, the live runs'
+  secrets and the stored project/workspace secrets, and the shared token shapes, become
+  `[REDACTED]`. Redaction runs again on every read, so a line stored before a rule existed is
+  served — and rewritten on the next write — under it. What the shell itself reads is kept as bash's own history
   keeps it: a heredoc body, and the answer to a `read -s` run by a sourced script or a function
   (no child shows and no typed line says `read -s`). Both the checkout's terminals and the
   project's task terminals feed it; a task's own credential never does (its run token's prefix counts on a local cockpit, which resolves it as the host), nor a cockpit booted inside a task (`CEZ_TASK_ID`), nor an API token (an MCP

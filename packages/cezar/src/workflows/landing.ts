@@ -228,11 +228,12 @@ async function commitTask(
   const unresolved = await unresolvedConflicts(root, status.stdout);
   if (unresolved) return { result: 'failed', error: `refusing to commit: ${unresolved}` };
   // Everything the task left: what an agent staged is incidental (spec 2026-10-24-git-view §4).
-  // `git add` exits 1 on a pathspec naming an ignored path, so drop the exclude when .gitignore
-  // already keeps .ai/cezar out (#1597).
-  const ignored = (await git(root, ['check-ignore', '-q', '.ai/cezar/'])).ok;
-  const add = await git(root, ['add', '-A', ...(ignored ? ['--', '.'] : PATHSPEC)]);
+  // An exclude pathspec makes `git add` exit 1 whenever .gitignore covers anything under
+  // .ai/cezar (#1597), so stage the tree, then unstage all of .ai/cezar — tracked edits included.
+  const add = await git(root, ['add', '-A', '--', '.']);
   if (!add.ok) return { result: 'failed', error: reason(add, 'git add failed') };
+  const unstage = await git(root, ['reset', '-q', '--', '.ai/cezar']);
+  if (!unstage.ok) return { result: 'failed', error: reason(unstage, 'git reset failed') };
   const nameStatus = await git(root, ['diff', '--cached', '--name-status']);
   const files = nameStatus.stdout
     .split('\n')

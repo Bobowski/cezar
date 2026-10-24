@@ -76,6 +76,62 @@ describe('landInPlace', () => {
     }
   });
 
+  it('lands when .ai/cezar/ is ignored but a file inside it is tracked, and commits none of it', async () => {
+    execFileSync('mkdir', ['-p', join(checkout, '.ai/cezar/workflows')]);
+    writeFileSync(join(checkout, '.ai/cezar/workflows/w.yaml'), 'a: 1\n');
+    writeFileSync(join(checkout, '.gitignore'), '.ai/cezar/\n');
+    git(checkout, 'add', '.gitignore');
+    git(checkout, 'add', '-f', '.ai/cezar/workflows/w.yaml');
+    git(checkout, 'commit', '-qm', 'tracked workflow');
+    git(checkout, 'push', '-q');
+    writeFileSync(join(checkout, '.ai/cezar/runs.json'), '{}\n');
+    writeFileSync(join(checkout, '.ai/cezar/workflows/new.yaml'), 'b: 1\n');
+    writeFileSync(join(checkout, 'person.md'), 'Bjorn\n');
+    const landed = await landInPlace(checkout, { describe: async () => 'mine', checks: [] });
+    expect(landed).toMatchObject({ result: 'landed', pushed: true, files: ['person.md'] });
+    expect(git(checkout, 'ls-files', '.ai')).toBe('.ai/cezar/workflows/w.yaml');
+    expect(git(checkout, 'diff', '--cached', '--name-only')).toBe('');
+  });
+
+  it('lands when .ai/cezar/ is ignored and nothing inside it is tracked', async () => {
+    writeFileSync(join(checkout, '.gitignore'), '.ai/cezar/\n');
+    git(checkout, 'add', '.gitignore');
+    git(checkout, 'commit', '-qm', 'ignore');
+    git(checkout, 'push', '-q');
+    execFileSync('mkdir', ['-p', join(checkout, '.ai/cezar')]);
+    writeFileSync(join(checkout, '.ai/cezar/runs.json'), '{}\n');
+    writeFileSync(join(checkout, 'person.md'), 'Bjorn\n');
+    const landed = await landInPlace(checkout, { describe: async () => 'mine', checks: [] });
+    expect(landed).toMatchObject({ result: 'landed', pushed: true, files: ['person.md'] });
+    expect(git(checkout, 'ls-files', '.ai')).toBe('');
+  });
+
+  it('with .ai/cezar/ not ignored, lands the rest and leaves its files untracked', async () => {
+    execFileSync('mkdir', ['-p', join(checkout, '.ai/cezar/workflows')]);
+    writeFileSync(join(checkout, '.ai/cezar/config.json'), '{}\n');
+    writeFileSync(join(checkout, '.ai/cezar/workflows/w.yaml'), 'a: 1\n');
+    writeFileSync(join(checkout, 'person.md'), 'Bjorn\n');
+    const landed = await landInPlace(checkout, { describe: async () => 'mine', checks: [] });
+    expect(landed).toMatchObject({ result: 'landed', pushed: true, files: ['person.md'] });
+    expect(git(checkout, 'ls-files', '.ai')).toBe('');
+    expect(git(checkout, 'status', '--porcelain')).toBe('?? .ai/');
+  });
+
+  it('a negated .ai/cezar/workflows/ does not auto-commit an untracked workflow', async () => {
+    writeFileSync(join(checkout, '.gitignore'), '.ai/cezar/*\n!.ai/cezar/workflows/\n');
+    git(checkout, 'add', '.gitignore');
+    git(checkout, 'commit', '-qm', 'ignore');
+    git(checkout, 'push', '-q');
+    execFileSync('mkdir', ['-p', join(checkout, '.ai/cezar/workflows')]);
+    writeFileSync(join(checkout, '.ai/cezar/runs.json'), '{}\n');
+    writeFileSync(join(checkout, '.ai/cezar/workflows/w.yaml'), 'a: 1\n');
+    writeFileSync(join(checkout, 'person.md'), 'Bjorn\n');
+    const landed = await landInPlace(checkout, { describe: async () => 'mine', checks: [] });
+    expect(landed).toMatchObject({ result: 'landed', pushed: true, files: ['person.md'] });
+    expect(git(checkout, 'ls-files', '.ai')).toBe('');
+    expect(git(checkout, 'status', '--porcelain', '-uall')).toBe('?? .ai/cezar/workflows/w.yaml');
+  });
+
   it('lands nothing on a clean checkout, without touching the network', async () => {
     expect(await landInPlace(checkout, { describe: async () => 'x', checks: [] })).toEqual({ result: 'nothing' });
   });

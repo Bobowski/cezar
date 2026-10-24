@@ -73,6 +73,36 @@ describe('DetectedUrlsStrip (spec 2026-10-24-code-page-terminal §3.1)', () => {
     expect(screen.queryByRole('button', { name: 'Copy tunnel command' })).toBeNull()
   })
 
+  it('asks nothing while its pane is hidden or the page is in the background', async () => {
+    vi.useFakeTimers()
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    try {
+      const { rerender } = render(<DetectedUrlsStrip scope={{ kind: 'project' }} onOpen={vi.fn()} active={false} />)
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(getProjectTerminalUrls).not.toHaveBeenCalled()
+
+      rerender(<DetectedUrlsStrip scope={{ kind: 'project' }} onOpen={vi.fn()} active />)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(getProjectTerminalUrls).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(3_000)
+      expect(getProjectTerminalUrls).toHaveBeenCalledTimes(2)
+
+      visibility.mockReturnValue('hidden')
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(getProjectTerminalUrls).toHaveBeenCalledTimes(2)
+
+      // Back in front: one read at once, then the usual pace.
+      visibility.mockReturnValue('visible')
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(getProjectTerminalUrls).toHaveBeenCalledTimes(3)
+    } finally {
+      visibility.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
   it('hosted: says the address goes through the gateway, and opens no gateway port to say so (§3.4)', async () => {
     localHandoff = false
     const onOpen = vi.fn()

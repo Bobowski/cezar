@@ -155,7 +155,7 @@ function TerminalTab({
     <div className="flex h-full min-h-0">
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Nothing opens on its own: the strip lists, the user clicks (§3.1). */}
-        {state.data ? <DetectedUrlsStrip scope={scope} onOpen={onOpenBrowser} /> : null}
+        {state.data ? <DetectedUrlsStrip scope={scope} onOpen={onOpenBrowser} active={active} /> : null}
         <div className="relative min-h-0 flex-1">
           {sessions.map((session) => (
             <CheckoutTerminal

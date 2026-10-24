@@ -149,3 +149,6 @@ gateway that `CEZ_PREVIEW_PORTS` already configures for the VPS image.
 - A "gateway address" in the output is this cockpit's own hostname on another port.
 - The task drawer keeps its strips as they were (user's browser + Preview); links, completion and
   the gateway mapping are the Code terminal's.
+- **The address strip polls only while it is looked at**: every 3 s while its pane is shown and
+  the page is in front, nothing while either is hidden, one read on coming back. The probe is a
+  TCP connect per address and has no event to wait on, so it stays a poll rather than a topic.

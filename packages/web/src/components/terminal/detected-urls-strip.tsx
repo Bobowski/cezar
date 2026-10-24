@@ -21,16 +21,19 @@ import { tunnelCommand, tunnelPorts } from './tunnel'
  * the strip showing, so a list of addresses holds no listener and evicts no one's Preview.
  */
 
-/** How often the strip re-probes. Each refresh is one TCP connect per address on the server, and
- *  a server coming up is something a user waits a second or two for anyway. */
+/** How often the strip re-probes while it is looked at. Each refresh is one TCP connect per address
+ *  on the server, and a server coming up is something a user waits a second or two for anyway. */
 const URL_REFRESH_MS = 3_000
 
 export function DetectedUrlsStrip({
   scope,
   onOpen,
   onPreview,
+  active = true,
 }: {
   scope: TerminalScope
+  /** The pane is on screen. A hidden one — or a page in the background — asks nothing. */
+  active?: boolean
   /** Opens the address inside the cockpit (the Code page's Browser tab). Absent: `Open in Browser`
    *  is the user's own browser, a new tab. */
   onOpen?: (url: string) => void
@@ -48,25 +51,35 @@ export function DetectedUrlsStrip({
 
   const key = scopeKey(scope)
   useEffect(() => {
-    let active = true
+    if (!active) return
+    let live = true
+    let timer: ReturnType<typeof setInterval> | null = null
     const pull = () => {
       void terminalUrls(scope)
         .then((state) => {
-          if (!active) return
+          if (!live) return
           setUrls(state.urls)
           setSshUser(state.sshUser ?? null)
         })
         .catch(() => {})
     }
-    pull()
-    const timer = setInterval(pull, URL_REFRESH_MS)
+    const pace = () => {
+      if (timer !== null) clearInterval(timer)
+      timer = null
+      if (document.visibilityState === 'hidden') return
+      pull()
+      timer = setInterval(pull, URL_REFRESH_MS)
+    }
+    pace()
+    document.addEventListener('visibilitychange', pace)
     return () => {
-      active = false
-      clearInterval(timer)
+      live = false
+      if (timer !== null) clearInterval(timer)
+      document.removeEventListener('visibilitychange', pace)
     }
     // `scope` is identified by its key; a fresh object each render is the same scope.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key])
+  }, [key, active])
 
   if (urls.length === 0) return null
   const tunnel = hosted ? tunnelCommand(tunnelPorts(urls.map((entry) => entry.url)), window.location.hostname, sshUser) : null

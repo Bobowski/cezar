@@ -35,7 +35,11 @@ const USAGE = `cez task — dispatch cezar tasks from inside a task (on by defau
                   [--verdict approve|changes|reject] [--suggestions "…"]… [--confidence <0-1>]
                   [--side-effect "…"]… [--error "…"]… [--next "…"]
   cez task list                       the tree this task belongs to, with status and cost
-  cez task tree <run id>              the tree rooted at (or containing) another run`;
+  cez task tree <run id>              the tree rooted at (or containing) another run
+
+From a shell (no CEZ_TASK_ID), create starts a top-level task instead: CEZ_TOKEN=<token> cez --server <url>
+task create "<objective>" [--workflow <name>] [--runner …] [--model …] (CEZ_SERVER works too; prefer
+CEZ_TOKEN to --token, which shows in the process list).`;
 
 function base(env: TaskCliEnv): { url: string; scope: string } | null {
   const url = env.CEZ_API_URL?.replace(/\/+$/, '');
@@ -105,11 +109,36 @@ export async function runTaskCommand(
             runner: { type: 'string' },
             model: { type: 'string' },
             'retry-limit': { type: 'string' },
+            workflow: { type: 'string' },
           },
         });
+        if (values.workflow !== undefined && env.CEZ_TASK_ID) throw new Error('--workflow is for a top-level task; a dispatched child runs the dispatch workflow');
         const objective = positionals.join(' ').trim();
         if (!objective) throw new Error('an objective is required: cez task create "<objective>"');
-        if (!env.CEZ_TASK_ID) throw new Error('CEZ_TASK_ID is not set — only a running task can dispatch');
+        if (!env.CEZ_TASK_ID) {
+          // From a shell — a laptop with `--server` (spec 2026-10-24-cezar-mcp-server §4) — there
+          // is no parent to dispatch from: start a top-level task instead.
+          const parentOnly = (['title', 'kind', 'review-of', 'scope', 'budget', 'success', 'evidence', 'tools', 'retry-limit'] as const)
+            .filter((flag) => values[flag] !== undefined);
+          if (parentOnly.length > 0) {
+            throw new Error(`--${parentOnly[0]} needs a parent task (CEZ_TASK_ID); from a shell, cez task create starts a top-level task with --workflow, --runner and --model only`);
+          }
+          const response = await io.fetch(`${api.scope}/runs`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              task: objective,
+              ...(values.workflow ? { workflow: values.workflow } : {}),
+              ...(values.runner ? { runner: values.runner } : {}),
+              ...(values.model ? { model: values.model } : {}),
+            }),
+          });
+          if (!response.ok) throw new Error(`the cockpit refused the task — ${await readError(response)}`);
+          const created = (await response.json()) as { id?: string; branch?: string; runs?: Array<{ id: string }> };
+          const id = created.id ?? created.runs?.map((run) => run.id).join(', ') ?? '?';
+          io.log(`started ${id}${created.branch ? ` on branch ${created.branch}` : ''} — follow it with cez runs list`);
+          return 0;
+        }
         const body = {
           objective,
           ...(values.title ? { title: values.title } : {}),

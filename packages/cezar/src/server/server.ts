@@ -109,6 +109,7 @@ import {
   runFileRenameSchema,
   runFileWriteSchema,
   type WorkspaceConfigResponse,
+  type SelfUpdateStatus,
   workspaceBrandingLogoResponseSchema,
   githubListQuerySchema,
 } from '@open-mercato/cezar-contract';
@@ -258,6 +259,7 @@ import {
   readWorktreePath,
   FILE_CONTENT_CAP,
   repoIndexContains,
+  entriesInIndex,
 } from './git-changes.ts';
 import {
   createWorktreeFile,
@@ -327,7 +329,11 @@ import { reviewGateEnabled } from '../runs/review-gate.ts';
 import { readUiState, uiStatePath } from '../ui-state.ts';
 import { agentHomePaths, cezarHomeDir, expandTilde, isAbsolutePath } from '../paths.ts';
 import { authEnforced, fileEditRefusal, isLoopbackHostHeader, normalizeHostname, resolveCapabilities, trustedOperator } from './capabilities.ts';
-import { createAuthGuard, principalOf, upgradeIsAuthenticated, upgradeSessionId } from '../auth/guard.ts';
+import { bearerOf, createAuthGuard, principalOf, upgradeIsAuthenticated, upgradeSessionId } from '../auth/guard.ts';
+import { isApiToken, principalSeesTranscript } from '../auth/api-tokens.ts';
+import { dispatchedTaskTitle, projectsRuns, projectTaskRow, redactRunForScope, runViewScopes, visibleTaskTitle } from '../auth/run-projection.ts';
+import { buildCatalog, type Catalog } from '../mcp/catalog.ts';
+import { mcpRoutes } from '../mcp/http.ts';
 import { ensureHostKey } from '../auth/host-key.ts';
 import { authRoutes } from '../auth/routes.ts';
 import { enableRunTokens } from '../auth/run-tokens.ts';
@@ -1490,6 +1496,18 @@ async function probeWritableDir(dir: string, create: boolean): Promise<string | 
   }
 }
 
+/** A token without `admin` gets the update job's status, target and timing — npm's output and the
+ *  failure text are the admin's (spec 2026-10-24-cezar-mcp-server §4), and so are the followed
+ *  branch (a configured remote, git's fetch error) and the commits a build came from. */
+function selfUpdateFor(principal: ReturnType<typeof principalOf>, status: SelfUpdateStatus): SelfUpdateStatus {
+  if (principal?.kind !== 'token' || principal.scopes.includes('admin')) return status;
+  const { branch: _branch, ...rest } = status;
+  const installed = status.installed.map(({ commit: _commit, ...entry }) => entry);
+  if (!status.job) return { ...rest, installed };
+  const { status: state, target, startedAt, finishedAt } = status.job;
+  return { ...rest, installed, job: { status: state, target, startedAt, finishedAt, projected: true } };
+}
+
 // The return type is INFERRED on purpose: it is the chained app type built at the bottom of
 // this function, and `AppType` (src/server/app-type.ts) is `ReturnType<typeof createApp>`.
 // Annotating it `Hono` here would erase every route from the type and leave the typed client
@@ -1809,7 +1827,13 @@ export function createApp(deps: ServerDeps) {
   // what check 1 stops.
   const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
   const isHostedMode = () => !resolveCapabilities(process.env, bindHost).localHandoff;
+  const auth = deps.auth ?? new AuthService();
   app.use('/api/*', async (c, next) => {
+    // A VALID API token is not a browser (spec 2026-10-24-cezar-mcp-server §4): a page can
+    // neither read one nor attach one cross-origin, so neither check below applies. A token that
+    // does not verify gets no pass — the auth guard then answers it 401.
+    const bearer = bearerOf(c.req.header('authorization'));
+    if (bearer !== undefined && isApiToken(bearer) && auth.verifyApiToken(bearer)) return next();
     const hostName = hostnameOfHost(c.req.header('host'));
     // Strict twin of `isLoopbackHost`: a *missing* Host is untrusted here (an
     // absent header is not the "we defaulted to the loopback bind" case), and
@@ -1881,7 +1905,6 @@ export function createApp(deps: ServerDeps) {
   // ---- authentication (spec 2026-10-12-cockpit-authentication §6) ------------
   // After the origin guard, before every route: a request is a principal or a 401. Off on a
   // local cockpit, where this only stamps the `host` principal.
-  const auth = deps.auth ?? new AuthService();
   const authIsEnforced = () => authEnforced(process.env, bindHost);
   const backup = deps.backup ?? new BackupService({ version: deps.version, runs: deps.semaphore });
   // A restore without a restart replaces auth.json and the sessions file under this service.
@@ -1897,11 +1920,13 @@ export function createApp(deps: ServerDeps) {
     },
   }) as unknown as MiddlewareHandler);
   // An SSE stream is authenticated once, when it opens; each keepalive tick re-asks whether the
-  // session behind it still stands (spec 2026-10-12-cockpit-authentication §6). Host-key and
-  // auth-off principals have no session, so nothing changes for them.
+  // session or API token behind it still stands (spec 2026-10-12-cockpit-authentication §6,
+  // 2026-10-24-cezar-mcp-server §5). A token means its scopes even with sign-in off. Host-key and
+  // auth-off principals have neither, so nothing changes for them.
   const ssePingMs = deps.ssePingMs ?? 15_000;
   const sseSessionEnded = (c: Context): boolean => {
     const principal = principalOf(c);
+    if (principal?.kind === 'token') return !auth.apiTokenAlive(principal.tokenId);
     return principal?.kind === 'user' && authIsEnforced() && !auth.sessionAlive(principal.sessionId);
   };
 
@@ -3747,7 +3772,7 @@ export function createApp(deps: ServerDeps) {
     });
 
   const selfUpdateRoutes = new Hono()
-    .get('/workspace/self-update', async (c) => c.json(await selfUpdate.status()))
+    .get('/workspace/self-update', async (c) => c.json(selfUpdateFor(principalOf(c), await selfUpdate.status())))
 
     .post('/workspace/self-update/refresh', async (c) => c.json(await selfUpdate.status({ refresh: true })))
 
@@ -4387,8 +4412,9 @@ export function createApp(deps: ServerDeps) {
     onChange: (automationId: string, revision: number) => emitAutomationChange(project, automationId, revision),
   });
 
-  /** The runs the log rows name, with their dispatch children (spec 2026-09-14 § API). */
-  const logRunsOf = (runStore: RunStore, records: ReadonlyArray<{ runId?: string }>) => {
+  /** The runs the log rows name, with their dispatch children (spec 2026-09-14 § API). A
+   *  `projected` principal never gets a child's title: its parent agent wrote it. */
+  const logRunsOf = (runStore: RunStore, records: ReadonlyArray<{ runId?: string }>, projected: boolean) => {
     const runs: Record<string, { title: string; status: RunRecord['status']; costUsd?: number; children: Array<{ runId: string; kind?: NonNullable<RunRecord['dispatch']>['kind']; title: string; status: RunRecord['status']; costUsd?: number }> }> = {};
     const wanted = new Set(records.map((row) => row.runId).filter((id): id is string => typeof id === 'string'));
     if (!wanted.size) return runs;
@@ -4401,12 +4427,12 @@ export function createApp(deps: ServerDeps) {
         .map((child) => ({
           runId: child.id,
           ...(child.dispatch?.kind ? { kind: child.dispatch.kind } : {}),
-          title: child.title,
+          title: projected ? dispatchedTaskTitle(child.id) : child.title,
           status: child.status,
           ...(showCost && typeof child.costUsd === 'number' ? { costUsd: child.costUsd } : {}),
         }));
       runs[run.id] = {
-        title: run.title,
+        title: visibleTaskTitle(run, run.title, projected),
         status: run.status,
         ...(showCost && typeof run.costUsd === 'number' ? { costUsd: run.costUsd } : {}),
         children,
@@ -4778,7 +4804,7 @@ export function createApp(deps: ServerDeps) {
     .get('/automation-log', queryZodValidator(automationLogQuerySchema), (c) => {
       const project = c.get('project');
       const records = project.automationStore.logs(c.req.valid('query'));
-      return c.json({ records, runs: logRunsOf(project.store, records) });
+      return c.json({ records, runs: logRunsOf(project.store, records, projectsRuns(runViewScopes(principalOf(c)))) });
     })
 
     .post('/automation-log/:receiptId/retry', async (c) => {
@@ -4959,7 +4985,10 @@ export function createApp(deps: ServerDeps) {
 
   // ---- chained family: runs lifecycle + artifacts (project-scoped) ----
   const runsRoutes = new Hono<ProjectApiEnv>()
-    .get('/runs', (c) => c.json(c.get('project').store.listRuns().map(withUsage)))
+    .get('/runs', (c) => {
+      const scopes = runViewScopes(principalOf(c));
+      return c.json(c.get('project').store.listRuns().map((run) => redactRunForScope(withUsage(run), scopes)));
+    })
 
     // Registered before the `/:id/...` routes so "archive-finished" and "read-all"
     // never match as a run id.
@@ -5142,7 +5171,7 @@ export function createApp(deps: ServerDeps) {
     .get('/runs/:id', (c) => {
       const { store } = c.get('project');
       const run = store.getRun(c.req.param('id'));
-      return run ? c.json(withUsage(run)) : c.json({ error: 'not found' }, 404);
+      return run ? c.json(redactRunForScope(withUsage(run), runViewScopes(principalOf(c)))) : c.json({ error: 'not found' }, 404);
     })
 
     // The ticket a run is linked to, read NOW by the cockpit for that run's agent (spec
@@ -5836,6 +5865,17 @@ export function createApp(deps: ServerDeps) {
       if (result.kind === 'invalid' || result.kind === 'missing') {
         return c.json({ error: result.error }, 409);
       }
+      // A token reads only what the repository index reaches, as on /repo/files: a worktree-off
+      // run's directory IS the checkout, and a worktree carries the seeded gitignored layer.
+      let indexed: string[] | undefined;
+      if (principalOf(c)?.kind === 'token') {
+        const index = await listRepoPaths(workingDirectory, Number.MAX_SAFE_INTEGER);
+        if (!index.ok) return c.json({ error: index.error }, 409);
+        if (result.kind === 'file' && !index.paths.includes(result.path)) {
+          return c.json({ error: `path is not in the repository index: ${result.path}` }, 409);
+        }
+        indexed = index.paths;
+      }
       if (result.kind === 'dir') {
         return c.json({
           // `as const` or the literal widens to `string` during Hono's route-type inference,
@@ -5843,7 +5883,7 @@ export function createApp(deps: ServerDeps) {
           // leaves `never` and every field access on it fails. The wire was always 'dir'.
           type: 'dir' as const,
           path: result.path,
-          entries: result.entries,
+          entries: indexed ? entriesInIndex(indexed, result.path, result.entries) : result.entries,
         });
       }
       if (wantsRaw) {
@@ -6335,8 +6375,9 @@ export function createApp(deps: ServerDeps) {
       const { dataDir, store } = c.get('project');
       const runs = groupRuns(store, c.req.param('groupId'));
       if (runs.length === 0) return c.json({ error: 'not found' }, 404);
+      const scopes = runViewScopes(principalOf(c));
       const detailed = await Promise.all(
-        runs.map(async (r): Promise<GroupVariant> => ({
+        runs.map((run) => redactRunForScope(run, scopes)).map(async (r): Promise<GroupVariant> => ({
           id: r.id,
           variant: r.variant ?? '?',
           title: r.title,
@@ -6350,7 +6391,8 @@ export function createApp(deps: ServerDeps) {
             r.worktreePath && existsSync(r.worktreePath)
               ? await worktreeDiffStat(r.worktreePath, r.baseBranch ?? 'HEAD')
               : '',
-          handoffExcerpt: handoffProgressExcerpt(readHandoff(dataDir, r.id)),
+          // Agent-written, like the handoff it quotes: runs.transcript's (spec 2026-10-24-cezar-mcp-server §4).
+          ...(projectsRuns(scopes) ? {} : { handoffExcerpt: handoffProgressExcerpt(readHandoff(dataDir, r.id)) }),
         })),
       );
       return c.json({
@@ -6520,10 +6562,11 @@ export function createApp(deps: ServerDeps) {
       // apply — inherited from the workspace default when this repo sets none.
       const keep = await resolveWorktreeRetention(repoRoot);
       const runs = store.listRuns().filter((r) => r.worktreePath && existsSync(r.worktreePath));
+      const projected = projectsRuns(runViewScopes(principalOf(c)));
       const worktrees = await Promise.all(
         runs.map(async (r) => ({
           runId: r.id,
-          title: r.title ?? r.id,
+          title: visibleTaskTitle(r, r.title ?? r.id, projected),
           status: r.status,
           branch: r.branch ?? null,
           // POSIX `du` — degrades to null (Windows / du missing / error); never blocks.
@@ -6722,7 +6765,7 @@ export function createApp(deps: ServerDeps) {
           if (event.seq > maxSeq) await writeEvent(event);
         }
         const run = store.getRun(id);
-        if (run) await stream.writeSSE({ event: 'run', data: JSON.stringify(run) });
+        if (run) await stream.writeSSE({ event: 'run', data: JSON.stringify(redactRunForScope(run, runViewScopes(principalOf(c)))) });
 
         while (!stream.aborted) {
           if (sseSessionEnded(c)) {
@@ -6743,8 +6786,9 @@ export function createApp(deps: ServerDeps) {
     // the all-project stream arrives as `/api/workspace/events` in step 2.8).
     .get('/events', (c) => {
       const { dataDir, store } = c.get('project');
+      const scopes = runViewScopes(principalOf(c));
       return streamSSENoBuffer(c, async (stream) => {
-        const onRun = (run: RunRecord) => void stream.writeSSE({ event: 'run', data: JSON.stringify(run) });
+        const onRun = (run: RunRecord) => void stream.writeSSE({ event: 'run', data: JSON.stringify(redactRunForScope(run, scopes)) });
         const onDeleted = (id: string) =>
           void stream.writeSSE({
             event: 'run-deleted',
@@ -6757,8 +6801,11 @@ export function createApp(deps: ServerDeps) {
         // Opt-in inbox (#471): subscribing is what creates this project's
         // watcher (step 2.3), so with the capability off we never subscribe —
         // no watcher, no fd. Scoped to this stream's dataDir: another
-        // project's todos.json writes never reach this connection.
-        const offTodos = capabilities().followups ? onTodosChanged(dataDir, () => void sendTodos()) : () => undefined;
+        // project's todos.json writes never reach this connection. The inbox is
+        // `runs.transcript`'s, like `GET /todos` (spec 2026-10-24-cezar-mcp-server §4).
+        const offTodos = capabilities().followups && principalSeesTranscript(principalOf(c))
+          ? onTodosChanged(dataDir, () => void sendTodos())
+          : () => undefined;
         // Live resource telemetry (#348): the sampler ticks ~every 2 s only
         // while some run has a registered process; each tick is relayed as one
         // `usage` message (runId → {cpuPct, rssBytes, procCount}). Never
@@ -6795,6 +6842,7 @@ export function createApp(deps: ServerDeps) {
   // ---- chained family: workspace SSE stream (workspace-level) ----
   const workspaceEventsRoutes = new Hono<ProjectApiEnv>()
     .get('/workspace/events', (c) => {
+      const scopes = runViewScopes(principalOf(c));
       return streamSSENoBuffer(c, async (stream) => {
         // One detach bundle per attached project — the id guard makes a double
         // attach (connect-time snapshot vs. the built hook) impossible.
@@ -6805,7 +6853,7 @@ export function createApp(deps: ServerDeps) {
           const onRun = (run: RunRecord) =>
             void stream.writeSSE({
               event: 'run',
-              data: JSON.stringify({ ...run, project }),
+              data: JSON.stringify({ ...redactRunForScope(run, scopes), project }),
             });
           const onDeleted = (id: string) =>
             void stream.writeSSE({
@@ -6821,7 +6869,9 @@ export function createApp(deps: ServerDeps) {
           };
           // Same opt-in gate as the per-project stream (#471): no capability, no
           // watcher — and each subscription is scoped to its own dataDir (2.3).
-          const offTodos = capabilities().followups ? onTodosChanged(dataDir, () => void sendTodos()) : () => undefined;
+          const offTodos = capabilities().followups && principalSeesTranscript(principalOf(c))
+            ? onTodosChanged(dataDir, () => void sendTodos())
+            : () => undefined;
           const offLifecycle = ctx.manager.lifecycle?.onChange(event => {
             const payload: WorktreeLifecycleInvalidation = { ...event, projectId: project };
             void stream.writeSSE({ event: 'worktree-lifecycle', data: JSON.stringify(payload) });
@@ -7495,25 +7545,26 @@ export function createApp(deps: ServerDeps) {
     const policy = terminalPolicyRefusal(capabilities());
     return policy ? policy.replace('the terminal is', 'the Docker view is') : null;
   };
-  /** The cezar task whose worktree a stack runs from (spec 2026-10-23-docker-management §3.1). */
-  const stackTask = (current: ProjectContext) => (dir: string, owner: KnownProject): DockerStack['task'] => {
+  /** The cezar task whose worktree a stack runs from (spec 2026-10-23-docker-management §3.1), in any project;
+   *  `projected` masks a dispatched child's title, its parent agent's words. */
+  const stackTask = (current: ProjectContext, projected: boolean) => (dir: string, owner: KnownProject): DockerStack['task'] => {
     const runId = worktreeRunOf(dir);
     if (!runId) return null;
     // A project whose context was never built has no run executing in this process.
     const run = (owner.id === current.id ? current : contexts.peek(owner.id))?.store.getRun(runId);
     if (!run) return null;
     const title = run.title.trim() || run.task.split('\n')[0]!.trim().slice(0, 80) || run.id.slice(0, 8);
-    return { id: run.id, title, status: run.status, active: run.status === 'running' || run.status === 'queued' };
+    return { id: run.id, title: visibleTaskTitle(run, title, projected), status: run.status, active: run.status === 'running' || run.status === 'queued' };
   };
   /** Containers, their stacks (with dir state, task and volumes) and the volume list, read once. */
-  const dockerInventory = async (project: ProjectContext) => {
+  const dockerInventory = async (project: ProjectContext, projected = false) => {
     const listed = await listContainers(docker);
     if (!listed.ok) return listed;
     const volumeList = await docker(['volume', 'ls', '--format', 'json']);
     const volumeRows = volumeList.ok ? parseVolumeList(volumeList.stdout) : [];
     const registry = (await loadWorkspaceConfig()).projects;
     const known = registry.some((entry) => entry.id === project.id) ? registry : [...registry, { id: project.id, root: project.root, name: '' }];
-    const stacks = groupStacks(listed.containers, known, project.id, { task: stackTask(project), volumes: volumesByStack(volumeRows) });
+    const stacks = groupStacks(listed.containers, known, project.id, { task: stackTask(project, projected), volumes: volumesByStack(volumeRows) });
     return { ok: true as const, containers: listed.containers, stacks, volumeRows };
   };
   const dockerState = async (project: ProjectContext, c: Context): Promise<DockerState> => {
@@ -7521,7 +7572,7 @@ export function createApp(deps: ServerDeps) {
     registerDockerTopic();
     const refusal = dockerRefusal(c);
     if (refusal) return off(refusal);
-    const inventory = await dockerInventory(project);
+    const inventory = await dockerInventory(project, projectsRuns(runViewScopes(principalOf(c))));
     if (!inventory.ok) return off(inventory.reason);
     const { stacks } = inventory;
     const composeFiles = (await discoverServiceCandidates(project.root)).filter((candidate) => /^docker compose -f \S+ up$/.test(candidate.command));
@@ -7678,7 +7729,8 @@ export function createApp(deps: ServerDeps) {
   const dockerRoutes = new Hono<ProjectApiEnv>()
     .get('/docker', async (c) => {
       c.header('Cache-Control', 'no-store');
-      return c.json(await dockerState(c.get('project'), c), 200);
+      const project = c.get('project');
+      return c.json(await dockerState(project, c), 200);
     })
     .post('/docker/stacks/:name/start', paramZodValidator(dockerStackParamsSchema), async (c) => {
       const { name } = c.req.valid('param');
@@ -9228,6 +9280,7 @@ export function createApp(deps: ServerDeps) {
         // active project's own run list, which it holds either way.
       }
       const bootId = await resolveBootProject(projects);
+      const projected = projectsRuns(runViewScopes(principalOf(c)));
       const runs: RunIndexEntry[] = [];
       const truncated: string[] = [];
       // Statuses the server already holds, shipped WITH the rows that carry the references. The
@@ -9253,7 +9306,7 @@ export function createApp(deps: ServerDeps) {
         if (recent.length > RUNS_INDEX_PER_PROJECT) truncated.push(project.id);
         const mentioned: number[] = [];
         for (const run of recent.slice(0, RUNS_INDEX_PER_PROJECT)) {
-          runs.push(runIndexEntry(project.id, run));
+          runs.push(projected ? projectTaskRow(runIndexEntry(project.id, run)) : runIndexEntry(project.id, run));
           mentioned.push(...mentionedReferenceNumbers(run));
         }
         if (mentioned.length > 0) {
@@ -9396,7 +9449,7 @@ export function createApp(deps: ServerDeps) {
   // project-scoped spelling, which would be a second surface to protect with no consumer.
   const workspaceV1 = new Hono()
     .route('/', healthRoutes)
-    .route('/', authRoutes({ service: auth, enforced: authIsEnforced }))
+    .route('/', authRoutes({ service: auth, enforced: authIsEnforced, trusted: () => trustedOperator(process.env, bindHost) }))
     .route('/', setupRestoreRoutes({ service: backup, auth, enforced: authIsEnforced }))
     .route('/', backupRoutes({ service: backup, trusted: () => trustedOperator(process.env, bindHost) }))
     .route('/', modelsRoutes)
@@ -9415,7 +9468,10 @@ export function createApp(deps: ServerDeps) {
     .route('/', runsIndexRoutes)
     .route('/', dashboardRoutes(dashboard, () => ({ tokens: capabilities().tokenUsageMetrics, cost: capabilities().costMetrics }), () => capabilities().automations))
     .route('/', workspaceEventsRoutes)
-    .route('/', telemetryRoutes);
+    .route('/', telemetryRoutes)
+    // The catalog is read off the assembled app on first use: every route is registered by then.
+    .route('/', mcpRoutes({ catalog: () => (mcpCatalog ??= buildCatalog(app.routes).catalog), dispatch: async (request, env) => app.fetch(request, env as object | undefined), version }));
+  let mcpCatalog: Catalog | undefined;
 
   // ---- mount ---------------------------------------------------------------
   // Scoped first, then the unscoped alias bound to the boot project. The paths are disjoint (no

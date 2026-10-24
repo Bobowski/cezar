@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readHostKey } from '../../auth/host-key.ts';
 import { issueSetupCode } from '../../auth/store.ts';
+import { isLoopbackHost } from '../../server/capabilities.ts';
 import { CANCEL, PreflightError, type InstallContext, type InstallStep, type PlatformStrategy, type StepArtifact } from '../types.ts';
 import {
   depCheckStep,
@@ -1066,6 +1067,9 @@ export function systemdUnit(
   /** The front authenticates (`signIn: 'proxy'`): cezar's own sign-in is switched off. Absent
    *  for cezar's sign-in AND for a record that predates the choice, whose unit stays as it was. */
   proxyAuth = false,
+  /** `--external-proxy`: every connection is the operator's proxy's, so the host key opens
+   *  nothing (spec 2026-10-24-cezar-mcp-server §5). */
+  externalProxy = false,
 ): string {
   const userLine = scope === 'system' ? `User=${userInfo().username}\n` : '';
   const installTarget = scope === 'system' ? 'multi-user.target' : 'default.target';
@@ -1091,7 +1095,7 @@ Wants=network-online.target
 Type=simple
 ${userLine}WorkingDirectory=${repoRoot}
 Environment=CEZ_REMOTE=1
-${proxyAuth ? 'Environment=CEZ_AUTH=0\n' : ''}${instanceId ? `Environment=CEZ_INSTANCE_ID=${sysd(instanceId)}\n` : ''}Environment=PATH=${sysd(pathDirs.join(':'))}
+${externalProxy ? 'Environment=CEZ_EXTERNAL_PROXY=1\n' : ''}${proxyAuth ? 'Environment=CEZ_AUTH=0\n' : ''}${instanceId ? `Environment=CEZ_INSTANCE_ID=${sysd(instanceId)}\n` : ''}Environment=PATH=${sysd(pathDirs.join(':'))}
 ExecStart=${sysd(execStart)} serve --no-open --port ${port}${sysd(bind)}
 Restart=on-failure
 RestartSec=5
@@ -1269,7 +1273,7 @@ async function applyServiceUnit(
     ctx.ui.info(`DRY RUN — would write ${unitPath} and enable it (systemctl --user enable --now cezar).`);
     return { scope, artifact };
   }
-  const unit = systemdUnit(ctx.repoRoot, ctx.state.primaryPort, scope, execStart, ctx.state.bindHost, ctx.state.instanceId, ctx.state.signIn === 'proxy');
+  const unit = systemdUnit(ctx.repoRoot, ctx.state.primaryPort, scope, execStart, ctx.state.bindHost, ctx.state.instanceId, ctx.state.signIn === 'proxy', ctx.state.externalProxy === true);
   const previous = userBus ? (existsSync(unitPath) ? readFileSync(unitPath, 'utf8') : null) : await readHostFile(ctx, unitPath);
   const differs = previous !== null && previous.trimEnd() !== unit.trimEnd();
   const mustRestart = restart === 'always' || (previous !== null && unitBehaviour(previous) !== unitBehaviour(unit));
@@ -1424,7 +1428,8 @@ async function verifyBehindExternalProxy(ctx: InstallContext): Promise<{ artifac
   }
 
   if (ctx.state.signIn === 'cezar') {
-    const problems = await verifyCezarSignIn(ctx, { base: `${target}/`, args: [], through: target });
+    // No owner probe: behind an external proxy the service refuses the host key (CEZ_EXTERNAL_PROXY).
+    const problems = await verifyCezarSignIn(ctx, { base: `${target}/`, args: [], through: target, upstream: null });
     if (problems.length > 0) {
       ctx.ui.error(`The cockpit is NOT fully working yet:\n` + problems.map((p) => `  • ${p}`).join('\n'));
       throw new StepAborted('cockpit verification failed — see the diagnostics above');
@@ -1513,11 +1518,13 @@ function announceSignIn(ctx: InstallContext, url: string): void {
 /**
  * The end-to-end check when cezar signs users in itself (spec 2026-10-12-cockpit-authentication
  * §7). Different proof from the Basic-Auth path, same standard: "complete" must mean it works.
- * `base` is where the probe goes — the nginx front, or the upstream behind an external proxy.
+ * `base` is where the anonymous probes go — the nginx front, or the upstream behind an external
+ * proxy. The owner probe goes to `upstream` only: the host key opens nothing through a proxy
+ * (spec 2026-10-24-cezar-mcp-server §5), and none is sent to a non-loopback upstream.
  */
 async function verifyCezarSignIn(
   ctx: InstallContext,
-  probe: { base: string; args: string[]; through: string },
+  probe: { base: string; args: string[]; through: string; upstream: string | null },
 ): Promise<string[]> {
   const problems: string[] = [];
   const anon = await curlCode(ctx, [...probe.args, `${probe.base}api/v1/health`]);
@@ -1528,22 +1535,31 @@ async function verifyCezarSignIn(
     );
   }
   const session = await curlResponse(ctx, [...probe.args, `${probe.base}api/v1/auth/session`]);
+  let served: { enforced?: unknown; instanceId?: unknown } | null = null;
   try {
-    if ((JSON.parse(session.body) as { enforced?: unknown }).enforced !== true) throw new Error('not enforced');
+    served = JSON.parse(session.body) as { enforced?: unknown; instanceId?: unknown };
   } catch {
-    problems.push(`/api/v1/auth/session through ${probe.through} did not report sign-in as enforced (got "${session.code}")`);
+    // reported just below
   }
+  if (served?.enforced !== true) {
+    problems.push(`/api/v1/auth/session through ${probe.through} did not report sign-in as enforced (got "${session.code}")`);
+  } else if (ctx.state.instanceId && served.instanceId !== ctx.state.instanceId) {
+    // The owner probe goes straight to the upstream; only this anonymous read proves the front
+    // (the domain's vhost) reaches THIS install.
+    problems.push(`the cockpit answering through ${probe.through} is not this install (it names ${typeof served.instanceId === 'string' ? `"${served.instanceId}"` : 'no install'})`);
+  }
+  if (probe.upstream === null) return problems;
   // The owner's view of the same route proves a credentialed request reaches THIS install.
-  const authed = await hostKeyResponse(ctx, [...probe.args, `${probe.base}api/v1/health`]);
+  const authed = await hostKeyResponse(ctx, [`${probe.upstream}api/v1/health`]);
   if (authed === null) {
     problems.push('this host has no cockpit key yet (~/.cezar/auth-host.key) — the service has not started with sign-in on');
   } else if (!/^2\d\d$/.test(authed.code)) {
-    problems.push(`an authenticated request through ${probe.through} got "${authed.code}" — it did not reach cezar`);
+    problems.push(`an authenticated request to ${probe.upstream} got "${authed.code}" — it did not reach cezar`);
   } else if (ctx.state.instanceId) {
     try {
       const served = (JSON.parse(authed.body) as { instanceId?: unknown }).instanceId;
       if (typeof served === 'string' && served !== ctx.state.instanceId) {
-        problems.push(`the cockpit answering through ${probe.through} is serving another install, not this one`);
+        problems.push(`the cockpit answering on ${probe.upstream} is serving another install, not this one`);
       }
     } catch {
       // An unreadable body leaves identity inconclusive, as it always has.
@@ -1590,10 +1606,10 @@ const identityStep: InstallStep = {
             're-run: cezar server-install --platform ubuntu-vps --reconfigure ssl',
         );
       }
-      if (upstreamUp && https) problems.push(...(await verifyCezarSignIn(ctx, { base, args: [...tls, ...host], through: 'nginx' })));
+      if (upstreamUp && https) problems.push(...(await verifyCezarSignIn(ctx, { base, args: [...tls, ...host], through: 'nginx', upstream: isLoopbackHost(upstreamHost(ctx)) ? `http://127.0.0.1:${port}/` : null })));
       if (problems.length === 0) {
         const url = ctx.state.publicUrl!;
-        ctx.ui.success(`Cockpit is live at ${url} — cezar's sign-in guards it, and an authenticated request reached this install.`);
+        ctx.ui.success(`Cockpit is live at ${url} — cezar's sign-in guards it, the domain reaches this install, and an authenticated request reached it.`);
         announceSignIn(ctx, url);
         return { artifacts: [] };
       }

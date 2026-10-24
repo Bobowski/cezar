@@ -121,14 +121,16 @@ export const lifecycleOperationSchema = z.object({
 }).passthrough();
 export type LifecycleOperation = z.infer<typeof lifecycleOperationSchema>;
 
+/** `commandPreview` (and an execution's `reason`) is absent for a token without `runs.transcript`
+ *  (spec 2026-10-24-cezar-mcp-server §4): a rendered command can carry an inline secret. */
 export const lifecycleEntrySummarySchema = z.object({
   entryId: lifecycleIdSchema,
   label: z.string(),
-  commandPreview: z.string(),
+  commandPreview: z.string().optional(),
   state: z.enum(['pending', 'running', 'succeeded', 'failed', 'interrupted', 'already-completed', 'skipped', 'removed']),
   attempt: z.number().int().nonnegative(),
 });
-export const lifecycleExecutionViewSchema = scriptExecutionSchema.omit({ process: true }).strip();
+export const lifecycleExecutionViewSchema = scriptExecutionSchema.omit({ process: true }).strip().extend({ commandPreview: z.string().optional() });
 export const lifecycleOperationViewSchema = lifecycleOperationSchema.omit({ schemaVersion: true, pendingLaunch: true, agentQuiescencePending: true, requests: true, successfulEntries: true, executions: true }).strip().extend({
   history: z.array(lifecycleExecutionViewSchema),
   entries: z.array(lifecycleEntrySummarySchema),

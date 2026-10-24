@@ -543,6 +543,19 @@ export async function repoIndexContains(
 
 // ---- worktree file browsing ---------------------------------------------------
 
+/**
+ * A directory listing cut to what the repository index reaches: a file in it, or a directory
+ * holding one. What a token sees of a task's files (spec 2026-10-24-cezar-mcp-server §4).
+ */
+export function entriesInIndex(index: readonly string[], dir: string, entries: DirEntry[]): DirEntry[] {
+  const prefix = dir === '' ? '' : `${dir}/`;
+  const files = new Set(index);
+  return entries.filter((entry) => {
+    const path = prefix + entry.name;
+    return entry.type === 'file' ? files.has(path) : index.some((indexed) => indexed.startsWith(`${path}/`));
+  });
+}
+
 /** Max file content served to the Files tab — past this the GUI shows an
  *  honest "too large" state instead of the bytes. */
 export const FILE_CONTENT_CAP = 512_000;

@@ -239,6 +239,18 @@ describe('cockpit authentication', () => {
     expect((await request('/api/v1/health')).status).toBe(200);
   });
 
+  it('names this install on the anonymous session read, so an installer can tell its own vhost', async () => {
+    const saved = process.env.CEZ_INSTANCE_ID;
+    process.env.CEZ_INSTANCE_ID = 'install-a';
+    try {
+      const anonymous = authSessionResponseSchema.strict().parse(await (await request('/api/v1/auth/session')).json());
+      expect(anonymous).toEqual({ enforced: true, authenticated: false, setupRequired: true, instanceId: 'install-a' });
+    } finally {
+      if (saved === undefined) delete process.env.CEZ_INSTANCE_ID;
+      else process.env.CEZ_INSTANCE_ID = saved;
+    }
+  });
+
   it('walks setup → session → sign-out → two-step sign-in, matching the contract at every step', async () => {
     const before = authSessionResponseSchema.strict().parse(await (await request('/api/v1/auth/session')).json());
     expect(before).toEqual({ enforced: true, authenticated: false, setupRequired: true });
@@ -336,12 +348,71 @@ describe('cockpit authentication', () => {
   it('this host’s key file authenticates a shell, and a wrong key does not', async () => {
     ensureHostKey();
     const key = readHostKey()!;
-    expect((await request('/api/v1/health', { headers: { authorization: `Bearer ${key}` } })).status).toBe(200);
-    expect((await request('/api/v1/health', { headers: { authorization: `Bearer ${key}x` } })).status).toBe(401);
+    const local = (headers: Record<string, string>) =>
+      app.request('/api/v1/health', { headers: { host: '127.0.0.1:4321', ...headers } }, { incoming: { socket: { remoteAddress: '127.0.0.1' } } });
+    expect((await local({ authorization: `Bearer ${key}` })).status).toBe(200);
+    expect((await local({ authorization: `Bearer ${key}x` })).status).toBe(401);
     if (process.platform !== 'win32') {
       const { statSync } = await import('node:fs');
       expect(statSync(join(home, 'auth-host.key')).mode & 0o777).toBe(0o600);
     }
+  });
+
+  it('the host key is a loopback shell’s only: hosted, proxied, browser or remote, it is 401', async () => {
+    ensureHostKey();
+    const bearer = { authorization: `Bearer ${readHostKey()!}` };
+    // Through the public front — a key a task read out and handed to a token holder.
+    expect((await request('/api/v1/health', { headers: bearer })).status).toBe(401);
+    // The socket decides, and a request whose socket the server does not know is no shell's.
+    const from = (remoteAddress: string | undefined, headers: Record<string, string> = {}) =>
+      app.request(
+        '/api/v1/health',
+        { headers: { host: '127.0.0.1:4321', ...bearer, ...headers } },
+        remoteAddress === undefined ? undefined : { incoming: { socket: { remoteAddress } } },
+      );
+    expect((await from('203.0.113.9')).status).toBe(401);
+    expect((await from(undefined)).status).toBe(401);
+    expect((await from('::ffff:127.0.0.1')).status).toBe(200);
+    expect((await from('::1')).status).toBe(200);
+    // A loopback socket behind a proxy on this box is the proxy's caller, not this shell —
+    // any X-Forwarded-* at all, Forwarded, X-Real-IP, or a page's Origin.
+    for (const forwarded of ['x-forwarded-for', 'x-forwarded-port', 'x-forwarded-proto', 'forwarded', 'x-real-ip']) {
+      expect((await from('127.0.0.1', { [forwarded]: '203.0.113.9' })).status, forwarded).toBe(401);
+    }
+    expect((await from('127.0.0.1', { origin: 'http://127.0.0.1:4321' })).status).toBe(401);
+    // Behind an external proxy, an L4 one adds no header to tell its callers from a shell.
+    const saved = process.env.CEZ_EXTERNAL_PROXY;
+    process.env.CEZ_EXTERNAL_PROXY = '1';
+    try {
+      expect((await from('127.0.0.1')).status).toBe(401);
+    } finally {
+      if (saved === undefined) delete process.env.CEZ_EXTERNAL_PROXY;
+      else process.env.CEZ_EXTERNAL_PROXY = saved;
+    }
+    // The WebSocket twin answers the same.
+    const upgrade = (headers: Record<string, string>, remoteAddress = '127.0.0.1') =>
+      upgradeIsAuthenticated({ headers: { ...bearer, ...headers }, socket: { remoteAddress } } as unknown as IncomingMessage, { service: new AuthService(), enforced: () => true });
+    expect(upgrade({ host: '127.0.0.1:4321' })).toBe(true);
+    expect(upgrade({ host: HOST })).toBe(false);
+    expect(upgrade({ host: '127.0.0.1:4321' }, '203.0.113.9')).toBe(false);
+    expect(upgrade({ host: '127.0.0.1:4321', 'x-forwarded-port': '443' })).toBe(false);
+    expect(upgradeIsAuthenticated({ headers: { ...bearer, host: '127.0.0.1:4321' } } as unknown as IncomingMessage, { service: new AuthService(), enforced: () => true })).toBe(false);
+  });
+
+  it('a host-key MCP call reaches its tool’s route: the inner request keeps the caller’s socket', async () => {
+    ensureHostKey();
+    const headers = {
+      host: '127.0.0.1:4321', authorization: `Bearer ${readHostKey()!}`,
+      'content-type': 'application/json', accept: 'application/json, text/event-stream',
+    };
+    const call = await app.request('/api/v1/mcp', {
+      method: 'POST', headers,
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'runs_list', arguments: {} } }),
+    }, { incoming: { socket: { remoteAddress: '127.0.0.1' } } });
+    expect(call.status).toBe(200);
+    const text = await call.text();
+    expect(text).toContain('"result"');
+    expect(text).not.toContain('"isError":true');
   });
 
   it('a signed-in owner is a trusted operator: the hosted gates open for them and for nobody else', async () => {
@@ -441,6 +512,8 @@ describe('cockpit authentication', () => {
       'server/preview/design-proxy.ts': { listeners: 1, upgrades: 1 }, // loopback-only; unreachable from a hosted cockpit
       'index.ts': { listeners: 1, upgrades: 0 }, // a free-port probe: listens, never accepts a request
       'server-install/state.ts': { listeners: 1, upgrades: 0 }, // the same probe, for the installer
+      'core/opencode-server-runner.ts': { listeners: 1, upgrades: 0 }, // a free-port probe before `opencode serve` (#1585)
+      'mcp/server.ts': { listeners: 1, upgrades: 0 }, // the MCP SDK's protocol `Server`, no socket: served by /api/v1/mcp behind the guard
     };
     const LISTENER = /\b(?:createServer|createSecureServer|serve)\(|\bnew\s+(?:[\w.]+\.)?(?:WebSocketServer|Server)\(/g;
     const UPGRADE = /\.(?:on|once|addListener|prependListener)\(\s*['"`]upgrade['"`]/g;

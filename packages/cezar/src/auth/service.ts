@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
-import type { AuthDevice, AuthUser } from '@open-mercato/cezar-contract';
+import type { ApiToken, ApiTokenScope, AuthDevice, AuthUser } from '@open-mercato/cezar-contract';
 import { authSessionsPath, authStorePath } from '../paths.ts';
+import { apiTokenIdOf, mintApiToken } from './api-tokens.ts';
 import { DEFAULT_SCRYPT, hashPassword, verifyPassword, type ScryptParams } from './password.ts';
 import {
   appendAudit,
@@ -13,6 +14,7 @@ import {
   sameHash,
   sha256,
   writeSessions,
+  type StoredApiToken,
   type StoredSession,
   type StoredUser,
 } from './store.ts';
@@ -115,6 +117,8 @@ export class AuthService {
   private sessions: Map<string, StoredSession> | undefined;
   private sessionsLoadedFrom: string | undefined;
   private persistedTouch = new Map<string, number>();
+  /** Token id → last use this process saw (persisted lazily, see `touchToken`). */
+  private readonly tokenTouch = new Map<string, number>();
   private decoy: Promise<string> | undefined;
   private scryptInFlight = 0;
   private readonly scryptWaiters: Array<() => void> = [];
@@ -454,8 +458,12 @@ export class AuthService {
       }));
   }
 
-  /** Sign every OTHER device out. Answers how many sessions that was. */
+  /**
+   * Sign every OTHER device out, and revoke every API token (a token is a device too, spec
+   * 2026-10-24-cezar-mcp-server §4). Answers how many sessions that was.
+   */
   revokeOtherSessions(userId: string, currentId: string): number {
+    this.revokeAllApiTokens(userId);
     const sessions = this.sessionMap();
     // The epoch is the one thing a sibling cockpit sharing auth.json sees (§5.5): bumping it kills
     // this user's sessions in EVERY process, the way a reset does; this one is re-stamped.
@@ -577,4 +585,135 @@ export class AuthService {
     appendAudit({ event: 'session-revoked', session: sessionId }, this.now());
     return true;
   }
+
+  // ---- API tokens (spec 2026-10-24-cezar-mcp-server §4) ----------------------
+
+  private publicToken(token: StoredApiToken): ApiToken {
+    const lastUsedAt = Math.max(token.lastUsedAt ?? 0, this.tokenTouch.get(token.id) ?? 0);
+    return {
+      id: token.id,
+      name: token.name,
+      scopes: token.scopes,
+      createdAt: new Date(token.createdAt).toISOString(),
+      ...(token.expiresAt !== undefined ? { expiresAt: new Date(token.expiresAt).toISOString() } : {}),
+      ...(lastUsedAt > 0 ? { lastUsedAt: new Date(lastUsedAt).toISOString() } : {}),
+    };
+  }
+
+  /** This user's tokens; every user's for the trusted operator (`userId` undefined). */
+  listApiTokens(userId: string | undefined): ApiToken[] {
+    return this.store().tokens
+      .filter((token) => userId === undefined || token.userId === userId)
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .map((token) => this.publicToken(token));
+  }
+
+  /** Mint a token. A credential, so it asks for a fresh authenticator code like a password change. */
+  createApiToken(
+    userId: string,
+    input: { name: string; scopes: ApiTokenScope[]; expiresAt?: string; code: string },
+    meta: RequestMeta,
+  ): AuthResult<{ token: ApiToken; value: string }> {
+    const expiresAt = input.expiresAt === undefined ? undefined : Date.parse(input.expiresAt);
+    if (expiresAt !== undefined && !(expiresAt > this.now())) return fail(400, 'the expiry must be in the future');
+    const refused = this.confirmSecondFactor(userId, input.code, meta);
+    if (refused) return refused;
+    const { id, value } = mintApiToken();
+    const row: StoredApiToken = {
+      id,
+      userId,
+      name: input.name,
+      hash: sha256(value),
+      scopes: [...new Set(input.scopes)],
+      createdAt: this.now(),
+      ...(expiresAt !== undefined ? { expiresAt } : {}),
+    };
+    this.mutate((store) => {
+      store.tokens.push(row);
+    });
+    appendAudit({ event: 'token-created', user: userId, address: meta.address, detail: `${id} ${row.scopes.join(',')}` }, this.now());
+    return { ok: true, token: this.publicToken(row), value };
+  }
+
+  /**
+   * False when the id is not one of this user's tokens — the route answers 404. `userId`
+   * undefined is the trusted operator, who may revoke any token.
+   */
+  revokeApiToken(userId: string | undefined, tokenId: string): boolean {
+    const removed = this.mutate((store) => {
+      const before = store.tokens.length;
+      store.tokens = store.tokens.filter((token) => !(token.id === tokenId && (userId === undefined || token.userId === userId)));
+      return store.tokens.length !== before;
+    });
+    if (removed) {
+      this.tokenTouch.delete(tokenId);
+      appendAudit({ event: 'token-revoked', ...(userId !== undefined ? { user: userId } : {}), detail: tokenId }, this.now());
+    }
+    return removed;
+  }
+
+  /** Every token this user holds, gone: a password change and "sign out everywhere else". */
+  revokeAllApiTokens(userId: string): number {
+    let revoked: string[] = [];
+    try {
+      revoked = this.mutate((store) => {
+        const gone = store.tokens.filter((token) => token.userId === userId).map((token) => token.id);
+        store.tokens = store.tokens.filter((token) => token.userId !== userId);
+        return gone;
+      });
+    } catch (error) {
+      console.warn(`[cez] could not revoke API tokens (${(error as Error).message})`);
+    }
+    for (const id of revoked) this.tokenTouch.delete(id);
+    if (revoked.length > 0) appendAudit({ event: 'tokens-revoked', user: userId, detail: String(revoked.length) }, this.now());
+    return revoked.length;
+  }
+
+  /**
+   * The token a Bearer value is, or null: unknown, wrong secret, expired, or its owner can no
+   * longer sign in. `touch` records the use — the origin guard peeks, the auth guard touches.
+   */
+  verifyApiToken(value: string, options: { touch?: boolean } = {}): AuthenticatedToken | null {
+    const id = apiTokenIdOf(value);
+    if (!id) return null;
+    const store = this.store();
+    const token = store.tokens.find((entry) => entry.id === id);
+    if (!token || !sameHash(token.hash, sha256(value))) return null;
+    const now = this.now();
+    if (token.expiresAt !== undefined && token.expiresAt <= now) return null;
+    const user = store.users.find((entry) => entry.id === token.userId);
+    if (!user || !hasCredentials(user)) return null;
+    if (options.touch) this.touchToken(token, now);
+    return { tokenId: token.id, name: token.name, scopes: token.scopes, user: publicUser(user) };
+  }
+
+  /** Whether a token still opens anything — what a stream it opened re-asks each keepalive beat. */
+  apiTokenAlive(tokenId: string): boolean {
+    const store = this.store();
+    const token = store.tokens.find((entry) => entry.id === tokenId);
+    if (!token || (token.expiresAt !== undefined && token.expiresAt <= this.now())) return false;
+    const user = store.users.find((entry) => entry.id === token.userId);
+    return user !== undefined && hasCredentials(user);
+  }
+
+  /** `lastUsedAt` is a display value: in memory at once, on disk at most every few minutes. */
+  private touchToken(token: StoredApiToken, now: number): void {
+    this.tokenTouch.set(token.id, now);
+    if (now - (token.lastUsedAt ?? 0) < TOUCH_PERSIST_MS) return;
+    try {
+      this.mutate((store) => {
+        const entry = store.tokens.find((candidate) => candidate.id === token.id);
+        if (entry) entry.lastUsedAt = now;
+      });
+    } catch (error) {
+      console.warn(`[cez] could not record a token's use (${(error as Error).message})`);
+    }
+  }
+}
+
+export interface AuthenticatedToken {
+  tokenId: string;
+  name: string;
+  scopes: ApiTokenScope[];
+  user: AuthUser;
 }

@@ -107,6 +107,11 @@ export const selfUpdateJobSchema = z.object({
 });
 export type SelfUpdateJob = z.infer<typeof selfUpdateJobSchema>;
 
+/** The job as a token without `admin` sees it (spec 2026-10-24-cezar-mcp-server §4): npm's output
+ *  and the failure text are the admin's. */
+export const selfUpdateJobProjectedSchema = selfUpdateJobSchema.omit({ log: true, error: true }).extend({ projected: z.literal(true) });
+export type SelfUpdateJobProjected = z.infer<typeof selfUpdateJobProjectedSchema>;
+
 export const selfUpdateScheduledSchema = z.object({
   target: z.string(),
   requestedAt: z.string(),
@@ -165,7 +170,7 @@ export const selfUpdateStatusSchema = z.object({
   checkedAt: z.string().nullable(),
   installed: z.array(installedVersionSchema),
   available: z.array(availableVersionSchema),
-  job: selfUpdateJobSchema.nullable(),
+  job: z.union([selfUpdateJobSchema, selfUpdateJobProjectedSchema]).nullable(),
   /** "Update when idle": the version this process installs and restarts into as soon as no task
    *  is running or queued. In memory only — a restart for any other reason forgets it. */
   scheduled: selfUpdateScheduledSchema.nullable(),

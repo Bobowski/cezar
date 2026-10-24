@@ -277,6 +277,18 @@ const VERTEX_ALLOW_NAMES: ReadonlySet<string> = upperSet([
 ]);
 const VERTEX_ALLOW_PREFIXES: readonly string[] = ['GOOGLE_CLOUD_'];
 
+/**
+ * The CLI client's own address and credential (`cez --server`, spec 2026-10-24-cezar-mcp-server
+ * §4), and a host-level `CEZ_API_TOKEN`: never an agent's. A task talks to the cockpit that runs
+ * it, with the token that cockpit hands it in `extraEnv` — never a VPS token from the user's shell.
+ */
+const NEVER_FORWARDED: ReadonlySet<string> = upperSet(['CEZ_TOKEN', 'CEZ_SERVER', 'CEZ_API_TOKEN']);
+
+/** Whether a name is the CLI client's own credential or address — never a child's, agent or check. */
+export function isNeverForwarded(name: string): boolean {
+  return NEVER_FORWARDED.has(name.toUpperCase());
+}
+
 export function looksSecret(name: string): boolean {
   return SECRET_NAME_RE.test(name);
 }
@@ -341,7 +353,7 @@ export function buildChildEnv(opts: BuildChildEnvOptions): NodeJS.ProcessEnv {
   if (isTruthy(readVar(source, 'CEZ_AGENT_ENV_FULL'))) {
     const full: NodeJS.ProcessEnv = {};
     for (const [name, value] of Object.entries(source)) {
-      if (!overridden.has(name.toUpperCase())) full[name] = value;
+      if (!overridden.has(name.toUpperCase()) && !NEVER_FORWARDED.has(name.toUpperCase())) full[name] = value;
     }
     return { ...full, ...extra };
   }
@@ -382,6 +394,7 @@ export function buildChildEnv(opts: BuildChildEnvOptions): NodeJS.ProcessEnv {
   /** `name` is matched normalized; the caller keeps the original spelling. */
   function allow(name: string): boolean {
     const key = name.toUpperCase();
+    if (NEVER_FORWARDED.has(key)) return false;
     // cezar's own namespace (CEZ_DRY_RUN plumbing, mock hooks, run wiring).
     if (key.startsWith('CEZ_')) return true;
     // Backend auth + gh handoff + the cloud creds an active Bedrock/Vertex

@@ -2,7 +2,7 @@ import { appendFileSync, chmodSync, copyFileSync, mkdirSync, readFileSync, renam
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { dirname } from 'node:path';
 import { z } from 'zod';
-import { AUTH_USERNAME_RE, authRoleSchema } from '@open-mercato/cezar-contract';
+import { AUTH_USERNAME_RE, apiTokenScopeSchema, authRoleSchema } from '@open-mercato/cezar-contract';
 import { assertCezarHomeWriteIsSandboxed, authAuditPath, authSessionsPath, authStorePath } from '../paths.ts';
 import { atomicWriteJsonSync } from '../workspace/config.ts';
 
@@ -52,9 +52,38 @@ const setupSchema = z
   })
   .passthrough();
 
+/** An owner API token (spec 2026-10-24-cezar-mcp-server §4). Only the hash of its value is kept. */
+const apiTokenRowSchema = z
+  .object({
+    id: z.string().regex(/^[0-9a-f]{12}$/),
+    userId: z.string().min(1).max(64),
+    name: z.string().max(100).catch('token'),
+    hash: z.string().min(1).max(128),
+    scopes: z.array(apiTokenScopeSchema).min(1),
+    createdAt: z.number(),
+    expiresAt: z.number().optional().catch(undefined),
+    lastUsedAt: z.number().optional().catch(undefined),
+  })
+  .passthrough();
+export type StoredApiToken = z.infer<typeof apiTokenRowSchema>;
+
 const storeSchema = z
   .object({
     version: z.number().int().min(0).default(1).catch(1),
+    // Per-entry salvage, like `users`: one bad row never revokes the others.
+    tokens: z
+      .array(z.unknown())
+      .default(() => [])
+      .catch(() => [])
+      .transform((entries) => {
+        const seen = new Set<string>();
+        return entries.flatMap((entry) => {
+          const parsed = apiTokenRowSchema.safeParse(entry);
+          if (!parsed.success || seen.has(parsed.data.id)) return [];
+          seen.add(parsed.data.id);
+          return [parsed.data];
+        });
+      }),
     users: z
       .array(z.unknown())
       .default(() => [])
@@ -165,7 +194,9 @@ export function mutateAuthStore<T>(mutator: (store: AuthStore) => T, path: strin
     const raw: unknown = JSON.parse(readFileSync(path, 'utf8'));
     store = storeSchema.parse(raw);
     const rows = (raw as { users?: unknown } | null)?.users;
-    salvaged = Array.isArray(rows) && rows.length !== store.users.length;
+    const tokenRows = (raw as { tokens?: unknown } | null)?.tokens;
+    salvaged = (Array.isArray(rows) && rows.length !== store.users.length)
+      || (Array.isArray(tokenRows) && tokenRows.length !== store.tokens.length);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
       try { copyFileSync(path, `${path}.corrupt`); } catch { /* best effort */ }
@@ -214,6 +245,8 @@ export function issueSetupCode(
       user.recovery = [];
       user.epoch += 1;
       userId = user.id;
+      // A reset is account recovery: whatever tokens the account minted die with its sessions.
+      store.tokens = store.tokens.filter((token) => token.userId !== user.id);
     } else if (store.users.some(hasCredentials)) {
       return { ok: false, reason: 'owner-exists' };
     } else {

@@ -40,4 +40,5 @@ export * from './docker.ts';
 export * from './e2e.ts';
 export * from './auth.ts';
 export * from './dotenv-lines.ts';
+export * from './routes.ts';
 export * from './backup.ts';

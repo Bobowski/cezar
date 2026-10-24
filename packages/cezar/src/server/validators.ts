@@ -55,6 +55,30 @@ type JsonOptions = ErrorOptions & {
 };
 
 /**
+ * What a validator checks, readable off the middleware itself: the MCP catalog walks
+ * `app.routes` and reads each route's input here, so a tool's input is exactly what its route
+ * validates (spec 2026-10-24-cezar-mcp-server §3).
+ */
+const ROUTE_INPUT = Symbol.for('cezar.route-input');
+
+export interface RouteInput {
+  target: 'json' | 'param' | 'query' | 'form';
+  /** A thunk stays a thunk: several schemas are declared below the route that uses them. */
+  schema: z.ZodType | (() => z.ZodType);
+}
+
+function tagged<T extends object>(middleware: T, input: RouteInput): T {
+  Object.defineProperty(middleware, ROUTE_INPUT, { value: input });
+  return middleware;
+}
+
+/** The input a route middleware validates; undefined for every other handler. */
+export function routeInputOf(handler: unknown): RouteInput | undefined {
+  if (typeof handler !== 'function') return undefined;
+  return (handler as unknown as Record<symbol, RouteInput | undefined>)[ROUTE_INPUT];
+}
+
+/**
  * `{ error }`, the one 400 shape this API answers (BACKWARD_COMPATIBILITY.md §2).
  *
  * Each issue is prefixed with the field path, because zod's own message never names the field:
@@ -141,7 +165,7 @@ export function jsonZodValidator<
     c.req.addValidatedData('json', result.data as never);
     return next();
   };
-  return guard as unknown as JsonValidator<S, E, P>;
+  return tagged(guard, { target: 'json', schema }) as unknown as JsonValidator<S, E, P>;
 }
 
 /**
@@ -150,20 +174,20 @@ export function jsonZodValidator<
  * The schema receives the whole param object (`{ provider: 'codex' }`), not a single value.
  */
 export function paramZodValidator<S extends z.ZodType>(schema: S, { message }: ErrorOptions = {}) {
-  return validator('param', (value, c) => {
+  return tagged(validator('param', (value, c) => {
     const parsed = schema.safeParse(value);
     return parsed.success ? (parsed.data as z.infer<S>) : reject(c, parsed.error, message);
-  });
+  }), { target: 'param', schema });
 }
 
 /** Query string, on the same terms as {@link paramZodValidator}. */
 export function queryZodValidator<S extends z.ZodType, E extends Env = Env, P extends string = string>(
   schema: S, { message }: ErrorOptions = {},
 ): MiddlewareHandler<E, P, { in: { query: z.input<S> }; out: { query: z.output<S> } }> {
-  return validator('query', (value, c) => {
+  return tagged(validator('query', (value, c) => {
     const parsed = schema.safeParse(value);
     return parsed.success ? (parsed.data as z.infer<S>) : reject(c, parsed.error, message);
-  }) as MiddlewareHandler<E, P, { in: { query: z.input<S> }; out: { query: z.output<S> } }>;
+  }), { target: 'query', schema }) as MiddlewareHandler<E, P, { in: { query: z.input<S> }; out: { query: z.output<S> } }>;
 }
 
 /**
@@ -192,11 +216,11 @@ export function multipartZodValidator<
   E extends Env = Env,
   P extends string = string,
 >(schema: S | (() => S), { message }: ErrorOptions = {}): FormValidator<S, E, P> {
-  return validator('form', async (value, c) => {
+  return tagged(validator('form', async (value, c) => {
     const resolved = typeof schema === 'function' ? schema() : schema;
     const parsed = await resolved.safeParseAsync(value);
     return parsed.success ? (parsed.data as z.infer<S>) : reject(c, parsed.error, message);
-  }) as unknown as FormValidator<S, E, P>;
+  }), { target: 'form', schema }) as unknown as FormValidator<S, E, P>;
 }
 
 /**

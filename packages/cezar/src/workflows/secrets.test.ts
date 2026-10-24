@@ -352,6 +352,22 @@ describe('run context for check steps', () => {
    * builds its manager without a projectId; stripping there left `CEZ_API_URL` in place while
    * `cez task create` silently fell back to the cockpit's boot project.
    */
+  it('never hands a check the shell CLI’s own cockpit address or token', async () => {
+    const names = ['CEZ_TOKEN', 'CEZ_SERVER', 'CEZ_API_TOKEN', 'cez_token'];
+    const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+    for (const name of names) process.env[name] = `leak-${name}`;
+    try {
+      const record = store.createRun({ title: 't', workflow: 'w', task: 'x', steps: [{ id: 'verify', name: 'Verify', kind: 'check' }] });
+      const env = await contextOf(record.id, 'verify', repoRoot);
+      for (const name of names) expect(env, name).not.toHaveProperty(name);
+    } finally {
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
   it('forwards an inherited CEZ_PROJECT_ID when the run has no project of its own', async () => {
     process.env.CEZ_PROJECT_ID = 'operators-choice';
     const projectless = new RunManager(store, repoRoot);

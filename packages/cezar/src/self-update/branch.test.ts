@@ -13,6 +13,9 @@ import { activate, activeId, listInstalled, previousId, readManifest, versionEnt
 import { RegistryCache } from './registry.ts';
 import { SelfUpdateService, type SelfUpdateDeps } from './service.ts';
 
+/** The job's failure text: the owner's view; a projected job carries none (`selfUpdateJobProjectedSchema`). */
+const jobError = (status: { job: unknown }): string | undefined => (status.job as { error?: string } | null)?.error;
+
 /**
  * The `branch` channel (spec 2026-10-23 §3) against a real fixture repository: the remote the
  * service is configured with is an `https://` URL (the only shapes it accepts), rewritten to the
@@ -464,7 +467,7 @@ describe('forward-only on a hosted cockpit, by committer date', () => {
     const target = `0.17.0+${dropped.slice(0, 8)}`;
     svc.apply(target);
     await vi.waitFor(async () => expect((await svc.status()).job?.status).toBe('failed'), { timeout: 15_000 });
-    expect((await svc.status()).job?.error).toMatch(/is not on brutus/);
+    expect(jobError(await svc.status())).toMatch(/is not on brutus/);
     expect(calls).toEqual([]);
   });
 });
@@ -586,7 +589,7 @@ describe('applying a branch build', () => {
     const svc = service({ ...deps, restart });
     svc.apply(`0.17.0+${c1.slice(0, 8)}`);
     await vi.waitFor(async () => expect((await svc.status()).job?.status).toBe('failed'), { timeout: 15_000 });
-    expect((await svc.status()).job?.error).toMatch(/no branch to follow/);
+    expect(jobError(await svc.status())).toMatch(/no branch to follow/);
     expect(calls).toEqual([]);
     expect(activeId(env)).toBe('0.16.0');
     expect(restart).not.toHaveBeenCalled();
@@ -602,7 +605,7 @@ describe('applying a branch build', () => {
     const svc = service({ ...deps, restart });
     svc.apply(target);
     await vi.waitFor(async () => expect((await svc.status()).job?.status).toBe('failed'), { timeout: 15_000 });
-    expect((await svc.status()).job?.error).toMatch(/build:server failed/);
+    expect(jobError(await svc.status())).toMatch(/build:server failed/);
     expect(activeId(env)).toBe(running);
     expect(previousId(env)).toBe('0.16.0');
     expect(existsSync(join(home, 'versions', target))).toBe(false);
@@ -695,7 +698,7 @@ describe('applying a branch build', () => {
     writeFileSync(join(home, 'source.lock'), `${process.ppid}\n${Date.now()}\n`);
     svc.apply(target);
     await vi.waitFor(async () => expect((await svc.status()).job?.status).toBe('failed'), { timeout: 15_000 });
-    expect((await svc.status()).job?.error).toMatch(/another cezar \(pid \d+\) is building/);
+    expect(jobError(await svc.status())).toMatch(/another cezar \(pid \d+\) is building/);
     expect(calls).toEqual([]);
     expect(activeId(env)).toBe(running);
 

@@ -89,6 +89,20 @@ describe('cez task', () => {
     expect(shell.calls).toHaveLength(0);
   });
 
+  it('from a shell (no parent task), create starts a top-level task on the addressed cockpit', async () => {
+    const h = harness({ status: 201, body: { id: 'run-9', branch: 'cez/run9' } });
+    const shell = { CEZ_API_URL: 'https://agents.example.dev', CEZ_API_TOKEN: 'ceztok_x', CEZ_PROJECT_ID: 'ffp' };
+    expect(await runTaskCommand(['create', 'Fix the gallery', '--workflow', 'quick-task', '--runner', 'codex'], shell, h.io)).toBe(0);
+    expect(h.calls[0]?.url).toBe('https://agents.example.dev/api/v1/p/ffp/runs');
+    expect(JSON.parse(String(h.calls[0]?.init?.body))).toEqual({ task: 'Fix the gallery', workflow: 'quick-task', runner: 'codex' });
+    expect(new Headers(h.calls[0]?.init?.headers).get('authorization')).toBe('Bearer ceztok_x');
+    expect(h.out[0]).toContain('started run-9 on branch cez/run9');
+    const parentOnly = harness({ status: 201, body: {} });
+    expect(await runTaskCommand(['create', 'x', '--budget', '2'], shell, parentOnly.io)).toBe(1);
+    expect(parentOnly.err[0]).toContain('--budget needs a parent task');
+    expect(parentOnly.calls).toHaveLength(0);
+  });
+
   it('answers --help on a subcommand instead of refusing it as an unknown option', async () => {
     const h = harness({ status: 200, body: {} });
     expect(await runTaskCommand(['create', '--help'], env, h.io)).toBe(0);

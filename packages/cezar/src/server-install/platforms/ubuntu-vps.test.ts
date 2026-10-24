@@ -229,6 +229,23 @@ describe('nginxVhost', () => {
     expect(v).toContain('proxy_set_header Host $http_host;');
     expect(v).not.toContain('proxy_set_header Host $host;');
   });
+
+  // Why the installer's own front needs no CEZ_EXTERNAL_PROXY (spec 2026-10-24-cezar-mcp-server
+  // §5): a bare `proxy_pass` sends a loopback Host and no forwarding header, which the host-key
+  // guard cannot tell from a shell. Every proxied location here inherits the server's headers —
+  // a `proxy_set_header` inside a location would drop that inheritance.
+  it('sends the public Host and X-Forwarded-For on every proxied location, so the host key opens nothing through it', () => {
+    for (const htpasswd of ['/etc/cezar/htpasswd', null]) {
+      const v = nginxVhost(4321, 'cezar.example.com', htpasswd);
+      const server = v.slice(v.indexOf('server {'));
+      const head = server.slice(0, server.indexOf('location '));
+      expect(head, String(htpasswd)).toContain('proxy_set_header Host $http_host;');
+      expect(head, String(htpasswd)).toContain('proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;');
+      const locations = server.split(/\n\s*location /).slice(1);
+      expect(locations.length, String(htpasswd)).toBeGreaterThan(0);
+      for (const location of locations) expect(location, String(htpasswd)).not.toContain('proxy_set_header');
+    }
+  });
 });
 
 /**
@@ -567,6 +584,14 @@ describe('systemdUnit — sign-in', () => {
     expect(systemdUnit('/srv/app', 4321, 'user', '/usr/local/bin/cezar', undefined, undefined, false)).toBe(base);
     expect(systemdUnit('/srv/app', 4321, 'user', '/usr/local/bin/cezar', undefined, undefined, true))
       .toContain('Environment=CEZ_REMOTE=1\nEnvironment=CEZ_AUTH=0\n');
+  });
+
+  it('tells the service it sits behind an external proxy, so the host key opens nothing there', () => {
+    const base = systemdUnit('/srv/app', 4321, 'user', '/usr/local/bin/cezar');
+    expect(base).not.toContain('CEZ_EXTERNAL_PROXY');
+    expect(systemdUnit('/srv/app', 4321, 'user', '/usr/local/bin/cezar', undefined, undefined, false, false)).toBe(base);
+    expect(systemdUnit('/srv/app', 4321, 'user', '/usr/local/bin/cezar', undefined, undefined, false, true))
+      .toContain('Environment=CEZ_REMOTE=1\nEnvironment=CEZ_EXTERNAL_PROXY=1\n');
   });
 });
 
@@ -1153,7 +1178,9 @@ describe("ubuntu-vps identity step — cezar's own sign-in", () => {
           inputs.push({ argv: args.join(' '), stdin: opts.input });
           return { code: 0, stdout: over.authed ?? '{"instanceId":"this-install"}\n200', stderr: '' };
         }
-        if (target.endsWith('/api/v1/auth/session')) return { code: 0, stdout: over.session ?? '{"enforced":true,"authenticated":false,"setupRequired":true}\n200', stderr: '' };
+        if (target.endsWith('/api/v1/auth/session')) {
+          return { code: 0, stdout: over.session ?? '{"enforced":true,"authenticated":false,"setupRequired":true,"instanceId":"this-install"}\n200', stderr: '' };
+        }
         if (target.endsWith('/api/v1/health')) return { code: 0, stdout: over.anon ?? '401', stderr: '' };
         return { code: 0, stdout: '200', stderr: '' }; // the upstream answers
       },
@@ -1188,7 +1215,23 @@ describe("ubuntu-vps identity step — cezar's own sign-in", () => {
     const { argv, stdin } = inputs[0]!;
     expect(stdin).toMatch(/^header = "Authorization: Bearer cezhost_/);
     expect(argv).not.toContain('cezhost_');
-    expect(argv).toContain('Host: agents.example.dev');
+    // Straight to the loopback upstream: behind nginx the key is a proxied request, which is 401.
+    expect(argv).toMatch(/ http:\/\/127\.0\.0\.1:\d+\/api\/v1\/health /);
+    expect(argv).not.toContain('Host:');
+  });
+
+  it('never sends the host key to an upstream that is not loopback', async () => {
+    const { runner, inputs } = signInRunner();
+    const { ctx } = signInCtx(runner, { externalProxy: true, bindHost: '172.17.0.1', publicUrl: undefined });
+    await expect(stepById('identity').run(ctx)).resolves.toBeTruthy();
+    expect(inputs).toHaveLength(0);
+  });
+
+  it('sends no host key behind an external proxy at all: the service refuses it there (CEZ_EXTERNAL_PROXY)', async () => {
+    const { runner, inputs } = signInRunner();
+    const { ctx } = signInCtx(runner, { externalProxy: true, publicUrl: undefined });
+    await expect(stepById('identity').run(ctx)).resolves.toBeTruthy();
+    expect(inputs).toHaveLength(0);
   });
 
   it('says "sign in" instead of minting a link once an account exists', async () => {
@@ -1208,6 +1251,10 @@ describe("ubuntu-vps identity step — cezar's own sign-in", () => {
     ['sign-in not enforced', { session: '{"enforced":false}\n200' }, {}, 'did not report sign-in as enforced'],
     ['an owner request that does not arrive', { authed: '\n502' }, {}, 'did not reach cezar'],
     ['another install answering', { authed: '{"instanceId":"other"}\n200' }, {}, 'serving another install'],
+    // The owner probe goes straight to the upstream, so only the anonymous session proves the
+    // DOMAIN's vhost reaches this install.
+    ['the domain reaching another install', { session: '{"enforced":true,"authenticated":false,"setupRequired":true,"instanceId":"other"}\n200' }, {}, 'through nginx is not this install'],
+    ['the domain reaching a cockpit that names no install', { session: '{"enforced":true,"authenticated":false,"setupRequired":true}\n200' }, {}, 'through nginx is not this install'],
   ] as const)('fails the install on %s', async (_label, answers, state, expected) => {
     const { ctx, out } = signInCtx(signInRunner(answers).runner, state);
     await expect(stepById('identity').run(ctx)).rejects.toBeInstanceOf(StepAborted);

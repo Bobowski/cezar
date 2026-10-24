@@ -59,6 +59,7 @@ import { runServiceCommand } from './services/cli.ts';
 import { runTelemetryCommand } from './telemetry-cli.ts';
 import { reportInconclusiveProbe } from './server/provider-telemetry.ts';
 import { runRunsCommand } from './runs/runs-cli.ts';
+import { plainHttpWarning, takeServerFlags } from './cockpit-address.ts';
 
 import { runTrackerConnectionsCommand } from './server/tracker/connections-cli.ts';
 import { runSecretsCommand } from './workspace/secrets-cli.ts';
@@ -71,6 +72,8 @@ Usage:
   cezar task <create|report|list>  dispatch or report from inside a running task (CEZ_DISPATCH=0 turns it off)
   cezar automation <add|create|check|run|list|…>  create and manage automations (GitHub polls, schedules) on a running cockpit
   cezar runs list           list a running cockpit's tasks from a shell (CEZ_API_URL=http://127.0.0.1:4321)
+  cezar mcp [--tools <sets>]  serve the cockpit's API to an MCP client over stdio
+                            (claude mcp add cezar -- cezar mcp)
   cezar init                scaffold .ai/cezar/ (example workflow + skill)
   cezar projects            list the projects this cockpit serves
                             (also: projects add [<dir>] · projects remove <id>)
@@ -117,12 +120,19 @@ Options:
       --yes                   server-install: accept safe defaults (never auto-sudo)
       --reconfigure <ids>     server-install: force re-run of step id(s), comma-separated
       --reinstall             server-install: force re-run of every step (full reinstall)
+      --server <url>          task/automation/tracker/service/runs/mcp: the cockpit to talk to
+                              (default: CEZ_SERVER, else the local one)
+      --token <token>         …and the API token to show it (default: CEZ_TOKEN;
+                              Settings → Security → API tokens)
   -h, --help                  show this help
 
 Zero config: uses your logged-in \`claude\` CLI (and \`gh\` for GitHub bits).
 Skills live in .ai/skills/, .ai/cezar/skills/ and your team skills repo
 (default open-mercato/skills; override via .ai/cezar/config.json);
 workflows in .ai/cezar/workflows/.`;
+
+/** The commands that talk to a running cockpit — the ones `--server` / `--token` address. */
+const CLIENT_COMMANDS = new Set(['task', 'automation', 'tracker', 'service', 'runs', 'mcp']);
 
 async function main(): Promise<void> {
   if (process.argv[2] === 'tracker-connections') {
@@ -132,6 +142,36 @@ async function main(): Promise<void> {
   // Local-only, like tracker-connections: `set` reads its value from stdin, never argv.
   if (process.argv[2] === 'secrets') {
     process.exitCode = await runSecretsCommand(process.argv.slice(3));
+    return;
+  }
+  // `cez --server <url> --token <t> <command>` (spec 2026-10-24-cezar-mcp-server §4): the
+  // cockpit-facing commands below may address another machine. Taken out before routing.
+  // A copy first: the cockpit itself (`serve`, `run`) must never inherit a CEZ_SERVER address.
+  const clientEnv: NodeJS.ProcessEnv = { ...process.env };
+  let clientArgs: string[];
+  try {
+    clientArgs = takeServerFlags(process.argv.slice(2), clientEnv);
+  } catch (error) {
+    clientArgs = process.argv.slice(2);
+    if (CLIENT_COMMANDS.has(clientArgs.find((arg) => !arg.startsWith('-')) ?? '')) {
+      console.error(`cezar: ${(error as Error).message}`);
+      process.exitCode = 2;
+      return;
+    }
+  }
+  if (CLIENT_COMMANDS.has(clientArgs[0] ?? '')) {
+    process.argv.splice(2, process.argv.length - 2, ...clientArgs);
+    for (const key of ['CEZ_API_URL', 'CEZ_API_TOKEN'] as const) {
+      if (clientEnv[key] !== undefined) process.env[key] = clientEnv[key];
+    }
+    // stderr: `cezar mcp` speaks its protocol on stdout.
+    const warning = plainHttpWarning(clientEnv);
+    if (warning) console.error(warning);
+  }
+  // `cezar mcp` (spec 2026-10-24-cezar-mcp-server §3): stdio is the protocol — nothing else may print.
+  if (process.argv[2] === 'mcp') {
+    const { runMcpCommand } = await import('./mcp/cli.ts');
+    process.exitCode = await runMcpCommand(process.argv.slice(3));
     return;
   }
   // `cez task …` (spec 2026-09-10-dispatch) has its own flags, so it is routed before the

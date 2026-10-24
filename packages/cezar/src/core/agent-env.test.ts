@@ -69,6 +69,18 @@ describe('buildChildEnv — least-privilege child env (#427)', () => {
     expect(env.CEZ_MOCK_ARGS_FILE).toBe('/tmp/args');
   });
 
+  it('never forwards the CLI client credentials (CEZ_TOKEN, CEZ_SERVER) or a host CEZ_API_TOKEN', () => {
+    const src = { ...HOST, CEZ_TOKEN: 'ceztok_vps', CEZ_SERVER: 'https://vps.example', CEZ_API_TOKEN: 'ceztok_host', CEZ_ENV_PASSTHROUGH: 'CEZ_TOKEN' };
+    for (const source of [src, { ...src, CEZ_AGENT_ENV_FULL: '1' }]) {
+      const env = buildChildEnv({ backend: 'claude', source });
+      expect(env.CEZ_TOKEN).toBeUndefined();
+      expect(env.CEZ_SERVER).toBeUndefined();
+      expect(env.CEZ_API_TOKEN).toBeUndefined();
+    }
+    // The run's own token arrives as per-run env and still wins.
+    expect(buildChildEnv({ backend: 'claude', source: src, extraEnv: { CEZ_API_TOKEN: 'cezrun_1' } }).CEZ_API_TOKEN).toBe('cezrun_1');
+  });
+
   it('applies extraEnv (spec.env) last so per-run vars always win', () => {
     const env = buildChildEnv({
       backend: 'claude',

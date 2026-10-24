@@ -28,6 +28,9 @@ export const authSessionResponseSchema = z.object({
   /** No account exists yet: only the setup flow is served (`cezar auth setup` on the host). */
   setupRequired: z.boolean(),
   user: authUserSchema.optional(),
+  /** `CEZ_INSTANCE_ID`, when server-install set one: how its anonymous probe tells that a domain
+   *  reaches THIS install (the health route's twin needs a session). A random id, no secret. */
+  instanceId: z.string().optional(),
 });
 export type AuthSessionResponse = z.infer<typeof authSessionResponseSchema>;
 
@@ -115,3 +118,41 @@ export type AuthRevokeOthersResponse = z.infer<typeof authRevokeOthersResponseSc
 
 export const authOkResponseSchema = z.object({ ok: z.literal(true) });
 export type AuthOkResponse = z.infer<typeof authOkResponseSchema>;
+
+// ---- API tokens (spec 2026-10-24-cezar-mcp-server §4) -------------------------------------
+
+/**
+ * What a token may do. `read` is the GETs that carry no secret; `runs.transcript` a task's event stream and
+ * transcript (tool output can hold secrets; `tasks` implies it); `tasks`, `author` and `admin` also write, each in
+ * its own route families (`packages/cezar/src/auth/api-tokens.ts` holds the map); `admin` is all of it.
+ */
+export const apiTokenScopeSchema = z.enum(['read', 'runs.transcript', 'tasks', 'author', 'admin']);
+export type ApiTokenScope = z.infer<typeof apiTokenScopeSchema>;
+
+export const apiTokenSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  scopes: z.array(apiTokenScopeSchema),
+  createdAt: z.string(),
+  /** Absent: the token never expires (it is still revocable). */
+  expiresAt: z.string().optional(),
+  /** Absent until it is first used; refreshed at most every few minutes. */
+  lastUsedAt: z.string().optional(),
+});
+export type ApiToken = z.infer<typeof apiTokenSchema>;
+
+export const apiTokensResponseSchema = z.object({ tokens: z.array(apiTokenSchema) });
+export type ApiTokensResponse = z.infer<typeof apiTokensResponseSchema>;
+
+/** Minting a credential asks for a fresh authenticator code, like every other credential change. */
+export const createApiTokenBodySchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  scopes: z.array(apiTokenScopeSchema).min(1).max(5),
+  expiresAt: z.iso.datetime({ offset: true }).optional(),
+  code: z.string().min(1).max(16),
+});
+export type CreateApiTokenBody = z.infer<typeof createApiTokenBodySchema>;
+
+/** `value` is the token itself (`ceztok_<id>_<secret>`), shown once and stored only as a hash. */
+export const createApiTokenResponseSchema = z.object({ token: apiTokenSchema, value: z.string() });
+export type CreateApiTokenResponse = z.infer<typeof createApiTokenResponseSchema>;

@@ -7,6 +7,7 @@ import {
   authSetupBeginBodySchema,
   authSetupCompleteBodySchema,
   authVerifyBodySchema,
+  createApiTokenBodySchema,
 } from '@open-mercato/cezar-contract';
 import { isLoopbackHostHeader } from '../server/capabilities.ts';
 import { jsonZodValidator, paramZodValidator } from '../server/validators.ts';
@@ -75,20 +76,23 @@ export function failure(c: Context, result: AuthFailure) {
   return c.json({ error: result.error }, result.status);
 }
 
-export function authRoutes(deps: { service: AuthService; enforced: () => boolean }) {
+export function authRoutes(deps: { service: AuthService; enforced: () => boolean; trusted?: () => boolean }) {
   const { service, enforced } = deps;
+  const trusted = deps.trusted ?? (() => false);
   const notEnabled = (c: Context) => c.json({ error: 'authentication is not enabled on this cockpit' }, 409);
 
   return new Hono<AuthEnv>()
     .get('/auth/session', (c) => {
       c.header('cache-control', 'no-store');
-      if (!enforced()) return c.json({ enforced: false, authenticated: true, setupRequired: false });
+      const instance = process.env.CEZ_INSTANCE_ID ? { instanceId: process.env.CEZ_INSTANCE_ID } : {};
+      if (!enforced()) return c.json({ enforced: false, authenticated: true, setupRequired: false, ...instance });
       const principal = c.get('principal');
       return c.json({
         enforced: true,
         authenticated: principal !== undefined,
         setupRequired: service.setupRequired(),
         ...(principal?.kind === 'user' ? { user: principal.user } : {}),
+        ...instance,
       });
     })
     .post('/auth/login', jsonZodValidator(authLoginBodySchema), async (c) => {
@@ -163,6 +167,36 @@ export function authRoutes(deps: { service: AuthService; enforced: () => boolean
       const { id } = c.req.valid('param');
       if (!service.revokeSession(principal.user.id, id)) return c.json({ error: 'unknown session' }, 404);
       if (id === principal.sessionId) clearSession(c);
+      return c.json({ ok: true as const });
+    })
+    // API tokens (spec 2026-10-24-cezar-mcp-server §4): minted by the signed-in owner alone;
+    // listed and revoked by them or by this machine's trusted operator (a local cockpit, also
+    // without sign-in — tokens verify there too). The guard refuses every token on `/auth/*`.
+    .get('/auth/tokens', (c) => {
+      const principal = c.get('principal');
+      c.header('cache-control', 'no-store');
+      if (principal?.kind === 'user') return c.json({ tokens: service.listApiTokens(principal.user.id) });
+      if (principal?.kind === 'host' && trusted()) return c.json({ tokens: service.listApiTokens(undefined) });
+      if (!enforced()) return notEnabled(c);
+      return c.json({ error: 'only a signed-in user has API tokens' }, 403);
+    })
+    .post('/auth/tokens', jsonZodValidator(createApiTokenBodySchema), (c) => {
+      if (!enforced()) return notEnabled(c);
+      const principal = c.get('principal');
+      if (principal?.kind !== 'user') return c.json({ error: 'only a signed-in user has API tokens' }, 403);
+      const result = service.createApiToken(principal.user.id, c.req.valid('json'), metaOf(c));
+      if (!result.ok) return failure(c, result);
+      c.header('cache-control', 'no-store');
+      return c.json({ token: result.token, value: result.value }, 201);
+    })
+    .delete('/auth/tokens/:id', paramZodValidator(z.object({ id: z.string().regex(/^[0-9a-f]{12}$/) })), (c) => {
+      const principal = c.get('principal');
+      const operator = principal?.kind === 'host' && trusted();
+      if (principal?.kind !== 'user' && !operator) {
+        return enforced() ? c.json({ error: 'only a signed-in user has API tokens' }, 403) : notEnabled(c);
+      }
+      const owner = principal?.kind === 'user' ? principal.user.id : undefined;
+      if (!service.revokeApiToken(owner, c.req.valid('param').id)) return c.json({ error: 'unknown token' }, 404);
       return c.json({ ok: true as const });
     });
 }

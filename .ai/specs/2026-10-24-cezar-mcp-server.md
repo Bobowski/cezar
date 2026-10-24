@@ -1,6 +1,6 @@
 # cezar as an MCP server — the whole API as tools, for the coding agent on your desktop
 
-> Status: proposed (2026-10-24), not built. Branch: `brutus`.
+> Status: built (2026-10-24) — see §9 for what the build settled. Branch: `brutus`.
 > Builds on: `packages/contract` (every request and response is a zod schema — the tool
 > catalog is generated from it), `2026-10-12-cockpit-authentication.md` (owner sign-in;
 > `run-tokens.ts` for a task's own CLI), `2026-09-10-dispatch.md` (`cez task create`, the one
@@ -36,8 +36,9 @@ one) serve the same catalog:
   which is the parity test's rule restated for tools.
 - **Project scope** is an input (`projectId`, default: the boot project), so one server covers
   the workspace.
-- **Annotations:** `readOnlyHint` for GET routes, `destructiveHint` for `DELETE` and for the
-  routes the cockpit confirms (discard, docker remove, branch delete).
+- **Annotations:** `readOnlyHint` for GET routes; `destructiveHint` for every write unless its
+  route-table entry says `destructive: false` (additive or trivially undone). Every write tool
+  states it, so a new write route is destructive until someone decides otherwise.
 - **Resources:** `cezar://projects`, `cezar://p/<id>/runs/<runId>/thread` (the thread as
   Markdown), `cezar://p/<id>/workflows/<name>` — the read-often shapes an agent wants to
   browse rather than call.
@@ -53,29 +54,89 @@ full list; the default set is `tasks,workflows,skills,projects` (about thirty to
 Settings → Security → **API tokens** (owner only):
 
 - `POST /auth/tokens { name, scopes, expiresAt? }` → the token value, shown once
-  (`ceztok_<id>_<secret>`); stored hashed (argon2, the password store's hash) in the auth store.
-- Scopes: `read` (GET), `tasks` (runs, messages, dispatch), `author` (workflows, skills,
-  automations, env), `admin` (everything, including settings and self-update).
+  (`ceztok_<id>_<secret>`); stored as a SHA-256 hash in the auth store (see As built: the secret is 256 random bits, so a slow hash buys nothing).
+- Scopes: `read` (allowlisted GETs), `runs.transcript` (`/runs/:id/events`, `/runs/:id/history`,
+  `/runs/:id/history-context`, `/runs/:id/handoff`, `/todos` and the inbox on the live streams:
+  tool output and agent-written notes can carry secrets, so `read` has only the run list and
+  summary; `tasks` implies it), `tasks` (runs, messages, dispatch, ticket transitions and watches),
+  `author` (workflows, skills, automations, env, the tracker connection and project link),
+  `admin` (everything, including settings, self-update and terminals — an interactive shell on
+  the host, so `tasks` and `author` never include it). Per-route exceptions to a family's owner
+  live in `ROUTE_OWNERS`.
+- Without `runs.transcript` (or `tasks`/`admin`), a token gets every run record PROJECTED —
+  `GET /runs`, `GET /runs/:id`, `GET /groups/:groupId` (whose variants also drop the
+  agent-written `handoffExcerpt`) and the `run` events of `/events` and `/workspace/events`, all
+  through `redactRunForScope` (`auth/run-projection.ts`): `projected: true`, and none of what the
+  agent wrote (`titleSummary`, `graphState.outputs`, `dispatch.report`/`pendingReports`/
+  `pendingAsk`); `error`, `steps[].error` and `landing.error`, which quote what a command
+  printed, become one line naming the kind (`required check failed`). A dispatched child's
+  `title` and `task` are its parent AGENT's order, not the user's words: they read
+  `dispatched task <id>`, its steps are named by id, and its `workflowDef` is dropped. No
+  projected record carries `systemPrompt` (an automation's included), `queuedMessages` or
+  `promptQueue`, and any other `workflowDef` is reduced to step ids, names and kinds
+  (`projectedWorkflowDefSchema`: no prompt, check command, secret name or graph). Status, timing,
+  counters, branch and PR stay; the contract's `apiRunSchema` names the marker. The slim task rows of `/workspace/runs-index` and the
+  dashboard (`projectTaskRow`) drop `titleSummary` and mask a child's title the same way, and the
+  dashboard's failure insights name a failure's kind instead of quoting it.
+- **A scope bounds the API surface, not the machine.** A token that can start or continue a run —
+  `tasks`, and `author`, whose workflows and automations start them — can execute code as the OS
+  user cezar runs as: agents run Bash, and a check step is a command. That user can read and write
+  everything under `~/.cezar/`, so treat `tasks` and `author` as owner-equivalent on that machine.
+  `read` is the only scope that executes nothing; it is the one to hand to anything shared.
 - `GET /auth/tokens`, `DELETE /auth/tokens/:id`; last-used time shown.
 - A Bearer token satisfies the auth guard like a session cookie, with its scope checked per
   route family; the request-origin guard (#426) is skipped for Bearer requests, because they
   are not browsers. Tokens never work for `/auth/*` management routes.
 
-The CLI learns `cez --server https://<domain> --token <…>` (or `CEZ_SERVER` / `CEZ_TOKEN`), so
+The CLI learns `cez --server https://<domain>` with `CEZ_TOKEN` (or `--token`, which shows in the
+process list; `CEZ_SERVER` for the address), so
 `cez task create` from a laptop talks to the VPS the same way the MCP server does.
 
 ## 5. Security
 
 - The MCP endpoint is behind the same auth as the API; without a token or session it is 401.
+- `tasks` and `author` are code execution as the cezar user (§4). What the server does stop is
+  that turning into the cockpit's owner credential off the box: the host key
+  (`~/.cezar/auth-host.key`, `0600`, readable by any task) is accepted only from a loopback
+  request — the SOCKET's remote address is loopback (an unknown socket is not), the `Host` is
+  loopback, and no `X-Forwarded-*`/`Forwarded`/`X-Real-IP`/`Origin` header is present — so a
+  key a task reads out and hands to a token holder opens nothing through the public front. The
+  MCP endpoint dispatches each tool call with the outer request's socket, so a host-key MCP
+  session keeps working. Behind `--external-proxy` the unit sets `CEZ_EXTERNAL_PROXY=1` and the
+  host key opens nothing at all: an L4 proxy (TCP passthrough) adds no header to tell its callers
+  from a local shell, and a proxy that wants host-key use would have to speak PROXY protocol,
+  which cezar does not. The same holds for a hand-written L7 proxy that adds no header: a bare
+  nginx `proxy_pass http://127.0.0.1:<port>` sends a loopback `Host` (`$proxy_host`) and no
+  `X-Forwarded-*`, exactly what a local shell sends, so such a setup must set
+  `CEZ_EXTERNAL_PROXY=1` itself. `server-install` does not write it for its own nginx site: that
+  site sends `Host $http_host` and `X-Forwarded-For` on every location (pinned by a test), and
+  setting it there would take the host key from every shell on the box. The installer's owner probe therefore goes to the loopback upstream, not
+  through nginx, and there is none behind an external proxy. What the probe through the domain
+  still proves is identity: the anonymous `GET /auth/session` carries `instanceId`
+  (`CEZ_INSTANCE_ID`), and the install fails unless the domain's vhost names this install.
+- A revoked or expired token ends the SSE streams it opened within one keepalive beat
+  (`sseSessionEnded`); a token opens no WebSocket under sign-in, so there is none to end.
+- `CEZ_TOKEN`/`CEZ_SERVER`/`CEZ_API_TOKEN` in the cockpit's own environment reach no child:
+  `buildChildEnv` drops them for agents and `checkStepEnv` for check steps (`isNeverForwarded`).
 - Scopes are enforced server-side per route family, not by the tool list the client saw.
 - Token hashes only; a lost token is recreated, never recovered.
+- An `admin` token reaches the auth state through the backup routes — an archive carries all of
+  `CEZ_HOME`, so downloading one reads the users, token hashes and host key, and restoring one
+  replaces them; this is accepted as inherent to `admin`, which already reads every secret and drives
+  the self-updater.
 - stdio `cezar mcp` on a local cockpit needs no token: it is the machine's owner, like the CLI.
 - The generator never exposes a route the cockpit does not have; a tool is a route.
 
 ## 6. Zero config
 
-Nothing on by default: the HTTP MCP endpoint answers only to a token the owner created. The
-stdio server is a command the owner adds to their client. No env var; `CEZ_SERVER`/`CEZ_TOKEN`
+Nothing new is exposed by default. On a cockpit with sign-in (every hosted one, unless
+`CEZ_AUTH=0`), the HTTP MCP endpoint answers only to a session or a token the owner created. On a
+local cockpit without sign-in — the zero-config default — it answers, like every other `/api/v1`
+route, to any caller on this machine: the machine is the perimeter there, and the #426 origin
+guard still refuses a foreign `Host` and a cross-site browser request. The stdio server is a
+command the owner adds to their client. A `--server` naming another machine over plain `http://`
+gets a warning (the token would travel in clear), and the docs prefer `CEZ_TOKEN` to `--token`,
+which shows in the process list. No env var; `CEZ_SERVER`/`CEZ_TOKEN`
 are client-side conveniences documented in `.env.example`.
 
 ## 7. Not done here
@@ -96,3 +157,61 @@ are client-side conveniences documented in `.env.example`.
   call `runs_create`, read a thread resource.
 - VPS: add `https://agents.kinel.dev/api/v1/mcp` to desktop Claude Code with a `tasks` token;
   create a task on fancy-fence-panels from the desktop; read its thread when it reaches review.
+
+## 9. As built
+
+- **The contract entry** is `packages/contract/src/routes.ts`: one `METHOD /path` row per
+  `/api/v1` route (summary, `response`, optional `tool` name, `destructive`, `notTool` for
+  streams, bytes, cockpit beacons, sign-in and `/mcp` itself). Inputs are read off the route's
+  own validator middleware (`validators.ts` tags each with its schema), so a tool's input is
+  what the route validates. `mcp/catalog.test.ts` fails on a route without a row and on a row
+  without a route; `contract-parity.routes.test.ts` checks every `response` against the route's
+  2xx body both ways at typecheck. Names derive from the path (`GET` list/get, `POST` on a
+  collection `_create`, else the action, `PUT` `_put`, `PATCH` `_update`, `DELETE` `_delete`);
+  a row's `tool` overrides it (`POST /workflows` is `workflows_put`, `POST /runs/:id/messages`
+  `runs_send_message`). A response that is not an object travels as `{ result }`.
+- **SDK**: `@modelcontextprotocol/server` 2.4 (`createMcpHandler`, stateless; it serves the
+  2025 `initialize` handshake and the 2026-07-28 envelope). A tool call is a request through the
+  whole app with the caller's own headers, so the guard checks the scope on the route. A token
+  is LISTED only the tools its scopes reach (`toolsAllowedFor`, `mcp/http.ts`), and the server's
+  instructions and prompts name only listed tools; calling an unlisted one still reaches its
+  route and its `403`.
+- **`cezar mcp`** is a stdio↔HTTP bridge to the cockpit's `/api/v1/mcp`, not a second server:
+  local default address and the host key, or `--server`/`--token`. `bridgeTarget()` in
+  `mcp/cli.ts` is where `--as-run` (the chat spec) adds the task's own address and token.
+- **Tokens are SHA-256-hashed**, like session tokens, not scrypt: the secret is 256 random bits,
+  and a slow hash on every API request would cost ~128 MB and hundreds of milliseconds per call.
+  Minting asks for a fresh authenticator code, like every other credential change; tokens are
+  minted by the signed-in owner only (`409` on a cockpit without sign-in); a local cockpit's
+  trusted operator lists and revokes them with or without sign-in, since they verify there too;
+  and `cezar auth reset`, a password change and "sign out everywhere else" (`revoke-others`)
+  revoke the user's tokens.
+- **Scopes**: `read` is an ALLOWLIST of GET routes known to carry no secret (`READ_ROUTES`): no
+  credential, config, secret name, env file, shell, service log or lifecycle output — those need
+  the family's scope or `admin`, and a GET nobody listed is not `read`'s. Any token reads a task's
+  files (`/runs/:id/files`) through the repository index, as `/repo/files` does for everyone;
+  any token may read `projects`, `health` and `models` and reach the `/mcp` transport. The
+  family map is `FAMILY_SCOPES` in `auth/api-tokens.ts`; an unmapped family is `admin`'s.
+  `read` carries no configured command and nothing the user typed or pasted outside a task's own
+  text: pinned services and the start command are `author`'s to read (`READ_OWNERS`), and
+  automations, their log, dry-runs and templates are `author`'s family; drafts, a task's images,
+  both `ui-state` bags and the self-update development picker are no longer `read`'s. The
+  projected task record has no system prompt or queued prompts, and its `workflowDef` keeps only
+  step ids, names and kinds. The
+  automation log, `/worktrees` and the worktree-lifecycle views mask a dispatched child's title;
+  the lifecycle views drop rendered commands and execution reasons and name a failure's stage;
+  `/workspace/self-update` gives a non-`admin` token the job's status, target and timing
+  (`projected: true`), not npm's log or the error, the followed branch or a build's commit;
+  `GET /docker` masks a dispatched child's stack title. `api-tokens.test.ts` pins every free-text
+  field each `read` route's contract response names, with where its words come from
+  (projected, repository, forge or a degrade reason); a new one fails until it is decided. A
+  field counts when it can hold text, an open object or a record of text counts as a field of
+  its own (`graphState.outputs.*`), and on the shared fixture
+  (`test-fixtures/agent-written-run.testkit.ts`) every field a task record lists is absent or
+  reduced once projected, except the user's own `title`/`task` and the tracker's title.
+- **Origin guard**: only a token that VERIFIES skips it; an unverified Bearer is checked like
+  any request and then refused by the auth guard.
+- **The CLI**: `CEZ_SERVER`/`CEZ_TOKEN` are ignored inside a task and never forwarded into an
+  agent's environment (`core/agent-env.ts`), and a local cockpit without sign-in treats a token
+  it never minted (from a loopback Host) as no credential; the host key is only ever sent to a loopback cockpit; from a shell (no
+  `CEZ_TASK_ID`) `cez task create` starts a top-level task (`--workflow`, `--runner`, `--model`).

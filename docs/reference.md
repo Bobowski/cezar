@@ -474,10 +474,12 @@ Useful environment variables:
 | `CEZ_DRY_RUN=1` | Use the bundled mock instead of the real `claude` CLI — the entire cockpit works offline, for demos and development. |
 | `CEZ_TELEMETRY=0` | Block usage telemetry even after you opted in. Telemetry is opt-in — nothing is sent until you answer yes in the cockpit, Settings → Privacy or `cezar telemetry enable` ([docs/telemetry.md](telemetry.md)). `DO_NOT_TRACK=1` works too. `CEZ_TELEMETRY=1` only lifts the CI / test-runner / `CEZ_DRY_RUN=1` block; it never grants consent. |
 | `CEZ_INSTANCE_ID` | Internal server-install identity set automatically in generated systemd/launchd services; normally leave unset. It is surfaced additively by `/api/v1/health` for install verification. |
+| `CEZ_EXTERNAL_PROXY` | Written as `1` by `server-install --external-proxy`. Every connection is then the operator's proxy's, so this machine's host key (`~/.cezar/auth-host.key`) opens nothing — an L4 proxy adds no header that would tell its callers from a local shell. Off (the default), the host key needs a loopback socket and no `X-Forwarded-*`/`Forwarded`/`X-Real-IP`/`Origin` header — so set it yourself behind a hand-written proxy that adds none, such as a bare nginx `proxy_pass` (which also sends a loopback `Host`). `server-install`'s own nginx site sends them and needs none. |
 | `CEZ_AGENT_MODELS_LOCKED=1` | Globally lock each runner to the model configured in its native Claude/Codex/OpenCode settings while keeping runner selection available. Exact `1` also delegates authentication and provider enablement to those native agents, so Cezar skips its credential probes and provider-disable preferences. Existing Cezar presets are preserved but ignored, and an environment change requires a restart. The config-file equivalent is `"modelsLocked": true` in global `~/.cezar/config.json` or one repository's `.ai/cezar/config.json`; config-file locks do not disable provider checks. |
 | `CEZ_APPROVAL_GATE=1` | Select Claude's `acceptEdits` mode. Cezar has no cockpit permission response channel; by default, unapproved tools are denied without interrupting the run. |
 | *(no flag)* — task preview | The task workspace's Browser column can show a task's OWN app only on a LOCAL cockpit (spec `.ai/specs/2026-10-07-task-workspace.md` §7, §9 Milestone 3), reported as `capabilities.preview`. There, `http://localhost:<port>` really is the task's app and sits on its own origin. On a hosted cockpit a loopback address resolves on the VIEWER's machine instead of the host the task runs on, so the Browser tile is offered disabled, with the reason — routing it properly needs the preview proxy §7 describes, which is not built. The Browser column itself still loads any address you type, on either kind of cockpit. |
 | `CEZ_AUTH=0` / `=1` | cezar's own sign-in (spec `.ai/specs/2026-10-12-cockpit-authentication.md`): password plus an authenticator code, one session per device. Unset it follows the deployment mode — off locally, **on for a hosted cockpit**, which serves only the setup flow until you run `cezar auth setup` on the host and open the one-time link it prints. `0` turns it off and leaves authentication to your reverse proxy, which must then enforce it. `1` requires sign-in on a local cockpit too. `cezar auth reset <user>` on the host is the only password recovery. Signing in over a public address needs HTTPS. |
+| `CEZ_SERVER` / `CEZ_TOKEN` | Client side only: the cockpit address and API token the shell CLIs (`cez task`, `cez runs`, `cez automation`, `cez tracker`, `cez service`) and `cezar mcp` use when the `--server` / `--token` flags are not given (spec `.ai/specs/2026-10-24-cezar-mcp-server.md` §4). Ignored inside a task, and never forwarded into an agent's or a check step's environment. Prefer `CEZ_TOKEN` to `--token`, which shows in the process list. This machine's host key is only ever sent to a local cockpit, so a remote one needs a token. Never read by the cockpit. |
 | `CEZ_TERMINAL=1` / `=0` | The task workspace's interactive terminal (spec `.ai/specs/2026-10-07-task-workspace.md` §6). Unset it is on wherever the caller is a trusted operator — locally, and on a hosted cockpit that enforces its own sign-in (the default, see `CEZ_AUTH`) — and off on a hosted cockpit under `CEZ_AUTH=0`. `1` allows it there too: without cezar's sign-in this hands a shell on the server to anyone your reverse proxy admits. `0` turns it off everywhere. A platform with no prebuilt PTY binary reports the terminal unavailable with a reason instead of failing. The same switch governs **project services** (spec `.ai/specs/2026-10-11-project-services.md`): starting a pinned command is running a shell command, so with the terminal off the Services page lists nothing and every start is refused; stopping stays allowed. It governs the **Docker view** too (spec `.ai/specs/2026-10-13-docker-view.md`): with the terminal off the machine's containers are neither listed nor stopped. |
 | `CEZ_FILE_EDIT=1` / `=0` | Editing and saving files from the task workspace's **Code** view (spec `.ai/specs/2026-07-20-worktree-file-editing.md`). Unset it follows the same line as the terminal — on locally and on a hosted cockpit that enforces its own sign-in, off on a hosted cockpit under `CEZ_AUTH=0`. `1` allows it there too: anyone your reverse proxy admits can then rewrite files an agent executes. `0` turns it off everywhere. Reading files is never gated by this, and `.git` and `node_modules` are never writable. |
 | `CEZ_DESIGN_MODE=0` | Turn off Design Mode in the task workspace's Browser column (spec `.ai/specs/2026-10-09-design-mode.md`). Unset, it is on for a local cockpit: switching it on for a tab makes cezar re-serve that tab's local `http://` dev server on a second `127.0.0.1` port with an element picker injected, so a clicked element can ride your next message to the agent. The port opens only on that click and closes when idle. Always off on a hosted cockpit, where a loopback port reaches nobody — there is no `=1`. |
@@ -656,6 +658,56 @@ the API below.
   `POST /runs/:id/{cancel,messages,continue,archive}`, `GET /automations`.
 - **No built-in auth.** The cockpit binds `127.0.0.1` and trusts the machine;
   see [Remote access](#remote-access-host-cezar-on-a-server) before exposing it.
+- **API tokens.** A hosted cockpit with sign-in answers `Authorization: Bearer
+  ceztok_…` too. Mint one in Settings → Security → API tokens, scoped `read`
+  (the GETs that carry no secret — task status, not its transcript: a task
+  record comes back `projected: true`, without the agent's summaries, reports
+  or title, the system prompt, queued prompts or the workflow's prompts and
+  commands (only its step names), and a failure names its kind, not what the command printed; no configured
+  command, draft or pasted image, and no automation — those are `author`'s), `runs.transcript` (a task's thread, live events, handoff and the
+  todo inbox: tool output can hold secrets; `tasks` includes it), `tasks` (runs, messages, dispatch, tracker
+  tickets), `author` (workflows, skills, automations, env files, the tracker
+  connection) or `admin` (everything but sign-in). It is shown once.
+  **A scope bounds the API, not the machine:** `tasks` and `author` start runs, and a
+  run executes code (agents run Bash, check steps are commands) as the user cezar runs
+  as — treat either as owner-equivalent on that machine. `read` is the only scope that
+  executes nothing; use it for anything you share. Only `admin` opens a terminal, and
+  this machine's host key (`~/.cezar/auth-host.key`) opens nothing except from a
+  loopback shell — never through a proxy, a browser or another machine. It tells a
+  proxy by the headers it adds, so a proxy you wrote that adds none (a bare nginx
+  `proxy_pass`, which also sends a loopback `Host`) must run cezar with
+  `CEZ_EXTERNAL_PROXY=1`; `server-install`'s own nginx site sends them.
+
+### cezar as an MCP server
+
+Every route above is also an MCP tool (`runs_create`, `runs_get`,
+`runs_send_message`, `workflows_put`, …), so a coding agent on your desktop can
+start tasks, read their threads and write workflows:
+
+```bash
+claude mcp add cezar -- cezar mcp                       # the local cockpit, no token
+claude mcp add --transport http cezar https://agents.example.dev/api/v1/mcp \
+  --header "Authorization: Bearer ceztok_…"               # a hosted one
+```
+
+A client gets the `tasks,workflows,skills,projects` tool sets (about thirty
+tools); `cezar mcp --tools all` or `…/api/v1/mcp?tools=repo,github` picks
+others. Project tools take an optional `projectId`. Resources:
+`cezar://projects`, `cezar://p/<id>/runs/<runId>/thread` (Markdown),
+`cezar://p/<id>/workflows/<name>`; prompts: `new-task`, `write-workflow`. A
+token's scope is checked on the route each tool calls, whatever tools the
+client was shown.
+
+The same address points the shell CLIs at another machine:
+`CEZ_TOKEN=ceztok_… cez --server https://agents.example.dev task create "…"`
+(or `CEZ_SERVER`) starts a top-level task there. Prefer `CEZ_TOKEN` to
+`--token`: a flag is visible in the process list. Use the `https://` address —
+`cez` warns when `--server` names another machine over plain `http://`.
+
+On a cockpit with sign-in, `/api/v1/mcp` answers only to a session or a token.
+A local cockpit without sign-in (the zero-config default) serves it, like every
+other route, to any caller on this machine: the machine is the perimeter, and
+the origin guard still refuses foreign `Host`s and cross-site browsers.
 
 ---
 

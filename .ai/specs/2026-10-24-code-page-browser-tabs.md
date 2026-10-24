@@ -19,8 +19,10 @@
 >   the gateway — the cockpit's scheme and host on another port — and never the cockpit itself.
 > - **"Nothing is listening" is new too**: a framed refused connection fires `load` like any page,
 >   so on a LOCAL cockpit a saved loopback address is probed first (one `no-cors` request, again
->   every 3 s while dead). A task's tree offers that task's Run app; the main checkout offers the
->   terminal. On a hosted cockpit the gateway's own 502 page says it.
+>   every 3 s while dead). Only an address set from outside the view is probed (a restore, Try
+>   again), never the user's own navigation, and the state is laid over the still-mounted view,
+>   so history, Design Mode and unsent notes survive. A task's tree offers that task's Run app;
+>   the main checkout offers the terminal. On a hosted cockpit the gateway's own 502 page says it.
 > - **Ctrl/Cmd+T** is the browser's own outside the desktop shell, so `Alt+T` / `Alt+Shift+T`
 >   (the page's Alt forms, as `Alt+W`) do the same, and the palette has both commands.
 > - **Suggestions**: a task tree's terminal-detected addresses, the main checkout's services'

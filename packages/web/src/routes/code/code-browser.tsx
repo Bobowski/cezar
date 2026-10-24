@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { PlugZapIcon, TerminalIcon, XIcon } from 'lucide-react'
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import { isLoopbackPageAddress, queryScope, type ApiRun } from '@open-mercato/cezar-api-client'
 import { getRunTerminalUrls, getServices } from '@/api/client'
@@ -86,25 +86,48 @@ export function CodeBrowserTab({
   // machine is not the app's.
   const local = health.data?.capabilities?.preview === true
   const terminal = health.data?.capabilities?.terminal === true
-  const [shown, setShown] = useState(false)
-  const listening = useListening(state.url, local && !shown, health.data !== undefined)
-  const view: ViewProps = { state, onChange, focusAddress, suggestions, onGateway }
-  // A saved address nothing answers at any more (§3 Persistence): the address is kept, and the
-  // page comes back on its own once the app is up again.
-  if (listening === 'no') {
-    return (
-      <NothingListening
-        url={state.url}
-        onEdit={() => setShown(true)}
-        runApp={tree.kind === 'run' && terminal
-          ? <RunAppPanel runId={tree.runId} projectId={queryScope()} onOpen={(url) => { onChange({ url }); setShown(true) }} {...(onShowTerminal ? { onShowTerminal } : {})} />
-          : null}
-        {...(onShowTerminal ? { onShowTerminal } : {})}
-      />
-    )
+  // Only an address set from OUTSIDE the view is probed (a restored one, Retry) — never the user's
+  // own navigation, which the view reports through `onChange`. The view is never unmounted for it.
+  const own = useRef<string | null>(null)
+  const [seen, setSeen] = useState(state.url)
+  const [probe, setProbe] = useState<string | null>(state.url)
+  if (state.url !== seen) {
+    setSeen(state.url)
+    setProbe(own.current === state.url ? null : state.url)
   }
-  if (listening === 'asking') return <p className="grid flex-1 place-items-center text-xs text-soft-foreground">Loading…</p>
-  return run ? <TaskBrowser key={run.id} {...view} run={run} /> : <NewTaskBrowser {...view} onStartTask={onStartTask} />
+  const [retry, setRetry] = useState(0)
+  const [revived, setRevived] = useState(0)
+  const [edit, setEdit] = useState(0)
+  const revive = useCallback(() => setRevived((count) => count + 1), [])
+  const listening = useListening(state.url, local && probe === state.url, retry, revive)
+  const change = useCallback((next: CodeBrowser) => {
+    own.current = next.url
+    onChange(next)
+  }, [onChange])
+  // On a hosted cockpit a loopback address goes through the gateway: nothing is framed until
+  // health says which kind this is.
+  if (health.data === undefined && state.url !== '') return <p className="grid flex-1 place-items-center text-xs text-soft-foreground">Loading…</p>
+  const view: ViewProps = { state, onChange: change, focusAddress: focusAddress + edit, suggestions, onGateway, reloadSignal: revived }
+  return (
+    <div data-slot="code-browser-page" className="relative flex min-h-0 flex-1 flex-col">
+      {run ? <TaskBrowser key={run.id} {...view} run={run} /> : <NewTaskBrowser {...view} onStartTask={onStartTask} />}
+      {/* A saved address nothing answers at any more (§3 Persistence): the address is kept, and
+          the page comes back on its own once the app is up again. */}
+      {listening === 'no' ? (
+        <NothingListening
+          url={state.url}
+          onEdit={() => { setProbe(null); setEdit((count) => count + 1) }}
+          onRetry={() => setRetry((count) => count + 1)}
+          runApp={tree.kind === 'run' && terminal
+            ? <RunAppPanel runId={tree.runId} projectId={queryScope()} onOpen={(url) => { setProbe(null); change({ url }); revive() }} {...(onShowTerminal ? { onShowTerminal } : {})} />
+            : null}
+          {...(onShowTerminal ? { onShowTerminal } : {})}
+        />
+      ) : listening === 'asking' ? (
+        <p data-slot="code-browser-asking" className="absolute inset-0 z-20 grid place-items-center bg-background text-xs text-soft-foreground">Loading…</p>
+      ) : null}
+    </div>
+  )
 }
 
 interface ViewProps {
@@ -113,6 +136,7 @@ interface ViewProps {
   focusAddress: number
   suggestions: readonly string[]
   onGateway: (origin: string | null) => void
+  reloadSignal: number
 }
 
 /** How often a dead saved address is asked again — one opaque request to a loopback port. */
@@ -120,13 +144,19 @@ const RELISTEN_MS = 3_000
 /** A port that neither answers nor refuses in this long is left to the view's own load timeout. */
 const LISTEN_TIMEOUT_MS = 2_500
 
-/** Whether anything answers at `url` — asked only for a loopback address on a LOCAL cockpit. */
-function useListening(url: string, enabled: boolean, known: boolean): 'asking' | 'yes' | 'no' {
+/**
+ * Whether anything answers at `url` — asked only for a loopback address on a LOCAL cockpit.
+ * `retry` asks again at once; `onBack` fires when an address that was down answers again.
+ */
+function useListening(url: string, enabled: boolean, retry: number, onBack: () => void): 'asking' | 'yes' | 'no' {
   const ask = enabled && url !== '' && isLoopbackPageAddress(url)
   const [answer, setAnswer] = useState<{ url: string; up: boolean } | null>(null)
+  const back = useRef(onBack)
+  back.current = onBack
   useEffect(() => {
     if (!ask) return
     let cancelled = false
+    let down = false
     let timer: ReturnType<typeof setTimeout> | undefined
     const probe = async () => {
       const controller = new AbortController()
@@ -134,7 +164,11 @@ function useListening(url: string, enabled: boolean, known: boolean): 'asking' |
       const up = await answers(url, controller.signal).then((ok) => ok || controller.signal.aborted)
       clearTimeout(giveUp)
       if (cancelled) return
-      setAnswer({ url, up })
+      setAnswer((previous) => {
+        if (up && (down || (previous?.url === url && !previous.up))) back.current()
+        return { url, up }
+      })
+      down ||= !up
       if (!up) timer = setTimeout(() => void probe(), RELISTEN_MS)
     }
     void probe()
@@ -142,15 +176,14 @@ function useListening(url: string, enabled: boolean, known: boolean): 'asking' |
       cancelled = true
       if (timer) clearTimeout(timer)
     }
-  }, [ask, url])
-  if (!known && url !== '') return 'asking'
+  }, [ask, url, retry])
   if (!ask) return 'yes'
   return answer?.url !== url ? 'asking' : answer.up ? 'yes' : 'no'
 }
 
-function NothingListening({ url, onEdit, runApp, onShowTerminal }: { url: string; onEdit: () => void; runApp: React.ReactNode; onShowTerminal?: () => void }) {
+function NothingListening({ url, onEdit, onRetry, runApp, onShowTerminal }: { url: string; onEdit: () => void; onRetry: () => void; runApp: React.ReactNode; onShowTerminal?: () => void }) {
   return (
-    <div data-slot="code-browser-dead" className="flex min-h-0 flex-1 flex-col overflow-auto">
+    <div data-slot="code-browser-dead" className="absolute inset-0 z-20 flex flex-col overflow-auto bg-background">
       <CenteredState
         icon={<PlugZapIcon />}
         tone="neutral"
@@ -160,6 +193,7 @@ function NothingListening({ url, onEdit, runApp, onShowTerminal }: { url: string
         actions={(
           <div className="flex flex-wrap items-center justify-center gap-2">
             <code className="rounded-md bg-muted px-2 py-1 font-mono text-xs text-foreground">{url}</code>
+            <Button type="button" variant="outline" size="sm" onClick={onRetry}>Try again</Button>
             <Button type="button" variant="outline" size="sm" onClick={onEdit}>Edit the address</Button>
             {onShowTerminal ? <Button type="button" variant="outline" size="sm" onClick={onShowTerminal}><TerminalIcon aria-hidden="true" />Open the terminal</Button> : null}
           </div>
@@ -188,7 +222,7 @@ function checkAddress(url: string): { ok: true; url: string } | { ok: false; mes
 const EMPTY_SUBTITLE = 'Enter the address of the project’s app, e.g. localhost:3000.'
 
 /** The props every Code browser hands `BrowserView`. */
-function useViewProps({ state, onChange, focusAddress, suggestions, onGateway }: ViewProps) {
+function useViewProps({ state, onChange, focusAddress, suggestions, onGateway, reloadSignal }: ViewProps) {
   const change = useCallback((next: BrowserState) => onChange(fromBrowserState(next)), [onChange])
   return {
     singleTab: true,
@@ -199,6 +233,7 @@ function useViewProps({ state, onChange, focusAddress, suggestions, onGateway }:
     focusAddress,
     onGateway,
     emptySubtitle: EMPTY_SUBTITLE,
+    reloadSignal,
   } as const
 }
 

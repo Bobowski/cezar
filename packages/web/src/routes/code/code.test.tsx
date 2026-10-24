@@ -59,6 +59,7 @@ function setup(options: {
     if (path === '/api/v1/repo/changes') return json({ files: [{ path: 'src/app.ts', status: 'modified', adds: 1, dels: 0, binary: false, patch: PATCH }], stat: { files: 1, adds: 1, dels: 0 } })
     if (path === '/api/v1/repo') return json({ info: { root: '/repo', branch: 'main' }, status: [], log: [], branches: ['main'], baseBranch: null })
     if (path === '/api/v1/repo/watch') return json({ topic: null })
+    if (method === 'POST' && path === '/api/v1/preview/design-proxy') return json({ origin: 'http://127.0.0.1:47000' })
     if (method === 'GET' && path === '/api/v1/runs') return json(options.runs ?? [])
     if (method === 'POST' && path === '/api/v1/runs') return json({ ...RUN, id: 'new-run', task: (JSON.parse(String(init.body)) as { task: string }).task }, 201)
     if (path === '/api/v1/workflows') return json({ workflows: [], issues: [] })
@@ -505,6 +506,34 @@ describe('Browser tabs as pages (spec 2026-10-24-code-page-browser-tabs)', () =>
     await waitFor(() => expect(tabsOf(0)).toEqual(['localhost:3000/admin', 'localhost:5173']))
   })
 
+  it('navigating inside a page on a local cockpit keeps the view: no probe, history and Design Mode survive', async () => {
+    const { sent } = setup()
+    await view()
+    fireEvent.click(screen.getByRole('button', { name: 'Open browser' }))
+    const go = async (url: string) => {
+      const input = await waitFor(() => { expect(address()).not.toBeNull(); return address() as HTMLInputElement })
+      fireEvent.change(input, { target: { value: url } })
+      fireEvent.submit(input.closest('form') as HTMLFormElement)
+      const frame = await waitFor(() => {
+        const found = document.querySelector('[data-slot="code-browser"] iframe')
+        expect(found?.getAttribute('src')).toContain(new URL(url).pathname)
+        return found as HTMLIFrameElement
+      })
+      fireEvent.load(frame)
+      await waitFor(() => expect(tabsOf(0)).toContain(`localhost:5173${new URL(url).pathname}`))
+    }
+    await go('http://localhost:5173/a')
+    const shown = document.querySelector('[data-slot="browser-view"]')
+    fireEvent.click(document.querySelector('[data-slot="browser-design-toggle"]') as HTMLElement)
+    await waitFor(() => expect(document.querySelector('[data-slot="browser-design-toggle"]')?.getAttribute('aria-pressed')).toBe('true'))
+    await go('http://localhost:5173/b')
+    expect(document.querySelector('[data-slot="browser-view"]')).toBe(shown)
+    expect(document.querySelector('[data-slot="browser-design-toggle"]')?.getAttribute('aria-pressed')).toBe('true')
+    expect((screen.getByRole('button', { name: 'Back' }) as HTMLButtonElement).disabled).toBe(false)
+    // The user's own navigation is never probed.
+    expect(sent.some((request) => request.path.startsWith('http://localhost:5173'))).toBe(false)
+  })
+
   it('shows "Nothing is listening" for a saved address that no longer answers, keeping the address', async () => {
     setup({ at: '/code', uiState: { codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }] }] }, dead: ['http://localhost:3000/admin'] })
     const dead = await waitFor(() => { const found = document.querySelector('[data-slot="code-browser-dead"]'); expect(found).not.toBeNull(); return found as HTMLElement })
@@ -513,5 +542,18 @@ describe('Browser tabs as pages (spec 2026-10-24-code-page-browser-tabs)', () =>
     expect(tabsOf(0)).toEqual(['localhost:3000/admin'])
     fireEvent.click(screen.getByRole('button', { name: 'Edit the address' }))
     await waitFor(() => expect(address()?.value).toBe('http://localhost:3000/admin'))
+  })
+
+  it('lays "Nothing is listening" over the mounted view, and Try again brings the page back in it', async () => {
+    const dead = ['http://localhost:3000/admin']
+    setup({ at: '/code', uiState: { codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }] }] }, dead })
+    await waitFor(() => expect(document.querySelector('[data-slot="code-browser-dead"]')).not.toBeNull())
+    const shown = document.querySelector('[data-slot="browser-view"]')
+    expect(shown).not.toBeNull()
+    dead.length = 0
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(document.querySelector('[data-slot="code-browser-dead"]')).toBeNull())
+    expect(document.querySelector('[data-slot="browser-view"]')).toBe(shown)
+    expect(document.querySelector('[data-slot="code-browser"] iframe')?.getAttribute('src')).toBe('http://localhost:3000/admin')
   })
 })

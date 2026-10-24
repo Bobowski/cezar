@@ -80,6 +80,7 @@ export function BrowserView({
   focusAddress = 0,
   onGateway,
   emptySubtitle,
+  reloadSignal = 0,
 }: {
   state: BrowserState
   /** Persisted into the column (spec §7). Called only for changes worth keeping — a successful
@@ -124,6 +125,8 @@ export function BrowserView({
   onGateway?: (origin: string | null) => void
   /** What an empty tab says under its title. */
   emptySubtitle?: string
+  /** Bumped by the host to reload the address shown — a page that was not answering is back. */
+  reloadSignal?: number
 }) {
   const tabs = state.tabs.length > 0 ? state.tabs : ['']
   const active = Math.min(state.active, tabs.length - 1)
@@ -442,6 +445,14 @@ export function BrowserView({
   const releaseMirror = useCallback(() => {
     if (!design) setProxy(null)
   }, [design])
+
+  const reloadTarget = useRef(target)
+  reloadTarget.current = target
+  useEffect(() => {
+    if (reloadSignal === 0 || reloadTarget.current === '') return
+    setStatus('loading')
+    setReloadToken((token) => token + 1)
+  }, [reloadSignal])
 
   // A page that never fires `load` is the only failure an embedder can detect at all.
   useEffect(() => {

@@ -102,6 +102,18 @@ describe('API token scopes, per route family', () => {
     expect(apiTokenAllows(['author'], 'GET', '/api/v1/services/web/logs')).toBe(false);
   });
 
+  it('automations are author’s to read: their tasks are commands and prompts, their log quotes gh and the tracker', () => {
+    for (const path of [
+      '/api/v1/automations', '/api/v1/p/x/automations/a1', '/api/v1/automation-log', '/api/v1/automation-checks/c1',
+      '/api/v1/workspace/automation-templates',
+    ]) {
+      expect(apiTokenAllows(['read'], 'GET', path), path).toBe(false);
+      expect(apiTokenAllows(['author'], 'GET', path), path).toBe(true);
+    }
+    // The dashboard's automation activity is counts and states, and stays read's.
+    expect(apiTokenAllows(['read'], 'GET', '/api/v1/workspace/dashboard/automations')).toBe(true);
+  });
+
   it('every route the read allowlist names is a real GET route', () => {
     const gets = new Set(Object.keys(routeContracts).filter((key) => key.startsWith('GET ')).map((key) => key.slice(4)));
     expect([...READ_ROUTES].filter((route) => !gets.has(route))).toEqual([]);

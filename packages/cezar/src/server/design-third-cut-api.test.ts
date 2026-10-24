@@ -21,7 +21,7 @@ describe('Design Mode, third cut — the API', () => {
   let manager: RunManager;
   let gateways: PreviewGateways | undefined;
   let app: Hono;
-  const saved = { remote: process.env.CEZ_REMOTE, design: process.env.CEZ_DESIGN_MODE };
+  const saved = { remote: process.env.CEZ_REMOTE, design: process.env.CEZ_DESIGN_MODE, ports: process.env.CEZ_PREVIEW_PORTS };
 
   const send = (path: string, method: string, body?: unknown) =>
     apiRequest(app, path, {
@@ -33,6 +33,7 @@ describe('Design Mode, third cut — the API', () => {
   beforeEach(() => {
     delete process.env.CEZ_REMOTE;
     delete process.env.CEZ_DESIGN_MODE;
+    delete process.env.CEZ_PREVIEW_PORTS;
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-design3-api-'));
     mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
     store = RunStore.open(join(repoRoot, '.ai/cezar'));
@@ -45,7 +46,7 @@ describe('Design Mode, third cut — the API', () => {
     manager.dispose();
     store.flush();
     rmSync(repoRoot, { recursive: true, force: true });
-    for (const [name, value] of [['CEZ_REMOTE', saved.remote], ['CEZ_DESIGN_MODE', saved.design]] as const) {
+    for (const [name, value] of [['CEZ_REMOTE', saved.remote], ['CEZ_DESIGN_MODE', saved.design], ['CEZ_PREVIEW_PORTS', saved.ports]] as const) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
@@ -152,16 +153,28 @@ describe('Design Mode, third cut — the API', () => {
   });
 
   describe('Design Mode on a hosted cockpit', () => {
-    it('is available, local or hosted, and CEZ_DESIGN_MODE=0 still turns it off', () => {
+    it('is available locally, and hosted where a gateway is configured; CEZ_DESIGN_MODE=0 still turns it off', () => {
+      const ports = { CEZ_PREVIEW_PORTS: '8500' };
       expect(resolveCapabilities({}, '127.0.0.1').designMode).toBe(true);
-      expect(resolveCapabilities({ CEZ_REMOTE: '1' }, '127.0.0.1').designMode).toBe(true);
-      expect(resolveCapabilities({}, '0.0.0.0').designMode).toBe(true);
+      expect(resolveCapabilities({ ...ports, CEZ_REMOTE: '1' }, '127.0.0.1').designMode).toBe(true);
+      expect(resolveCapabilities(ports, '0.0.0.0').designMode).toBe(true);
+      expect(resolveCapabilities({ CEZ_REMOTE: '1' }, '127.0.0.1').designMode).toBe(false);
       expect(resolveCapabilities({ CEZ_DESIGN_MODE: '0' }, '127.0.0.1').designMode).toBe(false);
-      expect(resolveCapabilities({ CEZ_DESIGN_MODE: '0', CEZ_REMOTE: '1' }, '127.0.0.1').designMode).toBe(false);
+      expect(resolveCapabilities({ ...ports, CEZ_DESIGN_MODE: '0', CEZ_REMOTE: '1' }, '127.0.0.1').designMode).toBe(false);
+    });
+
+    it('refuses a design slot on a hosted cockpit with no gateway configured', async () => {
+      process.env.CEZ_REMOTE = '1';
+      const health = (await (await send('/api/v1/health', 'GET')).json()) as { capabilities: { designMode: boolean } };
+      expect(health.capabilities.designMode).toBe(false);
+      const res = await send('/api/v1/preview/gateway', 'POST', { target: 'http://localhost:3000', parentOrigin: 'https://cezar.example.com', designMode: true });
+      expect(res.status).toBe(409);
+      expect(gateways?.size).toBe(0);
     });
 
     it('opens a design slot through the gateway', async () => {
       process.env.CEZ_REMOTE = '1';
+      process.env.CEZ_PREVIEW_PORTS = '8500';
       const res = await send('/api/v1/preview/gateway', 'POST', { target: 'http://localhost:3000', parentOrigin: 'https://cezar.example.com', designMode: true });
       expect(res.status).toBe(200);
       expect(gateways?.size).toBe(1);
@@ -169,6 +182,7 @@ describe('Design Mode, third cut — the API', () => {
 
     it('refuses a design slot with CEZ_DESIGN_MODE=0, and still opens a plain preview', async () => {
       process.env.CEZ_REMOTE = '1';
+      process.env.CEZ_PREVIEW_PORTS = '8500';
       process.env.CEZ_DESIGN_MODE = '0';
       const body = { target: 'http://localhost:3000', parentOrigin: 'https://cezar.example.com' };
       expect((await send('/api/v1/preview/gateway', 'POST', { ...body, designMode: true })).status).toBe(409);

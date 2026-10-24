@@ -161,23 +161,7 @@ interface Entry {
   sockets: Set<Duplex>;
 }
 
-/**
- * `8500-8519`, `8500,8501`, or a mix → the ports, in order, without duplicates. Anything that is
- * not a port above the privileged range is dropped: a typo must not make cezar try to bind :80.
- */
-export function parsePreviewPorts(raw: string | undefined): number[] {
-  const ports: number[] = [];
-  for (const part of (raw ?? '').split(',')) {
-    const range = /^\s*(\d{1,5})\s*(?:-\s*(\d{1,5})\s*)?$/.exec(part);
-    if (!range) continue;
-    const from = Number(range[1]);
-    const to = range[2] === undefined ? from : Number(range[2]);
-    for (let port = from; port <= to && ports.length < 256; port += 1) {
-      if (port >= 1024 && port <= 65535 && !ports.includes(port)) ports.push(port);
-    }
-  }
-  return ports;
-}
+export { parsePreviewPorts } from './ports.ts';
 
 function socketHost(url: URL): string {
   return url.hostname.replace(/^\[|\]$/g, '');

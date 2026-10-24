@@ -186,11 +186,19 @@ describe('resolveCapabilities — designMode (spec 2026-10-09-design-mode)', () 
   });
 
   // Third cut §3.4: a hosted cockpit picks through the preview gateway, so the refusal is gone.
-  it('is on for a hosted cockpit too, and CEZ_DESIGN_MODE=0 still turns it off there', () => {
-    expect(resolveCapabilities({ CEZ_REMOTE: '1' }, undefined).designMode).toBe(true);
-    expect(resolveCapabilities({}, '0.0.0.0').designMode).toBe(true);
-    expect(resolveCapabilities({ CEZ_REMOTE: '1', CEZ_DESIGN_MODE: '0' }, undefined).designMode).toBe(false);
-    expect(resolveCapabilities({ CEZ_DESIGN_MODE: '0' }, '0.0.0.0').designMode).toBe(false);
+  it('is on for a hosted cockpit with a gateway, and CEZ_DESIGN_MODE=0 still turns it off there', () => {
+    const ports = { CEZ_PREVIEW_PORTS: '8500-8501' };
+    expect(resolveCapabilities({ ...ports, CEZ_REMOTE: '1' }, undefined).designMode).toBe(true);
+    expect(resolveCapabilities(ports, '0.0.0.0').designMode).toBe(true);
+    expect(resolveCapabilities({ ...ports, CEZ_REMOTE: '1', CEZ_DESIGN_MODE: '0' }, undefined).designMode).toBe(false);
+    expect(resolveCapabilities({ ...ports, CEZ_DESIGN_MODE: '0' }, '0.0.0.0').designMode).toBe(false);
+  });
+
+  it('is off for a hosted cockpit with no gateway — there is no way in to pick through', () => {
+    expect(resolveCapabilities({ CEZ_REMOTE: '1' }, undefined).designMode).toBe(false);
+    expect(resolveCapabilities({}, '0.0.0.0').designMode).toBe(false);
+    // A pool that names no usable port is no gateway either.
+    expect(resolveCapabilities({ CEZ_REMOTE: '1', CEZ_PREVIEW_PORTS: '80,nope' }, undefined).designMode).toBe(false);
   });
 });
 
@@ -215,7 +223,7 @@ describe('resolveCapabilities — followups (#471)', () => {
       localHandoff: false,
       // A hosted cockpit enforces sign-in by default, so its operator is trusted with both.
       terminal: true,
-      preview: false, designMode: true, fileEdit: true,
+      preview: false, designMode: false, fileEdit: true,
       followups: true,
       singleProject: false,
       automations: true,
@@ -414,7 +422,7 @@ describe('trustedOperator vs localHandoff — the two questions hosted mode used
     expect(hosted.localHandoff).toBe(false);
     expect(hosted.preview).toBe(false);
     // Design Mode is not a local-machine property any more: it rides the gateway (third cut §3.4).
-    expect(hosted.designMode).toBe(true);
+    expect(resolveCapabilities({ CEZ_REMOTE: '1', CEZ_PREVIEW_PORTS: '8500' }, undefined).designMode).toBe(true);
   });
 
   it('is false only for a hosted cockpit that handed auth to its proxy', () => {

@@ -53,6 +53,7 @@
  */
 
 import { followupsEnabled } from '../handoff.ts';
+import { parsePreviewPorts } from './preview/ports.ts';
 import type { Capabilities } from '@open-mercato/cezar-contract';
 
 /** Every IPv4 address in 127.0.0.0/8, anchored. Anchoring is load-bearing: a
@@ -225,10 +226,12 @@ function previewEnabled(env: NodeJS.ProcessEnv, bindHost?: string): boolean {
 /**
  * Whether the Browser column may offer Design Mode (spec `2026-10-09-design-mode`), local or
  * hosted: a hosted cockpit picks through the preview gateway instead of the loopback mirror (spec
- * `2026-10-24-design-mode-third-cut` §3.4). `CEZ_DESIGN_MODE=0` is the off switch everywhere.
+ * `2026-10-24-design-mode-third-cut` §3.4), so there it needs a gateway (`CEZ_PREVIEW_PORTS`).
+ * `CEZ_DESIGN_MODE=0` is the off switch everywhere.
  */
-function designModeEnabled(env: NodeJS.ProcessEnv): boolean {
-  return env.CEZ_DESIGN_MODE !== '0';
+function designModeEnabled(env: NodeJS.ProcessEnv, bindHost?: string): boolean {
+  if (env.CEZ_DESIGN_MODE === '0') return false;
+  return previewEnabled(env, bindHost) || parsePreviewPorts(env.CEZ_PREVIEW_PORTS).length > 0;
 }
 
 function terminalEnabled(env: NodeJS.ProcessEnv, bindHost?: string): boolean {
@@ -294,7 +297,7 @@ export function resolveCapabilities(env: NodeJS.ProcessEnv = process.env, bindHo
     localHandoff: env.CEZ_REMOTE !== '1' && isLoopbackHost(bindHost),
     terminal: terminalEnabled(env, bindHost),
     preview: previewEnabled(env, bindHost),
-    designMode: designModeEnabled(env),
+    designMode: designModeEnabled(env, bindHost),
     fileEdit: fileEditEnabled(env, bindHost),
     // Deliberately not re-derived here: RunManager enforces the same predicate,
     // and two spellings of "is the inbox on" would eventually disagree.

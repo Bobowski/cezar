@@ -164,6 +164,14 @@ Nothing to configure. Reclaim is a click, never a timer. All new state is Docker
   service output already do: topics are workspace-level, and a hosted cockpit (the VPS) opens no
   socket at all, so it polls that same read. The follower lives while a subscriber holds the topic
   (the last release kills it) or a poller read it within 15 s.
+- **A released follower resumes by the daemon's clock.** The follower runs with `--timestamps`
+  (stripped before anything is kept) and remembers each stream's last whole line and the line still
+  arriving. When the last subscriber leaves it is killed, and a returning reader's follower starts
+  `--since` the earliest of those stamps — never the host's time, which a daemon in a VM or on
+  another machine need not agree with. Lines at or before what the killed one passed whole are
+  dropped, so nothing shows twice; a partial line comes back whole, and an over-long line being
+  dropped stays dropped. What the killed one held for a multi-line secret stays hidden and still
+  matches. Without a stamp (Docker's own errors) the resume falls back to the host time.
 - **Used-by for images** comes from `docker container inspect` (`.Image`, the digest), matched
   against `image ls --no-trunc`, rather than `image inspect`: a tag can move while a container
   still runs the old image.

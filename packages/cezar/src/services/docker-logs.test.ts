@@ -26,7 +26,7 @@ describe('docker logs followers (spec 2026-10-23-docker-management §3.4)', () =
   it('starts on the first reader, redacts whole lines, and hands back output by cursor', () => {
     const { followers, spawned } = harness();
     expect(followers.read(ID, 0)).toMatchObject({ data: '', cursor: 0, following: true });
-    expect(spawned[0]?.args).toEqual(['logs', '--tail', '500', '--follow', ID]);
+    expect(spawned[0]?.args).toEqual(['logs', '--timestamps', '--tail', '500', '--follow', ID]);
     // A secret split across two chunks is still caught: only whole lines are redacted and kept.
     spawned[0]!.data('out', 'DATABASE_URL=postgres://u:hunter2-super');
     expect(followers.read(ID, 0).data).toBe('');
@@ -190,7 +190,7 @@ describe('docker logs followers (spec 2026-10-23-docker-management §3.4)', () =
     expect(followers.running()).toEqual([]);
     // The pane comes back with its cursor: picked up from where it was cut, not replayed.
     const read = followers.read(ID, 4);
-    expect(spawned[1]?.args.slice(0, 2)).toEqual(['logs', '--since']);
+    expect(spawned[1]?.args.slice(0, 3)).toEqual(['logs', '--timestamps', '--since']);
     expect(read).toMatchObject({ data: '', cursor: 4, following: true });
   });
 
@@ -292,5 +292,54 @@ describe('docker logs followers (spec 2026-10-23-docker-management §3.4)', () =
     vi.advanceTimersByTime(250);
     expect(bells).toEqual([4]);
     followers.close();
+  });
+
+  describe('resumes by the daemon’s own timestamps, not the host clock', () => {
+    const ts = (n: number) => `2026-10-24T10:00:00.00000000${n}Z`;
+    const pw = 'Zq8!rT2#vLp9@xWm4$kN7';
+
+    it('follows with --timestamps and strips them, a stamp split across reads included', () => {
+      const { followers, spawned } = harness();
+      followers.read(ID, 0);
+      expect(spawned[0]?.args).toEqual(['logs', '--timestamps', '--tail', '500', '--follow', ID]);
+      spawned[0]!.data('out', `${ts(1)} one\n2026-10-24T10:00`);
+      spawned[0]!.data('out', `:00.000000002Z two\n`);
+      // What Docker itself prints carries no stamp and goes out as it is.
+      spawned[0]!.data('err', 'Error response from daemon: gone\n');
+      expect(followers.read(ID, 0).data).toBe('one\ntwo\nError response from daemon: gone\n');
+    });
+
+    it('resumes from the last line’s stamp and never shows that line twice', () => {
+      const { followers, spawned } = harness();
+      followers.hold(ID);
+      spawned[0]!.data('out', `${ts(1)} one\n${ts(2)} two\n`);
+      followers.release(ID);
+      followers.hold(ID);
+      expect(spawned[1]?.args).toEqual(['logs', '--timestamps', '--since', ts(2), '--follow', ID]);
+      spawned[1]!.data('out', `${ts(2)} two\n${ts(3)} three\n`);
+      expect(followers.read(ID, 0).data).toBe('one\ntwo\nthree\n');
+    });
+
+    it('shows a partial line a release cut off whole, from the resumed follower', () => {
+      const { followers, spawned } = harness([pw]);
+      followers.hold(ID);
+      spawned[0]!.data('out', `${ts(1)} boot\n${ts(2)} DB=${pw.slice(0, 16)}`);
+      followers.release(ID);
+      followers.hold(ID);
+      expect(spawned[1]?.args).toEqual(['logs', '--timestamps', '--since', ts(2), '--follow', ID]);
+      spawned[1]!.data('out', `${ts(2)} DB=${pw}\n${ts(3)} next\n`);
+      expect(followers.read(ID, 0).data).toBe(`boot\nDB=${REDACTED}\nnext\n`);
+    });
+
+    it('does not show again an over-long line a release cut off while dropping it', () => {
+      const { followers, spawned } = harness();
+      followers.hold(ID);
+      spawned[0]!.data('out', `${ts(1)} ${'x'.repeat(40 * 1024)}`);
+      followers.release(ID);
+      followers.hold(ID);
+      expect(spawned[1]?.args.slice(2, 4)).toEqual(['--since', ts(1)]);
+      spawned[1]!.data('out', `${ts(1)} ${'x'.repeat(50 * 1024)}\n${ts(2)} ok\n`);
+      expect(followers.read(ID, 0).data).toBe(`${'x'.repeat(32 * 1024)} … [line cut at 32 KiB]\nok\n`);
+    });
   });
 });

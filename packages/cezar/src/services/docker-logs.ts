@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { collectSecretValues, heldSecretStart, lineSafeCut, redactionHold, redactionSafeCut, redactSecretsFrom } from '../core/secret-redaction.ts';
 
 /**
- * `docker logs --tail 500 --follow <id>`, one process per container while someone looks (spec
+ * `docker logs --timestamps --tail 500 --follow <id>`, one process per container while someone looks (spec
  * `2026-10-23-docker-management` §3.4). Demand-driven twice over: a topic subscriber holds the
  * follower (the last release kills it), and a read keeps it alive for `idleMs` — the hosted
  * cockpit, which opens no socket, polls. Output is redacted line by line before it is kept.
@@ -48,6 +48,69 @@ const CUT_MARK = ' … [line cut at 32 KiB]';
 type Stream = 'out' | 'err';
 const BELL_MS = 200;
 
+/** A `--timestamps` line head, RFC 3339 by the daemon's clock: `2026-10-24T10:00:00.123456789Z `. */
+const STAMP_RE = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(Z|[+-]\d\d:\d\d) /;
+/** Longer than any stamp: a line start without one by then has none. */
+const STAMP_MAX = 40;
+
+/** One stream's stamps, in ns: the line arriving and the last one passed whole. */
+interface Stamps {
+  /** What of a line's stamp has arrived, at a line start; `null` inside a line. */
+  head: string | null;
+  open: bigint | null;
+  done: bigint | null;
+  /** A resumed follower drops the lines stamped at or before this: the killed one had them. */
+  after: bigint | null;
+  dropping: boolean;
+}
+
+function freshStamps(): Stamps {
+  return { head: '', open: null, done: null, after: null, dropping: false };
+}
+
+function stampNs(match: RegExpExecArray): bigint | null {
+  const ms = Date.parse(`${match[1]}${match[3]}`);
+  return Number.isNaN(ms) ? null : BigInt(ms) * 1_000_000n + BigInt((match[2] ?? '').padEnd(9, '0'));
+}
+
+function formatStamp(ns: bigint): string {
+  const seconds = new Date(Number(ns / 1_000_000_000n) * 1000).toISOString().slice(0, 19);
+  return `${seconds}.${(ns % 1_000_000_000n).toString().padStart(9, '0')}Z`;
+}
+
+/** `chunk` without its line stamps, each line's noted; a line at or before `after` is dropped. */
+function unstamp(stamps: Stamps, chunk: string): string {
+  let out = '';
+  let rest = chunk;
+  while (rest !== '') {
+    if (stamps.head === null) {
+      const newline = rest.indexOf('\n');
+      if (!stamps.dropping) out += newline === -1 ? rest : rest.slice(0, newline + 1);
+      if (newline === -1) break;
+      if (stamps.open !== null && (stamps.done === null || stamps.open > stamps.done)) stamps.done = stamps.open;
+      stamps.open = null;
+      stamps.dropping = false;
+      stamps.head = '';
+      rest = rest.slice(newline + 1);
+      continue;
+    }
+    const head = stamps.head + rest;
+    const match = STAMP_RE.exec(head);
+    stamps.head = null;
+    if (match) {
+      stamps.open = stampNs(match);
+      stamps.dropping = stamps.open !== null && stamps.after !== null && stamps.open <= stamps.after;
+      rest = head.slice(match[0].length);
+    } else if (head.length < STAMP_MAX && !/[ \n]/.test(head)) {
+      stamps.head = head;
+      break;
+    } else {
+      rest = head;
+    }
+  }
+  return out;
+}
+
 interface Entry {
   proc: FollowedProcess | null;
   following: boolean;
@@ -64,8 +127,9 @@ interface Entry {
   holders: number;
   lastRead: number;
   bell: ReturnType<typeof setTimeout> | null;
-  /** When we killed the follower (ms), so the next one picks up `--since` then; `null` once Docker ended it. */
-  resumeFrom: number | null;
+  stamps: Record<Stream, Stamps>;
+  /** The `--since` a follower we killed is picked up from; `null` once Docker ended it. */
+  resumeFrom: string | null;
 }
 
 /** Forget every byte held for a follower — a line still arriving, a secret still being held. */
@@ -74,20 +138,36 @@ function clearHold(entry: Entry): void {
   entry.skipping = { out: false, err: false };
   entry.dropped = { out: '', err: '' };
   entry.hidden = { out: 0, err: 0 };
+  entry.stamps = { out: freshStamps(), err: freshStamps() };
 }
 
 /**
  * What a killed process held never joins the next one's output — a half-held secret would leak — but
- * kept hidden, it lets a resumed follower still match a secret the killed one was printing.
+ * kept hidden, it lets a resumed follower still match a secret the killed one was printing. Returns
+ * the stamp to resume from: the line each stream had open (sent again — a partial one is shown whole,
+ * one being dropped stays dropped), else its last whole line, which the resumed follower skips.
  */
-function hideHold(entry: Entry): void {
+function hideHold(entry: Entry): bigint | null {
+  let since: bigint | null = null;
   for (const stream of ['out', 'err'] as const) {
-    const held = entry.skipping[stream] ? entry.dropped[stream] : entry.pending[stream];
+    const stamps = entry.stamps[stream];
+    let held = entry.skipping[stream] ? entry.dropped[stream] : entry.pending[stream];
+    stamps.after = stamps.done;
+    if (stamps.open !== null && entry.skipping[stream]) {
+      held += '\n';
+      stamps.after = stamps.open;
+    } else if (stamps.open !== null) {
+      held = held.slice(0, held.lastIndexOf('\n') + 1);
+    }
+    const need = stamps.open ?? stamps.done;
+    if (need !== null && (since === null || need < since)) since = need;
+    Object.assign(stamps, { head: '', open: null, dropping: false });
     entry.pending[stream] = held;
     entry.hidden[stream] = held.length;
     entry.skipping[stream] = false;
     entry.dropped[stream] = '';
   }
+  return since;
 }
 
 export interface DockerLogsRead { data: string; cursor: number; truncated: boolean; following: boolean }
@@ -172,7 +252,7 @@ export class DockerLogFollowers {
   private entry(id: string): Entry {
     let entry = this.entries.get(id);
     if (!entry) {
-      entry = { proc: null, following: false, text: '', start: 0, pending: { out: '', err: '' }, skipping: { out: false, err: false }, dropped: { out: '', err: '' }, hidden: { out: 0, err: 0 }, holders: 0, lastRead: this.now(), bell: null, resumeFrom: null };
+      entry = { proc: null, following: false, text: '', start: 0, pending: { out: '', err: '' }, skipping: { out: false, err: false }, dropped: { out: '', err: '' }, hidden: { out: 0, err: 0 }, holders: 0, lastRead: this.now(), bell: null, stamps: { out: freshStamps(), err: freshStamps() }, resumeFrom: null };
       this.entries.set(id, entry);
       this.armSweep();
     }
@@ -205,15 +285,18 @@ export class DockerLogFollowers {
     }
     entry.resumeFrom = null;
     entry.following = true;
-    const from = !fresh && since !== null ? ['--since', new Date(since).toISOString()] : ['--tail', String(TAIL_LINES)];
-    const proc = this.spawnDocker(['logs', ...from, '--follow', id], {
+    const from = !fresh && since !== null ? ['--since', since] : ['--tail', String(TAIL_LINES)];
+    // Stamped by the daemon, so a resume never leans on the host clock agreeing with it.
+    const proc = this.spawnDocker(['logs', '--timestamps', ...from, '--follow', id], {
       data: (stream, chunk) => {
         if (entry.proc !== proc) return;
         // Whole lines only, so a secret split across two chunks is still one string when redacted.
-        this.append(id, entry, this.take(entry, stream, chunk));
+        this.append(id, entry, this.take(entry, stream, unstamp(entry.stamps[stream], chunk)));
       },
       exit: (reason) => {
         if (entry.proc !== proc) return;
+        // A line start still waiting to show it carries no stamp is text.
+        for (const stream of ['out', 'err'] as const) this.append(id, entry, this.take(entry, stream, entry.stamps[stream].head ?? ''));
         const values = this.redacting() ? this.secretValues() : [];
         // A partial last line goes out; a multi-line secret it may be the start of does not.
         const rest = (['out', 'err'] as const).map((stream) => {
@@ -235,9 +318,9 @@ export class DockerLogFollowers {
     if (!proc) return;
     entry.proc = null;
     entry.following = false;
-    hideHold(entry);
-    // Cut off by us, not ended by Docker: a returning reader resumes from here.
-    entry.resumeFrom = this.now();
+    // Cut off by us, not ended by Docker: a returning reader resumes from here, by the daemon's stamps.
+    const since = hideHold(entry);
+    entry.resumeFrom = since === null ? new Date(this.now()).toISOString() : formatStamp(since);
     proc.kill();
   }
 

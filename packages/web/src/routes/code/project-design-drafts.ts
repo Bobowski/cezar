@@ -32,6 +32,11 @@ interface Store {
   timer: ReturnType<typeof setTimeout> | undefined
   chain: Promise<unknown>
   loading: boolean
+  /** Bumped by every edit, so a save that lands knows whether it wrote the latest one. */
+  edits: number
+  /** The last save was refused: the notes on screen are not the stored ones. */
+  unsaved: boolean
+  failure: string | undefined
 }
 
 const stores = new Map<string, Store>()
@@ -42,7 +47,18 @@ function storeFor(projectId: string | null): Store {
   const key = storeKey(projectId)
   let store = stores.get(key)
   if (!store) {
-    store = { scope: apiScope(projectId), drafts: undefined, version: 0, listeners: new Set(), timer: undefined, chain: Promise.resolve(), loading: false }
+    store = {
+      scope: apiScope(projectId),
+      drafts: undefined,
+      version: 0,
+      listeners: new Set(),
+      timer: undefined,
+      chain: Promise.resolve(),
+      loading: false,
+      edits: 0,
+      unsaved: false,
+      failure: undefined,
+    }
     stores.set(key, store)
   }
   return store
@@ -77,10 +93,30 @@ function save(store: Store): void {
   clearTimeout(store.timer)
   store.timer = undefined
   const picks = toWire(store.drafts ?? [])
-  store.chain = store.chain.catch(() => {}).then(() => putRepoDesignDrafts({ picks }, store.scope)).catch(() => {})
+  const edit = store.edits
+  store.chain = store.chain
+    .catch(() => {})
+    .then(() => putRepoDesignDrafts({ picks }, store.scope))
+    .then(
+      () => {
+        if (store.edits !== edit || !store.unsaved) return
+        store.unsaved = false
+        store.failure = undefined
+        publish(store)
+      },
+      (error: unknown) => {
+        // The server's `{ error }` (e.g. a note over 100,000 characters), once per distinct refusal.
+        const message = error instanceof Error && error.message ? error.message : 'the server refused them'
+        if (!store.unsaved || store.failure !== message) toast(`Notes not saved: ${message}`, { tone: 'danger' })
+        store.unsaved = true
+        store.failure = message
+        publish(store)
+      },
+    )
 }
 
 function persist(store: Store, delayMs: number): void {
+  store.edits++
   clearTimeout(store.timer)
   store.timer = setTimeout(() => save(store), delayMs)
 }
@@ -96,6 +132,8 @@ const pathOf = (url: string): string | undefined => {
 export interface ProjectDesignDrafts {
   drafts: ProjectDraft[]
   marks: DesignMark[]
+  /** The last save failed; the notes stay on screen but are not stored. */
+  unsaved: boolean
   draft: (key: string) => ProjectDraft | undefined
   add: (pick: NewDesignPick) => boolean
   setText: (key: string, text: string) => void
@@ -188,7 +226,7 @@ export function useProjectDesignDrafts(): ProjectDesignDrafts {
     [drafts],
   )
   const draft = useCallback((key: string) => drafts.find((each) => each.key === key), [drafts])
-  return { drafts, marks, draft, add, setText, discard, consume }
+  return { drafts, marks, unsaved: store.unsaved, draft, add, setText, discard, consume }
 }
 
 /**

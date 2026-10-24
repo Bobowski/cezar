@@ -72,7 +72,7 @@ interface Started {
 
 /** Notes with no task behind them yet: they collect, and starting a task is what consumes them. */
 function NewTaskBrowser({ state, onChange, onStartTask }: { state: CodeBrowser; onChange: (state: CodeBrowser) => void; onStartTask: (message: string) => Promise<void> }) {
-  const { drafts, marks: draftMarks, draft: draftFor, add, setText, discard, consume } = useProjectDesignDrafts()
+  const { drafts, marks: draftMarks, unsaved, draft: draftFor, add, setText, discard, consume } = useProjectDesignDrafts()
   const { projectId } = useProjectScope()
   const navigate = useNavigate()
   const sourceRoots = useSourceRoots(null)
@@ -131,9 +131,16 @@ function NewTaskBrowser({ state, onChange, onStartTask }: { state: CodeBrowser; 
       sourceRoots={sourceRoots}
       designToolbar={
         drafts.length > 0 ? (
-          <Button type="button" data-slot="design-start-all" size="sm" className="ml-1" onClick={startWithAll} title="Open New task with every collected note as its text">
-            Start task with {drafts.length} {drafts.length === 1 ? 'note' : 'notes'}
-          </Button>
+          <>
+            {unsaved ? (
+              <span data-slot="design-drafts-unsaved" className="ml-1 text-xs text-destructive" title="The last save was refused — these notes are only in this tab">
+                Not saved
+              </span>
+            ) : null}
+            <Button type="button" data-slot="design-start-all" size="sm" className="ml-1" onClick={startWithAll} title="Open New task with every collected note as its text">
+              Start task with {drafts.length} {drafts.length === 1 ? 'note' : 'notes'}
+            </Button>
+          </>
         ) : null
       }
       renderDesignNote={({ mark, close }) => {

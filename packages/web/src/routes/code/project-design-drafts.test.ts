@@ -10,7 +10,8 @@ const api = vi.hoisted(() => ({
 vi.mock('@/api/client', () => api)
 const scope = vi.hoisted(() => ({ projectId: 'a' as string | null }))
 vi.mock('@/api/project-scope-context', () => ({ useProjectScope: () => ({ projectId: scope.projectId }) }))
-vi.mock('@/components/ui/toaster', () => ({ toast: vi.fn() }))
+const toaster = vi.hoisted(() => ({ toast: vi.fn() }))
+vi.mock('@/components/ui/toaster', () => toaster)
 
 import { resetProjectDesignDrafts, useProjectDesignDrafts } from './project-design-drafts'
 
@@ -33,6 +34,7 @@ beforeEach(() => {
   scope.projectId = 'a'
   api.getRepoDesignDrafts.mockReset().mockResolvedValue({ picks: [] })
   api.putRepoDesignDrafts.mockReset().mockResolvedValue({ picks: [] })
+  toaster.toast.mockReset()
 })
 afterEach(() => {
   cleanup()
@@ -60,5 +62,23 @@ describe('project design drafts', () => {
       else expect(projectId).not.toBe('b')
     }
     expect(api.getRepoDesignDrafts.mock.calls.map(([projectId]) => projectId)).toEqual(['a', 'b'])
+  })
+
+  it('a refused save says why, keeps the notes and marks them unsaved until a save lands', async () => {
+    const { result } = renderHook(() => useProjectDesignDrafts())
+    await waitFor(() => expect(result.current.drafts).toEqual([]))
+    api.putRepoDesignDrafts.mockRejectedValue(new Error('a note is at most 100000 characters'))
+    act(() => { result.current.add(pick('k-1')) })
+
+    await waitFor(() => expect(result.current.unsaved).toBe(true))
+    expect(toaster.toast).toHaveBeenCalledTimes(1)
+    expect(toaster.toast.mock.calls[0]?.[0]).toContain('a note is at most 100000 characters')
+    expect(toaster.toast.mock.calls[0]?.[1]).toEqual({ tone: 'danger' })
+    expect(result.current.drafts.map((draft) => draft.key)).toEqual(['k-1'])
+
+    api.putRepoDesignDrafts.mockResolvedValue({ picks: [] })
+    act(() => { result.current.setText('k-1', 'shorter') })
+    await waitFor(() => expect(result.current.unsaved).toBe(false))
+    expect(toaster.toast).toHaveBeenCalledTimes(1)
   })
 })

@@ -71,6 +71,16 @@ describe('history folding', () => {
     expect(historyLine('export TOKEN=$(vault read -field=x a) PASSWORD=b')).toBe('export TOKEN=*** PASSWORD=***');
   });
 
+  it('masks a secret-named `name=value` anywhere in a word: after a path, a colon, a quote or another `=`', () => {
+    expect(historyLine('npm config set //reg.io/:_authToken=abc123')).toBe('npm config set //reg.io/:_authToken=***');
+    expect(historyLine('curl -d "password=hunter2" https://x')).not.toContain('hunter2');
+    expect(historyLine("curl -d 'client_secret=abc' https://x")).not.toContain('abc');
+    expect(historyLine('docker run -e=API_KEY=abc img')).toBe('docker run -e=API_KEY=*** img');
+    expect(historyLine('helm install x --set db/PASSWORD=abc')).toBe('helm install x --set db/PASSWORD=***');
+    // Ordinary names in the same places stay as typed.
+    expect(historyLine('curl -d "name=me" https://x/a:page=2')).toBe('curl -d "name=me" https://x/a:page=2');
+  });
+
   it('stores no credential a flag, a header, a URL or a token shape carries', () => {
     const pat = 'ghp_' + 'a'.repeat(36);
     expect(historyLine(`curl -H "Authorization: Bearer ${pat}" https://api.github.com/user`))

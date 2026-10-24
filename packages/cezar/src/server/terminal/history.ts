@@ -220,8 +220,9 @@ function redactClientPassword(segment: string): string {
 
 /** Short names the shared credential heuristic leaves out: `DB_PASS`, `KEY`, `SMTP_PWD`. */
 const SECRET_NAME_PART = /(^|_)(PASS|PWD|KEY|PIN)(_|$)/i;
-/** `NAME=` at a word start; its value is the shell word after it (`shellWordEnd`). */
-const ASSIGNMENT = /(^|[\s;&|(`])([A-Za-z_][A-Za-z0-9_]*)=/g;
+/** `NAME=` wherever a name can start inside a word — after a separator, a quote, another `=`, a
+ *  `/` or a `:` (`//reg/:_authToken=…`, `-d "password=…"`); its value is the shell word after it. */
+const ASSIGNMENT = /(^|[\s;&|(`=/:"'])([A-Za-z_][A-Za-z0-9_]*)=/g;
 
 /** Where the shell word starting at `start` ends: quotes, `$( … )`, `${ … }` and backticks
  *  (closed or not) are part of it, so `$(cat ~/t)` is one value, not `$(cat`. */

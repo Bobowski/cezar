@@ -337,7 +337,7 @@ import { buildCatalog, type Catalog } from '../mcp/catalog.ts';
 import { mcpRoutes } from '../mcp/http.ts';
 import { ensureHostKey } from '../auth/host-key.ts';
 import { authRoutes } from '../auth/routes.ts';
-import { enableRunTokens } from '../auth/run-tokens.ts';
+import { enableRunTokens, isRunToken } from '../auth/run-tokens.ts';
 import { AuthService } from '../auth/service.ts';
 import { createSocketHub, type SocketHub, type WsUpgradeVerdict } from './ws.ts';
 import { applyKeepAlive } from './keep-alive.ts';
@@ -1711,19 +1711,22 @@ export function createApp(deps: ServerDeps) {
     historyExempt.delete(id);
   });
   deps.onDispose?.(releaseEnded);
+  /** A task's or an API token's request. A run token resolves as the host on a local cockpit, so its prefix counts too. */
+  const fromAgent = (c: Context): boolean => {
+    const kind = principalOf(c)?.kind;
+    const bearer = bearerOf(c.req.header('authorization'));
+    return kind === 'run' || kind === 'token' || (bearer !== undefined && isRunToken(bearer));
+  };
   /** Every terminal-opening route calls this with the session it just made. */
   const noteTerminalOpener = (c: Context, sessionId: string): void => {
-    if (principalOf(c)?.kind === 'token') historyExempt.add(sessionId);
+    if (fromAgent(c)) historyExempt.add(sessionId);
   };
   /**
-   * Keystrokes into a terminal, fed to the project's history as they are written (spec
-   * 2026-10-24-code-page-terminal §3.3). The history's prompt check runs beside the write, never
-   * before it — no keystroke waits on a process table. A task's own credential's typing, an API
-   * token's, and anything typed into a session a token opened are not the user's history.
+   * Keystrokes into a terminal, fed to the project's history beside the write (spec
+   * 2026-10-24-code-page-terminal §9). An agent's typing is nobody's history, nor is anything in a cockpit booted inside a task.
    */
   const typeInto = (c: Context, project: ProjectContext, sessionId: string, data: string): boolean => {
-    const kind = principalOf(c)?.kind;
-    if (kind !== 'run' && kind !== 'token' && !historyExempt.has(sessionId)) {
+    if (!fromAgent(c) && !historyExempt.has(sessionId) && !process.env.CEZ_TASK_ID) {
       terminalHistory.typed(project.dataDir, sessionId, data, async () => {
         const rows = await (deps.freshProcesses ?? freshProcessSnapshot)();
         terminalSessions.observe(rows);

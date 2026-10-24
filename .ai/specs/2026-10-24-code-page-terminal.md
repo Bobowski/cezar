@@ -134,7 +134,7 @@ gateway that `CEZ_PREVIEW_PORTS` already configures for the VPS image.
   name part — is stored as `NAME=***`. What the shell itself reads is kept as bash's own history
   keeps it: a heredoc body, and the answer to a `read -s` run by a sourced script or a function
   (no child shows and no typed line says `read -s`). Both the checkout's terminals and the
-  project's task terminals feed it; a task's own credential never does, nor an API token (an MCP
+  project's task terminals feed it; a task's own credential never does (its run token's prefix counts on a local cockpit, which resolves it as the host), nor a cockpit booted inside a task (`CEZ_TASK_ID`), nor an API token (an MCP
   client), nor anyone typing into a session a token opened. A session's line state is dropped
   when its shell exits or the session is closed.
 - **`/repo/terminal/urls` adds `sshUser`** (`projectDetectedUrlsSchema`), the account cezar runs

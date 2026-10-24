@@ -369,6 +369,27 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
       ]);
     });
 
+    it('keeps no history of a task\'s typing on a local cockpit, where its run token resolves as the host', async () => {
+      const { instance } = await app();
+      const task = { authorization: 'Bearer cezrun_W1sicnVuLTEiXQ.c2ln' };
+      const open = async (headers: Record<string, string> = {}) =>
+        terminalSessionSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal', { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: '{}' })).json()).id;
+      const type = (id: string, data: string, headers: Record<string, string> = {}) =>
+        apiRequest(instance, `/api/v1/repo/terminal/${id}/input`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify({ data }) });
+      const users = await open();
+      await type(users, 'ls\r', task);
+      const tasks = await open(task);
+      await type(tasks, 'pwd\r');
+      // A cockpit an agent booted inside its task: every shell it opens is the task's.
+      vi.stubEnv('CEZ_TASK_ID', 'run-1');
+      await type(users, 'make\r');
+      vi.stubEnv('CEZ_TASK_ID', '');
+      await type(users, 'git status\r');
+      await history.flushed();
+      expect(terminalHistorySchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal/history')).json()).lines).toEqual(['git status']);
+      expect(spawned[0]?.written).toEqual(['ls\r', 'make\r', 'git status\r']);
+    });
+
     it('refuses the history where the terminal is off', async () => {
       vi.stubEnv('CEZ_TERMINAL', '0');
       const { instance } = await app();

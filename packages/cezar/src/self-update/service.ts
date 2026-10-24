@@ -92,7 +92,8 @@ export interface SelfUpdateDeps {
   pulls?: () => Promise<OpenPulls>;
   /** Builds an unbuilt or stale checkout before it is linked. Defaults to npm in the worktree. */
   buildCheckout?: typeof buildCheckout;
-  /** npm for the branch channel's build and pack; tests substitute one that touches no network. */
+  /** npm for the branch channel's build and pack and for a registry install; tests substitute one
+   *  that touches no network. */
   runNpm?: typeof runNpm;
   /** git for the branch channel's clone. */
   git?: GitRunner;
@@ -515,6 +516,13 @@ export class SelfUpdateService {
     }
   }
 
+  /** A registry release into the managed layout — the dialog's job and `cezar update` alike — with
+   *  its publish date recorded, which the container's boot choice dates it by (spec §4.2). */
+  async installRelease(target: string, onLog: (line: string) => void): Promise<string> {
+    const publishedAt = this.registry.current()?.versions.find((entry) => entry.version === target)?.publishedAt ?? null;
+    return (await installFromRegistry(target, { onLog, env: this.env, publishedAt, ...(this.deps.runNpm ? { runNpm: this.deps.runNpm } : {}) })).id;
+  }
+
   /**
    * Install `target` (a registry version, an already-installed id such as `0.11.1+local`, the
    * id of a built cezar checkout `status()` lists — linked on the spot — or a
@@ -554,8 +562,7 @@ export class SelfUpdateService {
         }
         // A linked checkout goes through discovery too: it may need a rebuild before it runs.
         const linked = !installed || installed.source === 'link' ? await this.linkDiscovered(target, log) : null;
-        const publishedAt = this.registry.current()?.versions.find((entry) => entry.version === target)?.publishedAt ?? null;
-        const id = linked ?? installed?.id ?? (await installFromRegistry(target, { onLog: log, env: this.env, publishedAt })).id;
+        const id = linked ?? installed?.id ?? (await this.installRelease(target, log));
         if (installed && !linked) log(`${id} is already installed`);
         this.switchTo(id, job, log);
       } catch (error) {

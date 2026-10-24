@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { currentEntry, activate, activeId, assertSafeId, detectInstallKind, installId, runsFromCheckout, listInstalled, versionDir, versionEntry, versionsDir, writeManifest } from './layout.ts';
+import { currentEntry, activate, activeId, assertSafeId, detectInstallKind, installId, runsFromCheckout, listInstalled, readManifest, versionDir, versionEntry, versionsDir, writeManifest } from './layout.ts';
 import { fetchPackageDocument, RegistryCache, registryPath } from './registry.ts';
 import { SelfUpdateService } from './service.ts';
 import { restartArgs } from './restart.ts';
@@ -303,6 +303,38 @@ describe('update when idle', () => {
       expect(await runSelfUpdateCommand('update', [], { service: checkout, modifyPath: false })).toBe(0);
       expect(log.mock.calls.flat().join('\n')).toContain('already up to date');
       expect(activeId(env)).toBe('0.12.1');
+    } finally {
+      log.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  // The container's boot choice dates a commitless registry install by this (spec 2026-10-23 §4.2).
+  it('cezar update records the registry publish date, as the dialog\'s install does', async () => {
+    vi.stubEnv('CEZ_HOME', home);
+    const registry = (async () =>
+      new Response(
+        JSON.stringify({ 'dist-tags': { latest: '0.12.2' }, versions: { '0.12.2': {} }, time: { '0.12.2': '2026-10-01T00:00:00.000Z' } }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+    const service = new SelfUpdateService({
+      pkgName: '@open-mercato/cezar',
+      version: '0.12.0',
+      entry: join(home, 'versions', '0.12.0', 'node_modules', '@open-mercato', 'cezar', 'dist', 'index.js'),
+      restart,
+      env: { ...env, CEZ_UPDATE_CHANNEL: 'stable' },
+      registry: new RegistryCache('@open-mercato/cezar', registry),
+      runNpm: async (args) => {
+        const dist = join(args[args.indexOf('--prefix') + 1] ?? '', 'node_modules', '@open-mercato', 'cezar', 'dist');
+        mkdirSync(dist, { recursive: true });
+        writeFileSync(join(dist, 'index.js'), '// entry\n');
+      },
+    });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      expect(await runSelfUpdateCommand('update', [], { service, modifyPath: false })).toBe(0);
+      expect(activeId(env)).toBe('0.12.2');
+      expect(readManifest('0.12.2', env)).toMatchObject({ source: 'registry', publishedAt: '2026-10-01T00:00:00.000Z' });
     } finally {
       log.mockRestore();
       vi.unstubAllEnvs();

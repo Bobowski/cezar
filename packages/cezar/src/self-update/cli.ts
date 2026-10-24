@@ -129,7 +129,7 @@ async function updateCommand(opts: SelfUpdateCliOptions): Promise<number> {
   }
   try {
     const installed = findInstalled(target);
-    const id = installed ? installed.id : (await installFromRegistry(target, { onLog: (line) => console.log(`  · ${line}`) })).id;
+    const id = installed ? installed.id : await service.installRelease(target, (line) => console.log(`  · ${line}`));
     activate(id);
     const dir = writeLaunchers();
     console.log(`\n  ✓ ${id} is now current — start it with: ${isOnPath(dir) ? 'cezar' : `${dir}/cezar`}\n`);

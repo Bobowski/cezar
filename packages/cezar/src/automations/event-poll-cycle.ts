@@ -244,16 +244,8 @@ export async function launchEventCandidate(input: {
   }
 }
 
-/**
- * Decide every `held` event of `definition` again, oldest first (spec 2026-10-23-github-events
- * §11): one held under another revision, of an event the definition no longer `tracks`, or
- * from before its current baseline is `skipped` as superseded — an edit, an enable or a
- * re-baseline owes it nothing; one a trace now claims is cezar's own and is `skipped`; one still
- * held stays as it is,
- * silently; any other is launched or delivered like a new event. `launch` calls `admit` once the
- * holds pass and before anything starts, so the receipt is `reserved` across the launch the way
- * a fresh event's is, and a crash mid-launch is reconciled rather than repeated.
- */
+/** Decides every `held` event of `definition` again, oldest first; `launch` calls `admit` once
+ *  the holds pass (spec 2026-10-23-github-events §11, releasing held events). */
 export async function releaseHeldEvents<C extends { timestamp: string }>(input: {
   store: AutomationStore;
   definition: AutomationDefinition;

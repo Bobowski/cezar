@@ -214,6 +214,17 @@ the text above, and why:
   or issue (`runsOnItem` — its maker, a reviewer, a `pr-head` verifier, a dispatched child, a run
   an automation launched for it), and the cap counts the runs the automation launched for that
   item in the hour (`launch-cap: …`). The trace check runs for every candidate, as before.
+  The holds are decided in one place, `automationHold`: the delivery or launch cap first, then,
+  for a comment by the `gh` login only, the open turns of the live runs on the item — the login
+  is compared before any run's event file is read.
+- **Releasing held events** (`releaseHeldEvents`): every poll decides an automation's `held`
+  receipts again, oldest (by GitHub's timestamp) first, before new candidates. One held under
+  another revision, of an event the automation no longer tracks, or older than its current
+  baseline is `skipped` (`superseded: …`) — an edit, an enable or a re-baseline owes it
+  nothing; pausing skips them all (`paused: …`). One a trace now claims is `skipped`
+  (`own-trace: …`); one still held stays as it is, writing nothing; any other goes out like a new
+  event. Its receipt is `reserved` once the holds pass and before anything starts, exactly as a
+  fresh event's is, so a crash mid-launch is reconciled rather than repeated.
 - **Traces** are also recorded for the task push route, the graph `git.push` node, an in-place
   landing, the `github.pr-comment` node and the agent's own `git push` and comment-posting tool calls.
   The repo-sync push of the project checkout belongs to no run and records nothing. An agent's

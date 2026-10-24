@@ -223,20 +223,8 @@ export function launchCapHold(definition: GithubAutomationDefinition, candidate:
   return { result: 'held', reason: `launch-cap: this automation already launched ${launches} runs for ${candidate.comment ? 'comments on ' : ''}#${candidate.number} in the last hour (cap ${cap}, the automation's maxRecords) — held until the window frees.` };
 }
 
-/**
- * Why an event must NOT go out now, or `undefined` (spec 2026-10-23-github-events §11) — into its
- * owning run (`owner`), or, for a comment, as a new run. The traces decide first (the scheduler
- * drops what they claim); this is the tie-breaker for a comment no trace claimed. On a local
- * cockpit the `gh` login IS the human, so a comment by it is never dropped: one CREATED during
- * the still-open turn of a run on that PR or issue (`runsOnItem`) may be that run's own reply
- * posted by a means no trace saw (curl, an alias, a tool cezar does not parse), and is `held`
- * until the turn ends — then delivered, unless a trace has claimed it meanwhile. One written after
- * the turn ended goes at once. `allowSelfComments` turns that hold off. A login that cannot be
- * read holds nothing — only the traces decide then — and the event carries a `warning` for its
- * log row, so the guard's absence is visible. And an automation sends at most `maxRecords`
- * events an hour into one PR's run — or, for comments, launches that many runs for one item;
- * the rest are held until the window frees. Only what went out counts.
- */
+/** Why an event must not go out now (`held`), a `warning` for its log row, or `undefined`: the
+ *  hourly caps and the own-login comment hold (spec 2026-10-23-github-events §11, owning-run guard). */
 export async function automationHold(input: {
   definition: GithubAutomationDefinition;
   candidate: GithubCandidate;

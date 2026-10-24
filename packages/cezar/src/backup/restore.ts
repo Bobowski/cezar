@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { constants, createReadStream, createWriteStream, existsSync, mkdirSync } from 'node:fs';
-import { chmod, copyFile, lstat, open, readdir, rename, rm } from 'node:fs/promises';
+import { constants, createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { chmod, copyFile, lstat, open, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { Writable } from 'node:stream';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -284,6 +284,126 @@ export const cloneWithGit: CloneProject = async (remote, root, branch) => {
   if (branch) await run(root, ['checkout', '--quiet', branch, '--'], 60_000).catch(() => {});
 };
 
+const RUN_INDEX = '.ai/cezar/runs.json';
+const RUN_EVENTS = /^\.ai\/cezar\/runs\/[^/]+\.ndjson$/;
+
+/** A project's run index and per-run event files: merged by `mergeRunHistory`, never just placed. */
+export const isRunHistory = (rel: string): boolean => rel === RUN_INDEX || RUN_EVENTS.test(rel);
+
+type RawRun = Record<string, unknown> & { id: string };
+
+const isRawRun = (row: unknown): row is RawRun =>
+  !!row && typeof row === 'object' && !Array.isArray(row) && typeof (row as { id?: unknown }).id === 'string';
+
+const RECENCY_FIELDS = ['createdAt', 'startedAt', 'finishedAt', 'archivedAt', 'pinnedAt', 'seenAt', 'worktreeReclaimedAt'];
+
+/** A run record has no `updatedAt`: the latest instant it carries, its steps' included, stands in. */
+function recency(run: Record<string, unknown>): number {
+  let latest = -Infinity;
+  const consider = (row: Record<string, unknown>) => {
+    for (const field of RECENCY_FIELDS) {
+      const at = typeof row[field] === 'string' ? Date.parse(row[field] as string) : Number.NaN;
+      if (Number.isFinite(at) && at > latest) latest = at;
+    }
+  };
+  consider(run);
+  if (Array.isArray(run.steps)) for (const step of run.steps) if (step && typeof step === 'object') consider(step as Record<string, unknown>);
+  return latest;
+}
+
+/**
+ * This machine's index with the archive's folded in: a record only here is kept, one only in the
+ * archive is added, and one in both takes the archive's copy only when that copy is newer.
+ */
+export function mergeRunIndex(here: unknown[], archived: unknown[]): { merged: unknown[]; added: number; updated: number } {
+  const fromArchive = new Map(archived.filter(isRawRun).map((run) => [run.id, run]));
+  let updated = 0;
+  const merged = here.map((row) => {
+    if (!isRawRun(row)) return row;
+    const theirs = fromArchive.get(row.id);
+    if (!theirs) return row;
+    fromArchive.delete(row.id);
+    if (recency(theirs) <= recency(row)) return row;
+    updated += 1;
+    return theirs;
+  });
+  return { merged: [...merged, ...fromArchive.values()], added: fromArchive.size, updated };
+}
+
+/** JSON off disk, or `undefined` when it is absent and `null` when it is unreadable. */
+function readJsonFile(path: string): unknown {
+  if (!existsSync(path)) return undefined;
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/** Atomically, through a sibling named like `copyAcross`'s so the leftover sweep knows it. */
+async function writeAtomically(dest: string, body: string): Promise<void> {
+  const tmp = join(dirname(dest), `.${basename(dest)}.cezar-restore-${randomBytes(6).toString('hex')}`);
+  try {
+    await writeFile(tmp, body, { flag: 'wx', mode: 0o600 });
+    await rename(tmp, dest);
+  } catch (error) {
+    await rm(tmp, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+/**
+ * Restore a project's run history WITHOUT losing what this machine did after the backup (spec
+ * 2026-10-23 §10): the index merges (`mergeRunIndex`), and an event file goes in only where this
+ * machine has none or a shorter one — an append-only log is never truncated. Files placed.
+ */
+async function mergeRunHistory(from: string, root: string, log: (line: string) => void): Promise<number> {
+  let placed = 0;
+  const destIndex = join(root, ...RUN_INDEX.split('/'));
+  const archived = readJsonFile(join(from, ...RUN_INDEX.split('/')));
+  if (archived !== undefined) {
+    const there = await kind(destIndex);
+    if (!Array.isArray(archived)) {
+      log(`kept ${destIndex}: the archive's run index is not readable`);
+    } else if (there === 'dir') {
+      log(`kept ${destIndex}: the archive has a file where this machine has a directory`);
+    } else {
+      let here = there === 'file' ? readJsonFile(destIndex) : [];
+      if (!Array.isArray(here)) {
+        // Unreadable here, so nothing to merge with — but it is set aside, never overwritten.
+        await rename(destIndex, `${destIndex}.before-restore`).catch(() => {});
+        log(`moved an unreadable ${destIndex} aside to runs.json.before-restore`);
+        here = [];
+      }
+      const { merged, added, updated } = mergeRunIndex(here as unknown[], archived);
+      try {
+        mkdirSync(dirname(destIndex), { recursive: true, mode: 0o700 });
+        await writeAtomically(destIndex, JSON.stringify(merged));
+        placed += 1;
+        log(`merged task history: ${added} added, ${updated} updated from the archive, ${(here as unknown[]).length - updated} kept as they are here`);
+      } catch (error) {
+        log(`kept ${destIndex}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+  const events = join(from, '.ai', 'cezar', 'runs');
+  let entries;
+  try {
+    entries = await readdir(events, { withFileTypes: true });
+  } catch {
+    return placed;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !RUN_EVENTS.test(`.ai/cezar/runs/${entry.name}`)) continue;
+    const src = join(events, entry.name);
+    const dest = join(root, '.ai', 'cezar', 'runs', entry.name);
+    const info = await lstat(src);
+    if ((await kind(dest)) === 'file' && (await lstat(dest)).size >= info.size) continue;
+    if (await placeFile(src, dest, info.mode & 0o777 || 0o600, log)) placed += 1;
+  }
+  return placed;
+}
+
 export interface ApplyInput {
   staging: string;
   manifest: BackupManifest;
@@ -346,8 +466,12 @@ export async function applyStaged(input: ApplyInput): Promise<void> {
         continue;
       }
     }
-    // The allowlist again: an archive is input, not an authority on what a project may hold.
-    const files = existsSync(from) ? await placeTree(from, root, { accept: projectFileQualifies, warn: log }) : 0;
-    log(`restored ${project.id} (${files} files)`);
+    // Run history merges in (it never replaces what this machine has), then the allowlist
+    // again: an archive is input, not an authority on what a project may hold.
+    const history = existsSync(from) ? await mergeRunHistory(from, root, log) : 0;
+    const files = existsSync(from)
+      ? await placeTree(from, root, { accept: (rel) => projectFileQualifies(rel) && !isRunHistory(rel), warn: log })
+      : 0;
+    log(`restored ${project.id} (${files + history} files)`);
   }
 }

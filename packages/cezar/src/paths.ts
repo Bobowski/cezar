@@ -259,6 +259,11 @@ export function backupStatePath(env: NodeJS.ProcessEnv = process.env): string {
   return join(cezarHomeDir(env), 'backup.json');
 }
 
+/** Left by a restore; the next boot reads and removes it, and prunes no orphan (spec 2026-10-23 §10). */
+export function restoreMarkerPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(cezarHomeDir(env), 'restore-marker.json');
+}
+
 /** The agents' and git's own state a backup carries beside `CEZ_HOME` (spec 2026-10-23 §3). In the
  *  container each is relocated under `/data` by its env var; elsewhere it is the tool's default.
  *  `claudeState` is Claude's `.claude.json` when it lives OUTSIDE its config dir (no override). */

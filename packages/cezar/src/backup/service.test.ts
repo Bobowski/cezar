@@ -157,6 +157,8 @@ describe('BackupService', () => {
     expect(restarted).toBe(1);
     expect(reloaded).toBe(1);
     expect(writerHolds).toEqual([{ authPlaced: false, released: false }]);
+    // The restarted process's first boot reads this and prunes no orphan (spec §10).
+    expect(existsSync(join(root, 'fresh-home', 'restore-marker.json'))).toBe(true);
 
     const config = await loadWorkspaceConfig();
     expect(config.projects.map((entry) => entry.id)).toEqual(['fancy']);

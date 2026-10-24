@@ -170,6 +170,14 @@ Code: `packages/cezar/src/backup/` (`tar.ts`, `codec.ts`, `collect.ts`, `s3.ts`,
   `config.json` is placed, so a fresh `/setup` vouches only for the projects directory — never to
   whatever absolute path the manifest names, and each one passes `projectFileQualifies` again
   (review 2026-10-24, round 2).
+  **Run history merges, it is never replaced** (review round 3): a project's `.ai/cezar/runs.json`
+  folds the archive's records into this machine's — a record only here stays, one only in the
+  archive is added, one in both takes the archive's copy only when its newest timestamp is later
+  (a run record has no `updatedAt`) — and a `runs/<id>.ndjson` goes in only where this machine
+  has none or a shorter one. The restore then leaves `CEZ_HOME/restore-marker.json`; the next
+  `serve` consumes it before any store opens, and for that whole process `pruneOrphans`, the
+  lifecycle's orphan cleanup and the layouts backstop list what they would remove instead of
+  removing it.
   The restart re-execs the running entry (the managed `current`
   only for a managed install). The CLI restore never restarts anything.
 - **Nightly** is a built-in item on the workspace automations timer (`builtins` on

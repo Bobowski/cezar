@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { rename, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { pipeline, Readable } from 'node:stream';
 import { pipeline as pipelineAsync } from 'node:stream/promises';
 import {
@@ -16,6 +16,7 @@ import {
 } from '@open-mercato/cezar-contract';
 import { agentStateLocations, backupsDir, cezarHomeDir, type AgentStateLocations } from '../paths.ts';
 import { listProjects } from '../workspace/projects.ts';
+import { suspendOrphanPrune, writeRestoreMarker } from '../restore-guard.ts';
 import { availableCompression, compressor, encrypted, type EncryptTo } from './codec.ts';
 import { archiveHost, archiveStamp, collectBackup, hostArchivePattern, newestArchiveFirst, type BackupManifest } from './collect.ts';
 import { applyStaged, stageArchive, type CloneProject } from './restore.ts';
@@ -495,6 +496,9 @@ export class BackupService {
       if (refusal) throw new BackupConflictError(`nothing was restored: ${refusal}`);
       writers = this.writerHolds.map((hold) => hold());
       await applyStaged({ staging, manifest, cezarHome: home, locations: this.locations(), clone: this.options.clone, log });
+      // Neither this process nor the next boot may prune a worktree the restored index lacks (§10).
+      suspendOrphanPrune();
+      writeRestoreMarker({ archive: basename(archive) });
       for (const hook of this.restoreHooks) hook();
       if (options.restart === false) {
         release?.();

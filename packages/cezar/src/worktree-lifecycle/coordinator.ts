@@ -17,6 +17,7 @@ import { isSafeGitRef } from '../git-refs.ts';
 import { createWorktree, createWorktreeWithOutcome, removeWorktree, worktreePathFor, branchFor } from '../git-worktree.ts';
 import { seedAgentConfigLocalLayer } from '../agent-config/seed.ts';
 import { seedWorktreeEnvFiles } from '../worktree-env.ts';
+import { orphanPruneSuspended } from '../restore-guard.ts';
 import { collectSecretValues, redactSecrets } from '../core/secret-redaction.ts';
 import { LifecycleStore, LifecycleConflictError, LifecycleStoreError, withLifecycleFileLock } from './store.ts';
 import { readLifecycleConfig, readLifecycleConfigOrDefault, withLifecycleConfigLock } from './config.ts';
@@ -802,6 +803,12 @@ export class WorktreeLifecycleCoordinator {
   private async enqueueOrphans(): Promise<void> {
     try {
       const {records} = await this.store.listWorktrees();
+      // The first boot after a restore removes no orphan, it lists them (spec 2026-10-23-backup-restore §10).
+      if (orphanPruneSuspended()) {
+        const kept = records.filter((record) => !this.runs.getRun(record.runId) && existsSync(record.worktreePath));
+        if (kept.length > 0) console.log(`  restore: kept ${kept.length} lifecycle worktree(s) an orphan cleanup would have removed: ${kept.map((record) => record.runId.slice(0, 8)).join(', ')}`);
+        return;
+      }
       for (const record of records) {
         if (this.runs.getRun(record.runId) || !existsSync(record.worktreePath) || record.activeOperationId || record.autoCleanupSuppressed) continue;
         await this.startRecordRemoval(record, 'orphan', randomUUID(), bodyHash({worktreeId: record.worktreeId, intent: 'orphan'})).catch(() => undefined);

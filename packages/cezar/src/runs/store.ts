@@ -20,6 +20,7 @@ import { collectSecretValues, redactDeep, redactSecrets } from '../core/secret-r
 // Sibling module, files only — a draft belongs to a run and is deleted with it (#939).
 import { deleteRunDrafts } from './drafts.ts';
 import { deleteRunLayouts, pruneOrphanLayouts } from './layouts.ts';
+import { orphanPruneSuspended } from '../restore-guard.ts';
 import { failureKind, taskFailedLabel } from './failure-kind.ts';
 import { track } from '../telemetry.ts';
 import { reportAgentError } from './agent-error-telemetry.ts';
@@ -1003,7 +1004,8 @@ export class RunStore extends EventEmitter {
           }
           // The layouts backstop (§5.3). Only behind an index that actually loaded — an unreadable
           // one knows no run, and every layout would look orphaned.
-          pruneOrphanLayouts(dataDir, new Set(store.runs.keys()), ORPHAN_LAYOUT_GRACE_MS);
+          // Not on the first boot after a restore: an unknown run may be one made after the backup.
+          if (!orphanPruneSuspended()) pruneOrphanLayouts(dataDir, new Set(store.runs.keys()), ORPHAN_LAYOUT_GRACE_MS);
         } else {
           store.indexReadHealth = { state: 'unavailable', omittedRuns: Array.isArray(raw) ? raw.length : 0, reason: 'Task index could not be loaded by this server' };
         }

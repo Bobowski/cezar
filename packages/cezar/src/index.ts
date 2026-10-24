@@ -39,6 +39,7 @@ import {
 import { printSkillsBanner, printStarBanner } from './skills-banner.ts';
 import { SelfUpdateService } from './self-update/service.ts';
 import { BackupService } from './backup/service.ts';
+import { consumeRestoreMarker } from './restore-guard.ts';
 import { runsFromCheckout } from './self-update/layout.ts';
 import { devVersion } from './self-update/semver.ts';
 import { isSupervised, restartProcess } from './self-update/restart.ts';
@@ -292,6 +293,8 @@ async function serveCommand(
   openBrowser: boolean,
   bindHost?: string,
 ): Promise<void> {
+  // Before any store opens: the first boot after a restore prunes no orphan (spec 2026-10-23 §10).
+  consumeRestoreMarker();
   const bootProjectId = await initWorkspace(repoRoot);
   // ONE workspace semaphore for the whole process (spec 2026-07-20, step 2.5):
   // the boot manager and every lazily-built project context count their runs

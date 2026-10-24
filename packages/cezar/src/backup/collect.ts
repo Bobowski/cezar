@@ -40,7 +40,7 @@ export type BackupManifest = z.infer<typeof backupManifestSchema>;
 /** Top-level `CEZ_HOME` entries that are not state: archives themselves, cezar's own installed
  *  code, caches (`npm-cache` is the self-updater's fallback, `npmFallbackCache`) and staging.
  *  A restore never overwrites them either. */
-const DATA_SKIP = new Set(['backups', 'versions', 'bin', 'current', 'cache', 'npm-cache', 'uploads']);
+const DATA_SKIP = new Set(['backups', 'versions', 'bin', 'current', 'cache', 'npm-cache', 'uploads', 'restore-marker.json']);
 
 export function isSkippedDataEntry(name: string): boolean {
   return DATA_SKIP.has(name) || name.startsWith('.restore') || name.endsWith('.lock') || name.endsWith('.tmp');

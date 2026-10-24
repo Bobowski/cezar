@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import type { GithubAutomationDefinition, AutomationEvent } from './types.ts';
-import { ACTIVITY_EVENTS, pollActivity } from './github-activity.ts';
+import { ACTIVITY_EVENTS, pollActivity, WritePermissions } from './github-activity.ts';
 import type { GithubTraces } from '../runs/github-traces.ts';
 
 const execFileAsync = promisify(execFile);
@@ -89,7 +89,8 @@ export interface GithubCandidate {
   cursorless?: boolean;
   /** The comment events. `body` never reaches a receipt (`store.reserveReceipt`). */
   /** `association`: GitHub's `author_association` (OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, …). */
-  comment?: { id: number; kind: 'issue' | 'review'; author: string; url: string; body?: string; association?: string };
+  /** `memberWrite`: a `MEMBER`'s write access to this repo, looked up only when it decides. */
+  comment?: { id: number; kind: 'issue' | 'review'; author: string; url: string; body?: string; association?: string; memberWrite?: boolean };
   check?: { id: number; name: string; conclusion: string; url: string; failingJobs: string[] };
   push?: { branch: string; before: string; after: string; subjects: string[] };
   release?: { tag: string; name: string; prerelease: boolean };
@@ -140,6 +141,8 @@ export class GithubPoller {
   private readonly run: NonNullable<GithubPollerOptions['run']>;
 
   private readonly host: string | undefined;
+
+  private readonly permissions = new WritePermissions();
 
   constructor(options: GithubPollerOptions = {}) {
     this.host = options.host && options.host.toLowerCase() !== 'github.com' ? options.host : undefined;
@@ -360,6 +363,7 @@ export class GithubPoller {
         run: (args) => this.run('gh', args),
         matches: (candidate) => matchesFilters(candidate, definition),
         htmlBase: `https://${this.host ?? 'github.com'}`,
+        permissions: this.permissions,
       });
       truncated ||= activity.truncated;
       for (const group of activity.groups) {

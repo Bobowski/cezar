@@ -39,9 +39,32 @@ const MAX_BODY = 4_000;
  *  diffed against what was last seen instead of being new. Newest first, then dropped. */
 export const HEADS_CAP = 1_000;
 const FAILING = new Set(['failure', 'timed_out', 'action_required', 'startup_failure']);
-/** Who may speak into an existing run by default (`deliver: 'owning-run'`): people with write
- *  access, as GitHub's `author_association` names them. */
-const TRUSTED_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+/** Who may speak into an existing run by default (`deliver: 'owning-run'`), as GitHub's
+ *  `author_association` names them. `MEMBER` is only ORG membership, so a member is admitted when
+ *  the repo's own permission lookup says write or admin (`WritePermissions`). */
+const TRUSTED_ASSOCIATIONS = new Set(['OWNER', 'COLLABORATOR']);
+const WRITE_PERMISSIONS = new Set(['admin', 'maintain', 'write']);
+
+/** `/collaborators/:login/permission` answers per repo and login, kept ten minutes, bounded. A
+ *  failed lookup is never kept: the next poll asks again. */
+export class WritePermissions {
+  private readonly entries = new Map<string, { write: boolean; at: number }>();
+  constructor(private readonly ttlMs = 10 * 60_000, private readonly now = () => Date.now()) {}
+
+  get(key: string): boolean | undefined {
+    const entry = this.entries.get(key);
+    if (!entry) return undefined;
+    if (this.now() - entry.at < this.ttlMs) return entry.write;
+    this.entries.delete(key);
+    return undefined;
+  }
+
+  set(key: string, write: boolean): void {
+    this.entries.delete(key);
+    this.entries.set(key, { write, at: this.now() });
+    if (this.entries.size > 500) this.entries.delete(this.entries.keys().next().value!);
+  }
+}
 
 export type GhRun = (args: readonly string[]) => Promise<string>;
 
@@ -232,6 +255,13 @@ function conclusionMatches(conclusion: string, wanted: 'success' | 'failure' | '
   return wanted === 'success' ? conclusion === 'success' : FAILING.has(conclusion);
 }
 
+/** Whether only a trusted author's comment may pass: the owning-run default, with no `authors`
+ *  list and no `allowAnyAuthor` (spec 2026-10-23-github-events §7). */
+function needsTrustedAuthor(candidate: GithubCandidate, definition: GithubAutomationDefinition): boolean {
+  return !!candidate.comment && definition.deliver === 'owning-run' && !definition.filters.authors?.length
+    && definition.filters.allowAnyAuthor !== true;
+}
+
 /** The filters only an activity event carries; `matchesFilters` checks the shared ones. */
 export function matchesActivityFilters(candidate: GithubCandidate, definition: GithubAutomationDefinition): boolean {
   const filters = definition.filters;
@@ -242,8 +272,8 @@ export function matchesActivityFilters(candidate: GithubCandidate, definition: G
     && !filters.mentions.some((who) => mentions(candidate.comment!.body ?? '', who))) return false;
   // A comment delivered INTO a running task is a message to an agent holding a worktree and the
   // user's credentials: by default only collaborators may send one (spec 2026-10-23-github-events §7).
-  if (candidate.comment && definition.deliver === 'owning-run' && !filters.authors?.length && filters.allowAnyAuthor !== true
-    && !TRUSTED_ASSOCIATIONS.has(candidate.comment.association ?? '')) return false;
+  if (needsTrustedAuthor(candidate, definition) && !TRUSTED_ASSOCIATIONS.has(candidate.comment!.association ?? '')
+    && !(candidate.comment!.association === 'MEMBER' && candidate.comment!.memberWrite === true)) return false;
   if (candidate.check && !conclusionMatches(candidate.check.conclusion, filters.conclusion)) return false;
   if (candidate.release) {
     if (filters.prerelease !== undefined && candidate.release.prerelease !== filters.prerelease) return false;
@@ -286,6 +316,8 @@ export async function pollActivity(input: {
   matches: (candidate: GithubCandidate) => boolean;
   /** `https://github.com`, or the Enterprise host's web origin. */
   htmlBase: string;
+  /** Kept across polls by the poller, so a member is looked up once per ten minutes. */
+  permissions?: WritePermissions;
 }): Promise<ActivityResult> {
   const { owner, repo, definition, maxRecords, state, run } = input;
   const full = `${owner}/${repo}`;
@@ -355,6 +387,29 @@ export async function pollActivity(input: {
     ...(item.headRef ? { branch: item.headRef } : {}),
   });
   const admit = (candidate: GithubCandidate) => input.matches(candidate) && matchesActivityFilters(candidate, definition);
+  const permissions = input.permissions ?? new WritePermissions();
+  /** Whether `login` may push to this repo; a lookup that fails is a no, and is asked again. */
+  const canWrite = async (login: string): Promise<boolean> => {
+    const key = `${full.toLowerCase()}:${login.toLowerCase()}`;
+    const cached = permissions.get(key);
+    if (cached !== undefined) return cached;
+    let write = false;
+    try {
+      const raw = await getJson(run, `${api}/collaborators/${encodeURIComponent(login)}/permission`) as { permission?: unknown; role_name?: unknown } | null;
+      write = WRITE_PERMISSIONS.has(String(raw?.permission)) || WRITE_PERMISSIONS.has(String(raw?.role_name));
+    } catch (error) {
+      if (!isNotFound(error)) return false;
+    }
+    permissions.set(key, write);
+    return write;
+  };
+  /** `admit` for a comment, asking the repo about an org member only when it decides. */
+  const admitComment = async (candidate: GithubCandidate): Promise<boolean> => {
+    if (!input.matches(candidate)) return false;
+    const comment = candidate.comment!;
+    if (comment.association === 'MEMBER' && needsTrustedAuthor(candidate, definition)) comment.memberWrite = await canWrite(comment.author);
+    return matchesActivityFilters(candidate, definition);
+  };
 
   // ---- open PR heads: `synchronize` and the heads `check_suite.completed` reads -------------
   const tracksPrHeads = events.has('pull_request.synchronize') || events.has('check_suite.completed');
@@ -486,7 +541,7 @@ export async function pollActivity(input: {
           ...(row.author_association ? { association: clean(row.author_association, 50) } : {}),
         },
       };
-      if (admit(candidate)) observation.candidate = candidate;
+      if (await admitComment(candidate)) observation.candidate = candidate;
     }
     groups.push(group);
   }
@@ -512,7 +567,7 @@ export async function pollActivity(input: {
           ...(row.author_association ? { association: clean(row.author_association, 50) } : {}),
         },
       };
-      if (admit(candidate)) observation.candidate = candidate;
+      if (await admitComment(candidate)) observation.candidate = candidate;
     }
     // A submitted review is N comments at once: one launch per PR per poll, carrying them all.
     const byPull = new Map<number, ActivityObservation[]>();

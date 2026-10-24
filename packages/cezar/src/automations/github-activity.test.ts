@@ -118,13 +118,39 @@ describe('comment events', () => {
         .poll('acme', 'demo', { ...definition(['pull_request.commented'], filters), ...(deliver ? { deliver } : {}) }, { since });
     expect((await poll('NONE', {}, 'owning-run')).candidates).toEqual([]);
     expect((await poll('CONTRIBUTOR', {}, 'owning-run')).candidates).toEqual([]);
-    for (const trusted of ['OWNER', 'MEMBER', 'COLLABORATOR']) {
+    for (const trusted of ['OWNER', 'COLLABORATOR']) {
       expect((await poll(trusted, {}, 'owning-run')).candidates.map((candidate) => candidate.comment?.association)).toEqual([trusted]);
     }
     expect((await poll('NONE', { authors: ['dave'] }, 'owning-run')).candidates).toHaveLength(1);
     expect((await poll('NONE', { allowAnyAuthor: true }, 'owning-run')).candidates).toHaveLength(1);
     // A new run per comment is unchanged: anyone's comment, as before.
     expect((await poll('NONE')).candidates).toHaveLength(1);
+  });
+
+  it('admits an org MEMBER into the owning run only with write access to the repo, asked once', async () => {
+    const permissionPath = 'repos/acme/demo/collaborators/dave/permission';
+    const member = { ...prComment, author_association: 'MEMBER' };
+    const owning = { ...definition(['pull_request.commented']), deliver: 'owning-run' as const };
+    const poll = async (permission: unknown) => {
+      const run = gh({ ...routes, 'repos/acme/demo/issues/comments': [member], ...(permission === undefined ? {} : { [permissionPath]: permission }) });
+      const poller = new GithubPoller({ run });
+      const first = await poller.poll('acme', 'demo', owning, { since });
+      const second = await poller.poll('acme', 'demo', owning, { since });
+      return { first, second, asked: pathsOf(run).filter((path) => path === permissionPath).length };
+    };
+    const writer = await poll({ permission: 'write' });
+    expect(writer.first.candidates.map((candidate) => candidate.comment?.id)).toEqual([777]);
+    expect(writer.second.candidates).toHaveLength(1);
+    // Cached: one lookup across both polls.
+    expect(writer.asked).toBe(1);
+    expect((await poll({ permission: 'admin' })).first.candidates).toHaveLength(1);
+    expect((await poll({ permission: 'read', role_name: 'triage' })).first.candidates).toEqual([]);
+    // Not a collaborator at all (404): a member of the org is not a writer of this repo.
+    expect((await poll(undefined)).first.candidates).toEqual([]);
+    // A new run per comment never asks.
+    const run = gh({ ...routes, 'repos/acme/demo/issues/comments': [member] });
+    await new GithubPoller({ run }).poll('acme', 'demo', definition(['pull_request.commented']), { since });
+    expect(pathsOf(run)).not.toContain(permissionPath);
   });
 
   it('drops a comment cezar posted itself (loop guard)', async () => {

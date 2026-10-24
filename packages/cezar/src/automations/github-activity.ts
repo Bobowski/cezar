@@ -352,7 +352,8 @@ export async function pollActivity(input: {
   let truncated = false;
 
   const items = new Map<number, Item | null>();
-  const fromPull = (pull: z.infer<typeof pullSchema>): Item => ({
+  /** `listedOpen`: read from the `state=open` list, so a missing `state` there is still open. */
+  const fromPull = (pull: z.infer<typeof pullSchema>, listedOpen = false): Item => ({
     number: pull.number,
     nodeId: pull.node_id,
     title: pull.title,
@@ -363,9 +364,16 @@ export async function pollActivity(input: {
     fork: pull.head.repo?.full_name.toLowerCase() !== full.toLowerCase(),
     headSha: pull.head.sha,
     headRef: pull.head.ref,
-    open: pull.state === undefined || pull.state === 'open',
+    open: isOpen(pull, listedOpen),
     updatedAt: pull.updated_at,
   });
+  /** A PR read alone without a `state` fails closed: a comment on it must not wake archived work. */
+  const isOpen = (pull: z.infer<typeof pullSchema>, listedOpen: boolean): boolean => {
+    if (pull.state !== undefined) return pull.state === 'open';
+    if (listedOpen) return true;
+    console.warn(`[cezar] automations: ${full}#${pull.number} came back without a state; treating it as closed`);
+    return false;
+  };
   /** PRs read one by one this poll — outside the open-PR window, when its own read missed them. */
   const readAlone = new Set<number>();
   /** One read per distinct item per poll; a deleted item (404) is `null`, anything else throws. */
@@ -466,14 +474,14 @@ export async function pollActivity(input: {
       windowed = new Set(Object.keys(fresh));
       suiteHeads = fresh;
       heads = retainPrHeads(state.prHeads, fresh);
-      for (const pull of pulls) items.set(pull.number, fromPull(pull));
+      for (const pull of pulls) items.set(pull.number, fromPull(pull, true));
       // First sight records the heads and fires nothing: a head is "changed" only against one seen
       // — including one kept from before the PR slid out of this capped list.
       if (events.has('pull_request.synchronize') && state.prHeads) {
         for (const pull of pulls) {
           const previous = state.prHeads[String(pull.number)];
           if (!previous || previous.sha === pull.head.sha || ownSha(pull.head.sha)) continue;
-          const candidate = synchronizeOf(fromPull(pull), pull.head.sha, pull.updated_at);
+          const candidate = synchronizeOf(fromPull(pull, true), pull.head.sha, pull.updated_at);
           if (takeSynchronize(candidate)) continue;
           heads[String(pull.number)] = { sha: previous.sha, ref: pull.head.ref, updatedAt: pull.updated_at };
           // A 304 next time would hand back these held heads with nothing left to diff.

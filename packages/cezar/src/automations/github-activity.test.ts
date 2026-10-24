@@ -177,6 +177,19 @@ describe('comment events', () => {
     expect(of777(open)).not.toHaveProperty('prClosed');
   });
 
+  it('fails closed on a PR read alone without a state, and says so', async () => {
+    const { state: _state, ...stateless } = fixture<Record<string, unknown>>('pull');
+    const run = gh({ ...routes, [`repos/acme/demo/pulls/${own.number}`]: stateless });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await new GithubPoller({ run }).poll('acme', 'demo', definition(['pull_request.commented']), { since });
+      expect(result.candidates.find((candidate) => candidate.comment?.id === 777)).toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('without a state'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('drops a comment cezar posted itself (loop guard)', async () => {
     const result = await new GithubPoller({ run: gh(routes) }).poll('acme', 'demo', definition(['pull_request.commented']),
       { since, traces: { shas: new Set(), comments: new Set([777]) } });

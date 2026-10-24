@@ -341,8 +341,15 @@ export class BranchSource {
     return counted.ok && Number.isFinite(n) ? n : null;
   }
 
-  private async isAncestor(a: string, b: string): Promise<boolean> {
+  async isAncestor(a: string, b: string): Promise<boolean> {
     return (await this.run(['merge-base', '--is-ancestor', a, b])).ok;
+  }
+
+  /** Whether the followed branch's tip reaches `sha` — the clone may hold objects a force-push
+   *  or an earlier branch left behind, and those are never a build target. */
+  async onBranch(target: UpdateBranch, sha: string): Promise<boolean> {
+    if ((await this.tipSha(target)) === null) return false;
+    return this.isAncestor(sha, this.trackingRef(target.branch));
   }
 
   /** The `docker/` paths that differ between two commits — an image rebuild is also due. */

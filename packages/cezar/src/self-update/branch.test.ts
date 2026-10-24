@@ -343,7 +343,7 @@ describe('the branch status', () => {
 });
 
 describe('forward-only on a hosted cockpit, by committer date', () => {
-  it('refuses a build committed before the running one, allows a newer one, and does not enforce ancestry', async () => {
+  it('refuses a build committed before the running one, allows a newer one off a rewritten branch the clone never had the running commit of', async () => {
     const c1 = commit('feat: old', '2026-10-20T10:00:00Z', { 'packages/cezar/package.json': pkg() });
     const c2 = commit('feat: running', '2026-10-21T10:00:00Z');
     runningBuild(c2, '2026-10-21T10:00:00.000Z');
@@ -371,6 +371,44 @@ describe('forward-only on a hosted cockpit, by committer date', () => {
     await svc.status({ refresh: true });
     expect(await svc.forwardOnlyRefusal(`0.17.0+${older.slice(0, 8)}`)).toMatch(/committed before the running 0\.17\.0 was installed/);
     expect(await svc.forwardOnlyRefusal(`0.17.0+${newer.slice(0, 8)}`)).toBeNull();
+  });
+
+  it('refuses a newer commit the branch tip does not reach, and one that does not descend from the running build', async () => {
+    const c1 = commit('feat: running', '2026-10-21T10:00:00Z', { 'packages/cezar/package.json': pkg() });
+    const dropped = commit('feat: force-pushed away', '2026-10-22T10:00:00Z');
+    runningBuild(c1, '2026-10-21T10:00:00.000Z');
+    await followBranch();
+    const svc = service();
+    await svc.status({ refresh: true });
+    // A rewrite: brutus restarts from an orphan; c1 and `dropped` stay as objects in the clone.
+    git(remote, ['checkout', '-q', '--orphan', 'rewritten']);
+    const rewritten = commit('feat: newer, not a descendant', '2026-10-23T10:00:00Z', { 'packages/cezar/package.json': pkg() });
+    git(remote, ['branch', '-q', '-f', 'brutus', 'rewritten']);
+    await svc.status({ refresh: true });
+    expect(await svc.forwardOnlyRefusal(`0.17.0+${dropped.slice(0, 8)}`)).toMatch(/is not on brutus/);
+    expect(await svc.forwardOnlyRefusal(`0.17.0+${rewritten.slice(0, 8)}`)).toMatch(/does not descend from the running build/);
+    // The date rule still comes first.
+    git(remote, ['checkout', '-q', 'brutus']);
+    const older = commit('feat: dated before the running build', '2026-10-20T10:00:00Z');
+    await svc.status({ refresh: true });
+    expect(await svc.forwardOnlyRefusal(`0.17.0+${older.slice(0, 8)}`)).toMatch(/committed before the running build/);
+  });
+
+  it('never builds a commit the branch tip does not reach, even on a local cockpit', async () => {
+    const c1 = commit('feat: one', '2026-10-21T10:00:00Z', { 'packages/cezar/package.json': pkg() });
+    const dropped = commit('feat: force-pushed away', '2026-10-22T10:00:00Z');
+    runningBuild(c1, '2026-10-21T10:00:00.000Z');
+    await followBranch();
+    const { calls, deps } = stubs();
+    const svc = service(deps);
+    await svc.status({ refresh: true });
+    git(remote, ['reset', '-q', '--hard', 'HEAD~1']);
+    await svc.status({ refresh: true });
+    const target = `0.17.0+${dropped.slice(0, 8)}`;
+    svc.apply(target);
+    await vi.waitFor(async () => expect((await svc.status()).job?.status).toBe('failed'), { timeout: 15_000 });
+    expect((await svc.status()).job?.error).toMatch(/is not on brutus/);
+    expect(calls).toEqual([]);
   });
 });
 

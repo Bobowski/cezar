@@ -168,10 +168,10 @@ describe('the self-update API', () => {
     res = await apply('0.11.1+aaaaaaaa');
     expect(res.status).toBe(409);
     expect(await errorOf(res)).toContain('is older than the running 0.12.1');
-    // Forward: what refuses now is the install-kind capability, not the guard.
+    // Forward in time, but no clone whose branch tip reaches it: refused as not on the branch.
     res = await apply('0.12.1+bbbbbbbb');
     expect(res.status).toBe(409);
-    expect(await errorOf(res)).not.toContain('can only update forward');
+    expect(await errorOf(res)).toContain('is not on');
   });
 
   it('runs the same hosted guard before scheduling an update for when idle', async () => {

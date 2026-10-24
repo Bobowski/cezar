@@ -408,7 +408,7 @@ export class SelfUpdateService {
     const suffix = 'apply it on the host itself (`cezar use <id>`)';
     const installed = findInstalled(target, this.env);
     if (installed?.source === 'branch' || installed?.source === 'image' || (!installed && isBranchInstallId(target))) {
-      return this.branchForwardRefusal(target, installed?.commit?.at ?? null, suffix);
+      return this.branchForwardRefusal(target, installed?.commit ?? null, suffix);
     }
     if (!isNewer(target, running)) {
       return `a hosted cockpit can only update forward — ${target} is not newer than the running ${running}; ${suffix}`;
@@ -428,11 +428,29 @@ export class SelfUpdateService {
     return null;
   }
 
-  /** Forward-only for a branch build (spec §3.6): committed no earlier than the running build.
-   *  Ancestry is reported on the status, never enforced here. */
-  private async branchForwardRefusal(target: string, committedAt: string | null, suffix: string): Promise<string | null> {
-    const targetAt = committedAt ?? (await this.source.commit(target.split('+').pop() ?? ''))?.at ?? null;
-    if (!targetAt) return `a hosted cockpit can only update forward — cezar cannot date ${target}'s commit; ${suffix}`;
+  /** Forward-only for a branch build (spec §3.6 as built): committed no earlier than the running
+   *  build, reachable from the followed branch's tip, and — when the clone has the running
+   *  commit — a descendant of it. */
+  private async branchForwardRefusal(target: string, installedCommit: { sha: string; at: string } | null, suffix: string): Promise<string | null> {
+    const cloned = installedCommit ? null : await this.source.commit(target.split('+').pop() ?? '');
+    const targetSha = installedCommit?.sha ?? cloned?.sha ?? null;
+    const targetAt = installedCommit?.at ?? cloned?.at ?? null;
+    if (!targetSha || !targetAt) return `a hosted cockpit can only update forward — cezar cannot date ${target}'s commit; ${suffix}`;
+    const dated = this.branchDateRefusal(target, targetAt, suffix);
+    if (dated) return dated;
+    const branch = await this.updateBranch();
+    if (!branch || !(await this.source.onBranch(branch, targetSha))) {
+      return `a hosted cockpit can only update forward — ${target} is not on ${branch?.branch ?? 'the followed branch'} (its tip does not reach it); ${suffix}`;
+    }
+    const running = this.runningCommit();
+    const runningSha = running ? (await this.source.commit(running.sha))?.sha : undefined;
+    if (runningSha && !(await this.source.isAncestor(runningSha, targetSha))) {
+      return `a hosted cockpit can only update forward — ${target} does not descend from the running build (${runningSha.slice(0, 8)}); ${suffix}`;
+    }
+    return null;
+  }
+
+  private branchDateRefusal(target: string, targetAt: string, suffix: string): string | null {
     const runningAt = this.runningCommit()?.at;
     if (runningAt) {
       return Date.parse(targetAt) >= Date.parse(runningAt)
@@ -568,7 +586,7 @@ export class SelfUpdateService {
       if (this.check.error) log(`fetch failed (${this.check.error}) — building from the clone as it is`);
       const short = target.split('+').pop() ?? '';
       const commit = await this.source.commit(short);
-      if (!commit) throw new Error(`commit ${short} is not on ${branch.branch}`);
+      if (!commit || !(await this.source.onBranch(branch, commit.sha))) throw new Error(`commit ${short} is not on ${branch.branch}`);
       const id = await this.source.installIdAt(commit.sha);
       if (id !== target) throw new Error(`${target} does not name commit ${short} (it builds as ${id ?? 'nothing cezar can install'})`);
       log(`checking out ${commit.sha.slice(0, 8)} — ${commit.subject}`);

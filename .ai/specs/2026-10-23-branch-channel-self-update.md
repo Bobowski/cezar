@@ -153,6 +153,16 @@ reported (`fastForward`), not enforced: a branch that was rebased or merged onto
 the guards that rule exists to protect (they live on `main`, which brutus merges), while an
 older commit may not. A local cockpit keeps the full picker, as today.
 
+As built (review round 2): the committer date alone let a hosted cockpit apply any commit object
+the clone held — one a force-push dropped, or one left from a branch followed earlier. A hosted
+apply of a branch build is now refused unless (1) it is committed no earlier than the running
+build, (2) the followed branch's tip reaches it (`merge-base --is-ancestor <target>
+origin/<branch>`, "is not on <branch>"), and (3) when the clone has the running commit, the
+running commit is its ancestor ("does not descend from the running build"). Rule 2 also gates
+every BUILD, local or hosted: the clone is never built from a commit its branch does not reach.
+A local cockpit keeps the full picker for anything that IS on the branch. After a force-push a
+hosted cockpit therefore needs the host (`cezar use <id>`, or `cezar update` there) to move on.
+
 ### 3.7 The dialog
 
 A fourth toggle, **Branch**. Its panel shows remote and branch, the running commit, the tip,
@@ -304,7 +314,8 @@ Unit (vitest, `packages/cezar/src/self-update/`):
   invalid remote or ref is dropped with the config's usual `.catch`;
 - `branch` status from a fixture clone: `behind`, `fastForward` false after a force-push,
   `touchesImage` from a commit that edits `docker/Dockerfile`;
-- forward-only by committer date — refused older, allowed newer, ancestry only reported;
+- forward-only by committer date, branch reachability and (when the clone has it) descent from
+  the running commit — each refusal tested;
 - apply pipeline with a stubbed `runNpm`: checkout → build → pack → install → activate order,
   a failing build leaves `current` and `previous` untouched, retention keeps three;
 - entrypoint loop as a shell test with a fake `node` (exit 75 → relaunch from the new link;

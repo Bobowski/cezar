@@ -9,7 +9,7 @@ import {
   dashboardTasksQuerySchema,
 } from '@open-mercato/cezar-contract';
 import { principalOf } from '../auth/guard.ts';
-import { projectsRuns, projectTaskRow, runViewScopes } from '../auth/run-projection.ts';
+import { dispatchedTaskTitle, projectsRuns, projectTaskRow, runViewScopes } from '../auth/run-projection.ts';
 import { DashboardReader } from '../workspace/dashboard.ts';
 import type { CostVisibility } from '../workspace/dashboard-costs.ts';
 import { queryZodValidator } from './validators.ts';
@@ -100,8 +100,15 @@ export function dashboardRoutes(
       queryZodValidator(dashboardCostsQuerySchema),
       async (c) => {
         const result = await reader.costs(c.req.valid('query'), visibility);
+        const projected = projectedFor(c);
         return result
-          ? c.json(result)
+          ? c.json(projected ? {
+              ...result,
+              tasks: {
+                ...result.tasks,
+                rows: result.tasks.rows.map((row) => (row.subtask ? { ...row, title: dispatchedTaskTitle(row.id) } : row)),
+              },
+            } : result)
           : c.json(
               {
                 error: 'Dashboard changed; refresh the list' as const,

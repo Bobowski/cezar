@@ -27,15 +27,23 @@ export function landingFailureLine(stage: string | undefined): string {
   return stage ? `landing failed at ${stage}` : 'landing failed';
 }
 
-/** A slim task row (runs index, dashboard) as a projected principal sees it: no `titleSummary`. */
-export function projectTaskRow<T extends { titleSummary?: string }>(row: T): T {
-  const { titleSummary: _summary, ...rest } = row;
-  return rest as T;
+/** A dispatched child's title and task are its parent AGENT's words, not the user's. */
+export function dispatchedTaskTitle(id: string): string {
+  return `dispatched task ${id}`;
 }
 
-function projectStep(step: StepState): StepState {
-  if (step.error === undefined) return step;
-  return { ...step, error: step.kind === 'check' ? 'check failed' : failureLine(step.error) };
+/** A slim task row (runs index, dashboard) as a projected principal sees it: no `titleSummary`,
+ *  and a dispatched child's title replaced. */
+export function projectTaskRow<T extends { id: string; title: string; titleSummary?: string; dispatch?: { parentRunId?: string } }>(row: T): T {
+  const { titleSummary: _summary, ...rest } = row;
+  return (row.dispatch?.parentRunId ? { ...rest, title: dispatchedTaskTitle(row.id) } : rest) as T;
+}
+
+function projectStep(step: StepState, child: boolean): StepState {
+  // A child's one step is named after the order's title (`dispatch()` in workflows/run.ts).
+  const named = child ? { ...step, name: step.id } : step;
+  if (step.error === undefined) return named;
+  return { ...named, error: step.kind === 'check' ? 'check failed' : failureLine(step.error) };
 }
 
 export function redactRunForScope<T extends RunRecord>(
@@ -44,7 +52,16 @@ export function redactRunForScope<T extends RunRecord>(
 ): T & { projected?: true } {
   if (!projectsRuns(scopes)) return run;
   const { titleSummary: _summary, graphState, dispatch, ...rest } = run;
-  const projected: Record<string, unknown> = { ...rest, steps: run.steps.map(projectStep), projected: true };
+  const child = Boolean(dispatch?.parentRunId);
+  const projected: Record<string, unknown> = { ...rest, steps: run.steps.map((step) => projectStep(step, child)), projected: true };
+  if (child) {
+    // Everything here came from the parent agent's order: its title, objective, step name and messages.
+    projected.title = dispatchedTaskTitle(run.id);
+    projected.task = dispatchedTaskTitle(run.id);
+    delete projected.workflowDef;
+    delete projected.queuedMessages;
+    delete projected.promptQueue;
+  }
   if (run.error !== undefined) projected.error = failureLine(run.error);
   if (run.landing?.error !== undefined) projected.landing = { ...run.landing, error: landingFailureLine(run.landing.stage) };
   if (graphState) {

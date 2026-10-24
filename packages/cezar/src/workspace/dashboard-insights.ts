@@ -10,6 +10,7 @@ import type {
   RunRecord,
   RunStatus,
 } from '@open-mercato/cezar-contract';
+import { dispatchedTaskTitle } from '../auth/run-projection.ts';
 import { failureLine } from '../runs/failure-kind.ts';
 import { projectCostTask, type CostVisibility } from './dashboard-costs.ts';
 
@@ -18,8 +19,10 @@ export type InsightRow = {
   projectId: string;
   id: string;
   title: string;
-  /** The title without the agent-derived summary — what a projected principal sees. */
+  /** The title a projected principal sees: no agent-derived summary, a dispatched child masked. */
   plainTitle: string;
+  /** A dispatched child, whose step name is its parent agent's order title. */
+  subtask: boolean;
   status: RunStatus;
   createdAt: string;
   startedAt?: string;
@@ -64,7 +67,8 @@ export function projectInsightRow(projectId: string, run: RunRecord): InsightRow
     projectId,
     id: run.id,
     title: run.titleSummary || run.title,
-    plainTitle: run.title,
+    plainTitle: run.dispatch?.parentRunId ? dispatchedTaskTitle(run.id) : run.title,
+    subtask: Boolean(run.dispatch?.parentRunId),
     status: run.status,
     createdAt: run.createdAt,
     ...(run.startedAt !== undefined ? { startedAt: run.startedAt } : {}),
@@ -205,7 +209,7 @@ export function buildDashboardInsights(
           id: r.id,
           title: projected ? r.plainTitle : r.title,
           at: new Date(Date.parse(r.finishedAt!)).toISOString(),
-          ...(r.failedStep ? { step: r.failedStep.name } : {}),
+          ...(r.failedStep && !(projected && r.subtask) ? { step: r.failedStep.name } : {}),
           message,
         },
       });

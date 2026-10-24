@@ -423,7 +423,10 @@ export type RunRecord = z.infer<typeof runRecordSchema>;
  * carries none of what the agent wrote or a command printed: no `titleSummary`, no
  * `graphState.outputs`, no `dispatch.report`, `dispatch.pendingReports` or `dispatch.pendingAsk`,
  * and `error`, `steps[].error` and `landing.error` are one line naming the failure's kind
- * (`required check failed`). Every other key is as stored. Absent on the full record.
+ * (`required check failed`). A dispatched child (`dispatch.parentRunId`) is its parent AGENT's
+ * order, so its `title` and `task` read `dispatched task <id>`, its steps are named by their ids,
+ * and it has no `workflowDef`, `queuedMessages` or `promptQueue`. Every other key is as stored.
+ * Absent on the full record.
  */
 export const apiRunSchema = runRecordSchema.extend({
   usage: processUsageSchema.optional(),

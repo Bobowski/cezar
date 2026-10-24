@@ -293,6 +293,59 @@ describe('a token’s view of a task', () => {
     expect(JSON.stringify(await get('/api/v1/workspace/dashboard/insights', full))).toContain(SECRET);
   });
 
+  it('a dispatched child’s title and task — the parent agent’s words — are projected everywhere', async () => {
+    await registerProject(repoRoot);
+    const now = new Date().toISOString();
+    const root = store.createRun({ title: 'the user’s own task', workflow: 'quick-task', task: 'the user’s own task', steps: [] });
+    const children = ['review', 'failed'].map((status) => {
+      const child = store.createRun({
+        title: `child ${SECRET}`,
+        workflow: '(planned)',
+        task: `objective naming ${SECRET}`,
+        steps: [],
+      });
+      store.updateRun(child.id, {
+        status: status as 'review' | 'failed', startedAt: now, finishedAt: now, costUsd: 0.5,
+        steps: [{ id: 'task', name: `child ${SECRET}`, kind: 'agent', status: status === 'failed' ? 'failed' : 'done', iterations: 1, tokensUsed: 0 }],
+        workflowDef: { name: '(planned)', source: 'built-in', steps: [{ id: 'task', name: `child ${SECRET}`, prompt: '{{task}}' }] },
+        dispatch: { rootRunId: root.id, parentRunId: root.id },
+        promptQueue: [{ id: 'q1', text: `parent says ${SECRET}`, createdAt: now }],
+      });
+      return child.id;
+    });
+    store.updateRun(root.id, { dispatch: { rootRunId: root.id } });
+    store.flush();
+    const read = seedToken(['read']);
+    const get = async (path: string) => {
+      const response = await request(path, read);
+      expect(response.status, path).toBe(200);
+      return (await response.json()) as Record<string, unknown>;
+    };
+    const one = await get(`/api/v1/runs/${children[0]!}`);
+    expect(one).toMatchObject({ title: `dispatched task ${children[0]!}`, task: `dispatched task ${children[0]!}`, projected: true });
+    expect((await get(`/api/v1/runs/${root.id}`)).task).toBe('the user’s own task');
+    const index = await get('/api/v1/workspace/runs-index');
+    expect((index.runs as Array<Record<string, unknown>>).map((row) => row.title).sort()).toEqual(
+      ['the user’s own task', ...children.map((id) => `dispatched task ${id}`)].sort(),
+    );
+    for (const path of [
+      '/api/v1/runs',
+      '/api/v1/workspace/runs-index',
+      '/api/v1/workspace/dashboard',
+      '/api/v1/workspace/dashboard/overview?group=needs-you',
+      '/api/v1/workspace/dashboard/overview?group=failed',
+      '/api/v1/workspace/dashboard/insights',
+      '/api/v1/workspace/dashboard/costs',
+      '/api/v1/workspace/dashboard/feed',
+    ]) {
+      expect(JSON.stringify(await get(path)), path).not.toContain(SECRET);
+    }
+    expect(JSON.stringify(await get('/api/v1/workspace/dashboard/insights'))).toContain(`dispatched task ${children[1]!}`);
+    // Guard: the owner sees what the parent wrote.
+    const full = await request(`/api/v1/runs/${children[0]!}`, seedToken(['read', 'runs.transcript']));
+    expect(((await full.json()) as Record<string, unknown>).title).toBe(`child ${SECRET}`);
+  });
+
   it('projects the run events of both live streams for a read token', async () => {
     const id = seedRun();
     for (const path of ['/api/v1/events', '/api/v1/workspace/events']) {

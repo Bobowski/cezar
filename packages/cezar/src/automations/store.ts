@@ -222,8 +222,14 @@ export class AutomationStore {
     const receiptKey = receiptKeyFor(input.automationId, input.eventId);
     if (this.latestReceipts().has(receiptKey)) return undefined;
     const now = this.now().toISOString();
+    // A comment's body is GitHub content, which receipts never hold (spec 2026-07-25 § logs);
+    // a retry renders without it and the prompt points at the comment's URL instead.
+    const candidate = input.candidate?.comment?.body !== undefined
+      ? { ...input.candidate, comment: { ...input.candidate.comment, body: undefined } }
+      : input.candidate;
     const receipt = automationReceiptSchema.parse({
       ...input,
+      ...(candidate ? { candidate } : {}),
       receiptKey,
       receiptId: randomUUID(),
       status: 'reserved',

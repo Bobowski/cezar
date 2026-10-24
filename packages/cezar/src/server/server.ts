@@ -4307,6 +4307,11 @@ export function createApp(deps: ServerDeps) {
       baselineAt,
       checkpoint: undefined,
       cursor: { timestamp: baselineAt },
+      // Heads seen before a pause would turn everything pushed meanwhile into events (spec
+      // 2026-10-23-github-events §3): the first poll after enabling records them afresh.
+      prHeads: undefined,
+      branchHeads: undefined,
+      etags: undefined,
       nextCheckAt: new Date(now + (automation.intervalSeconds ?? 300) * 1_000).toISOString(),
     }));
     store.appendLog({ automationId: automation.id, revision: automation.revision, result: 'baseline', reason: 'Enabled from a current-time baseline; existing records were not launched.' });

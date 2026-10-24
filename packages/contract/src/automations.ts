@@ -28,7 +28,8 @@ import { automationScheduleSchema } from './automation-schedule.ts';
 
 // ---- the definition ------------------------------------------------------------------------
 
-/** The GitHub activity an automation reacts to. Nine events, all bounded polls — never a webhook. */
+/** The GitHub activity an automation reacts to — all bounded polls; a registered webhook only
+ *  wakes the poll early (spec 2026-10-23-github-events). */
 export const automationEventSchema = z.enum([
   'pull_request.opened',
   'issue.opened',
@@ -39,6 +40,13 @@ export const automationEventSchema = z.enum([
   'pull_request.rereview_requested',
   'pull_request.closed',
   'pull_request.merged',
+  'pull_request.synchronize',
+  'pull_request.commented',
+  'pull_request.review_commented',
+  'issue.commented',
+  'check_suite.completed',
+  'push',
+  'release.published',
 ]);
 export type AutomationEvent = z.infer<typeof automationEventSchema>;
 
@@ -80,6 +88,19 @@ export const automationFiltersSchema = z.object({
    *  requested reviewer for the two `review_requested` events. Optional: an empty filter means
    *  "any reviewer". */
   reviewers: z.array(z.string()).optional(),
+  /** Comment events: the body must mention one of these logins (`@login`). Empty = any comment. */
+  mentions: z.array(z.string()).optional(),
+  /** `pull_request.synchronize` (the PR's head branch) and `push`: exact names or `*` globs. */
+  branches: z.array(z.string()).optional(),
+  /** `check_suite.completed`: which results launch. Absent = `any`. */
+  conclusion: z.enum(['success', 'failure', 'any']).optional(),
+  /** `release.published`: `true` = prereleases only, `false` = none; absent = both. */
+  prerelease: z.boolean().optional(),
+  /** `release.published`: tag names, exact or `*` globs. */
+  tags: z.array(z.string()).optional(),
+  /** Admit `check_suite.completed` on a sha cezar itself pushed — the "fix my CI" case, and the
+   *  one place a loop is possible (spec 2026-10-23-github-events §6). */
+  includeOwnPushes: z.boolean().optional(),
   status: z.string().optional(),
   lookbackDays: z.number(),
   maxRecords: z.number(),
@@ -95,6 +116,11 @@ export type AutomationFilters = z.infer<typeof automationFiltersSchema>;
  */
 export const automationKindSchema = z.enum(['github', 'schedule', 'tracker']);
 export type AutomationKind = z.infer<typeof automationKindSchema>;
+
+/** Where a matched pull request goes (spec 2026-10-23-github-events §5): a fresh run, or a message
+ *  into the newest run that owns the PR — a fresh run only when none does. Absent = `new-run`. */
+export const automationDeliverSchema = z.enum(['new-run', 'owning-run']);
+export type AutomationDeliver = z.infer<typeof automationDeliverSchema>;
 
 /**
  * The automation's own dispatch setting (spec 2026-09-14 Q4): on, with a subtask ceiling, and
@@ -159,6 +185,8 @@ export const automationDefinitionSchema = z.object({
   /** `schedule` kind: always present. `github` kind: absent. */
   trackerTrigger: trackerTriggerSchema.optional(),
   schedule: automationScheduleSchema.optional(),
+  /** `github` kind only. */
+  deliver: automationDeliverSchema.optional(),
   task: automationTaskSchema,
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -198,6 +226,11 @@ export const automationRuntimeStateSchema = z.object({
   etags: z.record(z.string(), z.string()).optional(),
   backoffUntil: z.string().optional(),
   consecutiveFailures: z.number().optional(),
+  /** Open PR heads as the last poll saw them (`number` → head): what `pull_request.synchronize`
+   *  diffs against, and what a `304` on `/pulls` reuses. */
+  prHeads: z.record(z.string(), z.object({ sha: z.string(), ref: z.string(), updatedAt: z.string() })).optional(),
+  /** Branch heads as the last poll saw them (`branch` → sha): what `push` diffs against. */
+  branchHeads: z.record(z.string(), z.string()).optional(),
 });
 export type AutomationRuntimeState = z.infer<typeof automationRuntimeStateSchema>;
 
@@ -217,6 +250,8 @@ export const automationLogResultSchema = z.enum([
   'catch-up',
   'skipped',
   'failed',
+  // spec 2026-10-23-github-events §5: the prompt went into the run that owns the PR.
+  'delivered',
 ]);
 export type AutomationLogResult = z.infer<typeof automationLogResultSchema>;
 

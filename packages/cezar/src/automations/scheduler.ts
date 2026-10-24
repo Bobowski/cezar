@@ -41,6 +41,9 @@ export interface ProjectAutomationHandle {
    *  removed or reconnected between ticks) rather than being captured once at handle build time. */
   tracker?: { getDriver: () => Promise<TrackerDriver | TrackerFailure>; poller: TrackerPoller };
   launch?: AutomationLauncher;
+  /** cezar's own traces on GitHub — the shas its runs pushed and the comments they posted (spec
+   *  2026-10-23-github-events §6). Read per poll; absent = nothing is recognised as our own. */
+  traces?: () => { shas: ReadonlySet<string>; comments: ReadonlySet<number> };
   launchSchedule?: ScheduleLauncher;
   launchTracker?: TrackerAutomationLauncher;
   onChange?: (automationId: string, revision: number) => void;
@@ -88,8 +91,16 @@ export class ProjectAutomationScheduler {
         polledState = state;
         const since = state.cursor?.timestamp ?? state.baselineAt;
         const overlapSince = since ? new Date(Date.parse(since) - CURSOR_OVERLAP_MS).toISOString() : undefined;
-        const drain = (maxRecords?: number) => githubRequests.run(() => github.poller.poll(github.owner, github.repo, definition,
-          maxRecords === undefined ? { since: overlapSince } : { since: overlapSince, maxRecords }));
+        const traces = this.handle.traces?.();
+        const activity = { etags: state.etags, prHeads: state.prHeads, branchHeads: state.branchHeads };
+        // A widening re-poll reads every conditional page in full: the first drain's 304 answers
+        // came from ETags whose results this cycle has not persisted yet.
+        const drain = (maxRecords?: number) => githubRequests.run(() => github.poller.poll(github.owner, github.repo, definition, {
+          since: overlapSince,
+          activity: maxRecords === undefined ? activity : { ...activity, etags: undefined },
+          ...(traces ? { traces } : {}),
+          ...(maxRecords === undefined ? {} : { maxRecords }),
+        }));
         const pinned = (observed: GithubPollResult): boolean =>
           observed.truncated && laterCursor(state.cursor, observed.cursor) === state.cursor;
         let result = await drain();
@@ -112,7 +123,9 @@ export class ProjectAutomationScheduler {
         }
         return result;
       },
-      eligible: (candidate, state) => !state.cursor || Date.parse(candidate.timestamp) >= Date.parse(state.cursor.timestamp) - CURSOR_OVERLAP_MS,
+      // A diff-found candidate (`synchronize`, `push`) is new because the stored heads say so.
+      eligible: (candidate, state) => candidate.cursorless === true || !state.cursor
+        || Date.parse(candidate.timestamp) >= Date.parse(state.cursor.timestamp) - CURSOR_OVERLAP_MS,
       launch: (candidate: GithubCandidate) => this.launch(definition, candidate),
       persist: (result, current) => {
         const cursor = laterCursor(current.cursor, result.cursor);
@@ -122,6 +135,9 @@ export class ProjectAutomationScheduler {
           pinnedCursor: exhausted
             ? cursor
             : sameCursor(current.pinnedCursor, cursor) ? current.pinnedCursor : undefined,
+          ...(result.activity?.etags ? { etags: result.activity.etags } : {}),
+          ...(result.activity?.prHeads ? { prHeads: result.activity.prHeads } : {}),
+          ...(result.activity?.branchHeads ? { branchHeads: result.activity.branchHeads } : {}),
           lastSuccessAt: new Date().toISOString(),
           nextCheckAt: new Date(Date.now() + definition.intervalSeconds * 1000).toISOString(),
           consecutiveFailures: 0,

@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import type { GithubAutomationDefinition, AutomationEvent } from './types.ts';
+import { ACTIVITY_EVENTS, pollActivity } from './github-activity.ts';
 
 const execFileAsync = promisify(execFile);
 const HARD_CANDIDATE_CAP = 100;
@@ -69,7 +70,8 @@ export interface GithubCandidate {
   tieBreaker: string;
   repo: string;
   nodeId: string;
-  number: number;
+  /** The issue or PR; absent for `push` and `release.published` (spec 2026-10-23-github-events). */
+  number?: number;
   title: string;
   url: string;
   author: string;
@@ -77,6 +79,25 @@ export interface GithubCandidate {
   labels: string[];
   changedLabel?: string;
   reviewer?: string;
+  /** The PR head (`synchronize`, `check_suite.completed`) or the pushed sha (`push`). */
+  headSha?: string;
+  /** The PR's head branch, or the pushed branch. */
+  branch?: string;
+  /** Found by diffing state (`synchronize`, `push`), not by a timestamp: the cursor neither
+   *  carries nor gates it, and its durable receipt is what dedups it. */
+  cursorless?: boolean;
+  /** The comment events. `body` never reaches a receipt (`store.reserveReceipt`). */
+  comment?: { id: number; kind: 'issue' | 'review'; author: string; url: string; body?: string };
+  check?: { id: number; name: string; conclusion: string; url: string; failingJobs: string[] };
+  push?: { branch: string; before: string; after: string; subjects: string[] };
+  release?: { tag: string; name: string; prerelease: boolean };
+}
+
+/** The diff bases and ETags a poll reads and hands back (spec 2026-10-23-github-events §3). */
+export interface GithubActivityState {
+  etags?: Record<string, string>;
+  prHeads?: Record<string, { sha: string; ref: string; updatedAt: string }>;
+  branchHeads?: Record<string, string>;
 }
 
 export interface GithubPollResult {
@@ -84,6 +105,8 @@ export interface GithubPollResult {
   truncated: boolean;
   pages: number;
   cursor?: { timestamp: string; tieBreaker: string };
+  /** Present when an activity source ran: the state to persist after an execute cycle. */
+  activity?: GithubActivityState;
 }
 
 export interface GithubPollerOptions {
@@ -100,6 +123,11 @@ export interface GithubPollOptions {
    * overlap band (#982); the stored definition is never touched.
    */
   maxRecords?: number;
+  /** The stored diff bases and ETags the activity sources start from. */
+  activity?: GithubActivityState;
+  /** cezar's own traces (spec 2026-10-23-github-events §6): shas its runs pushed and comment ids
+   *  they posted. A candidate whose source is one of them is dropped. */
+  traces?: { shas: ReadonlySet<string>; comments: ReadonlySet<number> };
 }
 
 /** The widest budget one poll may be given — the `/search/issues` page ceiling. */
@@ -321,14 +349,44 @@ export class GithubPoller {
       truncated ||= sourceObservations.length >= maxRecords;
       observations.push(...sourceObservations.slice(0, maxRecords));
     }
+    let activity: Awaited<ReturnType<typeof pollActivity>> | undefined;
+    if (definition.events.some((event) => ACTIVITY_EVENTS.has(event))) {
+      activity = await pollActivity({
+        owner, repo, definition, since: options.since, maxRecords,
+        state: options.activity ?? {}, traces: options.traces,
+        run: (args) => this.run('gh', args),
+        matches: (candidate) => matchesFilters(candidate, definition),
+        htmlBase: `https://${this.host ?? 'github.com'}`,
+      });
+      truncated ||= activity.truncated;
+      for (const group of activity.groups) {
+        group.sort(compareObservation);
+        truncated ||= group.length > maxRecords;
+        observations.push(...group.slice(0, maxRecords));
+      }
+    }
     observations.sort(compareObservation);
     const evaluated = observations.slice(0, maxRecords);
     const cursor = evaluated.at(-1);
+    if (activity?.state.etags) {
+      // A conditional page whose rows this poll did not evaluate must be read again in full next
+      // time: its ETag would answer 304 and the cursor has not passed those rows yet.
+      const seen = new Set<object>(evaluated);
+      const unread = [...activity.groups.flat(), ...observations].filter((observation) => !seen.has(observation));
+      for (const observation of unread) {
+        const key = (observation as { etagKey?: string }).etagKey;
+        if (key) delete activity.state.etags[key];
+      }
+    }
     return {
-      candidates: onePerPullRequest(evaluated.flatMap((observation) => observation.candidate ? [observation.candidate] : [])),
+      candidates: [
+        ...onePerPullRequest(evaluated.flatMap((observation) => observation.candidate ? [observation.candidate] : [])),
+        ...(activity?.cursorless ?? []),
+      ],
       truncated: truncated || observations.length > maxRecords,
-      pages: sources.length,
+      pages: sources.length + (activity?.groups.length ?? 0),
       cursor: cursor ? { timestamp: cursor.timestamp, tieBreaker: cursor.tieBreaker } : undefined,
+      ...(activity ? { activity: activity.state } : {}),
     };
   }
 
@@ -603,7 +661,9 @@ export function matchesFilters(candidate: GithubCandidate, definition: GithubAut
   const lower = (values: readonly string[]) => new Set(values.map((value) => value.toLowerCase()));
   const labels = lower(candidate.labels);
   const filters = definition.filters;
-  if (filters.authors?.length && !lower(filters.authors).has(candidate.author.toLowerCase())) return false;
+  // A comment event's author is whoever COMMENTED (spec 2026-10-23-github-events §3).
+  const actor = candidate.comment?.author ?? candidate.author;
+  if (filters.authors?.length && !lower(filters.authors).has(actor.toLowerCase())) return false;
   if (filters.assignees?.length && !candidate.assignees.some((value) => lower(filters.assignees!).has(value.toLowerCase()))) return false;
   if (filters.allLabels?.some((value) => !labels.has(value.toLowerCase()))) return false;
   if (filters.anyLabels?.length && !filters.anyLabels.some((value) => labels.has(value.toLowerCase()))) return false;

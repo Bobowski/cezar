@@ -1,0 +1,58 @@
+[
+  {
+    "id": 6320980803,
+    "node_id": "IC_kwDODKw3uc8AAAABeMKDQw",
+    "created_at": "2026-10-21T16:26:17Z",
+    "updated_at": "2026-10-21T16:26:17Z",
+    "author_association": "MEMBER",
+    "url": "https://api.github.com/repos/acme/demo/issues/comments/6320980803",
+    "html_url": "https://github.com/acme/demo/issues/14449#issuecomment-6320980803",
+    "issue_url": "https://api.github.com/repos/acme/demo/issues/14449",
+    "user": {
+      "login": "carol"
+    },
+    "body": "Synthetic comment body 1."
+  },
+  {
+    "id": 6321002655,
+    "node_id": "IC_kwDODKw3uc8AAAABeMLYnw",
+    "created_at": "2026-10-21T16:27:19Z",
+    "updated_at": "2026-10-21T16:27:19Z",
+    "author_association": "MEMBER",
+    "url": "https://api.github.com/repos/acme/demo/issues/comments/6321002655",
+    "html_url": "https://github.com/acme/demo/issues/14449#issuecomment-6321002655",
+    "issue_url": "https://api.github.com/repos/acme/demo/issues/14449",
+    "user": {
+      "login": "carol"
+    },
+    "body": "Synthetic comment body 2."
+  },
+  {
+    "id": 6321379417,
+    "node_id": "IC_kwDODKw3uc8AAAABeMiYWQ",
+    "created_at": "2026-10-21T16:44:34Z",
+    "updated_at": "2026-10-21T16:44:34Z",
+    "author_association": "MEMBER",
+    "url": "https://api.github.com/repos/acme/demo/issues/comments/6321379417",
+    "html_url": "https://github.com/acme/demo/issues/5924#issuecomment-6321379417",
+    "issue_url": "https://api.github.com/repos/acme/demo/issues/5924",
+    "user": {
+      "login": "carol"
+    },
+    "body": "Synthetic comment body 3."
+  },
+  {
+    "id": 6324711650,
+    "node_id": "IC_kwDODKw3uc8AAAABePtw4g",
+    "created_at": "2026-10-21T19:30:21Z",
+    "updated_at": "2026-10-21T19:30:21Z",
+    "author_association": "CONTRIBUTOR",
+    "url": "https://api.github.com/repos/acme/demo/issues/comments/6324711650",
+    "html_url": "https://github.com/acme/demo/issues/14785#issuecomment-6324711650",
+    "issue_url": "https://api.github.com/repos/acme/demo/issues/14785",
+    "user": {
+      "login": "dave"
+    },
+    "body": "Synthetic comment body 4."
+  }
+]

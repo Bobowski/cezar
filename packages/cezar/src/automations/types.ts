@@ -20,6 +20,23 @@ export const automationEventSchema = z.enum([
   'pull_request.rereview_requested',
   'pull_request.closed',
   'pull_request.merged',
+  // spec 2026-10-23-github-events §3
+  'pull_request.synchronize',
+  'pull_request.commented',
+  'pull_request.review_commented',
+  'issue.commented',
+  'check_suite.completed',
+  'push',
+  'release.published',
+]);
+
+/** Events whose item is an open pull request — the ones `checkout: 'pr-head'` and
+ *  `deliver: 'owning-run'` mean something for. `check_suite.completed` is polled for open PR
+ *  heads only, so it belongs here although its name does not say so. */
+export const PR_HEAD_EVENTS: ReadonlySet<string> = new Set([
+  'pull_request.opened', 'pull_request.reviewed', 'pull_request.review_requested',
+  'pull_request.rereview_requested', 'pull_request.synchronize', 'pull_request.commented',
+  'pull_request.review_commented', 'check_suite.completed',
 ]);
 
 const boundedString = z.string().trim().min(1).max(200);
@@ -34,6 +51,13 @@ export const automationFiltersSchema = z
     excludeLabels: stringList,
     changedLabels: stringList,
     reviewers: stringList,
+    // spec 2026-10-23-github-events §3, §6
+    mentions: stringList,
+    branches: stringList,
+    conclusion: z.enum(['success', 'failure', 'any']).optional(),
+    prerelease: z.boolean().optional(),
+    tags: stringList,
+    includeOwnPushes: z.boolean().optional(),
     lookbackDays: z.number().int().min(1).max(90).default(7),
     maxRecords: z.number().int().min(1).max(100).default(25),
     /** Tracker kind only: the vendor workflow status a matching item must currently be in
@@ -107,11 +131,13 @@ export const automationDefinitionObjectSchema = z
     enabled: z.boolean().default(false),
     /** A definition written before schedules (spec 2026-09-14) has no `kind`: it is a poll. */
     kind: z.enum(['github', 'schedule', 'tracker']).default('github'),
-    events: z.array(automationEventSchema).min(1).max(9).optional(),
+    events: z.array(automationEventSchema).min(1).max(automationEventSchema.options.length).optional(),
     intervalSeconds: z.number().int().min(60).max(86_400).optional(),
     filters: automationFiltersSchema.optional(),
     trackerTrigger: trackerTriggerSchema.optional(),
     schedule: automationScheduleSchema.optional(),
+    /** spec 2026-10-23-github-events §5 — `github` kind only; absent = `new-run`. */
+    deliver: z.enum(['new-run', 'owning-run']).optional(),
     task: automationTaskSchema,
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
@@ -124,7 +150,10 @@ export const automationDefinitionObjectSchema = z
     const pullRequestOnly =
       definition.kind === 'github' &&
       !!definition.events?.length &&
-      definition.events.every((event) => event.startsWith('pull_request.'));
+      definition.events.every((event) => event.startsWith('pull_request.') || event === 'check_suite.completed');
+    if (definition.deliver !== undefined && definition.kind !== 'github') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['deliver'], message: 'deliver is accepted only on a GitHub automation' });
+    }
     // A closed or merged PR has no head to check out — `resolvePrHead` would skip every launch.
     const closedEvent = definition.events?.some((event) => event === 'pull_request.closed' || event === 'pull_request.merged');
     if (definition.task.checkout === 'pr-head' && closedEvent) {
@@ -139,7 +168,7 @@ export const automationDefinitionObjectSchema = z
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['task', key],
-          message: `${key} is accepted only on a GitHub automation whose events are all pull_request.*`,
+          message: `${key} is accepted only on a GitHub automation whose events are all pull_request.* (or check_suite.completed)`,
         });
       }
     }
@@ -228,6 +257,9 @@ export const automationRuntimeStateSchema = z
     etags: z.record(z.string(), z.string()).optional(),
     backoffUntil: z.string().datetime().optional(),
     consecutiveFailures: z.number().int().nonnegative().optional(),
+    /** spec 2026-10-23-github-events §3: the diff bases of `pull_request.synchronize` and `push`. */
+    prHeads: z.record(z.string(), z.object({ sha: z.string(), ref: z.string(), updatedAt: z.string() })).optional().catch(undefined),
+    branchHeads: z.record(z.string(), z.string()).optional().catch(undefined),
   })
   .passthrough();
 
@@ -258,11 +290,20 @@ export const automationReceiptSchema = z
     candidate: z
       .object({
         eventId: z.string(), event: automationEventSchema, timestamp: z.string().datetime(),
-        tieBreaker: z.string(), repo: z.string(), nodeId: z.string(), number: z.number().int().positive(),
+        // Optional since `push`/`release.published` (spec 2026-10-23-github-events): no item number.
+        tieBreaker: z.string(), repo: z.string(), nodeId: z.string(), number: z.number().int().positive().optional(),
         title: z.string().max(500), url: z.string().url(), author: z.string().max(200),
         assignees: z.array(z.string().max(200)).max(100), labels: z.array(z.string().max(200)).max(100),
         changedLabel: z.string().max(200).optional(),
         reviewer: z.string().max(200).optional(),
+        // The event's own detail; a comment's BODY is never stored (spec 2026-07-25 § logs).
+        headSha: z.string().optional(),
+        branch: z.string().optional(),
+        cursorless: z.boolean().optional(),
+        comment: z.object({ id: z.number(), kind: z.enum(['issue', 'review']), author: z.string(), url: z.string() }).passthrough().optional(),
+        check: z.object({ id: z.number(), name: z.string(), conclusion: z.string(), url: z.string(), failingJobs: z.array(z.string()) }).passthrough().optional(),
+        push: z.object({ branch: z.string(), before: z.string(), after: z.string(), subjects: z.array(z.string()) }).passthrough().optional(),
+        release: z.object({ tag: z.string(), name: z.string(), prerelease: z.boolean() }).passthrough().optional(),
       })
       .passthrough()
       .optional(),
@@ -302,6 +343,8 @@ export const automationLogResultSchema = z.enum([
   'catch-up',
   'skipped',
   'failed',
+  // spec 2026-10-23-github-events §5
+  'delivered',
 ]);
 
 export const automationLogRecordSchema = z

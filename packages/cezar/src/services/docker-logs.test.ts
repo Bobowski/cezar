@@ -240,18 +240,38 @@ describe('docker logs followers (spec 2026-10-23-docker-management §3.4)', () =
       expect(followers.read(ID, 0).data).toBe('boot\nnext line\n');
     });
 
-    it('drops a half-held PEM a release cut off', () => {
-      const { followers, spawned } = harness([pem, pw]);
+    it('drops a half-held PEM a release cut off, and the resumed follower sends it again whole', () => {
       const ts = (n: number) => `2026-10-24T10:00:0${n}.000000000Z`;
-      followers.hold(ID);
       const lines = pem.split('\n');
-      spawned[0]!.data('out', `${ts(1)} boot\n${ts(2)} ${lines[0]}\n${ts(3)} ${lines[1]}\n`);
+      const start = `${ts(1)} boot\n${ts(2)} ${lines[0]}\n${ts(3)} ${lines[1]}\n`;
+      for (const [rest, shown] of [
+        [`${ts(4)} ${lines[2]}\n${ts(5)} ${lines[3]}\n${ts(6)} ok\n`, `boot\n${REDACTED}\nok\n`],
+        [`${ts(4)} after restart\n`, `boot\n${lines[0]}\n${REDACTED}\nafter restart\n`],
+      ] as const) {
+        const { followers, spawned } = harness([pem, pw]);
+        followers.hold(ID);
+        spawned[0]!.data('out', start);
+        expect(followers.read(ID, 0).data).toBe('boot\n');
+        followers.release(ID);
+        followers.hold(ID);
+        // From the first line it held, not its last whole one: what it held was never shown.
+        expect(spawned[1]?.args).toEqual(['logs', '--timestamps', '--since', ts(2), '--follow', ID]);
+        spawned[1]!.data('out', `${start.slice(start.indexOf('\n') + 1)}${rest}`);
+        expect(followers.read(ID, 0).data).toBe(shown);
+      }
+    });
+
+    it('shows a held line that was not a secret after all, and never one the killed follower showed', () => {
+      const ts = (n: number) => `2026-10-24T10:00:0${n}.000000000Z`;
+      const { followers, spawned } = harness([pem, pw]);
+      followers.hold(ID);
+      spawned[0]!.data('out', `${ts(1)} boot\n${ts(2)} key: -----BEGIN PRIVATE KEY-----\n`);
+      expect(followers.read(ID, 0).data).toBe('boot\nkey: ');
       followers.release(ID);
       followers.hold(ID);
-      expect(spawned[1]?.args).toEqual(['logs', '--timestamps', '--since', ts(3), '--follow', ID]);
-      // Docker sends the last line again from its stamp: it is skipped, and the held start never shows.
-      spawned[1]!.data('out', `${ts(3)} ${lines[1]}\n${ts(4)} after restart\n`);
-      expect(followers.read(ID, 0).data).toBe('boot\nafter restart\n');
+      expect(spawned[1]?.args).toEqual(['logs', '--timestamps', '--since', ts(2), '--follow', ID]);
+      spawned[1]!.data('out', `${ts(2)} key: -----BEGIN PRIVATE KEY-----\n${ts(3)} NOT-THE-KEY-AT-ALL-xxxxxxxx\n${ts(4)} end\n`);
+      expect(followers.read(ID, 0).data).toBe('boot\nkey: -----BEGIN PRIVATE KEY-----\nNOT-THE-KEY-AT-ALL-xxxxxxxx\nend\n');
     });
 
     it('still redacts a PEM a resumed follower finishes, from the hidden start the killed one held', () => {

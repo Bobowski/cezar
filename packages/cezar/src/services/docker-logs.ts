@@ -95,7 +95,7 @@ function formatStamp(ns: bigint): string {
  * `chunk` without its record stamps, each line's noted, the records of one long line joined; a line
  * at or before `after` is dropped.
  */
-function unstamp(stamps: Stamps, chunk: string): string {
+function unstamp(stamps: Stamps, chunk: string, ends: Array<bigint | null>): string {
   let out = '';
   let rest = stamps.held + chunk;
   stamps.held = '';
@@ -128,7 +128,10 @@ function unstamp(stamps: Stamps, chunk: string): string {
       stamps.held = rest.slice(keep);
       break;
     }
-    if (!stamps.dropping) out += line;
+    if (!stamps.dropping) {
+      out += line;
+      ends.push(stamps.open);
+    }
     if (stamps.open !== null && (stamps.done === null || stamps.open > stamps.done)) stamps.done = stamps.open;
     Object.assign(stamps, { atStart: true, mark: null, open: null, dropping: false });
     rest = rest.slice(newline + 1);
@@ -149,6 +152,10 @@ interface Entry {
   dropped: Record<Stream, string>;
   /** How many leading chars of `pending` are that tail — held to match a secret, never let out. */
   hidden: Record<Stream, number>;
+  /** The stamp of each line end in `pending`, oldest first. */
+  ends: Record<Stream, Array<bigint | null>>;
+  /** `pending` starts inside a line whose head went out. */
+  shown: Record<Stream, boolean>;
   holders: number;
   lastRead: number;
   bell: ReturnType<typeof setTimeout> | null;
@@ -163,32 +170,68 @@ function clearHold(entry: Entry): void {
   entry.skipping = { out: false, err: false };
   entry.dropped = { out: '', err: '' };
   entry.hidden = { out: 0, err: 0 };
+  entry.ends = { out: [], err: [] };
+  entry.shown = { out: false, err: false };
   entry.stamps = { out: freshStamps(), err: freshStamps() };
 }
 
+function lineEnds(text: string): number {
+  let count = 0;
+  for (let at = text.indexOf('\n'); at !== -1; at = text.indexOf('\n', at + 1)) count++;
+  return count;
+}
+
+/** Where `text`'s line `n` (from 0) starts. */
+function lineStart(text: string, n: number): number {
+  let at = 0;
+  for (let i = 0; i < n; i++) at = text.indexOf('\n', at) + 1;
+  return at;
+}
+
 /**
- * What a killed process held never joins the next one's output — a half-held secret would leak — but
- * kept hidden, it lets a resumed follower still match a secret the killed one was printing. Returns
- * the stamp to resume from: the line each stream had open (sent again — a partial one is shown whole,
- * one being dropped stays dropped), else its last whole line, which the resumed follower skips.
+ * What a killed process held never joins the next one's output — a half-held secret would leak. The
+ * resumed follower sends again, by stamp, every line the killed one held and did not show (a PEM start
+ * that was not one goes out). What it keeps: the rest of a line whose head went out, which still
+ * matches a secret the next lines finish, and — hidden — a dropped line's tail or unstamped text.
+ * Returns the stamp to resume from; the resumed follower skips what is stamped before it.
  */
 function hideHold(entry: Entry): bigint | null {
   let since: bigint | null = null;
   for (const stream of ['out', 'err'] as const) {
     const stamps = entry.stamps[stream];
-    let held = entry.skipping[stream] ? entry.dropped[stream] : entry.pending[stream];
-    stamps.after = stamps.done;
-    if (stamps.open !== null && entry.skipping[stream]) {
-      held += '\n';
-      stamps.after = stamps.open;
-    } else if (stamps.open !== null) {
-      held = held.slice(0, held.lastIndexOf('\n') + 1);
+    const pending = entry.pending[stream];
+    const ends = entry.ends[stream];
+    let held: string;
+    let hidden: number;
+    let need: bigint | null;
+    if (entry.skipping[stream]) {
+      // The line being dropped is sent again only to be skipped.
+      held = entry.dropped[stream] + (stamps.open !== null ? '\n' : '');
+      hidden = held.length;
+      need = stamps.open ?? stamps.done;
+      stamps.after = need;
+      entry.ends[stream] = stamps.open !== null ? [stamps.open] : [];
+      entry.shown[stream] = true;
+    } else {
+      const lines = [...ends, stamps.open];
+      const kept = entry.shown[stream] && ends.length > 0 ? 1 : 0;
+      const resend = lines.findIndex((stamp, i) => i >= kept && stamp !== null);
+      if (resend === -1 && !kept) {
+        held = pending;
+        hidden = held.length;
+      } else {
+        held = pending.slice(0, lineStart(pending, resend === -1 ? 1 : resend));
+        hidden = Math.min(entry.hidden[stream], held.length);
+      }
+      need = resend === -1 ? stamps.done : lines[resend]!;
+      stamps.after = resend === -1 ? need : need! - 1n;
+      entry.ends[stream] = ends.slice(0, lineEnds(held));
+      if (held === '') entry.shown[stream] = false;
     }
-    const need = stamps.open ?? stamps.done;
     if (need !== null && (since === null || need < since)) since = need;
     Object.assign(stamps, { held: '', atStart: true, mark: null, open: null, dropping: false });
     entry.pending[stream] = held;
-    entry.hidden[stream] = held.length;
+    entry.hidden[stream] = hidden;
     entry.skipping[stream] = false;
     entry.dropped[stream] = '';
   }
@@ -249,6 +292,7 @@ export class DockerLogFollowers {
       entry.dropped[stream] = '';
       entry.pending[stream] = dropped.slice(held);
       entry.hidden[stream] = dropped.length - held;
+      entry.shown[stream] = held < dropped.length;
       text = text.slice(newline + 1);
     }
     const pending = entry.pending[stream] + text;
@@ -256,6 +300,7 @@ export class DockerLogFollowers {
     // Not past a tail a multi-line secret (a PEM) may still be arriving in, nor into one whose last
     // line has not ended: it is redacted whole too.
     const cut = lineSafeCut(pending, values, Math.min(pending.lastIndexOf('\n') + 1, heldSecretStart(pending, values)));
+    if (cut > 0) entry.shown[stream] = pending[cut - 1] !== '\n';
     const out = this.capped(pending.slice(0, cut), values, hidden);
     const rest = pending.slice(cut);
     const restHidden = Math.max(0, hidden - cut);
@@ -274,10 +319,18 @@ export class DockerLogFollowers {
     return `${out}${this.redact(rest.slice(0, head), values, restHidden)}${CUT_MARK}\n`;
   }
 
+  /** `take`, keeping the stamps of the line ends still in `pending`. */
+  private feed(entry: Entry, stream: Stream, text: string, ends: Array<bigint | null>): string {
+    const all = [...entry.ends[stream], ...ends];
+    const out = this.take(entry, stream, text);
+    entry.ends[stream] = all.slice(Math.max(0, all.length - lineEnds(entry.pending[stream])));
+    return out;
+  }
+
   private entry(id: string): Entry {
     let entry = this.entries.get(id);
     if (!entry) {
-      entry = { proc: null, following: false, text: '', start: 0, pending: { out: '', err: '' }, skipping: { out: false, err: false }, dropped: { out: '', err: '' }, hidden: { out: 0, err: 0 }, holders: 0, lastRead: this.now(), bell: null, stamps: { out: freshStamps(), err: freshStamps() }, resumeFrom: null };
+      entry = { proc: null, following: false, text: '', start: 0, pending: { out: '', err: '' }, skipping: { out: false, err: false }, dropped: { out: '', err: '' }, hidden: { out: 0, err: 0 }, ends: { out: [], err: [] }, shown: { out: false, err: false }, holders: 0, lastRead: this.now(), bell: null, stamps: { out: freshStamps(), err: freshStamps() }, resumeFrom: null };
       this.entries.set(id, entry);
       this.armSweep();
     }
@@ -316,7 +369,9 @@ export class DockerLogFollowers {
       data: (stream, chunk) => {
         if (entry.proc !== proc) return;
         // Whole lines only, so a secret split across two chunks is still one string when redacted.
-        this.append(id, entry, this.take(entry, stream, unstamp(entry.stamps[stream], chunk)));
+        const ends: Array<bigint | null> = [];
+        const text = unstamp(entry.stamps[stream], chunk, ends);
+        this.append(id, entry, this.feed(entry, stream, text, ends));
       },
       exit: (reason) => {
         if (entry.proc !== proc) return;

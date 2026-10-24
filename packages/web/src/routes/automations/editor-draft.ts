@@ -50,7 +50,7 @@ export interface DraftFilters {
   prerelease: 'both' | 'only' | 'none'
   /** CI on commits cezar itself pushed — the "fix my CI" case. */
   includeOwnPushes: boolean
-  /** `deliver: 'owning-run'`: comments from anyone, not only the repository's collaborators. */
+  /** `deliver: 'owning-run'`: comments from anyone, not only the owner and those with write access. */
   allowAnyAuthor: boolean
   /** `deliver: 'owning-run'`: comments by cezar's own login while the task works, too. */
   allowSelfComments: boolean

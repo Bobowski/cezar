@@ -184,24 +184,27 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
     setPagesRestored(true)
   }, [key, pagesRestored, uiState.data, uiState.isSuccess])
   const pagesJson = JSON.stringify(pagesOf(layout))
+  // This workbench's project (it is keyed by scope): an answer that arrives after the user moved
+  // to another project lands in the cache of the one it was written for.
+  const [uiStateKey] = useState(() => queryKeys.uiState)
   useEffect(() => {
     if (!pagesRestored) return
     const timer = setTimeout(() => {
-      const cached = queryClient.getQueryData<UiState>(queryKeys.uiState)
+      const cached = queryClient.getQueryData<UiState>(uiStateKey)
       const saved = savedPagesFor(cached?.codePages, key)
       // A checkout never saved and still without pages is not worth a slot on the server.
       if (JSON.stringify(saved ?? []) === pagesJson) return
       const codePages = withPages(cached?.codePages, key, JSON.parse(pagesJson) as CodePage[])
-      queryClient.setQueryData<UiState>(queryKeys.uiState, (prev) => ({ ...prev, codePages }))
+      queryClient.setQueryData<UiState>(uiStateKey, (prev) => ({ ...prev, codePages }))
       // Layout is state: a failed write costs another device the latest pages, nothing more.
-      putUiState({ codePages }).then((merged) => {
-        queryClient.setQueryData(queryKeys.uiState, merged)
+      putUiState({ codePages }, uiStateKey[0]).then((merged) => {
+        queryClient.setQueryData(uiStateKey, merged)
         // Only a page the server's answer names is held; until then its list cannot close it.
         setLayout((state) => markSaved(state, savedPagesFor(merged.codePages, key) ?? []))
       }, () => {})
     }, 400)
     return () => clearTimeout(timer)
-  }, [key, pagesJson, pagesRestored, queryClient])
+  }, [key, pagesJson, pagesRestored, queryClient, uiStateKey])
 
   // The focused file's path IS the page's address, replaced rather than pushed (as `/git/files`).
   useEffect(() => {

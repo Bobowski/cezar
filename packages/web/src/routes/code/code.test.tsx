@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { queryScope, type ApiRun, type CodeSearchMatch, type HealthResponse, type WorktreeEntry } from '@open-mercato/cezar-api-client'
+import { queryScope, setApiScope, type ApiRun, type CodeSearchMatch, type HealthResponse, type WorktreeEntry } from '@open-mercato/cezar-api-client'
 import { createQueryClient } from '@/api/query-client'
 import { Toaster, resetToasts } from '@/components/ui/toaster'
 import { ShellWithSidebar } from '@/test/shell-with-sidebar'
@@ -42,6 +42,8 @@ function setup(options: {
   fileEdit?: boolean; at?: string; disk?: { content: string; hash: string }; putStatus?: number; runs?: ApiRun[]
   /** What `GET /ui-state` answers; `terminal` turns the capability on; `dead`: addresses nothing listens at. */
   uiState?: unknown; terminal?: boolean; services?: unknown; dead?: string[]
+  /** Held until it settles: the `GET` and the `PUT` of `/ui-state`. */
+  uiStateRead?: Promise<void>; uiStateWrite?: Promise<void>
 } = {}) {
   const disk = options.disk ?? { content: 'one\n', hash: 'h1' }
   const sent: Sent[] = []
@@ -52,8 +54,8 @@ function setup(options: {
     sent.push({ method, path, body: typeof init.body === 'string' ? JSON.parse(init.body) : undefined })
     if (path === '/api/v1/health') return json(health(options.fileEdit ?? true, options.terminal ?? false))
     if (options.dead?.includes(path)) throw new TypeError('Failed to fetch')
-    if (method === 'GET' && path === '/api/v1/ui-state') return json(options.uiState ?? {})
-    if (method === 'PUT' && path === '/api/v1/ui-state') return json({ ...(options.uiState as object | undefined), ...(JSON.parse(String(init.body)) as object) })
+    if (method === 'GET' && path === '/api/v1/ui-state') { await options.uiStateRead; return json(options.uiState ?? {}) }
+    if (method === 'PUT' && path === '/api/v1/ui-state') { await options.uiStateWrite; return json({ ...(options.uiState as object | undefined), ...(JSON.parse(String(init.body)) as object) }) }
     if (path === '/api/v1/services') return json(options.services ?? { available: false, reason: null, services: [], candidates: [], lastRunning: [], topic: 'services' })
     if (path === '/api/v1/repo/tree') return json({ paths: ['README.md', 'src/app.ts'], truncated: false })
     if (path === '/api/v1/repo/changes') return json({ files: [{ path: 'src/app.ts', status: 'modified', adds: 1, dels: 0, binary: false, patch: PATCH }], stat: { files: 1, adds: 1, dels: 0 } })
@@ -70,8 +72,9 @@ function setup(options: {
     }
     return json({})
   }))
+  const client = createQueryClient()
   render(
-    <QueryClientProvider client={createQueryClient()}>
+    <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[options.at ?? '/code/src/app.ts']}>
         <ShellWithSidebar>
           <Routes>
@@ -83,7 +86,7 @@ function setup(options: {
       </MemoryRouter>
     </QueryClientProvider>,
   )
-  return { sent, state }
+  return { sent, state, client }
 }
 
 const view = async () => {
@@ -518,6 +521,23 @@ describe('Browser tabs as pages (spec 2026-10-24-code-page-browser-tabs)', () =>
     await waitFor(() => expect(sent.find((request) => request.method === 'PUT' && request.path === '/api/v1/ui-state')?.body).toEqual({
       codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }] }],
     }))
+  })
+
+  it('writes the pages\' answer to the project they were saved for, after a move to another one', async () => {
+    let answer = () => {}
+    const { sent, client } = setup({ at: '/code', uiState: SAVED, uiStateWrite: new Promise<void>((resolve) => { answer = resolve }) })
+    await waitFor(() => expect(tabsOf(1)).toEqual(['localhost:3000']))
+    fireEvent.click(screen.getByRole('button', { name: 'Close localhost:3000' }))
+    await waitFor(() => expect(sent.some((request) => request.method === 'PUT' && request.path === '/api/v1/ui-state')).toBe(true))
+    const written = queryScope()
+    setApiScope('elsewhere')
+    try {
+      await act(async () => { answer() })
+      await waitFor(() => expect(client.getQueryData([written, 'ui-state'])).toMatchObject({ codePages: [{ tree: 'main', pages: [{ id: 'b1' }] }] }))
+      expect((client.getQueryData(['elsewhere', 'ui-state']) as { codePages?: unknown } | undefined)?.codePages).toBeUndefined()
+    } finally {
+      setApiScope(null)
+    }
   })
 
   it('merges the server\'s pages: one opened here and not saved yet stays and is written, one closed elsewhere closes', async () => {

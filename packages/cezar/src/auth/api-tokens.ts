@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { routeContracts, type ApiTokenScope } from '@open-mercato/cezar-contract';
+import type { Principal } from './guard.ts';
 import { randomToken } from './store.ts';
 
 /**
@@ -108,8 +109,8 @@ const DISCOVERY_ROUTES: ReadonlySet<string> = new Set(['/projects', '/health', '
 export const READ_ROUTES: ReadonlySet<string> = new Set([
   '/runs', '/runs/:id', '/runs/:id/changes', '/runs/:id/commit/:sha', '/runs/:id/commits', '/runs/:id/diff',
   '/runs/:id/drafts', '/runs/:id/drafts/:surface/images/:imageId', '/runs/:id/files',
-  '/runs/:id/git/status', '/runs/:id/handoff', '/runs/:id/images/:file', '/runs/:id/layouts', '/runs/:id/search', '/runs/:id/tracker-issue', '/runs/:id/tree',
-  '/groups/:groupId', '/todos', '/events',
+  '/runs/:id/git/status', '/runs/:id/images/:file', '/runs/:id/layouts', '/runs/:id/search', '/runs/:id/tracker-issue', '/runs/:id/tree',
+  '/groups/:groupId', '/events',
   '/workflows', '/workflows/nodes', '/skills', '/skills/importable',
   '/projects/:projectId/icon',
   '/repo', '/repo/changes', '/repo/commit/:sha', '/repo/diff', '/repo/files', '/repo/search', '/repo/sync',
@@ -131,9 +132,22 @@ export const READ_ROUTES: ReadonlySet<string> = new Set([
 
 /**
  * A task's event stream and transcript: tool output, which can carry whatever a command printed —
- * `runs.transcript`'s, never `read`'s. `tasks` has them as the owner of the `runs` family.
+ * `runs.transcript`'s, never `read`'s. So are the handoff and the todo inbox, which quote what the
+ * agent wrote. `tasks` has them as the owner of the `runs` and `todos` families.
  */
-export const TRANSCRIPT_ROUTES: ReadonlySet<string> = new Set(['/runs/:id/events', '/runs/:id/history', '/runs/:id/history-context']);
+export const TRANSCRIPT_ROUTES: ReadonlySet<string> = new Set([
+  '/runs/:id/events', '/runs/:id/history', '/runs/:id/history-context', '/runs/:id/handoff', '/todos',
+]);
+
+/** Whether a token with these scopes sees agent-authored text: `runs.transcript`, or a scope that owns it. */
+export function scopesSeeTranscript(scopes: readonly ApiTokenScope[]): boolean {
+  return scopes.some((scope) => scope === 'runs.transcript' || scope === 'tasks' || scope === 'admin');
+}
+
+/** The same question for a request's principal; anything but a token is the owner and sees all. */
+export function principalSeesTranscript(principal: Principal | undefined): boolean {
+  return principal?.kind !== 'token' || scopesSeeTranscript(principal.scopes);
+}
 
 const GET_TEMPLATES = Object.keys(routeContracts)
   .filter((key) => key.startsWith('GET '))

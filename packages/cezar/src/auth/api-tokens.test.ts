@@ -73,7 +73,11 @@ describe('API token scopes, per route family', () => {
   });
 
   it('read carries no transcript: that is runs.transcript, which tasks implies', () => {
-    const transcript = ['/api/v1/runs/1/events', '/api/v1/p/x/runs/1/history', '/api/v1/runs/1/history-context'];
+    const transcript = [
+      '/api/v1/runs/1/events', '/api/v1/p/x/runs/1/history', '/api/v1/runs/1/history-context',
+      // The handoff and the todo inbox quote what the agent wrote.
+      '/api/v1/runs/1/handoff', '/api/v1/p/x/todos',
+    ];
     for (const path of transcript) {
       expect(apiTokenAllows(['read'], 'GET', path), path).toBe(false);
       expect(apiTokenAllows(['runs.transcript'], 'GET', path), path).toBe(true);

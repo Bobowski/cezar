@@ -56,7 +56,8 @@ Settings → Security → **API tokens** (owner only):
 - `POST /auth/tokens { name, scopes, expiresAt? }` → the token value, shown once
   (`ceztok_<id>_<secret>`); stored hashed (argon2, the password store's hash) in the auth store.
 - Scopes: `read` (allowlisted GETs), `runs.transcript` (`/runs/:id/events`, `/runs/:id/history`,
-  `/runs/:id/history-context`: tool output can carry secrets, so `read` has only the run list and
+  `/runs/:id/history-context`, `/runs/:id/handoff`, `/todos` and the inbox on the live streams:
+  tool output and agent-written notes can carry secrets, so `read` has only the run list and
   summary; `tasks` implies it), `tasks` (runs, messages, dispatch, ticket transitions and watches),
   `author` (workflows, skills, automations, env, the tracker connection and project link),
   `admin` (everything, including settings, self-update and terminals — an interactive shell on

@@ -314,7 +314,7 @@ import { readUiState, uiStatePath } from '../ui-state.ts';
 import { agentHomePaths, cezarHomeDir, expandTilde, isAbsolutePath } from '../paths.ts';
 import { authEnforced, fileEditRefusal, isLoopbackHostHeader, normalizeHostname, resolveCapabilities, trustedOperator } from './capabilities.ts';
 import { bearerOf, createAuthGuard, principalOf, upgradeIsAuthenticated, upgradeSessionId } from '../auth/guard.ts';
-import { isApiToken } from '../auth/api-tokens.ts';
+import { isApiToken, principalSeesTranscript } from '../auth/api-tokens.ts';
 import { buildCatalog, type Catalog } from '../mcp/catalog.ts';
 import { mcpRoutes } from '../mcp/http.ts';
 import { ensureHostKey } from '../auth/host-key.ts';
@@ -6641,8 +6641,11 @@ export function createApp(deps: ServerDeps) {
         // Opt-in inbox (#471): subscribing is what creates this project's
         // watcher (step 2.3), so with the capability off we never subscribe —
         // no watcher, no fd. Scoped to this stream's dataDir: another
-        // project's todos.json writes never reach this connection.
-        const offTodos = capabilities().followups ? onTodosChanged(dataDir, () => void sendTodos()) : () => undefined;
+        // project's todos.json writes never reach this connection. The inbox is
+        // `runs.transcript`'s, like `GET /todos` (spec 2026-10-24-cezar-mcp-server §4).
+        const offTodos = capabilities().followups && principalSeesTranscript(principalOf(c))
+          ? onTodosChanged(dataDir, () => void sendTodos())
+          : () => undefined;
         // Live resource telemetry (#348): the sampler ticks ~every 2 s only
         // while some run has a registered process; each tick is relayed as one
         // `usage` message (runId → {cpuPct, rssBytes, procCount}). Never
@@ -6705,7 +6708,9 @@ export function createApp(deps: ServerDeps) {
           };
           // Same opt-in gate as the per-project stream (#471): no capability, no
           // watcher — and each subscription is scoped to its own dataDir (2.3).
-          const offTodos = capabilities().followups ? onTodosChanged(dataDir, () => void sendTodos()) : () => undefined;
+          const offTodos = capabilities().followups && principalSeesTranscript(principalOf(c))
+            ? onTodosChanged(dataDir, () => void sendTodos())
+            : () => undefined;
           const offLifecycle = ctx.manager.lifecycle?.onChange(event => {
             const payload: WorktreeLifecycleInvalidation = { ...event, projectId: project };
             void stream.writeSSE({ event: 'worktree-lifecycle', data: JSON.stringify(payload) });

@@ -60,6 +60,17 @@ describe('history folding', () => {
     expect(historyLine('grep -r TOKEN src')).toBe('grep -r TOKEN src');
   });
 
+  it('masks a secret-named assignment\'s whole value: a substitution, an expansion, a quoted run', () => {
+    expect(historyLine('export GITHUB_TOKEN=$(cat ~/t)')).toBe('export GITHUB_TOKEN=***');
+    expect(historyLine('TOKEN=$(cat ~/t) && make')).toBe('TOKEN=*** && make');
+    expect(historyLine('TOKEN="$(gh auth token)" npm publish')).toBe('TOKEN=*** npm publish');
+    expect(historyLine('API_KEY=`cat key file` make')).toBe('API_KEY=*** make');
+    expect(historyLine('TOKEN=${VAULT_TOKEN:-dev token} ./run')).toBe('TOKEN=*** ./run');
+    expect(historyLine('SECRET=a"b c"d ./x')).toBe('SECRET=*** ./x');
+    expect(historyLine('(make; TOKEN=abc)')).toBe('(make; TOKEN=***)');
+    expect(historyLine('export TOKEN=$(vault read -field=x a) PASSWORD=b')).toBe('export TOKEN=*** PASSWORD=***');
+  });
+
   it('stores no credential a flag, a header, a URL or a token shape carries', () => {
     const pat = 'ghp_' + 'a'.repeat(36);
     expect(historyLine(`curl -H "Authorization: Bearer ${pat}" https://api.github.com/user`))

@@ -188,13 +188,58 @@ function redactClientPassword(segment: string): string {
 
 /** Short names the shared credential heuristic leaves out: `DB_PASS`, `KEY`, `SMTP_PWD`. */
 const SECRET_NAME_PART = /(^|_)(PASS|PWD|KEY|PIN)(_|$)/i;
-/** `NAME=value` at a word start; the value quoted (closed or not) or up to the next separator. */
-const ASSIGNMENT = /(^|[\s;&|(`])([A-Za-z_][A-Za-z0-9_]*)=("(?:[^"\\]|\\.)*"?|'[^']*'?|[^\s;&|)`]+)/g;
+/** `NAME=` at a word start; its value is the shell word after it (`shellWordEnd`). */
+const ASSIGNMENT = /(^|[\s;&|(`])([A-Za-z_][A-Za-z0-9_]*)=/g;
+
+/** Where the shell word starting at `start` ends: quotes, `$( … )`, `${ … }` and backticks
+ *  (closed or not) are part of it, so `$(cat ~/t)` is one value, not `$(cat`. */
+function shellWordEnd(text: string, start: number): number {
+  const closers: string[] = [];
+  let index = start;
+  while (index < text.length) {
+    const char = text[index]!;
+    if (char === '\\') {
+      index += 2;
+    } else if (char === "'" || char === '`') {
+      const close = text.indexOf(char, index + 1);
+      index = close === -1 ? text.length : close + 1;
+    } else if (char === '"') {
+      index += 1;
+      while (index < text.length && text[index] !== '"') index += text[index] === '\\' ? 2 : 1;
+      index += 1;
+    } else if (char === '$' && (text[index + 1] === '(' || text[index + 1] === '{')) {
+      closers.push(text[index + 1] === '(' ? ')' : '}');
+      index += 2;
+    } else if (closers.length > 0) {
+      if (char === '(') closers.push(')');
+      else if (char === closers[closers.length - 1]) closers.pop();
+      index += 1;
+    } else if (/[\s;&|)]/.test(char)) {
+      break;
+    } else {
+      index += 1;
+    }
+  }
+  return Math.min(index, text.length);
+}
 
 /** `line` with the value of every secret-named assignment replaced by `***`. */
 export function redactAssignments(line: string): string {
-  return line.replace(ASSIGNMENT, (whole, lead: string, name: string, value: string) =>
-    !/^\*\*\*(?=$|["'])/.test(value) && (SECRET_NAME_RE.test(name) || SECRET_NAME_PART.test(name)) ? `${lead}${name}=***` : whole);
+  const head = new RegExp(ASSIGNMENT.source, 'g');
+  let out = '';
+  let copied = 0;
+  for (let match = head.exec(line); match !== null; match = head.exec(line)) {
+    const name = match[2]!;
+    const start = match.index + match[0].length;
+    const end = shellWordEnd(line, start);
+    const value = line.slice(start, end);
+    // Already masked — `'…&key=***'` from a query, whose quote is the URL's, not this value's.
+    if (value === '' || /^\*\*\*(?=$|["'])/.test(value) || !(SECRET_NAME_RE.test(name) || SECRET_NAME_PART.test(name))) continue;
+    out += `${line.slice(copied, start)}***`;
+    copied = end;
+    head.lastIndex = end;
+  }
+  return out + line.slice(copied);
 }
 
 /** The stored lines, redacted again on the way out: a line kept before a rule existed is served under it. */

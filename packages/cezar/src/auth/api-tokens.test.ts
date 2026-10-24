@@ -91,6 +91,17 @@ describe('API token scopes, per route family', () => {
     expect(apiTokenAllows(['runs.transcript'], 'POST', '/api/v1/runs/1/history')).toBe(false);
   });
 
+  it('a service’s command and the start command are author’s to read, not read’s', () => {
+    for (const path of ['/api/v1/services', '/api/v1/p/x/start-app']) {
+      expect(apiTokenAllows(['read'], 'GET', path), path).toBe(false);
+      expect(apiTokenAllows(['author'], 'GET', path), path).toBe(true);
+    }
+    // Reading them is all author gets: pinning and setting stay admin's.
+    expect(apiTokenAllows(['author'], 'POST', '/api/v1/services')).toBe(false);
+    expect(apiTokenAllows(['author'], 'PUT', '/api/v1/start-app')).toBe(false);
+    expect(apiTokenAllows(['author'], 'GET', '/api/v1/services/web/logs')).toBe(false);
+  });
+
   it('every route the read allowlist names is a real GET route', () => {
     const gets = new Set(Object.keys(routeContracts).filter((key) => key.startsWith('GET ')).map((key) => key.slice(4)));
     expect([...READ_ROUTES].filter((route) => !gets.has(route))).toEqual([]);

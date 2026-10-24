@@ -97,6 +97,16 @@ const ROUTE_OWNERS: ReadonlyArray<readonly [RegExp, Exclude<ApiTokenScope, 'read
   [/^\/tracker\/(connection|association)(\/|$)/, 'author'],
 ];
 
+/**
+ * GET routes a scope other than their family's owner may read, by template. A pinned service's
+ * command and the start command are configuration that can carry an inline secret: `author`'s
+ * to read, never `read`'s, while pinning and setting them stay `admin`'s.
+ */
+const READ_OWNERS: ReadonlyMap<string, Exclude<ApiTokenScope, 'read' | 'runs.transcript'>> = new Map([
+  ['/services', 'author'],
+  ['/start-app', 'author'],
+]);
+
 /** Reads any token may make: what an agent needs to address anything at all. */
 const DISCOVERY_ROUTES: ReadonlySet<string> = new Set(['/projects', '/health', '/models']);
 
@@ -121,7 +131,7 @@ export const READ_ROUTES: ReadonlySet<string> = new Set([
   '/automations', '/automations/:id', '/automation-log', '/automation-checks/:checkId',
   '/tracker', '/tracker/:id', '/tracker/:id/transitions', '/tracker/association', '/tracker/automation-options',
   '/tracker/candidates', '/tracker/search', '/tracker/watch/:watchId',
-  '/services', '/docker', '/e2e', '/start-app', '/ui-state', '/open-targets', '/providers/status', '/star-count',
+  '/docker', '/e2e', '/ui-state', '/open-targets', '/providers/status', '/star-count',
   '/telemetry/consent',
   '/workspace/automation-templates', '/workspace/branding-logo', '/workspace/dashboard',
   '/workspace/dashboard/automations', '/workspace/dashboard/costs', '/workspace/dashboard/feed',
@@ -218,6 +228,8 @@ export function apiTokenAllows(scopes: readonly ApiTokenScope[], method: string,
   const template = getRouteTemplateOf(path);
   if (template === null) return false;
   if (DISCOVERY_ROUTES.has(template)) return true;
+  const reader = READ_OWNERS.get(template);
+  if (reader && scopes.includes(reader)) return true;
   if (scopes.includes('runs.transcript') && TRANSCRIPT_ROUTES.has(template)) return true;
   return scopes.includes('read') && READ_ROUTES.has(template);
 }

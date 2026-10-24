@@ -79,12 +79,16 @@ supervise_boot() { # <home> <image dir>
     return 0
   fi
   image_s=$(supervise_epoch "$image_at")
+  if [ -z "$image_s" ]; then
+    echo "cezar: starting $current — the image's ($image_id) commit date '$image_at' does not parse, so its age is unknown and current stays" >&2
+    return 0
+  fi
   current_s=$(supervise_epoch "$current_at")
   if [ -z "$current_s" ]; then
     echo "cezar: starting $current (${current_source:-unknown}) — it carries no commit date to compare with the image's $image_id, so it stays"
     return 0
   fi
-  if [ -n "$image_s" ] && [ "$current_s" -ge "$image_s" ]; then
+  if [ "$current_s" -ge "$image_s" ]; then
     echo "cezar: starting $current (${current_source:-unknown}, $current_at) — newer than the image's $image_id"
     return 0
   fi

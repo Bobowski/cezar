@@ -217,6 +217,14 @@ describe.skipIf(!haveBootTools)('the container supervisor boot choice', () => {
     expect(readlinkSync(join(home, 'versions', 'previous'))).toBe('0.17.0+a1b2c3d4');
   });
 
+  it('keeps current, and says so, when the image commit date does not parse', () => {
+    manifest(join(image, '0.17.0+image'), { sha: 'e5f6a7b8c9d0', at: 'not-a-date' });
+    manifest(join(home, 'versions', '0.17.0+a1b2c3d4'), { sha: 'a1b2c3d4', at: '2026-10-23T00:00:00.000Z' });
+    symlinkSync('0.17.0+a1b2c3d4', join(home, 'versions', 'current'));
+    expect(boot()).toContain('does not parse');
+    expect(current()).toBe('0.17.0+a1b2c3d4');
+  });
+
   it('keeps current when the image carries no commit', () => {
     manifest(join(image, '0.17.0+image'));
     manifest(join(home, 'versions', '0.17.0+a1b2c3d4'), { sha: 'a1b2c3d4', at: '2026-10-23T00:00:00.000Z' });

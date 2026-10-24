@@ -202,6 +202,7 @@ The entrypoint, before starting the server:
   activated, and the choice is logged (`cezar: starting 0.17.0+a1b2c3d4 (branch, 2026-10-23)
   — newer than the image's 0.17.0+image.e5f6…`);
 - the image carries no commit (built without §4.4's args) → `current` stays; logged too.
+  As built, an image commit date that does not parse counts the same: unknown age, `current` stays.
 
 ### 4.3 The supervisor loop
 

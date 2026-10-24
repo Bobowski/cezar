@@ -7545,11 +7545,10 @@ export function createApp(deps: ServerDeps) {
       const member = listed.containers.find((entry) => entry.stack === name);
       if (!member) return c.json({ error: 'no such stack' }, 404);
       const volumes = c.req.valid('json').volumes === true;
-      // A gone (or unjudged) dir: compose would search for a file wherever it ran, so the labels drive removal.
-      const inDir = judgeDir(member.dir) === 'exists';
-      // The files it was started with (`-f a -f b`), when every one is still there — a missing one fails compose outright.
-      const files = inDir && member.configFiles.length > 0 && member.configFiles.every((file) => judgeDir(file) === 'exists') ? member.configFiles : [];
-      const result = inDir
+      // Compose only with the files it was started from (`-f a -f b`), every one still there: without
+      // them it searches the cwd and its parents for one. Else the stack's labels drive removal.
+      const files = judgeDir(member.dir) === 'exists' && member.configFiles.length > 0 && member.configFiles.every((file) => judgeDir(file) === 'exists') ? member.configFiles : null;
+      const result = files
         ? await docker(['compose', '-p', name, ...files.flatMap((file) => ['-f', file]), 'down', ...(volumes ? ['--volumes'] : [])], { cwd: member.dir!, timeoutMs: 180_000 })
         : await removeStackByLabel(docker, name, { volumes });
       dockerChanged();

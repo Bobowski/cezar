@@ -131,6 +131,15 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     expect((await apiRequest(instance, '/api/v1/docker/stacks/mine/down', json('POST', { volumes: 'yes' }))).status).toBe(400);
   });
 
+  it('downs a stack by its labels when a file it was started from is missing, never by compose discovery', async () => {
+    // `compose.dev.yml` is gone: dropping the -f flags would let compose pick whatever file it finds.
+    writeFileSync(join(root, 'compose.yml'), 'services: {}\n');
+    const { instance } = await app();
+    expect((await apiRequest(instance, '/api/v1/docker/stacks/mine/down', json('POST', { volumes: true }))).status).toBe(200);
+    expect(calls.some((call) => call.args.startsWith('compose'))).toBe(false);
+    expect(ran()).toEqual([`rm -f -v ${C('a')}`, 'network rm mine_default', 'volume rm mine_pg']);
+  });
+
   it('removes a container, an image and a volume only when the listing shows it', async () => {
     const { instance } = await app();
     expect((await apiRequest(instance, `/api/v1/docker/containers/${C('a')}?force=1`, { method: 'DELETE' })).status).toBe(200);

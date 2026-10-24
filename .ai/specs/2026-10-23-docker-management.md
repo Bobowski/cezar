@@ -168,8 +168,10 @@ Nothing to configure. Reclaim is a click, never a timer. All new state is Docker
   against `image ls --no-trunc`, rather than `image inspect`: a tag can move while a container
   still runs the old image.
 - **"A stack compose does not know"** is one whose working dir is gone, or the standalone group:
-  those get Remove (`rm -f` of each container) instead of Down. Down runs compose in the stack's dir
-  when it exists. When it is gone (or cannot be judged) compose is not run at all: without a file it
+  those get Remove (`rm -f` of each container) instead of Down. Down runs compose in the stack's dir,
+  with `-f` for every file it was started from (`project.config_files`), only when the dir and every
+  one of those files are still there. Otherwise — dir gone or unjudged, a file missing, or no files
+  labelled — compose is not run at all: without a file it
   searches the cwd and its parents, and a `compose.yaml` planted there could name other volumes or
   run hooks. The stack is torn down by its `com.docker.compose.project=<name>` label instead —
   `docker rm -f` of its containers, `docker network rm` of its networks and, with `--volumes`,

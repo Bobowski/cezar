@@ -72,6 +72,13 @@ describe('the favicon SVG sanitiser', () => {
     expect(sanitizeSvg('<svg xmlns="http://www.w3.org/1999/xhtml"><path d="M0 0"/></svg>').ok).toBe(false);
   });
 
+  it('refuses an SVG nested deeper than 256 elements instead of overflowing the stack', () => {
+    const nest = (depth: number) => `<svg xmlns="http://www.w3.org/2000/svg">${'<g>'.repeat(depth)}<rect width="1" height="1"/>${'</g>'.repeat(depth)}</svg>`;
+    expect(sanitizeSvg(nest(100_000))).toMatchObject({ ok: false, error: expect.stringContaining('nested') });
+    expect(sanitizeSvg(nest(257))).toMatchObject({ ok: false, error: expect.stringContaining('nested') });
+    expect(sanitizeSvg(nest(255))).toMatchObject({ ok: true });
+  });
+
   it('serves a bare <svg> with the namespace it was parsed in', () => {
     expect(sanitizeSvg('<svg viewBox="0 0 1 1"><path d="M0 0"/></svg>')).toEqual({
       ok: true, svg: '<svg viewBox="0 0 1 1" xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>',

@@ -47,20 +47,31 @@ function keepAttribute(attr: { name: string; namespaceURI: string | null; value:
   return true;
 }
 
-function clean(element: Element): void {
-  for (const attr of [...Array.from(element.attributes)]) {
-    if (!keepAttribute(attr)) element.removeAttributeNode(attr);
-  }
-  for (const child of [...Array.from(element.childNodes)] as Node[]) {
-    if (child.nodeType === ELEMENT_NODE) {
-      const el = child as Element;
-      if (el.namespaceURI === SVG_NS && ELEMENTS.has(el.localName ?? '') && el.localName !== 'svg') clean(el);
-      else element.removeChild(child);
-    } else if (child.nodeType !== TEXT_NODE || !TEXT_PARENTS.has(element.localName ?? '')) {
-      // Comments, processing instructions, CDATA, and stray text between shapes.
-      element.removeChild(child);
+/** Far deeper than any icon; a hostile nesting is refused rather than walked. */
+const MAX_DEPTH = 256;
+
+/** Cleans the tree in place, iteratively; false when kept elements nest deeper than MAX_DEPTH. */
+function clean(root: Element): boolean {
+  const stack: Array<readonly [Element, number]> = [[root, 0]];
+  while (stack.length > 0) {
+    const [element, depth] = stack.pop()!;
+    for (const attr of [...Array.from(element.attributes)]) {
+      if (!keepAttribute(attr)) element.removeAttributeNode(attr);
+    }
+    for (const child of [...Array.from(element.childNodes)] as Node[]) {
+      if (child.nodeType === ELEMENT_NODE) {
+        const el = child as Element;
+        if (el.namespaceURI === SVG_NS && ELEMENTS.has(el.localName ?? '') && el.localName !== 'svg') {
+          if (depth + 1 > MAX_DEPTH) return false;
+          stack.push([el, depth + 1]);
+        } else element.removeChild(child);
+      } else if (child.nodeType !== TEXT_NODE || !TEXT_PARENTS.has(element.localName ?? '')) {
+        // Comments, processing instructions, CDATA, and stray text between shapes.
+        element.removeChild(child);
+      }
     }
   }
+  return true;
 }
 
 export type SanitizeResult = { ok: true; svg: string } | { ok: false; error: string };
@@ -79,7 +90,7 @@ export function sanitizeSvg(source: string): SanitizeResult {
   if (!root || root.localName !== 'svg' || root.namespaceURI !== SVG_NS) {
     return { ok: false, error: 'not an SVG image — the root element must be <svg xmlns="http://www.w3.org/2000/svg">' };
   }
-  clean(root);
+  if (!clean(root)) return { ok: false, error: `the SVG is nested more than ${MAX_DEPTH} elements deep` };
   // Parsed as image/svg+xml, a bare `<svg>` is already in the SVG namespace; served, it must say so.
   if (!root.hasAttribute('xmlns')) root.setAttribute('xmlns', SVG_NS);
   for (const child of [...Array.from(doc.childNodes)] as Node[]) if (child !== root) doc.removeChild(child);

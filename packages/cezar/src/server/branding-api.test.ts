@@ -102,6 +102,8 @@ describe('the cockpit branding API', () => {
     expect(tooSmall.status).toBe(400);
     expect(((await tooSmall.json()) as { error: string }).error).toContain('512');
     expect((await upload('favicon', Buffer.from('<svg><script>'))).status).toBe(400);
+    const deep = `<svg xmlns="http://www.w3.org/2000/svg">${'<g>'.repeat(100_000)}${'</g>'.repeat(100_000)}</svg>`;
+    expect((await upload('favicon', Buffer.from(deep))).status).toBe(400);
     expect((await upload('logo', square(64))).status).toBe(400); // the logo keeps its own route
     // A 16 × 16 interlaced header over 256 MiB of zeros: refused before anything is inflated.
     const bomb = await upload('favicon', pngBomb({ interlace: true, inflatedMiB: 256 }));

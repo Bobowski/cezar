@@ -1,9 +1,9 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fallbackCommitMessage, hasUnlanded, landInPlace } from './landing.ts';
+import { fallbackCommitMessage, hasUnlanded, landInPlace, type GitRun } from './landing.ts';
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
@@ -21,12 +21,14 @@ beforeEach(() => {
   other = join(dir, 'other');
   execFileSync('git', ['init', '--bare', '-b', 'main', remote]);
   execFileSync('git', ['clone', '-q', remote, checkout], { stdio: 'pipe' });
+  git(checkout, 'config', 'core.autocrlf', 'false');
   git(checkout, 'checkout', '-q', '-b', 'main');
   writeFileSync(join(checkout, 'daily.md'), 'one\n');
   git(checkout, 'add', '-A');
   git(checkout, 'commit', '-qm', 'init');
   git(checkout, 'push', '-q', '-u', 'origin', 'main');
   execFileSync('git', ['clone', '-q', remote, other]);
+  git(other, 'config', 'core.autocrlf', 'false');
 });
 
 afterEach(() => {
@@ -35,6 +37,11 @@ afterEach(() => {
 });
 
 const ok = async () => ({ ok: true, output: '' });
+
+const realGit: GitRun = (cwd, args) =>
+  new Promise((resolve) => {
+    execFile('git', args, { cwd, encoding: 'utf8' }, (err, stdout, stderr) => resolve({ ok: !err, stdout, stderr }));
+  });
 
 describe('landInPlace', () => {
   it('commits what the task left and pushes it to the upstream', async () => {
@@ -132,6 +139,21 @@ describe('landInPlace', () => {
     expect(git(checkout, 'status', '--porcelain', '-uall')).toBe('?? .ai/cezar/workflows/w.yaml');
   });
 
+  it("when unstaging .ai/cezar fails, leaves nothing staged and fails the landing with git's message", async () => {
+    execFileSync('mkdir', ['-p', join(checkout, '.ai/cezar')]);
+    writeFileSync(join(checkout, '.ai/cezar/config.json'), '{}\n');
+    git(checkout, 'add', '.ai/cezar/config.json');
+    writeFileSync(join(checkout, 'person.md'), 'Bjorn\n');
+    const failingReset: GitRun = (cwd, args) =>
+      args.join(' ') === 'reset -q -- .ai/cezar'
+        ? Promise.resolve({ ok: false, stdout: '', stderr: 'fatal: Unable to create index.lock' })
+        : realGit(cwd, args);
+    const result = await landInPlace(checkout, { describe: async () => 'mine', checks: [], git: failingReset });
+    expect(result).toEqual({ result: 'failed', stage: 'commit', error: 'git reset failed: fatal: Unable to create index.lock' });
+    expect(git(checkout, 'diff', '--cached', '--name-only')).toBe('');
+    expect(git(checkout, 'log', '-1', '--format=%s')).toBe('init');
+  });
+
   it('lands nothing on a clean checkout, without touching the network', async () => {
     expect(await landInPlace(checkout, { describe: async () => 'x', checks: [] })).toEqual({ result: 'nothing' });
   });
@@ -206,6 +228,7 @@ describe('landInPlace', () => {
   it('commits locally when the branch has no upstream', async () => {
     const local = join(dir, 'local');
     execFileSync('git', ['init', '-q', '-b', 'main', local]);
+    git(local, 'config', 'core.autocrlf', 'false');
     writeFileSync(join(local, 'a.md'), 'a\n');
     git(local, 'add', '-A');
     git(local, 'commit', '-qm', 'init');
@@ -218,6 +241,7 @@ describe('landInPlace', () => {
   it('with no upstream, a failing check commits nothing, so the retry still sees the change', async () => {
     const local = join(dir, 'local');
     execFileSync('git', ['init', '-q', '-b', 'main', local]);
+    git(local, 'config', 'core.autocrlf', 'false');
     writeFileSync(join(local, 'a.md'), 'a\n');
     git(local, 'add', '-A');
     git(local, 'commit', '-qm', 'init');

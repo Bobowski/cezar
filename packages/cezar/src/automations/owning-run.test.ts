@@ -41,6 +41,21 @@ describe('findOwningRun (spec 2026-10-23-github-events §5)', () => {
     expect(findOwningRun([child], pr)).toBeUndefined();
   });
 
+  it('a run that created two PRs owns both, though its pullRequestUrl names only the newer', () => {
+    const creator = run({
+      id: 'two-prs', pullRequestUrl: 'https://github.com/acme/demo/pull/9', createdAt: '2026-10-01T00:00:00.000Z',
+      prRefs: [
+        { number: 8, url: 'https://github.com/acme/demo/pull/8', origin: 'created', at: '2026-10-01T00:00:00.000Z' },
+        { number: 9, url: 'https://github.com/acme/demo/pull/9', origin: 'created', at: '2026-10-02T00:00:00.000Z' },
+      ],
+    });
+    const reviewer = run({ id: 'reviewer', prNumber: 8, createdAt: '2026-10-04T00:00:00.000Z' });
+    expect(findOwningRun([creator, reviewer], pr)?.id).toBe('two-prs');
+    expect(findOwningRun([creator, reviewer], { repo: 'acme/demo', number: 9 })?.id).toBe('two-prs');
+    // A PR it only mentioned is still not its own while it created another.
+    expect(findOwningRun([run({ pullRequestUrl: 'https://github.com/acme/demo/pull/9', prRefs: [{ number: 8, origin: 'marker', at: '2026-10-01T00:00:00.000Z' }] })], pr)).toBeUndefined();
+  });
+
   it('ignores another repository, pr-head verifiers and runs whose worktree is gone', () => {
     expect(findOwningRun([run({ pullRequestUrl: 'https://github.com/other/demo/pull/8', prNumber: 8 })], pr)).toBeUndefined();
     expect(findOwningRun([run({ prRefs: [{ number: 8, url: 'https://github.com/other/demo/pull/8', origin: 'created', at: '2026-10-01T00:00:00.000Z' }] })], pr)).toBeUndefined();

@@ -60,18 +60,21 @@ export function findOwningRun(runs: Iterable<RunRecord>, candidate: { repo: stri
     const pull = pullOf(url);
     return !pull || pull.repo === repo;
   };
+  // Every PR the run made — `pullRequestUrl` names only its latest one, `created` refs all.
+  const created = (run: RunRecord): boolean => {
+    const made = pullOf(run.pullRequestUrl);
+    if (made?.repo === repo && made.number === number) return true;
+    return run.prRefs?.some((ref) => ref.origin === 'created' && ref.number === number
+      && (ref.url ? sameRepo(ref.url) : !made || made.repo === repo)) ?? false;
+  };
   const owns = (run: RunRecord): boolean => {
     if (run.prHead || run.dispatch?.parentRunId) return false;
     if (run.worktree !== false && !run.worktreePath) return false;
-    const created = pullOf(run.pullRequestUrl);
-    if (created) return created.repo === repo && created.number === number;
+    if (created(run)) return true;
+    // A run that made a PR owns only what it made, not one it merely mentioned.
+    if (pullOf(run.pullRequestUrl)) return false;
     if (run.prRefs?.some((ref) => ref.number === number && sameRepo(ref.url))) return true;
     return run.prNumber === number;
-  };
-  const created = (run: RunRecord): boolean => {
-    const made = pullOf(run.pullRequestUrl);
-    if (made) return made.repo === repo && made.number === number;
-    return run.prRefs?.some((ref) => ref.origin === 'created' && ref.number === number && sameRepo(ref.url)) ?? false;
   };
   let creator: RunRecord | undefined;
   let newest: RunRecord | undefined;

@@ -211,7 +211,7 @@ export interface ReclaimInput {
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /**
- * What Reclaim may free (spec §3.6), line by line: dangling images, build cache, stacks whose
+ * What Reclaim may free (spec §3.6), line by line: dangling images, build cache, task-worktree stacks whose
  * compose working dir is gone, and stopped standalone containers of those stacks' images.
  * Never a volume of a stack whose dir exists, an image in use, or anything of an active task.
  */
@@ -226,7 +226,8 @@ export function planReclaim(input: ReclaimInput): DockerReclaimItem[] {
   }
   if (input.buildCacheBytes > 0) items.push({ step: { kind: 'build-cache' }, label: 'Build cache', detail: null, bytes: input.buildCacheBytes });
 
-  const gone = input.stacks.filter((stack) => stack.name !== '' && stack.dirState === 'gone' && stack.task?.active !== true);
+  // Only a task worktree's stack (spec §2): a project checkout whose dir is gone is not Reclaim's to judge.
+  const gone = input.stacks.filter((stack) => stack.name !== '' && stack.dirState === 'gone' && worktreeRunOf(stack.dir) !== null && stack.task?.active !== true);
   for (const stack of gone) {
     const containerBytes = stack.containers.reduce((sum, container) => sum + (input.containerSizes.get(container.id) ?? 0), 0);
     const volumeBytes = stack.volumes.reduce((sum, name) => sum + (input.volumeSizes.get(name) ?? 0), 0);

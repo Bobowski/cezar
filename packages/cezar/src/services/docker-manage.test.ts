@@ -174,6 +174,14 @@ describe('Reclaim planner (spec 2026-10-23-docker-management §3.6)', () => {
     expect(keys).not.toContain(`container:${C('c')}`);
   });
 
+  it('a gone non-task stack is not listed: Reclaim frees task worktrees only', async () => {
+    const { stacks, managed, images } = await inventory();
+    // `ffp` runs from the project root, not a task worktree: its dir being gone is not Reclaim's call.
+    const goneRoot = stacks.map((stack) => (stack.name === 'ffp' ? { ...stack, dirState: 'gone' as const } : stack));
+    const items = planReclaim({ stacks: goneRoot, containers: managed, images, buildCacheBytes: 0, volumeSizes: new Map(), containerSizes: new Map() });
+    expect(items.map((item) => stepKey(item.step))).toEqual(['dangling-images', 'stack:ffp-4100', `container:${C('e')}`]);
+  });
+
   it('lists nothing about a stack whose dir cannot be judged from here', async () => {
     const { stacks, managed, images } = await inventory();
     const unjudged = stacks.map((stack) => (stack.name === 'ffp-4100' ? { ...stack, dirState: 'unknown' as const } : stack));

@@ -1,4 +1,4 @@
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { restoreMarkerPath } from './paths.ts';
 
 /**
@@ -18,6 +18,22 @@ export function writeRestoreMarker(info: { archive?: string } = {}): void {
   }
 }
 
+/** A marker that cannot be removed is renamed aside, and one that cannot be either is only logged: never a failed boot. */
+function retireMarker(log: (line: string) => void): void {
+  const path = restoreMarkerPath();
+  try {
+    rmSync(path, { force: true });
+    return;
+  } catch (error) {
+    try {
+      renameSync(path, `${path}.consumed`);
+      return;
+    } catch {
+      log(`  could not remove ${path} (${error instanceof Error ? error.message : String(error)}); the next boot will list orphans instead of pruning them too`);
+    }
+  }
+}
+
 /** Boot: a marker suspends orphan pruning for this whole process, and is removed so the next boot is ordinary. */
 export function consumeRestoreMarker(log: (line: string) => void = console.log): boolean {
   let raw: string;
@@ -27,7 +43,7 @@ export function consumeRestoreMarker(log: (line: string) => void = console.log):
     return false;
   }
   suspended = true;
-  rmSync(restoreMarkerPath(), { force: true });
+  retireMarker(log);
   let at = '';
   try {
     at = String((JSON.parse(raw) as { restoredAt?: unknown }).restoredAt ?? '');

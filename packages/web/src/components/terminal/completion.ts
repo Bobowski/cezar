@@ -180,6 +180,8 @@ export const PROMPT_RECHECK_MS = 1_100
 /** While the shell is still busy, it is asked again every `PROMPT_RECHECK_MS` for this long, so a
  *  command that ends on its own gives completion back. */
 export const PROMPT_RECHECK_LIMIT_MS = 10_000
+/** Past that window, a keystroke asks once more this long after typing pauses (spec §9). */
+export const KEY_RECHECK_MS = 1_000
 
 /** A prompt check's answer: whether the shell sits at its prompt, and where (`pathItems`). */
 export interface PromptState {
@@ -209,7 +211,7 @@ export interface KeyLike {
  *
  * It takes keys only at the shell's own prompt: never on the alternate screen (vim, less), and
  * only while the last prompt check — run at mount and again after each Enter, then every
- * `PROMPT_RECHECK_MS` while busy for up to `PROMPT_RECHECK_LIMIT_MS` — found the shell with
+ * `PROMPT_RECHECK_MS` while busy for up to `PROMPT_RECHECK_LIMIT_MS`, then `KEY_RECHECK_MS` after typing pauses — found the shell with
  * nothing running. A REPL or a program's prompt keeps its Tab, Esc and Ctrl+R.
  */
 export class CompletionController {
@@ -220,6 +222,7 @@ export class CompletionController {
   private dismissed = false
   private cancelAuto: (() => void) | null = null
   private cancelRecheck: (() => void) | null = null
+  private cancelKeyCheck: (() => void) | null = null
   /** The last prompt check's answer; a check still running counts as no. */
   private atPrompt: boolean
   /** Where the shell is, from the same check; unknown until one says. */
@@ -266,12 +269,15 @@ export class CompletionController {
       this.atPrompt = false
       this.close()
       this.cancelRecheck?.()
+      this.cancelKeyCheck?.()
+      this.cancelKeyCheck = null
       // An answer still in flight describes the shell before this key.
       this.checkSeq += 1
       this.rechecksLeft = Math.floor(PROMPT_RECHECK_LIMIT_MS / PROMPT_RECHECK_MS) - 1
       this.scheduleRecheck()
       return
     }
+    if (!this.atPrompt) this.scheduleKeyCheck()
     if (this.view?.mode === 'complete') {
       this.refresh(false)
       return
@@ -349,6 +355,8 @@ export class CompletionController {
   dispose(): void {
     this.cancelAuto?.()
     this.cancelAuto = null
+    this.cancelKeyCheck?.()
+    this.cancelKeyCheck = null
     this.cancelRecheck?.()
     this.cancelRecheck = null
     // An answer still in flight lands on nothing.
@@ -370,6 +378,16 @@ export class CompletionController {
           this.scheduleRecheck()
         }
       })
+  }
+
+  /** Past the recheck window, a command that ended on its own is noticed once typing pauses. */
+  private scheduleKeyCheck(): void {
+    if (!this.options.promptCheck || this.rechecksLeft > 0 || this.cancelRecheck !== null) return
+    this.cancelKeyCheck?.()
+    this.cancelKeyCheck = this.scheduler()(() => {
+      this.cancelKeyCheck = null
+      this.checkPrompt()
+    }, KEY_RECHECK_MS)
   }
 
   private scheduleRecheck(): void {

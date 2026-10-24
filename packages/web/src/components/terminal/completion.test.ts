@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
-  AUTO_DELAY_MS, CompletionController, LineTracker, PROMPT_RECHECK_LIMIT_MS, PROMPT_RECHECK_MS, childrenOf, filterHistory, promptStateOf, rankCompletions,
+  AUTO_DELAY_MS, CompletionController, KEY_RECHECK_MS, LineTracker, PROMPT_RECHECK_LIMIT_MS, PROMPT_RECHECK_MS, childrenOf, filterHistory, promptStateOf, rankCompletions,
   type CompletionSources, type CompletionView, type PromptState,
 } from './completion'
 
@@ -225,6 +225,33 @@ describe('CompletionController', () => {
       }
       expect(checks).toBe(Math.floor(PROMPT_RECHECK_LIMIT_MS / PROMPT_RECHECK_MS))
       expect(checks * PROMPT_RECHECK_MS).toBeLessThanOrEqual(PROMPT_RECHECK_LIMIT_MS)
+    })
+
+    it('past the ten seconds, asks once more a second after typing pauses, so a long command that ended gives keys back', async () => {
+      const { controller, key, answer, timers } = gated()
+      await answer(true)
+      // Within the window a keystroke asks nothing of its own.
+      controller.typed('npm run build\r')
+      controller.typed('x')
+      expect(timers.has(KEY_RECHECK_MS)).toBe(false)
+      for (let run = timers.get(PROMPT_RECHECK_MS); run; run = timers.get(PROMPT_RECHECK_MS)) {
+        timers.delete(PROMPT_RECHECK_MS)
+        run()
+        await answer(false)
+      }
+      controller.typed('\x7f')
+      // The build ended on its own; typing resumes. A burst asks once, after it pauses.
+      for (const char of 'npm run ') controller.typed(char)
+      expect(key('Tab')).toBe(true)
+      const run = timers.get(KEY_RECHECK_MS)!
+      timers.delete(KEY_RECHECK_MS)
+      run()
+      await answer(true)
+      expect(key('Tab')).toBe(false)
+      expect(controller.current?.mode).toBe('complete')
+      // At the prompt, keystrokes ask nothing.
+      controller.typed('d')
+      expect(timers.has(KEY_RECHECK_MS)).toBe(false)
     })
 
     it('is off before the first answer, and on Ctrl+C asks again', async () => {

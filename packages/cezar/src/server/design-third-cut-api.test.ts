@@ -126,7 +126,7 @@ describe('Design Mode, third cut — the API', () => {
     });
 
     it('refuses what is not a pick, in middleware', async () => {
-      for (const picks of [[{ ...pick, selector: '' }], [{ ...pick, source: { file: '/etc/passwd'.repeat(100) } }], 'x']) {
+      for (const picks of [[{ ...pick, selector: '' }], [{ ...pick, source: { file: '/etc/passwd' } }], [{ ...pick, source: { file: 'src/'.repeat(80) } }], 'x']) {
         expect((await send('/api/v1/repo/design-drafts', 'PUT', { picks })).status).toBe(400);
       }
       expect((await send('/api/v1/repo/design-drafts', 'PUT', { picks: Array.from({ length: 13 }, (_, n) => ({ ...pick, mark: `m-${n}` })) })).status).toBe(400);

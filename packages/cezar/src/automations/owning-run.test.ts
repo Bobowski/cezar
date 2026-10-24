@@ -9,7 +9,7 @@ import type { GithubCandidate } from './github-poller.ts';
 import { deliverAutomationMessage, findOwningRun, forgetGithubSelfLogins, githubSelfLogin, openTurnSince } from './owning-run.ts';
 import { ProjectAutomationScheduler } from './scheduler.ts';
 import { AutomationStore } from './store.ts';
-import { launchAutomationRun } from './task-template.ts';
+import { launchAutomationRun, rebaselineIdleAutomations } from './task-template.ts';
 import type { GithubAutomationDefinition } from './types.ts';
 
 const run = (over: Partial<RunRecord>): RunRecord => ({
@@ -481,11 +481,78 @@ describe('held events through the poll cycle (spec 2026-10-23-github-events §11
       traces: () => runs.githubTraces(),
       launch: (def, candidate, receiptId, options) => launchAutomationRun({ root, manager, store: runs, definition: def, candidate, receiptId, selfLogin: async () => 'cezar-bot', admit: options?.admit }),
     });
-    const poll = async (...candidates: GithubCandidate[]) => { polls.push(candidates); await scheduler.check(definition); };
+    // The definition as the store has it now: an edit, a pause or an enable bumps its revision.
+    const poll = async (...candidates: GithubCandidate[]) => { polls.push(candidates); await scheduler.check((automations.get('talk') ?? definition) as GithubAutomationDefinition); };
     const receiptOf = (id: number) => automations.latestReceipts().get(`talk:acme/demo:comment:${id}`);
     const results = () => automations.logs({ automationId: 'talk' }).filter((row) => row.receiptId).map((row) => row.result).reverse();
-    return { runs, owner, delivered, state, poll, receiptOf, results };
+    const edit = (over: Partial<GithubAutomationDefinition>) => {
+      const { id, revision, createdAt: _c, updatedAt: _u, ...editable } = automations.get('talk')!;
+      return automations.update(id, revision, { ...editable, ...over } as typeof editable);
+    };
+    const skippedReason = (id: number) => automations.logs({ automationId: 'talk' })
+      .find((row) => row.result === 'skipped' && row.receiptId === receiptOf(id)?.receiptId)?.reason;
+    return { runs, automations, owner, delivered, state, poll, receiptOf, results, edit, skippedReason };
   }
+
+  /** A comment of cezar's own login held during a live turn; `between` runs; the turn ends; a poll. */
+  async function heldThenTurnEnds(env: Awaited<ReturnType<typeof setup>>, id: number, between: () => void) {
+    env.state.live = true;
+    env.runs.appendEvent(env.owner.id, { type: 'turn.started', turnId: 't1' });
+    await env.poll(comment(id, 'cezar-bot', new Date()));
+    expect(env.receiptOf(id)).toMatchObject({ status: 'held' });
+    between();
+    env.runs.appendEvent(env.owner.id, { type: 'turn.completed', turnId: 't1' });
+    await env.poll();
+  }
+
+  it('pause marks a held event skipped (paused), and enabling again never sends it', async () => {
+    const env = await setup();
+    await heldThenTurnEnds(env, 21, () => {
+      env.edit({ enabled: false });
+      expect(env.receiptOf(21)).toMatchObject({ status: 'skipped' });
+      env.edit({ enabled: true });
+    });
+    expect(env.delivered).toEqual([]);
+    expect(env.receiptOf(21)).toMatchObject({ status: 'skipped' });
+    expect(env.skippedReason(21)).toMatch(/^paused:/);
+  });
+
+  it('an edit that drops the held event’s type supersedes it: skipped, never sent', async () => {
+    const env = await setup();
+    await heldThenTurnEnds(env, 22, () => { env.edit({ events: ['pull_request.review_commented'] }); });
+    expect(env.delivered).toEqual([]);
+    expect(env.receiptOf(22)).toMatchObject({ status: 'skipped' });
+    expect(env.skippedReason(22)).toMatch(/^superseded:/);
+  });
+
+  it('any other edit (the prompt, the delivery) supersedes what the old revision held', async () => {
+    const env = await setup();
+    await heldThenTurnEnds(env, 23, () => { env.edit({ task: { prompt: 'Reply to {{github.comment.url}}', workflow: 'quick-task' } }); });
+    expect(env.delivered).toEqual([]);
+    expect(env.receiptOf(23)).toMatchObject({ status: 'skipped' });
+    expect(env.skippedReason(23)).toMatch(/^superseded:/);
+  });
+
+  it('the boot re-baseline of an idle automation clears what it held', async () => {
+    const env = await setup();
+    await heldThenTurnEnds(env, 24, () => {
+      env.automations.setState('talk', (current) => ({ ...current, lastSuccessAt: new Date(Date.now() - 30 * 86_400_000).toISOString() }));
+      expect(rebaselineIdleAutomations(env.automations)).toBe(1);
+      expect(env.receiptOf(24)).toMatchObject({ status: 'skipped' });
+    });
+    expect(env.delivered).toEqual([]);
+    expect(env.skippedReason(24)).toMatch(/^superseded:/);
+  });
+
+  it('a held event older than the current baseline is superseded on release', async () => {
+    const env = await setup();
+    await heldThenTurnEnds(env, 25, () => {
+      env.automations.setState('talk', (current) => ({ ...current, baselineAt: new Date(Date.now() + 60_000).toISOString() }));
+    });
+    expect(env.delivered).toEqual([]);
+    expect(env.receiptOf(25)).toMatchObject({ status: 'skipped' });
+    expect(env.skippedReason(25)).toMatch(/^superseded:/);
+  });
 
   it('holds cezar’s own-login comment while the live turn is open, poll after poll, and delivers it on the first poll after the turn ends', async () => {
     const { runs, owner, delivered, state, poll, receiptOf, results } = await setup();

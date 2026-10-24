@@ -241,7 +241,10 @@ export async function launchEventCandidate(input: {
 
 /**
  * Decide every `held` event of `definition` again, oldest first (spec 2026-10-23-github-events
- * §11): one a trace now claims is cezar's own and is `skipped`; one still held stays as it is,
+ * §11): one held under another revision, of an event the definition no longer `tracks`, or
+ * from before its current baseline is `skipped` as superseded — an edit, an enable or a
+ * re-baseline owes it nothing; one a trace now claims is cezar's own and is `skipped`; one still
+ * held stays as it is,
  * silently; any other is launched or delivered like a new event. `launch` calls `admit` once the
  * holds pass and before anything starts, so the receipt is `reserved` across the launch the way
  * a fresh event's is, and a crash mid-launch is reconciled rather than repeated.
@@ -252,9 +255,18 @@ export async function releaseHeldEvents<C extends { timestamp: string }>(input: 
   candidateOf: (receipt: AutomationReceipt) => C | undefined;
   log: (candidate: C) => EventLogFields;
   own?: (candidate: C) => Promise<boolean>;
+  /** False for an event the definition no longer listens to. */
+  tracks?: (candidate: C) => boolean;
   launch: (receiptId: string, candidate: C, admit: () => void) => Promise<EventLaunched>;
 }): Promise<void> {
   const { store, definition } = input;
+  const baselineAt = store.state(definition.id)?.baselineAt;
+  const superseded = (receipt: AutomationReceipt, candidate: C): string | undefined => {
+    if (receipt.revision !== definition.revision) return `superseded: held under revision ${receipt.revision}, the automation is at ${definition.revision} now; not sent.`;
+    if (input.tracks && !input.tracks(candidate)) return 'superseded: the automation no longer tracks this event; not sent.';
+    if (baselineAt && Date.parse(candidate.timestamp) < Date.parse(baselineAt)) return `superseded: older than the automation's baseline (${baselineAt}); not sent.`;
+    return undefined;
+  };
   const held = [...store.latestReceipts().values()]
     .filter((receipt) => receipt.automationId === definition.id && receipt.status === 'held')
     .flatMap((receipt) => {
@@ -264,6 +276,12 @@ export async function releaseHeldEvents<C extends { timestamp: string }>(input: 
     .sort((a, b) => a.candidate.timestamp.localeCompare(b.candidate.timestamp) || a.receipt.observedAt.localeCompare(b.receipt.observedAt));
   for (const { receipt, candidate } of held) {
     const log = input.log(candidate);
+    const stale = superseded(receipt, candidate);
+    if (stale) {
+      heldCandidates.delete(receipt.receiptId);
+      recordOutcome(store, definition, receipt, log, new AutomationLaunchOutcome('skipped', stale));
+      continue;
+    }
     if (await input.own?.(candidate)) {
       heldCandidates.delete(receipt.receiptId);
       recordOutcome(store, definition, receipt, log, new AutomationLaunchOutcome('skipped', 'own-trace: a push or comment cezar recorded as its own; never delivered.'));

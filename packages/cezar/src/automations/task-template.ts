@@ -530,6 +530,7 @@ export function rebaselineIdleAutomations(
       backoffUntil: undefined,
       consecutiveFailures: 0,
     }));
+    automationStore.skipHeldReceipts(definition.id, definition.revision, 'superseded: re-baselined at start after idling past the lookback; a held event is not sent.');
     automationStore.appendLog({
       automationId: definition.id,
       revision: definition.revision,

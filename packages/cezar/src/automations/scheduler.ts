@@ -201,6 +201,7 @@ export class ProjectAutomationScheduler {
       store: this.handle.store, definition,
       candidateOf: (receipt) => receipt.candidate as GithubCandidate | undefined,
       log: (candidate) => ({ event: candidate.event, githubNumber: candidate.number, githubTitle: candidate.title, githubUrl: candidate.url }),
+      tracks: (candidate) => definition.events?.includes(candidate.event) ?? false,
       own: async (candidate) => {
         const traces = await this.handle.traces?.();
         return !!traces && isOwnTrace(candidate, traces, definition.filters.includeOwnPushes);

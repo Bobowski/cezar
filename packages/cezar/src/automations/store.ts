@@ -138,6 +138,8 @@ export class AutomationStore {
         updatedAt: this.now().toISOString(),
       });
       this.definitions.set(id, definition);
+      // A paused automation sends nothing it held (spec 2026-10-23-github-events §11).
+      if (!definition.enabled) this.skipHeldReceipts(id, definition.revision, 'paused: the automation was paused; a held event is not sent when it is enabled again.');
       // `pinnedCursor` records that a cursor was unescapable *under the previous definition*, and the
       // pinned poll log tells the operator to narrow the filter to escape it. Carrying the marker across
       // an edit would skip the widening re-poll that makes the narrowed filter take effect, so the very
@@ -241,6 +243,25 @@ export class AutomationStore {
     });
     this.appendReceipt(receipt);
     return receipt;
+  }
+
+  /**
+   * Settle every `held` receipt of `automationId` as `skipped` with `reason`, one log row each —
+   * a pause or a re-baseline (spec 2026-10-23-github-events §11). Returns how many.
+   */
+  skipHeldReceipts(automationId: string, revision: number, reason: string): number {
+    let skipped = 0;
+    for (const receipt of this.latestReceipts().values()) {
+      if (receipt.automationId !== automationId || receipt.status !== 'held') continue;
+      this.appendReceipt({ ...receipt, status: 'skipped', error: undefined, updatedAt: this.now().toISOString() });
+      const candidate = receipt.candidate;
+      this.appendLog({
+        automationId, revision, result: 'skipped', reason, receiptId: receipt.receiptId,
+        ...(candidate ? { event: candidate.event, githubNumber: candidate.number, githubTitle: candidate.title, githubUrl: candidate.url } : {}),
+      });
+      skipped += 1;
+    }
+    return skipped;
   }
 
   /** Called under both polling and mutation leases, after run reconciliation. */

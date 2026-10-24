@@ -187,7 +187,8 @@ Nothing to configure. Reclaim is a click, never a timer. All new state is Docker
   Reclaim's stack step always goes this way, since its dir is gone by definition. A dir still there
   whose files are missing (or unlabelled) is not torn down by labels unasked: Down answers `409`
   "compose files missing in <dir>; stop it from that directory or remove by label", and
-  `{ byLabel: true }` removes the whole stack by its label.
+  `{ byLabel: true }` removes the whole stack by its label — the cockpit offers it on that `409` as
+  **Remove by label**, a confirm naming the label, the containers and (on its checkbox) the volumes.
 - **A dir is "gone" only when this host can judge it** (`dirState`: a WSL path seen from Windows is
   `unknown`), and Reclaim lists `gone` stacks only.
 - **A stack is judged by every container in it**, since a compose file with a top-level `name:` puts

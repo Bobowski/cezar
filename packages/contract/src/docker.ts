@@ -231,6 +231,8 @@ export type DockerForceBody = z.infer<typeof dockerForceBodySchema>;
 /** `byLabel`: tear it down by its compose label even where a live dir's compose files are missing (else a 409). */
 export const dockerStackDownSchema = z.object({ volumes: z.boolean().optional(), byLabel: z.boolean().optional() }).strict();
 export type DockerStackDown = z.infer<typeof dockerStackDownSchema>;
+/** How Down's `409` for a live dir without its compose files begins — the cockpit offers `byLabel` on it. */
+export const DOCKER_COMPOSE_FILES_MISSING = 'compose files missing in';
 
 export const dockerOkSchema = z.object({ ok: z.literal(true) }).strict();
 export type DockerOk = z.infer<typeof dockerOkSchema>;

@@ -1060,8 +1060,10 @@ export async function removeDockerVolume(name: string, force: boolean, users: st
 export async function removeDockerContainer(id: string, force: boolean): Promise<void> {
   await unwrap(await dockerApi().containers[':id'].$delete({ param: { ...scopeParam(), id }, ...forceQuery(force) }), '/docker/containers')
 }
-export async function dockerStackDown(name: string, volumes: boolean): Promise<void> {
-  await unwrap(await dockerApi().stacks[':name'].down.$post({ param: { ...scopeParam(), name }, json: { volumes } }), '/docker/stacks/down')
+/** `byLabel`: remove all of it by its compose label, for a live dir whose compose files are missing. */
+export async function dockerStackDown(name: string, volumes: boolean, byLabel = false): Promise<void> {
+  const json = byLabel ? { volumes, byLabel } : { volumes }
+  await unwrap(await dockerApi().stacks[':name'].down.$post({ param: { ...scopeParam(), name }, json }), '/docker/stacks/down')
 }
 export async function readDockerLogs(id: string, cursor: number): Promise<DockerLogs> {
   return unwrap(await dockerApi().containers[':id'].logs.$get({ param: { ...scopeParam(), id }, query: { cursor: String(cursor) } }), '/docker/containers/logs')

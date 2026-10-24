@@ -12,7 +12,7 @@ import {
   repoSyncQuerySchema, type RepoPullResponse, type RepoSync,
   PROJECT_ICON_MAX_BYTES, setProjectIconSchema, type ProjectIconCandidates,
   dockerContainerParamsSchema, dockerStackParamsSchema, type DockerState,
-  dockerForceBodySchema, dockerForceQuerySchema, dockerImageParamsSchema, dockerLogsQuerySchema, dockerReclaimRequestSchema, dockerStackDownSchema,
+  DOCKER_COMPOSE_FILES_MISSING, dockerForceBodySchema, dockerForceQuerySchema, dockerImageParamsSchema, dockerLogsQuerySchema, dockerReclaimRequestSchema, dockerStackDownSchema,
   dockerVolumeParamsSchema, type DockerDisk, type DockerImages, type DockerLogs, type DockerReclaimPlan, type DockerReclaimResult, type DockerStack,
   type DockerVolumes,
   githubReposQuerySchema, type GithubReposResponse,
@@ -7588,7 +7588,7 @@ export function createApp(deps: ServerDeps) {
       const member = live.find((entry) => entry.configFiles.length > 0 && entry.configFiles.every((file) => judgeDir(file) === 'exists'));
       // A live dir without its files: a label down by default would be partial or surprising — the user picks.
       if (!member && live.length > 0 && !byLabel) {
-        return c.json({ error: `compose files missing in ${live[0]!.dir}; stop it from that directory or remove by label` }, 409);
+        return c.json({ error: `${DOCKER_COMPOSE_FILES_MISSING} ${live[0]!.dir}; stop it from that directory or remove by label` }, 409);
       }
       const goneDirs = [...new Set(members.flatMap((entry) => (entry.dir !== null && judgeDir(entry.dir) === 'gone' ? [entry.dir] : [])))];
       const result = member && !byLabel

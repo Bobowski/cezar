@@ -79,7 +79,8 @@ const PLAN: DockerReclaimPlan = {
 const SERVICES = { available: true, reason: null, services: [], candidates: [], lastRunning: [], topic: 'services:p' }
 const HEALTH = { version: 't', repoRoot: '/srv', repo: { root: '/srv', branch: 'main' }, checks: [], defaultRunner: 'claude', capabilities: { terminal: true } }
 
-function setup(docker: DockerState = DOCKER, entry = '/docker') {
+/** `refuse`: the `{ error }` a write answers with a 409 instead of succeeding, or `null`. */
+function setup(docker: DockerState = DOCKER, entry = '/docker', refuse: (call: string) => string | null = () => null) {
   const calls: string[] = []
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
@@ -89,7 +90,10 @@ function setup(docker: DockerState = DOCKER, entry = '/docker') {
     if (url.includes('/health')) return ok(HEALTH)
     if (url.includes('/docker/reclaim/plan')) return ok(PLAN)
     if (method !== 'GET') {
-      calls.push(`${method} ${path}${init?.body ? ` ${String(init.body)}` : ''}`)
+      const call = `${method} ${path}${init?.body ? ` ${String(init.body)}` : ''}`
+      calls.push(call)
+      const refusal = refuse(call)
+      if (refusal) return new Response(JSON.stringify({ error: refusal }), { status: 409, headers: { 'content-type': 'application/json' } })
       if (url.includes('/docker/reclaim')) return ok({ freedBytes: 6.12e9, log: ['1 dangling image: done', 'Build cache: done'] })
       if (url.includes('/repo/terminal')) return ok({ id: 's1', runId: '', cwd: '/srv', shell: 'bash', cols: 80, rows: 24, startedAt: '', exitCode: null, label: 'bash', busy: false, topic: 'terminal:s1' })
       return url.includes('/start') || url.includes('/stop') ? new Response(null, { status: 204 }) : ok({ ok: true })
@@ -163,6 +167,24 @@ describe('Docker management (spec 2026-10-23-docker-management)', () => {
     expect(dialog.querySelector('[data-slot="docker-confirm-option-names"]')?.textContent).toBe('shop-b_pg')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Down' }))
     await waitFor(() => expect(calls).toEqual(['POST /docker/stacks/shop-b/down {"volumes":true}']))
+  })
+
+  it('offers removal by label when Down finds the compose files missing, naming what the label takes', async () => {
+    const missing = 'compose files missing in /srv/shop-b; stop it from that directory or remove by label'
+    const calls = setup(DOCKER, '/docker', (call) => (call.endsWith('{"volumes":false}') ? missing : null))
+    fireEvent.click(await screen.findByRole('button', { name: 'Down shop-b' }))
+    fireEvent.click(within(await confirmDialog()).getByRole('button', { name: 'Down' }))
+    const dialog = await screen.findByRole('alertdialog', { name: 'Remove shop-b by its label?' })
+    expect(dialog.textContent).toContain('its files are missing in /srv/shop-b')
+    expect(dialog.textContent).toContain('com.docker.compose.project=shop-b')
+    expect(dialog.querySelector('[data-slot="docker-confirm-items"]')?.textContent).toContain('shop-b-postgres-1 (running)')
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Also remove its labelled volumes' }))
+    expect(dialog.querySelector('[data-slot="docker-confirm-option-names"]')?.textContent).toBe('shop-b_pg')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove by label' }))
+    await waitFor(() => expect(calls).toEqual([
+      'POST /docker/stacks/shop-b/down {"volumes":false}',
+      'POST /docker/stacks/shop-b/down {"volumes":true,"byLabel":true}',
+    ]))
   })
 
   it('force-removes a running container, and says it is running', async () => {

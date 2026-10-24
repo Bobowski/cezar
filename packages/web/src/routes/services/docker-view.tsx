@@ -3,7 +3,7 @@ import { ArrowDownToLineIcon, PlayIcon, ScrollTextIcon, SquareIcon, SquareTermin
 import { Fragment, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router'
 
-import type { DockerContainer, DockerImage, DockerStack, DockerVolume } from '@open-mercato/cezar-api-client'
+import { DOCKER_COMPOSE_FILES_MISSING, type DockerContainer, type DockerImage, type DockerStack, type DockerVolume } from '@open-mercato/cezar-api-client'
 import {
   dockerContainerAction, dockerStackAction, dockerStackDown, removeDockerContainer, removeDockerImage, removeDockerVolume,
 } from '@/api/client'
@@ -63,6 +63,23 @@ export function stackDown(stack: DockerStack, down: (volumes: boolean) => void):
     items: { label: 'Containers', names: stack.containers.map((c) => `${c.name}${c.running ? ' (running)' : ''}`) },
     ...(stack.volumes.length > 0 ? { option: { label: 'Also remove its volumes', names: stack.volumes } } : {}),
     confirmLabel: 'Down',
+    onConfirm: down,
+  }
+}
+
+/**
+ * Down's fallback when compose cannot run: the stack's dir is there but its compose files are not
+ * (`refusal` is the server's 409). Everything its compose label names goes, said so in full.
+ */
+export function stackDownByLabel(stack: DockerStack, refusal: string, down: (volumes: boolean) => void): DockerConfirmRequest {
+  const dir = refusal.slice(DOCKER_COMPOSE_FILES_MISSING.length).split(';')[0]?.trim() || stack.dir
+  return {
+    title: `Remove ${stack.name} by its label?`,
+    body: `Compose cannot take it down: its files are missing in ${dir}. Instead, everything labelled com.docker.compose.project=${stack.name} goes — each container below is force-removed and the stack's networks are removed${stack.project ? ` (${stackOwner(stack)})` : ''}.`,
+    warnings: [...taskWarnings(stack), ...stack.containers.filter((c) => c.running).map((c) => `${c.name} is running`)],
+    items: { label: 'Containers', names: stack.containers.map((c) => `${c.name}${c.running ? ' (running)' : ''}`) },
+    ...(stack.volumes.length > 0 ? { option: { label: 'Also remove its labelled volumes', names: stack.volumes } } : {}),
+    confirmLabel: 'Remove by label',
     onConfirm: down,
   }
 }
@@ -134,7 +151,7 @@ function ContainerRow({ container, busy, execAllowed, onAct, onRemove, onLogs, o
 
 type DockerMutation =
   | { kind: 'stack' | 'container'; id: string; action: 'start' | 'stop' }
-  | { kind: 'down'; id: string; volumes: boolean }
+  | { kind: 'down'; id: string; volumes: boolean; byLabel?: boolean }
   | { kind: 'rm'; ids: string[]; force: boolean }
   | { kind: 'image'; id: string; force: boolean; users: string[] }
   | { kind: 'volume'; id: string; force: boolean; users: string[] }
@@ -143,7 +160,7 @@ async function runMutation(input: DockerMutation): Promise<void> {
   switch (input.kind) {
     case 'stack': return dockerStackAction(input.id, input.action)
     case 'container': return dockerContainerAction(input.id, input.action)
-    case 'down': return dockerStackDown(input.id, input.volumes)
+    case 'down': return dockerStackDown(input.id, input.volumes, input.byLabel === true)
     case 'rm': for (const id of input.ids) await removeDockerContainer(id, input.force); return
     case 'image': return removeDockerImage(input.id, input.force, input.users)
     case 'volume': return removeDockerVolume(input.id, input.force, input.users)
@@ -174,7 +191,14 @@ export function DockerView({ header }: { header: ReactNode }) {
   const [logs, setLogs] = useState<DockerContainer | null>(null)
   const act = useMutation({
     mutationFn: runMutation,
-    onError: (error: Error) => toast(error.message, { tone: 'danger' }),
+    onError: (error: Error, input) => {
+      // A live dir without its compose files: offer removal by label instead of a dead-end toast.
+      const stack = input.kind === 'down' && !input.byLabel && error.message.startsWith(DOCKER_COMPOSE_FILES_MISSING)
+        ? state.data?.stacks.find((entry) => entry.name === input.id)
+        : undefined
+      if (stack) setConfirm(stackDownByLabel(stack, error.message, (volumes) => act.mutate({ kind: 'down', id: stack.name, volumes, byLabel: true })))
+      else toast(error.message, { tone: 'danger' })
+    },
     // The state key is every sub-view's prefix: one invalidation re-reads whichever is shown.
     onSettled: () => queryClient.invalidateQueries({ queryKey: queryKeys.docker.state() }),
   })

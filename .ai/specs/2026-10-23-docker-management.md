@@ -198,3 +198,6 @@ Nothing to configure. Reclaim is a click, never a timer. All new state is Docker
   run's registered values), logs are redacted with the stored secrets of the workspace and of every
   registered project — a container belongs to no one project. Each scope is re-read at most every
   10 s; a failed read is never cached as "no secrets", the next read retries it.
+- **An over-long log line (8 KiB, no newline) goes out cut where no secret is split**
+  (`redactionSafeCut`): the tail that could still hold a secret's start is held back, redacted with
+  what follows. A held tail past 32 KiB (a token shape that never ends) goes out redacted whole.

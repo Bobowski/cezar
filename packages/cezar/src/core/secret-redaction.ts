@@ -98,6 +98,29 @@ export function redactSecrets(text: string, secretValues: readonly string[]): st
   return out;
 }
 
+/** Longer than any token shape needs before it can match at all (`AIza` + 35). */
+const TOKEN_HOLD = 64;
+
+/**
+ * Where a stream redacted piece by piece may cut `text` without splitting a secret value or token
+ * shape: at most `text.length - hold`, before any match reaching that point. The tail is held back,
+ * since a secret starting there may still be arriving.
+ */
+export function redactionSafeCut(text: string, secretValues: readonly string[]): number {
+  let cut = text.length - Math.max(TOKEN_HOLD, ...secretValues.map((value) => value.length));
+  if (cut <= 0) return 0;
+  const spans: Array<[number, number]> = [];
+  for (const value of secretValues) {
+    if (value === '') continue;
+    for (let at = text.indexOf(value); at !== -1; at = text.indexOf(value, at + 1)) spans.push([at, at + value.length]);
+  }
+  for (const re of TOKEN_PATTERNS) for (const match of text.matchAll(re)) spans.push([match.index, match.index + match[0].length]);
+  // Latest first, so a span the moved cut now reaches is still seen; a token reaching it may still be growing.
+  spans.sort((a, b) => b[0] - a[0]);
+  for (const [start, end] of spans) if (start < cut && end >= cut) cut = start;
+  return cut;
+}
+
 /**
  * Deep-copy `value`, redacting every string leaf. Structure/keys are
  * preserved; only string values (and string keys are left untouched — keys are

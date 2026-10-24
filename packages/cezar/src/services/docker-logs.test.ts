@@ -36,6 +36,27 @@ describe('docker logs followers (spec 2026-10-23-docker-management §3.4)', () =
     expect(followers.read(ID, first.cursor)).toMatchObject({ data: 'warn: slow\n', truncated: false });
   });
 
+  it('keeps a secret whole across the cut of an over-long line', () => {
+    const { followers, spawned } = harness();
+    followers.read(ID, 0);
+    // Past the 8 KiB line bound with a stored secret and a token shape each split across chunks.
+    spawned[0]!.data('out', `${'x'.repeat(8190)}pw=hunter2-sup`);
+    spawned[0]!.data('out', 'er-secret-value tok=ghp_abcdefghij');
+    spawned[0]!.data('out', `klmnopqrstuvwxyz123456 ${'y'.repeat(9000)}`);
+    spawned[0]!.data('out', ' end\n');
+    const data = followers.read(ID, 0).data;
+    expect(data).not.toContain('hunter2');
+    expect(data).not.toContain('ghp_');
+    expect(data.endsWith('pw=[REDACTED] tok=[REDACTED] ' + 'y'.repeat(9000) + ' end\n')).toBe(true);
+  });
+
+  it('still flushes a line that never ends, so memory stays bounded', () => {
+    const { followers, spawned } = harness();
+    followers.read(ID, 0);
+    spawned[0]!.data('out', 'z'.repeat(20_000));
+    expect(followers.read(ID, 0).data.length).toBeGreaterThan(19_000);
+  });
+
   it('is demand-driven: the last topic release kills the process, a returning reader resumes', () => {
     const { followers, spawned } = harness();
     followers.hold(ID);

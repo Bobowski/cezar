@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { collectSecretValues, redactSecrets } from '../core/secret-redaction.ts';
+import { collectSecretValues, redactionSafeCut, redactSecrets } from '../core/secret-redaction.ts';
 
 /**
  * `docker logs --tail 500 --follow <id>`, one process per container while someone looks (spec
@@ -39,8 +39,10 @@ export const dockerSpawn: DockerSpawn = (args, on) => {
 export const TAIL_LINES = 500;
 /** Kept per container; older output is dropped and a reader behind it is told so. */
 const MAX_CHARS = 512 * 1024;
-/** A line longer than this is redacted and kept without waiting for its newline. */
+/** A line longer than this is redacted and kept without waiting for its newline, cut where no secret is split. */
 const MAX_PENDING = 8 * 1024;
+/** Past this a held tail (a token shape that never ends) goes out anyway, redacted whole. */
+const MAX_HELD = 4 * MAX_PENDING;
 const BELL_MS = 200;
 
 interface Entry {
@@ -76,9 +78,21 @@ export class DockerLogFollowers {
     return this.options.now?.() ?? Date.now();
   }
 
+  private secretValues(): readonly string[] {
+    return this.options.secrets?.() ?? collectSecretValues();
+  }
+
   private redact(text: string): string {
     if (process.env.CEZ_REDACT_SECRETS === '0') return text;
-    return redactSecrets(text, this.options.secrets?.() ?? collectSecretValues());
+    return redactSecrets(text, this.secretValues());
+  }
+
+  /** How much of `pending` goes out now: whole lines, plus an over-long line's head that splits no secret. */
+  private cutOf(pending: string): number {
+    const lines = pending.lastIndexOf('\n') + 1;
+    if (pending.length - lines <= MAX_PENDING) return lines;
+    if (process.env.CEZ_REDACT_SECRETS === '0' || pending.length > MAX_HELD) return pending.length;
+    return Math.max(lines, redactionSafeCut(pending, this.secretValues()));
   }
 
   private entry(id: string): Entry {
@@ -122,7 +136,7 @@ export class DockerLogFollowers {
         if (entry.proc !== proc) return;
         // Whole lines only, so a secret split across two chunks is still one string when redacted.
         const pending = entry.pending[stream] + chunk;
-        const cut = pending.length > MAX_PENDING ? pending.length : pending.lastIndexOf('\n') + 1;
+        const cut = this.cutOf(pending);
         entry.pending[stream] = pending.slice(cut);
         this.append(id, entry, this.redact(pending.slice(0, cut)));
       },

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RunStore, type RunEvent, type RunRecord } from '../runs/store.ts';
 import type { RunManager } from '../workflows/run.ts';
-import { launchEventCandidate, releaseHeldEvents } from './event-poll-cycle.ts';
+import { forgetHeldCandidates, launchEventCandidate, releaseHeldEvents } from './event-poll-cycle.ts';
 import type { GithubCandidate } from './github-poller.ts';
 import { deliverAutomationMessage, findOwningRun, forgetGithubSelfLogins, githubSelfLogin, openTurnSince } from './owning-run.ts';
 import { ProjectAutomationScheduler } from './scheduler.ts';
@@ -597,6 +597,31 @@ describe('held events through the poll cycle (spec 2026-10-23-github-events §11
     });
     expect(env.delivered).toEqual([]);
     expect(env.skippedReason(24)).toMatch(/^superseded:/);
+  });
+
+  it('after a restart (the held body is gone) delivers from the receipt, pointing at the comment’s URL', async () => {
+    const env = await setup();
+    await heldThenTurnEnds(env, 26, () => forgetHeldCandidates());
+    expect(env.delivered).toHaveLength(1);
+    expect(env.delivered[0]).toContain('comment_body: (not kept; read it at https://github.com/acme/demo/pull/8#issuecomment-26)');
+    expect(env.delivered[0]).not.toContain('Comment 26.');
+    expect(env.receiptOf(26)).toMatchObject({ status: 'launched', delivered: true });
+  });
+
+  it('pause, an edit while paused, then enable: the old hold stays skipped and a new comment goes in', async () => {
+    const env = await setup();
+    await heldThenTurnEnds(env, 27, () => {
+      env.edit({ enabled: false });
+      env.edit({ task: { prompt: 'Reply: {{github.comment.body}}', workflow: 'quick-task' } });
+      env.edit({ enabled: true });
+    });
+    expect(env.delivered).toEqual([]);
+    expect(env.receiptOf(27)).toMatchObject({ status: 'skipped' });
+    expect(env.skippedReason(27)).toMatch(/^paused:/);
+    await env.poll(comment(28, 'dave', new Date(Date.now() + 1_000)));
+    expect(env.delivered).toHaveLength(1);
+    expect(env.delivered[0]).toContain('Reply:');
+    expect(env.receiptOf(28)).toMatchObject({ status: 'launched', delivered: true });
   });
 
   it('a held event older than the current baseline is superseded on release', async () => {

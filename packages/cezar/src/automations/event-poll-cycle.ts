@@ -197,6 +197,11 @@ export function recordOutcome(store: AutomationStore, definition: AutomationDefi
 const heldCandidates = new Map<string, unknown>();
 const HELD_MEMORY_CAP = 500;
 
+/** Test seam: forget every held body, as a restart does. */
+export function forgetHeldCandidates(): void {
+  heldCandidates.clear();
+}
+
 function rememberHeld(receiptId: string, candidate: unknown): void {
   if (candidate === undefined) return;
   heldCandidates.delete(receiptId);

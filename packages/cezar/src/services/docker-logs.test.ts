@@ -227,25 +227,31 @@ describe('docker logs followers (spec 2026-10-23-docker-management §3.4)', () =
     const pem = '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\nSECRETBODYLINE2abcdefghijklmnop\n-----END PRIVATE KEY-----';
     const pw = 'Zq8!rT2#vLp9@xWm4$kN7';
 
+    // Output before the release, so the next hold resumes rather than starting a fresh tail.
     it('drops a partial line a release cut off instead of joining it to the next follower', () => {
       const { followers, spawned } = harness([pem, pw]);
       followers.hold(ID);
-      spawned[0]!.data('out', `DB=${pw.slice(0, 16)}`);
+      spawned[0]!.data('out', `boot\nDB: ${pw.slice(0, 16)}`);
       followers.release(ID);
       followers.hold(ID);
+      // No stamp to resume from (output without one): the host's time.
+      expect(spawned[1]?.args).toEqual(['logs', '--timestamps', '--since', '1970-01-01T00:00:01.000Z', '--follow', ID]);
       spawned[1]!.data('out', 'next line\n');
-      expect(followers.read(ID, 0).data).toBe('next line\n');
+      expect(followers.read(ID, 0).data).toBe('boot\nnext line\n');
     });
 
     it('drops a half-held PEM a release cut off', () => {
       const { followers, spawned } = harness([pem, pw]);
+      const ts = (n: number) => `2026-10-24T10:00:0${n}.000000000Z`;
       followers.hold(ID);
       const lines = pem.split('\n');
-      spawned[0]!.data('out', `${lines[0]}\n${lines[1]}\n`);
+      spawned[0]!.data('out', `${ts(1)} boot\n${ts(2)} ${lines[0]}\n${ts(3)} ${lines[1]}\n`);
       followers.release(ID);
       followers.hold(ID);
-      spawned[1]!.data('out', 'after restart\n');
-      expect(followers.read(ID, 0).data).toBe('after restart\n');
+      expect(spawned[1]?.args).toEqual(['logs', '--timestamps', '--since', ts(3), '--follow', ID]);
+      // Docker sends the last line again from its stamp: it is skipped, and the held start never shows.
+      spawned[1]!.data('out', `${ts(3)} ${lines[1]}\n${ts(4)} after restart\n`);
+      expect(followers.read(ID, 0).data).toBe('boot\nafter restart\n');
     });
 
     it('still redacts a PEM a resumed follower finishes, from the hidden start the killed one held', () => {

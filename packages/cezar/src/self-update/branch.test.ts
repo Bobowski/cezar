@@ -419,6 +419,22 @@ describe('applying a branch build', () => {
     expect(git(join(home, 'source'), ['config', '--get', 'remote.origin.url'])).toBe(REMOTE);
   });
 
+  it('builds from a clean tree: an earlier build\'s output goes, node_modules stays', async () => {
+    const { tip } = await prepared();
+    const svc = service();
+    await svc.status({ refresh: true });
+    const clone = join(home, 'source');
+    await svc.source.checkout(tip);
+    for (const leftover of ['packages/cezar/dist/stale.js', 'node_modules/dep/index.js', 'packages/cezar/node_modules/dep/index.js']) {
+      mkdirSync(join(clone, leftover, '..'), { recursive: true });
+      writeFileSync(join(clone, leftover), '');
+    }
+    await svc.source.checkout(tip);
+    expect(existsSync(join(clone, 'packages/cezar/dist/stale.js'))).toBe(false);
+    expect(existsSync(join(clone, 'node_modules/dep/index.js'))).toBe(true);
+    expect(existsSync(join(clone, 'packages/cezar/node_modules/dep/index.js'))).toBe(true);
+  });
+
   it('takes over a lock its dead holder left behind', async () => {
     const { target } = await prepared();
     const { deps } = stubs();

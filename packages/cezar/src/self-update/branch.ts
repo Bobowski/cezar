@@ -333,12 +333,14 @@ export class BranchSource {
     return (await this.commit(short))?.sha ?? null;
   }
 
-  /** Put the work tree on `sha`, discarding whatever an earlier attempt left — never `clean -x`,
-   *  so `node_modules` survive between builds. */
+  /** Put the work tree on `sha`, discarding whatever an earlier attempt left — ignored build
+   *  output too (a stale `dist/` would ship in `npm pack`), but never `node_modules`, so
+   *  installs survive between builds. */
   async checkout(sha: string): Promise<void> {
     for (const args of [
       ['checkout', '--quiet', '--detach', '--force', sha],
       ['reset', '--quiet', '--hard', sha],
+      ['clean', '--quiet', '-fdx', '-e', 'node_modules'],
     ]) {
       const result = await this.run(args, 5 * 60_000);
       if (!result.ok) throw new Error(`git ${args[0]} ${sha.slice(0, 8)} failed: ${firstLine(result.stderr)}`);

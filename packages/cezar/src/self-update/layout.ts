@@ -91,6 +91,18 @@ const manifestSchema = z
   .passthrough();
 export type InstallManifest = z.infer<typeof manifestSchema>;
 
+/** How old an install is: its commit date, else its registry publish date, else its install time —
+ *  the first that parses. The container's boot choice (`supervise_install_date`) uses this order. */
+export function installDate(manifest: InstallManifest): { at: string; how: 'committed' | 'published' | 'installed' } | null {
+  const candidates = [
+    [manifest.commit?.at, 'committed'],
+    [manifest.publishedAt, 'published'],
+    [manifest.installedAt, 'installed'],
+  ] as const;
+  for (const [at, how] of candidates) if (at && Number.isFinite(Date.parse(at))) return { at, how };
+  return null;
+}
+
 export function readManifest(id: string, env: NodeJS.ProcessEnv = process.env): InstallManifest | null {
   try {
     const parsed = manifestSchema.safeParse(JSON.parse(readFileSync(join(versionDir(id, env), MANIFEST_FILE), 'utf8')));

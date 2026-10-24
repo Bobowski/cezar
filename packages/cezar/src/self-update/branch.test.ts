@@ -393,6 +393,19 @@ describe('forward-only on a hosted cockpit, by committer date', () => {
     expect(await svc.forwardOnlyRefusal(`0.17.0+${newer.slice(0, 8)}`)).toBeNull();
   });
 
+  // The same order docker/supervise.sh's boot choice dates installs by: commit, publish, install.
+  it('dates a commitless running release by its publish date before its install time', async () => {
+    const older = commit('feat: before the release', '2026-10-20T10:00:00Z', { 'packages/cezar/package.json': pkg() });
+    const between = commit('feat: after the release, before its install', '2026-10-22T10:00:00Z');
+    fakeInstall('0.17.0', { version: '0.17.0', source: 'registry', publishedAt: '2026-10-21T10:00:00.000Z', installedAt: '2026-10-23T10:00:00.000Z' });
+    activate('0.17.0', env);
+    await followBranch();
+    const svc = service();
+    await svc.status({ refresh: true });
+    expect(await svc.forwardOnlyRefusal(`0.17.0+${older.slice(0, 8)}`)).toMatch(/committed before the running 0\.17\.0 was published \(2026-10-21/);
+    expect(await svc.forwardOnlyRefusal(`0.17.0+${between.slice(0, 8)}`)).toBeNull();
+  });
+
   it('refuses a newer commit the branch tip does not reach, and one that does not descend from the running build', async () => {
     const c1 = commit('feat: running', '2026-10-21T10:00:00Z', { 'packages/cezar/package.json': pkg() });
     const dropped = commit('feat: force-pushed away', '2026-10-22T10:00:00Z');

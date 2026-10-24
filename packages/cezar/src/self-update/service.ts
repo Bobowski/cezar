@@ -40,6 +40,7 @@ import {
   detectInstallKind,
   findInstalled,
   foreignInstallOwner,
+  installDate,
   isBranchInstallId,
   linkCheckout,
   listInstalled,
@@ -468,28 +469,26 @@ export class SelfUpdateService {
    *  time. Null for a registry, local or linked install (their publish date dates them). */
   private runningBuildDate(): string | null {
     const manifest = this.runningId ? readManifest(this.runningId, this.env) : null;
-    if (!manifest) return null;
-    if (manifest.commit?.at && Number.isFinite(Date.parse(manifest.commit.at))) return manifest.commit.at;
-    if (manifest.source !== 'branch' && manifest.source !== 'image') return null;
-    return Number.isFinite(Date.parse(manifest.installedAt)) ? manifest.installedAt : null;
+    const dated = manifest ? installDate(manifest) : null;
+    if (!manifest || !dated) return null;
+    return dated.how === 'committed' || manifest.source === 'branch' || manifest.source === 'image' ? dated.at : null;
   }
 
   private branchDateRefusal(target: string, targetAt: string, suffix: string): string | null {
-    const runningAt = this.runningCommit()?.at;
-    if (runningAt) {
-      return Date.parse(targetAt) >= Date.parse(runningAt)
+    const manifest = this.runningId ? readManifest(this.runningId, this.env) : null;
+    const running = manifest ? installDate(manifest) : null;
+    if (running?.how === 'committed') {
+      return Date.parse(targetAt) >= Date.parse(running.at)
         ? null
         : `a hosted cockpit can only update forward — ${target} was committed before the running build; ${suffix}`;
     }
     // No running commit (a registry release, an image built without CEZ_SOURCE_*): never step back
-    // a release, and never take a commit older than the running install (an image's: its build time).
+    // a release, and never take a commit older than the running install, dated like the boot choice.
     if (compareVersions(target.split('+')[0] ?? target, this.deps.version) < 0) {
       return `a hosted cockpit can only update forward — ${target} is older than the running ${this.deps.version}; ${suffix}`;
     }
-    const runningInstalledAt = this.runningId ? readManifest(this.runningId, this.env)?.installedAt : undefined;
-    const installedMs = runningInstalledAt ? Date.parse(runningInstalledAt) : Number.NaN;
-    if (Number.isFinite(installedMs) && Date.parse(targetAt) < installedMs) {
-      return `a hosted cockpit can only update forward — ${target} was committed before the running ${this.deps.version} was installed (${runningInstalledAt}), and that build carries no commit to compare with; ${suffix}`;
+    if (running && Date.parse(targetAt) < Date.parse(running.at)) {
+      return `a hosted cockpit can only update forward — ${target} was committed before the running ${this.deps.version} was ${running.how} (${running.at}), and that build carries no commit to compare with; ${suffix}`;
     }
     return null;
   }

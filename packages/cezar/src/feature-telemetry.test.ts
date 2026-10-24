@@ -1,10 +1,16 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { automationLabel, automationTaskOrigin, collectFeatureInventory, skillLabel, taskOriginOf, workflowLabel } from './feature-telemetry.ts';
 import { cezarHomeDir } from './paths.ts';
 import { mergeWriteWorkspaceConfig } from './workspace/config.ts';
+
+const teamLoads = vi.hoisted(() => ({ count: 0 }));
+vi.mock('./skills-remote.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./skills-remote.ts')>();
+  return { ...actual, getTeamSkillsCached: (root: string) => { teamLoads.count += 1; return actual.getTeamSkillsCached(root); } };
+});
 
 describe('feature telemetry labels', () => {
   it('derives a task origin from what the start input carries', () => {
@@ -85,5 +91,7 @@ describe('collectFeatureInventory', () => {
     expect(rows.get('tracker_connections')).toBe(1);
     expect(rows.has('skills_repos_custom')).toBe(false);
     expect([...rows.values()].every((v) => v > 0)).toBe(true);
+    // The daily read of every registered project is disk-only: no team-repo clone or fetch.
+    expect(teamLoads.count).toBe(0);
   });
 });

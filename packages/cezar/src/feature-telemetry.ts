@@ -15,7 +15,7 @@ import { DEFAULT_SKILLS_REPOS, loadConfig } from './config.ts';
 import { cezarHomeDir } from './paths.ts';
 import { loadWorkspaceConfig } from './workspace/config.ts';
 import { loadWorkflows } from './workflows/load.ts';
-import { discoverSkills } from './skills.ts';
+import { discoverLocalSkills } from './skills.ts';
 
 /** Where a task came from — `task_origin`'s label. Callers that know set it on the start input;
  *  the rest is derived in `taskOriginOf`. */
@@ -140,7 +140,7 @@ export async function collectFeatureInventory(): Promise<InventoryRow[]> {
       }
       const { workflows } = await loadWorkflows(root);
       add('workflows_custom', workflows.filter((w) => w.source === 'file').length);
-      const skills = await discoverSkills(root);
+      const skills = await discoverLocalSkills(root);
       add('skills_repo', skills.filter((s) => s.source === 'cezar' || s.source === 'ai' || s.source === 'agents').length);
       globalSkills = Math.max(globalSkills, skills.filter((s) => s.source === 'global').length);
       const { skillsRepos } = await loadConfig(root);

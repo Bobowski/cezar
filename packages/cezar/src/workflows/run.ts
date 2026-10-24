@@ -1784,7 +1784,7 @@ export class RunManager {
     const groupId = randomUUID();
     const variants = Math.min(Math.max(count, 1), VARIANT_LETTERS.length);
     if (variants > 1) track('variants_started', { label: String(variants) }, { sid: input.deviceSid });
-    return VARIANT_LETTERS.slice(0, Math.min(Math.max(count, 1), VARIANT_LETTERS.length)).map(
+    return VARIANT_LETTERS.slice(0, variants).map(
       (variant) => {
         const hint = VARIANT_HINTS[variant];
         const task = hint ? `${input.task}\n\n${hint}` : input.task;

@@ -98,8 +98,13 @@ function commandOf(input: unknown): string {
 }
 
 const PUSH_RE = /(?:^|[\s;&|(])git\s+(?:-[cC]\s+\S+\s+|--\S+\s+)*push\b/;
-const GH_COMMENT_RE = /\bgh\s+(?:pr|issue)\s+comment\b/;
-const GH_API_POST_COMMENT_RE = /\bgh\s+api\b[^\n]*\/comments\b/;
+const GH_COMMENT_RE = /\bgh\s+(?:pr\s+(?:comment|review)|issue\s+comment)\b/;
+const GH_API_POST_COMMENT_RE = /\bgh\s+api\b[^\n]*\/(?:comments|reviews)\b/;
+const GH_GRAPHQL_RE = /\bgh\s+api\s+graphql\b/;
+/** The GraphQL mutations that leave a comment or a review body on GitHub. */
+const COMMENT_MUTATION_RE = /\b(?:addComment|addPullRequestReview(?:Comment|Thread|ThreadReply)?|submitPullRequestReview|addDiscussionComment)\b/;
+/** An MCP tool of a GitHub server (`mcp__github__add_issue_comment`, `github.create_pull_request_review`, …). */
+const GITHUB_TOOL_RE = /github/i;
 const POST_RE = /(?:-X|--method)[\s=]*POST\b|\s-[fF]\s+body=|--(?:raw-)?field[\s=]+body=/i;
 
 /** A tool call that runs `git push` — recorded when it STARTS too, so the sha is a trace before
@@ -108,15 +113,26 @@ export function isPushCommand(input: unknown): boolean {
   return PUSH_RE.test(commandOf(input));
 }
 
-const postsComment = (command: string) => GH_COMMENT_RE.test(command) || (GH_API_POST_COMMENT_RE.test(command) && POST_RE.test(command));
+const postsComment = (command: string) => GH_COMMENT_RE.test(command)
+  || (GH_API_POST_COMMENT_RE.test(command) && POST_RE.test(command))
+  || (GH_GRAPHQL_RE.test(command) && COMMENT_MUTATION_RE.test(command));
+
+/** The input of a GitHub MCP tool call that carries a `body` — a comment, review or reply. */
+function githubToolInput(input: unknown, toolName: string | undefined): Record<string, unknown> | undefined {
+  if (!toolName || !GITHUB_TOOL_RE.test(toolName) || !input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const record = input as Record<string, unknown>;
+  return typeof record.body === 'string' ? record : undefined;
+}
 
 /**
  * What one tool call left on GitHub: whether it was a successful `git push` (the caller reads the
- * sha), and the comment ids a `gh … comment` or a POST to a comments endpoint printed — whatever
- * the call's status, since `gh pr comment … && git push` fails AFTER posting. A command that only
- * READS comments posts nothing, so its output is never mined.
+ * sha), and the comment ids a `gh … comment`, a POST to a comments or reviews endpoint, a GraphQL
+ * comment mutation or a GitHub MCP tool with a `body` printed — whatever the call's status, since
+ * `gh pr comment … && git push` fails AFTER posting. A call that only READS comments posts
+ * nothing, so its output is never mined.
  */
-export function toolTraces(item: { input?: unknown; output?: string; status?: string }): { pushed: boolean; comments: number[] } {
+export function toolTraces(item: { name?: string; input?: unknown; output?: string; status?: string }): { pushed: boolean; comments: number[] } {
+  if (githubToolInput(item.input, item.name)) return { pushed: false, comments: commentIdsIn(item.output ?? '') };
   const command = commandOf(item.input);
   if (!command) return { pushed: false, comments: [] };
   const completed = item.status === undefined || item.status === 'completed';
@@ -210,10 +226,14 @@ function readBodyFile(path: string, cwd: string | undefined): string | undefined
 /**
  * The body a comment-posting tool call is about to send, read off the command BEFORE it runs so
  * its fingerprint is a trace whatever the call's outcome (spec 2026-10-23-github-events §6).
- * Best-effort: `--body`/`-b`, `--body-file`/`-F` (a file, or `-` with a heredoc), and `gh api`'s
- * `-f`/`--raw-field`/`-F`/`--field body=…` (`@file` too). Anything else is `undefined`.
+ * Best-effort: `--body`/`-b`, `--body-file`/`-F` (a file, or `-` with a heredoc), `gh api`'s
+ * `-f`/`--raw-field`/`-F`/`--field body=…` (`@file` too), a GraphQL mutation's inline
+ * `body: "…"`, and a GitHub MCP tool's `body` field (`toolName` names the tool). Anything else
+ * is `undefined`: a trace is best-effort, which is why owning-run delivery checks the author too.
  */
-export function postingCommentBody(input: unknown, cwd?: string): string | undefined {
+export function postingCommentBody(input: unknown, cwd?: string, toolName?: string): string | undefined {
+  const tool = githubToolInput(input, toolName);
+  if (tool) return (tool.body as string).trim() ? tool.body as string : undefined;
   const command = commandOf(input);
   if (!command || !postsComment(command)) return undefined;
   const api = !GH_COMMENT_RE.test(command);
@@ -234,14 +254,32 @@ export function postingCommentBody(input: unknown, cwd?: string): string | undef
     }
     if (body?.trim()) return body;
   }
-  return undefined;
+  return GH_GRAPHQL_RE.test(command) ? inlineGraphqlBody(command) : undefined;
+}
+
+/** `body: "…"` written into a GraphQL mutation itself, its string escapes undone. */
+function inlineGraphqlBody(command: string): string | undefined {
+  const match = /\bbody\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(command);
+  if (!match) return undefined;
+  try {
+    const body = JSON.parse(`"${match[1]}"`) as string;
+    return body.trim() ? body : undefined;
+  } catch {
+    return match[1]!.trim() ? match[1] : undefined;
+  }
 }
 
 /**
- * The PR or issue number a comment-posting call targets: `gh pr|issue comment <n|url>` or a
- * `repos/o/r/(issues|pulls)/<n>/…` endpoint. `undefined` when it names none (the current branch's PR).
+ * The PR or issue number a comment-posting call targets: `gh pr|issue comment <n|url>`, a
+ * `repos/o/r/(issues|pulls)/<n>/…` endpoint, or a GitHub MCP tool's `issue_number`/`pull_number`.
+ * `undefined` when it names none (the current branch's PR, a GraphQL node id).
  */
-export function postingCommentTarget(input: unknown): number | undefined {
+export function postingCommentTarget(input: unknown, toolName?: string): number | undefined {
+  const tool = githubToolInput(input, toolName);
+  if (tool) {
+    const value = Number(tool.issue_number ?? tool.pull_number ?? tool.issueNumber ?? tool.pullNumber ?? tool.number);
+    return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  }
   const command = commandOf(input);
   if (!command || !postsComment(command)) return undefined;
   const endpoint = /\brepos\/[^/\s]+\/[^/\s]+\/(?:issues|pulls)\/(\d{1,10})\/(?:comments|reviews)\b/.exec(command);

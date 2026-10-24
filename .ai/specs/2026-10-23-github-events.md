@@ -183,7 +183,7 @@ the text above, and why:
   message takes (queued run → prompt queue of a live session → buffered start → Continue); an
   owner that cannot take it falls back to a new run, and the log row says why.
 - **Traces** are also recorded for the task push route, the graph `git.push` node, an in-place
-  landing, the `github.pr-comment` node and the agent's own `git push` / `gh … comment` tool calls.
+  landing, the `github.pr-comment` node and the agent's own `git push` and comment-posting tool calls.
   The repo-sync push of the project checkout belongs to no run and records nothing. An agent's
   `git push` call records `HEAD` provisionally as it starts (so a webhook-woken poll already
   knows it); when it finishes, the shas it really pushed are read off its output (`old..new`,
@@ -196,10 +196,14 @@ the text above, and why:
   or by body. A body is scoped to the PR or issue the call names (`gh pr comment 12`,
   `repos/o/r/issues/12/comments`, the graph node's number): the same words on another item are
   someone else's. Only a call that names no item (`gh pr comment` on the current branch) keeps
-  a project-wide fingerprint. For the agent's own tool calls the body is read off the command as the call starts
-  (`--body`, `--body-file`, a heredoc, `gh api … -f body=`), and both it and any comment id the
-  output prints are kept whatever the call's final status: `gh pr comment … && git push` fails
-  after it posted.
+  a project-wide fingerprint. For the agent's own tool calls the body is read off the call as it
+  starts — `gh pr comment`/`gh issue comment`/`gh pr review` (`--body`, `--body-file`, a
+  heredoc), a `gh api` POST to a `/comments` or `/reviews` endpoint (`-f body=`), a
+  `gh api graphql` comment mutation (`addComment`, `addPullRequestReview*`, inline `body: "…"` or
+  a body variable), and a GitHub MCP tool's `body` field (its `issue_number`/`pull_number` is the
+  item) — and both it and any comment id the output prints are kept whatever the call's final
+  status: `gh pr comment … && git push` fails after it posted. Anything else (curl, an alias, a
+  script) leaves no trace, which is why owning-run delivery also checks the author (below).
 - **Registering** needs a hosted cockpit with cezar's own sign-in (not `CEZ_AUTH=0`, where the
   proxy would also stand between GitHub and the route). The secret goes to `gh` on stdin.
 - **Comment bodies are data, never instructions** (§7 tightened). `{{github.comment.body}}`

@@ -203,3 +203,44 @@ describe('RunStore.recordGithubTraces', () => {
     expect(postingCommentTarget({ command: 'gh pr view 12' })).toBeUndefined();
   });
 });
+
+describe('comments posted by other means than `gh … comment`', () => {
+  it('traces a GitHub MCP tool call with a body: its body, its item and the id it printed', () => {
+    const name = 'mcp__github__add_issue_comment';
+    const input = { owner: 'acme', repo: 'demo', issue_number: 8, body: 'Fixed in the latest push.' };
+    expect(postingCommentBody(input, undefined, name)).toBe('Fixed in the latest push.');
+    expect(postingCommentTarget(input, name)).toBe(8);
+    expect(toolTraces({ name, input, output: '{"html_url":"https://github.com/acme/demo/pull/8#issuecomment-991"}', status: 'failed' }).comments).toEqual([991]);
+    expect(postingCommentBody({ pull_number: 8, body: 'nit' }, undefined, 'github.create_pull_request_review')).toBe('nit');
+    // Not a GitHub tool, or no body: nothing.
+    expect(postingCommentBody(input, undefined, 'mcp__slack__post_message')).toBeUndefined();
+    expect(postingCommentBody({ issue_number: 8 }, undefined, name)).toBeUndefined();
+    expect(toolTraces({ name: 'mcp__github__get_issue', input: { issue_number: 8 }, output: '#issuecomment-5' }).comments).toEqual([]);
+  });
+
+  it('an MCP-posted comment is then cezar’s own, on that PR', () => {
+    const name = 'mcp__github__add_issue_comment';
+    const input = { owner: 'acme', repo: 'demo', issue_number: 8, body: 'On it.' };
+    const record = mergeTraces({}, { bodies: [{ hash: commentFingerprint(postingCommentBody(input, undefined, name)!), number: postingCommentTarget(input, name)! }] })!;
+    const traces = githubTracesOf([record]);
+    expect(isOwnTrace({ event: 'pull_request.commented', number: 8, comment: { id: 1, body: 'On it.' } }, traces)).toBe(true);
+  });
+
+  it('traces a GraphQL comment mutation, inline body or a body variable', () => {
+    const inline = `gh api graphql -f query='mutation { addComment(input: {subjectId: "PR_1", body: "Done \\"now\\"\\nthanks"}) { commentEdge { node { url } } } }'`;
+    expect(postingCommentBody({ command: inline })).toBe('Done "now"\nthanks');
+    expect(toolTraces({ input: { command: inline }, output: '{"url":"https://github.com/acme/demo/pull/8#issuecomment-77"}' }).comments).toEqual([77]);
+    expect(postingCommentBody({ command: `gh api graphql -f body='hi there' -f query='mutation($body: String!) { addPullRequestReviewThreadReply(input: {body: $body}) { comment { url } } }'` })).toBe('hi there');
+    // A query that only reads posts nothing.
+    expect(postingCommentBody({ command: `gh api graphql -f query='{ repository(owner: "a", name: "b") { pullRequest(number: 1) { body } } }'` })).toBeUndefined();
+  });
+
+  it('traces a review body: gh pr review and a POST to /reviews', () => {
+    expect(postingCommentBody({ command: 'gh pr review 8 --comment -b "nit: rename"' })).toBe('nit: rename');
+    expect(postingCommentTarget({ command: 'gh pr review 8 --comment -b "nit: rename"' })).toBe(8);
+    const api = 'gh api repos/acme/demo/pulls/8/reviews -f event=COMMENT -f body="Looks good"';
+    expect(postingCommentBody({ command: api })).toBe('Looks good');
+    expect(postingCommentTarget({ command: api })).toBe(8);
+    expect(postingCommentBody({ command: 'gh api repos/acme/demo/pulls/8/reviews' })).toBeUndefined();
+  });
+});

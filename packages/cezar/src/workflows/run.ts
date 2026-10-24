@@ -7129,8 +7129,8 @@ export class RunManager {
     if (event.type === 'item.started' && event.item.kind === 'tool' && isPushCommand(event.item.input)) this.startPushTrace(runId, state.cwd, event.item.id);
     // A comment's body is a trace before it runs, and stays one whatever the call's status.
     if ((event.type === 'item.started' || event.type === 'item.updated' || event.type === 'item.completed') && event.item.kind === 'tool') {
-      const body = postingCommentBody(event.item.input, state.cwd);
-      if (body) this.store.notePostingComment(runId, body, postingCommentTarget(event.item.input));
+      const body = postingCommentBody(event.item.input, state.cwd, event.item.name);
+      if (body) this.store.notePostingComment(runId, body, postingCommentTarget(event.item.input, event.item.name));
     }
     if (event.type === 'item.completed' && event.item.kind === 'tool') this.recordToolTraces(runId, state.cwd, event.item);
     sink.handle(event);
@@ -7153,7 +7153,7 @@ export class RunManager {
 
   /** The agent's own `git push` and `gh … comment` calls, remembered so automations never take
    *  them for someone else's (spec 2026-10-23-github-events §6). Best-effort, never blocks. */
-  private recordToolTraces(runId: string, cwd: string, item: { id: string; input?: unknown; output?: string; status?: string }): void {
+  private recordToolTraces(runId: string, cwd: string, item: { id: string; name?: string; input?: unknown; output?: string; status?: string }): void {
     const traces = toolTraces(item);
     if (traces.comments.length) this.store.recordGithubTraces(runId, { comments: traces.comments });
     if (isPushCommand(item.input)) void this.settlePushTrace(runId, cwd, item);

@@ -1,9 +1,9 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fallbackCommitMessage, hasUnlanded, landInPlace } from './landing.ts';
+import { fallbackCommitMessage, hasUnlanded, landInPlace, type GitRun } from './landing.ts';
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
@@ -21,12 +21,14 @@ beforeEach(() => {
   other = join(dir, 'other');
   execFileSync('git', ['init', '--bare', '-b', 'main', remote]);
   execFileSync('git', ['clone', '-q', remote, checkout], { stdio: 'pipe' });
+  git(checkout, 'config', 'core.autocrlf', 'false');
   git(checkout, 'checkout', '-q', '-b', 'main');
   writeFileSync(join(checkout, 'daily.md'), 'one\n');
   git(checkout, 'add', '-A');
   git(checkout, 'commit', '-qm', 'init');
   git(checkout, 'push', '-q', '-u', 'origin', 'main');
   execFileSync('git', ['clone', '-q', remote, other]);
+  git(other, 'config', 'core.autocrlf', 'false');
 });
 
 afterEach(() => {
@@ -35,6 +37,11 @@ afterEach(() => {
 });
 
 const ok = async () => ({ ok: true, output: '' });
+
+const realGit: GitRun = (cwd, args) =>
+  new Promise((resolve) => {
+    execFile('git', args, { cwd, encoding: 'utf8' }, (err, stdout, stderr) => resolve({ ok: !err, stdout, stderr }));
+  });
 
 describe('landInPlace', () => {
   it('commits what the task left and pushes it to the upstream', async () => {
@@ -45,6 +52,15 @@ describe('landInPlace', () => {
     expect(await hasUnlanded(checkout)).toBe(false);
   });
 
+  it('a landing takes everything the task left, whatever happens to be staged', async () => {
+    writeFileSync(join(checkout, 'staged.md'), 's\n');
+    writeFileSync(join(checkout, 'later.md'), 'l\n');
+    git(checkout, 'add', 'staged.md');
+    const landed = await landInPlace(checkout, { describe: async () => 'all', checks: [] });
+    expect(landed).toMatchObject({ result: 'landed', pushed: true, files: ['later.md', 'staged.md'] });
+    expect(git(checkout, 'status', '--porcelain')).toBe('');
+  });
+
   it("never lands cezar's own state", async () => {
     execFileSync('mkdir', ['-p', join(checkout, '.ai/cezar')]);
     writeFileSync(join(checkout, '.ai/cezar/config.json'), '{"landing":"auto"}\n');
@@ -52,6 +68,107 @@ describe('landInPlace', () => {
     writeFileSync(join(checkout, 'person.md'), 'x\n');
     expect(await landInPlace(checkout, { describe: async () => 'x', checks: [] })).toMatchObject({ result: 'landed', files: ['person.md'] });
     expect(git(checkout, 'ls-files', '.ai')).toBe('');
+  });
+
+  it('lands when .gitignore ignores .ai/ or .ai/cezar/, and leaves nothing staged', async () => {
+    for (const ignore of ['.ai/\n', '.ai/cezar/\n']) {
+      writeFileSync(join(checkout, '.gitignore'), ignore);
+      execFileSync('mkdir', ['-p', join(checkout, '.ai/cezar')]);
+      writeFileSync(join(checkout, '.ai/cezar/runs.json'), '{}\n');
+      writeFileSync(join(checkout, 'person.md'), ignore);
+      const landed = await landInPlace(checkout, { describe: async () => `ignore ${ignore.trim()}`, checks: [] });
+      expect(landed).toMatchObject({ result: 'landed', pushed: true });
+      expect(git(checkout, 'status', '--porcelain')).toBe('');
+      expect(git(checkout, 'ls-files', '.ai')).toBe('');
+    }
+  });
+
+  it('lands when .ai/cezar/ is ignored but a file inside it is tracked, and commits none of it', async () => {
+    execFileSync('mkdir', ['-p', join(checkout, '.ai/cezar/workflows')]);
+    writeFileSync(join(checkout, '.ai/cezar/workflows/w.yaml'), 'a: 1\n');
+    writeFileSync(join(checkout, '.gitignore'), '.ai/cezar/\n');
+    git(checkout, 'add', '.gitignore');
+    git(checkout, 'add', '-f', '.ai/cezar/workflows/w.yaml');
+    git(checkout, 'commit', '-qm', 'tracked workflow');
+    git(checkout, 'push', '-q');
+    writeFileSync(join(checkout, '.ai/cezar/runs.json'), '{}\n');
+    writeFileSync(join(checkout, '.ai/cezar/workflows/new.yaml'), 'b: 1\n');
+    writeFileSync(join(checkout, 'person.md'), 'Bjorn\n');
+    const landed = await landInPlace(checkout, { describe: async () => 'mine', checks: [] });
+    expect(landed).toMatchObject({ result: 'landed', pushed: true, files: ['person.md'] });
+    expect(git(checkout, 'ls-files', '.ai')).toBe('.ai/cezar/workflows/w.yaml');
+    expect(git(checkout, 'diff', '--cached', '--name-only')).toBe('');
+  });
+
+  it('lands when .ai/cezar/ is ignored and nothing inside it is tracked', async () => {
+    writeFileSync(join(checkout, '.gitignore'), '.ai/cezar/\n');
+    git(checkout, 'add', '.gitignore');
+    git(checkout, 'commit', '-qm', 'ignore');
+    git(checkout, 'push', '-q');
+    execFileSync('mkdir', ['-p', join(checkout, '.ai/cezar')]);
+    writeFileSync(join(checkout, '.ai/cezar/runs.json'), '{}\n');
+    writeFileSync(join(checkout, 'person.md'), 'Bjorn\n');
+    const landed = await landInPlace(checkout, { describe: async () => 'mine', checks: [] });
+    expect(landed).toMatchObject({ result: 'landed', pushed: true, files: ['person.md'] });
+    expect(git(checkout, 'ls-files', '.ai')).toBe('');
+  });
+
+  it('with .ai/cezar/ not ignored, lands the rest and leaves its files untracked', async () => {
+    execFileSync('mkdir', ['-p', join(checkout, '.ai/cezar/workflows')]);
+    writeFileSync(join(checkout, '.ai/cezar/config.json'), '{}\n');
+    writeFileSync(join(checkout, '.ai/cezar/workflows/w.yaml'), 'a: 1\n');
+    writeFileSync(join(checkout, 'person.md'), 'Bjorn\n');
+    const landed = await landInPlace(checkout, { describe: async () => 'mine', checks: [] });
+    expect(landed).toMatchObject({ result: 'landed', pushed: true, files: ['person.md'] });
+    expect(git(checkout, 'ls-files', '.ai')).toBe('');
+    expect(git(checkout, 'status', '--porcelain')).toBe('?? .ai/');
+  });
+
+  it('a negated .ai/cezar/workflows/ does not auto-commit an untracked workflow', async () => {
+    writeFileSync(join(checkout, '.gitignore'), '.ai/cezar/*\n!.ai/cezar/workflows/\n');
+    git(checkout, 'add', '.gitignore');
+    git(checkout, 'commit', '-qm', 'ignore');
+    git(checkout, 'push', '-q');
+    execFileSync('mkdir', ['-p', join(checkout, '.ai/cezar/workflows')]);
+    writeFileSync(join(checkout, '.ai/cezar/runs.json'), '{}\n');
+    writeFileSync(join(checkout, '.ai/cezar/workflows/w.yaml'), 'a: 1\n');
+    writeFileSync(join(checkout, 'person.md'), 'Bjorn\n');
+    const landed = await landInPlace(checkout, { describe: async () => 'mine', checks: [] });
+    expect(landed).toMatchObject({ result: 'landed', pushed: true, files: ['person.md'] });
+    expect(git(checkout, 'ls-files', '.ai')).toBe('');
+    expect(git(checkout, 'status', '--porcelain', '-uall')).toBe('?? .ai/cezar/workflows/w.yaml');
+  });
+
+  it('stages with the exclude pathspec unless .gitignore covers .ai/cezar, and never lands what an agent staged there', async () => {
+    const adds: string[] = [];
+    const recording: GitRun = (cwd, args) => {
+      if (args[0] === 'add' && args[1] !== '--dry-run') adds.push(args.join(' '));
+      return realGit(cwd, args);
+    };
+    execFileSync('mkdir', ['-p', join(checkout, '.ai/cezar')]);
+    writeFileSync(join(checkout, '.ai/cezar/config.json'), '{}\n');
+    git(checkout, 'add', '.ai/cezar/config.json');
+    writeFileSync(join(checkout, 'person.md'), 'Bjorn\n');
+    expect(await landInPlace(checkout, { describe: async () => 'one', checks: [], git: recording })).toMatchObject({ result: 'landed', files: ['person.md'] });
+    writeFileSync(join(checkout, '.gitignore'), '.ai/cezar/\n');
+    expect(await landInPlace(checkout, { describe: async () => 'two', checks: [], git: recording })).toMatchObject({ result: 'landed', files: ['.gitignore'] });
+    expect(adds).toEqual(['add -A -- . :(exclude).ai/cezar', 'add -A -- .']);
+    expect(git(checkout, 'ls-files', '.ai')).toBe('');
+  });
+
+  it("when unstaging .ai/cezar fails, leaves nothing staged and fails the landing with git's message", async () => {
+    execFileSync('mkdir', ['-p', join(checkout, '.ai/cezar')]);
+    writeFileSync(join(checkout, '.ai/cezar/config.json'), '{}\n');
+    git(checkout, 'add', '.ai/cezar/config.json');
+    writeFileSync(join(checkout, 'person.md'), 'Bjorn\n');
+    const failingReset: GitRun = (cwd, args) =>
+      args.join(' ') === 'reset -q -- .ai/cezar'
+        ? Promise.resolve({ ok: false, stdout: '', stderr: 'fatal: Unable to create index.lock' })
+        : realGit(cwd, args);
+    const result = await landInPlace(checkout, { describe: async () => 'mine', checks: [], git: failingReset });
+    expect(result).toEqual({ result: 'failed', stage: 'commit', error: 'git reset failed: fatal: Unable to create index.lock' });
+    expect(git(checkout, 'diff', '--cached', '--name-only')).toBe('');
+    expect(git(checkout, 'log', '-1', '--format=%s')).toBe('init');
   });
 
   it('lands nothing on a clean checkout, without touching the network', async () => {
@@ -128,6 +245,7 @@ describe('landInPlace', () => {
   it('commits locally when the branch has no upstream', async () => {
     const local = join(dir, 'local');
     execFileSync('git', ['init', '-q', '-b', 'main', local]);
+    git(local, 'config', 'core.autocrlf', 'false');
     writeFileSync(join(local, 'a.md'), 'a\n');
     git(local, 'add', '-A');
     git(local, 'commit', '-qm', 'init');
@@ -140,6 +258,7 @@ describe('landInPlace', () => {
   it('with no upstream, a failing check commits nothing, so the retry still sees the change', async () => {
     const local = join(dir, 'local');
     execFileSync('git', ['init', '-q', '-b', 'main', local]);
+    git(local, 'config', 'core.autocrlf', 'false');
     writeFileSync(join(local, 'a.md'), 'a\n');
     git(local, 'add', '-A');
     git(local, 'commit', '-qm', 'init');

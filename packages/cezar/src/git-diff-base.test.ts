@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { resolveTaskDiffBase, type GitRunner } from './git-diff-base.ts';
+import { resolveCompareBase, resolveTaskDiffBase, type GitRunner } from './git-diff-base.ts';
 
 /**
  * The one place the "which ref anchors this task's diff" rule lives (#751).
@@ -416,5 +416,31 @@ describe('resolveTaskDiffBase — degradation', () => {
     // No `origin/--upload-pack=evil` probe: the caller's `isSafeGitRef` gate rejects the
     // ref before it ever reaches git, and this helper must not smuggle it in either.
     expect(calls).toEqual([['merge-base', '--upload-pack=evil', 'HEAD']]);
+  });
+});
+
+describe('resolveCompareBase — Compare with current', () => {
+  it('measures from origin/<current> when the local branch has fallen behind it', async () => {
+    const fixture = realGitFixture(); // local main = base; origin/main one commit ahead; cez/task off origin/main
+    try {
+      expect(await resolveCompareBase(fixture.runGit, 'main', 'cez/task')).toEqual({
+        against: 'origin/main',
+        mergeBase: fixture.upstream,
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the local branch once it is level with or ahead of origin', async () => {
+    const fixture = realGitFixture();
+    try {
+      fixture.git('update-ref', 'refs/heads/main', fixture.upstream);
+      expect(await resolveCompareBase(fixture.runGit, 'main', 'cez/task')).toEqual({ against: 'main', mergeBase: fixture.upstream });
+      expect(await resolveCompareBase(fixture.runGit, 'HEAD', 'main')).toEqual({ against: 'HEAD', mergeBase: fixture.upstream });
+      expect(await resolveCompareBase(fixture.runGit, 'main', '--upload-pack=evil')).toBeNull();
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
   });
 });

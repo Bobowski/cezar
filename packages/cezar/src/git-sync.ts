@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { isSafeGitRef } from './git-refs.ts';
+import { serializeCheckout } from './server/repo-sync.ts';
 
 /**
  * How far the MAIN checkout is from its upstream, and the two things cezar does about it: a
@@ -120,7 +121,12 @@ export type PullResult =
  * refusal, passed on. `requireClean` is for the unattended caller, which must not touch a tree
  * someone is editing.
  */
-export async function pullFastForward(root: string, opts: { requireClean?: boolean } = {}): Promise<PullResult> {
+export function pullFastForward(root: string, opts: { requireClean?: boolean } = {}): Promise<PullResult> {
+  // The checkout's one queue: never between a Git-page action's or a landing's steps.
+  return serializeCheckout(root, () => pullUnqueued(root, opts));
+}
+
+async function pullUnqueued(root: string, opts: { requireClean?: boolean }): Promise<PullResult> {
   const { branch, upstream } = await tracking(root);
   if (!branch) return { ok: false, error: 'HEAD is detached — there is no branch to pull', behind: 0, upstream: null };
   if (!upstream) return { ok: false, error: `"${branch}" has no branch on origin to pull from`, behind: 0, upstream: null };

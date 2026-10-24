@@ -10,6 +10,9 @@ import type {
   GithubData,
   HealthResponse,
   RepoCommitPayload,
+  RepoGraph,
+  RepoIndex,
+  RepoRemotes,
   RepoResponse,
   RepoSync,
   RepoTree,
@@ -83,6 +86,50 @@ const CHANGES: ChangesPayload = {
     },
   ],
   stat: { adds: 5, dels: 1, files: 2 },
+}
+
+/** The Changes tab's index (spec 2026-10-24-git-view §3.3): nothing staged, both files unstaged. */
+const INDEX: RepoIndex = {
+  branch: 'main',
+  staged: [],
+  unstaged: CHANGES.files,
+  conflicted: [],
+  operation: null,
+  headPushed: false,
+  hasHead: true,
+}
+
+const REMOTES: RepoRemotes = {
+  remotes: [
+    { name: 'origin', url: 'git@github.com:acme/demo.git', pushUrl: null, branches: ['main', 'feature'] },
+    { name: 'upstream', url: 'https://github.com/canon/demo.git', pushUrl: null, branches: ['main'] },
+  ],
+  prTarget: 'upstream',
+  pushDefault: 'origin',
+  reasons: { prTarget: 'fork-parent', pushDefault: 'origin' },
+}
+
+/** main and a task branch forked from its root, and a merged task branch at the root. */
+const GRAPH: RepoGraph = {
+  commits: [
+    { sha: 'c'.repeat(40), parents: ['a'.repeat(40)], subject: 'feat: on main', author: 'Ada', when: '1 hour ago' },
+    { sha: 'b'.repeat(40), parents: ['a'.repeat(40)], subject: 'task: the work', author: 'cezar', when: '2 hours ago' },
+    { sha: 'a'.repeat(40), parents: [], subject: 'root', author: 'Ada', when: '3 days ago' },
+  ],
+  refs: [
+    { name: 'main', kind: 'local', remote: null, branch: 'main', commit: 'c'.repeat(40), current: true, base: true, isTask: false, task: null, merged: false, mergeBase: null },
+    {
+      name: 'cez/1a2b3c4d', kind: 'local', remote: null, branch: 'cez/1a2b3c4d', commit: 'b'.repeat(40), current: false, base: false,
+      isTask: true, task: { runId: 'r1', title: 'Fix the login', status: 'review' }, merged: false, mergeBase: 'a'.repeat(40),
+    },
+    {
+      name: 'cez/done0000', kind: 'local', remote: null, branch: 'cez/done0000', commit: 'a'.repeat(40), current: false, base: false,
+      isTask: true, task: null, merged: true, mergeBase: 'a'.repeat(40),
+    },
+  ],
+  head: 'c'.repeat(40),
+  base: 'main',
+  next: null,
 }
 
 /** The repository path index behind the Files sub-tab (#1279) — a compactable chain, a sibling
@@ -167,6 +214,10 @@ function stubFetch(overrides: Record<string, () => Response> = {}): SentRequest[
       if (override) return override()
       if (method === 'GET' && path === '/api/v1/repo') return jsonResponse(REPO)
       if (method === 'GET' && path === '/api/v1/repo/changes') return jsonResponse(CHANGES)
+      if (method === 'GET' && path === '/api/v1/repo/status') return jsonResponse(INDEX)
+      if (method === 'GET' && path === '/api/v1/repo/remotes') return jsonResponse(REMOTES)
+      if (method === 'GET' && path === '/api/v1/repo/stash') return jsonResponse({ stashes: [] })
+      if (method === 'GET' && path.startsWith('/api/v1/repo/graph')) return jsonResponse(GRAPH)
       if (method === 'GET' && path === '/api/v1/repo/sync') return jsonResponse(SYNC)
       if (method === 'GET' && path === '/api/v1/repo/tree') return jsonResponse(TREE)
       if (method === 'GET' && path === '/api/v1/repo/commit/abc1234?structured=1') return jsonResponse(COMMIT)
@@ -189,6 +240,7 @@ function renderAt(entry: string) {
         <ShellWithSidebar>
         <Routes>
           <Route path="/git" element={<RepoGitRoute tab="changes" />} />
+          <Route path="/git/graph" element={<RepoGitRoute tab="graph" />} />
           <Route path="/git/commits" element={<RepoGitRoute tab="commits" />} />
           <Route path="/git/commits/:sha" element={<RepoGitRoute tab="commits" />} />
           <Route path="/git/branches" element={<RepoGitRoute tab="branches" />} />
@@ -211,7 +263,7 @@ const emptyTitles = () =>
 // ---- changes ----------------------------------------------------------------------------------
 
 describe('the repo view Changes segment', () => {
-  it('renders the header, the segment tabs and the working-tree diff from /api/v1/repo/changes', async () => {
+  it('renders the header, the segment tabs and the working-tree diff from /api/v1/repo/status', async () => {
     stubFetch()
     renderAt('/git')
 
@@ -230,21 +282,22 @@ describe('the repo view Changes segment', () => {
     }))
     expect(tabs).toEqual([
       { text: 'Changes', href: '/git', current: 'page' },
+      { text: 'Graph', href: '/git/graph', current: null },
       { text: 'Commits', href: '/git/commits', current: null },
       { text: 'Branches', href: '/git/branches', current: null },
       { text: 'Files', href: '/git/files', current: null },
     ])
 
-    // The SAME tree + facade the task Changes tab uses: compacted folder, per-file ±.
-    await waitFor(() => expect(document.querySelector('[data-slot="changes-tree"]')).not.toBeNull())
-    expect(document.querySelector('[data-slot="tree-dir"]')?.textContent).toContain('src/util')
+    // The unstaged side, one row per file with its directory, Source-Control style.
+    await waitFor(() => expect(document.querySelectorAll('[data-slot="index-file"]')).toHaveLength(2))
+    expect(document.querySelector('[data-slot="index-file"][data-path="src/util/a.ts"]')?.textContent).toContain('src/util')
     // …in a scroller of its own, so a long list never drags the diff down with it. That used
     // to be a bounded pane beside the diff; it is the sidebar's content area now, which scrolls
     // independently of main by construction.
     await waitFor(() => expect(document.querySelector('[data-slot="changes-tree-pane"]')).not.toBeNull())
     const pane = document.querySelector('[data-slot="changes-tree-pane"]') as HTMLElement
     expect(sidebar().contains(pane)).toBe(true)
-    expect(pane.querySelector('[data-slot="changes-tree"]')).not.toBeNull()
+    expect(pane.querySelector('[data-slot="index-unstaged"]')).not.toBeNull()
     const scroller = pane.closest('[data-slot="sidebar-content"]') as HTMLElement
     expect(scroller.className).toContain('overflow-auto')
     expect(scroller.className).toContain('min-h-0')
@@ -279,7 +332,7 @@ describe('the repo view Changes segment', () => {
 
   it('a clean tree renders the honest empty state', async () => {
     stubFetch({
-      'GET /api/v1/repo/changes': () => jsonResponse({ files: [], stat: { adds: 0, dels: 0, files: 0 } }),
+      'GET /api/v1/repo/status': () => jsonResponse({ ...INDEX, unstaged: [] }),
     })
     renderAt('/git')
     await waitFor(() =>
@@ -287,9 +340,9 @@ describe('the repo view Changes segment', () => {
     )
   })
 
-  it('a 409 from /changes renders the server reason, not an error explosion', async () => {
+  it('a 409 from /index renders the server reason, not an error explosion', async () => {
     stubFetch({
-      'GET /api/v1/repo/changes': () => jsonResponse({ error: 'not a git repository' }, 409),
+      'GET /api/v1/repo/status': () => jsonResponse({ error: 'not a git repository' }, 409),
     })
     renderAt('/git')
     await waitFor(() =>
@@ -323,6 +376,187 @@ describe('the repo view Changes segment', () => {
       expect(emptyTitles()).toEqual(['Not a git repository']),
     )
     expect(document.querySelector('[data-slot="repo-tabs"]')).toBeNull()
+  })
+})
+
+// ---- staging (spec 2026-10-24-git-view §3.3) ------------------------------------------------
+
+const posted = (sent: SentRequest[], path: string) => sent.filter((request) => request.method === 'POST' && request.path === path)
+
+describe('the repo view Changes segment — staging', () => {
+  it('stages a file from its row and a hunk from its header', async () => {
+    const sent = stubFetch({ 'POST /api/v1/repo/stage': () => jsonResponse(INDEX) })
+    renderAt('/git')
+    const row = await waitFor(() => {
+      const element = document.querySelector('[data-slot="index-file"][data-path="notes.md"]')
+      expect(element).not.toBeNull()
+      return element as HTMLElement
+    })
+    fireEvent.click(row.querySelector('[data-action="stage-file"]')!)
+    await waitFor(() => expect(posted(sent, '/api/v1/repo/stage')).toHaveLength(1))
+    expect(posted(sent, '/api/v1/repo/stage')[0]!.body).toEqual({ paths: ['notes.md'] })
+
+    const hunkButton = await waitFor(() => {
+      const element = document.querySelector('[data-slot="diff-hunk-actions"] [data-action="stage-hunk"]')
+      expect(element).not.toBeNull()
+      return element!
+    })
+    fireEvent.click(hunkButton)
+    await waitFor(() => expect(posted(sent, '/api/v1/repo/stage')).toHaveLength(2))
+    expect(posted(sent, '/api/v1/repo/stage')[1]!.body).toEqual({ path: 'notes.md', hunk: '@@ -0,0 +1,2 @@' })
+  })
+
+  it('discards only after the confirm', async () => {
+    const sent = stubFetch({ 'POST /api/v1/repo/discard': () => jsonResponse(INDEX) })
+    renderAt('/git')
+    const row = await waitFor(() => {
+      const element = document.querySelector('[data-slot="index-file"][data-path="src/util/a.ts"]')
+      expect(element).not.toBeNull()
+      return element as HTMLElement
+    })
+    fireEvent.click(row.querySelector('[data-action="discard-file"]')!)
+    const confirm = await waitFor(() => {
+      const element = document.querySelector('[data-action="confirm-discard"]')
+      expect(element).not.toBeNull()
+      return element!
+    })
+    expect(posted(sent, '/api/v1/repo/discard')).toHaveLength(0)
+    fireEvent.click(confirm)
+    await waitFor(() => expect(posted(sent, '/api/v1/repo/discard')).toHaveLength(1))
+    expect(posted(sent, '/api/v1/repo/discard')[0]!.body).toEqual({ paths: ['src/util/a.ts'], confirm: true })
+  })
+
+  it('says so when the discarded file is untracked, since the server deletes it only then', async () => {
+    const untracked: RepoIndex = { ...INDEX, unstaged: [{ ...CHANGES.files[0]!, untracked: true }] }
+    const sent = stubFetch({
+      'GET /api/v1/repo/status': () => jsonResponse(untracked),
+      'POST /api/v1/repo/discard': () => jsonResponse(INDEX),
+    })
+    renderAt('/git')
+    const row = await waitFor(() => {
+      const element = document.querySelector('[data-slot="index-file"][data-path="notes.md"]')
+      expect(element).not.toBeNull()
+      return element as HTMLElement
+    })
+    fireEvent.click(row.querySelector('[data-action="discard-file"]')!)
+    const confirm = await waitFor(() => {
+      const element = document.querySelector('[data-action="confirm-discard"]')
+      expect(element).not.toBeNull()
+      return element!
+    })
+    fireEvent.click(confirm)
+    await waitFor(() => expect(posted(sent, '/api/v1/repo/discard')).toHaveLength(1))
+    expect(posted(sent, '/api/v1/repo/discard')[0]!.body).toEqual({ paths: ['notes.md'], untracked: true, confirm: true })
+  })
+
+  it('a hunk of an untracked file is discarded with the untracked flag too', async () => {
+    const untracked: RepoIndex = { ...INDEX, unstaged: [{ ...CHANGES.files[0]!, untracked: true }] }
+    const sent = stubFetch({
+      'GET /api/v1/repo/status': () => jsonResponse(untracked),
+      'POST /api/v1/repo/discard': () => jsonResponse(INDEX),
+    })
+    renderAt('/git')
+    const hunkButton = await waitFor(() => {
+      const element = document.querySelector('[data-slot="diff-hunk-actions"] [data-action="discard-hunk"]')
+      expect(element).not.toBeNull()
+      return element!
+    })
+    fireEvent.click(hunkButton)
+    const confirm = await waitFor(() => {
+      const element = document.querySelector('[data-action="confirm-discard"]')
+      expect(element).not.toBeNull()
+      return element!
+    })
+    fireEvent.click(confirm)
+    await waitFor(() => expect(posted(sent, '/api/v1/repo/discard')).toHaveLength(1))
+    expect(posted(sent, '/api/v1/repo/discard')[0]!.body).toEqual({
+      path: 'notes.md',
+      hunk: '@@ -0,0 +1,2 @@',
+      untracked: true,
+      confirm: true,
+    })
+  })
+
+  it('commits the staged side with the typed message; nothing staged, nothing to commit', async () => {
+    const staged: RepoIndex = { ...INDEX, staged: [CHANGES.files[1]!], unstaged: [CHANGES.files[0]!] }
+    const sent = stubFetch({
+      'GET /api/v1/repo/status': () => jsonResponse(staged),
+      'POST /api/v1/repo/commit': () => jsonResponse({ message: 'committed abcdef12', sha: 'abcdef12' }),
+    })
+    renderAt('/git')
+    const box = await waitFor(() => {
+      const element = document.querySelector('[data-slot="commit-box"]')
+      expect(element).not.toBeNull()
+      return element as HTMLElement
+    })
+    expect(document.querySelector('[data-slot="index-staged"] [data-path="src/util/a.ts"]')).not.toBeNull()
+    const button = box.querySelector<HTMLButtonElement>('[data-action="commit-index"]')!
+    expect(button.disabled).toBe(true)
+    fireEvent.change(within(box).getByLabelText('Commit message'), { target: { value: 'fix: the util' } })
+    expect(button.disabled).toBe(false)
+    fireEvent.click(button)
+    await waitFor(() => expect(posted(sent, '/api/v1/repo/commit')).toHaveLength(1))
+    expect(posted(sent, '/api/v1/repo/commit')[0]!.body).toEqual({ message: 'fix: the util' })
+    await waitFor(() => expect(document.body.textContent).toContain('committed abcdef12'))
+  })
+
+  it('a stopped merge lists its conflicts, holds Continue, and aborts', async () => {
+    const stopped: RepoIndex = { ...INDEX, unstaged: [], conflicted: ['src/util/a.ts'], operation: { kind: 'merge', onto: 'abc1234' } }
+    const sent = stubFetch({
+      'GET /api/v1/repo/status': () => jsonResponse(stopped),
+      'POST /api/v1/repo/merge/abort': () => jsonResponse({ message: 'merge aborted', conflicts: [] }),
+    })
+    renderAt('/git')
+    const banner = await waitFor(() => {
+      const element = document.querySelector('[data-slot="repo-operation"]')
+      expect(element).not.toBeNull()
+      return element as HTMLElement
+    })
+    expect(banner.getAttribute('data-operation')).toBe('merge')
+    expect(banner.querySelector('[data-slot="conflicted-files"] a')?.getAttribute('href')).toBe('/code/src/util/a.ts')
+    expect(banner.querySelector<HTMLButtonElement>('[data-action="continue-operation"]')!.disabled).toBe(true)
+    fireEvent.click(banner.querySelector('[data-action="abort-operation"]')!)
+    await waitFor(() => expect(posted(sent, '/api/v1/repo/merge/abort')).toHaveLength(1))
+  })
+
+  it('?compare= shows what the branch brings in from the merge-base', async () => {
+    stubFetch({
+      'GET /api/v1/repo/compare?ref=feature': () =>
+        jsonResponse({ ref: 'feature', against: 'origin/main', mergeBase: 'f'.repeat(40), files: [CHANGES.files[0]], stat: { adds: 2, dels: 0, files: 1 } }),
+    })
+    renderAt('/git?compare=feature')
+    await waitFor(() => expect(document.querySelector('[data-slot="repo-compare-toolbar"]')?.textContent).toContain('vs origin/main'))
+    await waitFor(() => expect(document.querySelectorAll('[data-slot="diff-file"]')).toHaveLength(1))
+  })
+})
+
+// ---- graph (spec 2026-10-24-git-view §3.1) ----------------------------------------------------
+
+describe('the repo view Graph segment', () => {
+  it('draws the rows with task labels, a faded merged branch and the fork point', async () => {
+    const sent = stubFetch()
+    renderAt('/git/graph')
+    await waitFor(() => expect(document.querySelectorAll('[data-slot="graph-row"]')).toHaveLength(3))
+    const task = document.querySelector('[data-slot="graph-ref"][data-ref="cez/1a2b3c4d"]')
+    expect(task?.textContent).toContain('Fix the login')
+    expect(document.querySelector('[data-slot="graph-ref"][data-ref="cez/done0000"]')?.getAttribute('data-merged')).toBe('true')
+    expect(document.querySelector('[data-slot="graph-ref"][data-ref="main"]')?.textContent).toContain('HEAD')
+    // The root is where the unmerged task forked from main.
+    expect(document.querySelector(`[data-slot="graph-row"][data-sha="${'a'.repeat(40)}"] [data-slot="graph-fork"]`)?.textContent).toContain('cez/1a2b3c4d')
+    expect(document.querySelector('[data-slot="graph-commit"]')?.getAttribute('href')).toBe(`/git/commits/${'c'.repeat(40)}`)
+    expect(sent.some((request) => request.path.startsWith('/api/v1/repo/graph?') && request.path.includes('filter=all'))).toBe(true)
+
+    fireEvent.click(document.querySelector('[data-filter="tasks"]')!)
+    await waitFor(() => expect(sent.some((request) => request.path.includes('filter=tasks'))).toBe(true))
+  })
+
+  it('search dims commits whose subject and sha do not match', async () => {
+    stubFetch()
+    renderAt('/git/graph')
+    await waitFor(() => expect(document.querySelectorAll('[data-slot="graph-row"]')).toHaveLength(3))
+    fireEvent.change(screen.getByLabelText('Search commits'), { target: { value: 'task' } })
+    const dimmed = [...document.querySelectorAll('[data-slot="graph-row"]')].filter((row) => row.className.includes('opacity-35'))
+    expect(dimmed).toHaveLength(2)
   })
 })
 
@@ -648,6 +882,46 @@ const fileEntry = (path: string, content: string): WorktreeEntry => ({
 })
 
 const filePath = (path: string) => `/api/v1/repo/files?path=${encodeURIComponent(path)}`
+
+describe('the repo view Branches segment — actions and remotes (spec 2026-10-24-git-view)', () => {
+  it('the Remotes block names the PR target, the push default and why', async () => {
+    stubFetch()
+    renderAt('/git/branches')
+    const block = await waitFor(() => {
+      const element = document.querySelector('[data-slot="repo-remotes"]')
+      expect(element?.querySelectorAll('[data-slot="remote-row"]')).toHaveLength(2)
+      return element as HTMLElement
+    })
+    const upstream = block.querySelector('[data-remote="upstream"]')!
+    expect(upstream.textContent).toContain('PR target')
+    expect(upstream.textContent).toContain('the repository origin was forked from')
+    expect(block.querySelector('[data-remote="origin"]')!.textContent).toContain('Push default')
+    // Each branch row says which remotes have it.
+    await waitFor(() =>
+      expect([...document.querySelectorAll('[data-branch="main"] [data-slot="branch-on-remote"]')].map((el) => el.textContent)).toEqual([
+        'origin/',
+        'upstream/',
+      ]),
+    )
+  })
+
+  it('merges into current from the row menu', async () => {
+    const sent = stubFetch({
+      'POST /api/v1/repo/branch/feature/merge': () => jsonResponse({ message: 'merged feature into main', conflicts: [] }),
+    })
+    renderAt('/git/branches')
+    const row = await waitFor(() => {
+      const element = document.querySelector('[data-slot="branch-row"][data-branch="feature"]')
+      expect(element).not.toBeNull()
+      return element as HTMLElement
+    })
+    fireEvent.pointerDown(within(row).getByRole('button', { name: 'Actions for feature' }))
+    await screen.findByRole('menu')
+    fireEvent.click(document.querySelector('[data-action="merge-branch"]')!)
+    await waitFor(() => expect(posted(sent, '/api/v1/repo/branch/feature/merge')).toHaveLength(1))
+    await waitFor(() => expect(document.body.textContent).toContain('merged feature into main'))
+  })
+})
 
 describe('the repo view Files segment', () => {
   it('builds the tree from one /api/v1/repo/tree read, folders closed, chains compacted', async () => {

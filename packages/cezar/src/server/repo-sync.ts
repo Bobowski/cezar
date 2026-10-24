@@ -143,14 +143,40 @@ export async function repoSyncStatus(root: string, hide: ReadonlySet<string> = n
 
 export type SyncActionResult = { ok: true; message: string } | { ok: false; error: string };
 
-/** One mutation per checkout at a time: a double-clicked Sync must not race its own pull. */
+/** One mutation per checkout at a time: a double-clicked Sync must not race its own pull, nor a
+ *  Git-page action (`repo-git.ts`) a sync, nor either an in-place landing (`landInPlace`). */
 const inFlight = new Map<string, Promise<unknown>>();
+/** Landings queued or running, per checkout (spec 2026-10-24-git-view §4). */
+const landings = new Map<string, number>();
+/** One key per checkout however it is spelled: `git rev-parse` answers `F:/x`, a caller `f:\x`. */
+const checkoutKey = (root: string): string => {
+  const path = resolve(root);
+  return process.platform === 'win32' ? path.toLowerCase() : path;
+};
+export function serializeCheckout<T>(root: string, work: () => Promise<T>): Promise<T> {
+  return serialized(root, work);
+}
+/** A landing takes the same queue; while it is queued or running a Git-page mutation refuses
+ *  (`landingInProgress`) rather than move HEAD between its commit, checks and push. */
+export function serializeLanding<T>(root: string, work: () => Promise<T>): Promise<T> {
+  const key = checkoutKey(root);
+  landings.set(key, (landings.get(key) ?? 0) + 1);
+  return serialized(root, work).finally(() => {
+    const left = (landings.get(key) ?? 1) - 1;
+    if (left > 0) landings.set(key, left);
+    else landings.delete(key);
+  });
+}
+export function landingInProgress(root: string): boolean {
+  return (landings.get(checkoutKey(root)) ?? 0) > 0;
+}
 function serialized<T>(root: string, work: () => Promise<T>): Promise<T> {
-  const prev = inFlight.get(root) ?? Promise.resolve();
+  const key = checkoutKey(root);
+  const prev = inFlight.get(key) ?? Promise.resolve();
   const next = prev.then(work, work);
-  inFlight.set(root, next);
+  inFlight.set(key, next);
   void next.finally(() => {
-    if (inFlight.get(root) === next) inFlight.delete(root);
+    if (inFlight.get(key) === next) inFlight.delete(key);
   });
   return next;
 }

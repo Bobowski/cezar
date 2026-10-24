@@ -345,6 +345,21 @@ describe('cockpit authentication', () => {
     expect((await request('/api/v1/p/boot/runs', { headers: { authorization: 'Bearer cezrun_forged.sig' } })).status).toBe(401);
   });
 
+  it('a running task’s token reaches none of the Git page’s mutations (spec 2026-10-24-git-view §5)', async () => {
+    enableRunTokens();
+    active.add('run-1');
+    const bearer = { authorization: `Bearer ${mintRunToken('run-1', 'boot')!}` };
+    for (const [path, body] of [
+      ['/api/v1/p/boot/repo/branch/main/checkout', {}],
+      ['/api/v1/p/boot/repo/stage', { paths: ['a.txt'] }],
+      ['/api/v1/p/boot/repo/commit', { message: 'from the agent' }],
+      ['/api/v1/p/boot/repo/discard', { paths: ['a.txt'], confirm: true }],
+      ['/api/v1/p/boot/repo/remotes/origin/fetch', {}],
+    ] as const) {
+      expect((await post(path, body, bearer)).status, path).toBe(403);
+    }
+  });
+
   it('this host’s key file authenticates a shell, and a wrong key does not', async () => {
     ensureHostKey();
     const key = readHostKey()!;

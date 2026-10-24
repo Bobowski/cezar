@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { pullFastForward, refreshRepoSync, repoSyncCounts } from './git-sync.ts';
+import { serializeCheckout } from './server/repo-sync.ts';
 import { removeTempDir } from './test-fixtures/remove-temp-dir.testkit.ts';
 
 const run = promisify(execFile);
@@ -81,6 +82,20 @@ describe('repo sync (real git)', () => {
     expect(pulled).toMatchObject({ ok: false });
     expect(pulled.ok ? '' : pulled.error).toContain('diverged');
     expect((await run('git', ['rev-parse', 'HEAD'], { cwd: work })).stdout).toBe(head);
+  });
+
+  it('the fast-forward waits its turn on the checkout queue the Git page and landings use', async () => {
+    const { work } = await cloneBehind();
+    let release!: () => void;
+    const held = serializeCheckout(work, () => new Promise<void>((resolve) => (release = resolve)));
+    let settled = false;
+    const pulled = pullFastForward(work).finally(() => (settled = true));
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(settled).toBe(false);
+    expect(existsSync(join(work, 'upstream-0.txt'))).toBe(false);
+    release();
+    await held;
+    expect(await pulled).toEqual({ ok: true, updated: 2 });
   });
 
   it('requireClean refuses a dirty tree; without it an unrelated edit rides along', async () => {

@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { CEZAR_DATA_EXCLUDE } from '../data-gitignore.ts';
 import { gitHasIdentity, unresolvedConflicts } from '../git-worktree.ts';
+import { serializeLanding } from '../server/repo-sync.ts';
 
 /**
  * Auto-land for in-place tasks (spec 2026-10-20-trunk-based-projects): commit what the task
@@ -29,6 +30,8 @@ export interface LandOptions {
   runCheck?: (command: string, cwd: string, env?: NodeJS.ProcessEnv) => Promise<{ ok: boolean; output: string }>;
   /** Called with the sha about to be pushed, BEFORE the push (spec 2026-10-23-github-events §6). */
   beforePush?: (sha: string) => void;
+  /** Runs the git commands that stage and record the landing commit; injectable for tests. */
+  git?: GitRun;
 }
 
 // cezar's own state never lands: committing `.ai/cezar/config.json` would track it, and a tracked
@@ -40,7 +43,8 @@ const CHECK_OUTPUT_TAIL = 8_000;
 // Network git never prompts: a landing runs unattended.
 const NETWORK_ENV = { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo' };
 
-interface GitResult { ok: boolean; stdout: string; stderr: string }
+export interface GitResult { ok: boolean; stdout: string; stderr: string }
+export type GitRun = (cwd: string, args: string[]) => Promise<GitResult>;
 
 function git(cwd: string, args: string[], timeout = 0): Promise<GitResult> {
   return new Promise((resolve) => {
@@ -98,7 +102,14 @@ async function changedFiles(root: string, range: string): Promise<string[]> {
   return res.ok ? res.stdout.split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 200) : [];
 }
 
-export async function landInPlace(root: string, options: LandOptions): Promise<LandResult> {
+/** Every landing holds the checkout's one queue, so no Git-page action moves HEAD between its
+ *  commit, checks and push (spec 2026-10-24-git-view §4). */
+export function landInPlace(root: string, options: LandOptions): Promise<LandResult> {
+  return serializeLanding(root, () => landUnlocked(root, options));
+}
+
+async function landUnlocked(root: string, options: LandOptions): Promise<LandResult> {
+  const run = options.git ?? git;
   const head = await git(root, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const branch = head.stdout.trim();
   if (!head.ok || !branch || branch === 'HEAD') {
@@ -122,13 +133,13 @@ export async function landInPlace(root: string, options: LandOptions): Promise<L
     if (pending.ok && !pending.stdout.trim()) return { result: 'nothing' };
     const checked = await runChecks(root, options);
     if (checked) return checked;
-    const committed = await commitTask(root, options.describe, identity);
+    const committed = await commitTask(root, options.describe, identity, run);
     if (committed.result === 'failed') return { result: 'failed', stage: 'commit', error: committed.error };
     if (committed.result === 'nothing') return { result: 'nothing' };
     const files = options.since ? await changedFiles(root, `${options.since}..HEAD`) : [];
     return { result: 'landed', branch, sha: committed.sha, pushed: false, files };
   }
-  const committed = await commitTask(root, options.describe, identity);
+  const committed = await commitTask(root, options.describe, identity, run);
   if (committed.result === 'failed') return { result: 'failed', stage: 'commit', error: committed.error };
   // Nothing new against the last-fetched upstream: no network, nothing to land.
   if (committed.result === 'nothing' && (await count(root, `${upstream.ref}..HEAD`)) === 0) return { result: 'nothing' };
@@ -214,15 +225,29 @@ async function commitTask(
   root: string,
   describe: LandOptions['describe'],
   identity: string[],
+  run: GitRun,
 ): Promise<{ result: 'committed'; sha: string } | { result: 'nothing' } | { result: 'failed'; error: string }> {
-  const status = await git(root, ['status', '--porcelain', ...PATHSPEC]);
+  const status = await run(root, ['status', '--porcelain', ...PATHSPEC]);
   if (!status.ok) return { result: 'failed', error: reason(status, 'git status failed') };
   if (!status.stdout.trim()) return { result: 'nothing' };
   const unresolved = await unresolvedConflicts(root, status.stdout);
   if (unresolved) return { result: 'failed', error: `refusing to commit: ${unresolved}` };
-  const add = await git(root, ['add', '-A', ...PATHSPEC]);
+  // Everything the task left: what an agent staged is incidental (spec 2026-10-24-git-view §4).
+  // The exclude pathspec never opens .ai/cezar, but `git add` exits 1 when .gitignore covers it
+  // (#1597); only then stage the whole tree and rely on the unstage below.
+  const probe = await run(root, ['add', '--dry-run', '-A', ...PATHSPEC]);
+  const ignored = !probe.ok && (await run(root, ['check-ignore', '-q', '--no-index', '.ai/cezar'])).ok;
+  if (!probe.ok && !ignored) return { result: 'failed', error: reason(probe, 'git add failed') };
+  const add = await run(root, ['add', '-A', ...(ignored ? ['--', '.'] : PATHSPEC)]);
   if (!add.ok) return { result: 'failed', error: reason(add, 'git add failed') };
-  const nameStatus = await git(root, ['diff', '--cached', '--name-status']);
+  // Whatever an agent staged under .ai/cezar itself never lands either.
+  const unstage = await run(root, ['reset', '-q', '--', '.ai/cezar']);
+  if (!unstage.ok) {
+    // Never leave .ai/cezar staged for whoever commits next: put the whole index back to HEAD.
+    await run(root, ['reset', '-q']);
+    return { result: 'failed', error: `git reset failed: ${reason(unstage, 'no answer')}` };
+  }
+  const nameStatus = await run(root, ['diff', '--cached', '--name-status']);
   const files = nameStatus.stdout
     .split('\n')
     .filter(Boolean)
@@ -230,12 +255,12 @@ async function commitTask(
       const parts = line.split('\t');
       return { status: parts[0] ?? 'M', path: parts[parts.length - 1] ?? '' };
     });
-  const patch = (await git(root, ['diff', '--cached', '--no-color'])).stdout.slice(0, STAGED_PATCH_CAP);
+  const patch = (await run(root, ['diff', '--cached', '--no-color'])).stdout.slice(0, STAGED_PATCH_CAP);
   const described = describe ? await describe({ files, patch }).catch(() => undefined) : undefined;
   const message = described?.trim() || fallbackCommitMessage(files);
-  const commit = await git(root, [...identity, 'commit', '--no-verify', '-m', message]);
+  const commit = await run(root, [...identity, 'commit', '--no-verify', '-m', message]);
   if (!commit.ok) return { result: 'failed', error: reason(commit, 'git commit failed') };
-  return { result: 'committed', sha: (await git(root, ['rev-parse', 'HEAD'])).stdout.trim() };
+  return { result: 'committed', sha: (await run(root, ['rev-parse', 'HEAD'])).stdout.trim() };
 }
 
 /** Uncommitted changes, or commits the last-fetched upstream lacks. Offline. */

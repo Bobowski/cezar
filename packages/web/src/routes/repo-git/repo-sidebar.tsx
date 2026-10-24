@@ -11,10 +11,11 @@ import { Link } from '@/lib/project-router'
 
 import { BranchChip } from '../task-git/diff-controls'
 
-export type RepoTab = 'changes' | 'commits' | 'branches' | 'files'
+export type RepoTab = 'changes' | 'graph' | 'commits' | 'branches' | 'files'
 
 const TABS: { value: RepoTab; to: string; label: string }[] = [
   { value: 'changes', to: '/git', label: 'Changes' },
+  { value: 'graph', to: '/git/graph', label: 'Graph' },
   { value: 'commits', to: '/git/commits', label: 'Commits' },
   { value: 'branches', to: '/git/branches', label: 'Branches' },
   { value: 'files', to: '/git/files', label: 'Files' },
@@ -45,8 +46,8 @@ export function RepoSidebarHeader({ info, tab, children }: { info?: RepoInfo; ta
       <Tabs value={tab}>
         <TabsList data-slot="repo-tabs" className="w-full">
           {TABS.map((entry) => (
-            // Four sections in a 264px column: the default trigger padding clipped the outer two.
-            <TabsTrigger key={entry.value} value={entry.value} asChild className="min-w-0 px-1.5 text-xs">
+            // Five sections in a 264px column: the default trigger padding clipped the outer ones.
+            <TabsTrigger key={entry.value} value={entry.value} asChild className="min-w-0 px-1 text-xs">
               <Link to={entry.to} aria-current={tab === entry.value ? 'page' : undefined}>
                 {entry.label}
               </Link>

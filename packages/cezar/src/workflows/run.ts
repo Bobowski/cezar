@@ -97,6 +97,7 @@ import {
 import { commentOnIssue, commentOnPr, fetchGithubChecks, updatePr } from '../server/forge/github.ts';
 import { createDraftPr } from '../server/pr.ts';
 import { createOrSwitchBranch } from '../server/git-changes.ts';
+import { serializeCheckout } from '../server/repo-sync.ts';
 import { getHeadCommit, getRepoInfo } from '../server/git.ts';
 import { pullFastForward, repoAutoSyncEnabled } from '../git-sync.ts';
 import { loadWorkflows, newerCatalogWorkflow } from './load.ts';
@@ -5293,7 +5294,7 @@ export class RunManager {
       const base = await chooseForkBase(this.repoRoot, current, config.baseBranch, (message) =>
         emit({ type: 'note', message }),
       );
-      const switched = await createOrSwitchBranch(repo.root, switchInPlaceTo, base);
+      const switched = await serializeCheckout(repo.root, () => createOrSwitchBranch(repo.root, switchInPlaceTo, base));
       if (!switched.ok) {
         const error = `could not switch the checkout to ${switchInPlaceTo}: ${switched.error}`;
         this.store.updateRun(runId, { status: 'failed', error, finishedAt: new Date().toISOString(), currentStepId: undefined });

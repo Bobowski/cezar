@@ -69,7 +69,8 @@ can fork from the failing head as the e2e automations already do.
 - The Automations page shows the hook's last delivery time and the result of a **Ping**.
 
 Without a webhook, the poll interval is unchanged. With one, the interval can stay long (the
-redesign's default) and latency becomes seconds.
+redesign's default) and latency drops to about a minute — the 60-second minimum between two
+polls a wake keeps (§11).
 
 ## 5. Delivery to the owning run
 
@@ -140,7 +141,7 @@ place a loop is possible, so it also carries the existing per-automation launch 
   payload never parsed (a malformed body still wakes).
 - Contract parity, BC inventory for the hook route and the new fields.
 - VPS: register the hook on fancy-fence-panels; open a task that makes a PR; comment on it →
-  the comment arrives in the thread within seconds; push a commit that breaks CI → the failure
+  the comment arrives in the thread within about a minute; push a commit that breaks CI → the failure
   is delivered to the same run; the run's own push does not re-trigger.
 
 ## 11. As built (2026-10-24)

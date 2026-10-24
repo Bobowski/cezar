@@ -68,8 +68,9 @@ describe('a gateway slot in design mode', () => {
     expect(body).toContain(`<script src="${PICKER_PATH}" data-cezar-design></script>`);
     expect(body.indexOf(PICKER_PATH)).toBeLessThan(body.indexOf('<title>'));
     expect(res.headers.get('x-frame-options')).toBeNull();
-    // Only the directive that forbids framing goes; the rest of the app's policy holds.
-    expect(res.headers.get('content-security-policy')).toBe("default-src 'self'; img-src *");
+    // Only the directive that forbids framing goes; the rest of the app's policy holds, and a
+    // policy of cezar's own lets the cockpit — and only the cockpit — frame it.
+    expect(res.headers.get('content-security-policy')).toBe("default-src 'self'; img-src *, frame-ancestors http://127.0.0.1:4321");
     expect(Number(res.headers.get('content-length'))).toBe(Buffer.byteLength(body));
   });
 
@@ -95,6 +96,12 @@ describe('a gateway slot in design mode', () => {
     const res = await fetch(`${origin}/script.js`, { headers: { cookie } });
     expect(await res.text()).toBe('1');
     expect(res.headers.get('x-frame-options')).toBeNull();
+  });
+
+  it('lets only the cockpit frame it, even when the app sent no policy of its own', async () => {
+    const { origin, cookie } = await enter(true);
+    const res = await fetch(`${origin}/script.js`, { headers: { cookie } });
+    expect(res.headers.get('content-security-policy')).toBe('frame-ancestors http://127.0.0.1:4321');
   });
 
   it('is a slot of its own: a plain preview of the same app stays untouched', async () => {

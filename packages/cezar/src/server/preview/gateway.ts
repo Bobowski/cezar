@@ -69,24 +69,26 @@ function answerHeader(name: string, value: string | string[]): string | string[]
 }
 
 /**
- * The app's answer without what forbids framing it: `X-Frame-Options` and CSP `frame-ancestors`.
- * A design slot is framed by a cockpit on another origin by construction; the rest of the app's
- * policy stays as sent (spec 2026-10-24-design-mode-third-cut §3.4).
+ * The app's answer framed by the cockpit and nothing else: the app's `X-Frame-Options` and CSP
+ * `frame-ancestors` go, a policy of cezar's own — `frame-ancestors <cockpit>` — takes their place,
+ * and the rest of the app's policy stays as sent (spec 2026-10-24-design-mode-third-cut §3.4).
  */
-export function withoutFrameBusting(answer: Record<string, string | string[]>): Record<string, string | string[]> {
+export function withoutFrameBusting(answer: Record<string, string | string[]>, parentOrigin: string): Record<string, string | string[]> {
   const out: Record<string, string | string[]> = {};
+  const policies: string[] = [];
   for (const [name, value] of Object.entries(answer)) {
     if (name === 'x-frame-options') continue;
     if (name !== 'content-security-policy') {
       out[name] = value;
       continue;
     }
-    const kept = (Array.isArray(value) ? value : [value]).flatMap((policy) => {
+    for (const policy of Array.isArray(value) ? value : [value]) {
       const directives = policy.split(';').map((directive) => directive.trim()).filter((directive) => directive !== '' && !/^frame-ancestors(\s|$)/i.test(directive));
-      return directives.length > 0 ? [directives.join('; ')] : [];
-    });
-    if (kept.length > 0) out[name] = Array.isArray(value) ? kept : kept[0]!;
+      if (directives.length > 0) policies.push(directives.join('; '));
+    }
   }
+  // Every policy in the list is enforced, so this one bounds framing whatever the app's say.
+  out['content-security-policy'] = [...policies, `frame-ancestors ${parentOrigin}`].join(', ');
   return out;
 }
 
@@ -525,7 +527,7 @@ export class PreviewGateways {
           if (to.origin === entry.upstream.origin) answer.location = entry.publicOrigin + to.pathname + to.search + to.hash;
         }
         if (entry.design) {
-          relayWithPicker(req, incoming, res, withoutFrameBusting(answer));
+          relayWithPicker(req, incoming, res, withoutFrameBusting(answer, entry.parentOrigin));
           return;
         }
         res.writeHead(incoming.statusCode ?? 502, answer);

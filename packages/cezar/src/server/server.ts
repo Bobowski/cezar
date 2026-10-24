@@ -7461,17 +7461,36 @@ export function createApp(deps: ServerDeps) {
   const dockerLogsTopic = (id: string) => `docker-logs:${id}`;
   const dockerLogTopics = new Map<string, { remove: () => void; publish: Set<(payload: { cursor: number }) => void> }>();
   // Spec §5: what the run log redacts (host env, every live run's registered values) plus the
-  // stored secrets of each project that read logs — refreshed by a read, at most every 10 s.
+  // stored secrets of the workspace and of EVERY registered project: a container is machine-wide,
+  // so any project's secret can show up in it. Each scope is re-read at most every 10 s; a failed
+  // read is retried by the next one, never cached as "none" (its last good values stay in use).
   const dockerLogStored = new Map<string, { values: readonly string[]; until: number }>();
-  const refreshDockerLogSecrets = async (project: ProjectContext): Promise<void> => {
-    if ((dockerLogStored.get(project.id)?.until ?? 0) > Date.now()) return;
-    const scope = project.id === 'default' ? undefined : { projectId: project.id, root: project.root };
-    const reads = await Promise.all([
-      secretStore.read({ kind: 'workspace' }),
-      ...(scope ? [secretStore.read({ kind: 'project', ...scope })] : []),
-    ]).catch(() => []);
-    const values = reads.flatMap((read) => Object.values(read.values).map((entry) => entry.value)).filter((value) => value.length >= MIN_SECRET_LEN);
-    dockerLogStored.set(project.id, { values, until: Date.now() + 10_000 });
+  const refreshStoredSecrets = async (key: string, scope: SecretScopeRef): Promise<void> => {
+    if ((dockerLogStored.get(key)?.until ?? 0) > Date.now()) return;
+    try {
+      const read = await secretStore.read(scope);
+      const values = Object.values(read.values).map((entry) => entry.value).filter((value) => value.length >= MIN_SECRET_LEN);
+      dockerLogStored.set(key, { values, until: Date.now() + 10_000 });
+    } catch {
+      // Left expired: the next read tries again.
+    }
+  };
+  let dockerLogRegistry: { projects: KnownProject[]; until: number } = { projects: [], until: 0 };
+  const refreshDockerLogSecrets = async (current: ProjectContext): Promise<void> => {
+    if (dockerLogRegistry.until <= Date.now()) {
+      try {
+        dockerLogRegistry = { projects: (await loadWorkspaceConfig()).projects, until: Date.now() + 10_000 };
+      } catch {
+        // The last registry read stands; the next read tries again.
+      }
+    }
+    const listed = dockerLogRegistry.projects;
+    const projects = listed.some((entry) => entry.id === current.id) ? listed : [...listed, { id: current.id, root: current.root, name: '' }];
+    await Promise.all([
+      refreshStoredSecrets('workspace', { kind: 'workspace' }),
+      ...projects.filter((entry) => entry.id !== 'default')
+        .map((entry) => refreshStoredSecrets(`project:${entry.id}`, { kind: 'project', projectId: entry.id, root: entry.root })),
+    ]);
   };
   const dockerLogSecrets = (): readonly string[] => {
     const values = new Set<string>();

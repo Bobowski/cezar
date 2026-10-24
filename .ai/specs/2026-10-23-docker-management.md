@@ -194,3 +194,7 @@ Nothing to configure. Reclaim is a click, never a timer. All new state is Docker
   so `?force=1` stops those containers first. A volume is refused while any container references
   it, stopped or running, `-f` or not, so `?force=1` removes those containers (`rm -f`) first.
   Without `force` an in-use object is a 409 and nothing runs; the confirm states the step.
+- **Log redaction is machine-wide.** On top of what the run log redacts (host env, every live
+  run's registered values), logs are redacted with the stored secrets of the workspace and of every
+  registered project — a container belongs to no one project. Each scope is re-read at most every
+  10 s; a failed read is never cached as "no secrets", the next read retries it.

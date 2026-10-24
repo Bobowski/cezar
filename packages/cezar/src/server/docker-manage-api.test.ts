@@ -216,6 +216,43 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     expect(next.data).toBe('pw=[REDACTED] tok=[REDACTED]\n');
   });
 
+  it('redacts every registered project’s stored secrets, not only the reading project’s', async () => {
+    const other = realpathSync(mkdtempSync(join(tmpdir(), 'cez-docker-other-')));
+    try {
+      const otherProject = await registerProject(other);
+      await secrets.set({ kind: 'project', projectId: otherProject.id, root: other }, 'OTHER_DB_PASSWORD', 'other-project-0123456789', ['checks']);
+      logText = 'pw=other-project-0123456789\n';
+      const { instance } = await app();
+      const first = dockerLogsSchema.parse(await (await apiRequest(instance, `/api/v1/docker/containers/${C('a')}/logs`)).json());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const next = dockerLogsSchema.parse(await (await apiRequest(instance, `/api/v1/docker/containers/${C('a')}/logs?cursor=${first.cursor}`)).json());
+      expect(next.data).toBe('pw=[REDACTED]\n');
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it('never caches a failed secret read as “no secrets”', async () => {
+    const { id, instance } = await app();
+    await secrets.set({ kind: 'project', projectId: id, root }, 'SHOP_DB_PASSWORD', 'stored-value-0123456789', ['checks']);
+    const read = secrets.read.bind(secrets);
+    let failed = false;
+    vi.spyOn(secrets, 'read').mockImplementation(async (scope) => {
+      if (scope.kind === 'project' && !failed) {
+        failed = true;
+        throw new Error('EACCES');
+      }
+      return read(scope);
+    });
+    logText = 'pw=stored-value-0123456789\n';
+    await apiRequest(instance, `/api/v1/docker/containers/${C('a')}/logs`);
+    // Another container, read right after: the failure above must not stand for 10 s as an empty list.
+    const first = dockerLogsSchema.parse(await (await apiRequest(instance, `/api/v1/docker/containers/${C('c')}/logs`)).json());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const next = dockerLogsSchema.parse(await (await apiRequest(instance, `/api/v1/docker/containers/${C('c')}/logs?cursor=${first.cursor}`)).json());
+    expect(next.data).toBe('pw=[REDACTED]\n');
+  });
+
   it('refuses every removal on a hosted cockpit without its own sign-in, and reads still work', async () => {
     vi.stubEnv('CEZ_REMOTE', '1');
     vi.stubEnv('CEZ_AUTH', '0');

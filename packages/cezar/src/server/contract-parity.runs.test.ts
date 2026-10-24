@@ -23,6 +23,7 @@ import type {
   promptQueueResponseSchema,
   removeQueuedPromptResponseSchema,
   editQueuedPromptResponseSchema,
+  reorderPromptQueueResponseSchema,
   removeWorktreeResponseSchema,
   runCommitsResponseSchema,
   runRecordSchema,
@@ -70,6 +71,7 @@ describe('src/contract/runs.ts matches the runs routes exactly', () => {
   type PromptQueue200 = InferResponseType<Run['prompt-queue']['$post'], 200>;
   type PromptQueuePatch200 = InferResponseType<Run['prompt-queue'][':msgId']['$patch'], 200>;
   type PromptQueueDelete200 = InferResponseType<Run['prompt-queue'][':msgId']['$delete'], 200>;
+  type PromptQueuePut200 = InferResponseType<Run['prompt-queue']['$put'], 200>;
   type Finish200 = InferResponseType<Run['finish']['$post'], 200>;
   type Land200 = InferResponseType<Run['land']['$post'], 200>;
   type Continue200 = InferResponseType<Run['continue']['$post'], 200>;
@@ -120,6 +122,7 @@ describe('src/contract/runs.ts matches the runs routes exactly', () => {
     Assert<Exact<z.infer<typeof promptQueueResponseSchema>, PromptQueue200>>,
     Assert<Exact<z.infer<typeof removeQueuedPromptResponseSchema>, PromptQueueDelete200>>,
     Assert<Exact<z.infer<typeof editQueuedPromptResponseSchema>, PromptQueuePatch200>>,
+    Assert<Exact<z.infer<typeof reorderPromptQueueResponseSchema>, PromptQueuePut200>>,
     // artifacts + local handoff
     Assert<Exact<z.infer<typeof openInCliResponseSchema>, OpenInCli200>>,
     Assert<Exact<z.infer<typeof runCommitsResponseSchema>, Commits200>>,

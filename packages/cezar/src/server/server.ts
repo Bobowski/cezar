@@ -105,6 +105,7 @@ import {
   designProxyRequestSchema,
   previewGatewayRequestSchema,
   promptQueueInputSchema,
+  reorderPromptQueueInputSchema,
   runFileCreateSchema,
   runFileRenameSchema,
   runFileWriteSchema,
@@ -5449,6 +5450,18 @@ export function createApp(deps: ServerDeps) {
       const message = manager.editQueuedPrompt(id, c.req.param('msgId'), c.req.valid('json').text);
       if (!message) return c.json({ error: 'not found' }, 404);
       return c.json({ message });
+    })
+
+    // Reordered as a whole (spec 2026-10-24-design-mode-third-cut §3.1). The order must name the
+    // waiting prompts exactly: the queue moves under the cockpit, and a stale order is refused
+    // rather than half-applied. Allowed in every run state, like removal.
+    .put('/runs/:id/prompt-queue', jsonZodValidator(reorderPromptQueueInputSchema), (c) => {
+      const { store, manager } = c.get('project');
+      const id = c.req.param('id');
+      if (!store.getRun(id)) return c.json({ error: 'not found' }, 404);
+      const promptQueue = manager.reorderQueuedPrompts(id, c.req.valid('json').order);
+      if (!promptQueue) return c.json({ error: 'the queue changed — reload it and try again' }, 409);
+      return c.json({ promptQueue });
     })
 
     // Removable in every run state — an undelivered prompt on a closed run included.

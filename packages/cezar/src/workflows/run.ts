@@ -100,6 +100,7 @@ import { createOrSwitchBranch } from '../server/git-changes.ts';
 import { getHeadCommit, getRepoInfo } from '../server/git.ts';
 import { pullFastForward, repoAutoSyncEnabled } from '../git-sync.ts';
 import { loadWorkflows, newerCatalogWorkflow } from './load.ts';
+import { reorderPromptQueue } from './prompt-queue-order.ts';
 import type { QueuedMessage, RunRecord, RunStore, StepState } from '../runs/store.ts';
 // Task dispatch (spec 2026-09-10-dispatch). Every import below is inert unless the feature is
 // ON *and* the run carries a `dispatch`: `dispatchOf()` is the single gate, and a run without one
@@ -3912,6 +3913,16 @@ export class RunManager {
     const replacement: QueuedMessage = { ...current, text };
     this.store.updateRun(runId, { promptQueue: queue.map((m) => (m.id === msgId ? replacement : m)) });
     return replacement;
+  }
+
+  /** The waiting prompts in the order `order` names, or null when it is not exactly their ids
+   *  (spec `2026-10-24-design-mode-third-cut` §3.1). Allowed in every run state, like removal. */
+  reorderQueuedPrompts(runId: string, order: readonly string[]): QueuedMessage[] | null {
+    const run = this.store.getRun(runId);
+    if (!run) return null;
+    const next = reorderPromptQueue(run.promptQueue ?? [], order);
+    if (next && next.length > 0) this.store.updateRun(runId, { promptQueue: next });
+    return next;
   }
 
   /** Take one prompt back out of the queue. Allowed in every run state: an undelivered prompt

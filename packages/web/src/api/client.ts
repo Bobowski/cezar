@@ -140,6 +140,7 @@ import type {
   PreviewGatewayResponse,
   PromptQueueResponse,
   RemoveQueuedPromptResponse,
+  ReorderPromptQueueResponse,
   EditQueuedPromptResponse,
   DesignProxyResponse,
   SetTelemetryConsentInput,
@@ -1746,6 +1747,18 @@ export async function removeQueuedRunPrompt(id: string, msgId: string): Promise<
       param: { projectId: queryScope(), id: encodeURIComponent(id), msgId: encodeURIComponent(msgId) },
     }),
     runPath(id, `/prompt-queue/${encodeURIComponent(msgId)}`),
+  )
+}
+
+/** Put the waiting prompts in a new order. `order` must name each exactly once — a 409 means
+ *  the queue moved since this window read it. */
+export async function reorderRunPromptQueue(id: string, order: string[]): Promise<ReorderPromptQueueResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].runs[':id']['prompt-queue'].$put({
+      param: { projectId: queryScope(), id: encodeURIComponent(id) },
+      json: { order },
+    }),
+    runPath(id, '/prompt-queue'),
   )
 }
 

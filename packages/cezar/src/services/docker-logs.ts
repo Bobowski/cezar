@@ -64,6 +64,12 @@ interface Entry {
   resumeFrom: number | null;
 }
 
+/** Forget every byte held for a follower — a line still arriving, a secret still being held. */
+function clearHold(entry: Entry): void {
+  entry.pending = { out: '', err: '' };
+  entry.skipping = { out: false, err: false };
+}
+
 export interface DockerLogsRead { data: string; cursor: number; truncated: boolean; following: boolean }
 
 export class DockerLogFollowers {
@@ -154,6 +160,7 @@ export class DockerLogFollowers {
 
   /** Attach `docker logs`: the last `TAIL_LINES` for a fresh pane, or from where a release cut it off. */
   private start(id: string, entry: Entry, fresh: boolean): void {
+    clearHold(entry);
     const since = entry.resumeFrom;
     if (fresh || since === null) {
       entry.text = '';
@@ -171,9 +178,12 @@ export class DockerLogFollowers {
       exit: (reason) => {
         if (entry.proc !== proc) return;
         const values = this.redacting() ? this.secretValues() : [];
-        const rest = (['out', 'err'] as const).map((stream) => (entry.skipping[stream] ? '' : this.capped(entry.pending[stream], values))).join('');
-        entry.pending = { out: '', err: '' };
-        entry.skipping = { out: false, err: false };
+        // A partial last line goes out; a multi-line secret it may be the start of does not.
+        const rest = (['out', 'err'] as const).map((stream) => {
+          const pending = entry.pending[stream];
+          return entry.skipping[stream] ? '' : this.capped(pending.slice(0, heldSecretStart(pending, values)), values);
+        }).join('');
+        clearHold(entry);
         this.append(id, entry, rest + (reason ? `\n[${reason}]\n` : ''));
         entry.proc = null;
         entry.following = false;
@@ -188,6 +198,8 @@ export class DockerLogFollowers {
     if (!proc) return;
     entry.proc = null;
     entry.following = false;
+    // What a killed process held never joins the next one's output: a half-held secret would leak.
+    clearHold(entry);
     // Cut off by us, not ended by Docker: a returning reader resumes from here.
     entry.resumeFrom = this.now();
     proc.kill();

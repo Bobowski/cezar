@@ -158,6 +158,42 @@ describe('docker logs followers (spec 2026-10-23-docker-management §3.4)', () =
     followers.close();
   });
 
+  describe('held bytes never outlive their follower', () => {
+    const pem = '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\nSECRETBODYLINE2abcdefghijklmnop\n-----END PRIVATE KEY-----';
+    const pw = 'Zq8!rT2#vLp9@xWm4$kN7';
+
+    it('drops a partial line a release cut off instead of joining it to the next follower', () => {
+      const { followers, spawned } = harness([pem, pw]);
+      followers.hold(ID);
+      spawned[0]!.data('out', `DB=${pw.slice(0, 16)}`);
+      followers.release(ID);
+      followers.hold(ID);
+      spawned[1]!.data('out', 'next line\n');
+      expect(followers.read(ID, 0).data).toBe('next line\n');
+    });
+
+    it('drops a half-held PEM a release cut off', () => {
+      const { followers, spawned } = harness([pem, pw]);
+      followers.hold(ID);
+      const lines = pem.split('\n');
+      spawned[0]!.data('out', `${lines[0]}\n${lines[1]}\n`);
+      followers.release(ID);
+      followers.hold(ID);
+      spawned[1]!.data('out', 'after restart\n');
+      expect(followers.read(ID, 0).data).toBe('after restart\n');
+    });
+
+    it('does not flush a half-held PEM when Docker ends the stream', () => {
+      const { followers, spawned } = harness([pem, pw]);
+      followers.read(ID, 0);
+      const lines = pem.split('\n');
+      spawned[0]!.data('out', `boot\n${lines[0]}\n${lines[1]}\n`);
+      expect(followers.read(ID, 0).data).toBe('boot\n');
+      spawned[0]!.exit(null);
+      expect(followers.read(ID, 5)).toMatchObject({ data: '', following: false });
+    });
+  });
+
   it('rings the topic with a cursor, coalesced', () => {
     vi.useFakeTimers();
     const { followers, spawned, bells } = harness();

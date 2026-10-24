@@ -277,6 +277,28 @@ describe('the Git page against a temp repo with a bare origin', () => {
       expect(readFileSync(join(repo, 'h.txt'), 'utf8')).toBe(`${lines.join('\n')}\n`);
     });
 
+    it('a partial commit of one tracked file leaves its other hunk modified and unstaged', async () => {
+      const lines = [...TEN];
+      lines[0] = 'one';
+      lines[9] = 'ten';
+      writeFileSync(join(repo, 'h.txt'), `${lines.join('\n')}\n`);
+      g(repo, 'config', 'diff.context', '1');
+      const before = await repoIndex(repo);
+      const first = before.ok ? before.index.unstaged[0]!.patch.split('\n').find((l) => l.startsWith('@@'))! : '';
+      expect(await stagePaths(repo, { path: 'h.txt', hunk: first })).toEqual({ ok: true });
+      expect((await commitIndex(repo, { message: 'just the first' })).ok).toBe(true);
+
+      const committed = g(repo, 'show', 'HEAD:h.txt');
+      expect(committed.split(/\r?\n/).filter(Boolean)).toEqual(['one', ...TEN.slice(1)]);
+      expect(g(repo, 'status', '--porcelain', '--', 'h.txt')).toBe(' M h.txt\n');
+      const after = await repoIndex(repo);
+      expect(after.ok && after.index.staged).toEqual([]);
+      const rest = after.ok ? after.index.unstaged.find((f) => f.path === 'h.txt') : undefined;
+      expect(rest).toMatchObject({ status: 'modified', adds: 1, dels: 1 });
+      expect(rest?.patch).toContain('+ten');
+      expect(rest?.patch).not.toContain('+one');
+    });
+
     it('a hunk that is gone is refused with a reason', async () => {
       const res = await stagePaths(repo, { path: 'h.txt', hunk: '@@ -1,3 +1,3 @@' });
       expect(res.ok).toBe(false);

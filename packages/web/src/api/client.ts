@@ -141,6 +141,8 @@ import type {
   PromptQueueResponse,
   RemoveQueuedPromptResponse,
   ReorderPromptQueueResponse,
+  DesignDraftsResponse,
+  SetDesignDraftsInput,
   EditQueuedPromptResponse,
   DesignProxyResponse,
   SetTelemetryConsentInput,
@@ -787,6 +789,23 @@ export async function getRepo(opts?: ReadOptions): Promise<RepoResponse> {
   return unwrap(
     await cez.api.v1.p[':projectId'].repo.$get({ param: { projectId: queryScope() } }, init(opts)),
     '/repo',
+  )
+}
+
+/** Design Mode notes collected on the Code page with no task chosen (spec
+ *  2026-10-24-design-mode-third-cut §3.2). */
+export async function getRepoDesignDrafts(opts?: ReadOptions): Promise<DesignDraftsResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].repo['design-drafts'].$get({ param: { projectId: queryScope() } }, init(opts)),
+    '/repo/design-drafts',
+  )
+}
+
+/** Replace them; an empty list clears them. */
+export async function putRepoDesignDrafts(input: SetDesignDraftsInput): Promise<DesignDraftsResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].repo['design-drafts'].$put({ param: { projectId: queryScope() }, json: input }),
+    '/repo/design-drafts',
   )
 }
 

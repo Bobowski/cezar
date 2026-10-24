@@ -106,6 +106,7 @@ import {
   previewGatewayRequestSchema,
   promptQueueInputSchema,
   reorderPromptQueueInputSchema,
+  setDesignDraftsInputSchema,
   runFileCreateSchema,
   runFileRenameSchema,
   runFileWriteSchema,
@@ -221,6 +222,7 @@ import {
   writeRunDraftImage,
   writeRunDraftSurface,
 } from '../runs/drafts.ts';
+import { readProjectDesignDrafts, writeProjectDesignDrafts } from '../runs/design-drafts.ts';
 import {
   draftImageInputSchema,
   draftImageParamSchema,
@@ -8427,6 +8429,17 @@ export function createApp(deps: ServerDeps) {
 
   // ---- chained family: repo / git (project-scoped) ----
   const repoRoutes = new Hono<ProjectApiEnv>()
+    // Design notes collected on the Code page with no task chosen (spec
+    // 2026-10-24-design-mode-third-cut §3.2), kept in the project's draft store until a task is
+    // started from them. User text: `tasks`'s to read, never `read`'s (auth/api-tokens.ts).
+    .get('/repo/design-drafts', (c) => c.json({ picks: readProjectDesignDrafts(c.get('project').dataDir) }))
+
+    .put('/repo/design-drafts', jsonZodValidator(setDesignDraftsInputSchema), (c) => {
+      const written = writeProjectDesignDrafts(c.get('project').dataDir, c.req.valid('json').picks);
+      if (!written.ok) return c.json({ error: written.error }, 400);
+      return c.json({ picks: readProjectDesignDrafts(c.get('project').dataDir) });
+    })
+
     .get('/repo', async (c) => {
       const { root: repoRoot, store } = c.get('project');
       const info = await getRepoInfo(repoRoot);

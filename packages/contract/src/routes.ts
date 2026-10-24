@@ -66,7 +66,7 @@ import {
 } from './github.ts';
 import { healthResponseSchema } from './health.ts';
 import { hostUsageSchema } from './host.ts';
-import { designProxyResponseSchema, previewGatewayResponseSchema } from './preview.ts';
+import { designDraftsResponseSchema, designProxyResponseSchema, previewGatewayResponseSchema } from './preview.ts';
 import {
   fsBrowseResponseSchema,
   githubOwnersResponseSchema,
@@ -317,6 +317,8 @@ export const routeContracts = {
   'POST /repo/branch': { summary: 'Create or switch a branch in the checkout.', response: repoBranchResponseSchema, destructive: true },
   'GET /repo/changes': { summary: 'Uncommitted changes in the checkout.', response: changesPayloadSchema },
   'GET /repo/commit/:sha': { summary: 'One commit in the checkout, with its diff.' },
+  'GET /repo/design-drafts': { summary: 'Design Mode notes collected on the Code page with no task chosen.', response: designDraftsResponseSchema },
+  'PUT /repo/design-drafts': { summary: 'Replace the collected Design Mode notes; an empty list clears them.', response: designDraftsResponseSchema, destructive: true },
   'GET /repo/diff': { summary: 'The checkout\'s uncommitted diff, as text.' },
   'POST /repo/fetch': { summary: 'Fetch the checkout\'s upstream.', response: repoSyncActionResponseSchema, destructive: false },
   'GET /repo/files': { summary: 'Read a file or list a directory in the checkout.' },

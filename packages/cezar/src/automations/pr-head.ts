@@ -78,7 +78,7 @@ function unavailable(what: string, stderr: string): PrHeadResolution {
 
 /** The remote whose URL is `repo`, else the base remote, else `origin` (the old default); with the
  *  host of the URL it matched (undefined when it fell back), which `gh api` needs on Enterprise. */
-async function remoteForRepo(exec: CommandRunner, root: string, repo: string): Promise<{ name: string; host?: string }> {
+export async function remoteForRepo(exec: CommandRunner, root: string, repo: string): Promise<{ name: string; host?: string }> {
   const remotes = await resolveTaskRemotes((args) => exec('git', args, root));
   for (const name of remotes.names) {
     const url = await exec('git', ['remote', 'get-url', name], root);

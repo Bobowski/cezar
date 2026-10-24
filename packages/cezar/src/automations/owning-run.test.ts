@@ -6,7 +6,7 @@ import { RunStore, type RunRecord } from '../runs/store.ts';
 import type { RunManager } from '../workflows/run.ts';
 import { launchEventCandidate } from './event-poll-cycle.ts';
 import type { GithubCandidate } from './github-poller.ts';
-import { deliverAutomationMessage, findOwningRun } from './owning-run.ts';
+import { deliverAutomationMessage, findOwningRun, forgetGithubSelfLogins, githubSelfLogin } from './owning-run.ts';
 import { AutomationStore } from './store.ts';
 import { launchAutomationRun } from './task-template.ts';
 import type { GithubAutomationDefinition } from './types.ts';
@@ -139,5 +139,121 @@ describe('deliver: owning-run, end to end through the receipt and the log', () =
     const launched = await launchAutomationRun({ root, manager, store: runs, definition, candidate, receiptId: 'r' });
     expect(launched.runId).toBe(started[0]);
     expect(launched.note).toContain('no agent session to resume');
+  });
+});
+
+describe('owning-run delivery never feeds a run its own reply, nor an unbounded stream (§11)', () => {
+  const dirs: string[] = [];
+  afterEach(async () => Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))));
+
+  const definition: GithubAutomationDefinition = {
+    id: 'talk', revision: 1, name: 'Answer reviews', enabled: true, kind: 'github', events: ['pull_request.commented'], intervalSeconds: 300,
+    deliver: 'owning-run', filters: { lookbackDays: 7, maxRecords: 2 },
+    task: { prompt: 'Answer: {{github.comment.body}}', workflow: 'quick-task' },
+    createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z',
+  };
+  const comment = (id: number, author: string, at: Date): GithubCandidate => ({
+    eventId: `acme/demo:comment:${id}`, event: 'pull_request.commented', timestamp: at.toISOString(), tieBreaker: `comment:${id}`,
+    repo: 'acme/demo', nodeId: 'PR_8', number: 8, title: 'Feature', url: 'https://github.com/acme/demo/pull/8', author: 'alice',
+    assignees: [], labels: [], comment: { id, kind: 'issue', author, url: `https://github.com/acme/demo/pull/8#issuecomment-${id}`, body: 'Done — pushed the fix.' },
+  });
+
+  async function setup() {
+    const root = await mkdtemp(join(tmpdir(), 'cezar-owning-self-')); dirs.push(root);
+    const runs = RunStore.open(join(root, '.ai/cezar'));
+    const automations = AutomationStore.open(join(root, '.ai/cezar'));
+    const delivered: string[] = [];
+    const started: string[] = [];
+    const manager = {
+      enqueueMessage: () => null, hasLiveSession: () => false, deferMessage: () => false, isActive: () => false,
+      continueRun: (_id: string, opts: { text?: string }) => { delivered.push(opts.text ?? ''); return { ok: true }; },
+      startRun: () => { const created = runs.createRun({ title: 'stranger', workflow: 'quick-task', task: 't', steps: [] }); started.push(created.id); return created; },
+    } as unknown as RunManager;
+    const owner = runs.createRun({ title: 'made the PR', workflow: 'quick-task', task: 't', steps: [] });
+    runs.updateRun(owner.id, { pullRequestUrl: 'https://github.com/acme/demo/pull/8', worktreePath: join(root, 'wt'), status: 'review', startedAt: new Date().toISOString() });
+    const fire = (candidate: GithubCandidate, over: Partial<GithubAutomationDefinition> = {}, selfLogin = async () => 'cezar-bot' as string | undefined) =>
+      launchEventCandidate({
+        store: automations, definition: { ...definition, ...over }, receipt: { eventId: candidate.eventId, candidate },
+        log: { event: candidate.event, githubNumber: 8 },
+        launch: (receiptId) => launchAutomationRun({ root, manager, store: runs, definition: { ...definition, ...over }, candidate, receiptId, selfLogin }),
+      });
+    const lastLog = () => automations.logs({ automationId: definition.id })[0];
+    return { runs, automations, owner, delivered, started, fire, lastLog };
+  }
+
+  it('holds a comment by cezar’s own login written while the run was at work — however it was posted (an MCP tool, curl)', async () => {
+    const { runs, owner, delivered, started, fire, lastLog } = await setup();
+    // The agent answered through a GitHub MCP tool cezar never parsed: no trace exists.
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    runs.appendEvent(owner.id, { type: 'item.completed', item: { kind: 'tool', id: 'x', name: 'mcp__gh_custom__reply', input: { text: 'Done' }, status: 'completed' } });
+    runs.appendEvent(owner.id, { type: 'turn.completed', turnId: 't1' });
+    await fire(comment(1, 'Cezar-Bot', new Date()));
+    expect(delivered).toEqual([]);
+    expect(started).toEqual([]);
+    expect(lastLog()).toMatchObject({ result: 'skipped' });
+    expect(lastLog()?.reason).toContain('own-comment');
+    // An unknown login, inside the window, is held too.
+    await fire(comment(2, 'someone', new Date()), {}, async () => undefined);
+    expect(delivered).toEqual([]);
+    expect(lastLog()?.reason).toContain('could not be read');
+  });
+
+  it('delivers the same login’s comment written well after the run’s last turn, someone else’s at any time, and any with allowSelfComments', async () => {
+    const { runs, owner, delivered, fire } = await setup();
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    runs.appendEvent(owner.id, { type: 'turn.completed', turnId: 't1' });
+    await fire(comment(3, 'cezar-bot', new Date(Date.now() + 10 * 60_000)));
+    await fire(comment(4, 'dave', new Date()));
+    expect(delivered).toHaveLength(2);
+  });
+
+  it('allowSelfComments delivers a comment of its own login, during a turn', async () => {
+    const { runs, owner, delivered, fire } = await setup();
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    await fire(comment(5, 'cezar-bot', new Date()), { filters: { ...definition.filters, allowSelfComments: true } });
+    expect(delivered).toHaveLength(1);
+  });
+
+  it('caps deliveries into one PR’s run at the automation’s maxRecords an hour', async () => {
+    const { delivered, started, fire, lastLog } = await setup();
+    const later = new Date(Date.now() + 10 * 60_000);
+    await fire(comment(6, 'dave', later));
+    await fire(comment(7, 'erin', later));
+    await fire(comment(8, 'frank', later));
+    expect(delivered).toHaveLength(2);
+    expect(started).toEqual([]);
+    expect(lastLog()).toMatchObject({ result: 'skipped' });
+    expect(lastLog()?.reason).toContain('delivery-cap');
+  });
+});
+
+describe('githubSelfLogin', () => {
+  afterEach(() => forgetGithubSelfLogins());
+
+  it('asks gh once an hour per repo, never keeps a failure long, and never runs dry', async () => {
+    const saved = process.env.CEZ_DRY_RUN;
+    delete process.env.CEZ_DRY_RUN;
+    try {
+      const calls: string[][] = [];
+      let answer = { ok: true, stdout: 'cezar-bot\n', stderr: '' };
+      const exec = async (command: string, args: string[]) => {
+        if (command === 'gh') calls.push(args);
+        return command === 'gh' ? answer : { ok: false, stdout: '', stderr: '' };
+      };
+      const now = Date.parse('2026-10-24T10:00:00.000Z');
+      expect(await githubSelfLogin('/r', 'acme/demo', exec, now)).toBe('cezar-bot');
+      expect(await githubSelfLogin('/r', 'acme/demo', exec, now + 30 * 60_000)).toBe('cezar-bot');
+      expect(calls).toEqual([['api', 'user', '--jq', '.login']]);
+      answer = { ok: false, stdout: '', stderr: 'HTTP 401' };
+      expect(await githubSelfLogin('/r', 'acme/other', exec, now)).toBeUndefined();
+      answer = { ok: true, stdout: 'ops-user\n', stderr: '' };
+      expect(await githubSelfLogin('/r', 'acme/other', exec, now + 61_000)).toBe('ops-user');
+      process.env.CEZ_DRY_RUN = '1';
+      expect(await githubSelfLogin('/r', 'acme/third', exec, now)).toBeUndefined();
+      expect(calls).toHaveLength(3);
+    } finally {
+      if (saved === undefined) delete process.env.CEZ_DRY_RUN;
+      else process.env.CEZ_DRY_RUN = saved;
+    }
   });
 });

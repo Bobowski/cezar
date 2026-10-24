@@ -11,7 +11,7 @@ import { normalizeCommentBody } from './github-activity.ts';
 import type { ScheduleOccurrence } from './schedule-runner.ts';
 import type { TrackerAutomationCandidate } from './tracker-poller.ts';
 import { resolvePrHead, type CommandRunner } from './pr-head.ts';
-import { deliverAutomationMessage, findOwningRun } from './owning-run.ts';
+import { deliverAutomationMessage, findOwningRun, githubSelfLogin, owningRunRefusal, type DeliveryMark } from './owning-run.ts';
 import type { AutomationDefinition, GithubAutomationDefinition, ScheduleAutomationDefinition, TrackerAutomationDefinition } from './types.ts';
 
 const GITHUB_PLACEHOLDERS = new Set([
@@ -246,6 +246,8 @@ export async function launchAutomationRun(options: {
   dispatchEnabled?: boolean;
   /** Test seam for the `gh`/`git` calls a `checkout: 'pr-head'` launch makes. */
   runCommand?: CommandRunner;
+  /** Test seam: the login cezar's `gh` runs as (`githubSelfLogin`). */
+  selfLogin?: () => Promise<string | undefined>;
 }): Promise<AutomationLaunched> {
   const { definition, candidate } = options;
   // spec 2026-10-23-github-events §5: a PR a cezar task owns gets the event as a message there.
@@ -254,12 +256,22 @@ export async function launchAutomationRun(options: {
     && (candidate.event.startsWith('pull_request.') || candidate.event === 'check_suite.completed')) {
     const owner = findOwningRun(options.store.listRuns(), candidate);
     if (owner) {
+      // Neither its own reply nor an unbounded stream: held, never a new run instead (§11).
+      const refusal = await owningRunRefusal({
+        definition, candidate, owner,
+        events: options.store.readEvents(owner.id),
+        live: options.manager.isActive?.(owner.id) ?? false,
+        selfLogin: options.selfLogin ?? (() => githubSelfLogin(options.root, candidate.repo, options.runCommand)),
+      });
+      if (refusal) throw new AutomationLaunchOutcome('skipped', refusal);
       const outcome = deliverAutomationMessage(options.manager, owner.id, renderAutomationTask(definition, candidate));
       if (outcome.ok) {
         const how = outcome.how === 'continued' ? 'continuing this task' : outcome.how === 'live' ? 'delivered' : 'queued behind the current turn';
+        const automationDelivery: DeliveryMark = { automationId: definition.id, repo: candidate.repo, number: candidate.number };
         options.store.appendEvent(owner.id, {
           type: 'note',
           message: `automation “${bounded(definition.name, 200)}”: ${candidate.event} on #${candidate.number} — ${how}`,
+          automationDelivery,
         });
         options.store.flush({ throwOnError: true });
         return { runId: owner.id, delivered: true };

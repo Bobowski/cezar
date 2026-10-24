@@ -105,6 +105,18 @@ export function EditorGithubFields({
               </Label>
             </span>
           ) : null}
+          {deliver === 'owning-run' && comments ? (
+            <span className="flex items-center gap-2">
+              <Checkbox
+                id="filter-self-comments"
+                checked={filters.allowSelfComments}
+                onCheckedChange={(checked) => setFilter('allowSelfComments', checked === true)}
+              />
+              <Label htmlFor="filter-self-comments" className="text-[13px] font-normal">
+                Also my own account’s comments while the task works (otherwise taken for its own reply)
+              </Label>
+            </span>
+          ) : null}
         </div>
       ) : null}
       <Collapsible open={open} onOpenChange={setOpen}>

@@ -52,6 +52,8 @@ export interface DraftFilters {
   includeOwnPushes: boolean
   /** `deliver: 'owning-run'`: comments from anyone, not only the repository's collaborators. */
   allowAnyAuthor: boolean
+  /** `deliver: 'owning-run'`: comments by cezar's own login while the task works, too. */
+  allowSelfComments: boolean
   lookbackDays: number
   maxRecords: number
 }
@@ -163,6 +165,7 @@ export const DEFAULT_FILTERS: DraftFilters = {
   prerelease: 'both',
   includeOwnPushes: false,
   allowAnyAuthor: false,
+  allowSelfComments: false,
   lookbackDays: 7,
   maxRecords: 25,
 }
@@ -216,6 +219,7 @@ function draftFiltersOf(filters: AutomationFilters): DraftFilters {
     prerelease: filters.prerelease === undefined ? 'both' : filters.prerelease ? 'only' : 'none',
     includeOwnPushes: filters.includeOwnPushes === true,
     allowAnyAuthor: filters.allowAnyAuthor === true,
+    allowSelfComments: filters.allowSelfComments === true,
     lookbackDays: filters.lookbackDays,
     maxRecords: filters.maxRecords,
   }
@@ -382,6 +386,7 @@ export function toBody(draft: EditorDraft): AutomationBody {
       ...(f.prerelease !== 'both' ? { prerelease: f.prerelease === 'only' } : {}),
       ...(f.includeOwnPushes ? { includeOwnPushes: true } : {}),
       ...(f.allowAnyAuthor ? { allowAnyAuthor: true } : {}),
+      ...(f.allowSelfComments ? { allowSelfComments: true } : {}),
       lookbackDays: clamp(f.lookbackDays, 1, 90),
       maxRecords: clamp(f.maxRecords, 1, 100),
     },

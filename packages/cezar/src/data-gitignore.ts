@@ -58,6 +58,9 @@ export const DATA_GITIGNORE_ENTRIES = [
   'automation-receipts.ndjson.tmp',
   'automation-log.ndjson',
   'automation-log.ndjson.tmp',
+  // spec 2026-10-23-github-events §4: the webhook's route id and HMAC secret.
+  'github-webhook.json',
+  'github-webhook.json.*.tmp',
   'automation-poll.lock',
   'automation-poll.lock.guard/',
   'automation-mutation.lock.guard/',

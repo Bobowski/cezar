@@ -188,6 +188,15 @@ describe('cockpit authentication', () => {
     expect(await response.text()).not.toContain(repoRoot);
   });
 
+  it('lets an anonymous webhook delivery reach its own signature check, and nothing else (spec 2026-10-23-github-events §4)', async () => {
+    // An unknown hook id is the route's own 404 — the guard did not answer it.
+    const delivery = await request(`/api/v1/hooks/github/${'a'.repeat(64)}`, { method: 'POST', body: '{}' });
+    expect(delivery.status).toBe(404);
+    expect((await request(`/api/v1/hooks/github/${'a'.repeat(64)}`)).status).toBe(401);
+    expect((await request('/api/v1/hooks/github/short', { method: 'POST', body: '{}' })).status).toBe(401);
+    expect((await request('/api/v1/automation-webhook', { method: 'POST' })).status).toBe(401);
+  });
+
   it.each([
     '/api/v1/health/',
     '/API/v1/health',

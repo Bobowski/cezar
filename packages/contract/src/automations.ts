@@ -423,6 +423,38 @@ export type AutomationRetryResponse = z.infer<typeof automationRetryResponseSche
 export const automationRunResponseSchema = z.object({ runId: z.string() });
 export type AutomationRunResponse = z.infer<typeof automationRunResponseSchema>;
 
+// ---- the webhook wake-up (spec 2026-10-23-github-events §4) -------------------------------
+
+/**
+ * `GET|POST|DELETE /automation-webhook`, `POST /automation-webhook/ping` — the project's GitHub
+ * webhook as the Automations page shows it. The secret never appears here.
+ */
+export const automationWebhookSchema = z.object({
+  /** Whether this cockpit can take a webhook: hosted, with cezar's own sign-in, on a GitHub remote. */
+  available: z.boolean(),
+  /** Why not, when `available` is false. */
+  reason: z.string().optional(),
+  /** The route GitHub calls, as a path — shown even where there is no public URL. */
+  route: z.string(),
+  /** The full URL, on a cockpit that knows its public origin. */
+  url: z.string().optional(),
+  registered: z.boolean(),
+  registeredAt: z.string().optional(),
+  lastDeliveryAt: z.string().optional(),
+  lastEvent: z.string().optional(),
+  lastWakeAt: z.string().optional(),
+  ping: z.object({ at: z.string(), ok: z.boolean(), error: z.string().optional() }).optional(),
+});
+export type AutomationWebhook = z.infer<typeof automationWebhookSchema>;
+
+export const automationWebhookResponseSchema = z.object({ webhook: automationWebhookSchema });
+export type AutomationWebhookResponse = z.infer<typeof automationWebhookResponseSchema>;
+
+/** `POST /hooks/:sender/:hookId` (202) — the one unauthenticated route besides `/health`. The
+ *  payload is never read: `woke` is false when the delivery collapsed into a wake under 5 s old. */
+export const hookDeliveryResponseSchema = z.object({ accepted: z.literal(true), woke: z.boolean() });
+export type HookDeliveryResponse = z.infer<typeof hookDeliveryResponseSchema>;
+
 /**
  * `GET /workspace/automation-templates` — the other registered projects' automations, as the
  * editor's "From your other projects" palette lists them (spec 2026-09-14 Q7). Read-only.

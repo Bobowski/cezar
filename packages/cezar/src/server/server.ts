@@ -223,6 +223,7 @@ import { checkoutGitStatus } from '../workflows/landing.ts';
 import { deleteUpload, readUpload, writeUpload } from '../uploads.ts';
 import { branchesCheckedOutElsewhere, removeWorktree, worktreeDiff, worktreeDiffStat, worktreeSizeBytes } from '../git-worktree.ts';
 import { githubTracesOf, headShaOf } from '../runs/github-traces.ts';
+import { automationWebhookRoutes, HookIndex, hookRoutes, wakeGithubPolls, type HookProject } from './automation-webhook.ts';
 import { isReclaimable, reclaimWorktrees } from '../runs/retention.ts';
 import { worktreeLifecycleRoutes, lifecycleError } from './worktree-lifecycle.ts';
 import { readLifecycleConfigOrDefault, readLifecycleConfigRaw, lifecycleConfigFromRaw, withLifecycleConfigLock, saveLifecycleConfigLocked, isLifecycleConfigTracked, LifecycleConfigError } from '../worktree-lifecycle/config.ts';
@@ -4373,6 +4374,48 @@ export function createApp(deps: ServerDeps) {
     if (!capabilities().automations) return c.json({ error: AUTOMATIONS_OFF }, 409);
     await next();
   };
+
+  // ---- the GitHub webhook wake-up (spec 2026-10-23-github-events §4) ----
+  // `hookIndex` maps a route id to its project over every project's `github-webhook.json`; a
+  // delivery makes that project's enabled polls due now, and the scheduler does the rest.
+  const hookIndex = new HookIndex(async () => {
+    const projects = await listProjects().catch(() => [] as Awaited<ReturnType<typeof listProjects>>);
+    return [
+      { id: bootContext.id, dataDir: bootContext.dataDir },
+      ...projects
+        .filter((project) => project.status === 'ok' && resolve(project.root) !== resolve(bootRoot))
+        .map((project) => ({ id: project.id, dataDir: join(project.root, '.ai/cezar') })),
+    ];
+  });
+  const wakeHookProject = async (project: HookProject) => {
+    let store: AutomationStore;
+    try {
+      store = project.id === bootContext.id ? bootContext.automationStore : (await contexts.context(project.id)).automationStore;
+    } catch {
+      return;
+    }
+    if (wakeGithubPolls(store) > 0) automationsChanged();
+  };
+  const webhookRoutes = automationWebhookRoutes({
+    enabled: () => capabilities().automations,
+    offMessage: AUTOMATIONS_OFF,
+    canRegister: () => !isHostedMode()
+      ? { ok: false, reason: 'This cockpit runs locally, so GitHub has no public URL to call; polls keep their interval.' }
+      : !authIsEnforced()
+        ? { ok: false, reason: 'Registering a webhook needs cezar’s own sign-in, and CEZ_AUTH=0 hands it to the proxy.' }
+        : { ok: true },
+    publicOrigin: ({ host, proto }) => {
+      if (!isHostedMode() || !host || !/^[A-Za-z0-9.-]+(?::\d{1,5})?$/.test(host)) return undefined;
+      const scheme = proto?.split(',')[0]?.trim().toLowerCase() === 'http' ? 'http' : 'https';
+      return `${scheme}://${host}`;
+    },
+    remote: async (root) => {
+      const parsed = parseRemote((await getRepoInfo(root))?.remote ?? '');
+      return parsed && isGithubHost(parsed.host) ? { owner: parsed.owner, repo: parsed.repo, host: parsed.host } : undefined;
+    },
+    changed: () => hookIndex.forget(),
+    dryRun: () => process.env.CEZ_DRY_RUN === '1',
+  });
 
   // ---- chained family: GitHub automations (project-scoped) ----
   // Every handler below reads `c.get('project')` — the definitions, their runtime state and the
@@ -8621,6 +8664,7 @@ export function createApp(deps: ServerDeps) {
     .route('/', workflowsRoutes)
     .route('/', planRoutes)
     .route('/', automationsRoutes)
+    .route('/', webhookRoutes)
     .route('/', dispatchRoutes)
     .route('/', runsRoutes)
     .route('/', draftRoutes)
@@ -8946,6 +8990,7 @@ export function createApp(deps: ServerDeps) {
     .route('/', workspaceSecretsRoutes)
     .route('/', fsBrowseRoutes)
     .route('/', automationChecksRoutes)
+    .route('/', hookRoutes({ find: (hookId) => hookIndex.find(hookId), wake: wakeHookProject }))
     .route('/', runsIndexRoutes)
     .route('/', dashboardRoutes(dashboard, () => ({ tokens: capabilities().tokenUsageMetrics, cost: capabilities().costMetrics }), () => capabilities().automations))
     .route('/', workspaceEventsRoutes)

@@ -34,6 +34,14 @@ export function isPublicAuthPath(pathname: string): boolean {
   return PUBLIC_PATHS.has(pathname);
 }
 
+/** A webhook delivery (spec 2026-10-23-github-events §4): the one unauthenticated route besides
+ *  health. Its own HMAC check is its authentication, so only an exact `POST` to a well-formed id
+ *  skips the session — any other spelling meets the guard. */
+const HOOK_PATH_RE = /^\/api\/v1\/hooks\/github\/[0-9a-f]{64}$/;
+export function isPublicHookRequest(method: string, pathname: string): boolean {
+  return method === 'POST' && HOOK_PATH_RE.test(pathname);
+}
+
 function cookieValue(header: string | undefined, name: string): string | undefined {
   for (const pair of (header ?? '').split(';')) {
     const trimmed = pair.trim();
@@ -94,7 +102,7 @@ export function createAuthGuard(options: AuthGuardOptions): MiddlewareHandler<Au
       return next();
     }
     c.set('principal', undefined);
-    return isPublicAuthPath(c.req.path) ? next() : unauthorized(c);
+    return isPublicAuthPath(c.req.path) || isPublicHookRequest(c.req.method, c.req.path) ? next() : unauthorized(c);
   };
 }
 

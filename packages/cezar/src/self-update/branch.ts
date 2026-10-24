@@ -34,7 +34,8 @@ export function sourceDir(env: NodeJS.ProcessEnv = process.env): string {
 export function sourceLockPath(env: NodeJS.ProcessEnv = process.env): string {
   return join(cezarHomeDir(env), 'source.lock');
 }
-/** A build that has held the lock this long is a pid that was reused, not a build. */
+/** A holder whose start time cannot be checked and that has held the lock this long is a pid
+ *  that was reused, not a build. A holder whose start time matches is never stale. */
 const SOURCE_LOCK_STALE_MS = 2 * 60 * 60_000;
 
 export class BranchBusyError extends Error {
@@ -78,16 +79,7 @@ function readLock(path: string): string | null {
 function lockHolder(path: string, text: string): number | null {
   const [pidText, atText, startText, token] = text.trim().split(/\r?\n/).map((line) => line.trim());
   const pid = Number(pidText);
-  const at = Number(atText);
-  let since = Number.isFinite(at) ? at : 0;
-  if (!since) {
-    try {
-      since = statSync(path).mtimeMs;
-    } catch {
-      return null;
-    }
-  }
-  if (!Number.isSafeInteger(pid) || pid <= 0 || Date.now() - since > SOURCE_LOCK_STALE_MS) return null;
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   // Our own pid: held by this very process, or left by an earlier one the pid was recycled from.
   if (pid === process.pid) return token === LOCK_TOKEN ? pid : null;
   try {
@@ -96,7 +88,20 @@ function lockHolder(path: string, text: string): number | null {
     if ((error as NodeJS.ErrnoException).code !== 'EPERM') return null;
   }
   const start = startText ? processStartTicks(pid) : null;
-  return start !== null && start !== startText ? null : pid;
+  // Verified the same process that wrote it: held for as long as it runs, however long it builds.
+  if (start !== null) return start === startText ? pid : null;
+  // Unverifiable (no /proc here or where it was written): a pid this old is taken to be reused.
+  const at = Number(atText);
+  const since = Number.isFinite(at) && at > 0 ? at : lockMtime(path);
+  return since !== null && Date.now() - since <= SOURCE_LOCK_STALE_MS ? pid : null;
+}
+
+function lockMtime(path: string): number | null {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return null;
+  }
 }
 
 /** Take the source lock (the skills updater's pattern: `wx`, pid + time, stale when dead). */

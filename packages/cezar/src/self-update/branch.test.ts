@@ -662,6 +662,35 @@ winner
     expect(sourceLockHolder(env)).toBeNull();
   });
 
+  const threeHoursAgo = () => Date.now() - 3 * 60 * 60_000;
+
+  it.runIf(process.platform === 'linux')('never counts a live holder whose start time matches as stale, however long it has built', () => {
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, 'source.lock'), `${process.ppid}\n${threeHoursAgo()}\n${processStartTicks(process.ppid)}\nx\n`);
+    expect(sourceLockHolder(env)).toBe(process.ppid);
+    const release = service().source.lock(BRANCH);
+    const mine = readFileSync(join(home, 'source.lock'), 'utf8').split('\n');
+    writeFileSync(join(home, 'source.lock'), [mine[0], threeHoursAgo(), ...mine.slice(2)].join('\n'));
+    expect(sourceLockHolder(env)).toBe(process.pid);
+    release();
+  });
+
+  it('keeps the two-hour rule for a holder whose start time cannot be checked', () => {
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, 'source.lock'), `${process.ppid}\n${threeHoursAgo()}\n`);
+    expect(sourceLockHolder(env)).toBeNull();
+    writeFileSync(join(home, 'source.lock'), `${process.ppid}\n${Date.now()}\n`);
+    expect(sourceLockHolder(env)).toBe(process.ppid);
+  });
+
+  it('counts its own lock as held after two hours: the token proves it', () => {
+    const release = service().source.lock(BRANCH);
+    const mine = readFileSync(join(home, 'source.lock'), 'utf8').split('\n');
+    writeFileSync(join(home, 'source.lock'), [mine[0], threeHoursAgo(), ...mine.slice(2)].join('\n'));
+    expect(sourceLockHolder(env)).toBe(process.pid);
+    release();
+  });
+
   it('builds at once but switches only when the workspace is idle', async () => {
     const { target } = await prepared();
     const { calls, deps } = stubs();

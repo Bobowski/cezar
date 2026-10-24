@@ -112,7 +112,7 @@ GET    /docker/images                         → { available, reason, images: D
 DELETE /docker/images/:id          ?force=1   → { ok } | { error }
 GET    /docker/volumes                        → { available, reason, volumes: DockerVolume[] }
 DELETE /docker/volumes/:name       ?force=1   → { ok } | { error }
-POST   /docker/stacks/:name/down   { volumes?: boolean }
+POST   /docker/stacks/:name/down   { volumes?: boolean, byLabel?: boolean }
 DELETE /docker/containers/:id      ?force=1
 GET    /docker/disk                           → DockerDisk (df + data root)
 POST   /docker/reclaim/plan                   → ReclaimPlan (what and how much)
@@ -176,16 +176,19 @@ Nothing to configure. Reclaim is a click, never a timer. All new state is Docker
   run hooks. The stack is torn down by its `com.docker.compose.project=<name>` label instead —
   `docker rm -f` of its containers, `docker network rm` of its networks and, with `--volumes`,
   `docker volume rm` of its labelled volumes (`rm -f -v` then takes the anonymous ones too).
-  Reclaim's stack step always goes this way, since its dir is gone by definition.
+  Reclaim's stack step always goes this way, since its dir is gone by definition. A dir still there
+  whose files are missing (or unlabelled) is not torn down by labels unasked: Down answers `409`
+  "compose files missing in <dir>; stop it from that directory or remove by label", and
+  `{ byLabel: true }` removes the whole stack by its label.
 - **A dir is "gone" only when this host can judge it** (`dirState`: a WSL path seen from Windows is
   `unknown`), and Reclaim lists `gone` stacks only.
 - **A stack is judged by every container in it**, since a compose file with a top-level `name:` puts
   containers from several dirs (the checkout and a worktree) under one project label. It is `gone`
   only when every container's dir is, `exists` while any is, and an active task in any of its dirs
   protects it; Reclaim takes it only when all of it is a gone task worktree. Down runs compose from
-  a live dir whose files are all there; by labels, it — and a Reclaim stack step — removes only the
-  containers whose own working dir is one of the gone ones, and leaves the networks and volumes when
-  any other container still carries the label.
+  a live dir whose files are all there (a live dir without them is the `409` above); by labels, it —
+  and a Reclaim stack step — removes only the containers whose own working dir is one of the gone
+  ones, and leaves the networks and volumes when any other container still carries the label.
 - **Step 4 is folded into step 3.** A gone stack's stopped containers carry its
   `com.docker.compose.project` label and go with that stack. Nothing is proposed on its image
   digest alone: an unrelated stopped `docker run postgres:16` is someone else's. The `container`

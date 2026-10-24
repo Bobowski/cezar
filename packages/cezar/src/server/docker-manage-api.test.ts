@@ -138,11 +138,15 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     expect((await apiRequest(instance, '/api/v1/docker/stacks/mine/down', json('POST', { volumes: 'yes' }))).status).toBe(400);
   });
 
-  it('downs a stack by its labels when a file it was started from is missing, never by compose discovery', async () => {
+  it('refuses to down a live dir’s stack whose file is missing, and downs it by its labels only when asked, never by compose discovery', async () => {
     // `compose.dev.yml` is gone: dropping the -f flags would let compose pick whatever file it finds.
     writeFileSync(join(root, 'compose.yml'), 'services: {}\n');
     const { instance } = await app();
-    expect((await apiRequest(instance, '/api/v1/docker/stacks/mine/down', json('POST', { volumes: true }))).status).toBe(200);
+    const refused = await apiRequest(instance, '/api/v1/docker/stacks/mine/down', json('POST', { volumes: true }));
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: `compose files missing in ${root}; stop it from that directory or remove by label` });
+    expect(ran()).toEqual([]);
+    expect((await apiRequest(instance, '/api/v1/docker/stacks/mine/down', json('POST', { volumes: true, byLabel: true }))).status).toBe(200);
     expect(calls.some((call) => call.args.startsWith('compose'))).toBe(false);
     expect(ran()).toEqual([`rm -f -v ${C('a')}`, 'network rm mine_default', 'volume rm mine_pg']);
   });
@@ -258,11 +262,15 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
       ]);
     });
 
-    it('by its labels, removes only the gone dir’s containers and leaves what they share with the live ones', async () => {
+    it('refuses a partial down while its live dir’s files are missing, and removes all of it by its labels when asked', async () => {
       const { instance } = await app();
-      expect((await apiRequest(instance, '/api/v1/docker/stacks/shared/down', json('POST', { volumes: true }))).status).toBe(200);
+      const refused = await apiRequest(instance, '/api/v1/docker/stacks/shared/down', json('POST', { volumes: true }));
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toEqual({ error: `compose files missing in ${root}; stop it from that directory or remove by label` });
+      expect(ran()).toEqual([]);
+      expect((await apiRequest(instance, '/api/v1/docker/stacks/shared/down', json('POST', { volumes: true, byLabel: true }))).status).toBe(200);
       expect(calls.some((call) => call.args.startsWith('compose'))).toBe(false);
-      expect(ran()).toEqual([`rm -f -v ${C('e')}`]);
+      expect(ran()).toEqual([`rm -f -v ${C('e')} ${C('d')}`, 'network rm shared_default', 'volume rm shared_pg']);
     });
   });
 

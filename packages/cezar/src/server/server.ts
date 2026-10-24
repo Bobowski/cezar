@@ -7579,15 +7579,22 @@ export function createApp(deps: ServerDeps) {
       if (!listed.ok) return c.json({ error: listed.reason }, 409);
       const members = listed.containers.filter((entry) => entry.stack === name);
       if (members.length === 0) return c.json({ error: 'no such stack' }, 404);
-      const volumes = c.req.valid('json').volumes === true;
+      const body = c.req.valid('json');
+      const volumes = body.volumes === true;
+      const byLabel = body.byLabel === true;
       // Compose only from a dir still there, with the files it was started from (`-f a -f b`), every one
       // still there: without them it searches the cwd and its parents for one. Else the labels drive removal.
-      const member = members.find((entry) => judgeDir(entry.dir) === 'exists' && entry.configFiles.length > 0 && entry.configFiles.every((file) => judgeDir(file) === 'exists'));
-      // A project name shared with a live dir: by labels, only the gone dirs' containers go.
+      const live = members.filter((entry) => judgeDir(entry.dir) === 'exists');
+      const member = live.find((entry) => entry.configFiles.length > 0 && entry.configFiles.every((file) => judgeDir(file) === 'exists'));
+      // A live dir without its files: a label down by default would be partial or surprising — the user picks.
+      if (!member && live.length > 0 && !byLabel) {
+        return c.json({ error: `compose files missing in ${live[0]!.dir}; stop it from that directory or remove by label` }, 409);
+      }
       const goneDirs = [...new Set(members.flatMap((entry) => (entry.dir !== null && judgeDir(entry.dir) === 'gone' ? [entry.dir] : [])))];
-      const result = member
+      const result = member && !byLabel
         ? await docker(['compose', '-p', name, ...member.configFiles.flatMap((file) => ['-f', file]), 'down', ...(volumes ? ['--volumes'] : [])], { cwd: member.dir!, timeoutMs: 180_000 })
-        : await removeStackByLabel(docker, name, { volumes, ...(goneDirs.length > 0 ? { dirs: goneDirs } : {}) });
+        // Asked by label: all of it. Else only gone dirs are left, and only their containers go.
+        : await removeStackByLabel(docker, name, { volumes, ...(!byLabel && goneDirs.length > 0 ? { dirs: goneDirs } : {}) });
       dockerChanged();
       if (!result.ok) return c.json({ error: result.reason }, 409);
       return c.json(dockerOk, 200);

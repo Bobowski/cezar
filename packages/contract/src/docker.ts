@@ -228,7 +228,8 @@ export type DockerForceQuery = z.infer<typeof dockerForceQuerySchema>;
 export const dockerForceBodySchema = z.object({ users: z.array(dockerContainerParamsSchema.shape.id).max(1000).optional() }).strict();
 export type DockerForceBody = z.infer<typeof dockerForceBodySchema>;
 
-export const dockerStackDownSchema = z.object({ volumes: z.boolean().optional() }).strict();
+/** `byLabel`: tear it down by its compose label even where a live dir's compose files are missing (else a 409). */
+export const dockerStackDownSchema = z.object({ volumes: z.boolean().optional(), byLabel: z.boolean().optional() }).strict();
 export type DockerStackDown = z.infer<typeof dockerStackDownSchema>;
 
 export const dockerOkSchema = z.object({ ok: z.literal(true) }).strict();

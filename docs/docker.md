@@ -93,7 +93,8 @@ keep running), installs the build beside the others in `/data/cezar/versions`, a
 running restarts **only the cezar process**: the container's Docker daemon and every project's
 services stay up, and boot recovery resumes the agents.
 
-- **A version that crashes on start is rolled back.** If it exits within 30 s, the entrypoint
+- **A version that crashes on start is rolled back.** If it exits within 30 s of its first start after
+  an update — from the dialog, or `cezar update` followed by a restart — the entrypoint
   switches back to the build that ran before and the dialog says so. The dialog also lists the
   builds on disk, for switching back by hand.
 - **Some commits also need a rebuild.** When the pending commits change `docker/` (the

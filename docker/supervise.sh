@@ -8,8 +8,11 @@
 #
 # The loop is what makes an update a PROCESS restart instead of a container restart: exit 75
 # (`RESTART_EXIT_CODE`, restart.ts) relaunches from the new `current`, so the container's Docker
-# daemon and the projects' services never notice. A version that dies within 30 s of being
-# activated is rolled back to `previous` once, and the rollback is recorded in rollback.json.
+# daemon and the projects' services never notice. A version that dies within 30 s of its first
+# launch after being activated is rolled back to `previous` once, recorded in rollback.json.
+# "Just activated" is read from state, not from this loop: every `activate` (the server's,
+# `cezar update` from the CLI, the boot choice) writes `versions/.fresh`, and the first launch of
+# the id it names consumes it — so a CLI update followed by a container restart is guarded too.
 # Functions only, no side effects on source; every helper succeeds, so `set -e` callers survive.
 
 SUPERVISE_PKG_ENTRY=node_modules/@open-mercato/cezar/dist/index.js
@@ -17,6 +20,8 @@ SUPERVISE_WINDOW=30
 # 1 while the install `current` points at was activated moments ago (an update, or the boot
 # choice): only then is a quick crash a bad version rather than a bad day.
 SUPERVISE_FRESH=0
+# The id the last `activate` switched to, until its first launch (layout.ts `FRESH_MARKER`).
+SUPERVISE_FRESH_MARKER=.fresh
 
 supervise_entry() { # <home> <id>
   printf '%s/versions/%s/%s' "$1" "$2" "$SUPERVISE_PKG_ENTRY"
@@ -42,6 +47,19 @@ supervise_activate() { # <home> <id>
     ln -sfn "$before" "$1/versions/previous"
   fi
   ln -sfn "$2" "$1/versions/current"
+  if [ "$before" != "$2" ]; then printf '%s\n' "$2" >"$1/versions/$SUPERVISE_FRESH_MARKER" 2>/dev/null || true; fi
+}
+
+# The first launch of an install activated since the last launch arms the rollback guard, once.
+supervise_consume_fresh() { # <home> <id>
+  marker=$1/versions/$SUPERVISE_FRESH_MARKER
+  fresh=$(cat "$marker" 2>/dev/null || true)
+  if [ -z "$fresh" ]; then return 0; fi
+  rm -f "$marker"
+  if [ "$fresh" = "$2" ]; then
+    SUPERVISE_FRESH=1
+    rolled_back=0
+  fi
 }
 
 supervise_boot() { # <home> <image dir>
@@ -93,7 +111,6 @@ supervise_boot() { # <home> <image dir>
     return 0
   fi
   supervise_activate "$home" "$image_id"
-  SUPERVISE_FRESH=1
   echo "cezar: starting $image_id ($image_at) — the image is newer than $current"
 }
 
@@ -110,6 +127,7 @@ supervise_loop() { # <home> <args for cezar>...
     started=$(date +%s)
     # A stop that landed while no cezar ran (between two launches) found nobody to pass it to.
     if [ "$stopping" = 1 ]; then return 0; fi
+    supervise_consume_fresh "$home" "$id"
     run_cezar "$(supervise_entry "$home" "${id:-current}")" "$@" &
     child=$!
     # …and one between the spawn and `child=` reached the shell before it knew the pid.
@@ -124,7 +142,8 @@ supervise_loop() { # <home> <args for cezar>...
     child=
     if [ "$stopping" = 1 ]; then return "$code"; fi
     if [ "$code" = 75 ]; then
-      # An update: relaunch from the `current` it just activated, which may now crash once.
+      # An update: relaunch from the `current` it just activated, which may now crash once —
+      # even when that activate came from a build too old to write the marker.
       SUPERVISE_FRESH=1
       rolled_back=0
       continue

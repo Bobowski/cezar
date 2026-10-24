@@ -226,7 +226,10 @@ done
 beside `current`, written by `activate`). A rollback is recorded in
 `/data/cezar/rollback.json` (`{ from, to, exitCode, at }`); the status route reports it until
 the next successful apply, and the dialog shows "rolled back from X: it exited with N within
-30 s". One rollback per boot sequence — a `previous` that also crashes exits the loop and
+30 s". As built, "just activated" is state, not the loop's memory: every `activate` (the server's,
+`cezar update` from the CLI, the boot choice) writes `versions/.fresh` naming the id it switched
+to, and the supervisor's first launch of that id consumes it and arms the 30 s guard — so a CLI
+update followed by a container restart is guarded like a dialog update. One rollback per boot sequence — a `previous` that also crashes exits the loop and
 Docker's restart policy takes over, which is today's behaviour.
 
 The container keeps `init: true`: tini stays PID 1, the loop is its child, and the inner
@@ -294,7 +297,7 @@ applies — it is the same tarball the new image would carry.
   `CEZ_SELF_UPDATE_CHECK=0` turns it off. AGENTS.md § Zero config gets the matching
   owner-approved line; `.env.example` and `docs/reference.md` document the variable.
 - Nothing applies itself. Nothing restarts without a click (or the idle poll after one).
-- New state only: `source/`, `versions/*+<sha8>`, `previous`, `rollback.json`, `/data/bin`,
+- New state only: `source/`, `versions/*+<sha8>`, `previous`, `versions/.fresh`, `rollback.json`, `/data/bin`,
   `/data/npm`. Delete any of it and the next run recreates what it needs.
 - `CEZ_UPDATE_BRANCH` joins `.env.example` beside `CEZ_UPDATE_CHANNEL`.
 

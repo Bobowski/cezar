@@ -201,6 +201,19 @@ export function activate(id: string, env: NodeJS.ProcessEnv = process.env): void
   // `previous` first: a crash between the two flips leaves a rollback target, never a wrong one.
   if (before && before !== id && existsSync(versionEntry(before, env))) pointLink(PREVIOUS_LINK, before, env);
   pointLink(CURRENT_LINK, id, env);
+  if (before !== id) markFresh(id, env);
+}
+
+/** `versions/.fresh`: the id the last `activate` switched to. The container's supervisor consumes
+ *  it on that id's first launch to arm its crash rollback (docker/supervise.sh, spec §4.3). */
+export const FRESH_MARKER = '.fresh';
+
+function markFresh(id: string, env: NodeJS.ProcessEnv): void {
+  try {
+    writeFileSync(join(versionsDir(env), FRESH_MARKER), `${id}\n`);
+  } catch {
+    // Only the rollback guard reads it; an unwritable marker leaves the switch itself intact.
+  }
 }
 
 function pointLink(name: string, id: string, env: NodeJS.ProcessEnv): void {

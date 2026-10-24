@@ -153,6 +153,34 @@ supervise_loop "$HOME_DIR" serve --port 4321
     expect(run.code).toBe(0);
   });
 
+  it('rolls back the first launch of a build `cezar update` activated from the CLI, after a container restart', () => {
+    // The CLI's activate: previous → aaaa, current → bbbb, and the marker naming bbbb.
+    rmSync(join(home, 'versions', 'current'));
+    symlinkSync('0.17.0+bbbbbbbb', join(home, 'versions', 'current'));
+    symlinkSync('0.17.0+aaaaaaaa', join(home, 'versions', 'previous'));
+    writeFileSync(join(home, 'versions', '.fresh'), '0.17.0+bbbbbbbb\n');
+    const run = supervise(['1 2', '0 100']);
+    expect(run.launched).toEqual(['0.17.0+bbbbbbbb', '0.17.0+aaaaaaaa']);
+    expect(current()).toBe('0.17.0+aaaaaaaa');
+    expect(JSON.parse(readFileSync(join(home, 'rollback.json'), 'utf8'))).toMatchObject({ from: '0.17.0+bbbbbbbb', to: '0.17.0+aaaaaaaa' });
+    expect(existsSync(join(home, 'versions', '.fresh'))).toBe(false);
+  });
+
+  it('arms the guard once: a marker is consumed by its first launch, and one naming another id is dropped', () => {
+    symlinkSync('0.17.0+bbbbbbbb', join(home, 'versions', 'previous'));
+    writeFileSync(join(home, 'versions', '.fresh'), '0.17.0+aaaaaaaa\n');
+    expect(supervise(['0 100']).code).toBe(0);
+    expect(existsSync(join(home, 'versions', '.fresh'))).toBe(false);
+    // The next restart of the same install is not a first launch.
+    expect(supervise(['1 2']).code).toBe(1);
+    expect(current()).toBe('0.17.0+aaaaaaaa');
+
+    writeFileSync(join(home, 'versions', '.fresh'), '0.17.0+bbbbbbbb\n');
+    expect(supervise(['1 2']).code).toBe(1);
+    expect(current()).toBe('0.17.0+aaaaaaaa');
+    expect(existsSync(join(home, 'versions', '.fresh'))).toBe(false);
+  });
+
   it('never rolls back a version that was not just activated', () => {
     symlinkSync('0.17.0+bbbbbbbb', join(home, 'versions', 'previous'));
     const run = supervise(['1 2']);
@@ -215,6 +243,7 @@ describe.skipIf(!haveBootTools)('the container supervisor boot choice', () => {
     boot();
     expect(current()).toBe('0.17.0+image.e5f6a7b8');
     expect(readlinkSync(join(home, 'versions', 'previous'))).toBe('0.17.0+a1b2c3d4');
+    expect(readFileSync(join(home, 'versions', '.fresh'), 'utf8').trim()).toBe('0.17.0+image.e5f6a7b8');
   });
 
   it('keeps current, and says so, when the image commit date does not parse', () => {

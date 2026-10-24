@@ -453,11 +453,26 @@ describe('cezar update on the branch channel', () => {
     expect(activeId(env)).toBe(running);
     expect(calls).toEqual([]);
 
+    const fresh = join(home, 'versions', '.fresh');
+    rmSync(fresh, { force: true });
     expect(await runSelfUpdateCommand('update', [], { service: svc, modifyPath: false })).toBe(0);
     expect(activeId(env)).toBe(`0.17.0+${c2.slice(0, 8)}`);
     expect(calls).toEqual([`build@${c2.slice(0, 8)}`, 'pack', 'install']);
     expect(restart).not.toHaveBeenCalled();
+    // The container supervisor's next launch of it is a first one: its crash rollback applies.
+    expect(readFileSync(fresh, 'utf8').trim()).toBe(`0.17.0+${c2.slice(0, 8)}`);
     vi.restoreAllMocks();
+  });
+
+  it('marks an activate as fresh only when it switches, and never lists the marker as an install', () => {
+    const c1 = commit('feat: one', '2026-10-21T10:00:00Z');
+    const running = runningBuild(c1, '2026-10-21T10:00:00.000Z');
+    const fresh = join(home, 'versions', '.fresh');
+    expect(readFileSync(fresh, 'utf8').trim()).toBe(running);
+    rmSync(fresh);
+    activate(running, env);
+    expect(existsSync(fresh)).toBe(false);
+    expect(listInstalled(env).map((entry) => entry.id)).toEqual([running]);
   });
 });
 

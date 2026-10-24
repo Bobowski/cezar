@@ -47,7 +47,7 @@ function queryValue(value: unknown): string[] {
  * URL normalisation would resolve it into another route; a slash or control character never
  * belongs in an id.
  */
-function isSafeSegment(value: string): boolean {
+export function isSafeSegment(value: string): boolean {
   // eslint-disable-next-line no-control-regex
   return value !== '.' && !value.includes('..') && !/[/\\\u0000-\u001f\u007f]/.test(value);
 }

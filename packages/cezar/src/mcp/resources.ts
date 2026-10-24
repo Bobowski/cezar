@@ -1,5 +1,5 @@
 import { stringify } from 'yaml';
-import type { CallContext } from './execute.ts';
+import { isSafeSegment, type CallContext } from './execute.ts';
 
 /**
  * The read-often shapes an agent browses rather than calls (spec 2026-10-24-cezar-mcp-server
@@ -113,6 +113,18 @@ export async function workflowYaml(context: CallContext, projectId: string, name
   return stringify(definition);
 }
 
+/** A URI segment as the id it names; one that could leave its route segment is a ResourceError. */
+function segment(raw: string, uri: string): string {
+  let value: string;
+  try {
+    value = decodeURIComponent(raw);
+  } catch {
+    throw new ResourceError(`invalid resource: ${uri}`);
+  }
+  if (value === '' || !isSafeSegment(value)) throw new ResourceError(`invalid resource: ${uri}`);
+  return value;
+}
+
 /** `cezar://…` → its contents; a URI that names nothing is a ResourceError. */
 export async function readResource(context: CallContext, uri: string): Promise<{ uri: string; mimeType: string; text: string }> {
   if (uri === 'cezar://projects') {
@@ -120,11 +132,11 @@ export async function readResource(context: CallContext, uri: string): Promise<{
   }
   const thread = /^cezar:\/\/p\/([^/]+)\/runs\/([^/]+)\/thread$/.exec(uri);
   if (thread) {
-    return { uri, mimeType: 'text/markdown', text: await threadMarkdown(context, decodeURIComponent(thread[1]!), decodeURIComponent(thread[2]!)) };
+    return { uri, mimeType: 'text/markdown', text: await threadMarkdown(context, segment(thread[1]!, uri), segment(thread[2]!, uri)) };
   }
   const workflow = /^cezar:\/\/p\/([^/]+)\/workflows\/([^/]+)$/.exec(uri);
   if (workflow) {
-    return { uri, mimeType: 'application/yaml', text: await workflowYaml(context, decodeURIComponent(workflow[1]!), decodeURIComponent(workflow[2]!)) };
+    return { uri, mimeType: 'application/yaml', text: await workflowYaml(context, segment(workflow[1]!, uri), segment(workflow[2]!, uri)) };
   }
   throw new ResourceError(`unknown resource: ${uri}`);
 }

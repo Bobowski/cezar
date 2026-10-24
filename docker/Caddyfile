@@ -27,7 +27,13 @@ http://{$CEZ_DOMAIN} {
 		X-Content-Type-Options nosniff
 		Referrer-Policy same-origin
 	}
-	request_body {
+	# A restore upload is the archive itself, which cezar caps at 1 GiB; every other body stays small.
+	@restore path /api/v1/auth/setup/restore /api/v1/workspace/backup/restore
+	@notRestore not path /api/v1/auth/setup/restore /api/v1/workspace/backup/restore
+	request_body @restore {
+		max_size 1GiB
+	}
+	request_body @notRestore {
 		max_size 32MB
 	}
 	reverse_proxy cezar:4321

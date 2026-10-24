@@ -91,18 +91,20 @@ export function checkoutRuns(runs: readonly ApiRun[] | undefined): ApiRun[] {
 /**
  * `/p/:projectId/code[/*]` — an editor for the project, with no task required (spec
  * `.ai/specs/2026-10-11-code-page.md`). `?tree=<runId>` selects a task's worktree; absent is the
- * main checkout. Keyed by checkout: tabs, buffers and panel belong to one tree.
+ * main checkout. Keyed by checkout: tabs, buffers and panel belong to one tree. `?terminal=<id>`
+ * opens the panel on that terminal session (Docker's Exec, spec 2026-10-23-docker-management §3.5).
  */
 export function CodeRoute() {
   const params = useParams()
   const [search] = useSearchParams()
   const runId = search.get('tree')
+  const terminal = search.get('terminal')
   const tree = useMemo<CodeTree>(() => (runId ? { kind: 'run', runId } : { kind: 'main' }), [runId])
   const path = params['*'] !== undefined && params['*'] !== '' ? params['*'] : null
-  return <CodeWorkbench key={`${queryScope()}:${treeKey(tree)}`} tree={tree} initialPath={path} />
+  return <CodeWorkbench key={`${queryScope()}:${treeKey(tree)}`} tree={tree} initialPath={path} initialTerminal={terminal} />
 }
 
-function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: string | null }) {
+function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: CodeTree; initialPath: string | null; initialTerminal?: string | null }) {
   const projectId = queryScope()
   const key = treeKey(tree)
   const navigate = useNavigate()
@@ -115,7 +117,8 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
   const repo = useRepo()
 
   const [layout, setLayout] = useState<CodeLayout>(() => {
-    const stored = loadLayout(storage(), projectId, key)
+    const loaded = loadLayout(storage(), projectId, key)
+    const stored = initialTerminal ? { ...loaded, panel: 'terminal' as const } : loaded
     return initialPath ? updateGroup(stored, stored.focused, (group) => openTab(group, initialPath, true)) : stored
   })
   const [files, setFiles] = useState<Record<string, OpenFile>>({})
@@ -690,7 +693,7 @@ function CodeWorkbench({ tree, initialPath }: { tree: CodeTree; initialPath: str
                 <>
                   <ResizableHandle aria-label="Resize panel" />
                   <ResizablePanel id="code-panel" order={2} defaultSize={layout.panelSize} minSize={10} className="min-h-0">
-                    <CodePanelView tree={tree} panel={layout.panel} onPanel={togglePanel} />
+                    <CodePanelView tree={tree} panel={layout.panel} onPanel={togglePanel} initialTerminal={initialTerminal} />
                   </ResizablePanel>
                 </>
               ) : null}

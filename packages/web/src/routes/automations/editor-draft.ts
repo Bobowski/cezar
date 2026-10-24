@@ -1,6 +1,7 @@
 import {
   normalizeSchedule,
   type AutomationDefinition,
+  type AutomationDeliver,
   type AutomationEvent,
   type AutomationFilters,
   type AutomationKind,
@@ -37,6 +38,24 @@ export interface DraftFilters {
   changedLabels: string
   /** GitHub logins the three review events narrow to — the reviewer, or the requested one. */
   reviewers: string
+  /** Comment events: the logins a comment must @mention (spec 2026-10-23-github-events §3). */
+  mentions: string
+  /** `pull_request.synchronize` and `push`: branch names or `*` globs. */
+  branches: string
+  /** `release.published`: tag names or `*` globs. */
+  tags: string
+  /** `check_suite.completed`: which results launch. */
+  conclusion: 'any' | 'success' | 'failure'
+  /** `release.published`: `prerelease` true (`only`), false (`none`) or absent (`both`). */
+  prerelease: 'both' | 'only' | 'none'
+  /** CI on commits cezar itself pushed — the "fix my CI" case. */
+  includeOwnPushes: boolean
+  /** `deliver: 'owning-run'`: comments from anyone, not only the owner and those with write access. */
+  allowAnyAuthor: boolean
+  /** `deliver: 'owning-run'`: comments by cezar's own login while the task works, too. */
+  allowSelfComments: boolean
+  /** `new-run`: comment and review events on closed or merged PRs, too. */
+  includeClosed: boolean
   lookbackDays: number
   maxRecords: number
 }
@@ -52,6 +71,8 @@ export interface EditorDraft {
   events: AutomationEvent[]
   intervalSeconds: number
   filters: DraftFilters
+  /** Where a matched pull request goes; `undefined` = never chosen = a new run, as shipped. */
+  deliver?: AutomationDeliver
   prompt: string
   workflow: string
   /** A skill the runs execute, as `/new` sends one: a one-step inline chain. Wins over `workflow`. */
@@ -77,7 +98,8 @@ export interface EditorDraft {
   allowForkHeads?: boolean
 }
 
-/** The nine events the poller reconstructs (Q6: nothing else is offered). */
+/** The events the poller reconstructs (Q6: nothing else is offered), lifecycle first, then the
+ *  activity inside it (spec 2026-10-23-github-events §3). */
 export const GITHUB_EVENTS: readonly AutomationEvent[] = [
   'pull_request.opened',
   'issue.opened',
@@ -88,7 +110,19 @@ export const GITHUB_EVENTS: readonly AutomationEvent[] = [
   'pull_request.rereview_requested',
   'pull_request.closed',
   'pull_request.merged',
+  'pull_request.synchronize',
+  'pull_request.commented',
+  'pull_request.review_commented',
+  'issue.commented',
+  'check_suite.completed',
+  'push',
+  'release.published',
 ]
+
+/** The events whose item is a pull request — what `deliver: 'owning-run'` can route. */
+export function hasPullRequestEvent(events: readonly AutomationEvent[]): boolean {
+  return events.some((event) => event.startsWith('pull_request.') || event === 'check_suite.completed')
+}
 
 type TaskSteps = NonNullable<AutomationDefinition['task']['steps']>
 
@@ -126,6 +160,15 @@ export const DEFAULT_FILTERS: DraftFilters = {
   excludeLabels: '',
   changedLabels: '',
   reviewers: '',
+  mentions: '',
+  branches: '',
+  tags: '',
+  conclusion: 'any',
+  prerelease: 'both',
+  includeOwnPushes: false,
+  allowAnyAuthor: false,
+  allowSelfComments: false,
+  includeClosed: false,
   lookbackDays: 7,
   maxRecords: 25,
 }
@@ -172,6 +215,15 @@ function draftFiltersOf(filters: AutomationFilters): DraftFilters {
     excludeLabels: joinList(filters.excludeLabels),
     changedLabels: joinList(filters.changedLabels),
     reviewers: joinList(filters.reviewers),
+    mentions: joinList(filters.mentions),
+    branches: joinList(filters.branches),
+    tags: joinList(filters.tags),
+    conclusion: filters.conclusion ?? 'any',
+    prerelease: filters.prerelease === undefined ? 'both' : filters.prerelease ? 'only' : 'none',
+    includeOwnPushes: filters.includeOwnPushes === true,
+    allowAnyAuthor: filters.allowAnyAuthor === true,
+    allowSelfComments: filters.allowSelfComments === true,
+    includeClosed: filters.includeClosed === true,
     lookbackDays: filters.lookbackDays,
     maxRecords: filters.maxRecords,
   }
@@ -190,6 +242,7 @@ export function fromDefinition(definition: AutomationDefinition): EditorDraft {
     events: definition.events?.length ? [...definition.events] : base.events,
     intervalSeconds: definition.intervalSeconds ?? base.intervalSeconds,
     filters: filters ? draftFiltersOf(filters) : base.filters,
+    ...(definition.deliver !== undefined ? { deliver: definition.deliver } : {}),
     prompt: task.prompt,
     workflow: task.workflow ?? base.workflow,
     skill,
@@ -260,6 +313,7 @@ export function applyTemplate(draft: EditorDraft, template: TemplatePick): Edito
     // The trigger and the task source are the template's, or the default: a second pick must never
     // inherit the first one's filters, skill or (control-less) fork-head admission.
     filters: template.filters ? draftFiltersOf(template.filters) : { ...DEFAULT_FILTERS },
+    deliver: undefined,
     prompt: template.prompt,
     ...(template.steps
       ? { skill, customSteps: skill ? null : template.steps, workflow: QUICK_TASK }
@@ -329,9 +383,19 @@ export function toBody(draft: EditorDraft): AutomationBody {
       ...list(f.excludeLabels, 'excludeLabels'),
       ...list(f.changedLabels, 'changedLabels'),
       ...list(f.reviewers, 'reviewers'),
+      ...list(f.mentions, 'mentions'),
+      ...list(f.branches, 'branches'),
+      ...list(f.tags, 'tags'),
+      ...(f.conclusion !== 'any' ? { conclusion: f.conclusion } : {}),
+      ...(f.prerelease !== 'both' ? { prerelease: f.prerelease === 'only' } : {}),
+      ...(f.includeOwnPushes ? { includeOwnPushes: true } : {}),
+      ...(f.allowAnyAuthor ? { allowAnyAuthor: true } : {}),
+      ...(f.allowSelfComments ? { allowSelfComments: true } : {}),
+      ...(f.includeClosed ? { includeClosed: true } : {}),
       lookbackDays: clamp(f.lookbackDays, 1, 90),
       maxRecords: clamp(f.maxRecords, 1, 100),
     },
+    ...(draft.deliver !== undefined ? { deliver: draft.deliver } : {}),
     task: {
       ...task,
       ...(draft.checkout !== undefined ? { checkout: draft.checkout } : {}),
@@ -358,6 +422,7 @@ export function cliDefinitionOf(draft: EditorDraft): CliDefinition {
     ...(body.events ? { events: body.events } : {}),
     ...(body.intervalSeconds !== undefined ? { intervalSeconds: body.intervalSeconds } : {}),
     ...(body.filters ? { filters: body.filters } : {}),
+    ...(body.deliver ? { deliver: body.deliver } : {}),
     task: body.task,
     ...(draft.enabled ? { enable: true } : {}),
   }

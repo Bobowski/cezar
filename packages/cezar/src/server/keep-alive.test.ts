@@ -47,6 +47,8 @@ describe('keep-alive (telemetry 7adbfbd7)', () => {
       await new Promise<void>((resolve) => server.once('listening', () => resolve()));
       expect(server.keepAliveTimeout).toBe(KEEP_ALIVE_TIMEOUT_MS);
       expect(server.keepAliveTimeout).toBeGreaterThan(BROWSER_IDLE_POOL_MS);
+      // A 1 GiB restore upload must not be cut at Node's 300 s; request-timeout.ts re-bounds the rest.
+      expect(server.requestTimeout).toBe(0);
     } finally {
       server.close();
     }

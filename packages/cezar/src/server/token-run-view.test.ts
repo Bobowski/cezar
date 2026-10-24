@@ -48,7 +48,11 @@ describe('a token’s view of a task', () => {
 
   const selfUpdateStatus = {
     version: '0.0.0-test', installKind: 'managed', entry: 'index.js', canSelfUpdate: true, channel: 'stable', restartMode: 'reexec',
-    latest: { stable: null, nightly: null }, updateAvailable: null, checkedAt: null, installed: [], available: [],
+    latest: { stable: null, nightly: null }, updateAvailable: null, checkedAt: null, available: [],
+    installed: [{ id: '9.9.9+abc12345', version: '9.9.9', source: 'branch', installedAt: '2026-10-24T00:00:00Z', active: true,
+      commit: { sha: 'abc12345', subject: 'MARKER-the-agent-printed-this', at: '2026-10-24T00:00:00Z', branch: 'main' } }],
+    branch: { remote: 'https://git.example/cezar.git', branch: 'main', running: null, tip: null, behind: 0, fastForward: true,
+      touchesImage: [], fetchedAt: null, error: 'fatal: MARKER-the-agent-printed-this' },
     job: { status: 'failed', target: '9.9.9', startedAt: '2026-10-24T00:00:00Z', finishedAt: '2026-10-24T00:01:00Z',
       log: ['npm http fetch GET 200 https://registry.example/MARKER-the-agent-printed-this'], error: 'npm ERR! MARKER-the-agent-printed-this' },
     scheduled: null, activeRuns: 0,
@@ -459,10 +463,13 @@ describe('a token’s view of a task', () => {
     expect(read.status).toBe(200);
     const body = (await read.json()) as { job: Record<string, unknown> };
     expect(JSON.stringify(body)).not.toContain(SECRET);
+    expect(body).not.toHaveProperty('branch');
+    expect(body).toMatchObject({ installed: [{ id: '9.9.9+abc12345', active: true }] });
     expect(body.job).toEqual({ status: 'failed', target: '9.9.9', startedAt: '2026-10-24T00:00:00Z', finishedAt: '2026-10-24T00:01:00Z', projected: true });
     // Guard: admin keeps the log.
     const admin = (await (await request('/api/v1/workspace/self-update', seedToken(['admin']))).json()) as { job: Record<string, unknown> };
     expect(admin.job.error).toContain(SECRET);
+    expect(JSON.stringify(admin)).toContain('fatal: MARKER');
     expect(admin.job.log).toHaveLength(1);
   });
 

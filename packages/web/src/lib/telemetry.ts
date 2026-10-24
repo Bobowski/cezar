@@ -363,7 +363,7 @@ const API_SEGMENTS = new Set([
   'merge-state', 'messages', 'models', 'nodes', 'open', 'open-in', 'open-in-cli', 'open-targets',
   'parse', 'pause', 'pick', 'pin', 'plan', 'pr', 'providers', 'push', 'queued-messages', 'read',
   'read-all', 'reclaim', 'refresh', 'remove-worktree', 'repo', 'report', 'retry', 'run', 'runs',
-  'runs-index', 'search', 'self-update', 'setup', 'skills-update', 'star-count', 'status',
+  'runs-index', 'search', 'self-update', 'setup', 'skills-update', 'star-count', 'status', 'backup', 'restore',
   'telemetry', 'todos', 'tree', 'ui-state', 'unread', 'validate', 'watch', 'workspace', 'ws',
 ])
 

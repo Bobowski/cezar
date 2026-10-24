@@ -116,11 +116,13 @@ describe('cockpit authentication', () => {
     }
     expect([...open].sort()).toEqual([
       'GET /api/v1/auth/session',
+      'GET /api/v1/auth/setup/restore',
       'POST /api/v1/auth/login',
       'POST /api/v1/auth/login/verify',
       'POST /api/v1/auth/logout',
       'POST /api/v1/auth/setup/begin',
       'POST /api/v1/auth/setup/complete',
+      'POST /api/v1/auth/setup/restore',
     ]);
     for (const entry of open) expect(isPublicAuthPath(entry.split(' ')[1]!)).toBe(true);
   }, 30_000);
@@ -186,6 +188,15 @@ describe('cockpit authentication', () => {
     const response = await request('/api/v1/health');
     expect(response.status).toBe(401);
     expect(await response.text()).not.toContain(repoRoot);
+  });
+
+  it('lets an anonymous webhook delivery reach its own signature check, and nothing else (spec 2026-10-23-github-events §4)', async () => {
+    // An unknown hook id is the route's own 404 — the guard did not answer it.
+    const delivery = await request(`/api/v1/hooks/github/${'a'.repeat(64)}`, { method: 'POST', body: '{}' });
+    expect(delivery.status).toBe(404);
+    expect((await request(`/api/v1/hooks/github/${'a'.repeat(64)}`)).status).toBe(401);
+    expect((await request('/api/v1/hooks/github/short', { method: 'POST', body: '{}' })).status).toBe(401);
+    expect((await request('/api/v1/automation-webhook', { method: 'POST' })).status).toBe(401);
   });
 
   it.each([
@@ -501,6 +512,7 @@ describe('cockpit authentication', () => {
       'server/preview/design-proxy.ts': { listeners: 1, upgrades: 1 }, // loopback-only; unreachable from a hosted cockpit
       'index.ts': { listeners: 1, upgrades: 0 }, // a free-port probe: listens, never accepts a request
       'server-install/state.ts': { listeners: 1, upgrades: 0 }, // the same probe, for the installer
+      'core/opencode-server-runner.ts': { listeners: 1, upgrades: 0 }, // a free-port probe before `opencode serve` (#1585)
       'mcp/server.ts': { listeners: 1, upgrades: 0 }, // the MCP SDK's protocol `Server`, no socket: served by /api/v1/mcp behind the guard
     };
     const LISTENER = /\b(?:createServer|createSecureServer|serve)\(|\bnew\s+(?:[\w.]+\.)?(?:WebSocketServer|Server)\(/g;

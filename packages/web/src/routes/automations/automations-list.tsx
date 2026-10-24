@@ -1,4 +1,5 @@
 import { CalendarClockIcon, PlusIcon, ZapIcon } from 'lucide-react'
+import type { ReactNode } from 'react'
 import type { AutomationsResponse } from '@open-mercato/cezar-api-client'
 
 import { Page, PageBody, PageHeader, PageToolbar } from '@/components/page'
@@ -38,6 +39,7 @@ export function AutomationsList({
   upcoming,
   pollCount,
   onNextRuns,
+  footer,
 }: {
   data: AutomationsResponse | undefined
   error?: string
@@ -48,6 +50,8 @@ export function AutomationsList({
   upcoming: readonly NextRun[]
   pollCount: number
   onNextRuns: () => void
+  /** Under the list view's strip: the route's webhook card (spec 2026-10-23-github-events §4). */
+  footer?: ReactNode
 }) {
   const now = Date.now()
 
@@ -154,6 +158,7 @@ export function AutomationsList({
             upcoming={upcoming}
             timeZone={data.timeZone}
           />
+          {footer}
         </PageBody>
       )}
     </Page>

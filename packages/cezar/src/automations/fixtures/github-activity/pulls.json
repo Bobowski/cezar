@@ -1,0 +1,109 @@
+[
+  {
+    "url": "https://api.github.com/repos/acme/demo/pulls/13894",
+    "id": 4067846140,
+    "node_id": "PR_kwDODKw3uc7ydmf8",
+    "number": 13894,
+    "state": "open",
+    "title": "Support nested skill discovery without skills directories",
+    "html_url": "https://github.com/acme/demo/pull/13894",
+    "created_at": "2026-07-16T10:38:21Z",
+    "updated_at": "2026-10-23T19:18:57Z",
+    "draft": true,
+    "user": {
+      "login": "alice"
+    },
+    "labels": [],
+    "assignees": [],
+    "head": {
+      "label": "acme:tommaso-moro-skill-install-nested-discovery",
+      "ref": "tommaso-moro-skill-install-nested-discovery",
+      "sha": "8f44336ccb889465115aa85319c275c8dec1c3b7",
+      "repo": {
+        "full_name": "acme/demo"
+      }
+    },
+    "base": {
+      "ref": "trunk",
+      "sha": "55dbb4dc6b7edb10b48e3d7fc5bccd32318d1b55",
+      "repo": {
+        "full_name": "acme/demo"
+      }
+    }
+  },
+  {
+    "url": "https://api.github.com/repos/acme/demo/pulls/12942",
+    "id": 3401507931,
+    "node_id": "PR_kwDODKw3uc7KvuRb",
+    "number": 12942,
+    "state": "open",
+    "title": "Add `--editor` flag to `gh issue edit` and `gh pr edit`",
+    "html_url": "https://github.com/acme/demo/pull/12942",
+    "created_at": "2026-03-15T18:14:16Z",
+    "updated_at": "2026-10-23T15:17:10Z",
+    "draft": false,
+    "user": {
+      "login": "bob"
+    },
+    "labels": [
+      {
+        "name": "external"
+      }
+    ],
+    "assignees": [],
+    "head": {
+      "label": "acme:issue-edit-editor-flag",
+      "ref": "issue-edit-editor-flag",
+      "sha": "bdedb68faa1f542ba865cd8acf18eaade5293e00",
+      "repo": {
+        "full_name": "fork-owner/demo"
+      }
+    },
+    "base": {
+      "ref": "trunk",
+      "sha": "e87ed4c751918d89c87b041913973770a770dc5c",
+      "repo": {
+        "full_name": "acme/demo"
+      }
+    }
+  },
+  {
+    "url": "https://api.github.com/repos/acme/demo/pulls/13247",
+    "id": 3558795859,
+    "node_id": "PR_kwDODKw3uc7UHupT",
+    "number": 13247,
+    "state": "open",
+    "title": "fix(project close): filter projects by open/closed state in interactive prompt",
+    "html_url": "https://github.com/acme/demo/pull/13247",
+    "created_at": "2026-04-20T22:40:09Z",
+    "updated_at": "2026-10-23T15:16:03Z",
+    "draft": false,
+    "user": {
+      "login": "bob"
+    },
+    "labels": [
+      {
+        "name": "external"
+      },
+      {
+        "name": "ready-for-review"
+      }
+    ],
+    "assignees": [],
+    "head": {
+      "label": "acme:fix/project-close-filter-closed",
+      "ref": "fix/project-close-filter-closed",
+      "sha": "0657dea831d767158bd9aadabc394ceb6e44b8af",
+      "repo": {
+        "full_name": "fork-owner/demo"
+      }
+    },
+    "base": {
+      "ref": "trunk",
+      "sha": "e87ed4c751918d89c87b041913973770a770dc5c",
+      "repo": {
+        "full_name": "acme/demo"
+      }
+    }
+  }
+]

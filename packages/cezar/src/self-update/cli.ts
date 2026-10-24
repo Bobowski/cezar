@@ -6,8 +6,10 @@
 
 import { resolve } from 'node:path';
 
+import { redactRemote } from '@open-mercato/cezar-contract';
+
 import { branchOf, cezarPackageRoot, discoverCheckouts } from './checkouts.ts';
-import { activate, activeId, findInstalled, linkCheckout, listInstalled, listLinks, removeInstalled } from './layout.ts';
+import { activate, activeId, findInstalled, isBranchInstallId, linkCheckout, listInstalled, listLinks, removeInstalled } from './layout.ts';
 import { ensurePathHook, isOnPath, writeLaunchers } from './launcher.ts';
 import { installFromRegistry } from './installer.ts';
 import { distTagFor, RegistryCache } from './registry.ts';
@@ -21,7 +23,13 @@ export interface SelfUpdateCliOptions {
   modifyPath: boolean;
   /** `link --use`: activate the linked checkout right away. */
   use?: boolean;
+  /** `update --check`: print the status and exit, changing nothing. */
+  check?: boolean;
 }
+
+const CHANNELS = ['stable', 'nightly', 'development', 'branch'] as const;
+type Channel = (typeof CHANNELS)[number];
+const isChannel = (value: string): value is Channel => (CHANNELS as readonly string[]).includes(value);
 
 export async function runSelfUpdateCommand(command: string, args: string[], opts: SelfUpdateCliOptions): Promise<number> {
   switch (command) {
@@ -75,12 +83,24 @@ async function installCommand(opts: SelfUpdateCliOptions): Promise<number> {
 async function updateCommand(opts: SelfUpdateCliOptions): Promise<number> {
   const { service } = opts;
   const requested = opts.channel;
-  if (requested !== undefined && requested !== 'stable' && requested !== 'nightly' && requested !== 'development') {
-    console.error(`  --channel must be stable, nightly or development (got ${requested})`);
+  if (requested !== undefined && !isChannel(requested)) {
+    console.error(`  --channel must be stable, nightly, development or branch (got ${requested})`);
     return 1;
   }
-  if (requested) await service.setChannel(requested);
+  // `--check` reports the channel as saved; it changes nothing, `--channel` included.
+  if (opts.check) return checkCommand(service, await service.channel());
+  if (requested) {
+    try {
+      await service.setChannel(requested);
+    } catch (error) {
+      console.error(`  ✗ ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
+  }
   const channel = await service.channel();
+  // A `+<sha8>` is a branch build whatever the channel, as the dialog's apply has it.
+  if (opts.version && isBranchInstallId(opts.version)) return branchBuildCommand(service, opts.version);
+  if (channel === 'branch' && !opts.version) return branchUpdateCommand(service);
   if (channel === 'development' && !opts.version) {
     // Development follows no dist-tag: there is no "newest" to update to.
     console.log('\n  channel development — nothing to update to. Pick a build by hand:');
@@ -111,10 +131,82 @@ async function updateCommand(opts: SelfUpdateCliOptions): Promise<number> {
   }
   try {
     const installed = findInstalled(target);
-    const id = installed ? installed.id : (await installFromRegistry(target, { onLog: (line) => console.log(`  · ${line}`) })).id;
+    const id = installed ? installed.id : await service.installRelease(target, (line) => console.log(`  · ${line}`));
     activate(id);
     const dir = writeLaunchers();
     console.log(`\n  ✓ ${id} is now current — start it with: ${isOnPath(dir) ? 'cezar' : `${dir}/cezar`}\n`);
+    return 0;
+  } catch (error) {
+    console.error(`\n  ✗ update failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+/** `cezar update --check`: what the channel would update to, nothing changed. */
+async function checkCommand(service: SelfUpdateService, channel: Channel): Promise<number> {
+  const status = await service.status({ refresh: true });
+  console.log(`\n  cezar ${status.version} (${status.installKind}) — channel ${channel}`);
+  if (status.rollback) {
+    console.log(`  ⚠ rolled back from ${status.rollback.from} to ${status.rollback.to}: it exited with ${status.rollback.exitCode} within 30 s`);
+  }
+  if (channel === 'branch') {
+    const branch = status.branch;
+    if (!branch) {
+      console.log('  no branch to follow — set CEZ_UPDATE_BRANCH=<remote>#<branch> or pick one in the cockpit\n');
+      return 1;
+    }
+    console.log(`  following ${branch.branch} of ${redactRemote(branch.remote)}`);
+    console.log(`  running   ${branch.running ? commitLine(branch.running) : 'a build not made from this branch'}`);
+    console.log(`  tip       ${branch.tip ? commitLine(branch.tip) : '— (not fetched yet)'}`);
+    if (branch.error) console.log(`  ✗ fetch failed: ${branch.error}`);
+    if (branch.tip) console.log(`  ${branch.behind === 0 ? '✓ up to date' : `${branch.behind} commit${branch.behind === 1 ? '' : 's'} behind → ${status.updateAvailable}`}`);
+    if (!branch.fastForward) console.log('  note: the running build is not an ancestor of the tip (a force-push or rebase)');
+    if (branch.touchesImage.length > 0) console.log(`  note: the pending commits change ${branch.touchesImage.join(', ')} — rebuild the image too`);
+    console.log('');
+    return 0;
+  }
+  if (!status.checkedAt) {
+    console.error('  ✗ the npm registry did not answer — offline?\n');
+    return 1;
+  }
+  console.log(`  ${status.updateAvailable ? `${status.updateAvailable} is available` : '✓ up to date'}\n`);
+  return 0;
+}
+
+/** `cezar update` on the branch channel: fetch, build, install, activate — never restart. */
+async function branchUpdateCommand(service: SelfUpdateService): Promise<number> {
+  console.log('\n  cezar update — channel branch');
+  try {
+    const result = await service.installBranchTip((line) => console.log(`  · ${line}`));
+    if (!result.branch) {
+      console.error('  ✗ no branch to follow — set CEZ_UPDATE_BRANCH=<remote>#<branch> or pick one in the cockpit\n');
+      return 1;
+    }
+    if (result.branch.error) console.log(`  ✗ fetch failed: ${result.branch.error}`);
+    if (!result.id) {
+      console.log(`  ✓ ${result.branch.tip ? `already on ${commitLine(result.branch.tip)}` : 'nothing fetched yet'}\n`);
+      return result.branch.tip ? 0 : 1;
+    }
+    const dir = writeLaunchers();
+    console.log(`\n  ✓ ${result.id} is now current — restart cezar to run it (${isOnPath(dir) ? 'cezar' : `${dir}/cezar`})\n`);
+    return 0;
+  } catch (error) {
+    console.error(`\n  ✗ update failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+function commitLine(commit: { sha: string; subject: string; at: string }): string {
+  return `${commit.sha.slice(0, 8)} ${commit.at.slice(0, 10)} ${commit.subject}`;
+}
+
+/** `cezar update --version <version>+<sha8>`: that commit of the followed branch, built here. */
+async function branchBuildCommand(service: SelfUpdateService, target: string): Promise<number> {
+  console.log(`\n  cezar update — branch build ${target}`);
+  try {
+    const id = await service.installBranchBuild(target, (line) => console.log(`  · ${line}`));
+    const dir = writeLaunchers();
+    console.log(`\n  ✓ ${id} is now current — restart cezar to run it (${isOnPath(dir) ? 'cezar' : `${dir}/cezar`})\n`);
     return 0;
   } catch (error) {
     console.error(`\n  ✗ update failed: ${error instanceof Error ? error.message : String(error)}\n`);
@@ -130,7 +222,8 @@ async function versionsCommand(): Promise<number> {
   }
   console.log('');
   for (const entry of installed) {
-    const where = entry.source === 'link' && entry.checkout ? `  → ${entry.checkout}` : '';
+    const where =
+      entry.source === 'link' && entry.checkout ? `  → ${entry.checkout}` : entry.commit ? `  ${entry.commit.branch ? `${entry.commit.branch} ` : ''}${commitLine(entry.commit)}` : '';
     console.log(`  ${entry.active ? '*' : ' '} ${entry.id.padEnd(36)} ${entry.source.padEnd(9)} ${entry.installedAt.slice(0, 19).replace('T', ' ')}${where}`);
   }
   const unlinked = (await discoverCheckouts().catch(() => [])).filter((checkout) => !checkout.linked);
@@ -153,7 +246,8 @@ async function useCommand(id: string | undefined): Promise<number> {
     console.error('  usage: cezar use <id>   (see: cezar versions)');
     return 1;
   }
-  const match = listInstalled().find((entry) => entry.id === id || entry.version === id);
+  // An exact id, else the registry release of that version — never a `+<sha8>`/`+local` build of it.
+  const match = findInstalled(id);
   if (!match) {
     console.error(`  ✗ ${id} is not installed — see: cezar versions`);
     return 1;

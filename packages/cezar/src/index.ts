@@ -25,7 +25,7 @@ import { RunStore } from './runs/store.ts';
 import { RunManager } from './workflows/run.ts';
 import { resolveTrackerAgentEnv } from './server/tracker/agent-credentials.ts';
 import { loadWorkflows } from './workflows/load.ts';
-import { resolveCapabilities } from './server/capabilities.ts';
+import { resolveCapabilities, trustedOperator } from './server/capabilities.ts';
 import { startServer, WorkspaceEventBus } from './server/server.ts';
 import {
   ProviderRuntimeAuthObserver,
@@ -38,6 +38,9 @@ import {
 } from './server/provider-action-gate.ts';
 import { printSkillsBanner, printStarBanner } from './skills-banner.ts';
 import { SelfUpdateService } from './self-update/service.ts';
+import { BackupService } from './backup/service.ts';
+import { sweepAfterInterruptedRestore } from './backup/restore.ts';
+import { consumeRestoreMarker } from './restore-guard.ts';
 import { runsFromCheckout } from './self-update/layout.ts';
 import { devVersion } from './self-update/semver.ts';
 import { isSupervised, restartProcess } from './self-update/restart.ts';
@@ -80,12 +83,15 @@ Usage:
   cezar telemetry [status|enable|disable|inspect]  opt-in usage data (off until you enable it)
   cezar server-install      interactive wizard to host cezar on a server
   cezar auth setup          mint the one-time link that creates a hosted cockpit's owner account
+  cezar backup <create|restore FILE|list>  encrypted backup of ~/.cezar, the agents' logins and
+                            each project's untracked .env and .ai/cezar files (--out FILE copies it)
   cezar server-deploy       redeploy a new version (reload the service) + verify
   cezar server-uninstall    reverse a server-install
   cezar install             install THIS cezar permanently under ~/.cezar (a \`cezar\`
                             command on PATH that updates itself from the cockpit)
   cezar update              update the managed install to the channel's newest version
-                            (--channel stable|nightly, --version <x> to pin or downgrade)
+                            (--channel stable|nightly|branch, --version <x> to pin or downgrade;
+                            on branch it fetches, builds and activates the tip; --check only reports)
   cezar versions            list installed versions and cezar worktrees (\`cezar use <id>\` switches)
   cezar link [<dir>]        run a cezar checkout/worktree (default: cwd) as a version — a
                             link, not a copy, so rebuilds are live (--use to switch to it now);
@@ -205,6 +211,12 @@ async function main(): Promise<void> {
     process.exitCode = await runAuthCommand(process.argv.slice(3));
     return;
   }
+  // `cezar backup …` (spec 2026-10-23-backup-restore): the Settings → Backup jobs, no server.
+  if (process.argv[2] === 'backup') {
+    const { runBackupCommand } = await import('./backup/cli.ts');
+    process.exitCode = await runBackupCommand(process.argv.slice(3), { version: readOwnVersion() });
+    return;
+  }
   const { values, positionals } = parseArgs({
     options: {
       port: { type: 'string', short: 'p', default: '4321' },
@@ -223,6 +235,7 @@ async function main(): Promise<void> {
       version: { type: 'string' },
       'no-modify-path': { type: 'boolean', default: false },
       use: { type: 'boolean', default: false },
+      check: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
     allowPositionals: true,
@@ -306,6 +319,7 @@ async function main(): Promise<void> {
         version: values.version,
         modifyPath: !values['no-modify-path'],
         use: Boolean(values.use),
+        check: Boolean(values.check),
       });
       return;
     default:
@@ -323,6 +337,10 @@ async function serveCommand(
   openBrowser: boolean,
   bindHost?: string,
 ): Promise<void> {
+  // Before any store opens: the first boot after a restore prunes no orphan (spec 2026-10-23 §10).
+  consumeRestoreMarker();
+  // A restore that stopped between copy and rename left half-copied siblings (review round 3).
+  await sweepAfterInterruptedRestore().catch(() => {});
   const bootProjectId = await initWorkspace(repoRoot);
   // ONE workspace semaphore for the whole process (spec 2026-07-20, step 2.5):
   // the boot manager and every lazily-built project context count their runs
@@ -409,27 +427,43 @@ async function serveCommand(
   // chip can apply it when this cezar runs from the managed layout (`cezar install`).
   const pkgName = readOwnName();
   const update: { latest?: string } = {};
+  // `entry`: what the relaunch runs — the managed `current` entry unless told otherwise.
+  const restartCockpit = (entry?: string) => {
+    void (httpServer?.shutdownLifecycle() ?? manager.lifecycle.shutdown()).then(() => {
+      store.flush({ pretty: true });
+      // The old process stops here, so it reports its own stop before handing over (bounded).
+      track('app_stop', { reason: 'restart' });
+      void flushTelemetry(1_000).finally(() =>
+        restartProcess({ server: httpServer, args: process.argv.slice(2), port, supervised: isSupervised(), entry }),
+      );
+      restartProcess({ server: httpServer, args: process.argv.slice(2), port, supervised: isSupervised(), entry });
+    }).catch((error: unknown) => {
+      console.error('cezar: lifecycle shutdown failed before restart', error);
+      process.exit(1);
+    });
+  };
   const selfUpdate = buildSelfUpdateService({
     // Workspace-wide, every project's manager — not the boot repo's store (#1524).
     runs: semaphore,
     // The server's own predicate, not a second spelling of it: the `/apply` guard decides hosted
     // mode through `resolveCapabilities`, and the two must never disagree (they did, on 127.0.0.2).
     trimPaths: () => !resolveCapabilities(process.env, bindHost).localHandoff,
-    restart: () => {
-      void (httpServer?.shutdownLifecycle() ?? manager.lifecycle.shutdown()).then(() => {
-        store.flush({ pretty: true });
-        // The old process stops here, so it reports its own stop before handing over (bounded).
-        track('app_stop', { reason: 'restart' });
-        void flushTelemetry(1_000).finally(() =>
-          restartProcess({ server: httpServer, args: process.argv.slice(2), port, supervised: isSupervised() }),
-        );
-        restartProcess({ server: httpServer, args: process.argv.slice(2), port, supervised: isSupervised() });
-      }).catch((error: unknown) => {
-        console.error('cezar: lifecycle shutdown failed before restart', error);
-        process.exit(1);
-      });
+    channelEditable: () => trustedOperator(process.env, bindHost),
+    // A branch check that finds new commits lights the version chip (spec 2026-10-23 §3.4).
+    onUpdateAvailable: (latest) => {
+      if (latest) update.latest = latest;
+      else delete update.latest;
     },
+    restart: () => restartCockpit(),
   });
+  // A restore comes back on the SAME code (spec 2026-10-23-backup-restore §4): the managed entry
+  // only when that is what this process runs, its own entry file otherwise.
+  const backup = new BackupService({
+    version,
+    runs: semaphore,
+    restart: () => restartCockpit(selfUpdate.installKind === 'managed' ? undefined : resolve(process.argv[1] ?? '')),
+  });
+  selfUpdate.recordRunning();
   void selfUpdate.updateAvailable().then((latest) => {
     if (!latest) return;
     update.latest = latest;
@@ -480,6 +514,7 @@ async function serveCommand(
     providerRuntimeAuth,
     workspaceEvents,
     selfUpdate,
+    backup,
   }, port);
   httpServer.once('listening', () => manager.lifecycle.start());
   const url = `http://localhost:${port}`;
@@ -944,7 +979,9 @@ function openStore(repoRoot: string, opts?: { keepLive?: boolean }): RunStore {
 
 /** The self-update service over THIS process: its package, version and entry file. */
 function buildSelfUpdateService(
-  overrides: Partial<Pick<ConstructorParameters<typeof SelfUpdateService>[0], 'restart' | 'runs' | 'trimPaths'>> & {
+  overrides: Partial<
+    Pick<ConstructorParameters<typeof SelfUpdateService>[0], 'restart' | 'runs' | 'trimPaths' | 'channelEditable' | 'onUpdateAvailable'>
+  > & {
     restart: () => void;
   },
 ): SelfUpdateService {

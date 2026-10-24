@@ -550,6 +550,23 @@ async function respond(userText, imageCount) {
       },
     });
     await pace(200);
+    // `mock:github-traces` → the agent posts on GitHub itself: a `gh pr comment`, a GitHub MCP
+    // comment and a `git push`, so cezar's own traces are recorded off real tool events.
+    if (userText.includes('mock:github-traces')) {
+      // A Continue is a new process: "again" in the message tells its calls apart from the first.
+      const n = userText.includes('again') ? 2 : 1;
+      const calls = [
+        { id: `toolu_mock_ghc_${turn}`, name: 'Bash', input: { command: `gh pr comment 8 --body "On it, turn ${n}."` }, result: `https://github.com/acme/demo/pull/8#issuecomment-${4240 + n}` },
+        { id: `toolu_mock_mcp_${turn}`, name: 'mcp__github__add_issue_comment', input: { owner: 'acme', repo: 'demo', issue_number: 8, body: `MCP reply, turn ${n}.` }, result: `{"html_url":"https://github.com/acme/demo/pull/8#issuecomment-${4340 + n}"}` },
+        { id: `toolu_mock_push_${turn}`, name: 'Bash', input: { command: 'git push origin HEAD' }, result: 'pushed (dry run)' },
+      ];
+      for (const call of calls) {
+        emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: call.id, name: call.name, input: call.input }], usage: { input_tokens: 10, output_tokens: 10 } } });
+        await pace(100);
+        emit({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: call.id, content: call.result }] } });
+        await pace(100);
+      }
+    }
     // Agent screenshot in a tool result — exercises the image pipeline
     // (persist to <id>-images/, serve via /api/runs/:id/images/, zoomable
     // card + lightbox in the transcript).

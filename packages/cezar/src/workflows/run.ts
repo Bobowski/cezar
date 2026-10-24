@@ -79,6 +79,7 @@ import { isLifecycleConfigTracked } from '../worktree-lifecycle/config.ts';
 import { generateCommitMessage } from './commit-message.ts';
 import { hasUnlanded, landInPlace, landingPromptPart, READ_ONLY_PROMPT, READ_ONLY_TOOLS, type LandResult } from './landing.ts';
 import { deleteRunLayouts } from '../runs/layouts.ts';
+import { headShaOf, isPushCommand, postingCommentBody, postingCommentTarget, resolveCommits, settlePush, toolTraces } from '../runs/github-traces.ts';
 import {
   autosaveCommit,
   branchFor,
@@ -233,6 +234,9 @@ type GraphParkOutcome =
 /** Most recent graph transitions kept on the record — loops are bounded, but a record is not a log. */
 /** Runs a restart interrupts — the self-update dialog's "N tasks are running" (#1524). */
 const RESTART_SENSITIVE: ReadonlySet<RunRecord['status']> = new Set<RunRecord['status']>(['queued', 'waiting', 'running']);
+
+/** A restore holds admission (spec 2026-10-23-backup-restore §4): nothing starts or resumes until cezar restarts. */
+export const RESTORE_IN_PROGRESS_ERROR = 'restore in progress — continue this task once cezar has restarted';
 
 const GRAPH_TAKEN_CAP = 500;
 
@@ -1884,6 +1888,8 @@ export class RunManager {
         // below is the only slot gate: resumes never pass through it. A run
         // starts only under BOTH the workspace cap and this project's ceiling.
         const capacity = () =>
+          // A restore in progress starts nothing (spec 2026-10-23-backup-restore §4).
+          !this.semaphore.admissionHeld?.() &&
           this.semaphore.busy() < maxParallel &&
           this.busySlots() < projectMax &&
           (repo !== null || this.busySlots() < 1);
@@ -3553,6 +3559,12 @@ export class RunManager {
     return this.active.has(runId) || this.starting.has(runId) || this.queue.includes(runId);
   }
 
+  /** An open, uncancelled session a prompt can be lined up for (`enqueuePrompt`). */
+  hasLiveSession(runId: string): boolean {
+    const state = this.active.get(runId);
+    return !!state && !state.cancelled && state.session?.open === true;
+  }
+
   /**
    * Fold a queued run's persisted prompt — `run.task` plus everything stacked
    * onto it (#472) — into the job input that is about to execute.
@@ -3954,6 +3966,11 @@ export class RunManager {
    * while `waiting`). Returns false when there is no open session — the GUI
    * then offers "Continue" instead.
    */
+  /** A restore is replacing the state runs write: the queue holds, and no session resumes. */
+  restoreInProgress(): boolean {
+    return this.semaphore.admissionHeld?.() ?? false;
+  }
+
   sendMessage(runId: string, content: PastedContent[]): boolean {
     const delivered = this.deliverMessage(runId, content, true);
     if (delivered) {
@@ -3973,6 +3990,9 @@ export class RunManager {
     preparedUserMessage?: PreparedUserMessage,
   ): boolean {
     if (this.lifecycle.isBlocked(runId)) return false;
+    // A parked session woken now would write the state the restore is replacing; callers fall
+    // back to queueing (a deferred continuation the held pump does not start).
+    if (this.restoreInProgress()) return false;
     const state = this.active.get(runId);
     // A graph gate/question parked with no session (1c) takes the user's reply as its answer.
     // Only a USER-authored message answers it: a child report or a wake nudge must not approve a gate.
@@ -4185,6 +4205,9 @@ export class RunManager {
     deferForCapacity = false,
   ): { ok: boolean; error?: string } {
     if (this.lifecycle.isBlocked(runId)) return {ok: false, error: 'Resolve the worktree lifecycle operation first'};
+    // A deferred continuation only queues, and the held pump does not start it; an immediate one
+    // would skip that gate (resumes never pass through the pump).
+    if (!deferForCapacity && this.restoreInProgress()) return { ok: false, error: RESTORE_IN_PROGRESS_ERROR };
     if (agentModelsLocked(this.repoRoot) && opts.model?.trim()) {
       return { ok: false, error: AGENT_MODELS_LOCKED_ERROR };
     }
@@ -6031,10 +6054,12 @@ export class RunManager {
           return 'created';
         }
         const title = node.title ? render(node.title) : undefined;
+        const worktreePath = run.worktreePath;
         const outcome = await createDraftPr({
           repoRoot: this.repoRoot,
           run: title ? { ...run, title } : run,
           handoffText: readHandoff(this.dataDir, runId),
+          ...(worktreePath ? { beforePush: () => this.recordPushedHead(runId, worktreePath) } : {}),
         });
         if (!outcome.ok) {
           note(`draft PR failed — ${outcome.error}`, 'danger');
@@ -6053,11 +6078,14 @@ export class RunManager {
           note('no PR on this task to comment on', 'danger');
           return 'failed';
         }
-        const res = await commentOnPr(this.repoRoot, number, render(node.body));
+        const body = render(node.body);
+        this.store.notePostingComment(runId, body, number);
+        const res = await commentOnPr(this.repoRoot, number, body);
         if (!res.ok) {
           note(`PR comment failed — ${res.error}`, 'danger');
           return 'failed';
         }
+        if (res.commentId !== undefined) this.store.recordGithubTraces(runId, { comments: [res.commentId] });
         note(`commented on PR #${number}`);
         return 'done';
       }
@@ -6109,6 +6137,7 @@ export class RunManager {
           return 'failed';
         }
         await autosaveCommit(state.cwd, 'pre-PR');
+        await this.recordPushedHead(runId, state.cwd);
         const res = await pushBranch(state.cwd, run.branch);
         if (!res.ok) {
           note(`push failed — ${res.error}`, 'danger');
@@ -6163,11 +6192,14 @@ export class RunManager {
           note('no issue on this task to comment on (set one on the node)', 'danger');
           return 'failed';
         }
-        const res = await commentOnIssue(this.repoRoot, issue, render(node.body));
+        const body = render(node.body);
+        this.store.notePostingComment(runId, body, issue);
+        const res = await commentOnIssue(this.repoRoot, issue, body);
         if (!res.ok) {
           note(`issue comment failed — ${res.error}`, 'danger');
           return 'failed';
         }
+        if (res.commentId !== undefined) this.store.recordGithubTraces(runId, { comments: [res.commentId] });
         outputs.set(node.id, { issue });
         note(`commented on issue #${issue}`);
         return 'done';
@@ -7110,6 +7142,14 @@ export class RunManager {
       state.skillMissingReported = true;
       track('skill_missing_in_session', { label: state.sessionBackend ?? 'unknown' });
     }
+    // A push is recorded as it STARTS as well, so its own webhook-woken poll already knows it.
+    if (event.type === 'item.started' && event.item.kind === 'tool' && isPushCommand(event.item.input)) this.startPushTrace(runId, state.cwd, event.item.id);
+    // A comment's body is a trace before it runs, and stays one whatever the call's status.
+    if ((event.type === 'item.started' || event.type === 'item.updated' || event.type === 'item.completed') && event.item.kind === 'tool') {
+      const body = postingCommentBody(event.item.input, state.cwd, event.item.name);
+      if (body) this.store.notePostingComment(runId, body, postingCommentTarget(event.item.input, event.item.name));
+    }
+    if (event.type === 'item.completed' && event.item.kind === 'tool') this.recordToolTraces(runId, state.cwd, event.item);
     sink.handle(event);
     // Work observed ends the rest, whoever started the turn: a parked Claude session wakes itself
     // when its background work finishes, and a queued prompt must not land mid-turn (§8). Only
@@ -7126,6 +7166,47 @@ export class RunManager {
     this.store.updateRun(runId, { status: 'waiting', activity: undefined });
     if (state.currentStepId) this.store.updateStep(runId, state.currentStepId, { status: 'waiting' });
     this.releaseSlot();
+  }
+
+  /** The agent's own `git push` and `gh … comment` calls, remembered so automations never take
+   *  them for someone else's (spec 2026-10-23-github-events §6). Best-effort, never blocks. */
+  private recordToolTraces(runId: string, cwd: string, item: { id: string; name?: string; input?: unknown; output?: string; status?: string }): void {
+    const traces = toolTraces(item);
+    if (traces.comments.length) this.store.recordGithubTraces(runId, { comments: traces.comments });
+    if (isPushCommand(item.input)) void this.settlePushTrace(runId, cwd, item);
+  }
+
+  /** Start-time `HEAD` of each running `git push` call, recorded provisionally (`settlePush`).
+   *  Bounded: a call that never completes (a cancelled session) is forgotten oldest first. */
+  private readonly pushesInFlight = new Map<string, Promise<string | undefined>>();
+
+  private startPushTrace(runId: string, cwd: string, itemId: string): void {
+    const pending = headShaOf(cwd).then((sha) => {
+      const run = this.store.getRun(runId);
+      // Already a trace from an earlier push: nothing to take back if this one pushes nothing.
+      if (!sha || !run || run.pushedShas?.includes(sha)) return undefined;
+      this.store.recordGithubTraces(runId, { shas: [sha] });
+      return sha;
+    });
+    this.pushesInFlight.set(`${runId}:${itemId}`, pending);
+    if (this.pushesInFlight.size > 100) this.pushesInFlight.delete(this.pushesInFlight.keys().next().value!);
+  }
+
+  /** The shas a finished push really pushed; the start-time trace goes when it was not one. */
+  private async settlePushTrace(runId: string, cwd: string, item: { id: string; output?: string; status?: string }): Promise<void> {
+    const key = `${runId}:${item.id}`;
+    const provisional = await this.pushesInFlight.get(key);
+    this.pushesInFlight.delete(key);
+    const { add, drop } = await settlePush({ provisional, item, resolve: (refs) => resolveCommits(cwd, refs), head: () => headShaOf(cwd) });
+    if (!this.store.getRun(runId)) return;
+    if (add.length) this.store.recordGithubTraces(runId, { shas: add });
+    if (drop) this.store.dropPushedSha(runId, drop);
+  }
+
+  /** The checkout's `HEAD` after a push this run made. */
+  private async recordPushedHead(runId: string, dir: string): Promise<void> {
+    const sha = await headShaOf(dir);
+    if (sha && this.store.getRun(runId)) this.store.recordGithubTraces(runId, { shas: [sha] });
   }
 
   /** Persist the invocation checkpoint before launching a runner. A throw or
@@ -7522,12 +7603,14 @@ export class RunManager {
       since: run?.baseBranch,
       checks: policy.checks,
       env,
+      beforePush: (sha) => this.store.recordGithubTraces(runId, { shas: [sha] }),
     });
     const at = new Date().toISOString();
     if (outcome.result === 'landed') {
       this.store.updateRun(runId, {
         landing: { status: 'landed', at, branch: outcome.branch, sha: outcome.sha, pushed: outcome.pushed, files: outcome.files },
       });
+      if (outcome.pushed) this.store.recordGithubTraces(runId, { shas: [outcome.sha] });
       this.store.appendEvent(runId, {
         type: 'note',
         message: `landed ${outcome.sha.slice(0, 8)} on ${outcome.branch}${outcome.pushed ? ' and pushed' : ' (no upstream — committed locally)'}: ${outcome.files.length} file${outcome.files.length === 1 ? '' : 's'}`,
@@ -8469,8 +8552,10 @@ async function captureCheckArtifacts(dir: string, owned: Map<string, string>): P
   for (const path of await worktreeChangedPaths(dir)) owned.set(path, fileSnapshot(dir, path));
 }
 
-function applyTemplate(template: string, task: string): string {
-  return template.replaceAll('{{task}}', task);
+/** `{{task}}` filled in by a function replacer: a string replacement would expand `$&`-style
+ *  patterns that happen to be in the task. */
+export function applyTemplate(template: string, task: string): string {
+  return template.replaceAll('{{task}}', () => task);
 }
 
 /**

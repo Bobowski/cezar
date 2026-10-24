@@ -319,6 +319,7 @@ export function AutomationEditor({ data, automation, actions, onBack, onSaved, o
                 events={draft.events}
                 intervalSeconds={draft.intervalSeconds}
                 filters={draft.filters}
+                deliver={draft.deliver}
                 onChange={(next) => patch(next)}
               />
               {error?.section === 'when' ? <InlineAlert>{error.message}</InlineAlert> : null}

@@ -12,12 +12,15 @@ export function AuthFrame({
   title,
   description,
   footer,
+  aside,
   children,
   ...props
 }: {
   title: ReactNode
   description?: ReactNode
   footer?: ReactNode
+  /** A second card under the first — setup's Restore from a backup. */
+  aside?: ReactNode
   children: ReactNode
   'data-screen': string
 }) {
@@ -38,6 +41,7 @@ export function AuthFrame({
           </CardHeader>
           <CardContent>{children}</CardContent>
         </Card>
+        {aside}
         {footer ? <p className="text-center text-xs text-pretty text-muted-foreground">{footer}</p> : null}
       </div>
       {/* The app's own outlet is mounted below the gate, so this screen brings one. */}

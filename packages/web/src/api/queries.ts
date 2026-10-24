@@ -140,6 +140,7 @@ import type {
   TrackerAssociation,
   TrackerItemsResponse,
   TrackerKind,
+  UpdateBranch,
   UpdateChannel,
 } from '@open-mercato/cezar-api-client'
 import { subscribeTopic } from './ws'
@@ -170,6 +171,12 @@ export const queryKeys = {
   },
   docker: {
     state: () => ['docker', queryScope()] as const,
+    // Under `state()`'s prefix, so the `docker` topic's re-read refreshes every sub-view.
+    images: () => ['docker', queryScope(), 'images'] as const,
+    volumes: () => ['docker', queryScope(), 'volumes'] as const,
+    diskFor: (projectId: string) => ['docker', projectId, 'disk'] as const,
+    // Outside that prefix: the dialog's list must not change under a user choosing from it.
+    reclaimPlan: () => ['docker-reclaim-plan', queryScope()] as const,
   },
   envFiles: {
     allFor: (projectId: string) => ['env-files', projectId] as const,
@@ -1751,7 +1758,9 @@ export function useRefreshSelfUpdate() {
 export function useSetSelfUpdateChannel() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (channel: UpdateChannel) => setSelfUpdateChannel(channel),
+    // A bare channel, or the branch channel with the branch it should follow.
+    mutationFn: (input: UpdateChannel | { channel: UpdateChannel; branch: UpdateBranch }) =>
+      typeof input === 'string' ? setSelfUpdateChannel(input) : setSelfUpdateChannel(input.channel, input.branch),
     onSuccess: (state) => queryClient.setQueryData(workspaceQueryKeys.selfUpdate, state),
   })
 }

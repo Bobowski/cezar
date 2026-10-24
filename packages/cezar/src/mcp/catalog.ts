@@ -70,6 +70,7 @@ const FAMILY_SETS: Record<string, string> = {
   automations: 'automations',
   'automation-log': 'automations',
   'automation-checks': 'automations',
+  'automation-webhook': 'automations',
   'workspace/automation-templates': 'automations',
   tracker: 'tracker',
   services: 'services',
@@ -91,6 +92,7 @@ const FAMILY_SETS: Record<string, string> = {
   health: 'settings',
   'star-count': 'settings',
   telemetry: 'settings',
+  'workspace/backup': 'settings',
 };
 
 /** What a client gets without `?tools=` / `--tools` — about thirty tools. */

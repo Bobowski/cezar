@@ -197,7 +197,8 @@ are client-side conveniences documented in `.env.example`.
   automation log, `/worktrees` and the worktree-lifecycle views mask a dispatched child's title;
   the lifecycle views drop rendered commands and execution reasons and name a failure's stage;
   `/workspace/self-update` gives a non-`admin` token the job's status, target and timing
-  (`projected: true`), not npm's log or the error. `api-tokens.test.ts` pins every free-text
+  (`projected: true`), not npm's log or the error, the followed branch or a build's commit;
+  `GET /docker` masks a dispatched child's stack title. `api-tokens.test.ts` pins every free-text
   field each `read` route's contract response names, with where its words come from
   (projected, repository, forge or a degrade reason); a new one fails until it is decided. A
   field counts when it can hold text, an open object or a record of text counts as a field of

@@ -1,6 +1,6 @@
 # Self-update from a git branch — the `branch` channel, and a container that updates itself
 
-> Status: proposed (2026-10-23), not built. Branch: `brutus`.
+> Status: implemented on brutus (2026-10-24); proposed 2026-10-23.
 > Builds on: `2026-09-25-self-update-and-desktop.md` (the managed layout, channels, restart),
 > `2026-10-10-cezar-in-a-container.md` (the image, `/data`, the entrypoint),
 > `2026-10-19-repo-git-sync.md` (the bounded background fetch this copies),
@@ -69,7 +69,17 @@ Seeds, lowest precedence first: `CEZ_UPDATE_CHANNEL=branch` and
 `CEZ_UPDATE_BRANCH=<remote>#<branch>` (the same precedence `CEZ_UPDATE_CHANNEL` has today — a
 value saved from the dialog wins); in the container, the image's own source (§4.5). Both keys
 are optional with `.catch`, like every workspace-config field. `remote` must parse as an
-`https://` or `ssh://`/`git@` git URL; `branch` passes `isSafeGitRef`.
+`https://` (with no userinfo: a bare `ghp_…@` is a token too) or `ssh://`/`git@` git URL, and
+is shown and logged through `redactRemote`; `branch` passes `isSafeGitRef`.
+
+As built: precedence is resolved at READ time, and no seed is ever written. A save through the
+dialog or `cezar update --channel` also writes `updateChannelSource: "user"`, and only a marked
+save outranks the seeds: user save > `CEZ_UPDATE_*` > image source > an unmarked saved value. An
+unmarked `stable`/`nightly`/`development` still counts as the user's (releases before the marker
+saved only those, through the same dialog); an unmarked `branch` is an earlier build's boot seed
+and ranks last, so a later `CEZ_UPDATE_CHANNEL=stable`, a new `CEZ_UPDATE_BRANCH` or an image
+rebuilt from another branch is followed. A bare channel save keeps following the seeded branch;
+only a save that names a branch pins it.
 
 ### 3.2 The source clone
 
@@ -77,7 +87,9 @@ are optional with `.catch`, like every workspace-config field. `remote` must par
 normal clone, `--single-branch`, created on first use, re-cloned when `remote` changes. Full
 history, not shallow: the forward-only check (§3.6) wants ancestry, and the "what changed"
 list (§3.4) wants `git diff --name-only`. `node_modules` is kept between builds; a build starts
-with `git fetch`, `git checkout --detach <sha>`, `git reset --hard` — never `clean -x`.
+with `git fetch`, `git checkout --detach <sha>`, `git reset --hard`, then
+`git clean -fdx -e node_modules`: an earlier build's output (`dist/`, the web bundle) never
+leaks into the next one, while every `node_modules` stays.
 
 It is state: delete it and the next check clones again.
 
@@ -125,7 +137,7 @@ regex). The job, logged line by line into `job.log` like an npm install:
 1. `git fetch`, `git checkout --detach <sha>`, `git reset --hard` in the source clone.
 2. `buildCheckout` (checkouts.ts): `npm install` when the lockfile changed, `build:server`,
    `build:web`. Under `nice -n 10` where `nice` exists (never on Windows); one job per process
-   (`SelfUpdateBusyError` as today).
+   (`SelfUpdateBusyError` as today), and one build in the clone across processes (below).
 3. `npm pack -w @open-mercato/cezar` and `installSpec` into `versions/<version>+<sha8>` with a
    `branch` manifest — the `installFromLocal` path with the id and manifest it needs.
 4. `activate`, then restart — immediately, or **when idle** (`scheduleWhenIdle`, the existing
@@ -134,7 +146,19 @@ regex). The job, logged line by line into `job.log` like an npm install:
 
 A failed build leaves `current` untouched and the clone on the attempted sha; the next attempt
 resets it. Retention: after a successful activate, `branch` installs beyond the three newest
-are removed (`removeInstalled`; never the active one). Registry installs are not pruned.
+are removed (`removeInstalled`; never `current`, `previous`, the pruning process's own install,
+or the one `serve` recorded at boot in `versions/.running`). Registry installs are not pruned.
+
+As built, the server's job and a CLI `cezar update` share the clone, so steps 1–3 run under a
+cross-process lock, `<CEZ_HOME>/source.lock` (`branch.ts`): pid, time, the process's start
+time (Linux `/proc/<pid>/stat`) and a per-process token, written whole — to a temp file
+hard-linked into place, so it is never seen half-written. A lock is held while its pid runs
+and is the process that wrote it: the same token for this process, the same start time for
+another. A holder that cannot be verified that way (no `/proc`) counts as stale after two
+hours; a file that does not parse yet counts as held for 10 s. A stale lock is taken over by an
+atomic rename, so of two processes only one wins. While another process holds it, an apply
+fails with "another cezar is building in the updater's clone" and the clone's remote is never
+swapped under that build.
 
 ### 3.6 Forward-only on a hosted cockpit
 
@@ -143,6 +167,20 @@ dates**: a hosted cockpit refuses a target committed before the running build. A
 reported (`fastForward`), not enforced: a branch that was rebased or merged onto still carries
 the guards that rule exists to protect (they live on `main`, which brutus merges), while an
 older commit may not. A local cockpit keeps the full picker, as today.
+
+As built (review round 2): the committer date alone let a hosted cockpit apply any commit object
+the clone held — one a force-push dropped, or one left from a branch followed earlier. A hosted
+apply of a branch build is now refused unless (1) it is committed no earlier than the running
+build, (2) the followed branch's tip reaches it (`merge-base --is-ancestor <target>
+origin/<branch>`, "is not on <branch>"), and (3) when the clone has the running commit, the
+running commit is its ancestor ("does not descend from the running build"). Rule 2 also gates
+every BUILD, local or hosted: the clone is never built from a commit its branch does not reach.
+A local cockpit keeps the full picker for anything that IS on the branch. After a force-push a
+hosted cockpit therefore needs the host (`cezar use <id>`, or `cezar update` there) to move on.
+The other direction too: from a running branch build, a REGISTRY target must have been
+published after the running build's commit (its install time when it records none) — semver
+and the running version's own publish date would let it step back to a release older than the
+code it runs.
 
 ### 3.7 The dialog
 
@@ -168,19 +206,25 @@ and exits. `cezar versions` lists `branch` builds with their commit.
 The runtime stage installs the tarball to `/opt/cezar/<version>+image/` with a manifest (source
 `image`, plus the commit of §4.4 when known) instead of `npm install -g`. On every boot the
 entrypoint links it into the volume — `/data/cezar/versions/<version>+image.<sha8> →
-/opt/cezar/…` — so `listInstalled` sees it and `detectInstallKind` answers `managed` for
+/opt/cezar/…`, `<sha8>` being the commit that install was built from; a link whose name no longer matches the install it points at (a rebuild at the same version) is removed — so `listInstalled` sees it and `detectInstallKind` answers `managed` for
 whatever `current` points at. A global `cezar` on PATH remains, as a launcher (`launcher.ts`'s
-POSIX script with `CEZ_HOME` baked), so `docker compose exec cezar cezar auth setup` keeps working.
+POSIX script with `CEZ_HOME` baked), so `docker compose exec -u node cezar cezar auth setup` keeps
+working. As built, the launcher refuses `update`/`install`/`use`/`link`/`serve` as root (no env var exempts root: the entrypoint never reaches the launcher as root — it runs the entry as `node` itself) with a `-u node`
+hint: run as root they would create a root-owned `/data/cezar/source` or `versions/` entry; `serve` itself also writes `versions/.running` only as the install's owner.
 
 ### 4.2 Which version boots
 
 The entrypoint, before starting the server:
 
 - no `current` → activate the image's install;
-- `current` exists → compare its manifest's `commit.at` with the image's: the newer one is
-  activated, and the choice is logged (`cezar: starting 0.17.0+a1b2c3d4 (branch, 2026-10-23)
-  — newer than the image's 0.17.0+image.e5f6…`);
+- `current` exists → compare its manifest's date with the image's `commit.at`: the newer one is
+  activated, and the choice is logged with both dates (`cezar: starting 0.17.0+a1b2c3d4 (branch,
+  committed 2026-10-23…) — newer than the image's 0.17.0+image.e5f6… (committed 2026-10-20…)`).
+  As built, `current` is dated by `commit.at`, else (a registry, local or link install) by the
+  registry `publishedAt` its manifest records, else by `installedAt` — counting a commitless
+  install as always newer would stop image rebuilds from deploying code;
 - the image carries no commit (built without §4.4's args) → `current` stays; logged too.
+  As built, an image commit date that does not parse counts the same: unknown age, `current` stays.
 
 ### 4.3 The supervisor loop
 
@@ -204,7 +248,10 @@ done
 beside `current`, written by `activate`). A rollback is recorded in
 `/data/cezar/rollback.json` (`{ from, to, exitCode, at }`); the status route reports it until
 the next successful apply, and the dialog shows "rolled back from X: it exited with N within
-30 s". One rollback per boot sequence — a `previous` that also crashes exits the loop and
+30 s". As built, "just activated" is state, not the loop's memory: every `activate` (the server's,
+`cezar update` from the CLI, the boot choice) writes `versions/.fresh` naming the id it switched
+to, and the supervisor's first launch of that id consumes it and arms the 30 s guard — so a CLI
+update followed by a container restart is guarded like a dialog update. One rollback per boot sequence — a `previous` that also crashes exits the loop and
 Docker's restart policy takes over, which is today's behaviour.
 
 The container keeps `init: true`: tini stays PID 1, the loop is its child, and the inner
@@ -224,7 +271,10 @@ Rejected: un-ignoring `.git/HEAD` and refs — packed refs make it unreliable fo
 First boot with no `updateChannel` saved and `/opt/cezar/source.json` present: the entrypoint
 exports `CEZ_UPDATE_CHANNEL=branch` and `CEZ_UPDATE_BRANCH=<remote>#<branch>` from it, which the
 service treats as the seed it already knows. A saved channel always wins, so an operator who
-switched to `stable` is not switched back by a rebuild.
+switched to `stable` is not switched back by a rebuild. Nothing is written into the config
+(§3.1 as built); the `cezar` launcher repeats the same export, so `docker compose exec -u node
+cezar cezar update` follows the same branch. Both go through `docker/update-seed.sh`, which seeds
+nothing (one line in the container log) when the remote fails `isUpdateRemote`'s rule.
 
 ### 4.6 Tools under `/data`
 
@@ -270,8 +320,8 @@ applies — it is the same tarball the new image would carry.
   `CEZ_SELF_UPDATE_CHECK=0` turns it off. AGENTS.md § Zero config gets the matching
   owner-approved line; `.env.example` and `docs/reference.md` document the variable.
 - Nothing applies itself. Nothing restarts without a click (or the idle poll after one).
-- New state only: `source/`, `versions/*+<sha8>`, `previous`, `rollback.json`, `/data/bin`,
-  `/data/npm`. Delete any of it and the next run recreates what it needs.
+- New state only: `source/`, `source.lock`, `versions/*+<sha8>`, `previous`, `versions/.fresh`,
+  `versions/.running`, `rollback.json`, `/data/bin`, `/data/npm`. Delete any of it and the next run recreates what it needs.
 - `CEZ_UPDATE_BRANCH` joins `.env.example` beside `CEZ_UPDATE_CHANNEL`.
 
 ## 7. Not done here
@@ -289,11 +339,12 @@ applies — it is the same tarball the new image would carry.
 
 Unit (vitest, `packages/cezar/src/self-update/`):
 
-- channel resolution: config > `CEZ_UPDATE_BRANCH` > container seed; an invalid remote or ref is
-  dropped with the config's usual `.catch`;
+- channel resolution: user-saved config > `CEZ_UPDATE_*` > container seed > an unmarked save; an
+  invalid remote or ref is dropped with the config's usual `.catch`;
 - `branch` status from a fixture clone: `behind`, `fastForward` false after a force-push,
   `touchesImage` from a commit that edits `docker/Dockerfile`;
-- forward-only by committer date — refused older, allowed newer, ancestry only reported;
+- forward-only by committer date, branch reachability and (when the clone has it) descent from
+  the running commit — each refusal tested;
 - apply pipeline with a stubbed `runNpm`: checkout → build → pack → install → activate order,
   a failing build leaves `current` and `previous` untouched, retention keeps three;
 - entrypoint loop as a shell test with a fake `node` (exit 75 → relaunch from the new link;

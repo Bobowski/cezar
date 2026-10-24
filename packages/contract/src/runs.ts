@@ -297,6 +297,13 @@ export const runRecordSchema = z.object({
     .optional(),
   /** The PR head came from a fork: its check steps run without the project's or workspace's secrets. */
   untrustedHead: z.boolean().optional(),
+  /** Shas this run pushed and comment ids it posted — cezar's own traces, which automations never
+   *  treat as triggers (spec 2026-10-23-github-events §6). */
+  pushedShas: z.array(z.string()).max(50).optional(),
+  postedComments: z.array(z.number()).max(100).optional(),
+  /** Fingerprints of comment bodies it posted or was posting, each kept 24 hours, with the PR or
+   *  issue number it went to when the call named one. */
+  postedCommentBodies: z.array(z.object({ hash: z.string(), at: z.string(), number: z.number().optional() })).max(100).optional(),
   createdAt: z.string(),
   startedAt: z.string().optional(),
   finishedAt: z.string().optional(),
@@ -381,6 +388,8 @@ export const runRecordSchema = z.object({
    *  runs, on any run not yet opened, and on one deliberately put back to unread via
    *  `POST /runs/:id/unread` (#775) — all three count as unread. */
   seenAt: z.string().optional(),
+  /** When the server last changed the record, strictly increasing per record. Absent on older runs. */
+  updatedAt: z.string().optional(),
   /** Highest event `seq` handed out for this run (ephemeral frames included). Absent on older runs. */
   lastSeq: z.number().int().nonnegative().optional(),
   currentStepId: z.string().optional(),

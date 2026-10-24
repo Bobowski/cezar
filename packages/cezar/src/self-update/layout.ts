@@ -21,7 +21,7 @@
  * rebuilds it — state, never configuration.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { z } from 'zod';
 
@@ -29,6 +29,10 @@ import { cezarHomeDir } from '../paths.ts';
 
 export const PACKAGE_NAME = '@open-mercato/cezar';
 export const CURRENT_LINK = 'current';
+/** What `current` pointed at before the last `activate` — the container's crash-rollback target. */
+export const PREVIOUS_LINK = 'previous';
+/** Entries under `versions/` that link to a version and are never one. */
+const RESERVED = new Set([CURRENT_LINK, PREVIOUS_LINK]);
 const MANIFEST_FILE = '.cezar-install.json';
 
 export type InstallKind = 'managed' | 'global-npm' | 'npx' | 'checkout' | 'unknown';
@@ -71,14 +75,33 @@ export function currentEntry(env: NodeJS.ProcessEnv = process.env): string {
 const manifestSchema = z
   .object({
     version: z.string(),
-    source: z.enum(['registry', 'local', 'link']),
+    source: z.enum(['registry', 'local', 'link', 'branch', 'image']),
     installedAt: z.string(),
+    /** `registry` only: the release's publish date, when the registry gave one (docker/supervise.sh). */
+    publishedAt: z.string().optional().catch(undefined),
     /** `link` only: the linked package root (`<worktree>/packages/cezar`) and its branch. */
     checkout: z.string().optional(),
     branch: z.string().optional(),
+    /** `branch` and `image` builds: the commit they were built from (spec 2026-10-23 §3.4). */
+    commit: z
+      .object({ sha: z.string().min(1), subject: z.string().catch(''), at: z.string().min(1), branch: z.string().catch('') })
+      .optional()
+      .catch(undefined),
   })
   .passthrough();
 export type InstallManifest = z.infer<typeof manifestSchema>;
+
+/** How old an install is: its commit date, else its registry publish date, else its install time —
+ *  the first that parses. The container's boot choice (`supervise_install_date`) uses this order. */
+export function installDate(manifest: InstallManifest): { at: string; how: 'committed' | 'published' | 'installed' } | null {
+  const candidates = [
+    [manifest.commit?.at, 'committed'],
+    [manifest.publishedAt, 'published'],
+    [manifest.installedAt, 'installed'],
+  ] as const;
+  for (const [at, how] of candidates) if (at && Number.isFinite(Date.parse(at))) return { at, how };
+  return null;
+}
 
 export function readManifest(id: string, env: NodeJS.ProcessEnv = process.env): InstallManifest | null {
   try {
@@ -100,6 +123,16 @@ export function installId(version: string, source: 'registry' | 'local'): string
   return source === 'local' ? `${version}+local` : version;
 }
 
+/** The id a `branch`-channel build gets: `<version>+<sha8>`. */
+export function branchInstallId(version: string, sha: string): string {
+  return assertSafeId(`${version}+${sha.slice(0, 8).toLowerCase()}`);
+}
+
+/** Whether an id names a `branch`-channel build: its build metadata is exactly eight hex digits. */
+export function isBranchInstallId(id: string): boolean {
+  return /^[0-9A-Za-z][0-9A-Za-z.-]*\+[0-9a-f]{8}$/.test(id) && !id.includes('..');
+}
+
 export interface InstalledEntry extends InstallManifest {
   id: string;
   active: boolean;
@@ -112,7 +145,7 @@ export function listInstalled(env: NodeJS.ProcessEnv = process.env): InstalledEn
   const active = activeId(env);
   const out: InstalledEntry[] = [];
   for (const name of readdirSync(dir)) {
-    if (name === CURRENT_LINK || name.startsWith('.')) continue;
+    if (RESERVED.has(name) || name.startsWith('.')) continue;
     const manifest = readManifest(name, env);
     if (!manifest || !existsSync(versionEntry(name, env))) continue;
     out.push({ ...manifest, id: name, active: name === active });
@@ -130,7 +163,16 @@ export function findInstalled(target: string, env: NodeJS.ProcessEnv = process.e
 
 /** The id `current` points at, or null when nothing is activated. */
 export function activeId(env: NodeJS.ProcessEnv = process.env): string | null {
-  const link = join(versionsDir(env), CURRENT_LINK);
+  return linkedId(CURRENT_LINK, env);
+}
+
+/** The id `previous` points at (what ran before the last `activate`), or null. */
+export function previousId(env: NodeJS.ProcessEnv = process.env): string | null {
+  return linkedId(PREVIOUS_LINK, env);
+}
+
+function linkedId(name: string, env: NodeJS.ProcessEnv): string | null {
+  const link = join(versionsDir(env), name);
   // Read, never check-then-read: `readlink` on something that is not a link fails, and that
   // failure is what selects the text-file fallback.
   try {
@@ -169,9 +211,65 @@ function removeLink(link: string): void {
 
 export function activate(id: string, env: NodeJS.ProcessEnv = process.env): void {
   if (!existsSync(versionEntry(id, env))) throw new Error(`version ${id} is not installed`);
+  const before = activeId(env);
+  // `previous` first: a crash between the two flips leaves a rollback target, never a wrong one.
+  if (before && before !== id && existsSync(versionEntry(before, env))) pointLink(PREVIOUS_LINK, before, env);
+  pointLink(CURRENT_LINK, id, env);
+  if (before !== id) markFresh(id, env);
+}
+
+/** `versions/.fresh`: the id the last `activate` switched to. The container's supervisor consumes
+ *  it on that id's first launch to arm its crash rollback (docker/supervise.sh, spec §4.3). */
+export const FRESH_MARKER = '.fresh';
+
+/** `versions/.running`: the install the last-booted server runs, so another process's prune
+ *  never removes it from under that server once `current` has moved on. */
+export const RUNNING_MARKER = '.running';
+
+/** The uid owning the managed layout when it is not `uid` (null when it is, when the platform has
+ *  no uids, or when there is no layout yet to own). */
+export function foreignInstallOwner(env: NodeJS.ProcessEnv = process.env, uid = process.getuid?.()): number | null {
+  if (uid === undefined) return null;
+  for (const dir of [versionsDir(env), dirname(versionsDir(env))]) {
+    try {
+      const owner = statSync(dir).uid;
+      return owner === uid ? null : owner;
+    } catch {
+      // Not there yet: the next one up decides.
+    }
+  }
+  return null;
+}
+
+export function recordServerRunning(id: string, env: NodeJS.ProcessEnv = process.env): void {
+  try {
+    mkdirSync(versionsDir(env), { recursive: true });
+    writeFileSync(join(versionsDir(env), RUNNING_MARKER), `${id}\n`);
+  } catch {
+    // A read-only home: prune then protects only what `current`/`previous` name.
+  }
+}
+
+export function serverRunningId(env: NodeJS.ProcessEnv = process.env): string | null {
+  try {
+    return readFileSync(join(versionsDir(env), RUNNING_MARKER), 'utf8').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function markFresh(id: string, env: NodeJS.ProcessEnv): void {
+  try {
+    writeFileSync(join(versionsDir(env), FRESH_MARKER), `${id}\n`);
+  } catch {
+    // Only the rollback guard reads it; an unwritable marker leaves the switch itself intact.
+  }
+}
+
+function pointLink(name: string, id: string, env: NodeJS.ProcessEnv): void {
   const dir = versionsDir(env);
-  const link = join(dir, CURRENT_LINK);
-  const tmp = join(dir, `.${CURRENT_LINK}.${process.pid}.tmp`);
+  const link = join(dir, name);
+  const tmp = join(dir, `.${name}.${process.pid}.tmp`);
   if (process.platform === 'win32') {
     removeLink(link);
     symlinkSync(versionDir(id, env), link, 'junction');
@@ -184,6 +282,7 @@ export function activate(id: string, env: NodeJS.ProcessEnv = process.env): void
 
 export function removeInstalled(id: string, env: NodeJS.ProcessEnv = process.env): void {
   if (id === activeId(env)) throw new Error(`version ${id} is active — switch first`);
+  if (id === previousId(env)) removeLink(join(versionsDir(env), PREVIOUS_LINK));
   // `rmSync` never follows symlinks, so a linked checkout loses its link, not its files.
   rmSync(versionDir(id, env), { recursive: true, force: true });
 }
@@ -262,7 +361,7 @@ export function listLinks(env: NodeJS.ProcessEnv = process.env): InstalledEntry[
   const active = activeId(env);
   const out: InstalledEntry[] = [];
   for (const name of readdirSync(dir)) {
-    if (name === CURRENT_LINK || name.startsWith('.')) continue;
+    if (RESERVED.has(name) || name.startsWith('.')) continue;
     const manifest = readManifest(name, env);
     if (manifest?.source === 'link') out.push({ ...manifest, id: name, active: name === active });
   }

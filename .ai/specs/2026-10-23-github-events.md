@@ -1,6 +1,6 @@
 # GitHub events, extended — PR updates, comments, CI results, pushes and releases; webhook wake-ups; delivery to the owning task
 
-> Status: proposed (2026-10-23), not built. Branch: `brutus`.
+> Status: built (2026-10-24) on `brutus` — see §11 for where the build differs from the text.
 > Builds on: `2026-07-25-github-automations.md` (the shipped poll), `2026-09-14-automations-redesign.md`
 > (the surface, `kind`, schedules), `2026-10-06-agentic-e2e-checks.md` Phase 3 (`checkout: 'pr-head'`),
 > `2026-10-12-cockpit-authentication.md` (the VPS has a public, authenticated origin).
@@ -67,9 +67,14 @@ can fork from the failing head as the e2e automations already do.
   cycle immediately instead of at `nextCheckAt`. Rate-limited to one wake per 5 s per project;
   extra deliveries collapse. Never a launch from the payload.
 - The Automations page shows the hook's last delivery time and the result of a **Ping**.
+- Under `CEZ_AUTOMATIONS=0` every id answers `404` and nothing is recorded: there is nothing
+  for a delivery to wake.
+- One project's webhook file is mutated by one request at a time (an in-process lock), each
+  re-reading it inside: a delivery never writes back a hook removed or re-registered meanwhile.
 
 Without a webhook, the poll interval is unchanged. With one, the interval can stay long (the
-redesign's default) and latency becomes seconds.
+redesign's default) and latency drops to about a minute — the 60-second minimum between two
+polls a wake keeps (§11).
 
 ## 5. Delivery to the owning run
 
@@ -78,7 +83,7 @@ behaviour). With `owning-run`:
 
 1. The matched item is a PR. The run that owns it is found by `prNumber` on the run records of
    the project (the store already tracks it, `store.ts`), newest first; the run must not be
-   `discarded`/`deleted`.
+   archived (a discarded variant is archived), deleted, or have lost its worktree.
 2. If the owner exists, the rendered prompt is delivered to it as a user-visible message
    (`run.ts`'s delivery path, the one Continue uses: live when the run is parked at review,
    queued when it is running). The run's worktree is the one that made the PR, so "fix the
@@ -87,7 +92,13 @@ behaviour). With `owning-run`:
 3. If no owner exists (a PR opened by hand), the automation falls back to `new-run` with
    `checkout: 'pr-head'` when set, as today.
 
-Nothing changes for issue events or for `new-run` automations.
+4. A comment, review or check event on a PR that is closed or merged continues no task: it is
+   `skipped` (`pr-closed: …`) — a "thanks" on a merged PR must not wake the archived work. A
+   `new-run` automation admits the comment and review events only with `filters.includeClosed: true`;
+   check suites are read for open PRs' heads only, so a closed PR yields none. An event held
+   while its PR was open (§11) is re-checked at release against the PRs that poll read as closed.
+
+Nothing else changes for issue events or for `new-run` automations.
 
 ## 6. The loop guard
 
@@ -140,5 +151,115 @@ place a loop is possible, so it also carries the existing per-automation launch 
   payload never parsed (a malformed body still wakes).
 - Contract parity, BC inventory for the hook route and the new fields.
 - VPS: register the hook on fancy-fence-panels; open a task that makes a PR; comment on it →
-  the comment arrives in the thread within seconds; push a commit that breaks CI → the failure
+  the comment arrives in the thread within about a minute; push a commit that breaks CI → the failure
   is delivered to the same run; the run's own push does not re-trigger.
+
+## 11. As built (2026-10-24)
+
+Where the code (`automations/github-activity.ts`, `automations/owning-run.ts`,
+`automations/webhook.ts`, `server/automation-webhook.ts`, `runs/github-traces.ts`) differs from
+the text above, and why:
+
+- **Comment sources are repo-wide**: `/repos/:r/issues/comments?since=` and
+  `/pulls/comments?since=` — one read each, instead of one per issue. A comment is observed at its
+  `updated_at` (an edit-only page still moves the cursor) and launches only if CREATED since the
+  cursor. A submitted review's diff comments collapse to one candidate per PR per poll, bodies
+  joined. Comment bodies never reach a receipt; a retry points the prompt at the comment's URL.
+- **`push` diffs branch heads** (`/branches`, or `/branches/<name>` for an exact name) against
+  `branchHeads` and reads `/compare/<before>...<after>` for the subjects — `/commits?since=` would
+  miss a fast-forward of old commits. `synchronize` diffs `prHeads` the same way. Both record the
+  heads on first sight (and after every enable) and fire nothing then; their candidates are
+  `cursorless`, deduplicated by their receipt. Heads of PRs and branches that slide out of the
+  capped lists (100 open PRs, 300 branches) are kept — up to 1000 each, newest first; a kept PR
+  head is marked `left` and never read for check suites — so one sliding back is diffed against
+  what was last seen. A branch with no previous head is a baseline, never a push (sliding in and
+  being created look the same); its first move fires. A PR outside the window that a comment
+  names is read through `/pulls/:n`, and a moved head found that way fires `synchronize`. The
+  heads remember the `owner/name` they were read from (`headsRepo`): a poll of another
+  repository — the project's origin changed — re-baselines them, ETags included. An edit
+  that adds or removes `push`, `pull_request.synchronize` or `check_suite.completed`, or changes
+  `branches`, clears the heads, as enabling does; any other edit of the events keeps them.
+- **ETags** cover `/pulls`, `/releases` and each head's `/check-suites`. A page whose rows a poll
+  did not evaluate forgets its ETag, so a `304` never hides rows the cursor has not passed.
+- **`wakeNow`** is "every enabled, not backed-off GitHub poll of the project is due now", then the
+  workspace scheduler's ordinary reschedule — the same leases, backoff and caps as a timer tick.
+  Deliveries the 5-second window collapses arm one trailing wake at its end, and a wake that
+  lands while a poll runs (`wakeAt` in the runtime state) keeps that poll due when it persists
+  instead of pushing it out a whole interval. A wake never makes a poll due sooner than a minute
+  after its last one (`MIN_WAKE_POLL_MS`, the shortest interval): wakes inside that minute
+  collapse into one trailing poll at its end, so a burst of deliveries cannot spend the rate
+  limit.
+- **Owner lookup** also counts the PR a run created (`pullRequestUrl`) and its `prRefs`, never a
+  `pr-head` verifier or a run whose worktree is gone. A delivery takes the ladder a person's
+  message takes (queued run → prompt queue of a live session → buffered start → Continue); an
+  owner that cannot take it falls back to a new run, and the log row says why.
+- **The owning-run guard** never loses a human's comment. On a local cockpit the `gh` login IS
+  the human, so the traces decide first (by id or body fingerprint) and the login is only the
+  tie-breaker for a comment no trace claimed. A comment whose author is the login cezar's `gh`
+  runs as (`gh api user`, cached ten minutes per host and `gh` config mtime, so `gh auth switch`
+  is seen at once), CREATED during the owning run's current turn while it is still open (the
+  last `turn.started` with no `turn.completed`/`session.ended` after it, on a live run), may be
+  the run's own reply posted by a means no trace saw: it is **held** — a `held` receipt and log
+  row, never a new run instead — and every poll decides it again. Once the turn ends it is
+  delivered, unless a trace has claimed it meanwhile (then `skipped`, `own-trace`). One written
+  after the turn ended is delivered at once. There is no grace window after a turn. A login that
+  cannot be read holds nothing — only the traces decide — and the event's log row says
+  `warning: cannot read the gh login; self-comment guard inactive`, so the gap is visible;
+  `filters.allowSelfComments: true` turns the hold off for a person who shares cezar's account.
+  A held event's receipt keeps its body's fingerprint, never the body: after a restart it is
+  delivered pointing at the comment's URL, as a retry is. And whatever the event, one automation
+  delivers at most `filters.maxRecords` events into one PR's run per hour — the delivery notes
+  on the run (`automationDelivery`) are what it counts, so only deliveries do. An event over the
+  cap is held too, and delivered when the window frees, oldest (by GitHub's timestamp) first.
+  A `new-run` comment automation (and an `owning-run` one whose PR has no owner) is held the
+  same way: the turn that holds cezar's own-login comment is the open turn of ANY run on that PR
+  or issue (`runsOnItem` — its maker, a reviewer, a `pr-head` verifier, a dispatched child, a run
+  an automation launched for it), and the cap counts the runs the automation launched for that
+  item in the hour (`launch-cap: …`). The trace check runs for every candidate, as before.
+  The holds are decided in one place, `automationHold`: the delivery or launch cap first, then,
+  for a comment by the `gh` login only, the open turns of the live runs on the item — the login
+  is compared before any run's event file is read.
+- **Releasing held events** (`releaseHeldEvents`): every poll decides an automation's `held`
+  receipts again, oldest (by GitHub's timestamp) first, before new candidates. One held under
+  another revision, of an event the automation no longer tracks, or older than its current
+  baseline is `skipped` (`superseded: …`) — an edit, an enable or a re-baseline owes it
+  nothing; pausing skips them all (`paused: …`). One a trace now claims is `skipped`
+  (`own-trace: …`); one still held stays as it is, writing nothing; any other goes out like a new
+  event. Its receipt is `reserved` once the holds pass and before anything starts, exactly as a
+  fresh event's is, so a crash mid-launch is reconciled rather than repeated.
+- **Traces** are also recorded for the task push route, the graph `git.push` node, an in-place
+  landing, the `github.pr-comment` node and the agent's own `git push` and comment-posting tool calls.
+  The repo-sync push of the project checkout belongs to no run and records nothing. An agent's
+  `git push` call records `HEAD` provisionally as it starts (so a webhook-woken poll already
+  knows it); when it finishes, the shas it really pushed are read off its output (`old..new`,
+  `[new branch]`) — or `HEAD` as it left the checkout when the output names nothing — and the
+  provisional sha is dropped unless it is one of them (a failed push, `Everything up-to-date`, a
+  `git commit && git push`). A comment's
+  body is a trace BEFORE it is posted: its fingerprint goes on the run record
+  (`postedCommentBodies`, at most 100, each kept 24 hours), so a poll that reads the comment
+  before its id comes back — or after a restart — still knows it, and a candidate matches by id
+  or by body. A body is scoped to the PR or issue the call names (`gh pr comment 12`,
+  `repos/o/r/issues/12/comments`, the graph node's number): the same words on another item are
+  someone else's. Only a call that names no item (`gh pr comment` on the current branch) keeps
+  a project-wide fingerprint. For the agent's own tool calls the body is read off the call as it
+  starts — `gh pr comment`/`gh issue comment`/`gh pr review` (`--body`, `--body-file`, a
+  heredoc), a `gh api` POST to a `/comments` or `/reviews` endpoint (`-f body=`), a
+  `gh api graphql` comment mutation (`addComment`, `addPullRequestReview*`, inline `body: "…"` or
+  a body variable), and a GitHub MCP tool's `body` field (its `issue_number`/`pull_number` is the
+  item) — and both it and any comment id the output prints are kept whatever the call's final
+  status: `gh pr comment … && git push` fails after it posted. Anything else (curl, an alias, a
+  script) leaves no trace, which is why owning-run delivery also checks the author (below).
+- **Registering** needs a hosted cockpit with cezar's own sign-in (not `CEZ_AUTH=0`, where the
+  proxy would also stand between GitHub and the route). The secret goes to `gh` on stdin.
+- **Comment bodies are data, never instructions** (§7 tightened). `{{github.comment.body}}`
+  renders as a pointer — "(the comment is quoted in the GitHub event context below)" — and the
+  body itself appears only inside the "GitHub event context (untrusted data)" block, every line
+  `> `-quoted, so a body cannot close the block or pose as one of its fields.
+- **Who may message a running task.** With `deliver: 'owning-run'`, a comment event is admitted
+  only when its `author_association` is `OWNER`, or it is `MEMBER` or `COLLABORATOR` and
+  `/repos/:o/:r/collaborators/:login/permission` says `write`, `maintain` or `admin` (`MEMBER` is
+  organisation membership, not access to this repo, and `COLLABORATOR` includes read and triage
+  access; the answer is cached ten minutes per login, a failed lookup is a no and is asked
+  again), or the automation names `filters.authors`, or it
+  opts in with `filters.allowAnyAuthor: true`. A `new-run` automation still admits anyone's
+  comment, as before, and never asks.

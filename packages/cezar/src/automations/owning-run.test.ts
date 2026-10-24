@@ -1,0 +1,743 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { RunStore, type RunEvent, type RunRecord } from '../runs/store.ts';
+import type { RunManager } from '../workflows/run.ts';
+import { forgetHeldCandidates, launchEventCandidate, releaseHeldEvents } from './event-poll-cycle.ts';
+import type { GithubCandidate } from './github-poller.ts';
+import { deliverAutomationMessage, findOwningRun, forgetGithubSelfLogins, githubSelfLogin, openTurnSince } from './owning-run.ts';
+import { ProjectAutomationScheduler } from './scheduler.ts';
+import { AutomationStore } from './store.ts';
+import { launchAutomationRun, rebaselineIdleAutomations } from './task-template.ts';
+import type { GithubAutomationDefinition } from './types.ts';
+
+const run = (over: Partial<RunRecord>): RunRecord => ({
+  id: 'r', title: 't', workflow: 'quick-task', task: 't', status: 'review', createdAt: '2026-10-01T00:00:00.000Z',
+  tokensUsed: 0, steps: [], archived: false, worktreePath: '/wt', ...over,
+} as RunRecord);
+
+describe('findOwningRun (spec 2026-10-23-github-events §5)', () => {
+  const pr = { repo: 'acme/demo', number: 8 };
+
+  it('picks the newest run that created, references or is about the PR', () => {
+    const runs = [
+      run({ id: 'old-about', prNumber: 8, createdAt: '2026-10-01T00:00:00.000Z' }),
+      run({ id: 'newer-about', prNumber: 8, createdAt: '2026-10-02T00:00:00.000Z' }),
+      run({ id: 'unrelated', prNumber: 9, createdAt: '2026-10-03T00:00:00.000Z' }),
+    ];
+    expect(findOwningRun(runs, pr)?.id).toBe('newer-about');
+    expect(findOwningRun([runs[0]!, run({ id: 'ref', prRefs: [{ number: 8, origin: 'marker', at: '2026-10-05T00:00:00.000Z' }], createdAt: '2026-10-05T00:00:00.000Z' })], pr)?.id).toBe('ref');
+  });
+
+  it('prefers the run that created the PR over a newer one merely referencing it; a dispatched child never owns', () => {
+    const creator = run({ id: 'creator', pullRequestUrl: 'https://github.com/acme/demo/pull/8', createdAt: '2026-10-01T00:00:00.000Z' });
+    const refCreator = run({ id: 'ref-creator', prRefs: [{ number: 8, url: 'https://github.com/acme/demo/pull/8', origin: 'created', at: '2026-10-01T00:00:00.000Z' }], createdAt: '2026-10-01T00:00:00.000Z' });
+    const reviewer = run({ id: 'reviewer', prNumber: 8, prRefs: [{ number: 8, origin: 'marker', at: '2026-10-04T00:00:00.000Z' }], createdAt: '2026-10-04T00:00:00.000Z' });
+    const child = run({ id: 'child', prNumber: 8, createdAt: '2026-10-05T00:00:00.000Z', dispatch: { rootRunId: 'reviewer', parentRunId: 'reviewer' } } as Partial<RunRecord>);
+    expect(findOwningRun([creator, reviewer, child], pr)?.id).toBe('creator');
+    expect(findOwningRun([refCreator, reviewer], pr)?.id).toBe('ref-creator');
+    expect(findOwningRun([reviewer, child], pr)?.id).toBe('reviewer');
+    expect(findOwningRun([child], pr)).toBeUndefined();
+  });
+
+  it('a run that created two PRs owns both, though its pullRequestUrl names only the newer', () => {
+    const creator = run({
+      id: 'two-prs', pullRequestUrl: 'https://github.com/acme/demo/pull/9', createdAt: '2026-10-01T00:00:00.000Z',
+      prRefs: [
+        { number: 8, url: 'https://github.com/acme/demo/pull/8', origin: 'created', at: '2026-10-01T00:00:00.000Z' },
+        { number: 9, url: 'https://github.com/acme/demo/pull/9', origin: 'created', at: '2026-10-02T00:00:00.000Z' },
+      ],
+    });
+    const reviewer = run({ id: 'reviewer', prNumber: 8, createdAt: '2026-10-04T00:00:00.000Z' });
+    expect(findOwningRun([creator, reviewer], pr)?.id).toBe('two-prs');
+    expect(findOwningRun([creator, reviewer], { repo: 'acme/demo', number: 9 })?.id).toBe('two-prs');
+    // A PR it only mentioned is still not its own while it created another.
+    expect(findOwningRun([run({ pullRequestUrl: 'https://github.com/acme/demo/pull/9', prRefs: [{ number: 8, origin: 'marker', at: '2026-10-01T00:00:00.000Z' }] })], pr)).toBeUndefined();
+  });
+
+  it('ignores another repository, pr-head verifiers and runs whose worktree is gone', () => {
+    expect(findOwningRun([run({ pullRequestUrl: 'https://github.com/other/demo/pull/8', prNumber: 8 })], pr)).toBeUndefined();
+    expect(findOwningRun([run({ prRefs: [{ number: 8, url: 'https://github.com/other/demo/pull/8', origin: 'created', at: '2026-10-01T00:00:00.000Z' }] })], pr)).toBeUndefined();
+    expect(findOwningRun([run({ prNumber: 8, prHead: { number: 8, repo: 'acme/demo', headRepo: 'acme/demo', headRef: 'x', headSha: 'a', baseRef: 'main', ref: 'refs/cezar/pr/8' } })], pr)).toBeUndefined();
+    expect(findOwningRun([run({ prNumber: 8, worktreePath: undefined })], pr)).toBeUndefined();
+    expect(findOwningRun([run({ prNumber: 8, worktreePath: undefined, worktree: false })], pr)?.id).toBe('r');
+    expect(findOwningRun([run({ prNumber: 8 })], { repo: 'acme/demo' })).toBeUndefined();
+  });
+
+  it('never picks an archived run (a discarded variant is archived), nor one that was deleted', () => {
+    expect(findOwningRun([run({ pullRequestUrl: 'https://github.com/acme/demo/pull/8', archived: true })], pr)).toBeUndefined();
+    const live = run({ id: 'live', prNumber: 8, createdAt: '2026-10-01T00:00:00.000Z' });
+    const filed = run({ id: 'filed', pullRequestUrl: 'https://github.com/acme/demo/pull/8', archived: true, createdAt: '2026-10-02T00:00:00.000Z' });
+    expect(findOwningRun([live, filed], pr)?.id).toBe('live');
+  });
+});
+
+describe('deliverAutomationMessage', () => {
+  const manager = (over: Partial<Record<keyof RunManager, unknown>>) => ({
+    enqueueMessage: () => null,
+    hasLiveSession: () => false,
+    enqueuePrompt: () => ({ ok: false, error: 'session closed' }),
+    deferMessage: () => false,
+    continueRun: () => ({ ok: false, error: 'no agent session to resume' }),
+    ...over,
+  }) as unknown as RunManager;
+
+  it('takes the ladder a person’s message takes', () => {
+    expect(deliverAutomationMessage(manager({ enqueueMessage: () => ({ id: 'q' }) }), 'r', 'x')).toEqual({ ok: true, how: 'queued' });
+    expect(deliverAutomationMessage(manager({ hasLiveSession: () => true, enqueuePrompt: () => ({ ok: true, delivered: true }) }), 'r', 'x')).toEqual({ ok: true, how: 'live' });
+    expect(deliverAutomationMessage(manager({ hasLiveSession: () => true, enqueuePrompt: () => ({ ok: true, delivered: false, message: {} }) }), 'r', 'x')).toEqual({ ok: true, how: 'queued' });
+    expect(deliverAutomationMessage(manager({ deferMessage: () => true }), 'r', 'x')).toEqual({ ok: true, how: 'queued' });
+    const continueRun = vi.fn(() => ({ ok: true }));
+    expect(deliverAutomationMessage(manager({ continueRun }), 'r', 'fix CI')).toEqual({ ok: true, how: 'continued' });
+    expect(continueRun).toHaveBeenCalledWith('r', { text: 'fix CI' });
+    expect(deliverAutomationMessage(manager({}), 'r', 'x')).toEqual({ ok: false, error: 'no agent session to resume' });
+  });
+});
+
+describe('deliver: owning-run, end to end through the receipt and the log', () => {
+  const dirs: string[] = [];
+  afterEach(async () => Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))));
+
+  const definition: GithubAutomationDefinition = {
+    id: 'ci', revision: 1, name: 'Fix CI', enabled: true, kind: 'github', events: ['check_suite.completed'], intervalSeconds: 300,
+    deliver: 'owning-run', filters: { lookbackDays: 7, maxRecords: 25, conclusion: 'failure' },
+    task: { prompt: 'CI failed: {{github.check.failedJobs}}', workflow: 'quick-task' },
+    createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z',
+  };
+  const candidate: GithubCandidate = {
+    eventId: 'acme/demo:check_suite:1:2026-10-02T00:00:00Z', event: 'check_suite.completed', timestamp: '2026-10-02T00:00:00Z',
+    tieBreaker: 'suite:1', repo: 'acme/demo', nodeId: 'PR_8', number: 8, title: 'Feature', url: 'https://github.com/acme/demo/pull/8',
+    author: 'alice', assignees: [], labels: [], headSha: 'abc',
+    check: { id: 1, name: 'GitHub Actions', conclusion: 'failure', url: 'https://ci', failingJobs: ['test'] },
+  };
+
+  async function setup() {
+    const root = await mkdtemp(join(tmpdir(), 'cezar-owning-')); dirs.push(root);
+    const runs = RunStore.open(join(root, '.ai/cezar'));
+    const automations = AutomationStore.open(join(root, '.ai/cezar'));
+    const started: string[] = [];
+    const continued: Array<[string, { text?: string }]> = [];
+    const manager = {
+      enqueueMessage: () => null, hasLiveSession: () => false, deferMessage: () => false,
+      continueRun: (id: string, opts: { text?: string }) => { continued.push([id, opts]); return { ok: true }; },
+      startRun: (_workflow: unknown, input: { task: string }) => {
+        const created = runs.createRun({ title: 'automation', workflow: 'quick-task', task: input.task, steps: [] });
+        started.push(created.id);
+        return created;
+      },
+    } as unknown as RunManager;
+    return { root, runs, automations, manager, started, continued };
+  }
+
+  it('delivers into the owner and logs delivered-to instead of launched', async () => {
+    const { root, runs, automations, manager, started, continued } = await setup();
+    const owner = runs.createRun({ title: 'made the PR', workflow: 'quick-task', task: 't', steps: [] });
+    runs.updateRun(owner.id, { pullRequestUrl: 'https://github.com/acme/demo/pull/8', worktreePath: join(root, 'wt'), status: 'review' });
+    await launchEventCandidate({
+      store: automations, definition, receipt: { eventId: candidate.eventId, candidate },
+      log: { event: candidate.event, githubNumber: 8 },
+      launch: () => launchAutomationRun({ root, manager, store: runs, definition, candidate, receiptId: 'unused' }),
+    });
+    expect(started).toEqual([]);
+    expect(continued).toHaveLength(1);
+    expect(continued[0]![0]).toBe(owner.id);
+    expect(continued[0]![1].text).toContain('CI failed: test');
+    const row = automations.logs({ automationId: 'ci' })[0];
+    expect(row).toMatchObject({ result: 'delivered', runId: owner.id, reason: `delivered-to: ${owner.id}` });
+    expect(automations.latestReceipts().get(`ci:${candidate.eventId}`)).toMatchObject({ status: 'launched', runId: owner.id, delivered: true });
+  });
+
+  it('falls back to a new run when no task owns the PR, and for new-run automations', async () => {
+    const { root, runs, automations, manager, started } = await setup();
+    await launchEventCandidate({
+      store: automations, definition, receipt: { eventId: candidate.eventId, candidate },
+      log: { event: candidate.event },
+      launch: () => launchAutomationRun({ root, manager, store: runs, definition, candidate, receiptId: 'r' }),
+    });
+    expect(started).toHaveLength(1);
+    expect(automations.logs({ automationId: 'ci' })[0]).toMatchObject({ result: 'launched', runId: started[0] });
+
+    const owner = runs.createRun({ title: 'made the PR', workflow: 'quick-task', task: 't', steps: [] });
+    runs.updateRun(owner.id, { prNumber: 8, worktreePath: join(root, 'wt') });
+    const plain = await launchAutomationRun({ root, manager, store: runs, definition: { ...definition, deliver: undefined }, candidate, receiptId: 'r2' });
+    expect(plain.delivered).toBeUndefined();
+    expect(started).toHaveLength(2);
+  });
+
+  it('skips (pr-closed) a comment or check event on a closed or merged PR: never delivered, never a new run', async () => {
+    const { root, runs, automations, manager, started, continued } = await setup();
+    const owner = runs.createRun({ title: 'made the PR', workflow: 'quick-task', task: 't', steps: [] });
+    runs.updateRun(owner.id, { pullRequestUrl: 'https://github.com/acme/demo/pull/8', worktreePath: join(root, 'wt'), status: 'review' });
+    const { check: _check, ...bare } = candidate;
+    const thanks: GithubCandidate = {
+      ...bare, eventId: 'acme/demo:comment:5', event: 'pull_request.commented', tieBreaker: 'comment:5', prClosed: true,
+      comment: { id: 5, kind: 'issue', author: 'dave', url: 'https://github.com/acme/demo/pull/8#issuecomment-5', body: 'thanks!' },
+    };
+    for (const event of [thanks, { ...candidate, prClosed: true as const }]) {
+      const talk = { ...definition, events: [event.event] };
+      await launchEventCandidate({
+        store: automations, definition: talk, receipt: { eventId: event.eventId, candidate: event },
+        log: { event: event.event, githubNumber: 8 },
+        launch: (receiptId) => launchAutomationRun({ root, manager, store: runs, definition: talk, candidate: event, receiptId }),
+      });
+      expect(automations.latestReceipts().get(`ci:${event.eventId}`)).toMatchObject({ status: 'skipped' });
+      expect(automations.logs({ automationId: 'ci' })[0]).toMatchObject({ result: 'skipped', reason: expect.stringMatching(/^pr-closed:/) });
+    }
+    expect(continued).toEqual([]);
+    expect(started).toEqual([]);
+  });
+
+  it('launches a new run, saying why, when the owner cannot take the message', async () => {
+    const { root, runs, manager, started } = await setup();
+    const owner = runs.createRun({ title: 'made the PR', workflow: 'quick-task', task: 't', steps: [] });
+    runs.updateRun(owner.id, { prNumber: 8, worktreePath: join(root, 'wt') });
+    (manager as unknown as { continueRun: () => unknown }).continueRun = () => ({ ok: false, error: 'no agent session to resume' });
+    const launched = await launchAutomationRun({ root, manager, store: runs, definition, candidate, receiptId: 'r' });
+    expect(launched.runId).toBe(started[0]);
+    expect(launched.note).toContain('no agent session to resume');
+  });
+
+  it('the new run that replaces a failed delivery counts toward the hourly launch cap, and is held over it', async () => {
+    const { root, runs, automations, manager, started } = await setup();
+    const owner = runs.createRun({ title: 'made the PR', workflow: 'quick-task', task: 't', steps: [] });
+    runs.updateRun(owner.id, { prNumber: 8, worktreePath: join(root, 'wt') });
+    (manager as unknown as { continueRun: () => unknown }).continueRun = () => ({ ok: false, error: 'no agent session to resume' });
+    const capped = { ...definition, filters: { ...definition.filters, maxRecords: 1 } };
+    const fire = (suite: number) => {
+      const event = { ...candidate, eventId: `acme/demo:check_suite:${suite}`, tieBreaker: `suite:${suite}` };
+      return launchEventCandidate({
+        store: automations, definition: capped, receipt: { eventId: event.eventId, candidate: event },
+        log: { event: event.event, githubNumber: 8 },
+        launch: (receiptId) => launchAutomationRun({ root, manager, store: runs, definition: capped, candidate: event, receiptId }),
+      });
+    };
+    await fire(1);
+    await fire(2);
+    expect(started).toHaveLength(1);
+    expect(automations.latestReceipts().get('ci:acme/demo:check_suite:2')).toMatchObject({ status: 'held' });
+    expect(automations.logs({ automationId: 'ci' })[0]?.reason).toContain('launch-cap');
+  });
+});
+
+describe('owning-run delivery never feeds a run its own reply, nor an unbounded stream (§11)', () => {
+  const dirs: string[] = [];
+  afterEach(async () => Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))));
+
+  const shared: GithubAutomationDefinition = {
+    id: 'talk', revision: 1, name: 'Answer reviews', enabled: true, kind: 'github', events: ['pull_request.commented'], intervalSeconds: 300,
+    deliver: 'owning-run', filters: { lookbackDays: 7, maxRecords: 2 },
+    task: { prompt: 'Answer: {{github.comment.body}}', workflow: 'quick-task' },
+    createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z',
+  };
+  const comment = (id: number, author: string, at: Date): GithubCandidate => ({
+    eventId: `acme/demo:comment:${id}`, event: 'pull_request.commented', timestamp: at.toISOString(), tieBreaker: `comment:${id}`,
+    repo: 'acme/demo', nodeId: 'PR_8', number: 8, title: 'Feature', url: 'https://github.com/acme/demo/pull/8', author: 'alice',
+    assignees: [], labels: [], comment: { id, kind: 'issue', author, url: `https://github.com/acme/demo/pull/8#issuecomment-${id}`, body: 'Done — pushed the fix.' },
+  });
+
+  async function setup(base: Partial<GithubAutomationDefinition> = {}) {
+    const definition = { ...shared, ...base };
+    const root = await mkdtemp(join(tmpdir(), 'cezar-owning-self-')); dirs.push(root);
+    const runs = RunStore.open(join(root, '.ai/cezar'));
+    const automations = AutomationStore.open(join(root, '.ai/cezar'));
+    const delivered: string[] = [];
+    const started: string[] = [];
+    const state = { live: false };
+    const manager = {
+      enqueueMessage: () => null, hasLiveSession: () => false, deferMessage: () => false, isActive: () => state.live,
+      continueRun: (_id: string, opts: { text?: string }) => { delivered.push(opts.text ?? ''); return { ok: true }; },
+      startRun: () => { const created = runs.createRun({ title: 'stranger', workflow: 'quick-task', task: 't', steps: [] }); started.push(created.id); return created; },
+    } as unknown as RunManager;
+    const owner = runs.createRun({ title: 'made the PR', workflow: 'quick-task', task: 't', steps: [] });
+    runs.updateRun(owner.id, { pullRequestUrl: 'https://github.com/acme/demo/pull/8', worktreePath: join(root, 'wt'), status: 'review', startedAt: new Date().toISOString() });
+    const fire = (candidate: GithubCandidate, over: Partial<GithubAutomationDefinition> = {}, selfLogin = async () => 'cezar-bot' as string | undefined) =>
+      launchEventCandidate({
+        store: automations, definition: { ...definition, ...over }, receipt: { eventId: candidate.eventId, candidate },
+        log: { event: candidate.event, githubNumber: 8 },
+        launch: (receiptId) => launchAutomationRun({ root, manager, store: runs, definition: { ...definition, ...over }, candidate, receiptId, selfLogin }),
+      });
+    const lastLog = () => automations.logs({ automationId: definition.id })[0];
+    const receiptOf = (id: number) => automations.latestReceipts().get(`${definition.id}:acme/demo:comment:${id}`);
+    /** The next poll's pass over the held events, with the traces it would read then. */
+    const release = (selfLogin = async () => 'cezar-bot' as string | undefined, own: (candidate: GithubCandidate) => boolean = () => false) =>
+      releaseHeldEvents<GithubCandidate>({
+        store: automations, definition,
+        candidateOf: (receipt) => receipt.candidate as GithubCandidate | undefined,
+        log: (candidate) => ({ event: candidate.event, githubNumber: candidate.number }),
+        own: async (candidate) => own(candidate),
+        launch: (receiptId, candidate, admit) => launchAutomationRun({ root, manager, store: runs, definition, candidate, receiptId, selfLogin, admit }),
+      });
+    return { runs, automations, owner, delivered, started, state, fire, lastLog, receiptOf, release };
+  }
+
+  it('holds a comment by cezar’s own login written during the run’s live turn, and delivers it once the turn ends', async () => {
+    const { runs, owner, delivered, started, state, fire, lastLog, receiptOf, release } = await setup();
+    // The agent answered through a GitHub MCP tool cezar never parsed: no trace exists.
+    state.live = true;
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    runs.appendEvent(owner.id, { type: 'item.completed', item: { kind: 'tool', id: 'x', name: 'mcp__gh_custom__reply', input: { text: 'Done' }, status: 'completed' } });
+    await fire(comment(1, 'Cezar-Bot', new Date()));
+    expect(delivered).toEqual([]);
+    expect(started).toEqual([]);
+    expect(lastLog()).toMatchObject({ result: 'held' });
+    expect(lastLog()?.reason).toContain('own-comment');
+    expect(receiptOf(1)).toMatchObject({ status: 'held' });
+    // Still working: the next poll leaves it held, and says nothing new.
+    const before = lastLog()?.seq;
+    await release();
+    expect(delivered).toEqual([]);
+    expect(lastLog()?.seq).toBe(before);
+    expect(receiptOf(1)).toMatchObject({ status: 'held' });
+    // The turn ends with no trace claiming it: a human wrote it after all, and it goes in.
+    runs.appendEvent(owner.id, { type: 'turn.completed', turnId: 't1' });
+    await release();
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain('Done — pushed the fix.');
+    expect(receiptOf(1)).toMatchObject({ status: 'launched', delivered: true, runId: owner.id });
+    expect(lastLog()).toMatchObject({ result: 'delivered', runId: owner.id });
+  });
+
+  it('with a gh login it cannot read, holds nothing — the traces alone decide — and says so in the log', async () => {
+    const { runs, owner, delivered, state, fire, lastLog, receiptOf } = await setup();
+    state.live = true;
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    await fire(comment(2, 'someone', new Date()), {}, async () => undefined);
+    expect(delivered).toHaveLength(1);
+    expect(receiptOf(2)).toMatchObject({ status: 'launched', delivered: true });
+    expect(lastLog()).toMatchObject({ result: 'delivered' });
+    expect(lastLog()?.reason).toContain('warning: cannot read the gh login; self-comment guard inactive');
+  });
+
+  it('drops a held comment a trace claims meanwhile — the run’s own reply — and never delivers it', async () => {
+    const { runs, owner, delivered, state, fire, lastLog, receiptOf, release } = await setup();
+    state.live = true;
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    await fire(comment(3, 'cezar-bot', new Date()));
+    expect(receiptOf(3)).toMatchObject({ status: 'held' });
+    runs.appendEvent(owner.id, { type: 'turn.completed', turnId: 't1' });
+    await release(undefined, (candidate) => candidate.comment?.id === 3);
+    expect(delivered).toEqual([]);
+    expect(receiptOf(3)).toMatchObject({ status: 'skipped' });
+    expect(lastLog()?.reason).toContain('own-trace');
+  });
+
+  it('delivers at once a comment by cezar’s login written after the turn ended, though the run is still live', async () => {
+    const { runs, owner, delivered, state, fire, lastLog } = await setup();
+    state.live = true;
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    runs.appendEvent(owner.id, { type: 'turn.completed', turnId: 't1' });
+    await fire(comment(4, 'cezar-bot', new Date(Date.now() + 5_000)));
+    expect(delivered).toHaveLength(1);
+    expect(lastLog()).toMatchObject({ result: 'delivered' });
+  });
+
+  it('delivers the same login’s comment written well after the run’s last turn, someone else’s at any time, and any with allowSelfComments', async () => {
+    const { runs, owner, delivered, fire } = await setup();
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    runs.appendEvent(owner.id, { type: 'turn.completed', turnId: 't1' });
+    await fire(comment(3, 'cezar-bot', new Date(Date.now() + 10 * 60_000)));
+    await fire(comment(4, 'dave', new Date()));
+    expect(delivered).toHaveLength(2);
+  });
+
+  it('decides a collapsed review per comment: one of its comments written in the turn holds the batch', async () => {
+    const { runs, owner, delivered, state, fire, lastLog } = await setup();
+    state.live = true;
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    // The batch's own timestamp is an older comment's (edited since); another was written in the turn.
+    const earlier = new Date(Date.now() - 60 * 60_000);
+    const batch = comment(9, 'cezar-bot', earlier);
+    batch.comment!.parts = [{ id: 9, at: earlier.toISOString(), hash: 'b'.repeat(64) }, { id: 10, at: new Date(Date.now() + 1_000).toISOString(), hash: 'a'.repeat(64) }];
+    await fire(batch);
+    expect(delivered).toEqual([]);
+    expect(lastLog()).toMatchObject({ result: 'held' });
+  });
+
+  it('allowSelfComments delivers a comment of its own login, during a turn', async () => {
+    const { runs, owner, delivered, state, fire } = await setup();
+    state.live = true;
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    await fire(comment(5, 'cezar-bot', new Date()), { filters: { ...shared.filters, allowSelfComments: true } });
+    expect(delivered).toHaveLength(1);
+  });
+
+  it('new-run: holds cezar’s own-login comment during a live turn of a run on that PR, and launches once it ends', async () => {
+    const { runs, owner, started, state, fire, lastLog, receiptOf, release } = await setup({ deliver: undefined });
+    state.live = true;
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    await fire(comment(11, 'cezar-bot', new Date()));
+    expect(started).toEqual([]);
+    expect(lastLog()).toMatchObject({ result: 'held' });
+    await release();
+    expect(started).toEqual([]);
+    runs.appendEvent(owner.id, { type: 'turn.completed', turnId: 't1' });
+    await release();
+    expect(started).toHaveLength(1);
+    expect(receiptOf(11)).toMatchObject({ status: 'launched', runId: started[0] });
+    expect(lastLog()).toMatchObject({ result: 'launched' });
+  });
+
+  it('new-run: a pr-head verifier’s own turn holds its login’s comment too', async () => {
+    const { runs, started, state, fire, lastLog } = await setup({ deliver: undefined });
+    const verifier = runs.createRun({ title: 'verify', workflow: 'quick-task', task: 't', steps: [] });
+    runs.updateRun(verifier.id, { prHead: { number: 8, repo: 'acme/demo', headRepo: 'acme/demo', headRef: 'x', headSha: 'a', baseRef: 'main', ref: 'refs/cezar/pr/8' } });
+    state.live = true;
+    runs.appendEvent(verifier.id, { type: 'turn.started', turnId: 't1' });
+    await fire(comment(12, 'cezar-bot', new Date()));
+    expect(started).toEqual([]);
+    expect(lastLog()).toMatchObject({ result: 'held' });
+  });
+
+  it('reads no events of a run at rest, and a live run’s once until its event file changes', async () => {
+    const { runs, owner, started, state, fire } = await setup({ deliver: undefined });
+    const read = vi.spyOn(runs, 'readEvents');
+    const ownerReads = () => read.mock.calls.filter(([id]) => id === owner.id).length;
+    await fire(comment(31, 'cezar-bot', new Date()));
+    expect(started).toHaveLength(1);
+    expect(ownerReads()).toBe(0);
+    state.live = true;
+    for (const id of [owner.id, ...started]) runs.appendEvent(id, { type: 'turn.started', turnId: 't1' });
+    read.mockClear();
+    await fire(comment(32, 'cezar-bot', new Date()));
+    await fire(comment(33, 'cezar-bot', new Date()));
+    expect(started).toHaveLength(1);
+    // Every run on the item is live now; each one's file is parsed once for both candidates.
+    const ids = read.mock.calls.map(([id]) => id);
+    expect(ids.length).toBeGreaterThan(0);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('parses no event file for a comment by another login, though a run on the item is live', async () => {
+    const { runs, owner, started, state, fire } = await setup({ deliver: undefined });
+    state.live = true;
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    const read = vi.spyOn(runs, 'readEvents');
+    await fire(comment(34, 'dave', new Date()));
+    expect(started).toHaveLength(1);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('new-run: caps the runs one comment automation launches for one PR at maxRecords an hour, holding the rest', async () => {
+    const { started, fire, lastLog, receiptOf } = await setup({ deliver: undefined });
+    const later = new Date(Date.now() + 10 * 60_000);
+    await fire(comment(13, 'dave', later));
+    await fire(comment(14, 'erin', later));
+    await fire(comment(15, 'frank', later));
+    expect(started).toHaveLength(2);
+    expect(lastLog()).toMatchObject({ result: 'held' });
+    expect(lastLog()?.reason).toContain('launch-cap');
+    expect(receiptOf(15)).toMatchObject({ status: 'held' });
+  });
+
+  it('caps deliveries into one PR’s run at the automation’s maxRecords an hour, holding the rest, and delivers them oldest first as the window frees', async () => {
+    const { delivered, started, fire, lastLog, receiptOf, release } = await setup();
+    const at = (minutes: number) => new Date(Date.now() + minutes * 60_000);
+    await fire(comment(6, 'dave', at(1)));
+    await fire(comment(7, 'erin', at(2)));
+    await fire(comment(10, 'frank', at(5)));
+    await fire(comment(8, 'gina', at(3)));
+    await fire(comment(9, 'hal', at(4)));
+    expect(delivered).toHaveLength(2);
+    expect(started).toEqual([]);
+    expect(lastLog()).toMatchObject({ result: 'held' });
+    expect(lastLog()?.reason).toContain('delivery-cap');
+    for (const id of [8, 9, 10]) expect(receiptOf(id)).toMatchObject({ status: 'held' });
+    // Within the hour a poll changes nothing; the held events never count toward the cap.
+    await release();
+    expect(delivered).toHaveLength(2);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + 61 * 60_000);
+      await release();
+    } finally {
+      vi.useRealTimers();
+    }
+    // The window freed two slots: the two oldest held comments went in, by creation time.
+    expect(delivered).toHaveLength(4);
+    expect(delivered[2]).toContain('issuecomment-8');
+    expect(delivered[3]).toContain('issuecomment-9');
+    expect(receiptOf(8)).toMatchObject({ status: 'launched', delivered: true });
+    expect(receiptOf(10)).toMatchObject({ status: 'held' });
+  });
+});
+
+describe('githubSelfLogin', () => {
+  afterEach(() => forgetGithubSelfLogins());
+
+  it('asks again after `gh auth switch` (the gh config changed) and at most ten minutes on', async () => {
+    const saved = process.env.CEZ_DRY_RUN;
+    delete process.env.CEZ_DRY_RUN;
+    try {
+      let login = 'alice';
+      const calls: string[][] = [];
+      const exec = async (command: string, args: string[]) => {
+        if (command === 'gh') calls.push(args);
+        return command === 'gh' ? { ok: true, stdout: `${login}\n`, stderr: '' } : { ok: false, stdout: '', stderr: '' };
+      };
+      let stamp = 'mtime-1';
+      const now = Date.parse('2026-10-24T10:00:00.000Z');
+      expect(await githubSelfLogin('/r', 'acme/demo', exec, now, () => stamp)).toBe('alice');
+      expect(await githubSelfLogin('/r', 'acme/demo', exec, now + 60_000, () => stamp)).toBe('alice');
+      expect(calls).toHaveLength(1);
+      login = 'bob';
+      stamp = 'mtime-2';
+      expect(await githubSelfLogin('/r', 'acme/demo', exec, now + 2 * 60_000, () => stamp)).toBe('bob');
+      expect(calls).toHaveLength(2);
+      login = 'carol';
+      expect(await githubSelfLogin('/r', 'acme/demo', exec, now + 9 * 60_000, () => stamp)).toBe('bob');
+      expect(await githubSelfLogin('/r', 'acme/demo', exec, now + 13 * 60_000, () => stamp)).toBe('carol');
+      expect(calls).toHaveLength(3);
+    } finally {
+      if (saved === undefined) delete process.env.CEZ_DRY_RUN;
+      else process.env.CEZ_DRY_RUN = saved;
+    }
+  });
+
+  it('asks gh once per host and gh config, never keeps a failure long, and never runs dry', async () => {
+    const saved = process.env.CEZ_DRY_RUN;
+    delete process.env.CEZ_DRY_RUN;
+    try {
+      const calls: string[][] = [];
+      let answer = { ok: true, stdout: 'cezar-bot\n', stderr: '' };
+      const exec = async (command: string, args: string[]) => {
+        if (command === 'gh') calls.push(args);
+        return command === 'gh' ? answer : { ok: false, stdout: '', stderr: '' };
+      };
+      const now = Date.parse('2026-10-24T10:00:00.000Z');
+      const stamp = () => 'same';
+      expect(await githubSelfLogin('/r', 'acme/demo', exec, now, stamp)).toBe('cezar-bot');
+      expect(await githubSelfLogin('/r', 'acme/demo', exec, now + 5 * 60_000, stamp)).toBe('cezar-bot');
+      expect(calls).toEqual([['api', 'user', '--jq', '.login']]);
+      answer = { ok: false, stdout: '', stderr: 'HTTP 401' };
+      expect(await githubSelfLogin('/r', 'acme/other', exec, now + 11 * 60_000, stamp)).toBeUndefined();
+      answer = { ok: true, stdout: 'ops-user\n', stderr: '' };
+      expect(await githubSelfLogin('/r', 'acme/other', exec, now + 12 * 60_000 + 1_000, stamp)).toBe('ops-user');
+      process.env.CEZ_DRY_RUN = '1';
+      expect(await githubSelfLogin('/r', 'acme/third', exec, now, stamp)).toBeUndefined();
+      expect(calls).toHaveLength(3);
+    } finally {
+      if (saved === undefined) delete process.env.CEZ_DRY_RUN;
+      else process.env.CEZ_DRY_RUN = saved;
+    }
+  });
+});
+
+describe('openTurnSince', () => {
+  const at = (iso: string) => Date.parse(iso);
+  const event = (type: string, ts: string) => ({ type, ts, seq: 0 }) as unknown as RunEvent;
+  const record = run({ startedAt: '2026-10-24T09:00:00.000Z' });
+
+  it('is the start of a live run’s open turn, and nothing once the turn ended or the run is at rest', () => {
+    const open = [event('turn.started', '2026-10-24T10:00:00.000Z'), event('turn.completed', '2026-10-24T10:05:00.000Z'), event('turn.started', '2026-10-24T10:10:00.000Z')];
+    expect(openTurnSince(record, open, true)).toBe(at('2026-10-24T10:10:00.000Z'));
+    expect(openTurnSince(record, open, false)).toBeUndefined();
+    expect(openTurnSince(record, open.slice(0, 2), true)).toBeUndefined();
+    expect(openTurnSince(record, [...open, event('session.ended', '2026-10-24T10:12:00.000Z')], true)).toBeUndefined();
+    // A backend that never says `turn.*`: a live run is working since it started.
+    expect(openTurnSince(record, [], true)).toBe(at('2026-10-24T09:00:00.000Z'));
+  });
+});
+
+describe('held events through the poll cycle (spec 2026-10-23-github-events §11)', () => {
+  const dirs: string[] = [];
+  afterEach(async () => {
+    vi.useRealTimers();
+    await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  const comment = (id: number, author: string, at: Date): GithubCandidate => ({
+    eventId: `acme/demo:comment:${id}`, event: 'pull_request.commented', timestamp: at.toISOString(), tieBreaker: `comment:${id}`,
+    repo: 'acme/demo', nodeId: 'PR_8', number: 8, title: 'Feature', url: 'https://github.com/acme/demo/pull/8', author: 'alice',
+    assignees: [], labels: [], comment: { id, kind: 'issue', author, url: `https://github.com/acme/demo/pull/8#issuecomment-${id}`, body: `Comment ${id}.` },
+  });
+
+  async function setup(maxRecords = 25) {
+    const root = await mkdtemp(join(tmpdir(), 'cezar-held-')); dirs.push(root);
+    const runs = RunStore.open(join(root, '.ai/cezar'));
+    const automations = AutomationStore.open(join(root, '.ai/cezar'));
+    const definition = automations.create({
+      name: 'Answer reviews', enabled: true, kind: 'github', events: ['pull_request.commented'], intervalSeconds: 300, deliver: 'owning-run',
+      filters: { lookbackDays: 7, maxRecords }, task: { prompt: 'Answer: {{github.comment.body}}', workflow: 'quick-task' },
+    }, 'talk') as GithubAutomationDefinition;
+    const delivered: string[] = [];
+    const state = { live: false };
+    const manager = {
+      enqueueMessage: () => null, hasLiveSession: () => false, deferMessage: () => false, isActive: () => state.live,
+      continueRun: (_id: string, opts: { text?: string }) => { delivered.push(opts.text ?? ''); return { ok: true }; },
+      startRun: () => { throw new Error('no new run expected'); },
+    } as unknown as RunManager;
+    const owner = runs.createRun({ title: 'made the PR', workflow: 'quick-task', task: 't', steps: [] });
+    runs.updateRun(owner.id, { pullRequestUrl: 'https://github.com/acme/demo/pull/8', worktreePath: join(root, 'wt'), status: 'review', startedAt: new Date().toISOString() });
+    const polls: GithubCandidate[][] = [];
+    /** PRs the next polls read as closed. */
+    const closed: number[] = [];
+    const scheduler = new ProjectAutomationScheduler({
+      projectId: 'p', timeZone: 'UTC', store: automations,
+      github: { owner: 'acme', repo: 'demo', poller: { poll: async () => ({ candidates: polls.shift() ?? [], truncated: false, pages: 1, ...(closed.length ? { closedPrs: [...closed] } : {}) }) } as never },
+      traces: () => runs.githubTraces(),
+      launch: (def, candidate, receiptId, options) => launchAutomationRun({ root, manager, store: runs, definition: def, candidate, receiptId, selfLogin: async () => 'cezar-bot', admit: options?.admit }),
+    });
+    // The definition as the store has it now: an edit, a pause or an enable bumps its revision.
+    const poll = async (...candidates: GithubCandidate[]) => { polls.push(candidates); await scheduler.check((automations.get('talk') ?? definition) as GithubAutomationDefinition); };
+    const receiptOf = (id: number) => automations.latestReceipts().get(`talk:acme/demo:comment:${id}`);
+    const results = () => automations.logs({ automationId: 'talk' }).filter((row) => row.receiptId).map((row) => row.result).reverse();
+    const edit = (over: Partial<GithubAutomationDefinition>) => {
+      const { id, revision, createdAt: _c, updatedAt: _u, ...editable } = automations.get('talk')!;
+      return automations.update(id, revision, { ...editable, ...over } as typeof editable);
+    };
+    const skippedReason = (id: number) => automations.logs({ automationId: 'talk' })
+      .find((row) => row.result === 'skipped' && row.receiptId === receiptOf(id)?.receiptId)?.reason;
+    return { runs, automations, owner, delivered, state, poll, receiptOf, results, edit, skippedReason, closed };
+  }
+
+  /** A comment of cezar's own login held during a live turn; `between` runs; the turn ends; a poll. */
+  async function heldThenTurnEnds(env: Awaited<ReturnType<typeof setup>>, id: number, between: () => void) {
+    env.state.live = true;
+    env.runs.appendEvent(env.owner.id, { type: 'turn.started', turnId: 't1' });
+    await env.poll(comment(id, 'cezar-bot', new Date()));
+    expect(env.receiptOf(id)).toMatchObject({ status: 'held' });
+    between();
+    env.runs.appendEvent(env.owner.id, { type: 'turn.completed', turnId: 't1' });
+    await env.poll();
+  }
+
+  it('pause marks a held event skipped (paused), and enabling again never sends it', async () => {
+    const env = await setup();
+    await heldThenTurnEnds(env, 21, () => {
+      env.edit({ enabled: false });
+      expect(env.receiptOf(21)).toMatchObject({ status: 'skipped' });
+      env.edit({ enabled: true });
+    });
+    expect(env.delivered).toEqual([]);
+    expect(env.receiptOf(21)).toMatchObject({ status: 'skipped' });
+    expect(env.skippedReason(21)).toMatch(/^paused:/);
+  });
+
+  it('an edit that drops the held event’s type supersedes it: skipped, never sent', async () => {
+    const env = await setup();
+    await heldThenTurnEnds(env, 22, () => { env.edit({ events: ['pull_request.review_commented'] }); });
+    expect(env.delivered).toEqual([]);
+    expect(env.receiptOf(22)).toMatchObject({ status: 'skipped' });
+    expect(env.skippedReason(22)).toMatch(/^superseded:/);
+  });
+
+  it('any other edit (the prompt, the delivery) supersedes what the old revision held', async () => {
+    const env = await setup();
+    await heldThenTurnEnds(env, 23, () => { env.edit({ task: { prompt: 'Reply to {{github.comment.url}}', workflow: 'quick-task' } }); });
+    expect(env.delivered).toEqual([]);
+    expect(env.receiptOf(23)).toMatchObject({ status: 'skipped' });
+    expect(env.skippedReason(23)).toMatch(/^superseded:/);
+  });
+
+  it('the boot re-baseline of an idle automation clears what it held', async () => {
+    const env = await setup();
+    await heldThenTurnEnds(env, 24, () => {
+      env.automations.setState('talk', (current) => ({ ...current, lastSuccessAt: new Date(Date.now() - 30 * 86_400_000).toISOString() }));
+      expect(rebaselineIdleAutomations(env.automations)).toBe(1);
+      expect(env.receiptOf(24)).toMatchObject({ status: 'skipped' });
+    });
+    expect(env.delivered).toEqual([]);
+    expect(env.skippedReason(24)).toMatch(/^superseded:/);
+  });
+
+  it('after a restart (the held body is gone) delivers from the receipt, pointing at the comment’s URL', async () => {
+    const env = await setup();
+    await heldThenTurnEnds(env, 26, () => forgetHeldCandidates());
+    expect(env.delivered).toHaveLength(1);
+    expect(env.delivered[0]).toContain('comment_body: (not kept; read it at https://github.com/acme/demo/pull/8#issuecomment-26)');
+    expect(env.delivered[0]).not.toContain('Comment 26.');
+    expect(env.receiptOf(26)).toMatchObject({ status: 'launched', delivered: true });
+  });
+
+  it('pause, an edit while paused, then enable: the old hold stays skipped and a new comment goes in', async () => {
+    const env = await setup();
+    await heldThenTurnEnds(env, 27, () => {
+      env.edit({ enabled: false });
+      env.edit({ task: { prompt: 'Reply: {{github.comment.body}}', workflow: 'quick-task' } });
+      env.edit({ enabled: true });
+    });
+    expect(env.delivered).toEqual([]);
+    expect(env.receiptOf(27)).toMatchObject({ status: 'skipped' });
+    expect(env.skippedReason(27)).toMatch(/^paused:/);
+    await env.poll(comment(28, 'dave', new Date(Date.now() + 1_000)));
+    expect(env.delivered).toHaveLength(1);
+    expect(env.delivered[0]).toContain('Reply:');
+    expect(env.receiptOf(28)).toMatchObject({ status: 'launched', delivered: true });
+  });
+
+  it('a held event older than the current baseline is superseded on release', async () => {
+    const env = await setup();
+    await heldThenTurnEnds(env, 25, () => {
+      env.automations.setState('talk', (current) => ({ ...current, baselineAt: new Date(Date.now() + 60_000).toISOString() }));
+    });
+    expect(env.delivered).toEqual([]);
+    expect(env.receiptOf(25)).toMatchObject({ status: 'skipped' });
+    expect(env.skippedReason(25)).toMatch(/^superseded:/);
+  });
+
+  it('holds cezar’s own-login comment while the live turn is open, poll after poll, and delivers it on the first poll after the turn ends', async () => {
+    const { runs, owner, delivered, state, poll, receiptOf, results } = await setup();
+    state.live = true;
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    await poll(comment(1, 'cezar-bot', new Date()));
+    expect(receiptOf(1)).toMatchObject({ status: 'held' });
+    await poll();
+    await poll();
+    expect(delivered).toEqual([]);
+    expect(results()).toEqual(['held']);
+    runs.appendEvent(owner.id, { type: 'turn.completed', turnId: 't1' });
+    await poll();
+    expect(delivered).toHaveLength(1);
+    // Delivered from the candidate the poll read, body included.
+    expect(delivered[0]).toContain('> Comment 1.');
+    expect(receiptOf(1)).toMatchObject({ status: 'launched', delivered: true, runId: owner.id });
+    expect(results()).toEqual(['held', 'delivered']);
+  });
+
+  it('skips (pr-closed) a held comment whose PR a later poll read as closed, owning-run and new-run alike', async () => {
+    const env = await setup();
+    await heldThenTurnEnds(env, 30, () => { env.closed.push(8); });
+    expect(env.delivered).toEqual([]);
+    expect(env.receiptOf(30)).toMatchObject({ status: 'skipped' });
+    expect(env.skippedReason(30)).toMatch(/^pr-closed:/);
+
+    const fresh = await setup();
+    fresh.edit({ deliver: undefined });
+    await heldThenTurnEnds(fresh, 31, () => { fresh.closed.push(8); });
+    expect(fresh.receiptOf(31)).toMatchObject({ status: 'skipped' });
+    expect(fresh.skippedReason(31)).toMatch(/^pr-closed:/);
+  });
+
+  it('skips a held comment once a trace on the run claims it — the run’s own reply, posted after all', async () => {
+    const { runs, owner, delivered, state, poll, receiptOf } = await setup();
+    state.live = true;
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    await poll(comment(2, 'cezar-bot', new Date()));
+    runs.recordGithubTraces(owner.id, { comments: [2] });
+    runs.appendEvent(owner.id, { type: 'turn.completed', turnId: 't1' });
+    await poll();
+    expect(delivered).toEqual([]);
+    expect(receiptOf(2)).toMatchObject({ status: 'skipped' });
+  });
+
+  it('releases what the hourly cap held once the window frees, oldest first, and never counts it before', async () => {
+    const { delivered, poll, receiptOf, results } = await setup(1);
+    const start = Date.now();
+    await poll(comment(3, 'dave', new Date(start + 1_000)), comment(4, 'erin', new Date(start + 2_000)), comment(5, 'frank', new Date(start + 3_000)));
+    expect(delivered).toHaveLength(1);
+    expect(receiptOf(4)).toMatchObject({ status: 'held' });
+    await poll();
+    expect(delivered).toHaveLength(1);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(start + 61 * 60_000);
+    await poll();
+    expect(delivered).toHaveLength(2);
+    expect(delivered[1]).toContain('issuecomment-4');
+    expect(receiptOf(5)).toMatchObject({ status: 'held' });
+    vi.setSystemTime(start + 122 * 60_000);
+    await poll();
+    expect(delivered).toHaveLength(3);
+    expect(results()).toEqual(['delivered', 'held', 'held', 'delivered', 'delivered']);
+  });
+});

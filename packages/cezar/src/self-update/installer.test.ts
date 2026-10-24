@@ -52,6 +52,11 @@ describe('installing into the managed layout', () => {
     expect(listInstalled(env).map((entry) => entry.id)).toEqual(['0.12.1']);
   });
 
+  it('records the registry publish date it was given, for the container boot choice', async () => {
+    await installFromRegistry('0.12.1', { env, runNpm: npmThatInstalls(), publishedAt: '2026-10-01T00:00:00.000Z' });
+    expect(readManifest('0.12.1', env)).toMatchObject({ source: 'registry', publishedAt: '2026-10-01T00:00:00.000Z' });
+  });
+
   it('leaves nothing behind when npm fails', async () => {
     await expect(
       installFromRegistry('0.12.1', {
@@ -134,6 +139,20 @@ describe('installing into the managed layout', () => {
     });
     expect(ran).toBe(false);
     expect(readFileSync(versionEntry('0.12.1', env), 'utf8')).toContain('first');
+  });
+
+  it('refuses an id with build metadata: npm would drop the suffix and install the bare release', async () => {
+    let ran = false;
+    await expect(
+      installFromRegistry('0.17.0+abcd1234', {
+        env,
+        runNpm: async () => {
+          ran = true;
+        },
+      }),
+    ).rejects.toThrow(/not a registry version/);
+    expect(ran).toBe(false);
+    expect(existsSync(versionDir('0.17.0+abcd1234', env))).toBe(false);
   });
 
   it('never builds a path from an unsafe version id', async () => {

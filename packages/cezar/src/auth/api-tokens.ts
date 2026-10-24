@@ -45,6 +45,8 @@ export const FAMILY_SCOPES: Record<string, Exclude<ApiTokenScope, 'read' | 'runs
   automations: 'author',
   'automation-log': 'author',
   'automation-checks': 'author',
+  // Registers a GitHub webhook for the automations (spec 2026-10-23-github-events).
+  'automation-webhook': 'author',
   'env-files': 'author',
   'workspace/automation-templates': 'author',
   projects: 'admin',
@@ -72,6 +74,10 @@ export const FAMILY_SCOPES: Record<string, Exclude<ApiTokenScope, 'read' | 'runs
   telemetry: 'admin',
   events: 'admin',
   mcp: 'admin',
+  // A delivery is unauthenticated and checks its own HMAC; no token needs it.
+  hooks: 'admin',
+  // A backup carries every secret and the auth store.
+  'workspace/backup': 'admin',
   'workspace/agent-profiles': 'admin',
   'workspace/branding-logo': 'admin',
   'workspace/config': 'admin',

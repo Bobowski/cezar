@@ -1,0 +1,36 @@
+{
+  "html_url": "https://github.com/acme/demo/compare/059f4975b5fa17303c483425cb50e19b709a3d63...4f2cfe92e3499f8581bf39db77e0a1431fa7b55c",
+  "status": "ahead",
+  "ahead_by": 2,
+  "total_commits": 2,
+  "commits": [
+    {
+      "sha": "17ac598e6afc43bb6206f074b05de9d63563a42f",
+      "html_url": "https://github.com/acme/demo/commit/17ac598e6afc43bb6206f074b05de9d63563a42f",
+      "author": {
+        "login": "grace"
+      },
+      "commit": {
+        "message": "Defer --attach credential checks to the server",
+        "author": {
+          "name": "Synthetic Author",
+          "date": "2026-10-23T19:50:28Z"
+        }
+      }
+    },
+    {
+      "sha": "4f2cfe92e3499f8581bf39db77e0a1431fa7b55c",
+      "html_url": "https://github.com/acme/demo/commit/4f2cfe92e3499f8581bf39db77e0a1431fa7b55c",
+      "author": {
+        "login": "grace"
+      },
+      "commit": {
+        "message": "Merge pull request #14805 from cli/bagtoad/attach-with-installation-tokens",
+        "author": {
+          "name": "Synthetic Author",
+          "date": "2026-10-23T20:08:01Z"
+        }
+      }
+    }
+  ]
+}

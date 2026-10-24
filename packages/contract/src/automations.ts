@@ -28,7 +28,8 @@ import { automationScheduleSchema } from './automation-schedule.ts';
 
 // ---- the definition ------------------------------------------------------------------------
 
-/** The GitHub activity an automation reacts to. Nine events, all bounded polls — never a webhook. */
+/** The GitHub activity an automation reacts to — all bounded polls; a registered webhook only
+ *  wakes the poll early (spec 2026-10-23-github-events). */
 export const automationEventSchema = z.enum([
   'pull_request.opened',
   'issue.opened',
@@ -39,6 +40,13 @@ export const automationEventSchema = z.enum([
   'pull_request.rereview_requested',
   'pull_request.closed',
   'pull_request.merged',
+  'pull_request.synchronize',
+  'pull_request.commented',
+  'pull_request.review_commented',
+  'issue.commented',
+  'check_suite.completed',
+  'push',
+  'release.published',
 ]);
 export type AutomationEvent = z.infer<typeof automationEventSchema>;
 
@@ -80,6 +88,30 @@ export const automationFiltersSchema = z.object({
    *  requested reviewer for the two `review_requested` events. Optional: an empty filter means
    *  "any reviewer". */
   reviewers: z.array(z.string()).optional(),
+  /** Comment events: the body must mention one of these logins (`@login`). Empty = any comment. */
+  mentions: z.array(z.string()).optional(),
+  /** `pull_request.synchronize` (the PR's head branch) and `push`: exact names or `*` globs. */
+  branches: z.array(z.string()).optional(),
+  /** `check_suite.completed`: which results launch. Absent = `any`. */
+  conclusion: z.enum(['success', 'failure', 'any']).optional(),
+  /** `release.published`: `true` = prereleases only, `false` = none; absent = both. */
+  prerelease: z.boolean().optional(),
+  /** `release.published`: tag names, exact or `*` globs. */
+  tags: z.array(z.string()).optional(),
+  /** Admit `check_suite.completed` on a sha cezar itself pushed — the "fix my CI" case, and the
+   *  one place a loop is possible (spec 2026-10-23-github-events §6). */
+  includeOwnPushes: z.boolean().optional(),
+  /** `deliver: 'owning-run'`: deliver comments from anyone. Without it (and without `authors`) only
+   *  the OWNER's, or a MEMBER's or COLLABORATOR's with write access, reach a running task (spec
+   *  2026-10-23-github-events §7, §11). */
+  allowAnyAuthor: z.boolean().optional(),
+  /** A comment by the login cezar runs as, written during the open turn of a run on that PR or
+   *  issue, goes out at once — into the owning run (`deliver: 'owning-run'`) or as a new run
+   *  (`new-run`). Without it, it is held until that turn ends, as possibly the run's own reply (§11). */
+  allowSelfComments: z.boolean().optional(),
+  /** `new-run`: launch for a comment or review event on a closed or merged PR too (checks read open PRs only). Never
+   *  `owning-run`, which skips those as `pr-closed` (spec 2026-10-23-github-events §5). */
+  includeClosed: z.boolean().optional(),
   status: z.string().optional(),
   lookbackDays: z.number(),
   maxRecords: z.number(),
@@ -95,6 +127,11 @@ export type AutomationFilters = z.infer<typeof automationFiltersSchema>;
  */
 export const automationKindSchema = z.enum(['github', 'schedule', 'tracker']);
 export type AutomationKind = z.infer<typeof automationKindSchema>;
+
+/** Where a matched pull request goes (spec 2026-10-23-github-events §5): a fresh run, or a message
+ *  into the newest run that owns the PR — a fresh run only when none does. Absent = `new-run`. */
+export const automationDeliverSchema = z.enum(['new-run', 'owning-run']);
+export type AutomationDeliver = z.infer<typeof automationDeliverSchema>;
 
 /**
  * The automation's own dispatch setting (spec 2026-09-14 Q4): on, with a subtask ceiling, and
@@ -159,6 +196,8 @@ export const automationDefinitionSchema = z.object({
   /** `schedule` kind: always present. `github` kind: absent. */
   trackerTrigger: trackerTriggerSchema.optional(),
   schedule: automationScheduleSchema.optional(),
+  /** `github` kind only. */
+  deliver: automationDeliverSchema.optional(),
   task: automationTaskSchema,
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -198,6 +237,16 @@ export const automationRuntimeStateSchema = z.object({
   etags: z.record(z.string(), z.string()).optional(),
   backoffUntil: z.string().optional(),
   consecutiveFailures: z.number().optional(),
+  /** When a webhook delivery last woke this poll; a poll that ran across one stays due. */
+  wakeAt: z.string().optional(),
+  /** Open PR heads as the last poll saw them (`number` → head): what `pull_request.synchronize`
+   *  diffs against, and what a `304` on `/pulls` reuses; `left` marks one kept after its PR slid out
+   *  of the capped open-PR list. */
+  prHeads: z.record(z.string(), z.object({ sha: z.string(), ref: z.string(), updatedAt: z.string(), left: z.boolean().optional() })).optional(),
+  /** Branch heads as the last poll saw them (`branch` → sha): what `push` diffs against. */
+  branchHeads: z.record(z.string(), z.string()).optional(),
+  /** The `owner/name` those heads were read from; a poll of another repository re-baselines. */
+  headsRepo: z.string().optional(),
 });
 export type AutomationRuntimeState = z.infer<typeof automationRuntimeStateSchema>;
 
@@ -217,6 +266,10 @@ export const automationLogResultSchema = z.enum([
   'catch-up',
   'skipped',
   'failed',
+  // spec 2026-10-23-github-events §5: the prompt went into the run that owns the PR.
+  'delivered',
+  // §11: deferred, not dropped — re-evaluated on every poll (the run's own turn, the hourly cap).
+  'held',
 ]);
 export type AutomationLogResult = z.infer<typeof automationLogResultSchema>;
 
@@ -387,6 +440,38 @@ export type AutomationRetryResponse = z.infer<typeof automationRetryResponseSche
 /** `POST /automations/:id/run` (202) — a schedule automation fired now, by hand. */
 export const automationRunResponseSchema = z.object({ runId: z.string() });
 export type AutomationRunResponse = z.infer<typeof automationRunResponseSchema>;
+
+// ---- the webhook wake-up (spec 2026-10-23-github-events §4) -------------------------------
+
+/**
+ * `GET|POST|DELETE /automation-webhook`, `POST /automation-webhook/ping` — the project's GitHub
+ * webhook as the Automations page shows it. The secret never appears here.
+ */
+export const automationWebhookSchema = z.object({
+  /** Whether this cockpit can take a webhook: hosted, with cezar's own sign-in, on a GitHub remote. */
+  available: z.boolean(),
+  /** Why not, when `available` is false. */
+  reason: z.string().optional(),
+  /** The route GitHub calls, as a path — shown even where there is no public URL. */
+  route: z.string(),
+  /** The full URL, on a cockpit that knows its public origin. */
+  url: z.string().optional(),
+  registered: z.boolean(),
+  registeredAt: z.string().optional(),
+  lastDeliveryAt: z.string().optional(),
+  lastEvent: z.string().optional(),
+  lastWakeAt: z.string().optional(),
+  ping: z.object({ at: z.string(), ok: z.boolean(), error: z.string().optional() }).optional(),
+});
+export type AutomationWebhook = z.infer<typeof automationWebhookSchema>;
+
+export const automationWebhookResponseSchema = z.object({ webhook: automationWebhookSchema });
+export type AutomationWebhookResponse = z.infer<typeof automationWebhookResponseSchema>;
+
+/** `POST /hooks/:sender/:hookId` (202) — the one unauthenticated route besides `/health`. The
+ *  payload is never read: `woke` is false when the delivery collapsed into a wake under 5 s old. */
+export const hookDeliveryResponseSchema = z.object({ accepted: z.literal(true), woke: z.boolean() });
+export type HookDeliveryResponse = z.infer<typeof hookDeliveryResponseSchema>;
 
 /**
  * `GET /workspace/automation-templates` — the other registered projects' automations, as the

@@ -200,6 +200,30 @@ export class AuthService {
     return { ...(setup.userId ? { userId: setup.userId } : {}) };
   }
 
+  /**
+   * The setup code as a gate for something other than creating the account — restoring a backup
+   * from `/setup` (spec 2026-10-23-backup-restore §4). Same throttle and audit as `beginSetup`;
+   * the code is not spent here (a restore replaces the whole store anyway).
+   */
+  checkSetupCode(code: string, meta: RequestMeta): AuthResult<Record<never, never>> {
+    const keys = [`setup:${throttleAddress(meta.address)}`];
+    const wait = this.throttle.retryAfter(keys, this.now());
+    if (wait > 0) return tooMany(wait);
+    if (!this.setupRequired() || !this.validSetup(sha256(code.trim()))) {
+      this.throttle.fail(keys, this.now());
+      appendAudit({ event: 'setup-rejected', address: meta.address, detail: 'restore' }, this.now());
+      return fail(401, 'this setup link is invalid or has expired — run `cezar auth setup` on the host for a new one');
+    }
+    appendAudit({ event: 'setup-restore', address: meta.address }, this.now());
+    return { ok: true };
+  }
+
+  /** Forget the sessions read from disk — a restore just replaced the file under them. */
+  reloadSessions(): void {
+    this.sessions = undefined;
+    this.sessionsLoadedFrom = undefined;
+  }
+
   async beginSetup(
     input: { code: string; username: string; password: string },
     meta: RequestMeta,

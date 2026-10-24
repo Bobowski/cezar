@@ -1,6 +1,6 @@
 # Backup and restore — an encrypted snapshot of everything a rebuild cannot recreate
 
-> Status: proposed (2026-10-23), not built. Branch: `brutus`.
+> Status: built (2026-10-24) — see §10 As built. Branch: `brutus`.
 > Builds on: `2026-10-10-cezar-in-a-container.md` (what lives in `/data` and `/projects`),
 > `2026-10-12-cockpit-authentication.md` (the `/setup` page before an owner exists),
 > `2026-10-12-project-env-files.md` and `2026-10-21-env-references.md` (the untracked project
@@ -89,7 +89,7 @@ POST   /workspace/backup/target/test
 PUT    /workspace/backup/schedule            { nightly: boolean, keep: number }
 POST   /workspace/backup                     → starts the job
 GET    /workspace/backup/archives/:name      → the file (download)
-POST   /workspace/backup/restore             multipart: archive + identity  (also mounted for /setup with the setup code)
+POST   /workspace/backup/restore             raw archive body + x-cezar-backup-identity  (also mounted for /setup with x-cezar-setup-code)
 ```
 
 Zod in `packages/contract/src/backup.ts`; archive names validated against the pattern above.
@@ -132,3 +132,106 @@ Zod in `packages/contract/src/backup.ts`; archive names validated against the pa
 - VPS: Backup now → download → `age -d` on the laptop lists the expected entries; set an R2
   target → Test → nightly on → next morning one object; fresh container with empty volumes →
   `/setup` → Restore → sign in with the old owner, fancy-fence-panels listed with its `.env`.
+  Restore an archive over 32 MB through Caddy: `docker/Caddyfile` gives the two restore routes
+  `max_size 1GiB` and keeps 32 MB elsewhere (no test reads docker files, so this is a manual check).
+
+## 10. As built (2026-10-24)
+
+Code: `packages/cezar/src/backup/` (`tar.ts`, `codec.ts`, `collect.ts`, `s3.ts`, `state.ts`,
+`restore.ts`, `service.ts`, `routes.ts`, `cli.ts`), `packages/contract/src/backup.ts`,
+`packages/web/src/routes/settings/backup-section.tsx`, `packages/web/src/components/auth/setup-restore-card.tsx`.
+
+- **age:** `age-encryption@0.3.1`, pinned exactly, streaming (`Encrypter.encrypt(ReadableStream)`).
+  Recipients `age1…` and `age1pq1…`; the passphrase recipient is scrypt at age's default work
+  factor. A pasted `age-keygen` file (comments included) is accepted as the identity.
+- **zstd:** Node's `zlib.createZstdCompress`, level 3. A Node without it (older than 22.15/23.8)
+  writes `.tar.gz.age` and says so in the job log; the reader sniffs the magic bytes, so either
+  archive restores anywhere zstd is available. The tar is a minimal ustar + PAX writer/reader of
+  our own (regular files and directories; symlinks are skipped).
+- **Project allowlist:** `git ls-files --others` **without** `--exclude-standard`, restricted by
+  pathspec to the allowlist and re-checked in `projectFileQualifies`. With `--exclude-standard`
+  the files worth keeping — `.env` and the run history under `.ai/cezar/` — are exactly the
+  ignored ones and would never qualify; the allowlist, not the ignore rules, is what keeps
+  `node_modules` and build output out. `.env*` at any depth, `.ai/cezar/**` minus `worktrees/`,
+  a root `config.local.json`.
+- **`data/` and `agents/`:** `CEZ_HOME` minus `backups/`, `versions/`, `bin/`, `cache/`, `npm-cache/`,
+  `uploads/`, `.restore*`, locks and temp files. Agents come from `agentStateLocations()`
+  (`paths.ts`): `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GH_CONFIG_DIR`, `~/.ssh`, `GIT_CONFIG_GLOBAL`,
+  each falling back to the tool's default outside the container; Claude's `.claude.json` rides
+  as `agents/claude.json` when it lives beside its dir.
+- **Restore** needs an idle workspace — a running or queued task is a 409 before the upload is
+  read (review 2026-10-24; `/setup` has no runs by definition) — then holds run admission
+  (`WorkspaceSemaphore.holdAdmission`) from its first step, stages under `CEZ_HOME/.restore-<job>`,
+  verifies the manifest, then overlays: a file in the archive replaces the one on
+  disk, nothing else is deleted — a directory where the archive has a file, and a link or file
+  where it has a directory, are kept and named in the job log, never removed or written through.
+  A project's files go back only to the root this machine's registry records for that id, or under
+  its projects directory (`projectsDir` / `CEZ_PROJECTS_DIR`) — both read BEFORE the archive's
+  `config.json` is placed, so a fresh `/setup` vouches only for the projects directory — never to
+  whatever absolute path the manifest names, and each one passes `projectFileQualifies` again
+  (review 2026-10-24, round 2).
+  **Run history merges, it is never replaced** (review rounds 3–5, `mergeRunIndex`): a project's
+  `.ai/cezar/runs.json` folds the archive's records into this machine's. A record only here
+  stays; one only in the archive is added; one in both takes the archive's copy only when it is
+  newer. "Newer" is the record's `updatedAt` — the store stamps it on every change, strictly
+  increasing per record (`touch`) — whenever BOTH copies carry one, settled copies included
+  (ties keep this machine's). Without it on both sides (a store from before `updatedAt`), the
+  latest instant either copy carries decides (`createdAt`, `startedAt`, `finishedAt`,
+  `archivedAt`, `pinnedAt`, `seenAt`, `worktreeReclaimedAt`, its steps' too), except that a
+  copy the backup settled never replaces a local record — its `finishedAt` is the backup's
+  instant, not work. A `runs/<id>.ndjson` follows its record: it goes in when the archive's
+  record won, never when this machine's did, and otherwise (no index merged, an id neither index
+  names) only where this machine has none or a shorter one.
+  **No tombstones:** a deletion is remembered only by the process that made it, so a task deleted
+  after the backup comes back on restore (its record and transcript, never its worktree); delete
+  it again.
+  **No archived run is live, none is scheduled** (`settleLiveRuns`, rounds 3–4): the archive's
+  copy of a `queued`/`running`/`waiting` record is written `failed` with `interrupted — captured
+  by backup <name> while it was <status>` (a still-unanswered question keeps
+  `awaitingAnswerSince`; running steps fail too), and any record's schedule — `autoResumeAt`,
+  `monitoringWakeAt`, `monitoringWakeCapReached`, `activity` — is cleared, a cancelled
+  auto-resume saying so in its `error`. The live record is untouched. A restore settles an older
+  archive's rows the same way at the archive's `createdAt`, so boot recovery on the restored host
+  never re-queues, resumes or re-arms one. A settled copy carries `settledByBackup: <name>`, and
+  that mark — not the note — is what the merge recognises: the store's schema drops the mark on
+  load, and Continue clears the note with the rest of `error`, so a pin or archive made on the
+  restored host wins a later restore (round 5).
+  **Restore marker:** the restore then leaves `CEZ_HOME/restore-marker.json`; the next `serve`
+  consumes it before any store opens, and for that whole process `pruneOrphans`, the lifecycle's
+  orphan cleanup and the layouts backstop list what they would remove instead of removing it.
+  A marker that cannot be removed is renamed `restore-marker.json.consumed`, and one that cannot
+  be renamed either is only logged — never a failed boot. Neither name is ever archived.
+  **409s:** a restore asked for while a task runs or is queued answers 409 before a byte of the
+  upload is read. From the restore's first step until the process restarts, `POST /runs`,
+  `POST /runs/:id/messages` and `POST /runs/:id/continue` (and their `/p/:projectId/` aliases)
+  answer `409 {error: "restore in progress — continue this task once cezar has restarted"}`
+  (`RESTORE_IN_PROGRESS_ERROR`, inventoried in BACKWARD_COMPATIBILITY.md §2), and a due
+  automation skips its cycle (a `skipped` / `restore in progress` log row, then its own retry
+  floor) instead of launching into an index that is not being written.
+  **Leftovers:** a crash between `copyAcross`'s copy and rename leaves `.<name>.cezar-restore-<hex>`.
+  Every restore first sweeps those from where it places files (`CEZ_HOME`, the agents' dirs and
+  files, the vouched project roots — never `node_modules`, `.git`, task worktrees or a link) and
+  keeps `CEZ_HOME/restore-journal.json` while it places; a boot that finds the journal sweeps
+  the same targets once and removes it.
+  The restart re-execs the running entry (the managed `current`
+  only for a managed install). The CLI restore never restarts anything.
+- **Nightly** is a built-in item on the workspace automations timer (`builtins` on
+  `WorkspaceAutomationScheduler`): 03:00 server time, retried every 10 minutes while the workspace
+  is busy, once per night otherwise (a failure is recorded in `lastError`). It needs an `age1…`
+  recipient (a passphrase is never stored) and a target; under `CEZ_AUTOMATIONS=0` there is no
+  timer and the status says so. Remote retention counts only this host's archives under the prefix.
+- **S3:** SigV4 by hand (pinned to AWS's worked GET example), path-style URLs, the payload hashed
+  before the PUT. Default region `us-east-1`. `s3.test.ts` runs against an in-memory S3 always
+  and against a real endpoint only with `BACKUP_S3_TEST_ENDPOINT` set (skipped otherwise).
+- **`/setup`:** `POST /api/v1/auth/setup/restore` (public by path; setup code, enforced sign-in,
+  HTTPS or loopback, no owner yet) answers `{ job }`; the page follows it with
+  `GET /api/v1/auth/setup/restore?job=` — the unguessable id is the only handle — and moves to
+  sign-in once the restarted cockpit answers.
+- **Uploads** are the archive as the raw body (not multipart), the identity in the
+  `x-cezar-backup-identity` header (base64) and, for `/setup`, the code in `x-cezar-setup-code`.
+  Every gate — trust or enforced sign-in, HTTPS, no owner yet, `Content-Length` present and at
+  most 1 GiB, the setup code and its throttle — answers from headers before a byte is read; the
+  body then streams to `CEZ_HOME/.restore-upload-*`, cut off past its declared length. The guard
+  serves `POST /auth/setup/restore` anonymously only while no owner exists (review 2026-10-24).
+- **Not done:** a passphrase prompt that hides input in the CLI (it reads a line or stdin); listing
+  remote archives in the cockpit; restoring onto a machine whose project roots differ.

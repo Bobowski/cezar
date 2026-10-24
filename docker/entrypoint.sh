@@ -1,15 +1,16 @@
 #!/bin/sh
 # cezar in a container — start-up (spec .ai/specs/2026-10-10-cezar-in-a-container.md).
 #
-# Runs as root for exactly two things: making the volumes writable by `node`, and starting the
-# container's own Docker daemon. Everything after the final `exec` — cezar, its agents, every
-# terminal — is `node`.
+# Runs as root for three things: making the volumes writable by `node`, starting the container's
+# own Docker daemon, and supervising cezar (docker/supervise.sh — an update restarts the cezar
+# process, never the container). Everything it starts — cezar, its agents, every terminal — is `node`.
 set -eu
 
-mkdir -p /data/cezar /data/claude /data/codex /data/gh /data/ssh /projects
+mkdir -p /data/cezar/versions /data/claude /data/codex /data/gh /data/ssh /data/bin /data/npm /projects
 chmod 700 /data/ssh
 # Top level only: a volume that already holds a hundred thousand files is not re-owned on boot.
-chown node:node /data /data/cezar /data/claude /data/codex /data/gh /data/ssh /projects
+# /data/bin and /data/npm are where tools installed from the terminal live (spec 2026-10-23 §4.6).
+chown node:node /data /data/cezar /data/cezar/versions /data/claude /data/codex /data/gh /data/ssh /data/bin /data/npm /projects
 
 # A project's services (its docker-compose.yml) run on a daemon INSIDE this container, so
 # `localhost:5432` means the same thing to the app as it does on a developer's machine, and a
@@ -37,5 +38,23 @@ export HOME=/home/node
 setpriv --reuid=node --regid=node --init-groups \
   git config --global --get-all safe.directory >/dev/null 2>&1 \
   || setpriv --reuid=node --regid=node --init-groups git config --global --add safe.directory '*'
+
+# The image follows the branch it was built from (spec 2026-10-23 §4.5). An operator's own
+# CEZ_UPDATE_* wins over this seed, and a channel saved in the cockpit wins over both. Nothing is
+# written: the service resolves it at read time, and the `cezar` launcher repeats it, so
+# `docker compose exec -u node cezar cezar update` follows the same branch.
+. /usr/local/lib/cezar/update-seed.sh
+seed_update_branch /opt/cezar/source.json
+
+if [ "${1:-}" = "cezar" ] && [ "${2:-}" = "serve" ]; then
+  shift
+  . /usr/local/lib/cezar/supervise.sh
+  # `exec`: the background job IS cezar, so the loop's signals reach it, not a wrapper shell.
+  run_cezar() { exec setpriv --reuid=node --regid=node --init-groups node "$@"; }
+  set +e
+  supervise_boot /data/cezar /opt/cezar
+  supervise_loop /data/cezar "$@"
+  exit $?
+fi
 
 exec setpriv --reuid=node --regid=node --init-groups "$@"

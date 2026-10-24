@@ -222,3 +222,17 @@ export function multipartZodValidator<
     return parsed.success ? (parsed.data as z.infer<S>) : reject(c, parsed.error, message);
   }), { target: 'form', schema }) as unknown as FormValidator<S, E, P>;
 }
+
+/**
+ * Request headers, for the one kind of route whose body is not a shape at all — a restore
+ * upload streams raw bytes to disk, so what it needs beside them rides headers. Hono hands the
+ * schema every header with a lower-cased name.
+ */
+export function headerZodValidator<S extends z.ZodType, E extends Env = Env, P extends string = string>(
+  schema: S, { message }: ErrorOptions = {},
+): MiddlewareHandler<E, P, { in: { header: z.input<S> }; out: { header: z.output<S> } }> {
+  return validator('header', (value, c) => {
+    const parsed = schema.safeParse(value);
+    return parsed.success ? (parsed.data as z.infer<S>) : reject(c, parsed.error, message);
+  }) as unknown as MiddlewareHandler<E, P, { in: { header: z.input<S> }; out: { header: z.output<S> } }>;
+}

@@ -16,7 +16,7 @@ export const GITHUB_COM = 'github.com';
 const HOSTS_TTL_MS = 30_000;
 let cached: { at: number; key: string; hosts: Set<string> } | null = null;
 
-function ghConfigDir(env: NodeJS.ProcessEnv): string {
+export function ghConfigDir(env: NodeJS.ProcessEnv = process.env): string {
   if (env.GH_CONFIG_DIR) return env.GH_CONFIG_DIR;
   if (env.XDG_CONFIG_HOME) return join(env.XDG_CONFIG_HOME, 'gh');
   if (process.platform === 'win32' && env.AppData) return join(env.AppData, 'GitHub CLI');

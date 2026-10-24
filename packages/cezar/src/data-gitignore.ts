@@ -16,6 +16,7 @@ import { join } from 'node:path';
 export const DATA_GITIGNORE_ENTRIES = [
   'runs.json',
   'runs.json.tmp',
+  'runs.json.before-restore', // an unreadable index a restore set aside (spec 2026-10-23-backup-restore)
   'services.json', // pinned project services (spec 2026-10-11-project-services)
   'services.json.tmp',
   'runs/',
@@ -58,6 +59,9 @@ export const DATA_GITIGNORE_ENTRIES = [
   'automation-receipts.ndjson.tmp',
   'automation-log.ndjson',
   'automation-log.ndjson.tmp',
+  // spec 2026-10-23-github-events §4: the webhook's route id and HMAC secret.
+  'github-webhook.json',
+  'github-webhook.json.*.tmp',
   'automation-poll.lock',
   'automation-poll.lock.guard/',
   'automation-mutation.lock.guard/',

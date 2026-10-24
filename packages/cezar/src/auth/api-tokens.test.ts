@@ -254,7 +254,7 @@ const RUN_FREE_TEXT = [
 /** What a projected task record keeps verbatim: the user's own task text and the tracker's title. */
 const RUN_SURVIVES = ['title', 'task', 'trackerLinks[].title'];
 
-const READ_FREE_TEXT: Record<string, { from: FreeTextOrigin; fields: string[] }> = {
+const READ_FREE_TEXT: Record<string, { from: FreeTextOrigin; fields: string[]; also?: { from: FreeTextOrigin; fields: string[] } }> = {
   '/runs': { from: 'projected', fields: RUN_FREE_TEXT.map((field) => `[].${field}`) },
   '/runs/:id': { from: 'projected', fields: RUN_FREE_TEXT },
   '/groups/:groupId': { from: 'projected', fields: ['runs[].title', 'runs[].handoffExcerpt'] },
@@ -285,7 +285,9 @@ const READ_FREE_TEXT: Record<string, { from: FreeTextOrigin; fields: string[] }>
   ] },
   '/workspace/dashboard/overview': { from: 'projected', fields: ['coverage.projects[].reason', 'page.rows[].title', 'page.rows[].titleSummary'] },
   '/workspace/dashboard/tasks': { from: 'projected', fields: ['coverage.projects[].reason', 'page.rows[].title', 'page.rows[].titleSummary'] },
-  '/workspace/self-update': { from: 'projected', fields: ['reason', 'job.log', 'job.error'] },
+  '/workspace/self-update': { from: 'projected', fields: [
+    'reason', 'job.log', 'job.error', 'installed[].commit.subject', 'branch.running.subject', 'branch.tip.subject', 'branch.error',
+  ] },
   '/repo': { from: 'repository', fields: ['log', 'log[].subject', 'checkedOutElsewhere.*'] },
   '/repo/search': { from: 'repository', fields: ['matches[].text'] },
   '/repo/sync': { from: 'repository', fields: ['incoming[].subject'] },
@@ -310,7 +312,7 @@ const READ_FREE_TEXT: Record<string, { from: FreeTextOrigin; fields: string[] }>
   '/tracker/:id': { from: 'forge', fields: ['item.title', 'item.body', 'comments.items[].body', 'comments.reason', 'reason'] },
   '/tracker/search': { from: 'forge', fields: ['items[].title', 'items[].body', 'reason'] },
   '/tracker/watch/:watchId': { from: 'forge', fields: ['result', 'result.items[].title', 'result.items[].body', 'result.reason'] },
-  '/docker': { from: 'degrade', fields: ['reason'] },
+  '/docker': { from: 'degrade', fields: ['reason'], also: { from: 'projected', fields: ['stacks[].task', 'stacks[].task.title'] } },
   '/github/checks': { from: 'degrade', fields: ['reason'] },
   '/github/prs/:number/changes': { from: 'degrade', fields: ['reason'] },
   '/providers/status': { from: 'degrade', fields: ['providers[].hint'] },
@@ -440,7 +442,7 @@ describe('what read may say, per route and field', () => {
       const schema = contracts[`GET ${route}`]?.response;
       if (!schema) continue;
       const { open: openPaths, textual } = responseFields(schema);
-      const declared = READ_FREE_TEXT[route]?.fields ?? [];
+      const declared = [...(READ_FREE_TEXT[route]?.fields ?? []), ...(READ_FREE_TEXT[route]?.also?.fields ?? [])];
       // A count or an enum named `questions` or `action` says nothing.
       const free = textual.filter(isFreeText);
       const undeclared = free.filter((field) => !declared.includes(field));

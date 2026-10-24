@@ -377,6 +377,25 @@ export class WorkspaceSemaphore {
     return true;
   }
 
+  private admissionHolds = 0;
+
+  /** Start no new run until the returned release is called — a restore is replacing the state
+   *  those runs would write (spec 2026-10-23-backup-restore §4). Queued runs keep their place. */
+  holdAdmission(): () => void {
+    this.admissionHolds += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.admissionHolds -= 1;
+      void this.release();
+    };
+  }
+
+  admissionHeld(): boolean {
+    return this.admissionHolds > 0;
+  }
+
   /** Cached workspace-wide parallel cap. */
   maxParallel(): number {
     return this.limits.maxParallel;

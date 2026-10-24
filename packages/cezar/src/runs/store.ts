@@ -10,6 +10,7 @@ import {
   readFileSync,
   readSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -20,11 +21,13 @@ import { collectSecretValues, redactDeep, redactSecrets } from '../core/secret-r
 // Sibling module, files only — a draft belongs to a run and is deleted with it (#939).
 import { deleteRunDrafts } from './drafts.ts';
 import { deleteRunLayouts, pruneOrphanLayouts } from './layouts.ts';
+import { orphanPruneSuspended } from '../restore-guard.ts';
 import { failureKind, taskFailedLabel } from './failure-kind.ts';
 import { track } from '../telemetry.ts';
 import { reportAgentError } from './agent-error-telemetry.ts';
 // Pure, dependency-free reference helpers — the same sanity bound the marker parser applies.
 import { MAX_REF } from './task-refs.ts';
+import { commentFingerprint, githubTracesOf, mergeTraces, POSTED_BODIES_CAP, POSTED_COMMENTS_CAP, PUSHED_SHAS_CAP, type GithubTraces } from './github-traces.ts';
 // Type-only module (zod + nothing else), so this cannot cycle back into the store.
 import { workflowDefSchema } from '../workflows/types.ts';
 // A contract VALUE, like `workspaceUiStateSchema` in `workspace/migrations.ts`: the persisted
@@ -325,6 +328,12 @@ export const runRecordSchema = z.object({
   /** The PR head came from a fork the automation admitted (`allowForkHeads`): untrusted code, so
    *  its check steps never receive any secrets. */
   untrustedHead: z.boolean().optional().catch(undefined),
+  /** cezar's own traces on GitHub (spec 2026-10-23-github-events §6): shas this run pushed and
+   *  comment ids it posted, which automations never treat as triggers. Capped (`github-traces.ts`). */
+  pushedShas: z.array(z.string()).max(PUSHED_SHAS_CAP).optional().catch(undefined),
+  postedComments: z.array(z.number()).max(POSTED_COMMENTS_CAP).optional().catch(undefined),
+  /** Fingerprints of bodies it posted or was posting, each kept 24 h (`POSTED_BODY_TTL_MS`). */
+  postedCommentBodies: z.array(z.object({ hash: z.string(), at: z.string(), number: z.number().int().positive().optional() })).max(POSTED_BODIES_CAP).optional().catch(undefined),
   /**
    * Exact deadline at which a run stopped by a provider USAGE LIMIT resumes itself
    * (spec 2026-08-03-auto-resume-after-usage-limit) — the reset instant the provider named plus a
@@ -441,6 +450,9 @@ export const runRecordSchema = z.object({
    *  runs, on every run not yet opened, and on one `setUnread` put back to unread
    *  (#775) — the unread rule treats all three alike. */
   seenAt: z.string().optional(),
+  /** When this store last changed the record, strictly increasing per record (`touch`). What a
+   *  restore's merge compares (spec 2026-10-23-backup-restore §10); absent on older records. */
+  updatedAt: z.string().optional(),
   /** Highest `seq` handed out for this run, ephemeral frames included, so a restart resumes the
    *  counter without parsing the transcript. Absent on older records, which fall back to that parse. */
   lastSeq: z.number().int().nonnegative().optional(),
@@ -959,6 +971,8 @@ export class RunStore extends EventEmitter {
   /** Ids this process removed on purpose — see `forget`, which is the only thing that writes it. */
   private forgotten = new Set<string>();
   private saveTimer: NodeJS.Timeout | null = null;
+  /** `holdIndex` callers still holding: a restore placed a runs.json this process must not write. */
+  private indexHolds = 0;
   // Preserve failed-load evidence even after a later save rewrites the index. A workspace
   // summary must not call an owner that silently dropped records a complete empty project.
   private indexReadHealth: { state: 'complete' | 'unavailable'; omittedRuns: number; reason?: string } = { state: 'complete', omittedRuns: 0 };
@@ -1001,7 +1015,8 @@ export class RunStore extends EventEmitter {
           }
           // The layouts backstop (§5.3). Only behind an index that actually loaded — an unreadable
           // one knows no run, and every layout would look orphaned.
-          pruneOrphanLayouts(dataDir, new Set(store.runs.keys()), ORPHAN_LAYOUT_GRACE_MS);
+          // Not on the first boot after a restore: an unknown run may be one made after the backup.
+          if (!orphanPruneSuspended()) pruneOrphanLayouts(dataDir, new Set(store.runs.keys()), ORPHAN_LAYOUT_GRACE_MS);
         } else {
           store.indexReadHealth = { state: 'unavailable', omittedRuns: Array.isArray(raw) ? raw.length : 0, reason: 'Task index could not be loaded by this server' };
         }
@@ -1647,6 +1662,34 @@ export class RunStore extends EventEmitter {
     return run;
   }
 
+  /** Remember shas this run pushed and comments it posted (spec 2026-10-23-github-events §6). */
+  recordGithubTraces(runId: string, add: Parameters<typeof mergeTraces>[1], now = Date.now()): void {
+    const run = this.runs.get(runId);
+    if (!run) return;
+    const patch = mergeTraces(run, add, now);
+    if (patch) this.updateRun(runId, patch);
+  }
+
+  /** A start-time push trace that turned out not to be what the push pushed (`settlePush`). */
+  dropPushedSha(runId: string, sha: string): void {
+    const run = this.runs.get(runId);
+    const wanted = sha.toLowerCase();
+    if (!run?.pushedShas?.includes(wanted)) return;
+    this.updateRun(runId, { pushedShas: run.pushedShas.filter((entry) => entry !== wanted) });
+  }
+
+  /** A comment this run is ABOUT to post on PR/issue `number` (when known): its body is a trace
+   *  before GitHub returns the id, and stays one on the record — across a restart — whether or not
+   *  the id ever comes back. */
+  notePostingComment(runId: string, body: string, number?: number, now = Date.now()): void {
+    this.recordGithubTraces(runId, { bodies: [{ hash: commentFingerprint(body), ...(number === undefined ? {} : { number }) }] }, now);
+  }
+
+  /** Every trace across this project's runs. */
+  githubTraces(now = Date.now()): GithubTraces {
+    return githubTracesOf(this.listRuns(), now);
+  }
+
   /** Record an authoritative PR association and recompute the compatibility scalar projection. */
   recordPrRef(runId: string, ref: Omit<RunPrRef, 'at'> & { at?: string }): RunRecord | undefined {
     const run = this.runs.get(runId);
@@ -1718,6 +1761,11 @@ export class RunStore extends EventEmitter {
     this.streamRedaction.clear(runId);
   }
 
+  /** Every value this store's run logs redact: the host's plus each live run's registered ones. */
+  redactionSecrets(): readonly string[] {
+    return [...this.hostSecrets(), ...[...this.runSecrets.values()].flat()];
+  }
+
   private secretsForRun(runId?: string): readonly string[] {
     return [...this.hostSecrets(), ...(runId ? this.runSecrets.get(runId) ?? [] : [])]
       .sort((a, b) => b.length - a.length);
@@ -1726,6 +1774,17 @@ export class RunStore extends EventEmitter {
   private hostSecrets(): readonly string[] {
     if (this.secretValues === null) this.secretValues = collectSecretValues();
     return this.secretValues;
+  }
+
+  /** The run's event file as `size:mtime`, `undefined` when it has none — what a cache of
+   *  something derived from `readEvents` keys on. */
+  eventsStamp(runId: string): string | undefined {
+    try {
+      const stat = statSync(this.eventsPath(runId));
+      return `${stat.size}:${stat.mtimeMs}`;
+    } catch {
+      return undefined;
+    }
   }
 
   readEvents(runId: string): RunEvent[] {
@@ -1776,6 +1835,23 @@ export class RunStore extends EventEmitter {
       this.saveTimer = null;
     }
     this.saveNow(options.throwOnError, options.pretty ?? false);
+  }
+
+  /**
+   * Stop writing `runs.json` until the returned release. A restore merges the archive's index into
+   * the file under a live store; every flush after that, the restart's shutdown flush above all,
+   * would merge this process's stale records over it (spec 2026-10-23-backup-restore §10). A pending
+   * debounced save goes out first, so the merge sees it rather than losing it (review round 4).
+   */
+  holdIndex(): () => void {
+    if (this.saveTimer) this.flush();
+    this.indexHolds += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.indexHolds -= 1;
+    };
   }
 
   // ---- internals -----------------------------------------------------------
@@ -1857,6 +1933,9 @@ export class RunStore extends EventEmitter {
   }
 
   private touch(run: RunRecord): void {
+    // Monotonic even when the clock steps back or two writes share a millisecond.
+    const previous = run.updatedAt ? Date.parse(run.updatedAt) : Number.NaN;
+    run.updatedAt = new Date(Number.isFinite(previous) ? Math.max(Date.now(), previous + 1) : Date.now()).toISOString();
     this.scheduleSave();
     this.emit('run', run);
   }
@@ -1904,7 +1983,7 @@ export class RunStore extends EventEmitter {
 
   /** Debounced so token-usage updates don't rewrite the index per event. */
   private scheduleSave(): void {
-    if (this.saveTimer) return;
+    if (this.saveTimer || this.indexHolds > 0) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
       this.saveNow();
@@ -1913,6 +1992,7 @@ export class RunStore extends EventEmitter {
   }
 
   private saveNow(throwOnError = false, pretty = false): void {
+    if (this.indexHolds > 0) return;
     const indexPath = join(this.dataDir, 'runs.json');
     const tmpPath = `${indexPath}.tmp`;
     try {

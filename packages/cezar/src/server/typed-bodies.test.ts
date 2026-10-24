@@ -1,6 +1,8 @@
 import type { ExtractSchema } from 'hono/types';
 import { describe, expect, it } from 'vitest';
-import { setWorkspaceUiStateInputSchema } from '@open-mercato/cezar-contract';
+import {
+  dockerForceBodySchema, dockerReclaimRequestSchema, dockerStackDownSchema, setWorkspaceUiStateInputSchema,
+} from '@open-mercato/cezar-contract';
 import type { z } from 'zod';
 import type { AppType } from './app-type.ts';
 
@@ -84,12 +86,29 @@ describe('every mutating route carries a typed body into AppType', () => {
     Assert<HasTypedBody<'/api/v1/workspace/skills-update/apply', '$post'>>,
     Assert<HasTypedBody<'/api/v1/workspace/self-update/channel', '$put'>>,
     Assert<HasTypedBody<'/api/v1/workspace/self-update/apply', '$post'>>,
+    Assert<HasTypedBody<'/api/v1/docker/stacks/:name/down', '$post'>>,
+    Assert<HasTypedBody<'/api/v1/docker/reclaim', '$post'>>,
+    Assert<HasTypedBody<'/api/v1/docker/images/:id', '$delete'>>,
+    Assert<HasTypedBody<'/api/v1/docker/volumes/:name', '$delete'>>,
+    Assert<HasTypedBody<'/api/v1/workspace/backup', '$post'>>,
+    Assert<HasTypedBody<'/api/v1/workspace/backup/recipient', '$put'>>,
+    Assert<HasTypedBody<'/api/v1/workspace/backup/target', '$put'>>,
+    Assert<HasTypedBody<'/api/v1/workspace/backup/schedule', '$put'>>,
   ];
 
   type WorkspaceUiStatePutBody = Schema['/api/v1/workspace/ui-state']['$put']['input']['json'];
   type _WorkspaceUiStateInputCheck = Assert<
     Mutual<z.infer<typeof setWorkspaceUiStateInputSchema>, WorkspaceUiStatePutBody>
   >;
+
+  // Spec 2026-10-23-docker-management: each removal carries ITS schema, not merely some body.
+  type BodyOf<Path extends keyof Schema, Method extends keyof Schema[Path]> = Schema[Path][Method] extends { input: { json: infer B } } ? B : never;
+  type _DockerBodyChecks = [
+    Assert<Mutual<z.input<typeof dockerStackDownSchema>, BodyOf<'/api/v1/docker/stacks/:name/down', '$post'>>>,
+    Assert<Mutual<z.input<typeof dockerReclaimRequestSchema>, BodyOf<'/api/v1/docker/reclaim', '$post'>>>,
+    Assert<Mutual<z.input<typeof dockerForceBodySchema>, BodyOf<'/api/v1/docker/images/:id', '$delete'>>>,
+    Assert<Mutual<z.input<typeof dockerForceBodySchema>, BodyOf<'/api/v1/docker/volumes/:name', '$delete'>>>,
+  ];
 
   /** Same idea for the routes that validate a path param or the query string. */
   type HasTypedInput<

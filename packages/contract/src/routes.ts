@@ -20,9 +20,11 @@ import {
   automationRunResponseSchema,
   automationsResponseSchema,
   automationTemplatesResponseSchema,
+  automationWebhookResponseSchema,
   dashboardAutomationsSchema,
   trackerAutomationOptionsSchema,
 } from './automations.ts';
+import { backupStatusSchema, backupTargetTestResponseSchema } from './backup.ts';
 import {
   dashboardFeedSchema,
   dashboardSnapshotSchema,
@@ -33,7 +35,16 @@ import { dashboardCostsSchema } from './dashboard-costs.ts';
 import { dashboardInsightsSchema } from './dashboard-insights.ts';
 import { dashboardOverviewSchema } from './dashboard-overview.ts';
 import { dispatchResponseSchema } from './dispatch.ts';
-import { dockerStateSchema } from './docker.ts';
+import {
+  dockerDiskSchema,
+  dockerImagesSchema,
+  dockerLogsSchema,
+  dockerOkSchema,
+  dockerReclaimPlanSchema,
+  dockerReclaimResultSchema,
+  dockerStateSchema,
+  dockerVolumesSchema,
+} from './docker.ts';
 import {
   deleteDraftResponseSchema,
   draftEntrySchema,
@@ -181,8 +192,9 @@ export interface RouteContract {
   summary: string;
   /** The 2xx JSON body. Absent where none is in the contract yet; the tool then answers JSON text. */
   response?: z.ZodType;
-  /** Not a tool, and why: a byte or event stream, a cockpit-only beacon, sign-in, or MCP itself. */
-  notTool?: 'stream' | 'binary' | 'browser' | 'auth' | 'transport';
+  /** Not a tool, and why: a byte or event stream, a cockpit-only beacon, sign-in, MCP itself, or a
+   *  forge's webhook delivery. */
+  notTool?: 'stream' | 'binary' | 'browser' | 'auth' | 'transport' | 'webhook';
   /** The tool's name, where the one derived from the path reads badly. */
   tool?: string;
   /** The tool set, where it is not the family's own (see `mcp/catalog.ts`). */
@@ -354,6 +366,11 @@ export const routeContracts = {
   'POST /automations/:id/pause': { summary: 'Pause an automation.', response: automationResponseSchema, destructive: false },
   'POST /automations/:id/run': { summary: 'Run an automation once, now.', response: automationRunResponseSchema, destructive: false },
   'GET /automation-log': { summary: 'What automations did: receipts, newest first.', response: automationLogResponseSchema },
+  'GET /automation-webhook': { summary: 'The project\'s GitHub webhook for automations, and whether it is registered.', response: automationWebhookResponseSchema },
+  'POST /automation-webhook': { summary: 'Register the project\'s GitHub webhook for automations.', response: automationWebhookResponseSchema, destructive: false },
+  'POST /automation-webhook/ping': { summary: 'Ask GitHub to send the automations webhook a ping.', response: automationWebhookResponseSchema, destructive: false },
+  'DELETE /automation-webhook': { summary: 'Remove the project\'s GitHub webhook for automations.', response: automationWebhookResponseSchema, destructive: true },
+  'POST /hooks/:sender/:hookId': { summary: 'A GitHub webhook delivery (checked by its own signature).', notTool: 'webhook' },
   'POST /automation-log/:receiptId/retry': { summary: 'Retry a failed automation receipt.', response: automationRetryResponseSchema, destructive: false },
   'GET /automation-checks/:checkId': { summary: 'The result of an automation dry-run.', response: automationCheckSchema },
 
@@ -397,6 +414,16 @@ export const routeContracts = {
   'POST /docker/containers/:id/stop': { summary: 'Stop a container.', destructive: true },
   'POST /docker/stacks/:name/start': { summary: 'Start a compose stack.', destructive: false },
   'POST /docker/stacks/:name/stop': { summary: 'Stop a compose stack.', destructive: true },
+  'POST /docker/stacks/:name/down': { summary: 'Remove a compose stack\'s containers (and, when asked, its volumes).', response: dockerOkSchema, destructive: true },
+  'DELETE /docker/containers/:id': { summary: 'Remove a container.', response: dockerOkSchema, destructive: true },
+  'GET /docker/containers/:id/logs': { summary: 'A container\'s recent log lines.', response: dockerLogsSchema },
+  'GET /docker/images': { summary: 'The Docker images, with the containers that use each.', response: dockerImagesSchema },
+  'DELETE /docker/images/:id': { summary: 'Remove an image.', response: dockerOkSchema, destructive: true },
+  'GET /docker/volumes': { summary: 'The Docker volumes, with the containers that use each.', response: dockerVolumesSchema },
+  'DELETE /docker/volumes/:name': { summary: 'Remove a volume.', response: dockerOkSchema, destructive: true },
+  'GET /docker/disk': { summary: 'Docker\'s disk use by kind, and the free space under its data root.', response: dockerDiskSchema },
+  'POST /docker/reclaim/plan': { summary: 'Plan what reclaiming Docker disk space would remove.', response: dockerReclaimPlanSchema, destructive: false },
+  'POST /docker/reclaim': { summary: 'Remove what a reclaim plan listed.', response: dockerReclaimResultSchema, destructive: true },
   'GET /e2e': { summary: 'Whether the project has an end-to-end test setup.', response: e2eStatusSchema, tool: 'e2e_status' },
   'POST /e2e/setup': { summary: 'Scaffold an end-to-end test setup.', response: e2eSetupResponseSchema, destructive: true },
   'GET /start-app': { summary: 'The command that starts the project\'s app.', response: startAppStateSchema, tool: 'start_app_get' },
@@ -476,6 +503,14 @@ export const routeContracts = {
   'GET /workspace/self-update/development': { summary: 'Development builds cezar can switch to.' },
   'POST /workspace/self-update/refresh': { summary: 'Check for cezar updates now.', response: selfUpdateStatusSchema, destructive: false },
   'DELETE /workspace/self-update/scheduled': { summary: 'Cancel a scheduled cezar update.', response: selfUpdateStatusSchema, destructive: true },
+  'GET /workspace/backup': { summary: 'The backup setup, its archives and the running job.', response: backupStatusSchema },
+  'POST /workspace/backup': { summary: 'Take a backup now.', response: backupStatusSchema, destructive: false },
+  'PUT /workspace/backup/recipient': { summary: 'Set the key backups are encrypted to.', response: backupStatusSchema, destructive: true },
+  'PUT /workspace/backup/target': { summary: 'Set where backups are uploaded.', response: backupStatusSchema, destructive: true },
+  'POST /workspace/backup/target/test': { summary: 'Check the backup target can be written.', response: backupTargetTestResponseSchema, destructive: false },
+  'PUT /workspace/backup/schedule': { summary: 'Set the backup schedule.', response: backupStatusSchema, destructive: true },
+  'GET /workspace/backup/archives/:name': { summary: 'Download a backup archive.', notTool: 'binary' },
+  'POST /workspace/backup/restore': { summary: 'Restore from an uploaded backup archive.', notTool: 'binary' },
   'GET /workspace/skills-update': { summary: 'Whether the Open Mercato skills are up to date.', response: skillsUpdateStateSchema },
   'POST /workspace/skills-update/apply': { summary: 'Update the Open Mercato skills.', response: skillsUpdateStateSchema, destructive: true },
   'POST /workspace/skills-update/check': { summary: 'Check for Open Mercato skills updates.', response: skillsUpdateStateSchema, destructive: false },
@@ -501,6 +536,8 @@ export const routeContracts = {
   'POST /auth/sessions/revoke-others': { summary: 'Sign every other device out.', notTool: 'auth' },
   'POST /auth/setup/begin': { summary: 'Create the owner account: password step.', notTool: 'auth' },
   'POST /auth/setup/complete': { summary: 'Create the owner account: authenticator step.', notTool: 'auth' },
+  'POST /auth/setup/restore': { summary: 'Set up by restoring a backup archive (before any owner exists).', notTool: 'auth' },
+  'GET /auth/setup/restore': { summary: 'The setup restore job.', notTool: 'auth' },
   'GET /auth/tokens': { summary: 'The owner\'s API tokens.', response: apiTokensResponseSchema, notTool: 'auth' },
   'POST /auth/tokens': { summary: 'Mint an API token.', response: createApiTokenResponseSchema, notTool: 'auth' },
   'DELETE /auth/tokens/:id': { summary: 'Revoke an API token.', response: authOkResponseSchema, notTool: 'auth' },

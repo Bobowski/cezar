@@ -8,6 +8,7 @@ import { mintApiToken } from '../auth/api-tokens.ts';
 import { AuthService } from '../auth/service.ts';
 import { issueSetupCode, mutateAuthStore, sha256 } from '../auth/store.ts';
 import { base32Decode, hotp, totpStep } from '../auth/totp.ts';
+import { AutomationStore } from '../automations/store.ts';
 import { RunStore } from '../runs/store.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import { todosWatchActive } from '../todos.ts';
@@ -344,6 +345,26 @@ describe('a token’s view of a task', () => {
     // Guard: the owner sees what the parent wrote.
     const full = await request(`/api/v1/runs/${children[0]!}`, seedToken(['read', 'runs.transcript']));
     expect(((await full.json()) as Record<string, unknown>).title).toBe(`child ${SECRET}`);
+  });
+
+  it('GET /automation-log names a dispatched child by id, not by its parent agent’s words', async () => {
+    const root = store.createRun({ title: 'nightly sweep', workflow: 'quick-task', task: 'nightly sweep', steps: [] });
+    const child = store.createRun({ title: `child ${SECRET}`, workflow: '(planned)', task: `objective ${SECRET}`, steps: [] });
+    store.updateRun(root.id, { dispatch: { rootRunId: root.id } });
+    store.updateRun(child.id, { dispatch: { rootRunId: root.id, parentRunId: root.id, kind: 'implement' } });
+    store.flush();
+    AutomationStore.open(dataDir).appendLog({ automationId: 'sweep', revision: 1, result: 'launched', runId: root.id });
+    const get = async (headers: Record<string, string>) => {
+      const response = await request('/api/v1/automation-log', headers);
+      expect(response.status).toBe(200);
+      return (await response.json()) as { runs: Record<string, { title: string; children: Array<{ runId: string; title: string }> }> };
+    };
+    const author = await get(seedToken(['author']));
+    expect(JSON.stringify(author)).not.toContain(SECRET);
+    expect(author.runs[root.id]).toMatchObject({ title: 'nightly sweep', children: [{ runId: child.id, title: `dispatched task ${child.id}` }] });
+    // Guard: whoever sees transcripts keeps the parent's words.
+    const full = await get(seedToken(['author', 'runs.transcript']));
+    expect(full.runs[root.id]!.children[0]!.title).toBe(`child ${SECRET}`);
   });
 
   it('projects the run events of both live streams for a read token', async () => {

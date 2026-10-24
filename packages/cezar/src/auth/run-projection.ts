@@ -32,6 +32,11 @@ export function dispatchedTaskTitle(id: string): string {
   return `dispatched task ${id}`;
 }
 
+/** The title a principal may see: a projected one never gets a dispatched child's. */
+export function visibleTaskTitle(run: { id: string; dispatch?: { parentRunId?: string } }, title: string, projected: boolean): string {
+  return projected && run.dispatch?.parentRunId ? dispatchedTaskTitle(run.id) : title;
+}
+
 /** A slim task row (runs index, dashboard) as a projected principal sees it: no `titleSummary`,
  *  and a dispatched child's title replaced. */
 export function projectTaskRow<T extends { id: string; title: string; titleSummary?: string; dispatch?: { parentRunId?: string } }>(row: T): T {

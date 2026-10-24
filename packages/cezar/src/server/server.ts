@@ -315,7 +315,7 @@ import { agentHomePaths, cezarHomeDir, expandTilde, isAbsolutePath } from '../pa
 import { authEnforced, fileEditRefusal, isLoopbackHostHeader, normalizeHostname, resolveCapabilities, trustedOperator } from './capabilities.ts';
 import { bearerOf, createAuthGuard, principalOf, upgradeIsAuthenticated, upgradeSessionId } from '../auth/guard.ts';
 import { isApiToken, principalSeesTranscript } from '../auth/api-tokens.ts';
-import { projectsRuns, projectTaskRow, redactRunForScope, runViewScopes } from '../auth/run-projection.ts';
+import { dispatchedTaskTitle, projectsRuns, projectTaskRow, redactRunForScope, runViewScopes, visibleTaskTitle } from '../auth/run-projection.ts';
 import { buildCatalog, type Catalog } from '../mcp/catalog.ts';
 import { mcpRoutes } from '../mcp/http.ts';
 import { ensureHostKey } from '../auth/host-key.ts';
@@ -4334,8 +4334,9 @@ export function createApp(deps: ServerDeps) {
     onChange: (automationId: string, revision: number) => emitAutomationChange(project, automationId, revision),
   });
 
-  /** The runs the log rows name, with their dispatch children (spec 2026-09-14 § API). */
-  const logRunsOf = (runStore: RunStore, records: ReadonlyArray<{ runId?: string }>) => {
+  /** The runs the log rows name, with their dispatch children (spec 2026-09-14 § API). A
+   *  `projected` principal never gets a child's title: its parent agent wrote it. */
+  const logRunsOf = (runStore: RunStore, records: ReadonlyArray<{ runId?: string }>, projected: boolean) => {
     const runs: Record<string, { title: string; status: RunRecord['status']; costUsd?: number; children: Array<{ runId: string; kind?: NonNullable<RunRecord['dispatch']>['kind']; title: string; status: RunRecord['status']; costUsd?: number }> }> = {};
     const wanted = new Set(records.map((row) => row.runId).filter((id): id is string => typeof id === 'string'));
     if (!wanted.size) return runs;
@@ -4348,12 +4349,12 @@ export function createApp(deps: ServerDeps) {
         .map((child) => ({
           runId: child.id,
           ...(child.dispatch?.kind ? { kind: child.dispatch.kind } : {}),
-          title: child.title,
+          title: projected ? dispatchedTaskTitle(child.id) : child.title,
           status: child.status,
           ...(showCost && typeof child.costUsd === 'number' ? { costUsd: child.costUsd } : {}),
         }));
       runs[run.id] = {
-        title: run.title,
+        title: visibleTaskTitle(run, run.title, projected),
         status: run.status,
         ...(showCost && typeof run.costUsd === 'number' ? { costUsd: run.costUsd } : {}),
         children,
@@ -4673,7 +4674,7 @@ export function createApp(deps: ServerDeps) {
     .get('/automation-log', queryZodValidator(automationLogQuerySchema), (c) => {
       const project = c.get('project');
       const records = project.automationStore.logs(c.req.valid('query'));
-      return c.json({ records, runs: logRunsOf(project.store, records) });
+      return c.json({ records, runs: logRunsOf(project.store, records, projectsRuns(runViewScopes(principalOf(c)))) });
     })
 
     .post('/automation-log/:receiptId/retry', async (c) => {

@@ -337,7 +337,6 @@ describe.skipIf(!haveShell)('the container launcher', () => {
     writeFileSync(join(dir, 'bin', 'id'), `#!/bin/sh\necho ${uid}\n`);
     chmodSync(join(dir, 'bin', 'id'), 0o755);
     const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${join(dir, 'bin')}:${process.env.PATH ?? ''}`, CEZ_HOME: join(dir, 'home'), ...extra };
-    if (!('CEZ_ENTRYPOINT' in extra)) delete env.CEZ_ENTRYPOINT;
     return spawnSync('sh', [LAUNCHER, ...args], { encoding: 'utf8', env });
   };
   const launch = (uid: number, ...args: string[]) => launchWith({}, uid, ...args);
@@ -353,10 +352,10 @@ describe.skipIf(!haveShell)('the container launcher', () => {
     expect(launch(0).stderr).toContain('docker compose exec -u node cezar cezar serve');
   });
 
-  it('lets the entrypoint start serve as root (it drops to node itself)', () => {
-    const run = launchWith({ CEZ_ENTRYPOINT: '1' }, 0, 'serve');
-    expect(run.status).toBe(0);
-    expect(run.stdout).toContain(' serve');
+  it('takes no env var as leave to run them as root', () => {
+    const run = launchWith({ CEZ_ENTRYPOINT: '1', CEZ_SUPERVISED: '1' }, 0, 'serve');
+    expect(run.status).toBe(1);
+    expect(run.stdout).toBe('');
   });
 
   it('runs everything else as root, and update as node', () => {
@@ -364,6 +363,21 @@ describe.skipIf(!haveShell)('the container launcher', () => {
     const run = launch(1000, 'update');
     expect(run.status).toBe(0);
     expect(run.stdout).toContain(' update');
+  });
+});
+
+// Why the launcher needs no exemption: the entrypoint, the only root-started path, never execs it
+// as root — the supervised server is `node <entry>` as node, anything else goes through setpriv.
+describe('the container entrypoint', () => {
+  const ENTRYPOINT = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../../docker/entrypoint.sh');
+  it('drops to node before running cezar, on both of its paths', () => {
+    const source = readFileSync(ENTRYPOINT, 'utf8');
+    const execs = source.split(/\r?\n/).filter((line) => /\bexec\s/.test(line) && !line.trimStart().startsWith('#'));
+    expect(execs).toEqual([
+      '  run_cezar() { exec setpriv --reuid=node --regid=node --init-groups node "$@"; }',
+      'exec setpriv --reuid=node --regid=node --init-groups "$@"',
+    ]);
+    expect(source).not.toContain('CEZ_ENTRYPOINT');
   });
 });
 

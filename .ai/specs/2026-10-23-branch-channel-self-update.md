@@ -209,7 +209,7 @@ entrypoint links it into the volume — `/data/cezar/versions/<version>+image.<s
 /opt/cezar/…`, `<sha8>` being the commit that install was built from; a link whose name no longer matches the install it points at (a rebuild at the same version) is removed — so `listInstalled` sees it and `detectInstallKind` answers `managed` for
 whatever `current` points at. A global `cezar` on PATH remains, as a launcher (`launcher.ts`'s
 POSIX script with `CEZ_HOME` baked), so `docker compose exec -u node cezar cezar auth setup` keeps
-working. As built, the launcher refuses `update`/`install`/`use`/`link`/`serve` as root (the entrypoint, `CEZ_ENTRYPOINT=1`, excepted) with a `-u node`
+working. As built, the launcher refuses `update`/`install`/`use`/`link`/`serve` as root (no env var exempts root: the entrypoint never reaches the launcher as root — it runs the entry as `node` itself) with a `-u node`
 hint: run as root they would create a root-owned `/data/cezar/source` or `versions/` entry; `serve` itself also writes `versions/.running` only as the install's owner.
 
 ### 4.2 Which version boots

@@ -4,11 +4,12 @@
 # to — else the image's own install, so `docker compose exec -u node cezar cezar auth setup` keeps working.
 home=${CEZ_HOME:-/data/cezar}
 # As root these would leave a root-owned /data/cezar/source or versions/ entry that the server
-# (node) can never write again — `serve` (also the bare command) its run markers. The entrypoint
-# (CEZ_ENTRYPOINT=1) drops to node itself. Other commands are left alone.
+# (node) can never write again — `serve` (also the bare command) its run markers. No env var
+# exempts root: the entrypoint never comes through here as root (it runs the entry as node itself).
+# Other commands are left alone.
 case ${1:-} in
   update | install | use | link | serve | '')
-    if [ "$(id -u)" = 0 ] && [ "${CEZ_ENTRYPOINT:-}" != 1 ]; then
+    if [ "$(id -u)" = 0 ]; then
       echo "cezar: run 'cezar ${1:-serve}' as node, not root: docker compose exec -u node cezar cezar ${*:-serve}" >&2
       exit 1
     fi

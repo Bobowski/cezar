@@ -52,9 +52,6 @@ if [ -f /opt/cezar/source.json ]; then
   fi
 fi
 
-# The container's own path: the launcher's root guard (cezar-launcher.sh) does not apply to it.
-export CEZ_ENTRYPOINT=1
-
 if [ "${1:-}" = "cezar" ] && [ "${2:-}" = "serve" ]; then
   shift
   . /usr/local/lib/cezar/supervise.sh

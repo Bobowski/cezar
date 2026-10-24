@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -124,6 +125,44 @@ describe('API tokens', () => {
     expect((await request('/api/v1/workflows', { headers: bearer(read.value) })).status).toBe(200);
     expect((await request('/api/v1/runs/read-all', { method: 'POST', headers: bearer(read.value) })).status).toBe(403);
     expect((await request('/api/v1/runs/read-all', { method: 'POST', headers: bearer(tasks.value) })).status).toBe(200);
+  });
+
+  it('a token reads a task\'s files through the repository index — an ignored secret stays unreadable', async () => {
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8' });
+    git('init', '-b', 'main');
+    git('config', 'user.email', 'test@cezar.local');
+    git('config', 'user.name', 'cezar-test');
+    writeFileSync(join(repoRoot, '.gitignore'), '.env\n.claude/settings.local.json\n.ai/\n');
+    mkdirSync(join(repoRoot, 'src'));
+    writeFileSync(join(repoRoot, 'src/a.ts'), 'export const a = 1\n');
+    git('add', '-A');
+    git('-c', 'commit.gpgsign=false', 'commit', '-m', 'base');
+    writeFileSync(join(repoRoot, '.env'), 'TOKEN=shh\n');
+    mkdirSync(join(repoRoot, '.claude'));
+    writeFileSync(join(repoRoot, '.claude/settings.local.json'), '{"env":{"KEY":"shh"}}\n');
+    const run = store.createRun({ title: 't', workflow: 'w', task: 't', worktree: false, steps: [] });
+    const read = await mint(['read']);
+    const tasks = await mint(['tasks'], 'tasks');
+    const files = (path: string, headers: Record<string, string>) =>
+      request(`/api/v1/runs/${run.id}/files?path=${encodeURIComponent(path)}`, { headers });
+
+    for (const token of [read.value, tasks.value]) {
+      for (const path of ['.env', './.env', 'src/../.env', '.claude/settings.local.json']) {
+        const refused = await files(path, bearer(token));
+        expect(refused.status, path).toBe(409);
+        expect(await refused.text()).not.toContain('shh');
+      }
+      const ok = await files('src/a.ts', bearer(token));
+      expect(ok.status).toBe(200);
+      expect(((await ok.json()) as { content?: string }).content).toContain('export const a');
+      const listing = (await (await files('', bearer(token))).json()) as { entries: Array<{ name: string }> };
+      const names = listing.entries.map((entry) => entry.name);
+      expect(names).toContain('src');
+      expect(names).not.toContain('.env');
+      expect(names).not.toContain('.claude');
+    }
+    // The signed-in owner's own cockpit is unchanged.
+    expect((await files('.env', { cookie })).status).toBe(200);
   });
 
   it('an unknown or malformed token is a 401, never a pass', async () => {

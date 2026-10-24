@@ -2,7 +2,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { apiTokenAllows, apiTokenIdOf, isApiToken, mintApiToken, routeFamily } from './api-tokens.ts';
+import { routeContracts } from '@open-mercato/cezar-contract';
+import { apiTokenAllows, apiTokenIdOf, isApiToken, mintApiToken, READ_ROUTES, routeFamily } from './api-tokens.ts';
 import { AuthService } from './service.ts';
 import { issueSetupCode, readAuthStore } from './store.ts';
 import { base32Decode, hotp, totpStep } from './totp.ts';
@@ -30,9 +31,10 @@ describe('API token scopes, per route family', () => {
     expect(routeFamily('/elsewhere')).toBeNull();
   });
 
-  it('read is every GET and no write', () => {
+  it('read is the allowlisted GETs and no write', () => {
     expect(apiTokenAllows(['read'], 'GET', '/api/v1/p/x/runs')).toBe(true);
     expect(apiTokenAllows(['read'], 'GET', '/api/v1/workflows')).toBe(true);
+    expect(apiTokenAllows(['read'], 'GET', '/api/v1/runs/1/files')).toBe(true);
     expect(apiTokenAllows(['read'], 'POST', '/api/v1/runs')).toBe(false);
     expect(apiTokenAllows(['read'], 'DELETE', '/api/v1/runs/1')).toBe(false);
   });
@@ -43,6 +45,36 @@ describe('API token scopes, per route family', () => {
     expect(apiTokenAllows(['read'], 'GET', '/api/v1/env-files/content')).toBe(false);
     expect(apiTokenAllows(['author'], 'GET', '/api/v1/env-files/content')).toBe(true);
     expect(apiTokenAllows(['admin'], 'GET', '/api/v1/launch-key')).toBe(true);
+  });
+
+  it('read is an allowlist: secrets, shells and logs stay out, and a GET nobody listed is refused', () => {
+    for (const path of [
+      '/api/v1/secrets',
+      '/api/v1/workspace/secrets',
+      '/api/v1/env-files',
+      '/api/v1/config',
+      '/api/v1/workspace/config',
+      '/api/v1/agent-config',
+      '/api/v1/fs/browse',
+      '/api/v1/tracker/connection',
+      '/api/v1/tracker/connection/sources',
+      '/api/v1/services/web/logs',
+      '/api/v1/services/web/output',
+      '/api/v1/repo/terminal/s1/output',
+      '/api/v1/runs/1/terminal/s1/output',
+      '/api/v1/worktree-lifecycle/operations/o1/output',
+      '/api/v1/workspace/agent-profiles/a1/details',
+      '/api/v1/workflows/brand-new-read',
+    ]) {
+      expect(apiTokenAllows(['read'], 'GET', path), path).toBe(false);
+    }
+    // A literal route beats the parameter route it would also match.
+    expect(apiTokenAllows(['read'], 'GET', '/api/v1/tracker/T-1')).toBe(true);
+  });
+
+  it('every route the read allowlist names is a real GET route', () => {
+    const gets = new Set(Object.keys(routeContracts).filter((key) => key.startsWith('GET ')).map((key) => key.slice(4)));
+    expect([...READ_ROUTES].filter((route) => !gets.has(route))).toEqual([]);
   });
 
   it('tasks writes runs and their kin, and nothing an author or admin owns', () => {

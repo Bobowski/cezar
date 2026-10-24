@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import type { ApiTokenScope } from '@open-mercato/cezar-contract';
+import { routeContracts, type ApiTokenScope } from '@open-mercato/cezar-contract';
 import { randomToken } from './store.ts';
 
 /**
@@ -26,7 +26,7 @@ export function apiTokenIdOf(value: string): string | null {
 }
 
 /**
- * The scope that WRITES each route family; `read` covers every GET outside {@link SENSITIVE_READS}.
+ * The scope that WRITES each route family; `read` covers the GETs in {@link READ_ROUTES} only.
  * A family is the first path segment after `/api/v1` (and the project scope), or
  * `workspace/<segment>` under the workspace family. `catalog.test.ts`-style coverage lives in
  * `api-tokens.test.ts`: every family a built app serves must be listed, so a new family is a
@@ -85,14 +85,71 @@ export const FAMILY_SCOPES: Record<string, Exclude<ApiTokenScope, 'read'>> = {
 };
 
 /** Reads any token may make: what an agent needs to address anything at all. */
-const DISCOVERY = new Set(['projects', 'health', 'models']);
+const DISCOVERY_ROUTES: ReadonlySet<string> = new Set(['/projects', '/health', '/models']);
 
-/** Reads that hand out a credential or a file's raw content: the family's scope, never `read`. */
-const SENSITIVE_READS: readonly RegExp[] = [
-  /^\/launch-key$/,
-  /^\/agent-config\/[^/]+$/,
-  /^\/env-files\/content$/,
-];
+/**
+ * The GET routes `read` covers, by route template — an ALLOWLIST: each one is known to hand out
+ * no credential, no shell or log output, and no file outside the repository index (the run and
+ * repo file routes gate a token on the index server-side). A GET added later is no token's but
+ * its family owner's until it is listed here; `api-tokens.test.ts` keeps every entry a real route.
+ */
+export const READ_ROUTES: ReadonlySet<string> = new Set([
+  '/runs', '/runs/:id', '/runs/:id/changes', '/runs/:id/commit/:sha', '/runs/:id/commits', '/runs/:id/diff',
+  '/runs/:id/drafts', '/runs/:id/drafts/:surface/images/:imageId', '/runs/:id/events', '/runs/:id/files',
+  '/runs/:id/git/status', '/runs/:id/handoff', '/runs/:id/history', '/runs/:id/history-context',
+  '/runs/:id/images/:file', '/runs/:id/layouts', '/runs/:id/search', '/runs/:id/tracker-issue', '/runs/:id/tree',
+  '/groups/:groupId', '/todos', '/events',
+  '/workflows', '/workflows/nodes', '/skills', '/skills/importable',
+  '/projects/:projectId/icon',
+  '/repo', '/repo/changes', '/repo/commit/:sha', '/repo/diff', '/repo/files', '/repo/search', '/repo/sync',
+  '/repo/tree', '/repo/watch',
+  '/worktrees', '/worktree-lifecycle', '/worktree-lifecycle/:worktreeId', '/worktree-lifecycle/operations/:operationId',
+  '/github', '/github/checks', '/github/comments/:kind/:number', '/github/prs/:number/changes',
+  '/github/prs/:number/merge-state', '/github/ref-status', '/github/search',
+  '/automations', '/automations/:id', '/automation-log', '/automation-checks/:checkId',
+  '/tracker', '/tracker/:id', '/tracker/:id/transitions', '/tracker/association', '/tracker/automation-options',
+  '/tracker/candidates', '/tracker/search', '/tracker/watch/:watchId',
+  '/services', '/docker', '/e2e', '/start-app', '/ui-state', '/open-targets', '/providers/status', '/star-count',
+  '/telemetry/consent',
+  '/workspace/automation-templates', '/workspace/branding-logo', '/workspace/dashboard',
+  '/workspace/dashboard/automations', '/workspace/dashboard/costs', '/workspace/dashboard/feed',
+  '/workspace/dashboard/insights', '/workspace/dashboard/overview', '/workspace/dashboard/tasks',
+  '/workspace/dashboard/telemetry', '/workspace/events', '/workspace/host-usage', '/workspace/runs-index',
+  '/workspace/self-update', '/workspace/self-update/development', '/workspace/skills-update', '/workspace/ui-state',
+]);
+
+const GET_TEMPLATES = Object.keys(routeContracts)
+  .filter((key) => key.startsWith('GET '))
+  .map((key) => key.slice(4).split('/').filter(Boolean));
+
+/**
+ * The GET route template a path is, literal segments beating parameters (`/tracker/connection`
+ * is never `/tracker/:id`); null for a path no GET route has.
+ */
+export function getRouteTemplateOf(path: string): string | null {
+  const segments = path.split('/').filter(Boolean);
+  let best: string[] | null = null;
+  let bestRank: string | null = null;
+  for (const template of GET_TEMPLATES) {
+    if (template.length !== segments.length) continue;
+    let rank = '';
+    let matches = true;
+    for (let index = 0; index < template.length; index += 1) {
+      const part = template[index]!;
+      if (part.startsWith(':')) rank += '0';
+      else if (part === segments[index]) rank += '1';
+      else {
+        matches = false;
+        break;
+      }
+    }
+    if (matches && (bestRank === null || rank > bestRank)) {
+      best = template;
+      bestRank = rank;
+    }
+  }
+  return best ? `/${best.join('/')}` : null;
+}
 
 /** `/api/v1/p/x/runs/1` → `/runs/1`; null outside the API. */
 function routePath(pathname: string): string | null {
@@ -126,8 +183,8 @@ export function apiTokenAllows(scopes: readonly ApiTokenScope[], method: string,
   // The MCP endpoint is a transport: each tool call is re-checked against its own route.
   if (family === 'mcp') return scopes.length > 0;
   if (!READS.has(method.toUpperCase())) return false;
-  if (DISCOVERY.has(family)) return true;
-  const path = routePath(pathname)!;
-  if (SENSITIVE_READS.some((pattern) => pattern.test(path))) return false;
-  return scopes.includes('read');
+  const template = getRouteTemplateOf(routePath(pathname)!);
+  if (template === null) return false;
+  if (DISCOVERY_ROUTES.has(template)) return true;
+  return scopes.includes('read') && READ_ROUTES.has(template);
 }

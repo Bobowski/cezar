@@ -25,7 +25,7 @@ import { SettingsError, SettingsGroup, SettingsLoading } from './settings-field'
  */
 
 const SCOPES: Array<{ id: ApiTokenScope; label: string; hint: string }> = [
-  { id: 'read', label: 'Read', hint: 'Every read: tasks, threads, workflows, settings.' },
+  { id: 'read', label: 'Read', hint: 'Reads that carry no secret: tasks, threads, workflows, the repo.' },
   { id: 'tasks', label: 'Tasks', hint: 'Start, steer and stop tasks; dispatch.' },
   { id: 'author', label: 'Author', hint: 'Write workflows, skills, automations and env files.' },
   { id: 'admin', label: 'Admin', hint: 'Everything, settings and self-update included.' },

@@ -243,6 +243,7 @@ import {
   readWorktreePath,
   FILE_CONTENT_CAP,
   repoIndexContains,
+  entriesInIndex,
 } from './git-changes.ts';
 import {
   createWorktreeFile,
@@ -5717,6 +5718,17 @@ export function createApp(deps: ServerDeps) {
       if (result.kind === 'invalid' || result.kind === 'missing') {
         return c.json({ error: result.error }, 409);
       }
+      // A token reads only what the repository index reaches, as on /repo/files: a worktree-off
+      // run's directory IS the checkout, and a worktree carries the seeded gitignored layer.
+      let indexed: string[] | undefined;
+      if (principalOf(c)?.kind === 'token') {
+        const index = await listRepoPaths(workingDirectory, Number.MAX_SAFE_INTEGER);
+        if (!index.ok) return c.json({ error: index.error }, 409);
+        if (result.kind === 'file' && !index.paths.includes(result.path)) {
+          return c.json({ error: `path is not in the repository index: ${result.path}` }, 409);
+        }
+        indexed = index.paths;
+      }
       if (result.kind === 'dir') {
         return c.json({
           // `as const` or the literal widens to `string` during Hono's route-type inference,
@@ -5724,7 +5736,7 @@ export function createApp(deps: ServerDeps) {
           // leaves `never` and every field access on it fails. The wire was always 'dir'.
           type: 'dir' as const,
           path: result.path,
-          entries: result.entries,
+          entries: indexed ? entriesInIndex(indexed, result.path, result.entries) : result.entries,
         });
       }
       if (wantsRaw) {

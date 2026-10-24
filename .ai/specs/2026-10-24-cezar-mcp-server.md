@@ -54,7 +54,7 @@ Settings → Security → **API tokens** (owner only):
 
 - `POST /auth/tokens { name, scopes, expiresAt? }` → the token value, shown once
   (`ceztok_<id>_<secret>`); stored hashed (argon2, the password store's hash) in the auth store.
-- Scopes: `read` (GET), `tasks` (runs, messages, dispatch), `author` (workflows, skills,
+- Scopes: `read` (allowlisted GETs), `tasks` (runs, messages, dispatch), `author` (workflows, skills,
   automations, env), `admin` (everything, including settings and self-update).
 - `GET /auth/tokens`, `DELETE /auth/tokens/:id`; last-used time shown.
 - A Bearer token satisfies the auth guard like a session cookie, with its scope checked per
@@ -120,8 +120,10 @@ are client-side conveniences documented in `.env.example`.
   Minting asks for a fresh authenticator code, like every other credential change; tokens are
   managed by the signed-in owner only (`409` on a cockpit without sign-in), and `cezar auth
   reset` revokes the user's tokens.
-- **Scopes**: `read` is every GET except the ones that hand out a credential or raw config (the
-  launch key, agent config files, env file contents — those need the family's scope or `admin`);
+- **Scopes**: `read` is an ALLOWLIST of GET routes known to carry no secret (`READ_ROUTES`): no
+  credential, config, secret name, env file, shell, service log or lifecycle output — those need
+  the family's scope or `admin`, and a GET nobody listed is not `read`'s. Any token reads a task's
+  files (`/runs/:id/files`) through the repository index, as `/repo/files` does for everyone;
   any token may read `projects`, `health` and `models` and reach the `/mcp` transport. The
   family map is `FAMILY_SCOPES` in `auth/api-tokens.ts`; an unmapped family is `admin`'s.
 - **Origin guard**: only a token that VERIFIES skips it; an unverified Bearer is checked like

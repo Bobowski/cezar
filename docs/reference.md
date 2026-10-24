@@ -655,7 +655,7 @@ the API below.
   see [Remote access](#remote-access-host-cezar-on-a-server) before exposing it.
 - **API tokens.** A hosted cockpit with sign-in answers `Authorization: Bearer
   ceztok_…` too. Mint one in Settings → Security → API tokens, scoped `read`
-  (every GET), `tasks` (runs, messages, dispatch), `author` (workflows, skills,
+  (the GETs that carry no secret), `tasks` (runs, messages, dispatch), `author` (workflows, skills,
   automations, env files) or `admin` (everything but sign-in). It is shown once.
 
 ### cezar as an MCP server

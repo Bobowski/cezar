@@ -14,7 +14,13 @@ const CURSOR_OVERLAP_MS = 120_000;
 
 export { LeaseHeldError } from './event-poll-cycle.ts';
 
-export interface AutomationLaunchResult { runId: string }
+export interface AutomationLaunchResult {
+  runId: string;
+  /** `deliver: 'owning-run'` put the prompt into this existing run (spec 2026-10-23-github-events §5). */
+  delivered?: true;
+  /** Why a delivery fell back to a new run. */
+  note?: string;
+}
 export type AutomationLauncher = (
   definition: GithubAutomationDefinition,
   candidate: GithubCandidate,

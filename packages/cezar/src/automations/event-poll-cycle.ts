@@ -150,7 +150,7 @@ export async function launchEventCandidate(input: {
   definition: AutomationDefinition;
   receipt: Omit<Parameters<AutomationStore['reserveReceipt']>[0], 'automationId' | 'revision'>;
   log: Pick<import('./types.ts').AutomationLogRecord, 'event' | 'githubNumber' | 'githubTitle' | 'githubUrl' | 'trackerKey' | 'trackerTitle' | 'trackerUrl'>;
-  launch: (receiptId: string) => Promise<{ runId: string }>;
+  launch: (receiptId: string) => Promise<{ runId: string; delivered?: true; note?: string }>;
 }): Promise<void> {
   const { store, definition } = input;
   const identity = { automationId: definition.id, revision: definition.revision };
@@ -164,8 +164,14 @@ export async function launchEventCandidate(input: {
   }
   try {
     const launched = await input.launch(receipt.receiptId);
-    store.appendReceipt({ ...receipt, status: 'launched', runId: launched.runId, updatedAt: new Date().toISOString() });
-    store.appendLog({ ...identity, ...input.log, result: 'launched', receiptId: receipt.receiptId, runId: launched.runId });
+    store.appendReceipt({
+      ...receipt, status: 'launched', runId: launched.runId, updatedAt: new Date().toISOString(),
+      ...(launched.delivered ? { delivered: true } : {}),
+    });
+    // spec 2026-10-23-github-events §5: `delivered-to: <runId>` instead of `launched: <runId>`.
+    store.appendLog(launched.delivered
+      ? { ...identity, ...input.log, result: 'delivered', reason: `delivered-to: ${launched.runId}`, receiptId: receipt.receiptId, runId: launched.runId }
+      : { ...identity, ...input.log, result: 'launched', receiptId: receipt.receiptId, runId: launched.runId, ...(launched.note ? { reason: launched.note } : {}) });
   } catch (error) {
     // A launch that ended without a run on purpose (a closed PR, a fork head) or on an
     // unreachable PR head: recorded against this event, never thrown into the poll cycle —

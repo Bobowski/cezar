@@ -3553,6 +3553,12 @@ export class RunManager {
     return this.active.has(runId) || this.starting.has(runId) || this.queue.includes(runId);
   }
 
+  /** An open, uncancelled session a prompt can be lined up for (`enqueuePrompt`). */
+  hasLiveSession(runId: string): boolean {
+    const state = this.active.get(runId);
+    return !!state && !state.cancelled && state.session?.open === true;
+  }
+
   /**
    * Fold a queued run's persisted prompt — `run.task` plus everything stacked
    * onto it (#472) — into the job input that is about to execute.

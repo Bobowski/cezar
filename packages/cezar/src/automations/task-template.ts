@@ -10,6 +10,7 @@ import type { GithubCandidate } from './github-poller.ts';
 import type { ScheduleOccurrence } from './schedule-runner.ts';
 import type { TrackerAutomationCandidate } from './tracker-poller.ts';
 import { resolvePrHead, type CommandRunner } from './pr-head.ts';
+import { deliverAutomationMessage, findOwningRun } from './owning-run.ts';
 import type { AutomationDefinition, GithubAutomationDefinition, ScheduleAutomationDefinition, TrackerAutomationDefinition } from './types.ts';
 
 const GITHUB_PLACEHOLDERS = new Set([
@@ -236,7 +237,41 @@ export async function launchAutomationRun(options: {
   dispatchEnabled?: boolean;
   /** Test seam for the `gh`/`git` calls a `checkout: 'pr-head'` launch makes. */
   runCommand?: CommandRunner;
-}): Promise<{ runId: string }> {
+}): Promise<AutomationLaunched> {
+  const { definition, candidate } = options;
+  // spec 2026-10-23-github-events §5: a PR a cezar task owns gets the event as a message there.
+  let note: string | undefined;
+  if (definition.deliver === 'owning-run' && candidate.number !== undefined
+    && (candidate.event.startsWith('pull_request.') || candidate.event === 'check_suite.completed')) {
+    const owner = findOwningRun(options.store.listRuns(), candidate);
+    if (owner) {
+      const outcome = deliverAutomationMessage(options.manager, owner.id, renderAutomationTask(definition, candidate));
+      if (outcome.ok) {
+        const how = outcome.how === 'continued' ? 'continuing this task' : outcome.how === 'live' ? 'delivered' : 'queued behind the current turn';
+        options.store.appendEvent(owner.id, {
+          type: 'note',
+          message: `automation “${bounded(definition.name, 200)}”: ${candidate.event} on #${candidate.number} — ${how}`,
+        });
+        options.store.flush({ throwOnError: true });
+        return { runId: owner.id, delivered: true };
+      }
+      note = `The owning run ${owner.id} could not take the message (${outcome.error}); a new run was launched instead.`;
+    }
+  }
+  const launched = await launchNewAutomationRun(options);
+  return note ? { ...launched, note } : launched;
+}
+
+/** What a GitHub automation's launch did: a new run, or a message into the run owning the PR. */
+export interface AutomationLaunched {
+  runId: string;
+  /** The prompt went into an existing run (`deliver: 'owning-run'`), not a new one. */
+  delivered?: true;
+  /** Why a delivery fell back to a new run — the log row's reason. */
+  note?: string;
+}
+
+async function launchNewAutomationRun(options: Parameters<typeof launchAutomationRun>[0]): Promise<{ runId: string }> {
   const { definition, candidate } = options;
   const workflow = await resolveWorkflow(options.root, definition);
   const input = startInput(definition, renderAutomationTask(definition, candidate), options.dispatchEnabled ?? false);

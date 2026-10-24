@@ -43,14 +43,8 @@ setpriv --reuid=node --regid=node --init-groups \
 # CEZ_UPDATE_* wins over this seed, and a channel saved in the cockpit wins over both. Nothing is
 # written: the service resolves it at read time, and the `cezar` launcher repeats it, so
 # `docker compose exec -u node cezar cezar update` follows the same branch.
-if [ -f /opt/cezar/source.json ]; then
-  source_remote=$(jq -r '.remote // empty' /opt/cezar/source.json 2>/dev/null || true)
-  source_branch=$(jq -r '.branch // empty' /opt/cezar/source.json 2>/dev/null || true)
-  if [ -n "$source_remote" ] && [ -n "$source_branch" ]; then
-    export CEZ_UPDATE_CHANNEL="${CEZ_UPDATE_CHANNEL:-branch}"
-    export CEZ_UPDATE_BRANCH="${CEZ_UPDATE_BRANCH:-$source_remote#$source_branch}"
-  fi
-fi
+. /usr/local/lib/cezar/update-seed.sh
+seed_update_branch /opt/cezar/source.json
 
 if [ "${1:-}" = "cezar" ] && [ "${2:-}" = "serve" ]; then
   shift

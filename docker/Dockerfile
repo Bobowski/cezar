@@ -76,7 +76,7 @@ RUN usermod -aG docker node \
 ENV CEZ_BROWSE_ROOT=/projects
 
 COPY docker/entrypoint.sh /usr/local/bin/cezar-entrypoint
-COPY docker/supervise.sh docker/image-install.sh /usr/local/lib/cezar/
+COPY docker/supervise.sh docker/image-install.sh docker/update-seed.sh /usr/local/lib/cezar/
 COPY docker/cezar-launcher.sh /usr/local/bin/cezar
 RUN chmod +x /usr/local/bin/cezar-entrypoint /usr/local/bin/cezar \
  && ln -s cezar /usr/local/bin/cez

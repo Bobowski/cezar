@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isUpdateRemote } from '@open-mercato/cezar-contract';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 /**
@@ -423,5 +424,42 @@ describe.skipIf(!haveBootTools)('the image install', () => {
     const source = readFileSync(join(dir, 'opt', 'source.json'), 'utf8');
     expect(JSON.parse(source).remote).toBe(want);
     expect(source).not.toMatch(/ghp_|github_pat_|token/);
+  });
+});
+
+// docker/update-seed.sh: the image seeds the branch channel only from a remote the service would follow.
+describe.skipIf(!haveShell)('the image branch seed', () => {
+  const SEED = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../../docker/update-seed.sh');
+  const remoteOk = (remote: string) => spawnSync('sh', ['-c', '. "$SEED"; update_remote_ok "$R"'], { env: { ...process.env, SEED, R: remote } }).status === 0;
+
+  it('accepts exactly the remotes isUpdateRemote does', () => {
+    const remotes = [
+      'https://github.com/open-mercato/cezar.git', 'https://git.example.com:8443/x/y.git', 'ssh://git@github.com/x/y.git', 'ssh://host:2222/cezar.git', 'git@github.com:x/y.git',
+      'https://ghp_abc123@github.com/x/y.git', 'https://user:token@github.com/x/y.git', 'http://github.com/x/y.git', 'file:///srv/cezar', '/srv/cezar',
+      'ssh://-oProxyCommand=x/y', 'git@-oProxyCommand:x', 'https://github.com/x y.git', 'https://github.com/x/y.git\nhttps://github.com/a/b.git', `https://github.com/${'a'.repeat(520)}`, '',
+    ];
+    for (const remote of remotes) expect(remoteOk(remote), remote).toBe(isUpdateRemote(remote));
+  });
+
+  it.skipIf(!haveBootTools)('seeds no channel from a remote the service would drop, and says so without the remote', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cez-seed-'));
+    try {
+      const seed = (remote: string, quiet = '') => {
+        writeFileSync(join(dir, 'source.json'), JSON.stringify({ remote, branch: 'brutus' }));
+        const env: NodeJS.ProcessEnv = { ...process.env, SEED, F: join(dir, 'source.json'), Q: quiet };
+        delete env.CEZ_UPDATE_CHANNEL;
+        delete env.CEZ_UPDATE_BRANCH;
+        return spawnSync('sh', ['-c', 'set -eu; . "$SEED"; seed_update_branch "$F" "$Q"; echo "${CEZ_UPDATE_CHANNEL:-none} ${CEZ_UPDATE_BRANCH:-none}"'], { encoding: 'utf8', env });
+      };
+      expect(seed('https://github.com/open-mercato/cezar.git').stdout.trim()).toBe('branch https://github.com/open-mercato/cezar.git#brutus');
+      const refused = seed('https://ghp_abc123@github.com/x/y.git');
+      expect(refused.status).toBe(0);
+      expect(refused.stdout.trim()).toBe('none none');
+      expect(refused.stderr).toContain('not seeding CEZ_UPDATE_CHANNEL=branch');
+      expect(refused.stderr).not.toContain('ghp_');
+      expect(seed('file:///srv/cezar', 'quiet').stderr).toBe('');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -273,7 +273,8 @@ exports `CEZ_UPDATE_CHANNEL=branch` and `CEZ_UPDATE_BRANCH=<remote>#<branch>` fr
 service treats as the seed it already knows. A saved channel always wins, so an operator who
 switched to `stable` is not switched back by a rebuild. Nothing is written into the config
 (§3.1 as built); the `cezar` launcher repeats the same export, so `docker compose exec -u node
-cezar cezar update` follows the same branch.
+cezar cezar update` follows the same branch. Both go through `docker/update-seed.sh`, which seeds
+nothing (one line in the container log) when the remote fails `isUpdateRemote`'s rule.
 
 ### 4.6 Tools under `/data`
 

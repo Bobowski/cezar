@@ -8463,6 +8463,7 @@ export function createApp(deps: ServerDeps) {
     }
     return tasks;
   };
+  const LIVE_BRANCH_STATUSES: ReadonlySet<string> = new Set(['queued', 'running', 'waiting', 'review']);
   const checkoutRoot = async (project: ProjectContext): Promise<string | null> =>
     (await getRepoInfo(project.root, { allowUnborn: true }))?.root ?? null;
   /**
@@ -8809,10 +8810,19 @@ export function createApp(deps: ServerDeps) {
         const { name } = c.req.valid('param');
         const query = c.req.valid('query');
         const project = c.get('project');
-        const tasks = graphTasks(project.store, projectsRuns(runViewScopes(principalOf(c))));
+        const projected = projectsRuns(runViewScopes(principalOf(c)));
+        // Only a live task still needs its branch; a finished, cancelled or archived one's may go.
         const ownedBy = (branch: string): string | null => {
-          const task = tasks.get(branch);
-          return task ? `the task “${task.title}” (${task.runId.slice(0, 8)})` : null;
+          const live = project.store
+            .listRuns()
+            .find(
+              (r) =>
+                r.branch === branch &&
+                (r.worktree !== false || r.inPlaceBranch) &&
+                !r.archived &&
+                LIVE_BRANCH_STATUSES.has(r.status),
+            );
+          return live ? `the task “${visibleTaskTitle(live, live.title ?? live.id, projected)}” (${live.id.slice(0, 8)})` : null;
         };
         const r = await mutateCheckout(project, principalOf(c), (root) =>
           deleteBranch(root, name, { remote: query.remote === '1', force: query.force === '1', ownedBy }),

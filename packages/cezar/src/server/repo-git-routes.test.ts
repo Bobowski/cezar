@@ -89,6 +89,37 @@ describe('the Git page routes', () => {
     expect(g(repo, 'ls-remote', '--heads', 'origin', 'feat/owned').trim()).not.toBe('');
   });
 
+  it('delete refuses only a live task’s branch: a finished, archived or cancelled task’s may go', async () => {
+    const cases = [
+      ['feat/review', { status: 'review' }, 409],
+      ['feat/waiting', { status: 'waiting' }, 409],
+      ['feat/done', { status: 'done' }, 200],
+      ['feat/failed', { status: 'failed' }, 200],
+      ['feat/cancelled', { status: 'cancelled' }, 200],
+      ['feat/archived', { status: 'review', archived: true }, 200],
+    ] as const;
+    for (const [branch, patch] of cases) {
+      g(repo, 'branch', branch);
+      const run = store.createRun({ title: `Task ${branch}`, task: 'Do it', workflow: 'quick-task', steps: [] });
+      store.updateRun(run.id, { branch, ...patch });
+    }
+    // A finished task and a live one on the same branch: the live one still owns it.
+    g(repo, 'branch', 'feat/shared');
+    const live = store.createRun({ title: 'Live owner', task: 'Do it', workflow: 'quick-task', steps: [] });
+    store.updateRun(live.id, { branch: 'feat/shared', status: 'running' });
+    const finished = store.createRun({ title: 'Finished owner', task: 'Do it', workflow: 'quick-task', steps: [] });
+    store.updateRun(finished.id, { branch: 'feat/shared', status: 'done' });
+    for (const [branch, , status] of [...cases, ['feat/shared', {}, 409] as const]) {
+      const res = await apiRequest(app, `/api/v1/repo/branch/${encodeURIComponent(branch)}/delete?force=1`, { method: 'POST' });
+      expect(res.status, branch).toBe(status);
+      expect(g(repo, 'branch', '--list', branch).trim(), branch).toBe(status === 200 ? '' : branch);
+      if (status === 409) {
+        const { error } = (await res.json()) as { error: string };
+        expect(error, branch).toContain(branch === 'feat/shared' ? 'Live owner' : `Task ${branch}`);
+      }
+    }
+  });
+
   it('a branch name with a slash reaches the action through an encoded path segment', async () => {
     g(repo, 'branch', 'feat/slash');
     const res = await apiRequest(app, `/api/v1/repo/branch/${encodeURIComponent('feat/slash')}/checkout`, { method: 'POST' });

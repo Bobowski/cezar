@@ -7,6 +7,7 @@ import {
   authSetupBeginBodySchema,
   authSetupCompleteBodySchema,
   authVerifyBodySchema,
+  createApiTokenBodySchema,
 } from '@open-mercato/cezar-contract';
 import { isLoopbackHostHeader } from '../server/capabilities.ts';
 import { jsonZodValidator, paramZodValidator } from '../server/validators.ts';
@@ -163,6 +164,31 @@ export function authRoutes(deps: { service: AuthService; enforced: () => boolean
       const { id } = c.req.valid('param');
       if (!service.revokeSession(principal.user.id, id)) return c.json({ error: 'unknown session' }, 404);
       if (id === principal.sessionId) clearSession(c);
+      return c.json({ ok: true as const });
+    })
+    // API tokens (spec 2026-10-24-cezar-mcp-server §4): the signed-in owner's alone. The guard
+    // already refuses every token on `/auth/*`, so a token can never mint or revoke another.
+    .get('/auth/tokens', (c) => {
+      if (!enforced()) return notEnabled(c);
+      const principal = c.get('principal');
+      if (principal?.kind !== 'user') return c.json({ error: 'only a signed-in user has API tokens' }, 403);
+      c.header('cache-control', 'no-store');
+      return c.json({ tokens: service.listApiTokens(principal.user.id) });
+    })
+    .post('/auth/tokens', jsonZodValidator(createApiTokenBodySchema), (c) => {
+      if (!enforced()) return notEnabled(c);
+      const principal = c.get('principal');
+      if (principal?.kind !== 'user') return c.json({ error: 'only a signed-in user has API tokens' }, 403);
+      const result = service.createApiToken(principal.user.id, c.req.valid('json'), metaOf(c));
+      if (!result.ok) return failure(c, result);
+      c.header('cache-control', 'no-store');
+      return c.json({ token: result.token, value: result.value }, 201);
+    })
+    .delete('/auth/tokens/:id', paramZodValidator(z.object({ id: z.string().regex(/^[0-9a-f]{12}$/) })), (c) => {
+      if (!enforced()) return notEnabled(c);
+      const principal = c.get('principal');
+      if (principal?.kind !== 'user') return c.json({ error: 'only a signed-in user has API tokens' }, 403);
+      if (!service.revokeApiToken(principal.user.id, c.req.valid('param').id)) return c.json({ error: 'unknown token' }, 404);
       return c.json({ ok: true as const });
     });
 }

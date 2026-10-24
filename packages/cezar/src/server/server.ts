@@ -312,7 +312,8 @@ import { reviewGateEnabled } from '../runs/review-gate.ts';
 import { readUiState, uiStatePath } from '../ui-state.ts';
 import { agentHomePaths, cezarHomeDir, expandTilde, isAbsolutePath } from '../paths.ts';
 import { authEnforced, fileEditRefusal, isLoopbackHostHeader, normalizeHostname, resolveCapabilities, trustedOperator } from './capabilities.ts';
-import { createAuthGuard, principalOf, upgradeIsAuthenticated, upgradeSessionId } from '../auth/guard.ts';
+import { bearerOf, createAuthGuard, principalOf, upgradeIsAuthenticated, upgradeSessionId } from '../auth/guard.ts';
+import { isApiToken } from '../auth/api-tokens.ts';
 import { ensureHostKey } from '../auth/host-key.ts';
 import { authRoutes } from '../auth/routes.ts';
 import { enableRunTokens } from '../auth/run-tokens.ts';
@@ -1780,7 +1781,13 @@ export function createApp(deps: ServerDeps) {
   // what check 1 stops.
   const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
   const isHostedMode = () => !resolveCapabilities(process.env, bindHost).localHandoff;
+  const auth = deps.auth ?? new AuthService();
   app.use('/api/*', async (c, next) => {
+    // A VALID API token is not a browser (spec 2026-10-24-cezar-mcp-server §4): a page can
+    // neither read one nor attach one cross-origin, so neither check below applies. A token that
+    // does not verify gets no pass — the auth guard then answers it 401.
+    const bearer = bearerOf(c.req.header('authorization'));
+    if (bearer !== undefined && isApiToken(bearer) && auth.verifyApiToken(bearer)) return next();
     const hostName = hostnameOfHost(c.req.header('host'));
     // Strict twin of `isLoopbackHost`: a *missing* Host is untrusted here (an
     // absent header is not the "we defaulted to the loopback bind" case), and
@@ -1852,7 +1859,6 @@ export function createApp(deps: ServerDeps) {
   // ---- authentication (spec 2026-10-12-cockpit-authentication §6) ------------
   // After the origin guard, before every route: a request is a principal or a 401. Off on a
   // local cockpit, where this only stamps the `host` principal.
-  const auth = deps.auth ?? new AuthService();
   const authIsEnforced = () => authEnforced(process.env, bindHost);
   app.use('/api/*', createAuthGuard({
     service: auth,

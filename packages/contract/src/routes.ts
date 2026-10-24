@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { agentConfigFileContentSchema, agentConfigListingSchema } from './agent-config.ts';
+import { apiTokensResponseSchema, authOkResponseSchema, createApiTokenResponseSchema } from './auth.ts';
 import {
   agentAccountDetailsResponseSchema,
   agentAccountStatusResponseSchema,
@@ -491,6 +492,9 @@ export const routeContracts = {
   'POST /auth/sessions/revoke-others': { summary: 'Sign every other device out.', notTool: 'auth' },
   'POST /auth/setup/begin': { summary: 'Create the owner account: password step.', notTool: 'auth' },
   'POST /auth/setup/complete': { summary: 'Create the owner account: authenticator step.', notTool: 'auth' },
+  'GET /auth/tokens': { summary: 'The owner\'s API tokens.', response: apiTokensResponseSchema, notTool: 'auth' },
+  'POST /auth/tokens': { summary: 'Mint an API token.', response: createApiTokenResponseSchema, notTool: 'auth' },
+  'DELETE /auth/tokens/:id': { summary: 'Revoke an API token.', response: authOkResponseSchema, notTool: 'auth' },
 } satisfies Record<string, RouteContract>;
 
 export type RouteKey = keyof typeof routeContracts;

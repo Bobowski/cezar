@@ -1,7 +1,8 @@
 import type { IncomingMessage } from 'node:http';
 import type { Context, MiddlewareHandler } from 'hono';
-import type { AuthUser } from '@open-mercato/cezar-contract';
+import type { ApiTokenScope, AuthUser } from '@open-mercato/cezar-contract';
 import { isLoopbackHostHeader } from '../server/capabilities.ts';
+import { apiTokenAllows, isApiToken } from './api-tokens.ts';
 import { verifyHostKey, isHostKey } from './host-key.ts';
 import { isRunToken, runTokenAllows, verifyRunToken, type RunTokenClaims } from './run-tokens.ts';
 import type { AuthService } from './service.ts';
@@ -15,6 +16,7 @@ import type { AuthService } from './service.ts';
 /** Who is calling. `host` is this machine's own shell — and everyone, on a cockpit without auth. */
 export type Principal =
   | { kind: 'user'; role: AuthUser['role']; user: AuthUser; sessionId: string }
+  | { kind: 'token'; role: AuthUser['role']; user: AuthUser; tokenId: string; scopes: ApiTokenScope[] }
   | { kind: 'run'; role: 'agent'; runId: string; projectId?: string }
   | { kind: 'host'; role: 'owner' };
 
@@ -49,7 +51,7 @@ export function sessionTokenOf(cookieHeader: string | undefined, host: string | 
     ?? (isLoopbackHostHeader(host) ? cookieValue(cookieHeader, PLAIN_SESSION_COOKIE) : undefined);
 }
 
-function bearerOf(header: string | undefined): string | undefined {
+export function bearerOf(header: string | undefined): string | undefined {
   const match = /^Bearer\s+(\S+)$/i.exec(header ?? '');
   return match?.[1];
 }
@@ -69,11 +71,25 @@ export function principalOf(c: Context): Principal | undefined {
 export function createAuthGuard(options: AuthGuardOptions): MiddlewareHandler<AuthEnv> {
   const unauthorized = (c: Context) => c.json({ error: 'authentication required' }, 401);
   return async (c, next) => {
+    const bearer = bearerOf(c.req.header('authorization'));
+    // Checked even where sign-in is off: a token always means its scopes (spec
+    // 2026-10-24-cezar-mcp-server §4), and it never manages sign-in or tokens.
+    if (bearer !== undefined && isApiToken(bearer)) {
+      if (c.req.path === `${API}/auth` || c.req.path.startsWith(`${API}/auth/`)) {
+        return c.json({ error: 'forbidden: an API token cannot manage sign-in or tokens' }, 403);
+      }
+      const token = options.service.verifyApiToken(bearer, { touch: true });
+      if (!token) return unauthorized(c);
+      if (!apiTokenAllows(token.scopes, c.req.method, c.req.path)) {
+        return c.json({ error: `forbidden: this token's scopes (${token.scopes.join(', ')}) do not cover ${c.req.method} ${c.req.path}` }, 403);
+      }
+      c.set('principal', { kind: 'token', role: token.user.role, user: token.user, tokenId: token.tokenId, scopes: token.scopes });
+      return next();
+    }
     if (!options.enforced()) {
       c.set('principal', { kind: 'host', role: 'owner' });
       return next();
     }
-    const bearer = bearerOf(c.req.header('authorization'));
     if (bearer !== undefined && isRunToken(bearer)) {
       const claims = verifyRunToken(bearer);
       if (!claims || !(await options.isRunLive(claims))) return unauthorized(c);

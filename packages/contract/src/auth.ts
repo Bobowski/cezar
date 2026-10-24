@@ -115,3 +115,40 @@ export type AuthRevokeOthersResponse = z.infer<typeof authRevokeOthersResponseSc
 
 export const authOkResponseSchema = z.object({ ok: z.literal(true) });
 export type AuthOkResponse = z.infer<typeof authOkResponseSchema>;
+
+// ---- API tokens (spec 2026-10-24-cezar-mcp-server §4) -------------------------------------
+
+/**
+ * What a token may do. `read` is every GET; `tasks`, `author` and `admin` also write, each in its
+ * own route families (`packages/cezar/src/auth/api-tokens.ts` holds the map); `admin` is all of it.
+ */
+export const apiTokenScopeSchema = z.enum(['read', 'tasks', 'author', 'admin']);
+export type ApiTokenScope = z.infer<typeof apiTokenScopeSchema>;
+
+export const apiTokenSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  scopes: z.array(apiTokenScopeSchema),
+  createdAt: z.string(),
+  /** Absent: the token never expires (it is still revocable). */
+  expiresAt: z.string().optional(),
+  /** Absent until it is first used; refreshed at most every few minutes. */
+  lastUsedAt: z.string().optional(),
+});
+export type ApiToken = z.infer<typeof apiTokenSchema>;
+
+export const apiTokensResponseSchema = z.object({ tokens: z.array(apiTokenSchema) });
+export type ApiTokensResponse = z.infer<typeof apiTokensResponseSchema>;
+
+/** Minting a credential asks for a fresh authenticator code, like every other credential change. */
+export const createApiTokenBodySchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  scopes: z.array(apiTokenScopeSchema).min(1).max(4),
+  expiresAt: z.iso.datetime({ offset: true }).optional(),
+  code: z.string().min(1).max(16),
+});
+export type CreateApiTokenBody = z.infer<typeof createApiTokenBodySchema>;
+
+/** `value` is the token itself (`ceztok_<id>_<secret>`), shown once and stored only as a hash. */
+export const createApiTokenResponseSchema = z.object({ token: apiTokenSchema, value: z.string() });
+export type CreateApiTokenResponse = z.infer<typeof createApiTokenResponseSchema>;

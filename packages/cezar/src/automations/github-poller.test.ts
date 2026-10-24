@@ -306,6 +306,17 @@ describe('GithubPoller', () => {
     expect(rows).toEqual([expect.objectContaining({ event: 'pull_request.reviewed', reviewer: 'carol' })]);
   });
 
+  it('marks a review on a closed PR, which only an includeClosed new-run automation admits', () => {
+    const review = { id: 1, event: 'reviewed' as const, submitted_at: '2026-07-26T02:00:00.000Z', user: { login: 'carol' } };
+    const closed = { ...item, pull_request: {}, closed_at: '2026-07-27T00:00:00.000Z' };
+    const [row] = reconstructReviewEvents('acme', 'demo', closed, [review]);
+    expect(row).toMatchObject({ prClosed: true });
+    expect(reconstructReviewEvents('acme', 'demo', item, [review])[0]).not.toHaveProperty('prClosed');
+    expect(matchesFilters(row!, definition)).toBe(false);
+    expect(matchesFilters(row!, { ...definition, filters: { ...definition.filters, includeClosed: true } })).toBe(true);
+    expect(matchesFilters(row!, { ...definition, deliver: 'owning-run' })).toBe(true);
+  });
+
   it('emits only review_requested for a first-time request', () => {
     const rows = reconstructReviewEvents('acme', 'demo', item, [
       { id: 1, event: 'review_requested', created_at: '2026-07-26T02:00:00.000Z', requested_reviewer: { login: 'carol' } },

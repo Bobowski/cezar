@@ -50,7 +50,8 @@ export function runsOnItem(runs: Iterable<RunRecord>, candidate: { repo: string;
  * it (`prRefs`) or is about it (`prNumber` — numbers are one sequence per repository, so a number
  * names one item). A reference whose URL names another repository does not count. Never a
  * dispatched child (its parent owns the work), never a `pr-head` verifier (it tested the PR; it
- * cannot change it) and never a run whose worktree is gone — the code it would fix is not there.
+ * cannot change it), never an archived one (a picked-against variant is archived) and never a
+ * run whose worktree is gone — the code it would fix is not there.
  */
 export function findOwningRun(runs: Iterable<RunRecord>, candidate: { repo: string; number?: number }): RunRecord | undefined {
   const number = candidate.number;
@@ -68,7 +69,7 @@ export function findOwningRun(runs: Iterable<RunRecord>, candidate: { repo: stri
       && (ref.url ? sameRepo(ref.url) : !made || made.repo === repo)) ?? false;
   };
   const owns = (run: RunRecord): boolean => {
-    if (run.prHead || run.dispatch?.parentRunId) return false;
+    if (run.archived || run.prHead || run.dispatch?.parentRunId) return false;
     if (run.worktree !== false && !run.worktreePath) return false;
     if (created(run)) return true;
     // A run that made a PR owns only what it made, not one it merely mentioned.

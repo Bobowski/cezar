@@ -164,6 +164,19 @@ describe('comment events', () => {
     expect(pathsOf(run)).not.toContain(permissionPath);
   });
 
+  it('marks a comment on a closed or merged PR: a new run only with includeClosed, owning-run decides at launch', async () => {
+    const closed = { ...routes, [`repos/acme/demo/pulls/${own.number}`]: { ...fixture<object>('pull'), state: 'closed' } };
+    const poll = (over: Partial<GithubAutomationDefinition> = {}) => new GithubPoller({ run: gh(closed) })
+      .poll('acme', 'demo', { ...definition(['pull_request.commented']), ...over }, { since });
+    const of777 = (result: Awaited<ReturnType<typeof poll>>) => result.candidates.find((candidate) => candidate.comment?.id === 777);
+    expect(of777(await poll())).toBeUndefined();
+    expect(of777(await poll({ filters: { lookbackDays: 7, maxRecords: 25, includeClosed: true } }))).toMatchObject({ prClosed: true });
+    expect(of777(await poll({ deliver: 'owning-run', filters: { lookbackDays: 7, maxRecords: 25, allowAnyAuthor: true } }))).toMatchObject({ prClosed: true });
+    // An open PR's comment carries no mark.
+    const open = await new GithubPoller({ run: gh(routes) }).poll('acme', 'demo', definition(['pull_request.commented']), { since });
+    expect(of777(open)).not.toHaveProperty('prClosed');
+  });
+
   it('drops a comment cezar posted itself (loop guard)', async () => {
     const result = await new GithubPoller({ run: gh(routes) }).poll('acme', 'demo', definition(['pull_request.commented']),
       { since, traces: { shas: new Set(), comments: new Set([777]) } });

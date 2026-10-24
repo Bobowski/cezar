@@ -79,7 +79,7 @@ behaviour). With `owning-run`:
 
 1. The matched item is a PR. The run that owns it is found by `prNumber` on the run records of
    the project (the store already tracks it, `store.ts`), newest first; the run must not be
-   `discarded`/`deleted`.
+   archived (a discarded variant is archived), deleted, or have lost its worktree.
 2. If the owner exists, the rendered prompt is delivered to it as a user-visible message
    (`run.ts`'s delivery path, the one Continue uses: live when the run is parked at review,
    queued when it is running). The run's worktree is the one that made the PR, so "fix the
@@ -88,7 +88,11 @@ behaviour). With `owning-run`:
 3. If no owner exists (a PR opened by hand), the automation falls back to `new-run` with
    `checkout: 'pr-head'` when set, as today.
 
-Nothing changes for issue events or for `new-run` automations.
+4. A comment, review or check event on a PR that is closed or merged continues no task: it is
+   `skipped` (`pr-closed: …`) — a "thanks" on a merged PR must not wake the archived work. A
+   `new-run` automation admits those events only with `filters.includeClosed: true`.
+
+Nothing else changes for issue events or for `new-run` automations.
 
 ## 6. The loop guard
 

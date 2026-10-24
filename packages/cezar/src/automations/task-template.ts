@@ -263,6 +263,7 @@ export async function launchAutomationRun(options: {
   // spec 2026-10-23-github-events §5: a PR a cezar task owns gets the event as a message there.
   if (definition.deliver === 'owning-run' && candidate.number !== undefined
     && (candidate.event.startsWith('pull_request.') || candidate.event === 'check_suite.completed')) {
+    if (candidate.prClosed) throw new AutomationLaunchOutcome('skipped', `pr-closed: #${candidate.number} is closed or merged; a ${candidate.event} there continues no task.`);
     const owner = findOwningRun(runs, candidate);
     if (owner) {
       const hold = await holdOf(owner);

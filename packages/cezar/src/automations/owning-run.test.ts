@@ -64,6 +64,13 @@ describe('findOwningRun (spec 2026-10-23-github-events §5)', () => {
     expect(findOwningRun([run({ prNumber: 8, worktreePath: undefined, worktree: false })], pr)?.id).toBe('r');
     expect(findOwningRun([run({ prNumber: 8 })], { repo: 'acme/demo' })).toBeUndefined();
   });
+
+  it('never picks an archived run (a discarded variant is archived), nor one that was deleted', () => {
+    expect(findOwningRun([run({ pullRequestUrl: 'https://github.com/acme/demo/pull/8', archived: true })], pr)).toBeUndefined();
+    const live = run({ id: 'live', prNumber: 8, createdAt: '2026-10-01T00:00:00.000Z' });
+    const filed = run({ id: 'filed', pullRequestUrl: 'https://github.com/acme/demo/pull/8', archived: true, createdAt: '2026-10-02T00:00:00.000Z' });
+    expect(findOwningRun([live, filed], pr)?.id).toBe('live');
+  });
 });
 
 describe('deliverAutomationMessage', () => {
@@ -156,6 +163,29 @@ describe('deliver: owning-run, end to end through the receipt and the log', () =
     const plain = await launchAutomationRun({ root, manager, store: runs, definition: { ...definition, deliver: undefined }, candidate, receiptId: 'r2' });
     expect(plain.delivered).toBeUndefined();
     expect(started).toHaveLength(2);
+  });
+
+  it('skips (pr-closed) a comment or check event on a closed or merged PR: never delivered, never a new run', async () => {
+    const { root, runs, automations, manager, started, continued } = await setup();
+    const owner = runs.createRun({ title: 'made the PR', workflow: 'quick-task', task: 't', steps: [] });
+    runs.updateRun(owner.id, { pullRequestUrl: 'https://github.com/acme/demo/pull/8', worktreePath: join(root, 'wt'), status: 'review' });
+    const { check: _check, ...bare } = candidate;
+    const thanks: GithubCandidate = {
+      ...bare, eventId: 'acme/demo:comment:5', event: 'pull_request.commented', tieBreaker: 'comment:5', prClosed: true,
+      comment: { id: 5, kind: 'issue', author: 'dave', url: 'https://github.com/acme/demo/pull/8#issuecomment-5', body: 'thanks!' },
+    };
+    for (const event of [thanks, { ...candidate, prClosed: true as const }]) {
+      const talk = { ...definition, events: [event.event] };
+      await launchEventCandidate({
+        store: automations, definition: talk, receipt: { eventId: event.eventId, candidate: event },
+        log: { event: event.event, githubNumber: 8 },
+        launch: (receiptId) => launchAutomationRun({ root, manager, store: runs, definition: talk, candidate: event, receiptId }),
+      });
+      expect(automations.latestReceipts().get(`ci:${event.eventId}`)).toMatchObject({ status: 'skipped' });
+      expect(automations.logs({ automationId: 'ci' })[0]).toMatchObject({ result: 'skipped', reason: expect.stringMatching(/^pr-closed:/) });
+    }
+    expect(continued).toEqual([]);
+    expect(started).toEqual([]);
   });
 
   it('launches a new run, saying why, when the owner cannot take the message', async () => {

@@ -397,6 +397,7 @@ export async function pollActivity(input: {
     title: clean(item.title, 500), url: item.url, author: clean(item.author, 200), assignees: item.assignees, labels: item.labels,
     ...(item.headSha ? { headSha: item.headSha } : {}),
     ...(item.headRef ? { branch: item.headRef } : {}),
+    ...(item.open === false ? { prClosed: true as const } : {}),
   });
   const admit = (candidate: GithubCandidate) => input.matches(candidate) && matchesActivityFilters(candidate, definition);
   const permissions = input.permissions ?? new WritePermissions();

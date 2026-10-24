@@ -117,6 +117,18 @@ export function EditorGithubFields({
               </Label>
             </span>
           ) : null}
+          {deliver !== 'owning-run' ? (
+            <span className="flex items-center gap-2">
+              <Checkbox
+                id="filter-include-closed"
+                checked={filters.includeClosed}
+                onCheckedChange={(checked) => setFilter('includeClosed', checked === true)}
+              />
+              <Label htmlFor="filter-include-closed" className="text-[13px] font-normal">
+                Also for comments, reviews and checks on closed or merged pull requests
+              </Label>
+            </span>
+          ) : null}
         </div>
       ) : null}
       <Collapsible open={open} onOpenChange={setOpen}>

@@ -95,6 +95,8 @@ export interface GithubCandidate {
     id: number; kind: 'issue' | 'review'; author: string; url: string; body?: string; association?: string; writeAccess?: boolean;
     parts?: GithubCommentPart[];
   };
+  /** A comment, review or check event on a PR that is closed or merged (spec 2026-10-23-github-events §5). */
+  prClosed?: true;
   check?: { id: number; name: string; conclusion: string; url: string; failingJobs: string[] };
   push?: { branch: string; before: string; after: string; subjects: string[] };
   release?: { tag: string; name: string; prerelease: boolean };
@@ -645,6 +647,7 @@ export function reconstructReviewEvents(
         timestamp: entry.submitted_at,
         tieBreaker: stable,
         reviewer: entry.user.login,
+        ...(item.pull_request !== undefined && item.closed_at ? { prClosed: true as const } : {}),
       });
       hasReviewed.add(entry.user.login.toLowerCase());
       continue;
@@ -686,6 +689,8 @@ export function matchesFilters(candidate: GithubCandidate, definition: GithubAut
   if (filters.excludeLabels?.some((value) => labels.has(value.toLowerCase()))) return false;
   if (candidate.changedLabel && filters.changedLabels?.length && !lower(filters.changedLabels).has(candidate.changedLabel.toLowerCase())) return false;
   if (candidate.reviewer && filters.reviewers?.length && !lower(filters.reviewers).has(candidate.reviewer.toLowerCase())) return false;
+  // A "thanks" on a merged PR is no task; owning-run skips it at launch, visibly (§5).
+  if (candidate.prClosed && definition.deliver !== 'owning-run' && filters.includeClosed !== true) return false;
   return true;
 }
 

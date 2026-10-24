@@ -137,11 +137,11 @@ describe('fromDefinition / toBody', () => {
       deliver: 'owning-run',
       filters: {
         mentions: ['cezar'], branches: ['main', 'release/*'], tags: ['v*'],
-        conclusion: 'failure', prerelease: false, includeOwnPushes: true, allowAnyAuthor: true, allowSelfComments: true, lookbackDays: 7, maxRecords: 25,
+        conclusion: 'failure', prerelease: false, includeOwnPushes: true, allowAnyAuthor: true, allowSelfComments: true, includeClosed: true, lookbackDays: 7, maxRecords: 25,
       },
     }
     const draft = fromDefinition(definition)
-    expect(draft.filters).toMatchObject({ mentions: 'cezar', branches: 'main, release/*', conclusion: 'failure', prerelease: 'none', includeOwnPushes: true, allowAnyAuthor: true, allowSelfComments: true })
+    expect(draft.filters).toMatchObject({ mentions: 'cezar', branches: 'main, release/*', conclusion: 'failure', prerelease: 'none', includeOwnPushes: true, allowAnyAuthor: true, allowSelfComments: true, includeClosed: true })
     expect(toBody(draft)).toMatchObject({ deliver: 'owning-run', filters: definition.filters })
     // Untouched, nothing new rides along: a shipped definition saves as it always did.
     const plain = toBody(fromDefinition(GITHUB_DEF))

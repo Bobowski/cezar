@@ -109,6 +109,9 @@ export const automationFiltersSchema = z.object({
    *  issue, goes out at once — into the owning run (`deliver: 'owning-run'`) or as a new run
    *  (`new-run`). Without it, it is held until that turn ends, as possibly the run's own reply (§11). */
   allowSelfComments: z.boolean().optional(),
+  /** `new-run`: launch for a comment, review or check event on a closed or merged PR too. Never
+   *  `owning-run`, which skips those as `pr-closed` (spec 2026-10-23-github-events §5). */
+  includeClosed: z.boolean().optional(),
   status: z.string().optional(),
   lookbackDays: z.number(),
   maxRecords: z.number(),

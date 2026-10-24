@@ -54,6 +54,8 @@ export interface DraftFilters {
   allowAnyAuthor: boolean
   /** `deliver: 'owning-run'`: comments by cezar's own login while the task works, too. */
   allowSelfComments: boolean
+  /** `new-run`: comment, review and check events on closed or merged PRs, too. */
+  includeClosed: boolean
   lookbackDays: number
   maxRecords: number
 }
@@ -166,6 +168,7 @@ export const DEFAULT_FILTERS: DraftFilters = {
   includeOwnPushes: false,
   allowAnyAuthor: false,
   allowSelfComments: false,
+  includeClosed: false,
   lookbackDays: 7,
   maxRecords: 25,
 }
@@ -220,6 +223,7 @@ function draftFiltersOf(filters: AutomationFilters): DraftFilters {
     includeOwnPushes: filters.includeOwnPushes === true,
     allowAnyAuthor: filters.allowAnyAuthor === true,
     allowSelfComments: filters.allowSelfComments === true,
+    includeClosed: filters.includeClosed === true,
     lookbackDays: filters.lookbackDays,
     maxRecords: filters.maxRecords,
   }
@@ -387,6 +391,7 @@ export function toBody(draft: EditorDraft): AutomationBody {
       ...(f.includeOwnPushes ? { includeOwnPushes: true } : {}),
       ...(f.allowAnyAuthor ? { allowAnyAuthor: true } : {}),
       ...(f.allowSelfComments ? { allowSelfComments: true } : {}),
+      ...(f.includeClosed ? { includeClosed: true } : {}),
       lookbackDays: clamp(f.lookbackDays, 1, 90),
       maxRecords: clamp(f.maxRecords, 1, 100),
     },

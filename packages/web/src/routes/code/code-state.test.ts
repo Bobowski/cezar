@@ -243,7 +243,7 @@ describe('Browser tabs as pages (spec 2026-10-24-code-page-browser-tabs)', () =>
     expect(loadLayout(storage, 'p', 'main').browsers).toEqual({ b1: { url: B }, b2: { url: '' } })
     storage.setItem('cez:code:layout:p:main', JSON.stringify({
       groups: [{ tabs: [{ path: 'browser:b1' }, { path: 'browser:b2' }, { path: 'browser:b3' }], active: 'browser:b1' }],
-      browsers: { b1: { tabs: ['x', B], active: 1 }, b2: { tabs: ['https://example.com/'], active: 0 }, b3: { url: 'javascript:alert(1)' } },
+      browsers: { b1: { tabs: ['x', B], active: 1 }, b2: { tabs: ['https://example.com/'], active: 0 }, b3: { url: 'javascript:void(0)' } },
     }))
     expect(loadLayout(storage, 'p', 'main').browsers).toEqual({ b1: { url: B }, b2: { url: '' }, b3: { url: '' } })
   })

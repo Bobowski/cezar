@@ -655,9 +655,10 @@ the API below.
   see [Remote access](#remote-access-host-cezar-on-a-server) before exposing it.
 - **API tokens.** A hosted cockpit with sign-in answers `Authorization: Bearer
   ceztok_…` too. Mint one in Settings → Security → API tokens, scoped `read`
-  (the GETs that carry no secret — task status, not its transcript),
-  `runs.transcript` (a task's thread and live events: tool output can hold
-  secrets; `tasks` includes it), `tasks` (runs, messages, dispatch, tracker
+  (the GETs that carry no secret — task status, not its transcript: a task
+  record comes back `projected: true`, without the agent's summaries, reports
+  or title), `runs.transcript` (a task's thread, live events, handoff and the
+  todo inbox: tool output can hold secrets; `tasks` includes it), `tasks` (runs, messages, dispatch, tracker
   tickets), `author` (workflows, skills, automations, env files, the tracker
   connection) or `admin` (everything but sign-in). It is shown once.
   **A scope bounds the API, not the machine:** `tasks` and `author` start runs, and a

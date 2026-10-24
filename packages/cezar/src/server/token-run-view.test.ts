@@ -139,6 +139,92 @@ describe('a token’s view of a task', () => {
     }
   });
 
+  // Not token-shaped: the store's own scrubber (CEZ_REDACT_SECRETS) must not be what hides it.
+  const SECRET = 'MARKER-the-agent-printed-this';
+
+  /** A run carrying agent-authored text in every field the projection strips. */
+  function seedRun() {
+    const run = store.createRun({ title: 'fix the build', workflow: 'quick-task', task: 'fix the build', steps: [] });
+    store.updateRun(run.id, {
+      titleSummary: `Title quoting ${SECRET}`,
+      branch: 'cez/abc',
+      prNumber: 12,
+      tokensUsed: 345,
+      graphState: { loops: { review: 1 }, taken: ['a.done->b'], cursor: 'b', outputs: { a: { summary: `printed ${SECRET}`, verdict: 'pass', costUsd: 0.1 } } },
+      dispatch: {
+        rootRunId: run.id,
+        budgetUsd: 2,
+        report: { status: 'done', result: `done, key ${SECRET}`, evidence: [], side_effects: [], errors: [], suggestions: [] },
+        pendingReports: [{ fromRunId: 'c1', title: 'child', at: '2026-10-24T00:00:00Z', report: { status: 'done', result: SECRET, evidence: [], side_effects: [], errors: [], suggestions: [] } }],
+        pendingAsk: { questions: [`may I use ${SECRET}?`], askedAt: '2026-10-24T00:00:00Z' },
+      },
+    });
+    return run.id;
+  }
+
+  function expectProjected(body: Record<string, unknown>, label: string) {
+    expect(JSON.stringify(body), label).not.toContain(SECRET);
+    expect(body.projected, label).toBe(true);
+    expect(body.titleSummary, label).toBeUndefined();
+    expect(body.graphState, label).toEqual({ loops: { review: 1 }, taken: ['a.done->b'], cursor: 'b' });
+    expect(body.dispatch, label).toEqual({ rootRunId: body.id, budgetUsd: 2 });
+    // Status, timing, counters, branch and PR stay.
+    expect(body, label).toMatchObject({ status: 'queued', branch: 'cez/abc', prNumber: 12, tokensUsed: 345, title: 'fix the build' });
+    expect(body.createdAt, label).toBeTypeOf('string');
+  }
+
+  function expectFull(body: Record<string, unknown>, label: string) {
+    expect(body.projected, label).toBeUndefined();
+    expect(body.titleSummary, label).toBe(`Title quoting ${SECRET}`);
+    expect(JSON.stringify(body.graphState), label).toContain(SECRET);
+    expect(JSON.stringify(body.dispatch), label).toContain(SECRET);
+  }
+
+  it('GET /runs/:id and GET /runs answer a read token the projected record', async () => {
+    const id = seedRun();
+    const read = seedToken(['read']);
+    const one = await request(`/api/v1/runs/${id}`, read);
+    expect(one.status).toBe(200);
+    expectProjected((await one.json()) as Record<string, unknown>, 'GET /runs/:id');
+    const list = await request('/api/v1/p/boot/runs', read);
+    expect(list.status).toBe(200);
+    const rows = (await list.json()) as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(1);
+    expectProjected(rows[0]!, 'GET /runs');
+  });
+
+  // Guard: passes with and without the fix — whoever sees transcripts keeps the whole record.
+  it('answers the full record to the owner and to a token that sees transcripts', async () => {
+    const id = seedRun();
+    for (const [label, headers] of [
+      ['runs.transcript', seedToken(['read', 'runs.transcript'])],
+      ['tasks', seedToken(['tasks'])],
+      ['admin', seedToken(['admin'])],
+    ] as const) {
+      const response = await request(`/api/v1/runs/${id}`, headers);
+      expect(response.status, label).toBe(200);
+      expectFull((await response.json()) as Record<string, unknown>, label);
+    }
+  });
+
+  it('projects the run events of both live streams for a read token', async () => {
+    const id = seedRun();
+    for (const path of ['/api/v1/events', '/api/v1/workspace/events']) {
+      const read = await openStream(path, seedToken(['read']));
+      const full = await openStream(path, seedToken(['read', 'runs.transcript']));
+      expect(await read.first('ping')).toBeDefined();
+      expect(await full.first('ping')).toBeDefined();
+      store.updateRun(id, { tokensUsed: 345 });
+      const projected = await read.first('run');
+      const whole = await full.first('run');
+      await read.cancel();
+      await full.cancel();
+      expect(projected, path).toBeDefined();
+      expectProjected(JSON.parse(projected!) as Record<string, unknown>, path);
+      expectFull(JSON.parse(whole!) as Record<string, unknown>, path);
+    }
+  });
+
   it('refuses the handoff and the todo inbox to a read token', async () => {
     const run = store.createRun({ title: 't', workflow: 'quick-task', task: 't', steps: [] });
     process.env.CEZ_FOLLOWUPS = '1';

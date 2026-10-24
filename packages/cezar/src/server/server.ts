@@ -315,6 +315,7 @@ import { agentHomePaths, cezarHomeDir, expandTilde, isAbsolutePath } from '../pa
 import { authEnforced, fileEditRefusal, isLoopbackHostHeader, normalizeHostname, resolveCapabilities, trustedOperator } from './capabilities.ts';
 import { bearerOf, createAuthGuard, principalOf, upgradeIsAuthenticated, upgradeSessionId } from '../auth/guard.ts';
 import { isApiToken, principalSeesTranscript } from '../auth/api-tokens.ts';
+import { redactRunForScope, runViewScopes } from '../auth/run-projection.ts';
 import { buildCatalog, type Catalog } from '../mcp/catalog.ts';
 import { mcpRoutes } from '../mcp/http.ts';
 import { ensureHostKey } from '../auth/host-key.ts';
@@ -4847,7 +4848,10 @@ export function createApp(deps: ServerDeps) {
 
   // ---- chained family: runs lifecycle + artifacts (project-scoped) ----
   const runsRoutes = new Hono<ProjectApiEnv>()
-    .get('/runs', (c) => c.json(c.get('project').store.listRuns().map(withUsage)))
+    .get('/runs', (c) => {
+      const scopes = runViewScopes(principalOf(c));
+      return c.json(c.get('project').store.listRuns().map((run) => redactRunForScope(withUsage(run), scopes)));
+    })
 
     // Registered before the `/:id/...` routes so "archive-finished" and "read-all"
     // never match as a run id.
@@ -5028,7 +5032,7 @@ export function createApp(deps: ServerDeps) {
     .get('/runs/:id', (c) => {
       const { store } = c.get('project');
       const run = store.getRun(c.req.param('id'));
-      return run ? c.json(withUsage(run)) : c.json({ error: 'not found' }, 404);
+      return run ? c.json(redactRunForScope(withUsage(run), runViewScopes(principalOf(c)))) : c.json({ error: 'not found' }, 404);
     })
 
     // The ticket a run is linked to, read NOW by the cockpit for that run's agent (spec
@@ -6606,7 +6610,7 @@ export function createApp(deps: ServerDeps) {
           if (event.seq > maxSeq) await writeEvent(event);
         }
         const run = store.getRun(id);
-        if (run) await stream.writeSSE({ event: 'run', data: JSON.stringify(run) });
+        if (run) await stream.writeSSE({ event: 'run', data: JSON.stringify(redactRunForScope(run, runViewScopes(principalOf(c)))) });
 
         while (!stream.aborted) {
           if (sseSessionEnded(c)) {
@@ -6627,8 +6631,9 @@ export function createApp(deps: ServerDeps) {
     // the all-project stream arrives as `/api/workspace/events` in step 2.8).
     .get('/events', (c) => {
       const { dataDir, store } = c.get('project');
+      const scopes = runViewScopes(principalOf(c));
       return streamSSENoBuffer(c, async (stream) => {
-        const onRun = (run: RunRecord) => void stream.writeSSE({ event: 'run', data: JSON.stringify(run) });
+        const onRun = (run: RunRecord) => void stream.writeSSE({ event: 'run', data: JSON.stringify(redactRunForScope(run, scopes)) });
         const onDeleted = (id: string) =>
           void stream.writeSSE({
             event: 'run-deleted',
@@ -6682,6 +6687,7 @@ export function createApp(deps: ServerDeps) {
   // ---- chained family: workspace SSE stream (workspace-level) ----
   const workspaceEventsRoutes = new Hono<ProjectApiEnv>()
     .get('/workspace/events', (c) => {
+      const scopes = runViewScopes(principalOf(c));
       return streamSSENoBuffer(c, async (stream) => {
         // One detach bundle per attached project — the id guard makes a double
         // attach (connect-time snapshot vs. the built hook) impossible.
@@ -6692,7 +6698,7 @@ export function createApp(deps: ServerDeps) {
           const onRun = (run: RunRecord) =>
             void stream.writeSSE({
               event: 'run',
-              data: JSON.stringify({ ...run, project }),
+              data: JSON.stringify({ ...redactRunForScope(run, scopes), project }),
             });
           const onDeleted = (id: string) =>
             void stream.writeSSE({

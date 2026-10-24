@@ -63,6 +63,12 @@ Settings → Security → **API tokens** (owner only):
   `admin` (everything, including settings, self-update and terminals — an interactive shell on
   the host, so `tasks` and `author` never include it). Per-route exceptions to a family's owner
   live in `ROUTE_OWNERS`.
+- Without `runs.transcript` (or `tasks`/`admin`), a token gets every run record PROJECTED —
+  `GET /runs`, `GET /runs/:id` and the `run` events of `/events` and `/workspace/events`, all
+  through `redactRunForScope` (`auth/run-projection.ts`): `projected: true`, and none of what the
+  agent wrote (`titleSummary`, `graphState.outputs`, `dispatch.report`/`pendingReports`/
+  `pendingAsk`). Status, timing, counters, branch and PR stay; the contract's `apiRunSchema`
+  names the marker.
 - **A scope bounds the API surface, not the machine.** A token that can start or continue a run —
   `tasks`, and `author`, whose workflows and automations start them — can execute code as the OS
   user cezar runs as: agents run Bash, and a check step is a command. That user can read and write

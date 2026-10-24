@@ -417,9 +417,16 @@ export type RunRecord = z.infer<typeof runRecordSchema>;
  * What `GET /runs` and `GET /runs/:id` answer: the stored record plus the live `usage` sample the
  * server attaches on the way out (`withUsage`). Absent for finished runs and wherever `ps` yields
  * nothing — never persisted, and never attached by the mutation routes.
+ *
+ * `projected: true` marks the view an API token without `runs.transcript` gets — here and in the
+ * `run` events of `/events` and `/workspace/events` (spec 2026-10-24-cezar-mcp-server §4). It
+ * carries none of what the agent wrote: no `titleSummary`, no `graphState.outputs`, no
+ * `dispatch.report`, `dispatch.pendingReports` or `dispatch.pendingAsk`. Every other key is as
+ * stored. Absent on the full record.
  */
 export const apiRunSchema = runRecordSchema.extend({
   usage: processUsageSchema.optional(),
+  projected: z.literal(true).optional(),
 });
 export type ApiRun = z.infer<typeof apiRunSchema>;
 

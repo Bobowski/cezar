@@ -353,3 +353,34 @@ describe('archive order', () => {
     }
   });
 });
+
+describe('a restore while tasks run', () => {
+  it('is refused until the workspace is idle, and holds admission from its first step', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cez-backup-idle-'));
+    const saved = process.env.CEZ_HOME;
+    process.env.CEZ_HOME = join(root, 'home');
+    try {
+      let idle = false;
+      let holds = 0;
+      const service = new BackupService({
+        version: 't',
+        runs: { idle: () => idle, holdAdmission: () => { holds += 1; return () => { holds -= 1; }; } },
+      });
+      expect(service.restoreRefusal()).toMatch(/running or queued/);
+      expect(() => service.startRestore({ archive: join(root, 'none.age'), identity: TEST_IDENTITY })).toThrow(BackupConflictError);
+      expect(holds).toBe(0);
+      idle = true;
+      expect(service.restoreRefusal()).toBeNull();
+      service.startRestore({ archive: join(root, 'none.age'), identity: TEST_IDENTITY });
+      // Held before the archive is even opened: no run starts while it is being read.
+      expect(holds).toBe(1);
+      await waitForJob(service);
+      expect(service.status().job?.status).toBe('failed');
+      expect(holds).toBe(0);
+    } finally {
+      if (saved === undefined) delete process.env.CEZ_HOME;
+      else process.env.CEZ_HOME = saved;
+      await removeTempDir(root);
+    }
+  });
+});

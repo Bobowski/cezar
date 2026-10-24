@@ -410,8 +410,22 @@ export class BackupService {
 
   // ---- restore ----------------------------------------------------------------
 
+  /**
+   * Why a restore cannot start now, or null. It replaces the state a running or queued task
+   * writes, so it waits for an idle workspace rather than racing one (review 2026-10-24).
+   */
+  restoreRefusal(): string | null {
+    if (this.busy()) return `a ${this.job!.kind} is already running`;
+    if (this.options.runs && !this.options.runs.idle()) {
+      return 'tasks are running or queued — restore once they have finished (or stop them): a restore replaces the state they write';
+    }
+    return null;
+  }
+
   /** Start a restore in the background. `removeArchive`: the upload's temp file, gone afterwards. */
   startRestore(input: { archive: string; identity: string; removeArchive?: boolean }): BackupJob {
+    const refusal = this.restoreRefusal();
+    if (refusal) throw new BackupConflictError(refusal);
     const { job, log } = this.begin('restore');
     void this.restoreInto(input.archive, input.identity, log, job).then(
       () => this.finish(job, log),
@@ -448,7 +462,9 @@ export class BackupService {
   ): Promise<BackupManifest> {
     const home = cezarHomeDir();
     const staging = join(home, `.restore-${job.id}`);
-    let release: (() => void) | undefined;
+    // Held from the first step, not just around the copy: nothing starts while the archive is read.
+    let release: (() => void) | undefined = this.options.runs?.holdAdmission?.();
+    if (release) log('holding new runs until the restore is in place');
     try {
       log('decrypting and unpacking the archive');
       const manifest = await stageArchive(archive, identity, staging);
@@ -456,8 +472,6 @@ export class BackupService {
         `archive from ${manifest.host}, ${manifest.createdAt} (cezar ${manifest.cezarVersion}): ` +
           `${manifest.projects.length} project(s), ${manifest.sizes.files} files`,
       );
-      release = this.options.runs?.holdAdmission?.();
-      if (release) log('holding new runs until the restore is in place');
       await applyStaged({ staging, manifest, cezarHome: home, locations: this.locations(), clone: this.options.clone, log });
       for (const hook of this.restoreHooks) hook();
       const restart = options.restart !== false ? this.options.restart : undefined;

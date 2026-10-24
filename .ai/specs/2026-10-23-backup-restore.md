@@ -157,8 +157,10 @@ Code: `packages/cezar/src/backup/` (`tar.ts`, `codec.ts`, `collect.ts`, `s3.ts`,
   (`paths.ts`): `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GH_CONFIG_DIR`, `~/.ssh`, `GIT_CONFIG_GLOBAL`,
   each falling back to the tool's default outside the container; Claude's `.claude.json` rides
   as `agents/claude.json` when it lives beside its dir.
-- **Restore** stages under `CEZ_HOME/.restore-<job>`, verifies the manifest, holds run admission
-  (`WorkspaceSemaphore.holdAdmission`), then overlays: a file in the archive replaces the one on
+- **Restore** needs an idle workspace — a running or queued task is a 409 before the upload is
+  read (review 2026-10-24; `/setup` has no runs by definition) — then holds run admission
+  (`WorkspaceSemaphore.holdAdmission`) from its first step, stages under `CEZ_HOME/.restore-<job>`,
+  verifies the manifest, then overlays: a file in the archive replaces the one on
   disk, nothing else is deleted — a directory where the archive has a file, and a link or file
   where it has a directory, are kept and named in the job log, never removed or written through.
   A project's files go back only to the root the restored registry records for that id, or under

@@ -293,3 +293,38 @@ describe('a restore upload, before its body', () => {
     expect(seen.pulls).toBe(0);
   });
 });
+
+describe('a Settings restore while tasks run', () => {
+  it('is refused with 409 before its body is read', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cez-backup-busy-'));
+    const saved = { home: process.env.CEZ_HOME, remote: process.env.CEZ_REMOTE, auth: process.env.CEZ_AUTH };
+    process.env.CEZ_HOME = join(dir, 'home');
+    delete process.env.CEZ_REMOTE;
+    delete process.env.CEZ_AUTH;
+    const repoRoot = join(dir, 'repo');
+    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
+    const store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    try {
+      const backup = new BackupService({ version: 't', runs: { idle: () => false } });
+      const app = createApp({ repoRoot, store, manager: {} as RunManager, version: 't', backup });
+      let pulls = 0;
+      const body = new ReadableStream<Uint8Array>({ pull(controller) { pulls += 1; controller.enqueue(new Uint8Array(8)); controller.close(); } }, { highWaterMark: 0 });
+      const res = await apiRequest(app, '/api/v1/workspace/backup/restore', {
+        method: 'POST',
+        headers: { 'x-cezar-backup-identity': Buffer.from(TEST_IDENTITY).toString('base64'), 'content-length': '8' },
+        body,
+        duplex: 'half',
+      } as RequestInit);
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as { error: string }).error).toMatch(/running or queued/);
+      expect(pulls).toBe(0);
+    } finally {
+      store.flush();
+      for (const [key, value] of [['CEZ_HOME', saved.home], ['CEZ_REMOTE', saved.remote], ['CEZ_AUTH', saved.auth]] as const) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      await removeTempDir(dir);
+    }
+  });
+});

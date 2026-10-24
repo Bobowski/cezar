@@ -183,6 +183,9 @@ export function backupRoutes(deps: { service: BackupService; trusted: () => bool
       // Headers only: the body is read after every gate passed (review 2026-10-24).
       async (c: Context, next: Next) => {
         if (!trusted()) return refuse(c);
+        // Busy tasks or a job in flight: refused before the upload, not after it.
+        const refusal = service.restoreRefusal();
+        if (refusal) return c.json({ error: refusal }, 409);
         const length = declaredLength(c);
         return typeof length === 'number' ? next() : length;
       },
@@ -212,6 +215,8 @@ export function setupRestoreRoutes(deps: { service: BackupService; auth: AuthSer
         if (typeof length !== 'number') return length;
         const gate = auth.checkSetupCode(c.req.header(SETUP_CODE_HEADER) ?? c.req.query('code') ?? '', metaOf(c));
         if (!gate.ok) return failure(c, gate);
+        const refusal = service.restoreRefusal();
+        if (refusal) return c.json({ error: refusal }, 409);
         return next();
       },
       headerZodValidator(setupRestoreHeadersSchema),

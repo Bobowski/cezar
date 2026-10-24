@@ -209,17 +209,17 @@ describe('a token’s view of a task', () => {
   });
 
   it('reduces every failure a read token sees to a one-line kind, without the output', async () => {
-    const run = store.createRun({ title: 'land it', workflow: 'quick-task', task: 'land it', steps: [] });
+    const run = store.createRun({
+      title: 'land it', workflow: 'quick-task', task: 'land it',
+      steps: [{ id: 'task', name: 'Task', kind: 'agent' }, { id: 'check', name: 'Check', kind: 'check' }, { id: 'next', name: 'Next', kind: 'agent' }],
+    });
     // What a failed required check leaves on the record: the command's whole output (landing.ts).
     const printed = `npm test printed the token ${SECRET}`;
+    store.updateStep(run.id, 'task', { status: 'failed', error: `agent said ${printed}` });
+    store.updateStep(run.id, 'check', { status: 'failed', error: `exit 1\n${printed}` });
     store.updateRun(run.id, {
       status: 'failed',
       error: `step "check" failed: ${printed}`,
-      steps: [
-        { id: 'task', name: 'Task', kind: 'agent', status: 'failed', iterations: 1, tokensUsed: 0, error: `agent said ${printed}` },
-        { id: 'check', name: 'Check', kind: 'check', status: 'failed', iterations: 1, tokensUsed: 0, error: `exit 1\n${printed}` },
-        { id: 'next', name: 'Next', kind: 'agent', status: 'pending', iterations: 0, tokensUsed: 0 },
-      ],
       landing: { status: 'failed', at: '2026-10-24T00:00:00Z', stage: 'checks', error: `required check \`npm test\` failed:\n${printed}` },
     });
     const read = seedToken(['read']);
@@ -255,11 +255,11 @@ describe('a token’s view of a task', () => {
     const now = new Date().toISOString();
     const review = store.createRun({ title: 'review me', workflow: 'quick-task', task: 'review me', steps: [] });
     store.updateRun(review.id, { status: 'review', titleSummary: `Summary quoting ${SECRET}`, startedAt: now, finishedAt: now });
-    const failed = store.createRun({ title: 'broke', workflow: 'quick-task', task: 'broke', steps: [] });
+    const failed = store.createRun({ title: 'broke', workflow: 'quick-task', task: 'broke', steps: [{ id: 'check', name: 'Check', kind: 'check' }] });
+    store.updateStep(failed.id, 'check', { status: 'failed', error: `exit 1: ${SECRET}` });
     store.updateRun(failed.id, {
       status: 'failed', titleSummary: `Summary ${SECRET}`, startedAt: now, finishedAt: now,
       error: `step "check" failed: printed ${SECRET}`,
-      steps: [{ id: 'check', name: 'Check', kind: 'check', status: 'failed', iterations: 1, tokensUsed: 0, error: `exit 1: ${SECRET}` }],
     });
     store.flush();
     const read = seedToken(['read']);
@@ -302,11 +302,11 @@ describe('a token’s view of a task', () => {
         title: `child ${SECRET}`,
         workflow: '(planned)',
         task: `objective naming ${SECRET}`,
-        steps: [],
+        steps: [{ id: 'task', name: `child ${SECRET}`, kind: 'agent' }],
       });
+      store.updateStep(child.id, 'task', { status: status === 'failed' ? 'failed' : 'done' });
       store.updateRun(child.id, {
         status: status as 'review' | 'failed', startedAt: now, finishedAt: now, costUsd: 0.5,
-        steps: [{ id: 'task', name: `child ${SECRET}`, kind: 'agent', status: status === 'failed' ? 'failed' : 'done', iterations: 1, tokensUsed: 0 }],
         workflowDef: { name: '(planned)', source: 'built-in', steps: [{ id: 'task', name: `child ${SECRET}`, prompt: '{{task}}' }] },
         dispatch: { rootRunId: root.id, parentRunId: root.id },
         promptQueue: [{ id: 'q1', text: `parent says ${SECRET}`, createdAt: now }],

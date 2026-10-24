@@ -1728,7 +1728,7 @@ export function createApp(deps: ServerDeps) {
         const rows = await (deps.freshProcesses ?? freshProcessSnapshot)();
         terminalSessions.observe(rows);
         return rows === null ? null : terminalSessions.childCommands(sessionId, rows);
-      });
+      }, () => historySecrets(project));
     }
     return terminalSessions.write(sessionId, data);
   };
@@ -7731,6 +7731,15 @@ export function createApp(deps: ServerDeps) {
         .map((entry) => refreshStoredSecrets(`project:${entry.id}`, { kind: 'project', projectId: entry.id, root: entry.root })),
     ]);
   };
+  /** What a terminal history line is scrubbed of (spec 2026-10-24-code-page-terminal §9): the run log's values plus this project's and the workspace's stored secrets. */
+  const historySecrets = async (project: ProjectContext): Promise<readonly string[]> => {
+    await Promise.all([
+      refreshStoredSecrets('workspace', { kind: 'workspace' }),
+      ...(project.id === 'default' ? [] : [refreshStoredSecrets(`project:${project.id}`, { kind: 'project', projectId: project.id, root: project.root })]),
+    ]);
+    const stored = [dockerLogStored.get('workspace'), dockerLogStored.get(`project:${project.id}`)].flatMap((entry) => entry?.values ?? []);
+    return [...new Set([...project.store.redactionSecrets(), ...stored])].sort((a, b) => b.length - a.length);
+  };
   const dockerLogSecrets = (): readonly string[] => {
     const values = new Set<string>();
     const stores = [bootContext.store, ...contexts.ids().map((id) => contexts.peek(id)?.store)];
@@ -9139,7 +9148,8 @@ export function createApp(deps: ServerDeps) {
       const refusal = terminalPolicyRefusal(capabilities());
       if (refusal) return c.json({ error: refusal }, 409);
       c.header('Cache-Control', 'no-store');
-      return c.json(terminalHistorySchema.parse({ lines: await readTerminalHistory(c.get('project').dataDir) }), 200);
+      const project = c.get('project');
+      return c.json(terminalHistorySchema.parse({ lines: await readTerminalHistory(project.dataDir, await historySecrets(project)) }), 200);
     })
     .post('/repo/terminal', jsonZodValidator(terminalCreateSchema), async (c) => {
       const project = c.get('project');

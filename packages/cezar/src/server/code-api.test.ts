@@ -11,6 +11,7 @@ import { RunStore } from '../runs/store.ts';
 import { fakeServiceBinding } from '../services/testkit.ts';
 import type { RunManager } from '../workflows/run.ts';
 import { registerProject } from '../workspace/projects.ts';
+import { SecretStore } from '../workspace/secrets.ts';
 import { apiRequest } from './loopback-request.testkit.ts';
 import { PreviewGateways } from './preview/gateway.ts';
 import { createApp } from './server.ts';
@@ -343,6 +344,29 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
       await apiRequest(instance, `/api/v1/repo/terminal/${session.id}/input`, send('POST', { data: 'git sta' }));
       spawned[0]!.finish(0);
       expect(forget).toHaveBeenCalledWith(session.id);
+    });
+
+    it('stores and serves no credential: token shapes, headers, the host\'s env values, the project\'s stored secrets', async () => {
+      vi.stubEnv('DEPLOY_HOOK_TOKEN', 'host-env-secret-0123456789');
+      const secrets = new SecretStore(process.env, { keychain: async () => null });
+      const { id, instance } = await app({ secrets });
+      await secrets.set({ kind: 'project', projectId: id, root }, 'SHOP_DB_PASSWORD', 'stored-value-0123456789', ['checks']);
+      const pat = 'ghp_' + 'e'.repeat(36);
+      // A line kept before redaction existed is served redacted too.
+      writeFileSync(join(root, '.ai/cezar/terminal-history.json'), JSON.stringify({ lines: ['psql postgres://app:stored-value-0123456789@db/app'] }));
+      const session = terminalSessionSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal', send('POST', {}))).json());
+      const type = (data: string) => apiRequest(instance, `/api/v1/repo/terminal/${session.id}/input`, send('POST', { data }));
+      await type(`curl -H "Authorization: Bearer ${pat}" https://api.github.com/user\r`);
+      await type(`gh auth login --with-token <<< ${pat}\r`);
+      await type('deploy host-env-secret-0123456789 stored-value-0123456789\r');
+      await history.flushed();
+      const served = JSON.stringify(await (await apiRequest(instance, '/api/v1/repo/terminal/history')).json());
+      const stored = readFileSync(join(root, '.ai/cezar/terminal-history.json'), 'utf8');
+      for (const text of [served, stored]) expect(text).not.toMatch(/ghp_e|host-env-secret|stored-value/);
+      expect(terminalHistorySchema.parse(JSON.parse(served)).lines).toEqual([
+        'deploy [REDACTED] [REDACTED]', 'gh auth login --with-token <<< ***',
+        'curl -H "Authorization: Bearer ***" https://api.github.com/user', 'psql postgres://***@db/app',
+      ]);
     });
 
     it('refuses the history where the terminal is off', async () => {

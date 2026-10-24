@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { TERMINAL_HISTORY_CAP } from '@open-mercato/cezar-contract';
 import { z } from 'zod';
 
-import { SECRET_NAME_RE } from '../../core/secret-redaction.ts';
+import { SECRET_NAME_RE, redactSecrets } from '../../core/secret-redaction.ts';
 import { atomicWriteJson } from '../../workspace/config.ts';
 
 /**
@@ -124,10 +124,54 @@ export function foldHistory(lines: readonly string[], added: readonly string[], 
 
 /** The line as stored, or null when it is not kept: blank, or led by a space (bash's
  *  `ignorespace` convention for "do not remember this one"). */
-export function historyLine(raw: string): string | null {
+export function historyLine(raw: string, secrets: readonly string[] = []): string | null {
   if (raw.startsWith(' ')) return null;
   const line = raw.trim();
-  return line === '' ? null : redactAssignments(line);
+  return line === '' ? null : redactHistoryLine(line, secrets);
+}
+
+/** `line` with every credential it may carry masked (spec 2026-10-24-code-page-terminal §9): shapes as `***`,
+ *  `secrets` (host env, live runs, stored secrets) and token shapes as `[REDACTED]`. Idempotent. */
+export function redactHistoryLine(line: string, secrets: readonly string[] = []): string {
+  // URL userinfo first: `https://x-access-token:…@` is no header.
+  let out = redactAssignments(line)
+    .replace(URL_USERINFO, (whole, scheme: string, info: string) =>
+      /^https?:\/\/$/i.test(scheme) || info.includes(':') ? `${scheme}***@` : whole)
+    .replace(SECRET_FLAG_EQ, (whole, lead: string, flag: string) => (secretFlag(flag) ? `${lead}${flag}=***` : whole))
+    .replace(SECRET_FLAG_SPACED, '$1$2$3***')
+    .replace(USER_PASSWORD_FLAG, '$1$2$3$4:***')
+    .replace(SECRET_HEADER, '$1$2$3***');
+  out = out.split(/(\|\|?|&&?|;)/).map(redactShortPassword).join('');
+  if (STDIN_SECRET_FLAG.test(out)) {
+    out = out.replace(HERE_STRING, '<<< ***').replace(ECHOED, '$1$2$3 ***');
+  }
+  return redactSecrets(out, secrets);
+}
+
+/** A shell word: quoted (closed or not), or up to the next separator or quote. */
+const WORD = String.raw`(?:"(?:[^"\\]|\\.)*"?|'[^']*'?|[^\s;&|)\`"']+)`;
+const SECRET_FLAG_EQ = new RegExp(String.raw`(^|\s)(--?[A-Za-z][A-Za-z0-9_-]*)=${WORD}`, 'g');
+const secretFlag = (flag: string): boolean => {
+  const name = flag.replace(/^-+/, '').replace(/-/g, '_');
+  return SECRET_NAME_RE.test(name) || SECRET_NAME_PART.test(name);
+};
+/** `--password hunter2`: only names that end in the secret itself, and never a redirect or flag after them. */
+const SECRET_FLAG_SPACED = new RegExp(String.raw`(^|\s)(--(?:[A-Za-z0-9]+-)*(?:password|passwd|token|secret|api-?key))(\s+)(?![-<>|&;])${WORD}`, 'gi');
+const USER_PASSWORD_FLAG = /(^|\s)(-u|--user)(\s+|=)([^\s:"']+):[^\s"']+/g;
+const SECRET_HEADER = /\b((?:proxy-)?authorization|cookie|x-[a-z0-9-]*(?:token|key|secret|auth)[a-z0-9-]*)(\s*:\s*)((?:bearer|basic|token|digest|bot)\s+)?[^\s"']+/gi;
+const URL_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)([^\s/?#@"']*)@/gi;
+/** A flag that reads the secret from stdin: what the line feeds it is the secret. */
+const STDIN_SECRET_FLAG = /(^|\s)--[A-Za-z0-9-]*(?:token|password|passwd|secret)[A-Za-z0-9-]*(?=\s|$)/i;
+const HERE_STRING = new RegExp(String.raw`<<<\s*${WORD}`, 'g');
+const ECHOED = new RegExp(String.raw`(^|[\s(])(echo|printf)((?:\s+-[A-Za-z]+)*)\s+${WORD}`, 'g');
+/** Clients whose `-p` glues the password on (`mysql -phunter2`); `-p` alone makes them ask. */
+const GLUED_PASSWORD = new Set(['mysql', 'mysqldump', 'mysqladmin', 'mysqlimport', 'mysqlshow', 'mysqlcheck', 'mariadb', 'mariadb-dump', 'sshpass']);
+const GLUED_PASSWORD_FLAG = new RegExp(String.raw`(\s)-p(?=[^\s])${WORD}`, 'g');
+
+function redactShortPassword(segment: string): string {
+  const words = segment.trim().split(/\s+/).filter((word) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
+  const command = words[0] === 'sudo' || words[0] === 'exec' ? words[1] : words[0];
+  return command && GLUED_PASSWORD.has(baseName(command)) ? segment.replace(GLUED_PASSWORD_FLAG, '$1-p***') : segment;
 }
 
 /** Short names the shared credential heuristic leaves out: `DB_PASS`, `KEY`, `SMTP_PWD`. */
@@ -141,7 +185,8 @@ export function redactAssignments(line: string): string {
     SECRET_NAME_RE.test(name) || SECRET_NAME_PART.test(name) ? `${lead}${name}=***` : whole);
 }
 
-export async function readTerminalHistory(dataDir: string): Promise<string[]> {
+/** The stored lines, redacted again on the way out: a line kept before a rule existed is served under it. */
+export async function readTerminalHistory(dataDir: string, secrets: readonly string[] = []): Promise<string[]> {
   let raw: string;
   try {
     raw = await readFile(join(dataDir, 'terminal-history.json'), 'utf8');
@@ -155,13 +200,19 @@ export async function readTerminalHistory(dataDir: string): Promise<string[]> {
     return [];
   }
   // Per-entry salvage: one odd row never costs the rest.
-  const lines = fileSchema.parse(parsed).lines.filter((line): line is string => typeof line === 'string' && line.length <= MAX_LINE);
+  const lines = fileSchema.parse(parsed).lines
+    .filter((line): line is string => typeof line === 'string' && line.length <= MAX_LINE)
+    .map((line) => redactHistoryLine(line, secrets));
   return foldHistory([], [...new Set(lines)].reverse());
 }
 
 /** A prompt check slower than this keeps nothing: the keystroke never waited for it, and a late
  *  answer may describe a shell that has moved on. */
 export const PROMPT_CHECK_TIMEOUT_MS = 300;
+
+/** The secret values a stored line is scrubbed of, read when the line is decided. */
+export type HistorySecrets = () => Promise<readonly string[]>;
+const noSecrets: HistorySecrets = async () => [];
 
 /** The commands of the shell's direct children right now, or null when the table is unreadable. */
 export type ShellChildren = () => Promise<readonly string[] | null>;
@@ -266,7 +317,7 @@ export class TerminalHistory {
    * (a program's own password prompt) is not visible from here at all; the process table, and the
    * rules after `exec`, `read -s` and the programs in `READS_SECRET`, are what stand in for it.
    */
-  typed(dataDir: string, sessionId: string, data: string, children: ShellChildren): void {
+  typed(dataDir: string, sessionId: string, data: string, children: ShellChildren, secrets: HistorySecrets = noSecrets): void {
     let state = this.sessions.get(sessionId);
     if (!state) {
       state = { line: new TypedLine(), check: null, decided: Promise.resolve(), replaced: false, secretNext: false, guard: null };
@@ -310,7 +361,8 @@ export class TerminalHistory {
           // Confirmed — unless this line, or a later one, started another such program.
           if (self.guard === guard) self.guard = null;
         }
-        this.append(dataDir, [entry]);
+        const values = await secrets().catch(() => [] as readonly string[]);
+        this.append(dataDir, [redactHistoryLine(entry, values)], values);
       });
     }
   }
@@ -325,11 +377,11 @@ export class TerminalHistory {
     await Promise.all(this.writes.values());
   }
 
-  private append(dataDir: string, added: string[]): void {
+  private append(dataDir: string, added: string[], secrets: readonly string[]): void {
     const previous = this.writes.get(dataDir) ?? Promise.resolve();
     const next = previous
       .then(async () => {
-        const current = await readTerminalHistory(dataDir);
+        const current = await readTerminalHistory(dataDir, secrets);
         await atomicWriteJson(join(dataDir, 'terminal-history.json'), { lines: foldHistory(current, added) });
       })
       .catch(() => {});

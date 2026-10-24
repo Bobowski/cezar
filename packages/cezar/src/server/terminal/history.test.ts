@@ -58,6 +58,27 @@ describe('history folding', () => {
     expect(historyLine('PORT=3000 NODE_ENV=dev npm run dev')).toBe('PORT=3000 NODE_ENV=dev npm run dev');
     expect(historyLine('grep -r TOKEN src')).toBe('grep -r TOKEN src');
   });
+
+  it('stores no credential a flag, a header, a URL or a token shape carries', () => {
+    const pat = 'ghp_' + 'a'.repeat(36);
+    expect(historyLine(`curl -H "Authorization: Bearer ${pat}" https://api.github.com/user`))
+      .toBe('curl -H "Authorization: Bearer ***" https://api.github.com/user');
+    expect(historyLine(`gh auth login --with-token <<< ${pat}`)).toBe('gh auth login --with-token <<< ***');
+    expect(historyLine('docker login --password-stdin <<< "hunter2 x"')).toBe('docker login --password-stdin <<< ***');
+    expect(historyLine('echo hunter2 | docker login -u me --password-stdin')).toBe('echo *** | docker login -u me --password-stdin');
+    expect(historyLine('psql --password=hunter2 --token hunter3 -h db')).toBe('psql --password=*** --token *** -h db');
+    expect(historyLine('mysql -u root -phunter2 shop && mysqldump -p"a b" shop')).toBe('mysql -u root -p*** shop && mysqldump -p*** shop');
+    expect(historyLine('curl -u admin:hunter2 http://x')).toBe('curl -u admin:*** http://x');
+    expect(historyLine('git clone https://x-access-token:tok3n@github.com/o/r.git')).toBe('git clone https://***@github.com/o/r.git');
+    expect(historyLine('psql postgres://app:hunter2@db:5432/app')).toBe('psql postgres://***@db:5432/app');
+    expect(historyLine(`npm config set //registry/:_authToken sk-${'b'.repeat(24)}`)).toBe('npm config set //registry/:_authToken [REDACTED]');
+    expect(historyLine('deploy s3cret-value-from-env', ['s3cret-value-from-env'])).toBe('deploy [REDACTED]');
+    // What carries no credential stays as typed: a bare `-p` (mysql asks), a port, an ssh user.
+    expect(historyLine('mysql -u root -p')).toBe('mysql -u root -p');
+    expect(historyLine('psql -p 5433 -h db')).toBe('psql -p 5433 -h db');
+    expect(historyLine('git clone ssh://git@github.com/o/r.git')).toBe('git clone ssh://git@github.com/o/r.git');
+    expect(historyLine('gh auth login --with-token < token.txt')).toBe('gh auth login --with-token < token.txt');
+  });
 });
 
 describe('TerminalHistory', () => {
@@ -184,6 +205,30 @@ describe('TerminalHistory', () => {
     await history.flushed();
     expect(Date.now() - started).toBeLessThan(PROMPT_CHECK_TIMEOUT_MS + 500);
     expect(await readTerminalHistory(dataDir)).toEqual([]);
+  });
+
+  it('scrubs a stored line of the host\'s and the project\'s secret values before writing it', async () => {
+    const history = new TerminalHistory();
+    const secrets = async () => ['project-stored-secret-1'];
+    history.typed(dataDir, 's1', 'deploy --from project-stored-secret-1\r', async () => [], secrets);
+    history.typed(dataDir, 's1', `curl -H "Authorization: Bearer ${'ghp_' + 'c'.repeat(36)}" x\r`, async () => [], secrets);
+    await history.flushed();
+    expect(readFileSync(join(dataDir, 'terminal-history.json'), 'utf8')).not.toMatch(/project-stored-secret-1|ghp_c/);
+    expect(await readTerminalHistory(dataDir)).toEqual(['curl -H "Authorization: Bearer ***" x', 'deploy --from [REDACTED]']);
+  });
+
+  it('serves a line stored before redaction redacted, and rewrites it on the next write', async () => {
+    const pat = 'ghp_' + 'd'.repeat(36);
+    writeFileSync(join(dataDir, 'terminal-history.json'), JSON.stringify({ lines: [
+      `curl -H "Authorization: Bearer ${pat}" x`, 'mysql -phunter2', 'mysql -p***', 'run old-env-secret-value',
+    ] }));
+    expect(await readTerminalHistory(dataDir, ['old-env-secret-value'])).toEqual([
+      'curl -H "Authorization: Bearer ***" x', 'mysql -p***', 'run [REDACTED]',
+    ]);
+    const history = new TerminalHistory();
+    history.typed(dataDir, 's1', 'ls\r', async () => [], async () => ['old-env-secret-value']);
+    await history.flushed();
+    expect(readFileSync(join(dataDir, 'terminal-history.json'), 'utf8')).not.toMatch(/ghp_d|hunter2|old-env-secret-value/);
   });
 
   it('reads a damaged file as what it can salvage, and a missing one as empty', async () => {

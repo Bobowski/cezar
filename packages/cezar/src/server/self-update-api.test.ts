@@ -65,7 +65,8 @@ describe('the self-update API', () => {
       version: RUNNING,
       entry: join(home, 'somewhere', 'dist', 'index.js'),
       restart: () => {},
-      env: { ...process.env, CEZ_HOME: home },
+      // No background branch fetch: the unit gate never reaches a remote.
+      env: { ...process.env, CEZ_HOME: home, CEZ_SELF_UPDATE_CHECK: '0' },
       registry: new RegistryCache('@open-mercato/cezar', stubFetch),
     });
     app = createApp({ repoRoot, store, manager: {} as RunManager, version: RUNNING, selfUpdate });
@@ -160,5 +161,47 @@ describe('the self-update API', () => {
       expect(res.status).toBe(409);
       expect(await errorOf(res)).not.toContain('can only update forward');
     }
+  });
+
+  // Spec 2026-10-23 §3.7: a followed branch is code this server builds and runs, so the channel
+  // is a trusted-operator write — the line agent-config writes draw.
+  describe('the update channel', () => {
+    const prevAuth = process.env.CEZ_AUTH;
+    afterEach(() => {
+      if (prevAuth === undefined) delete process.env.CEZ_AUTH;
+      else process.env.CEZ_AUTH = prevAuth;
+    });
+    const put = (body: unknown) =>
+      apiRequest(app, '/api/v1/workspace/self-update/channel', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const branch = { remote: 'https://github.com/open-mercato/cezar.git', branch: 'brutus' };
+
+    it('follows a branch given with the channel, and reports it as editable', async () => {
+      const res = await put({ channel: 'branch', branch });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { channel: string; channelEditable: boolean; branch?: { remote: string; branch: string } };
+      expect(body.channel).toBe('branch');
+      expect(body.channelEditable).toBe(true);
+      expect(body.branch).toMatchObject(branch);
+    });
+
+    it('refuses the branch channel with nothing to follow, and a remote that is not a remote', async () => {
+      expect((await put({ channel: 'branch' })).status).toBe(409);
+      for (const remote of ['file:///srv/cezar', '/srv/cezar', '--upload-pack=touch /tmp/x']) {
+        expect((await put({ channel: 'branch', branch: { remote, branch: 'main' } })).status).toBe(400);
+      }
+      expect((await put({ channel: 'branch', branch: { ...branch, branch: '--orphan' } })).status).toBe(400);
+    });
+
+    it('is not writable on a hosted cockpit without sign-in', async () => {
+      process.env.CEZ_REMOTE = '1';
+      process.env.CEZ_AUTH = '0';
+      const res = await put({ channel: 'stable' });
+      expect(res.status).toBe(409);
+      expect(await errorOf(res)).toContain('trusted operator');
+    });
   });
 });

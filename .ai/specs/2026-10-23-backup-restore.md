@@ -159,7 +159,12 @@ Code: `packages/cezar/src/backup/` (`tar.ts`, `codec.ts`, `collect.ts`, `s3.ts`,
   as `agents/claude.json` when it lives beside its dir.
 - **Restore** stages under `CEZ_HOME/.restore-<job>`, verifies the manifest, holds run admission
   (`WorkspaceSemaphore.holdAdmission`), then overlays: a file in the archive replaces the one on
-  disk, nothing else is deleted. The restart re-execs the running entry (the managed `current`
+  disk, nothing else is deleted — a directory where the archive has a file, and a link or file
+  where it has a directory, are kept and named in the job log, never removed or written through.
+  A project's files go back only to the root the restored registry records for that id, or under
+  the projects directory (`projectsDir` / `CEZ_PROJECTS_DIR`), never to whatever absolute path
+  the manifest names, and each one passes `projectFileQualifies` again (review 2026-10-24).
+  The restart re-execs the running entry (the managed `current`
   only for a managed install). The CLI restore never restarts anything.
 - **Nightly** is a built-in item on the workspace automations timer (`builtins` on
   `WorkspaceAutomationScheduler`): 03:00 server time, retried every 10 minutes while the workspace

@@ -171,6 +171,10 @@ describe('BackupService', () => {
     const project = join(root, 'projects', 'app');
     git(root, 'clone', '-q', upstream, project);
     writeFileSync(join(project, '.env'), 'KEY=1\n');
+    // The registry is what vouches for the root on the way back (a restore never trusts the manifest alone).
+    await mergeWriteWorkspaceConfig((config) => {
+      config.projects.push({ id: 'app', root: project, addedAt: new Date().toISOString() } as (typeof config.projects)[number]);
+    });
 
     const agents = locationsUnder(join(root, 'agents'));
     const service = new BackupService({ version: 't', projects: async () => [{ id: 'app', root: project }], locations: () => agents, hostname: 'vps' });

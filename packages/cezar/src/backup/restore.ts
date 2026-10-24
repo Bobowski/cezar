@@ -1,10 +1,12 @@
 import { execFile } from 'node:child_process';
 import { createReadStream, createWriteStream, existsSync, mkdirSync } from 'node:fs';
-import { chmod, copyFile, lstat, readdir, readFile, rename, rm } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { isAbsolutePath, type AgentStateLocations } from '../paths.ts';
+import { chmod, copyFile, lstat, readdir, readFile, rename } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { expandTilde, isAbsolutePath, type AgentStateLocations } from '../paths.ts';
+import { loadWorkspaceConfig } from '../workspace/config.ts';
 import { decompressed, decrypted } from './codec.ts';
-import { agentEntries, backupManifestSchema, isSkippedDataEntry, type BackupManifest } from './collect.ts';
+import { agentEntries, backupManifestSchema, isSkippedDataEntry, projectFileQualifies, type BackupManifest } from './collect.ts';
 import { readTar } from './tar.ts';
 
 /**
@@ -51,25 +53,53 @@ export async function stageArchive(archive: string, identity: string, staging: s
   return parsed.data;
 }
 
-/** Move `src` over `dest`, across filesystems when it has to. */
-async function place(src: string, dest: string, mode: number): Promise<void> {
-  mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
+const kind = async (path: string): Promise<'missing' | 'dir' | 'file' | 'other'> => {
   try {
-    if ((await lstat(dest)).isDirectory()) await rm(dest, { recursive: true, force: true });
-  } catch { /* nothing there */ }
+    const info = await lstat(path);
+    return info.isDirectory() ? 'dir' : info.isFile() ? 'file' : 'other';
+  } catch {
+    return 'missing';
+  }
+};
+
+/** Move `src` over `dest`, across filesystems when it has to. A directory at `dest` is never removed. */
+async function place(src: string, dest: string, mode: number, warn: (line: string) => void): Promise<boolean> {
+  if ((await kind(dest)) === 'dir') {
+    warn(`kept ${dest}: the archive has a file where this machine has a directory`);
+    return false;
+  }
   try {
-    await rename(src, dest);
+    mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
+    try {
+      await rename(src, dest);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error;
+      await copyFile(src, dest);
+    }
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error;
-    await copyFile(src, dest);
+    warn(`kept ${dest}: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
   }
   await chmod(dest, mode).catch(() => {});
+  return true;
 }
 
-/** Every file under `srcDir` placed at the same relative path under `destDir`. */
-export async function placeTree(srcDir: string, destDir: string, skipTop?: (name: string) => boolean): Promise<number> {
+export interface PlaceOptions {
+  skipTop?: (name: string) => boolean;
+  /** `/`-separated path under the tree; false keeps it out (a project's allowlist). */
+  accept?: (rel: string) => boolean;
+  warn?: (line: string) => void;
+}
+
+/**
+ * Every file under `srcDir` placed at the same relative path under `destDir`. Directories are
+ * made only to hold a file, and a destination that is a link or a file where the archive has a
+ * directory is left alone with a warning — nothing is written through it.
+ */
+export async function placeTree(srcDir: string, destDir: string, options: PlaceOptions = {}): Promise<number> {
+  const warn = options.warn ?? (() => {});
   let count = 0;
-  const visit = async (src: string, dest: string, top: boolean): Promise<void> => {
+  const visit = async (src: string, dest: string, rel: string): Promise<void> => {
     let entries;
     try {
       entries = await readdir(src, { withFileTypes: true });
@@ -77,22 +107,58 @@ export async function placeTree(srcDir: string, destDir: string, skipTop?: (name
       return;
     }
     for (const entry of entries) {
-      if (top && skipTop?.(entry.name)) continue;
+      if (rel === '' && options.skipTop?.(entry.name)) continue;
       const from = join(src, entry.name);
       const to = join(dest, entry.name);
+      const childRel = rel === '' ? entry.name : `${rel}/${entry.name}`;
       if (entry.isDirectory()) {
-        const info = await lstat(from);
-        mkdirSync(to, { recursive: true, mode: info.mode & 0o777 || 0o700 });
-        await visit(from, to, false);
+        const there = await kind(to);
+        if (there !== 'missing' && there !== 'dir') {
+          warn(`kept ${to}: the archive has a directory where this machine has a ${there === 'file' ? 'file' : 'link'}`);
+          continue;
+        }
+        await visit(from, to, childRel);
       } else if (entry.isFile()) {
+        if (options.accept && !options.accept(childRel)) continue;
         const info = await lstat(from);
-        await place(from, to, info.mode & 0o777 || 0o600);
-        count += 1;
+        if (await place(from, to, info.mode & 0o777 || 0o600, warn)) count += 1;
       }
     }
   };
-  await visit(srcDir, destDir, true);
+  await visit(srcDir, destDir, '');
   return count;
+}
+
+const inside = (base: string, path: string): boolean => {
+  const rel = relative(base, path);
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+};
+
+/** Where a project's files may go: the registry's root for it, or under the projects directory. */
+export interface RootPolicy {
+  registry: Array<{ id: string; root: string }>;
+  projectsDir: string | null;
+  /** Never a project root, nor anything inside it. */
+  cezarHome: string;
+}
+
+/** The root a manifest project may be restored to, or why not. Never an arbitrary absolute path. */
+export function resolveProjectRoot(project: BackupManifest['projects'][number], policy: RootPolicy): { root: string } | { reason: string } {
+  if (!isAbsolutePath(project.root)) return { reason: 'its recorded root is not an absolute path here' };
+  const root = resolve(project.root);
+  const home = resolve(policy.cezarHome);
+  if (dirname(root) === root || root === resolve(homedir()) || root === home || inside(home, root)) {
+    return { reason: `its recorded root (${root}) is not a place a project can live` };
+  }
+  const registered = policy.registry.find((entry) => entry.id === project.id);
+  if (registered && resolve(registered.root) === root) return { root };
+  if (policy.projectsDir && isAbsolutePath(policy.projectsDir) && inside(resolve(policy.projectsDir), root)) return { root };
+  return { reason: `its recorded root (${root}) is neither the registered root for ${project.id} nor under the projects directory` };
+}
+
+async function rootPolicyOf(cezarHome: string): Promise<RootPolicy> {
+  const config = await loadWorkspaceConfig(join(cezarHome, 'config.json'));
+  return { registry: config.projects, projectsDir: expandTilde(config.projectsDir), cezarHome };
 }
 
 export type CloneProject = (remote: string, root: string, branch: string | null) => Promise<void>;
@@ -120,13 +186,15 @@ export interface ApplyInput {
   cezarHome: string;
   locations: AgentStateLocations;
   clone?: CloneProject;
+  /** Absent: the workspace registry the data half just put in place, and its projects dir. */
+  rootPolicy?: RootPolicy;
   log: (line: string) => void;
 }
 
 /** Put a staged archive in place: cezar's state, then the logins (a clone may need `gh`'s), then projects. */
 export async function applyStaged(input: ApplyInput): Promise<void> {
   const { staging, manifest, log } = input;
-  const data = await placeTree(join(staging, 'data'), input.cezarHome, isSkippedDataEntry);
+  const data = await placeTree(join(staging, 'data'), input.cezarHome, { skipTop: isSkippedDataEntry, warn: log });
   log(`restored cezar state (${data} files)`);
 
   let agents = 0;
@@ -136,42 +204,44 @@ export async function applyStaged(input: ApplyInput): Promise<void> {
     if (entry.kind === 'file') {
       const info = await lstat(from);
       if (!info.isFile()) continue;
-      await place(from, entry.path, info.mode & 0o777 || 0o600);
-      agents += 1;
+      if (await place(from, entry.path, info.mode & 0o777 || 0o600, log)) agents += 1;
     } else {
       mkdirSync(entry.path, { recursive: true, mode: 0o700 });
-      agents += await placeTree(from, entry.path);
+      agents += await placeTree(from, entry.path, { warn: log });
       if (entry.archive === 'agents/ssh') await chmod(entry.path, 0o700).catch(() => {});
     }
   }
   // Claude's `.claude.json` sits beside its dir by default and inside it under an override.
   if (!input.locations.claudeState && existsSync(join(staging, 'agents', 'claude.json'))) {
-    await place(join(staging, 'agents', 'claude.json'), join(input.locations.claude, '.claude.json'), 0o600);
-    agents += 1;
+    if (await place(join(staging, 'agents', 'claude.json'), join(input.locations.claude, '.claude.json'), 0o600, log)) agents += 1;
   }
   log(`restored agent logins (${agents} files)`);
 
   const clone = input.clone ?? cloneWithGit;
+  const policy = input.rootPolicy ?? (await rootPolicyOf(input.cezarHome));
   for (const project of manifest.projects) {
     const from = join(staging, 'projects', project.id);
-    if (!isAbsolutePath(project.root)) {
-      log(`skipped ${project.id}: its recorded root is not an absolute path here`);
+    const resolved = resolveProjectRoot(project, policy);
+    if ('reason' in resolved) {
+      log(`skipped ${project.id}: ${resolved.reason}`);
       continue;
     }
-    if (!existsSync(project.root)) {
+    const { root } = resolved;
+    if (!existsSync(root)) {
       if (!project.remote) {
         log(`skipped ${project.id}: not on disk and it has no remote to clone`);
         continue;
       }
       log(`cloning ${project.id}…`);
       try {
-        await clone(project.remote, project.root, project.branch);
+        await clone(project.remote, root, project.branch);
       } catch (error) {
         log(`could not clone ${project.id}: ${error instanceof Error ? error.message : String(error)}`);
         continue;
       }
     }
-    const files = existsSync(from) ? await placeTree(from, project.root) : 0;
+    // The allowlist again: an archive is input, not an authority on what a project may hold.
+    const files = existsSync(from) ? await placeTree(from, root, { accept: projectFileQualifies, warn: log }) : 0;
     log(`restored ${project.id} (${files} files)`);
   }
 }

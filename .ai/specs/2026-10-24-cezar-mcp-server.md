@@ -87,6 +87,8 @@ process list; `CEZ_SERVER` for the address), so
   installer's owner probe therefore goes to the loopback upstream, not through nginx.
 - A revoked or expired token ends the SSE streams it opened within one keepalive beat
   (`sseSessionEnded`); a token opens no WebSocket under sign-in, so there is none to end.
+- `CEZ_TOKEN`/`CEZ_SERVER`/`CEZ_API_TOKEN` in the cockpit's own environment reach no child:
+  `buildChildEnv` drops them for agents and `checkStepEnv` for check steps (`isNeverForwarded`).
 - Scopes are enforced server-side per route family, not by the tool list the client saw.
 - Token hashes only; a lost token is recreated, never recovered.
 - stdio `cezar mcp` on a local cockpit needs no token: it is the machine's owner, like the CLI.

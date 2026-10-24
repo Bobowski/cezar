@@ -284,6 +284,11 @@ const VERTEX_ALLOW_PREFIXES: readonly string[] = ['GOOGLE_CLOUD_'];
  */
 const NEVER_FORWARDED: ReadonlySet<string> = upperSet(['CEZ_TOKEN', 'CEZ_SERVER', 'CEZ_API_TOKEN']);
 
+/** Whether a name is the CLI client's own credential or address — never a child's, agent or check. */
+export function isNeverForwarded(name: string): boolean {
+  return NEVER_FORWARDED.has(name.toUpperCase());
+}
+
 export function looksSecret(name: string): boolean {
   return SECRET_NAME_RE.test(name);
 }

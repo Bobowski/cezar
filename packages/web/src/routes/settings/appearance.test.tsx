@@ -3,7 +3,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createQueryClient } from '@/api/query-client'
-import { workspaceQueryKeys } from '@/api/queries'
+import { authQueryKeys } from '@/api/auth'
+import { queryKeys, workspaceQueryKeys } from '@/api/queries'
 import { AppearanceProvider } from '@/components/appearance-provider'
 import { ThemeProvider } from '@/components/theme-provider'
 import { AppearanceSection } from './appearance'
@@ -84,9 +85,10 @@ function seedProjects(client: QueryClient, ids: string[]) {
   })
 }
 
-function renderSection(projectIds: string[]) {
+function renderSection(projectIds: string[], seed?: (client: QueryClient) => void) {
   const client = createQueryClient()
   seedProjects(client, projectIds)
+  seed?.(client)
   render(
     <QueryClientProvider client={client}>
       <ThemeProvider>
@@ -104,6 +106,28 @@ afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
   localStorage.clear()
+})
+
+describe('Settings → Appearance: branding writes', () => {
+  const hosted = (session: { enforced: boolean; user?: { id: string } }) => (client: QueryClient) => {
+    client.setQueryData(queryKeys.health, { capabilities: { localHandoff: false } })
+    client.setQueryData(authQueryKeys.session, { authenticated: session.enforced, setupRequired: false, ...session })
+  }
+
+  it('offers no branding control on a hosted cockpit without sign-in, which refuses every write', async () => {
+    renderSection(['cezar'], hosted({ enforced: false }))
+    expect((await screen.findByText(/Sign-in required/)).closest('[data-slot="branding-readonly"]')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Choose logo' })).toBeNull()
+    expect(screen.queryByLabelText('Instance name')).toBeNull()
+    expect(screen.queryByLabelText('Upload favicon')).toBeNull()
+    expect(document.querySelector('[data-slot="branding-reset"]')).toBeNull()
+  })
+
+  it('offers them to the signed-in owner of a hosted cockpit', () => {
+    renderSection(['cezar'], hosted({ enforced: true, user: { id: 'owner' } }))
+    expect(screen.getByRole('button', { name: 'Choose logo' })).toBeTruthy()
+    expect(document.querySelector('[data-slot="branding-readonly"]')).toBeNull()
+  })
 })
 
 describe('Settings → Appearance: project order', () => {

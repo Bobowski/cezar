@@ -3,7 +3,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 
-import { useProjects, useWorkspaceBranding, useWorkspaceConfig, workspaceQueryKeys } from '@/api/queries'
+import { useSignedInUser } from '@/api/auth'
+import { useHealth, useProjects, useWorkspaceBranding, useWorkspaceConfig, workspaceQueryKeys } from '@/api/queries'
 import type { BrandingUploadKind, WorkspaceBranding, WorkspaceConfigResponse } from '@open-mercato/cezar-api-client'
 import {
   deleteWorkspaceBrandingImage,
@@ -25,7 +26,7 @@ import type { Accent, Density, Width } from '@/lib/appearance'
 import type { Theme } from '@/lib/theme'
 import { useProjectOrder } from '@/lib/use-project-order'
 import { toast } from '@/components/ui/toaster'
-import { SettingsField, SettingsGroup, SettingsPane } from './settings-field'
+import { SettingsField, SettingsGroup, SettingsNote, SettingsPane } from './settings-field'
 
 /**
  * Settings → Appearance (R6 Step 1.3, spec §"Settings").
@@ -242,7 +243,19 @@ function ProjectOrderField() {
   )
 }
 
+/**
+ * The server's `trustedOperator()`: a local cockpit, or a hosted one behind cezar's own sign-in.
+ * Hosted under `CEZ_AUTH=0` every branding write answers 409. Until health loads the controls
+ * show — the server still decides.
+ */
+function useBrandingEditable(): boolean {
+  const health = useHealth()
+  const signedIn = useSignedInUser() !== null
+  return health.data === undefined || health.data.capabilities.localHandoff || signedIn
+}
+
 function BrandingFields() {
+  const editable = useBrandingEditable()
   const config = useWorkspaceConfig()
   const brand = useWorkspaceBranding()
   const queryClient = useQueryClient()
@@ -285,6 +298,15 @@ function BrandingFields() {
     }
   }, [branding?.name])
   const logoSrc = logoDraft?.url ?? branding?.logoUrl ?? null
+  if (!editable) {
+    return (
+      <SettingsGroup title="Branding" description="How this cezar instance introduces itself.">
+        <SettingsNote role="note" data-slot="branding-readonly">
+          Sign-in required: this cockpit is hosted without sign-in (CEZ_AUTH=0), so its name, logo, icons and accent are changed on the machine that runs it.
+        </SettingsNote>
+      </SettingsGroup>
+    )
+  }
   return (
     <SettingsGroup title="Branding" description="How this cezar instance introduces itself.">
       <SettingsField

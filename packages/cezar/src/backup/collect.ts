@@ -165,23 +165,38 @@ async function fileSource(path: string, name: string): Promise<TarSource | null>
 const LIVE_STATUSES = new Set(['queued', 'running', 'waiting']);
 
 /**
- * Run rows as an archive may carry them: none still live. No process travels with a backup, and
- * boot recovery on the restored host would re-queue or resume a live-looking row (review
- * 2026-10-24, round 3) — so it is `failed` with an `interrupted — ` note, as a cold read shows it.
+ * A record's promises to wake itself later (run schema): the usage-limit resume deadline and the
+ * monitoring wake timer with its sub-state. No timer travels with a backup, and `recover()` on the
+ * restored host would keep a promise another host made (review 2026-10-24, round 4).
+ */
+const SCHEDULING_FIELDS = ['autoResumeAt', 'monitoringWakeAt', 'monitoringWakeCapReached', 'activity'] as const;
+
+/**
+ * Run rows as an archive may carry them: none still live, none still scheduled. No process travels
+ * with a backup, and boot recovery on the restored host would re-queue, resume or re-arm such a row
+ * (review 2026-10-24, rounds 3 and 4) — so a live row is `failed` with an `interrupted — ` note, as
+ * a cold read shows it, and a scheduled one loses its schedule with a note saying so.
  */
 export function settleLiveRuns(rows: unknown[], capturedBy: string, now: Date = new Date()): unknown[] {
   return rows.map((row) => {
     if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
     const was = (row as { status?: unknown }).status;
-    if (typeof was !== 'string' || !LIVE_STATUSES.has(was)) return row;
+    const live = typeof was === 'string' && LIVE_STATUSES.has(was);
+    if (!live && !SCHEDULING_FIELDS.some((key) => (row as Record<string, unknown>)[key] !== undefined)) return row;
     const run = structuredClone(row) as Record<string, unknown>;
-    const askParked = was === 'waiting' && run.askParked === true;
-    run.status = 'failed';
-    run.error = `interrupted — captured by ${capturedBy} while it was ${was}`;
-    if (typeof run.finishedAt !== 'string') run.finishedAt = now.toISOString();
-    // Still the user's question to answer, as `reconcileLoadedRun` keeps it.
-    if (askParked) run.awaitingAnswerSince = run.finishedAt;
-    for (const key of ['activity', 'monitoringWakeAt', 'monitoringWakeCapReached', 'askParked']) delete run[key];
+    if (live) {
+      const askParked = was === 'waiting' && run.askParked === true;
+      run.status = 'failed';
+      run.error = `interrupted — captured by ${capturedBy} while it was ${was}`;
+      if (typeof run.finishedAt !== 'string') run.finishedAt = now.toISOString();
+      // Still the user's question to answer, as `reconcileLoadedRun` keeps it.
+      if (askParked) run.awaitingAnswerSince = run.finishedAt;
+      delete run.askParked;
+    } else if (run.autoResumeAt !== undefined) {
+      const note = `automatic resume cancelled — captured by ${capturedBy}; continue this task by hand`;
+      run.error = typeof run.error === 'string' && run.error ? `${run.error}\n${note}` : note;
+    }
+    for (const key of SCHEDULING_FIELDS) delete run[key];
     if (Array.isArray(run.steps)) {
       run.steps = run.steps.map((step: unknown) =>
         step && typeof step === 'object' && ['running', 'waiting'].includes(String((step as { status?: unknown }).status))

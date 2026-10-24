@@ -3,12 +3,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { BackupManifest } from '../backup/collect.ts';
+import { settleLiveRuns, type BackupManifest } from '../backup/collect.ts';
 import { applyStaged } from '../backup/restore.ts';
 import { branchFor, pruneOrphans, worktreePathFor } from '../git-worktree.ts';
 import type { AgentStateLocations } from '../paths.ts';
 import { consumeRestoreMarker, orphanPruneSuspended, resetRestoreGuardForTests, writeRestoreMarker } from '../restore-guard.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
+import { RunManager } from '../workflows/run.ts';
 import { RunStore } from './store.ts';
 
 /** The archive's index, as a restore places it (spec 2026-10-23-backup-restore §10). */
@@ -164,6 +165,35 @@ describe('restoring over a live install keeps the tasks created after the backup
       expect(reopened.getRun(id)?.error, id).toMatch(/^interrupted — /);
     }
     expect(reopened.getRun('was-running')?.steps[0]?.status).toBe('failed');
+  });
+
+  it('keeps no promise to resume a task the old host parked on a usage limit', async () => {
+    const inAnHour = new Date(Date.now() + 3_600_000).toISOString();
+    const parked = { ...RESTORED[0]!, id: 'limit-parked', status: 'failed', error: 'usage limit', autoResumeAt: inAnHour, autoResumeAttempts: 1 };
+    // Archive time: the backup's copy is settled already.
+    const [captured] = settleLiveRuns([parked], 'backup x') as Array<Record<string, unknown>>;
+    expect(captured?.autoResumeAt).toBeUndefined();
+    expect(captured?.error).toMatch(/usage limit\nautomatic resume cancelled — captured by backup x/);
+
+    // Restore time: an archive written before that is settled as it is placed.
+    const log: string[] = [];
+    await apply(stage({ '.ai/cezar/runs.json': JSON.stringify([parked]) }), log);
+    const store = RunStore.open(join(root, '.ai', 'cezar'), { keepLive: true });
+    expect(store.getRun('limit-parked')?.autoResumeAt).toBeUndefined();
+    expect(store.getRun('limit-parked')?.error).toMatch(/automatic resume cancelled — captured by the backup from box/);
+    const savedDry = process.env.CEZ_DRY_RUN;
+    process.env.CEZ_DRY_RUN = '1';
+    const manager = new RunManager(store, root);
+    try {
+      await manager.recover(); // → reconcileAutoResumes
+      expect((manager as unknown as { autoResumeTimers: Map<string, unknown> }).autoResumeTimers.size).toBe(0);
+      expect(store.getRun('limit-parked')?.status).toBe('failed');
+    } finally {
+      manager.dispose();
+      store.flush();
+      if (savedDry === undefined) delete process.env.CEZ_DRY_RUN;
+      else process.env.CEZ_DRY_RUN = savedDry;
+    }
   });
 
   it('prunes nothing on the first boot after a restore, says what it kept, and prunes on the next', async () => {

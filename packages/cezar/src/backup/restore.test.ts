@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -7,7 +7,7 @@ import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import { TEST_IDENTITY } from './age-vector.testkit.ts';
 import { file, rawEntry, sealArchive, sealTar, tarBytes, withManifest } from './craft-archive.testkit.ts';
 import { PAX_HEADER_MAX } from './tar.ts';
-import { applyStaged, cloneWithGit, stageArchive, validCloneRemote } from './restore.ts';
+import { applyStaged, cloneWithGit, placeFile, stageArchive, validCloneRemote } from './restore.ts';
 
 /** What a restore may touch (review 2026-10-24): the archive is input, not an authority. */
 describe('applying a crafted archive', () => {
@@ -103,6 +103,49 @@ describe('applying a crafted archive', () => {
     );
     expect(existsSync(join(elsewhere, 'cezar', 'runs.json'))).toBe(false);
     expect(log.join('\n')).toMatch(/kept .*\.ai: /);
+  });
+});
+
+describe('placing a file across filesystems (EXDEV)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cez-restore-exdev-'));
+  });
+  afterEach(() => removeTempDir(dir));
+
+  const exdev = async () => {
+    throw Object.assign(new Error('cross-device link not permitted'), { code: 'EXDEV' });
+  };
+
+  it('replaces a file link at the destination instead of writing through it', async (ctx) => {
+    const outside = join(dir, 'outside.json');
+    writeFileSync(outside, 'theirs');
+    const dest = join(dir, 'home', 'auth.json');
+    mkdirSync(join(dir, 'home'));
+    try {
+      symlinkSync(outside, dest, 'file');
+    } catch {
+      ctx.skip(); // no symlink privilege (Windows without developer mode)
+    }
+    const src = join(dir, 'staged.json');
+    writeFileSync(src, 'restored');
+    const warnings: string[] = [];
+    expect(await placeFile(src, dest, 0o600, (line) => warnings.push(line), exdev)).toBe(true);
+    expect(warnings).toEqual([]);
+    expect(lstatSync(dest).isSymbolicLink()).toBe(false);
+    expect(readFileSync(dest, 'utf8')).toBe('restored');
+    expect(readFileSync(outside, 'utf8')).toBe('theirs');
+  });
+
+  it('replaces a plain file and leaves no temp sibling behind', async () => {
+    const dest = join(dir, 'runs.json');
+    writeFileSync(dest, 'old');
+    const src = join(dir, 'staged.json');
+    writeFileSync(src, 'new');
+    expect(await placeFile(src, dest, 0o600, () => {}, exdev)).toBe(true);
+    expect(readFileSync(dest, 'utf8')).toBe('new');
+    expect(existsSync(join(dir, 'staged.json'))).toBe(true); // a copy, the staging dir is removed later
+    expect(readdirSync(dir).filter((name) => name.includes('cezar-restore'))).toEqual([]);
   });
 });
 

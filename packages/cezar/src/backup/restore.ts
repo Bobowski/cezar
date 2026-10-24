@@ -1,9 +1,10 @@
 import { execFile } from 'node:child_process';
-import { createReadStream, createWriteStream, existsSync, mkdirSync } from 'node:fs';
-import { chmod, copyFile, lstat, readdir, rename } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { constants, createReadStream, createWriteStream, existsSync, mkdirSync } from 'node:fs';
+import { chmod, copyFile, lstat, open, readdir, rename, rm } from 'node:fs/promises';
 import { Writable } from 'node:stream';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { expandTilde, isAbsolutePath, type AgentStateLocations } from '../paths.ts';
 import { loadWorkspaceConfig } from '../workspace/config.ts';
 import { decompressed, decrypted } from './codec.ts';
@@ -112,25 +113,54 @@ const kind = async (path: string): Promise<'missing' | 'dir' | 'file' | 'other'>
   }
 };
 
+/**
+ * Across filesystems: copy to a fresh sibling and rename THAT over `dest`, so a link at `dest`
+ * is replaced like `rename` replaces it, never followed. The sibling is created exclusively
+ * (`COPYFILE_EXCL` never opens an existing path) and chmodded through a no-follow handle.
+ */
+async function copyAcross(src: string, dest: string, mode: number): Promise<void> {
+  const tmp = join(dirname(dest), `.${basename(dest)}.cezar-restore-${randomBytes(6).toString('hex')}`);
+  try {
+    await copyFile(src, tmp, constants.COPYFILE_EXCL);
+    const handle = await open(tmp, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      await handle.chmod(mode).catch(() => {});
+    } finally {
+      await handle.close();
+    }
+    await rename(tmp, dest);
+  } catch (error) {
+    await rm(tmp, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
 /** Move `src` over `dest`, across filesystems when it has to. A directory at `dest` is never removed. */
-async function place(src: string, dest: string, mode: number, warn: (line: string) => void): Promise<boolean> {
+export async function placeFile(
+  src: string,
+  dest: string,
+  mode: number,
+  warn: (line: string) => void,
+  move: (from: string, to: string) => Promise<void> = rename,
+): Promise<boolean> {
   if ((await kind(dest)) === 'dir') {
     warn(`kept ${dest}: the archive has a file where this machine has a directory`);
     return false;
   }
   try {
     mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
+    // The staged copy is ours: its mode is set before it moves, never through whatever `dest` is.
+    await chmod(src, mode).catch(() => {});
     try {
-      await rename(src, dest);
+      await move(src, dest);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error;
-      await copyFile(src, dest);
+      await copyAcross(src, dest, mode);
     }
   } catch (error) {
     warn(`kept ${dest}: ${error instanceof Error ? error.message : String(error)}`);
     return false;
   }
-  await chmod(dest, mode).catch(() => {});
   return true;
 }
 
@@ -171,7 +201,7 @@ export async function placeTree(srcDir: string, destDir: string, options: PlaceO
       } else if (entry.isFile()) {
         if (options.accept && !options.accept(childRel)) continue;
         const info = await lstat(from);
-        if (await place(from, to, info.mode & 0o777 || 0o600, warn)) count += 1;
+        if (await placeFile(from, to, info.mode & 0o777 || 0o600, warn)) count += 1;
       }
     }
   };
@@ -277,7 +307,7 @@ export async function applyStaged(input: ApplyInput): Promise<void> {
     if (entry.kind === 'file') {
       const info = await lstat(from);
       if (!info.isFile()) continue;
-      if (await place(from, entry.path, info.mode & 0o777 || 0o600, log)) agents += 1;
+      if (await placeFile(from, entry.path, info.mode & 0o777 || 0o600, log)) agents += 1;
     } else {
       mkdirSync(entry.path, { recursive: true, mode: 0o700 });
       agents += await placeTree(from, entry.path, { warn: log });
@@ -286,7 +316,7 @@ export async function applyStaged(input: ApplyInput): Promise<void> {
   }
   // Claude's `.claude.json` sits beside its dir by default and inside it under an override.
   if (!input.locations.claudeState && existsSync(join(staging, 'agents', 'claude.json'))) {
-    if (await place(join(staging, 'agents', 'claude.json'), join(input.locations.claude, '.claude.json'), 0o600, log)) agents += 1;
+    if (await placeFile(join(staging, 'agents', 'claude.json'), join(input.locations.claude, '.claude.json'), 0o600, log)) agents += 1;
   }
   log(`restored agent logins (${agents} files)`);
 

@@ -185,6 +185,11 @@ Code: `packages/cezar/src/backup/` (`tar.ts`, `codec.ts`, `collect.ts`, `s3.ts`,
   **While the hold lasts** `POST /runs` answers 409 with Continue's "restore in progress"
   message, and a due automation skips its cycle (a `skipped` / `restore in progress` log row,
   then its own retry floor) instead of launching into an index that is not being written.
+  **Leftovers:** a crash between `copyAcross`'s copy and rename leaves `.<name>.cezar-restore-<hex>`.
+  Every restore first sweeps those from where it places files (`CEZ_HOME`, the agents' dirs and
+  files, the vouched project roots — never `node_modules`, `.git`, task worktrees or a link) and
+  keeps `CEZ_HOME/restore-journal.json` while it places; a boot that finds the journal sweeps
+  the same targets once and removes it.
   The restart re-execs the running entry (the managed `current`
   only for a managed install). The CLI restore never restarts anything.
 - **Nightly** is a built-in item on the workspace automations timer (`builtins` on

@@ -1,13 +1,13 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AgentStateLocations } from '../paths.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import { TEST_IDENTITY } from './age-vector.testkit.ts';
 import { file, rawEntry, sealArchive, sealTar, tarBytes, withManifest } from './craft-archive.testkit.ts';
 import { PAX_HEADER_MAX } from './tar.ts';
-import { applyStaged, cloneWithGit, placeFile, stageArchive, validCloneRemote } from './restore.ts';
+import { applyStaged, cloneWithGit, placeFile, stageArchive, sweepAfterInterruptedRestore, validCloneRemote } from './restore.ts';
 
 /** What a restore may touch (review 2026-10-24): the archive is input, not an authority. */
 describe('applying a crafted archive', () => {
@@ -144,6 +144,69 @@ describe('applying a crafted archive', () => {
     );
     expect(existsSync(join(elsewhere, 'cezar'))).toBe(false);
     expect(log.join('\n')).toMatch(/kept .*\.ai: /);
+  });
+});
+
+describe('leftovers of a restore that crashed between copy and rename', () => {
+  let dir: string;
+  const saved = process.env.CEZ_HOME;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cez-restore-leftover-'));
+    process.env.CEZ_HOME = join(dir, 'home');
+    mkdirSync(join(dir, 'home'), { recursive: true });
+  });
+
+  afterEach(async () => {
+    if (saved === undefined) delete process.env.CEZ_HOME;
+    else process.env.CEZ_HOME = saved;
+    await removeTempDir(dir);
+  });
+
+  const leftover = (at: string, name: string) => {
+    mkdirSync(at, { recursive: true });
+    const path = join(at, `.${name}.cezar-restore-0123456789ab`);
+    writeFileSync(path, 'half a copy');
+    return path;
+  };
+
+  it('are swept from the project, the home and the agents at the start of the next restore', async () => {
+    const app = join(dir, 'code', 'app');
+    const home = join(dir, 'home');
+    const agents = join(dir, 'agents');
+    const planted = [leftover(app, '.env'), leftover(join(app, '.ai', 'cezar'), 'runs.json'), leftover(join(app, 'packages', 'api'), '.env'), leftover(home, 'auth.json'), leftover(join(agents, 'ssh'), 'id_ed25519')];
+    const kept = [join(app, '.env.cezar-restore-notours'), join(app, 'node_modules', 'pkg', '..env.cezar-restore-0123456789ab')];
+    for (const path of kept) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, 'not a leftover of ours');
+    }
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ projects: [{ id: 'app', root: app, addedAt: '2026-10-24T00:00:00Z' }] }));
+    const archive = join(dir, 'a.age');
+    await sealArchive(withManifest([{ id: 'app', root: app, remote: null, branch: null }], [file('projects/app/.env', 'A=1')]), archive);
+    const staging = join(home, '.restore-test');
+    const manifest = await stageArchive(archive, TEST_IDENTITY, staging);
+    const log: string[] = [];
+    const locations: AgentStateLocations = { claude: join(agents, 'claude'), claudeState: null, codex: join(agents, 'codex'), gh: join(agents, 'gh'), ssh: join(agents, 'ssh'), gitconfig: join(agents, 'gitconfig') };
+    await applyStaged({ staging, manifest, cezarHome: home, locations, log: (line) => log.push(line) });
+    for (const path of planted) expect(existsSync(path), path).toBe(false);
+    for (const path of kept) expect(existsSync(path), path).toBe(true);
+    expect(readFileSync(join(app, '.env'), 'utf8')).toBe('A=1');
+    expect(log.join('\n')).toMatch(/removed 5 leftover/);
+    // A restore that finished leaves no journal for the boot sweep to find.
+    expect(existsSync(join(home, 'restore-journal.json'))).toBe(false);
+  });
+
+  it('are swept at boot when a restore never finished', async () => {
+    const app = join(dir, 'code', 'app');
+    const path = leftover(join(app, '.ai', 'cezar'), 'runs.json');
+    writeFileSync(join(dir, 'home', 'restore-journal.json'), JSON.stringify({ trees: [app], files: [] }));
+    const log: string[] = [];
+    await sweepAfterInterruptedRestore((line) => log.push(line));
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(join(dir, 'home', 'restore-journal.json'))).toBe(false);
+    expect(log.join('\n')).toMatch(/removed 1 leftover/);
+    // No journal, no walk.
+    await sweepAfterInterruptedRestore(() => expect.unreachable());
   });
 });
 

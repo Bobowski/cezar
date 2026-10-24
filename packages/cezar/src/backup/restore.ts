@@ -1,11 +1,11 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { constants, createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { constants, createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { chmod, copyFile, lstat, open, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { Writable } from 'node:stream';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { expandTilde, isAbsolutePath, type AgentStateLocations } from '../paths.ts';
+import { cezarHomeDir, expandTilde, isAbsolutePath, restoreJournalPath, type AgentStateLocations } from '../paths.ts';
 import { loadWorkspaceConfig } from '../workspace/config.ts';
 import { decompressed, decrypted } from './codec.ts';
 import { agentEntries, backupManifestSchema, isSkippedDataEntry, projectFileQualifies, settleLiveRuns, type BackupManifest } from './collect.ts';
@@ -419,6 +419,80 @@ async function mergeRunHistory(from: string, root: string, manifest: BackupManif
   return placed;
 }
 
+/** The sibling `copyAcross` and `writeAtomically` create, exactly — nothing else is ever swept. */
+const LEFTOVER_RE = /^\..+\.cezar-restore-[0-9a-f]{12}$/;
+
+/** What a restore places into: trees it walks, and single files whose siblings it checks. */
+export interface RestoreTargets {
+  trees: string[];
+  files: string[];
+}
+
+/**
+ * Remove the half-copied siblings a crash between copy and rename left (review 2026-10-24,
+ * round 3). Never follows a link, never enters `node_modules`, `.git` or task worktrees, and
+ * walks `CEZ_HOME` only where a restore places files.
+ */
+export async function sweepRestoreLeftovers(targets: RestoreTargets, cezarHome: string): Promise<number> {
+  let removed = 0;
+  const drop = async (path: string) => {
+    await rm(path, { force: true }).then(() => { removed += 1; }, () => {});
+  };
+  const walk = async (root: string): Promise<void> => {
+    const isHome = resolve(root) === resolve(cezarHome);
+    const visit = async (dir: string, top: boolean): Promise<void> => {
+      let entries;
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (top && isHome && isSkippedDataEntry(entry.name)) continue;
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === 'node_modules' || entry.name === '.git' || path === join(root, '.ai', 'cezar', 'worktrees')) continue;
+          await visit(path, false);
+        } else if (entry.isFile() && LEFTOVER_RE.test(entry.name)) {
+          await drop(path);
+        }
+      }
+    };
+    await visit(root, true);
+  };
+  for (const tree of new Set(targets.trees)) await walk(tree);
+  for (const file of new Set(targets.files)) {
+    const prefix = `.${basename(file)}.cezar-restore-`;
+    let entries;
+    try {
+      entries = await readdir(dirname(file), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.startsWith(prefix) && LEFTOVER_RE.test(entry.name)) await drop(join(dirname(file), entry.name));
+    }
+  }
+  return removed;
+}
+
+/** Boot: a journal means a restore stopped mid-placement — sweep where it was placing, once. */
+export async function sweepAfterInterruptedRestore(log: (line: string) => void = console.log): Promise<void> {
+  const path = restoreJournalPath();
+  let targets: RestoreTargets;
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as Partial<RestoreTargets>;
+    const strings = (value: unknown) => (Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && isAbsolutePath(item)) : []);
+    targets = { trees: strings(raw.trees), files: strings(raw.files) };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    targets = { trees: [], files: [] };
+  }
+  const removed = await sweepRestoreLeftovers(targets, cezarHomeDir());
+  rmSync(path, { force: true });
+  if (removed > 0) log(`  removed ${removed} leftover file(s) of a restore that did not finish`);
+}
+
 export interface ApplyInput {
   staging: string;
   manifest: BackupManifest;
@@ -433,9 +507,39 @@ export interface ApplyInput {
 
 /** Put a staged archive in place: cezar's state, then the logins (a clone may need `gh`'s), then projects. */
 export async function applyStaged(input: ApplyInput): Promise<void> {
-  const { staging, manifest, log } = input;
+  const { manifest, log } = input;
   // Read before anything lands: the archive's config.json must not vouch for its own roots.
   const policy = input.rootPolicy ?? (await rootPolicyOf(input.cezarHome));
+  const agentTargets = agentEntries(input.locations);
+  const targets: RestoreTargets = {
+    trees: [
+      input.cezarHome,
+      ...agentTargets.filter((entry) => entry.kind === 'dir').map((entry) => entry.path),
+      ...manifest.projects.flatMap((project) => {
+        const resolved = resolveProjectRoot(project, policy);
+        return 'root' in resolved ? [resolved.root] : [];
+      }),
+    ],
+    files: agentTargets.filter((entry) => entry.kind === 'file').map((entry) => entry.path),
+  };
+  // What an earlier restore that crashed between copy and rename left behind (review round 3).
+  const swept = await sweepRestoreLeftovers(targets, input.cezarHome);
+  if (swept > 0) log(`removed ${swept} leftover file(s) of an earlier restore that did not finish`);
+  const journal = restoreJournalPath();
+  try {
+    writeFileSync(journal, `${JSON.stringify(targets)}\n`, { mode: 0o600 });
+  } catch {
+    /* best-effort: the next restore sweeps anyway */
+  }
+  try {
+    await placeStaged(input, policy);
+  } finally {
+    rmSync(journal, { force: true });
+  }
+}
+
+async function placeStaged(input: ApplyInput, policy: RootPolicy): Promise<void> {
+  const { staging, manifest, log } = input;
   const data = await placeTree(join(staging, 'data'), input.cezarHome, { skipTop: isSkippedDataEntry, warn: log });
   log(`restored cezar state (${data} files)`);
 

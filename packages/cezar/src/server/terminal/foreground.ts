@@ -131,18 +131,67 @@ export function processSnapshot(now = Date.now()): Promise<ProcessRow[] | null> 
   return inFlight;
 }
 
+/** A fresh read slower than this is killed: the history's check has given up on it by then, and
+ *  a hung `ps` must not hold the one slot (spec 2026-10-24-code-page-terminal §9). */
+export const FRESH_SNAPSHOT_TIMEOUT_MS = 300;
+
+/** One process-table read; it must stop (kill its child) when `signal` aborts. */
+export type ProcessTableRead = (signal: AbortSignal) => Promise<ProcessRow[] | null>;
+
+/**
+ * Fresh snapshots, at most one `ps` at a time per host. A caller never gets a table read begun
+ * before it asked: one arriving while a read runs shares the single read queued behind it, so a
+ * burst of lines costs two `ps`, not one each. A read past `timeoutMs` is aborted and answers null.
+ */
+export function freshSnapshotReader(
+  read: ProcessTableRead = readProcessTable,
+  timeoutMs = FRESH_SNAPSHOT_TIMEOUT_MS,
+): () => Promise<ProcessRow[] | null> {
+  let running: Promise<ProcessRow[] | null> | undefined;
+  let queued: Promise<ProcessRow[] | null> | undefined;
+  const launch = (): Promise<ProcessRow[] | null> => {
+    const controller = new AbortController();
+    const at = Date.now();
+    const current = new Promise<ProcessRow[] | null>((resolve) => {
+      const timer = setTimeout(() => {
+        controller.abort();
+        resolve(null);
+      }, timeoutMs);
+      timer.unref?.();
+      read(controller.signal).then(
+        (rows) => {
+          clearTimeout(timer);
+          if (rows !== null) snapshot = { at, rows };
+          resolve(rows);
+        },
+        () => {
+          clearTimeout(timer);
+          resolve(null);
+        },
+      );
+    });
+    running = current;
+    void current.then(() => {
+      if (running === current) running = undefined;
+    });
+    return current;
+  };
+  return () => {
+    if (!running) return launch();
+    queued ??= running.then(() => {
+      queued = undefined;
+      return launch();
+    });
+    return queued;
+  };
+}
+
 /**
  * A snapshot taken NOW, never the cached one: the terminal history asks whether a shell sits at
- * its prompt at the instant a line is submitted, and a second-old answer would let a password
- * typed into a `sudo` started a moment ago pass for a command (spec 2026-10-24-code-page-terminal §5).
+ * its prompt at the instant a line begins, and a second-old answer would let a password typed
+ * into a `sudo` started a moment ago pass for a command (spec 2026-10-24-code-page-terminal §5).
  */
-export function freshProcessSnapshot(): Promise<ProcessRow[] | null> {
-  const now = Date.now();
-  return readProcessTable().then((rows) => {
-    if (rows !== null) snapshot = { at: now, rows };
-    return rows;
-  });
-}
+export const freshProcessSnapshot = freshSnapshotReader();
 
 /** Test seam: forget the cached snapshot. */
 export function resetProcessSnapshot(): void {
@@ -150,11 +199,12 @@ export function resetProcessSnapshot(): void {
   inFlight = undefined;
 }
 
-function readProcessTable(): Promise<ProcessRow[] | null> {
+function readProcessTable(signal?: AbortSignal): Promise<ProcessRow[] | null> {
   return new Promise((resolve) => {
     // Windows has no `ps`, and a hardened container can hide the table; both land on `null`,
     // which says "unknown" rather than "nothing running".
-    execFile('ps', ['-axo', 'pid=,ppid=,command='], { maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+    const options = { maxBuffer: 8 * 1024 * 1024, killSignal: 'SIGKILL' as const, ...(signal ? { signal } : {}) };
+    execFile('ps', ['-axo', 'pid=,ppid=,command='], options, (error, stdout) => {
       resolve(error ? null : parseProcessRows(stdout));
     });
   });

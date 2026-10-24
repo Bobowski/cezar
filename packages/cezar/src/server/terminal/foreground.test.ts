@@ -1,6 +1,8 @@
+import { execFile, type ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
 import { describe, expect, it } from 'vitest';
 
-import { foregroundCommand, hasForeground, parseProcessRows, tidyCommand } from './foreground.ts';
+import { foregroundCommand, freshSnapshotReader, hasForeground, parseProcessRows, tidyCommand } from './foreground.ts';
 
 /** A `ps -axo pid=,ppid=,command=` sample: a shell (900) running `npm run dev`, which has its
  *  own child, plus an unrelated process to prove the walk does not wander. */
@@ -76,5 +78,45 @@ describe('tidyCommand', () => {
 
   it('survives whitespace-only input', () => {
     expect(tidyCommand('   ')).toBe('');
+  });
+});
+
+describe('freshSnapshotReader (spec 2026-10-24-code-page-terminal §9)', () => {
+  it('runs one ps at a time: a burst shares the one read queued behind the running one', async () => {
+    let reads = 0;
+    let live = 0;
+    let peak = 0;
+    const finish: Array<() => void> = [];
+    const reader = freshSnapshotReader(() => {
+      reads += 1;
+      live += 1;
+      peak = Math.max(peak, live);
+      return new Promise((resolve) => finish.push(() => { live -= 1; resolve([]); }));
+    }, 10_000);
+    const answers = Array.from({ length: 30 }, () => reader());
+    expect(reads).toBe(1);
+    finish.shift()!();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(reads).toBe(2);
+    finish.shift()!();
+    expect(await Promise.all(answers)).toEqual(Array.from({ length: 30 }, () => []));
+    expect(peak).toBe(1);
+  });
+
+  it('kills a hung ps at its timeout, answers null, and frees the slot', async () => {
+    const children: ChildProcess[] = [];
+    const reader = freshSnapshotReader((signal) => new Promise((resolve) => {
+      children.push(execFile(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { signal }, () => resolve(null)));
+    }), 100);
+    const started = Date.now();
+    expect(await reader()).toBeNull();
+    expect(Date.now() - started).toBeLessThan(1_000);
+    const child = children[0]!;
+    if (child.exitCode === null && child.signalCode === null) await once(child, 'exit');
+    expect(child.killed).toBe(true);
+    // The slot is free: the next caller gets a read of its own, not the dead one.
+    void reader();
+    expect(children).toHaveLength(2);
+    children[1]!.kill();
   });
 });

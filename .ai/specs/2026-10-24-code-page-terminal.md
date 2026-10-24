@@ -114,11 +114,13 @@ gateway that `CEZ_PREVIEW_PORTS` already configures for the VPS image.
 - **History comes off the input routes**, `server/terminal/history.ts`: a line is kept only when
   its text is certain (typing, backspace, paste — an arrow, a Tab or a Ctrl chord makes it
   unknown) and the shell sat at its prompt when the line BEGAN: a FRESH process table, read when
-  its first keystroke arrives, shows the shell with no child or only the line's own command (one
+  its first word arrives, shows the shell with no child or only the line's own command (one
   chunk can carry a whole line, and the shell forks it while `ps` starts). That is what keeps a
   password a running `sudo`/`ssh` reads out of the file; a host with no readable process table
   (Windows) therefore keeps no history. The check never holds a keystroke: it runs beside the
-  write, and an answer later than 300 ms keeps nothing. Each line of a chunk is judged alone, and
+  write, and an answer later than 300 ms keeps nothing. A bare Enter, a Ctrl+C or a space-led
+  line asks nothing; one `ps` runs at a time per host, a burst shares the one read queued behind
+  it (never a read begun before it asked), and a `ps` past 300 ms is killed. Each line of a chunk is judged alone, and
   only a chunk's first line can have met a prompt: a pasted `ssh host⏎passw0rd⏎` keeps
   `ssh host`. What the table cannot see is ruled by text: after `exec …` nothing is kept again
   (the shell's own pid became the program), the line after `read -s` is never kept, and after

@@ -16,8 +16,8 @@ import { atomicWriteJson } from '../../workspace/config.ts';
  * a Tab or a Ctrl chord leaves the line unknown, and a busy shell is a program reading input — a
  * `sudo` or `ssh` password prompt among them — so neither is kept.
  *
- * "At its prompt" is a process-table read started on the line's FIRST keystroke and never awaited
- * by any keystroke: the shell has no child then, or only the line's own command (one chunk can
+ * "At its prompt" is a process-table read started on the line's first word and never awaited
+ * by any keystroke (one shared `ps` per host, `freshSnapshotReader`): the shell has no child then, or only the line's own command (one chunk can
  * carry a whole line, and the shell forks it while `ps` starts). An answer later than
  * `PROMPT_CHECK_TIMEOUT_MS` keeps nothing.
  */
@@ -35,15 +35,15 @@ const fileSchema = z.object({
 // eslint-disable-next-line no-control-regex
 const PASTE_MARKERS = /\x1b\[20[01]~/g;
 
-/** What one chunk of keystrokes did to the line, in order: a line began, or one was submitted
- *  (`text` null when only the shell knows what it said). */
+/** What one chunk of keystrokes did to the line, in order: a line got its first word, or one was
+ *  submitted (`text` null when only the shell knows what it said). */
 export type LineEvent = { kind: 'begin' } | { kind: 'submit'; text: string | null };
 
 /** One session's line as it is being typed. */
 export class TypedLine {
   private text = '';
   private known = true;
-  private started = false;
+  private begun = false;
 
   /** Feed keystrokes; returns every line SUBMITTED in them whose text is certain. */
   feed(data: string): string[] {
@@ -55,10 +55,6 @@ export class TypedLine {
     const input = data.replace(PASTE_MARKERS, '');
     for (let index = 0; index < input.length; index += 1) {
       const char = input[index]!;
-      if (!this.started) {
-        this.started = true;
-        out.push({ kind: 'begin' });
-      }
       if (char === '\r' || char === '\n') {
         out.push({ kind: 'submit', text: this.known ? this.text : null });
         this.reset();
@@ -75,6 +71,12 @@ export class TypedLine {
         // Tab, Ctrl+W, Ctrl+R…: the shell edits the line in ways only it knows.
         this.known = false;
       } else if (this.known) {
+        // A line begins with its first word: a bare Enter, a Ctrl+C or a space-led line (never
+        // kept) is owed no prompt check, so it spawns no `ps`.
+        if (!this.begun && char !== ' ' && !this.text.startsWith(' ')) {
+          this.begun = true;
+          out.push({ kind: 'begin' });
+        }
         this.text += char;
         if (this.text.length > MAX_LINE) this.known = false;
       }
@@ -85,7 +87,7 @@ export class TypedLine {
   private reset(): void {
     this.text = '';
     this.known = true;
-    this.started = false;
+    this.begun = false;
   }
 }
 

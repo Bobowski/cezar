@@ -67,15 +67,27 @@ describe('TerminalHistory', () => {
     expect(readFileSync(join(dataDir, 'terminal-history.json'), 'utf8')).not.toContain('hunter2');
   });
 
-  it('asks once per line, on its first keystroke', async () => {
+  it('asks once per line, on its first word', async () => {
     const history = new TerminalHistory();
     let asked = 0;
     const children = async () => { asked += 1; return []; };
     for (const key of ['n', 'p', 'm', '\r']) history.typed(dataDir, 's1', key, children);
+    // A recalled line is unknown text: nothing to keep, nothing to ask.
     history.typed(dataDir, 's1', '\x1b[A\r', children);
     await history.flushed();
-    expect(asked).toBe(2);
+    expect(asked).toBe(1);
     expect(await readTerminalHistory(dataDir)).toEqual(['npm']);
+  });
+
+  it('spawns no check for a bare Enter, a Ctrl+C or a line led by a space', async () => {
+    const history = new TerminalHistory();
+    let asked = 0;
+    const children = async () => { asked += 1; return []; };
+    for (let index = 0; index < 30; index += 1) history.typed(dataDir, 's1', '\r', children);
+    for (const key of ['\x03', '\x15', '\x1a', '  \r', ' export TOKEN=x\r']) history.typed(dataDir, 's1', key, children);
+    await history.flushed();
+    expect(asked).toBe(0);
+    expect(await readTerminalHistory(dataDir)).toEqual([]);
   });
 
   it('reads the line\'s own command, forked while the table was read, as the prompt', async () => {

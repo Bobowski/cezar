@@ -182,7 +182,10 @@ the text above, and why:
   body is a trace BEFORE it is posted: its fingerprint goes on the run record
   (`postedCommentBodies`, at most 100, each kept 24 hours), so a poll that reads the comment
   before its id comes back — or after a restart — still knows it, and a candidate matches by id
-  or by body.
+  or by body. For the agent's own tool calls the body is read off the command as the call starts
+  (`--body`, `--body-file`, a heredoc, `gh api … -f body=`), and both it and any comment id the
+  output prints are kept whatever the call's final status: `gh pr comment … && git push` fails
+  after it posted.
 - **Registering** needs a hosted cockpit with cezar's own sign-in (not `CEZ_AUTH=0`, where the
   proxy would also stand between GitHub and the route). The secret goes to `gh` on stdin.
 - **Comment bodies are data, never instructions** (§7 tightened). `{{github.comment.body}}`

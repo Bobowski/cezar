@@ -79,7 +79,7 @@ import { isLifecycleConfigTracked } from '../worktree-lifecycle/config.ts';
 import { generateCommitMessage } from './commit-message.ts';
 import { hasUnlanded, landInPlace, landingPromptPart, READ_ONLY_PROMPT, READ_ONLY_TOOLS, type LandResult } from './landing.ts';
 import { deleteRunLayouts } from '../runs/layouts.ts';
-import { headShaOf, isPushCommand, toolTraces } from '../runs/github-traces.ts';
+import { headShaOf, isPushCommand, postingCommentBody, toolTraces } from '../runs/github-traces.ts';
 import {
   autosaveCommit,
   branchFor,
@@ -7127,6 +7127,11 @@ export class RunManager {
     }
     // A push is recorded as it STARTS as well, so its own webhook-woken poll already knows it.
     if (event.type === 'item.started' && event.item.kind === 'tool' && isPushCommand(event.item.input)) void this.recordPushedHead(runId, state.cwd);
+    // A comment's body is a trace before it runs, and stays one whatever the call's status.
+    if ((event.type === 'item.started' || event.type === 'item.updated' || event.type === 'item.completed') && event.item.kind === 'tool') {
+      const body = postingCommentBody(event.item.input, state.cwd);
+      if (body) this.store.notePostingComment(runId, body);
+    }
     if (event.type === 'item.completed' && event.item.kind === 'tool') this.recordToolTraces(runId, state.cwd, event.item);
     sink.handle(event);
     // Work observed ends the rest, whoever started the turn: a parked Claude session wakes itself

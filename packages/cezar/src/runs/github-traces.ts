@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 /**
  * cezar's own traces on GitHub (spec 2026-10-23-github-events §6): the shas a run pushed and the
@@ -89,17 +91,133 @@ export function isPushCommand(input: unknown): boolean {
   return PUSH_RE.test(commandOf(input));
 }
 
+const postsComment = (command: string) => GH_COMMENT_RE.test(command) || (GH_API_POST_COMMENT_RE.test(command) && POST_RE.test(command));
+
 /**
- * What one finished tool call left on GitHub: whether it was a `git push` (the caller reads the
- * sha), and the comment ids a `gh … comment` or a POST to a comments endpoint printed. A command
- * that only READS comments posts nothing, so its output is never mined.
+ * What one tool call left on GitHub: whether it was a successful `git push` (the caller reads the
+ * sha), and the comment ids a `gh … comment` or a POST to a comments endpoint printed — whatever
+ * the call's status, since `gh pr comment … && git push` fails AFTER posting. A command that only
+ * READS comments posts nothing, so its output is never mined.
  */
 export function toolTraces(item: { input?: unknown; output?: string; status?: string }): { pushed: boolean; comments: number[] } {
-  if (item.status !== undefined && item.status !== 'completed') return { pushed: false, comments: [] };
   const command = commandOf(item.input);
   if (!command) return { pushed: false, comments: [] };
-  const posts = GH_COMMENT_RE.test(command) || (GH_API_POST_COMMENT_RE.test(command) && POST_RE.test(command));
-  return { pushed: PUSH_RE.test(command), comments: posts ? commentIdsIn(item.output ?? '') : [] };
+  const completed = item.status === undefined || item.status === 'completed';
+  return { pushed: completed && PUSH_RE.test(command), comments: postsComment(command) ? commentIdsIn(item.output ?? '') : [] };
+}
+
+const BODY_FILE_MAX = 65_536;
+const BACKSLASH = String.fromCharCode(92);
+
+/** The heredoc whose `<<` operator is at `at`: its text and the offset past its delimiter line. */
+function heredocAt(command: string, at: number): { body: string; end: number } | undefined {
+  const head = /^<<-?[ \t]*(['"]?)([A-Za-z_][\w-]*)\1[^\n]*\n/.exec(command.slice(at));
+  if (!head || command[at + 2] === '<') return undefined;
+  const lines: string[] = [];
+  let offset = at + head[0].length;
+  while (offset <= command.length) {
+    const next = command.indexOf('\n', offset);
+    const line = command.slice(offset, next < 0 ? command.length : next);
+    if (line.trim() === head[2]) return { body: lines.join('\n'), end: next < 0 ? command.length : next + 1 };
+    lines.push(line);
+    if (next < 0) break;
+    offset = next + 1;
+  }
+  return undefined;
+}
+
+function firstHeredoc(command: string, from: number): string | undefined {
+  for (let at = command.indexOf('<<', from); at >= 0; at = command.indexOf('<<', at + 2)) {
+    const doc = heredocAt(command, at);
+    if (doc) return doc.body;
+  }
+  return undefined;
+}
+
+/** One shell word from `start`, its quotes joined; a `$(cat <<'X' … X)` substitution reads as its heredoc. */
+function wordAt(command: string, start: number): string | undefined {
+  let i = start;
+  let value = '';
+  let any = false;
+  while (i < command.length) {
+    const ch = command[i]!;
+    const substitution = command.startsWith('"$(cat <<', i) ? 1 : command.startsWith('$(cat <<', i) ? 0 : -1;
+    if (substitution >= 0) {
+      const doc = heredocAt(command, command.indexOf('<<', i));
+      if (!doc) return undefined;
+      value += doc.body;
+      const close = command.indexOf(')', doc.end);
+      i = close < 0 ? command.length : close + 1;
+      if (substitution === 1 && command[i] === '"') i += 1;
+      any = true;
+      continue;
+    }
+    if (ch === "'") {
+      const end = command.indexOf("'", i + 1);
+      if (end < 0) return undefined;
+      value += command.slice(i + 1, end);
+      i = end + 1;
+      any = true;
+      continue;
+    }
+    if (ch === '"') {
+      i += 1;
+      while (i < command.length && command[i] !== '"') {
+        // Inside double quotes a backslash escapes only these four characters.
+        if (command[i] === BACKSLASH && ['"', '$', '`', BACKSLASH].includes(command[i + 1] ?? '')) i += 1;
+        value += command[i] ?? '';
+        i += 1;
+      }
+      i += 1;
+      any = true;
+      continue;
+    }
+    if (/[\s;&|<>()]/.test(ch)) break;
+    if (ch === BACKSLASH) i += 1;
+    value += command[i] ?? '';
+    i += 1;
+    any = true;
+  }
+  return any ? value : undefined;
+}
+
+function readBodyFile(path: string, cwd: string | undefined): string | undefined {
+  if (!cwd || !path) return undefined;
+  try {
+    return readFileSync(resolve(cwd, path), 'utf8').slice(0, BODY_FILE_MAX);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The body a comment-posting tool call is about to send, read off the command BEFORE it runs so
+ * its fingerprint is a trace whatever the call's outcome (spec 2026-10-23-github-events §6).
+ * Best-effort: `--body`/`-b`, `--body-file`/`-F` (a file, or `-` with a heredoc), and `gh api`'s
+ * `-f`/`--raw-field`/`-F`/`--field body=…` (`@file` too). Anything else is `undefined`.
+ */
+export function postingCommentBody(input: unknown, cwd?: string): string | undefined {
+  const command = commandOf(input);
+  if (!command || !postsComment(command)) return undefined;
+  const api = !GH_COMMENT_RE.test(command);
+  const flags = /(?:^|\s)(--body-file|--body|-b|-F|-f|--field|--raw-field)(?:=|[ \t]+)/g;
+  for (const match of command.matchAll(flags)) {
+    const flag = match[1]!;
+    const word = wordAt(command, match.index + match[0].length);
+    if (word === undefined) continue;
+    let body: string | undefined;
+    if (!api) {
+      if (flag === '--body' || flag === '-b') body = word;
+      else if (flag === '--body-file' || flag === '-F') body = word === '-' ? firstHeredoc(command, match.index) : readBodyFile(word, cwd);
+    } else if (word.startsWith('body=')) {
+      const value = word.slice('body='.length);
+      const typed = flag === '-F' || flag === '--field';
+      if (typed && value === '@-') body = firstHeredoc(command, match.index);
+      else body = typed && value.startsWith('@') ? readBodyFile(value.slice(1), cwd) : value;
+    }
+    if (body?.trim()) return body;
+  }
+  return undefined;
 }
 
 /** The record fields after adding `add`, deduplicated and capped; `undefined` when nothing changed.
@@ -118,7 +236,9 @@ export function mergeTraces(
   const posted = run.postedComments ?? [];
   const freshIds = ids.filter((id, index) => !posted.includes(id) && ids.indexOf(id) === index);
   if (freshIds.length) patch.postedComments = [...posted, ...freshIds].slice(-POSTED_COMMENTS_CAP);
-  const hashes = [...new Set((add.bodies ?? []).filter((hash) => /^[0-9a-f]{64}$/.test(hash)))];
+  const live = new Set((run.postedCommentBodies ?? []).filter((entry) => liveBody(entry, now)).map((entry) => entry.hash));
+  // A body still kept is not written again: every update of a tool item re-reads the same command.
+  const hashes = [...new Set((add.bodies ?? []).filter((hash) => /^[0-9a-f]{64}$/.test(hash) && !live.has(hash)))];
   if (hashes.length) {
     const at = new Date(now).toISOString();
     const kept = (run.postedCommentBodies ?? []).filter((entry) => liveBody(entry, now) && !hashes.includes(entry.hash));

@@ -1,11 +1,14 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { commentFingerprint, commentIdsIn, githubTracesOf, isOwnTrace, isPushCommand, mergeTraces, POSTED_BODIES_CAP, POSTED_COMMENTS_CAP, PUSHED_SHAS_CAP, toolTraces } from './github-traces.ts';
+import { commentFingerprint, commentIdsIn, githubTracesOf, isOwnTrace, isPushCommand, mergeTraces, POSTED_BODIES_CAP, POSTED_COMMENTS_CAP, postingCommentBody, PUSHED_SHAS_CAP, toolTraces } from './github-traces.ts';
 import { RunStore } from './store.ts';
 
 const sha = (n: number) => n.toString(16).padStart(40, '0');
+
+const dirs: string[] = [];
+afterEach(async () => Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))));
 
 describe('github traces (spec 2026-10-23-github-events §6)', () => {
   it('reads conversation and review comment ids out of URLs', () => {
@@ -23,8 +26,43 @@ describe('github traces (spec 2026-10-23-github-events §6)', () => {
     expect(toolTraces({ input: { command: 'git add -A && git commit -m x && git push' } }).pushed).toBe(true);
     expect(toolTraces({ input: { command: ['git', '-C', 'dir', 'push', 'origin', 'HEAD'] } }).pushed).toBe(true);
     expect(toolTraces({ input: { command: 'echo git-push-helper' } }).pushed).toBe(false);
-    // A failed call left nothing behind.
+    // A failed push left nothing behind.
     expect(toolTraces({ input: { command: 'git push' }, status: 'failed' }).pushed).toBe(false);
+  });
+
+  it('reads the body a comment-posting command is about to send, before it runs', async () => {
+    const run = (command: string, cwd?: string) => postingCommentBody({ command }, cwd);
+    expect(run('gh pr comment 8 --body "Fixed the \\"typo\\"." && git push')).toBe('Fixed the "typo".');
+    expect(run("gh issue comment 3 -b 'single quoted'")).toBe('single quoted');
+    expect(run('gh pr comment 8 --body=plain')).toBe('plain');
+    expect(run("gh pr comment 8 --body \"$(cat <<'EOF'\nLine one.\n\nLine \"two\".\nEOF\n)\" && git push")).toBe('Line one.\n\nLine "two".');
+    expect(run("gh pr comment 8 --body-file - <<'EOF'\nfrom stdin\nEOF")).toBe('from stdin');
+    expect(run("gh api -X POST repos/a/b/issues/8/comments -f body='api body'")).toBe('api body');
+    expect(run('gh api --method POST repos/a/b/pulls/8/comments --raw-field body="review note" -f path=x')).toBe('review note');
+    const dir = await mkdtemp(join(tmpdir(), 'cezar-body-')); dirs.push(dir);
+    await writeFile(join(dir, 'note.md'), 'from a file\n');
+    expect(run('gh pr comment 8 -F note.md', dir)).toBe('from a file\n');
+    expect(run('gh api -X POST repos/a/b/issues/8/comments -F body=@note.md', dir)).toBe('from a file\n');
+    // Reading comments posts nothing.
+    expect(run('gh api repos/a/b/issues/8/comments')).toBeUndefined();
+    expect(run('gh pr view 8 --comments')).toBeUndefined();
+    expect(run('git push')).toBeUndefined();
+  });
+
+  it('keeps the comment of a call that failed after posting it (gh comment && git push)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cezar-traces-')); dirs.push(dir);
+    const store = RunStore.open(dir);
+    const run = store.createRun({ title: 't', workflow: 'quick-task', task: 't', steps: [] });
+    const input = { command: 'gh pr comment 8 --body "Pushed the fix." && git push' };
+    // Fingerprinted as the call STARTS, so a poll running meanwhile already knows it.
+    store.notePostingComment(run.id, postingCommentBody(input)!);
+    const failed = { input, status: 'failed', output: 'https://github.com/a/b/pull/8#issuecomment-9\nerror: failed to push some refs' };
+    expect(toolTraces(failed)).toEqual({ pushed: false, comments: [9] });
+    store.recordGithubTraces(run.id, { comments: toolTraces(failed).comments });
+    const traces = store.githubTraces();
+    expect(isOwnTrace({ event: 'pull_request.commented', comment: { id: 9, body: 'Pushed the fix.' } }, traces)).toBe(true);
+    // Matched by body alone too: the id never printed (or the output was lost).
+    expect(isOwnTrace({ event: 'pull_request.commented', comment: { id: 10, body: 'Pushed the fix.\r\n' } }, traces)).toBe(true);
   });
 
   it('knows a push as it starts, and its own events by sha, id or the body being posted', () => {
@@ -60,9 +98,6 @@ describe('github traces (spec 2026-10-23-github-events §6)', () => {
 });
 
 describe('RunStore.recordGithubTraces', () => {
-  const dirs: string[] = [];
-  afterEach(async () => Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))));
-
   it('persists the traces on the record, and a record without them still parses', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'cezar-traces-')); dirs.push(dir);
     const store = RunStore.open(dir);

@@ -29,7 +29,7 @@ async function freePorts(count: number): Promise<number[]> {
 }
 
 async function enter(designMode: boolean): Promise<{ origin: string; cookie: string }> {
-  const opened = await gateways.open({ target: appOrigin, parentOrigin: 'https://cezar.example.com', designMode });
+  const opened = await gateways.open({ target: appOrigin, parentOrigin: 'http://127.0.0.1:4321', designMode });
   if (!opened.ok) throw new Error(opened.reason);
   const res = await fetch(`${opened.origin}/?${TICKET_PARAM}=${opened.ticket}`, { redirect: 'manual' });
   return { origin: opened.origin, cookie: (res.headers.get('set-cookie') ?? '').split(';')[0]! };
@@ -79,12 +79,12 @@ describe('a gateway slot in design mode', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toMatch(/javascript/);
     const script = await res.text();
-    expect(script).toContain('"parentOrigin":"https://cezar.example.com"');
+    expect(script).toContain('"parentOrigin":"http://127.0.0.1:4321"');
     expect(script).toContain(`"upstreamOrigin":"${appOrigin}"`);
   });
 
   it('keeps the same session: no cookie, no page and no picker', async () => {
-    const opened = await gateways.open({ target: appOrigin, parentOrigin: 'https://cezar.example.com', designMode: true });
+    const opened = await gateways.open({ target: appOrigin, parentOrigin: 'http://127.0.0.1:4321', designMode: true });
     if (!opened.ok) throw new Error(opened.reason);
     expect((await fetch(`${opened.origin}/`)).status).toBe(401);
     expect((await fetch(`${opened.origin}${PICKER_PATH}`)).status).toBe(401);

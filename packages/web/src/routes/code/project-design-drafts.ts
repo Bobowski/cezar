@@ -165,8 +165,10 @@ export function useProjectDesignDrafts(): ProjectDesignDrafts {
   const drafts = useMemo(() => store.drafts ?? [], [store, store.version])
   const marks = useMemo<DesignMark[]>(
     () =>
-      drafts.map((draft) => ({
+      // Numbered in the order the task will list them (§3.2).
+      drafts.map((draft, index) => ({
         key: draft.key,
+        n: index + 1,
         selector: draft.pick.selector,
         path: pathOf(draft.pick.url),
         label: pickLabel(draft.pick),

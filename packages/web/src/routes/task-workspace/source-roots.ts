@@ -13,7 +13,7 @@ export function useSourceRoots(run?: Pick<ApiRun, 'worktreePath'> | null): reado
   const projects = useProjects()
   const active = useActiveProjectId()
   const id = active ?? projects.data?.bootProject
-  const root = projects.data?.projects.find((project) => project.id === id)?.root
+  const root = projects.data?.projects?.find((project) => project.id === id)?.root
   const worktree = run?.worktreePath
   return useMemo(() => [worktree, root].filter((each): each is string => typeof each === 'string' && each !== ''), [root, worktree])
 }

@@ -94,6 +94,27 @@ describe('the Git page routes', () => {
     expect(((await res.json()) as { error: string }).error).toMatch(/in-place task/);
   });
 
+  it('stage, unstage, commit and amend are refused while an in-place task works in the checkout', async () => {
+    writeFileSync(join(repo, 'a.txt'), 'changed\n');
+    g(repo, 'add', 'a.txt');
+    const run = store.createRun({ title: 'x', task: 'x', workflow: 'quick-task', worktree: false, steps: [] });
+    store.updateRun(run.id, { status: 'running' });
+    const post = (path: string, body: unknown) =>
+      apiRequest(app, path, { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json' } });
+    for (const [path, body] of [
+      ['/api/v1/repo/stage', { paths: ['a.txt'] }],
+      ['/api/v1/repo/unstage', { paths: ['a.txt'] }],
+      ['/api/v1/repo/commit', { message: 'mid-task' }],
+      ['/api/v1/repo/commit', { message: '', amend: true }],
+    ] as const) {
+      const res = await post(path, body);
+      expect(res.status, path).toBe(409);
+      expect(((await res.json()) as { error: string }).error).toMatch(/in-place task/);
+    }
+    expect(g(repo, 'log', '-1', '--format=%s').trim()).toBe('first');
+    expect(g(repo, 'status', '--porcelain', '--', 'a.txt')).toBe('M  a.txt\n');
+  });
+
   it('a Git-page action refuses while a landing holds the checkout, so the push lands main’s own commit', async () => {
     // The landing's pathspec names .ai/cezar, which `git add` refuses when .gitignore ignores .ai/.
     writeFileSync(join(repo, '.gitignore'), 'node_modules/\n');

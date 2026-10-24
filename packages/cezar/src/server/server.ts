@@ -8455,7 +8455,7 @@ export function createApp(deps: ServerDeps) {
     (await getRepoInfo(project.root, { allowUnborn: true }))?.root ?? null;
   /**
    * One Git-page mutation on the main checkout: refused for a task's own token, and — when it
-   * moves HEAD or the working files — while an in-place task works there. Success rings the
+   * moves HEAD, the index or the working files — while an in-place task works there. Success rings the
    * checkout's topics so every open view refreshes.
    */
   const mutateCheckout = async <R extends { ok: true }>(
@@ -8826,12 +8826,12 @@ export function createApp(deps: ServerDeps) {
     })
     .post('/repo/stage', jsonZodValidator(repoIndexChangeSchema), async (c) => {
       const change = c.req.valid('json');
-      const r = await mutateCheckout(c.get('project'), principalOf(c), thenIndex((root) => stagePaths(root, change)));
+      const r = await mutateCheckout(c.get('project'), principalOf(c), thenIndex((root) => stagePaths(root, change)), { movesTree: true });
       return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
     })
     .post('/repo/unstage', jsonZodValidator(repoIndexChangeSchema), async (c) => {
       const change = c.req.valid('json');
-      const r = await mutateCheckout(c.get('project'), principalOf(c), thenIndex((root) => unstagePaths(root, change)));
+      const r = await mutateCheckout(c.get('project'), principalOf(c), thenIndex((root) => unstagePaths(root, change)), { movesTree: true });
       return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
     })
     .post('/repo/discard', jsonZodValidator(repoDiscardSchema), async (c) => {
@@ -8841,8 +8841,11 @@ export function createApp(deps: ServerDeps) {
     })
     .post('/repo/commit', jsonZodValidator(repoCommitSchema), async (c) => {
       const input = c.req.valid('json');
-      const r = await mutateCheckout(c.get('project'), principalOf(c), (root) =>
-        commitIndex(root, { message: input.message, ...(input.amend ? { amend: true } : {}) }),
+      const r = await mutateCheckout(
+        c.get('project'),
+        principalOf(c),
+        (root) => commitIndex(root, { message: input.message, ...(input.amend ? { amend: true } : {}) }),
+        { movesTree: true },
       );
       return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
     })

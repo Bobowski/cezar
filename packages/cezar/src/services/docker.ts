@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { basename } from 'node:path';
 import type { DockerConflict, DockerContainer, DockerPort, DockerStack } from '@open-mercato/cezar-contract';
+import { judgeDir } from './docker-manage.ts';
 
 /**
  * The machine's containers, read through the `docker` CLI (spec `2026-10-13-docker-view`).
@@ -47,12 +48,14 @@ export function parseDockerPorts(text: string): DockerPort[] {
 export interface ListedContainer extends DockerContainer {
   stack: string;
   dir: string | null;
+  /** Volume names (and bind sources) it mounts — who uses a volume (spec 2026-10-23-docker-management §3.3). */
+  mounts: string[];
 }
 
 const PS_FORMAT = [
   '{{.ID}}', '{{.Names}}', '{{.Image}}', '{{.State}}', '{{.Status}}', '{{.Ports}}',
   '{{.Label "com.docker.compose.project"}}', '{{.Label "com.docker.compose.service"}}',
-  '{{.Label "com.docker.compose.project.working_dir"}}',
+  '{{.Label "com.docker.compose.project.working_dir"}}', '{{.Mounts}}',
 ].join('\t');
 
 export async function listContainers(exec: DockerExec): Promise<{ ok: true; containers: ListedContainer[] } | { ok: false; reason: string }> {
@@ -60,11 +63,12 @@ export async function listContainers(exec: DockerExec): Promise<{ ok: true; cont
   if (!result.ok) return result;
   const containers: ListedContainer[] = [];
   for (const line of result.stdout.split('\n')) {
-    const [id, name, image, state, status, ports, stack, service, dir] = line.replace(/\r$/, '').split('\t');
+    const [id, name, image, state, status, ports, stack, service, dir, mounts] = line.replace(/\r$/, '').split('\t');
     if (!id || !/^[a-f0-9]{12,64}$/.test(id)) continue;
     containers.push({
       id, name: name ?? '', image: image ?? '', running: state === 'running', status: status ?? '',
       ports: parseDockerPorts(ports ?? ''), service: service || null, stack: stack ?? '', dir: dir || null,
+      mounts: (mounts ?? '').split(',').map((mount) => mount.trim()).filter(Boolean),
     });
   }
   return { ok: true, containers };
@@ -95,17 +99,32 @@ export function projectOf(dir: string | null, projects: KnownProject[]): KnownPr
   return best;
 }
 
+/** What `groupStacks` learns from outside the listing (spec 2026-10-23-docker-management §3.1). */
+export interface StackFacts {
+  /** Whether a stack's working dir is still on disk; `judgeDir` by default. */
+  dirState?: (dir: string | null) => DockerStack['dirState'];
+  /** The cezar task whose worktree the dir is, given the project that owns it. */
+  task?: (dir: string, owner: KnownProject) => DockerStack['task'];
+  /** Volume names by compose project. */
+  volumes?: Map<string, string[]>;
+}
+
 /** Stacks in a stable order: this project's first, then by name, loose containers last. */
-export function groupStacks(containers: ListedContainer[], projects: KnownProject[], currentId: string): DockerStack[] {
+export function groupStacks(containers: ListedContainer[], projects: KnownProject[], currentId: string, facts: StackFacts = {}): DockerStack[] {
   const stacks = new Map<string, DockerStack>();
-  for (const { stack, dir, ...container } of containers) {
+  // `mounts` is the listing's own bookkeeping, not part of a container on the wire.
+  for (const { stack, dir, mounts: _mounts, ...container } of containers) {
     let entry = stacks.get(stack);
     if (!entry) {
       const owner = stack === '' ? null : projectOf(dir, projects);
+      const stackDir = stack === '' ? null : dir;
       entry = {
-        name: stack, dir: stack === '' ? null : dir,
+        name: stack, dir: stackDir,
         project: owner ? { id: owner.id, name: owner.name || basename(owner.root) } : null,
         mine: owner?.id === currentId, containers: [],
+        dirState: stack === '' ? 'unknown' : (facts.dirState ?? judgeDir)(stackDir),
+        task: owner && stackDir ? facts.task?.(stackDir, owner) ?? null : null,
+        volumes: stack === '' ? [] : facts.volumes?.get(stack) ?? [],
       };
       stacks.set(stack, entry);
     }

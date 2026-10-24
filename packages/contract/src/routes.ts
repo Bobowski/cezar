@@ -504,7 +504,7 @@ export const routeContracts = {
   'POST /workspace/self-update/refresh': { summary: 'Check for cezar updates now.', response: selfUpdateStatusSchema, destructive: false },
   'DELETE /workspace/self-update/scheduled': { summary: 'Cancel a scheduled cezar update.', response: selfUpdateStatusSchema, destructive: true },
   'GET /workspace/backup': { summary: 'The backup setup, its archives and the running job.', response: backupStatusSchema },
-  'POST /workspace/backup': { summary: 'Take a backup now.', response: backupStatusSchema, destructive: false },
+  'POST /workspace/backup': { summary: 'Take a backup now; older archives past the kept count are deleted.', response: backupStatusSchema, destructive: true },
   'PUT /workspace/backup/recipient': { summary: 'Set the key backups are encrypted to.', response: backupStatusSchema, destructive: true },
   'PUT /workspace/backup/target': { summary: 'Set where backups are uploaded.', response: backupStatusSchema, destructive: true },
   'POST /workspace/backup/target/test': { summary: 'Check the backup target can be written.', response: backupTargetTestResponseSchema, destructive: false },

@@ -126,6 +126,9 @@ describe('the MCP tool catalog', () => {
     expect(catalog.byName.get('runs_remove_worktree')?.annotations.destructiveHint).toBe(true);
     expect(catalog.byName.get('runs_create')?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });
     expect(catalog.byName.get('github_list')?.annotations.openWorldHint).toBe(true);
+    // A backup prunes the older archives past the kept count.
+    const backup = [...catalog.byName.values()].find((tool) => tool.method === 'POST' && tool.path === '/workspace/backup');
+    expect(backup?.annotations.destructiveHint).toBe(true);
   });
 
   it('every write route states whether it is destructive — a new one is a decision, not a default', () => {

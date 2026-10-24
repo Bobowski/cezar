@@ -189,7 +189,9 @@ The runtime stage installs the tarball to `/opt/cezar/<version>+image/` with a m
 entrypoint links it into the volume — `/data/cezar/versions/<version>+image.<sha8> →
 /opt/cezar/…` — so `listInstalled` sees it and `detectInstallKind` answers `managed` for
 whatever `current` points at. A global `cezar` on PATH remains, as a launcher (`launcher.ts`'s
-POSIX script with `CEZ_HOME` baked), so `docker compose exec cezar cezar auth setup` keeps working.
+POSIX script with `CEZ_HOME` baked), so `docker compose exec -u node cezar cezar auth setup` keeps
+working. As built, the launcher refuses `update`/`install`/`use`/`link` as root with a `-u node`
+hint: run as root they would create a root-owned `/data/cezar/source` or `versions/` entry.
 
 ### 4.2 Which version boots
 

@@ -105,9 +105,11 @@ services stay up, and boot recovery resumes the agents.
 - **Which branch.** The dialog's **Branch** channel shows it and, for a signed-in operator, changes
   it (`CEZ_UPDATE_BRANCH=<remote>#<branch>` sets it from the environment). A public repository
   needs no credentials; a private one uses the container's `gh` login or `/data/ssh`.
-  The container saves its branch into the workspace config on first boot, so `docker compose exec
-  cezar cezar update` follows the same branch; after that the saved channel wins — change it in the
-  dialog.
+  From a shell, `docker compose -f docker/compose.yml exec -u node cezar cezar update` follows the
+  same branch (`--check` only reports). Always `-u node`: the launcher refuses `update`, `install`,
+  `use` and `link` as root, which would leave a root-owned `/data/cezar/source` the server cannot
+  write. Nothing is saved on boot — `CEZ_UPDATE_*` and a rebuilt image's branch are followed until
+  you pick a channel in the dialog, which then wins.
 
 ## Security, plainly
 
@@ -190,7 +192,7 @@ Verified on the overlay (2026-10-21, `CEZ_DOMAIN=localhost`) unless marked **on 
 | HTTP | `308` to the same path on `https://<domain>` | `curl -I http://<domain>/x` |
 | Cockpit headers | HSTS, `frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff` | `curl -kI https://<domain>/` |
 | Sign-in throttling | `429` + `Retry-After` after five failures, forged `X-Forwarded-For` ignored | |
-| **On the box:** the address cezar records | your real IP, not a Docker gateway (`172.x.0.1`) | `docker compose … exec cezar tail /data/cezar/auth-audit.ndjson` after a sign-in from your phone. A gateway address means every client shares one throttle key, so a stranger's failures delay yours. |
+| **On the box:** the address cezar records | your real IP, not a Docker gateway (`172.x.0.1`) | `docker compose … exec -u node cezar tail /data/cezar/auth-audit.ndjson` after a sign-in from your phone. A gateway address means every client shares one throttle key, so a stranger's failures delay yours. |
 | Preview port without its cookie | `401`, also with a forged ticket | `curl -k https://<domain>:8500/` |
 | Preview targets | only loopback `http://`; never cezar, a pool port, another host | |
 | Cookies across preview ports | the app never receives `__Host-cez_session` and cannot overwrite it | |

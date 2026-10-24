@@ -1,8 +1,18 @@
 #!/bin/sh
 # `cezar` and `cez` on PATH in the container (spec .ai/specs/2026-10-23-branch-channel-self-update.md
 # §4.1): runs whatever the managed layout's `current` points at — the version the cockpit updated
-# to — else the image's own install, so `docker compose exec cezar cezar auth setup` keeps working.
+# to — else the image's own install, so `docker compose exec -u node cezar cezar auth setup` keeps working.
 home=${CEZ_HOME:-/data/cezar}
+# As root these would leave a root-owned /data/cezar/source or versions/ entry that the server
+# (node) can never write again. Other commands are left alone.
+case ${1:-} in
+  update | install | use | link)
+    if [ "$(id -u)" = 0 ]; then
+      echo "cezar: run 'cezar $1' as node, not root: docker compose exec -u node cezar cezar $*" >&2
+      exit 1
+    fi
+    ;;
+esac
 entry=$home/versions/current/node_modules/@open-mercato/cezar/dist/index.js
 if [ ! -f "$entry" ]; then
   for dir in /opt/cezar/*+image; do

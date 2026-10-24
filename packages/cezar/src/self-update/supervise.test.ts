@@ -225,3 +225,40 @@ describe.skipIf(!haveBootTools)('the container supervisor boot choice', () => {
     expect(current()).toBe('0.17.0+a1b2c3d4');
   });
 });
+
+// docs/docker.md: as root, `cezar update` would create a root-owned /data/cezar/source.
+describe.skipIf(!haveShell)('the container launcher', () => {
+  const LAUNCHER = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../../docker/cezar-launcher.sh');
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cez-launcher-'));
+    mkdirSync(join(dir, 'bin'));
+    writeFileSync(join(dir, 'bin', 'node'), '#!/bin/sh\necho "node $*"\n');
+    chmodSync(join(dir, 'bin', 'node'), 0o755);
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  const launch = (uid: number, ...args: string[]) => {
+    writeFileSync(join(dir, 'bin', 'id'), `#!/bin/sh\necho ${uid}\n`);
+    chmodSync(join(dir, 'bin', 'id'), 0o755);
+    return spawnSync('sh', [LAUNCHER, ...args], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${join(dir, 'bin')}:${process.env.PATH ?? ''}`, CEZ_HOME: join(dir, 'home') },
+    });
+  };
+
+  it('refuses update, install, use and link as root, with the -u node hint', () => {
+    for (const command of ['update', 'install', 'use', 'link']) {
+      const run = launch(0, command);
+      expect(run.status).toBe(1);
+      expect(run.stderr).toContain(`docker compose exec -u node cezar cezar ${command}`);
+      expect(run.stdout).toBe('');
+    }
+  });
+
+  it('runs everything else as root, and update as node', () => {
+    expect(launch(0, 'versions').stdout).toContain('versions');
+    const run = launch(1000, 'update');
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain(' update');
+  });
+});

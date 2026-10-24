@@ -296,7 +296,7 @@ the previous behaviour exactly. Recorded in `BACKWARD_COMPATIBILITY.md` and the 
 
 | `signIn` | nginx site | SSL step | unit | last step |
 | --- | --- | --- | --- | --- |
-| `cezar` (default for a person) | no `auth_basic`; `limit_req` on `/auth/(login\|setup)` | **required** | unchanged | verifies 401 for anonymous, 200 for the host key against THIS install, then prints the setup link |
+| `cezar` (default for a person) | no `auth_basic`; `limit_req` on `/auth/(login\|setup)` | **required** | unchanged | verifies 401 for anonymous through nginx, 200 for the host key against THIS install's loopback upstream (the key opens nothing through a proxy — spec `2026-10-24-cezar-mcp-server` §5), then prints the setup link |
 | `proxy` (and always under `--yes`) | `auth_basic` + htpasswd, as before | optional | `Environment=CEZ_AUTH=0` | the Basic-Auth verify, unchanged |
 | absent (a record from before) | untouched | — | untouched | `server-deploy` explains the double login and changes nothing |
 

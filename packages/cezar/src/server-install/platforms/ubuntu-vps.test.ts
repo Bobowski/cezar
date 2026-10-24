@@ -1188,7 +1188,16 @@ describe("ubuntu-vps identity step — cezar's own sign-in", () => {
     const { argv, stdin } = inputs[0]!;
     expect(stdin).toMatch(/^header = "Authorization: Bearer cezhost_/);
     expect(argv).not.toContain('cezhost_');
-    expect(argv).toContain('Host: agents.example.dev');
+    // Straight to the loopback upstream: behind nginx the key is a proxied request, which is 401.
+    expect(argv).toMatch(/ http:\/\/127\.0\.0\.1:\d+\/api\/v1\/health /);
+    expect(argv).not.toContain('Host:');
+  });
+
+  it('never sends the host key to an upstream that is not loopback', async () => {
+    const { runner, inputs } = signInRunner();
+    const { ctx } = signInCtx(runner, { externalProxy: true, bindHost: '172.17.0.1', publicUrl: undefined });
+    await expect(stepById('identity').run(ctx)).resolves.toBeTruthy();
+    expect(inputs).toHaveLength(0);
   });
 
   it('says "sign in" instead of minting a link once an account exists', async () => {

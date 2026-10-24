@@ -121,6 +121,18 @@ describe('API token scopes, per route family', () => {
     expect(apiTokenAllows(['read', 'tasks', 'author'], 'POST', '/api/v1/brand-new-family')).toBe(false);
     expect(apiTokenAllows(['admin'], 'POST', '/api/v1/brand-new-family')).toBe(true);
   });
+
+  it('the docs say what a scope cannot stop: tasks and author run code as the cezar user', () => {
+    const repo = join(import.meta.dirname, '../../../..');
+    const reference = readFileSync(join(repo, 'docs/reference.md'), 'utf8').replace(/\s+/g, ' ');
+    const spec = readFileSync(join(repo, '.ai/specs/2026-10-24-cezar-mcp-server.md'), 'utf8').replace(/\s+/g, ' ');
+    for (const text of [reference, spec]) {
+      expect(text).toContain('bounds the API');
+      expect(text).toMatch(/`tasks` and `author`[^.]*owner-equivalent/);
+      expect(text).toMatch(/`read` is the only scope that executes nothing/);
+    }
+    expect(reference).not.toContain('never include shell access');
+  });
 });
 
 describe('API tokens in the auth store', () => {

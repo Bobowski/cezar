@@ -656,8 +656,13 @@ the API below.
 - **API tokens.** A hosted cockpit with sign-in answers `Authorization: Bearer
   ceztok_…` too. Mint one in Settings → Security → API tokens, scoped `read`
   (the GETs that carry no secret), `tasks` (runs, messages, dispatch), `author` (workflows, skills,
-  automations, env files) or `admin` (everything but sign-in). Only `admin` opens a
-  terminal — `tasks` and `author` never include shell access. It is shown once.
+  automations, env files) or `admin` (everything but sign-in). It is shown once.
+  **A scope bounds the API, not the machine:** `tasks` and `author` start runs, and a
+  run executes code (agents run Bash, check steps are commands) as the user cezar runs
+  as — treat either as owner-equivalent on that machine. `read` is the only scope that
+  executes nothing; use it for anything you share. Only `admin` opens a terminal, and
+  this machine's host key (`~/.cezar/auth-host.key`) opens nothing except from a
+  loopback shell — never through a proxy, a browser or another machine.
 
 ### cezar as an MCP server
 

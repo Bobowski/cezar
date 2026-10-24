@@ -58,6 +58,11 @@ Settings → Security → **API tokens** (owner only):
 - Scopes: `read` (allowlisted GETs), `tasks` (runs, messages, dispatch), `author` (workflows, skills,
   automations, env), `admin` (everything, including settings, self-update and terminals — a task
   terminal is a shell on the host, so `tasks` and `author` never include it: `ADMIN_ROUTES`).
+- **A scope bounds the API surface, not the machine.** A token that can start or continue a run —
+  `tasks`, and `author`, whose workflows and automations start them — can execute code as the OS
+  user cezar runs as: agents run Bash, and a check step is a command. That user can read and write
+  everything under `~/.cezar/`, so treat `tasks` and `author` as owner-equivalent on that machine.
+  `read` is the only scope that executes nothing; it is the one to hand to anything shared.
 - `GET /auth/tokens`, `DELETE /auth/tokens/:id`; last-used time shown.
 - A Bearer token satisfies the auth guard like a session cookie, with its scope checked per
   route family; the request-origin guard (#426) is skipped for Bearer requests, because they
@@ -70,6 +75,12 @@ process list; `CEZ_SERVER` for the address), so
 ## 5. Security
 
 - The MCP endpoint is behind the same auth as the API; without a token or session it is 401.
+- `tasks` and `author` are code execution as the cezar user (§4). What the server does stop is
+  that turning into the cockpit's owner credential off the box: the host key
+  (`~/.cezar/auth-host.key`, `0600`, readable by any task) is accepted only from a loopback
+  request — loopback `Host` and socket, no `X-Forwarded-*`/`Forwarded`/`X-Real-IP`/`Origin` — so a
+  key a task reads out and hands to a token holder opens nothing through the public front. The
+  installer's owner probe therefore goes to the loopback upstream, not through nginx.
 - Scopes are enforced server-side per route family, not by the tool list the client saw.
 - Token hashes only; a lost token is recreated, never recovered.
 - stdio `cezar mcp` on a local cockpit needs no token: it is the machine's owner, like the CLI.

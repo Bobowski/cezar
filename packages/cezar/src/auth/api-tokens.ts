@@ -85,8 +85,9 @@ export const FAMILY_SCOPES: Record<string, Exclude<ApiTokenScope, 'read'>> = {
 };
 
 /**
- * Routes inside a non-admin family that are `admin`'s anyway: a task terminal is a shell on the
- * host (it can read the host key), so `tasks` and `author` never include shell access.
+ * Routes inside a non-admin family that are `admin`'s anyway: an interactive shell on the host.
+ * Not a sandbox — a run `tasks` starts executes code as the cezar user too (spec
+ * 2026-10-24-cezar-mcp-server §4); scopes bound the API surface, not the machine.
  */
 const ADMIN_ROUTES: readonly RegExp[] = [/^\/runs\/[^/]+\/terminal(\/|$)/];
 

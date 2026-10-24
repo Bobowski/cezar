@@ -25,9 +25,9 @@ import { SettingsError, SettingsGroup, SettingsLoading } from './settings-field'
  */
 
 const SCOPES: Array<{ id: ApiTokenScope; label: string; hint: string }> = [
-  { id: 'read', label: 'Read', hint: 'Reads that carry no secret: tasks, threads, workflows, the repo.' },
-  { id: 'tasks', label: 'Tasks', hint: 'Start, steer and stop tasks; dispatch. No terminal.' },
-  { id: 'author', label: 'Author', hint: 'Write workflows, skills, automations and env files.' },
+  { id: 'read', label: 'Read', hint: 'Reads that carry no secret: tasks, threads, workflows, the repo. Runs nothing — the one to share.' },
+  { id: 'tasks', label: 'Tasks', hint: 'Start, steer and stop tasks; dispatch. A task runs code as cezar’s user on this machine.' },
+  { id: 'author', label: 'Author', hint: 'Write workflows, skills, automations and env files — which run code too.' },
   { id: 'admin', label: 'Admin', hint: 'Everything, terminals, settings and self-update included.' },
 ]
 
@@ -176,7 +176,7 @@ function NewTokenDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
           <form className="contents" onSubmit={submit} noValidate>
             <DialogHeader>
               <DialogTitle>New API token</DialogTitle>
-              <DialogDescription>Pick only the scopes it needs. Every request it makes is checked against them.</DialogDescription>
+              <DialogDescription>Pick only the scopes it needs. Scopes bound the API, not the machine: Tasks and Author can run code here, so treat them like your own login.</DialogDescription>
             </DialogHeader>
             <FieldGroup className="gap-4">
               <Field>

@@ -56,6 +56,33 @@ export function bearerOf(header: string | undefined): string | undefined {
   return match?.[1];
 }
 
+/** Headers a proxy or a browser adds: a request carrying one is not this machine's own shell. */
+const NOT_A_SHELL = ['x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'forwarded', 'x-real-ip', 'origin'];
+
+/**
+ * Whether a request may present the host key: a shell on this machine talking straight to its own
+ * cockpit — loopback Host, loopback socket (when the server knows it), no proxy or page between.
+ * Code a token runs can read the key file, so off the box the key must open nothing (spec
+ * 2026-10-24-cezar-mcp-server §5).
+ */
+export function hostKeyRequestIsLocal(header: (name: string) => string | undefined, remoteAddress: string | undefined): boolean {
+  if (!isLoopbackHostHeader(header('host'))) return false;
+  if (NOT_A_SHELL.some((name) => header(name) !== undefined)) return false;
+  return remoteAddress === undefined || isLoopbackHostHeader(remoteAddress.replace(/^::ffff:(?=\d+\.)/i, ''));
+}
+
+function socketAddressOf(c: Context): string | undefined {
+  return (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket?.remoteAddress;
+}
+
+function upgradeHostKeyIsLocal(req: IncomingMessage): boolean {
+  const header = (name: string) => {
+    const value = req.headers[name];
+    return Array.isArray(value) ? value[0] : value;
+  };
+  return hostKeyRequestIsLocal(header, req.socket?.remoteAddress);
+}
+
 export interface AuthGuardOptions {
   service: AuthService;
   /** Read per request, like every other capability: tests and ops flip the variable live. */
@@ -106,7 +133,7 @@ export function createAuthGuard(options: AuthGuardOptions): MiddlewareHandler<Au
       return next();
     }
     if (bearer !== undefined && isHostKey(bearer)) {
-      if (!verifyHostKey(bearer)) return unauthorized(c);
+      if (!hostKeyRequestIsLocal((name) => c.req.header(name), socketAddressOf(c)) || !verifyHostKey(bearer)) return unauthorized(c);
       c.set('principal', { kind: 'host', role: 'owner' });
       return next();
     }
@@ -128,7 +155,7 @@ export function createAuthGuard(options: AuthGuardOptions): MiddlewareHandler<Au
 export function upgradeIsAuthenticated(req: IncomingMessage, options: Pick<AuthGuardOptions, 'service' | 'enforced'>): boolean {
   if (!options.enforced()) return true;
   const bearer = bearerOf(req.headers.authorization);
-  if (bearer !== undefined && isHostKey(bearer)) return verifyHostKey(bearer);
+  if (bearer !== undefined && isHostKey(bearer)) return upgradeHostKeyIsLocal(req) && verifyHostKey(bearer);
   return options.service.authenticate(sessionTokenOf(req.headers.cookie, req.headers.host)) !== null;
 }
 

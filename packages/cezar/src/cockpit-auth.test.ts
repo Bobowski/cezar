@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ensureHostKey, readHostKey } from './auth/host-key.ts';
-import { takeServerFlags, withCockpitAuth } from './cockpit-address.ts';
+import { plainHttpWarning, takeServerFlags, withCockpitAuth } from './cockpit-address.ts';
 
 describe('withCockpitAuth', () => {
   let home: string;
@@ -71,6 +71,17 @@ describe('cez --server / --token', () => {
     takeServerFlags(['task', 'create', 'x'], task);
     expect(task.CEZ_API_URL).toBe('http://127.0.0.1:4321');
     expect(task.CEZ_API_TOKEN).toBeUndefined();
+  });
+
+  it('warns when a shell addresses a non-loopback cockpit over plain http — the token would travel in clear', () => {
+    expect(plainHttpWarning({ CEZ_API_URL: 'http://agents.example.dev:4321' })).toMatch(/plain http/);
+    expect(plainHttpWarning({ CEZ_API_URL: 'https://agents.example.dev' })).toBeNull();
+    expect(plainHttpWarning({ CEZ_API_URL: 'http://127.0.0.1:4321' })).toBeNull();
+    expect(plainHttpWarning({ CEZ_API_URL: 'http://localhost:4321' })).toBeNull();
+    expect(plainHttpWarning({})).toBeNull();
+    expect(plainHttpWarning({ CEZ_API_URL: 'not a url' })).toBeNull();
+    // A task's address is the cockpit's to choose.
+    expect(plainHttpWarning({ CEZ_API_URL: 'http://cockpit:4321', CEZ_TASK_ID: 'r1' })).toBeNull();
   });
 
   it('refuses a flag without a value', () => {

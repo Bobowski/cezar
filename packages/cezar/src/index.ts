@@ -56,7 +56,7 @@ import { runServiceCommand } from './services/cli.ts';
 import { runTelemetryCommand } from './telemetry-cli.ts';
 import { reportInconclusiveProbe } from './server/provider-telemetry.ts';
 import { runRunsCommand } from './runs/runs-cli.ts';
-import { takeServerFlags } from './cockpit-address.ts';
+import { plainHttpWarning, takeServerFlags } from './cockpit-address.ts';
 
 import { runTrackerConnectionsCommand } from './server/tracker/connections-cli.ts';
 import { runSecretsCommand } from './workspace/secrets-cli.ts';
@@ -158,6 +158,9 @@ async function main(): Promise<void> {
     for (const key of ['CEZ_API_URL', 'CEZ_API_TOKEN'] as const) {
       if (clientEnv[key] !== undefined) process.env[key] = clientEnv[key];
     }
+    // stderr: `cezar mcp` speaks its protocol on stdout.
+    const warning = plainHttpWarning(clientEnv);
+    if (warning) console.error(warning);
   }
   // `cezar mcp` (spec 2026-10-24-cezar-mcp-server §3): stdio is the protocol — nothing else may print.
   if (process.argv[2] === 'mcp') {

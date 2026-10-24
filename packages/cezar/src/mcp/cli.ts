@@ -6,19 +6,21 @@ import { runMcpBridge, type BridgeIo, type BridgeTarget } from './stdio.ts';
  * `cezar mcp [--tools <sets>]` — add cezar to Claude Code, Codex or any MCP client that launches
  * a command (spec 2026-10-24-cezar-mcp-server §3). On a local cockpit it needs nothing: the
  * address defaults to the local port and the host key authenticates it, like every other
- * shell-side CLI. `cez --server <url> --token <token> mcp` points it at a hosted one.
+ * shell-side CLI. `CEZ_TOKEN=<token> cez --server <url> mcp` points it at a hosted one.
  */
 
 const USAGE = `cezar mcp — serve this cockpit's API to an MCP client over stdio
 
   cezar mcp [--tools <sets>]       --tools: a comma list of tool sets, or all
                                    (default: tasks,workflows,skills,projects)
-  cez --server https://<host> --token <ceztok_…> mcp    a hosted cockpit (or CEZ_SERVER / CEZ_TOKEN)
+  CEZ_TOKEN=<ceztok_…> cez --server https://<host> mcp    a hosted cockpit (or CEZ_SERVER; --token works,
+                                   but shows in the process list)
 
   Claude Code:  claude mcp add cezar -- cezar mcp
   Over HTTP:    claude mcp add --transport http cezar https://<host>/api/v1/mcp --header "Authorization: Bearer <token>"
 
-Tokens: Settings → Security → API tokens. A local cockpit needs none.`;
+Tokens: Settings → Security → API tokens. A local cockpit needs none. Always https:// for another
+machine: over plain http the token travels in clear (cez warns).`;
 
 export interface McpCliEnv {
   CEZ_API_URL?: string;

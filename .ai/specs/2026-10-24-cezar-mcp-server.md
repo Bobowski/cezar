@@ -63,7 +63,8 @@ Settings → Security → **API tokens** (owner only):
   route family; the request-origin guard (#426) is skipped for Bearer requests, because they
   are not browsers. Tokens never work for `/auth/*` management routes.
 
-The CLI learns `cez --server https://<domain> --token <…>` (or `CEZ_SERVER` / `CEZ_TOKEN`), so
+The CLI learns `cez --server https://<domain>` with `CEZ_TOKEN` (or `--token`, which shows in the
+process list; `CEZ_SERVER` for the address), so
 `cez task create` from a laptop talks to the VPS the same way the MCP server does.
 
 ## 5. Security
@@ -76,8 +77,14 @@ The CLI learns `cez --server https://<domain> --token <…>` (or `CEZ_SERVER` / 
 
 ## 6. Zero config
 
-Nothing on by default: the HTTP MCP endpoint answers only to a token the owner created. The
-stdio server is a command the owner adds to their client. No env var; `CEZ_SERVER`/`CEZ_TOKEN`
+Nothing new is exposed by default. On a cockpit with sign-in (every hosted one, unless
+`CEZ_AUTH=0`), the HTTP MCP endpoint answers only to a session or a token the owner created. On a
+local cockpit without sign-in — the zero-config default — it answers, like every other `/api/v1`
+route, to any caller on this machine: the machine is the perimeter there, and the #426 origin
+guard still refuses a foreign `Host` and a cross-site browser request. The stdio server is a
+command the owner adds to their client. A `--server` naming another machine over plain `http://`
+gets a warning (the token would travel in clear), and the docs prefer `CEZ_TOKEN` to `--token`,
+which shows in the process list. No env var; `CEZ_SERVER`/`CEZ_TOKEN`
 are client-side conveniences documented in `.env.example`.
 
 ## 7. Not done here

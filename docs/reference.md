@@ -679,9 +679,16 @@ others. Project tools take an optional `projectId`. Resources:
 token's scope is checked on the route each tool calls, whatever tools the
 client was shown.
 
-The same flags point the shell CLIs at another machine:
-`cez --server https://agents.example.dev --token ceztok_… task create "…"`
-(or `CEZ_SERVER` / `CEZ_TOKEN`) starts a top-level task there.
+The same address points the shell CLIs at another machine:
+`CEZ_TOKEN=ceztok_… cez --server https://agents.example.dev task create "…"`
+(or `CEZ_SERVER`) starts a top-level task there. Prefer `CEZ_TOKEN` to
+`--token`: a flag is visible in the process list. Use the `https://` address —
+`cez` warns when `--server` names another machine over plain `http://`.
+
+On a cockpit with sign-in, `/api/v1/mcp` answers only to a session or a token.
+A local cockpit without sign-in (the zero-config default) serves it, like every
+other route, to any caller on this machine: the machine is the perimeter, and
+the origin guard still refuses foreign `Host`s and cross-site browsers.
 
 ---
 

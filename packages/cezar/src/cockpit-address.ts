@@ -59,6 +59,23 @@ export function takeServerFlags(args: readonly string[], env: NodeJS.ProcessEnv)
   return rest;
 }
 
+/**
+ * The warning a shell hears when `--server` / `CEZ_SERVER` names another machine over plain
+ * `http://`: its token (and every prompt) would cross the network in clear. Null otherwise, and
+ * always null inside a task, whose address is the cockpit's choice.
+ */
+export function plainHttpWarning(env: { CEZ_API_URL?: string; CEZ_TASK_ID?: string }): string | null {
+  if (env.CEZ_TASK_ID || !env.CEZ_API_URL) return null;
+  let url: URL;
+  try {
+    url = new URL(env.CEZ_API_URL);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'http:' || isLoopbackHost(url.hostname)) return null;
+  return `cezar: warning — ${url.origin} is plain http, so the API token and everything sent travel unencrypted; use its https:// address.`;
+}
+
 export const DEFAULT_COCKPIT_URL = 'http://127.0.0.1:4321';
 
 export interface MissingCockpitMessage {

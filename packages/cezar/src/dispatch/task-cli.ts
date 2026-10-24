@@ -37,8 +37,9 @@ const USAGE = `cez task — dispatch cezar tasks from inside a task (on by defau
   cez task list                       the tree this task belongs to, with status and cost
   cez task tree <run id>              the tree rooted at (or containing) another run
 
-From a shell (no CEZ_TASK_ID), create starts a top-level task instead: cez --server <url> --token <token>
-task create "<objective>" [--workflow <name>] [--runner …] [--model …] (CEZ_SERVER / CEZ_TOKEN work too).`;
+From a shell (no CEZ_TASK_ID), create starts a top-level task instead: CEZ_TOKEN=<token> cez --server <url>
+task create "<objective>" [--workflow <name>] [--runner …] [--model …] (CEZ_SERVER works too; prefer
+CEZ_TOKEN to --token, which shows in the process list).`;
 
 function base(env: TaskCliEnv): { url: string; scope: string } | null {
   const url = env.CEZ_API_URL?.replace(/\/+$/, '');

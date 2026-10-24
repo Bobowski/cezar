@@ -114,7 +114,7 @@ async function freshestPinnedBaseRef(runGit: GitRunner, base: string, baseRemote
  * A base that is already remote-tracking, a commit sha pinned from a detached
  * HEAD, or a repo with no remote all fall through unchanged.
  */
-async function freshestBaseRef(runGit: GitRunner, base: string): Promise<string> {
+export async function freshestBaseRef(runGit: GitRunner, base: string): Promise<string> {
   if (!isSafeGitRef(base) || base === 'HEAD') return base;
   const remotes = await resolveTaskRemotes(runGit);
   if (splitRemoteRef(base, remotes.names).remote) return base;
@@ -248,4 +248,22 @@ export async function resolveTaskDiffBase(
   const viaMergeBase = await changedLines(runGit, anchor);
   if (viaMergeBase === null || viaBaseline <= viaMergeBase) return { base: baseline, repointedHead };
   return { base: anchor, repointedHead };
+}
+
+/**
+ * The Git page's "Compare with current" anchor (spec 2026-10-24-git-view §3.2): what `ref` brings
+ * in is measured from its merge-base with the checked-out branch, re-resolved to its freshest ref
+ * by the same rule a task diff uses, so a stale local branch never inflates the comparison.
+ * Null when the two share no history.
+ */
+export async function resolveCompareBase(
+  runGit: GitRunner,
+  current: string,
+  ref: string,
+): Promise<{ against: string; mergeBase: string } | null> {
+  if (!isSafeGitRef(current) || !isSafeGitRef(ref)) return null;
+  const against = current === 'HEAD' ? 'HEAD' : await freshestBaseRef(runGit, current);
+  const res = await runGit(['merge-base', against, ref]);
+  const mergeBase = res.ok ? res.stdout.trim() : '';
+  return mergeBase ? { against, mergeBase } : null;
 }

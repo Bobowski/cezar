@@ -22,6 +22,10 @@ export interface TaskRemotes {
   push: string | null;
   /** Every configured remote name — what `splitRemoteRef` recognizes as a prefix. */
   names: string[];
+  /** Why `base` won (the Git page's Remotes block shows it, spec 2026-10-24-git-view §3.4). */
+  baseReason: 'gh-default' | 'fork-parent' | 'origin' | 'first-remote' | null;
+  /** Why `push` won. */
+  pushReason: 'push-default' | 'origin' | 'pr-target' | null;
 }
 
 export interface ParsedRemote {
@@ -114,14 +118,22 @@ export async function resolveTaskRemotes(runGit: RemoteGitRunner): Promise<TaskR
   }
   // Dash-guard (#431): names become positional git operands.
   const names = [...urls.keys()].filter(isSafeGitRef);
-  if (names.length === 0) return { base: null, push: null, names };
+  if (names.length === 0) return { base: null, push: null, names, baseReason: null, pushReason: null };
 
   let base: string | null = ghResolved && names.includes(ghResolved) ? ghResolved : null;
-  if (!base && names.includes('origin')) base = await forkParentRemote(urls, names);
-  base ??= names.includes('origin') ? 'origin' : (names[0] as string);
+  let baseReason: TaskRemotes['baseReason'] = base ? 'gh-default' : null;
+  if (!base && names.includes('origin')) {
+    base = await forkParentRemote(urls, names);
+    if (base) baseReason = 'fork-parent';
+  }
+  if (!base) {
+    base = names.includes('origin') ? 'origin' : (names[0] as string);
+    baseReason = names.includes('origin') ? 'origin' : 'first-remote';
+  }
 
   const push = names.includes(pushDefault) ? pushDefault : names.includes('origin') ? 'origin' : base;
-  return { base, push, names };
+  const pushReason = names.includes(pushDefault) ? 'push-default' : names.includes('origin') ? 'origin' : 'pr-target';
+  return { base, push, names, baseReason, pushReason };
 }
 
 /**

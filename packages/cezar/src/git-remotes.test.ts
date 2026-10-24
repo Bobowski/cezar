@@ -90,7 +90,7 @@ describe('splitRemoteRef', () => {
 describe('taskRemotes (real git)', () => {
   it('origin = fork, upstream = canonical: fork from upstream, push to origin', async () => {
     const { work } = await forkFixture('origin-is-fork');
-    expect(await taskRemotes(work)).toMatchObject({ base: 'upstream', push: 'origin' });
+    expect(await taskRemotes(work)).toMatchObject({ base: 'upstream', push: 'origin', baseReason: 'fork-parent', pushReason: 'origin' });
   });
 
   it('origin = canonical, fork = yours: base and push are both origin', async () => {
@@ -107,15 +107,15 @@ describe('taskRemotes (real git)', () => {
   it('honours remote.pushDefault for the push remote', async () => {
     const { work } = await forkFixture('origin-is-canonical');
     await git(work, 'config', 'remote.pushDefault', 'fork');
-    expect(await taskRemotes(work)).toMatchObject({ base: 'origin', push: 'fork' });
+    expect(await taskRemotes(work)).toMatchObject({ base: 'origin', push: 'fork', pushReason: 'push-default' });
   });
 
   it('a lone remote with an unconventional name is both; no remote is null', async () => {
     const solo = tempDir('cez-solo-');
     await run('git', ['init', '-q', '-b', 'main'], { cwd: solo });
-    expect(await taskRemotes(solo)).toEqual({ base: null, push: null, names: [] });
+    expect(await taskRemotes(solo)).toEqual({ base: null, push: null, names: [], baseReason: null, pushReason: null });
     await git(solo, 'remote', 'add', 'gitlab', CANONICAL_URL);
-    expect(await taskRemotes(solo)).toMatchObject({ base: 'gitlab', push: 'gitlab' });
+    expect(await taskRemotes(solo)).toMatchObject({ base: 'gitlab', push: 'gitlab', baseReason: 'first-remote', pushReason: 'pr-target' });
   });
 
   it('downstream fork: an `upstream` that is NOT origin\'s GitHub parent leaves origin as the base', async () => {
@@ -164,7 +164,7 @@ describe('taskRemotes (real git)', () => {
     await run('git', ['init', '-q', '-b', 'main'], { cwd: repo });
     await git(repo, 'config', 'remote.--upload-pack=evil.url', CANONICAL_URL);
     await git(repo, 'remote', 'add', 'origin', FORK_URL);
-    expect(await taskRemotes(repo)).toEqual({ base: 'origin', push: 'origin', names: ['origin'] });
+    expect(await taskRemotes(repo)).toEqual({ base: 'origin', push: 'origin', names: ['origin'], baseReason: 'origin', pushReason: 'origin' });
   });
 });
 

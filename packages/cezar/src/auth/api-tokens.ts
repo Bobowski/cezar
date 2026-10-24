@@ -112,14 +112,16 @@ const DISCOVERY_ROUTES: ReadonlySet<string> = new Set(['/projects', '/health', '
 
 /**
  * The GET routes `read` covers, by route template — an ALLOWLIST: each one is known to hand out
- * no credential, no shell or log output, and no file outside the repository index (the run and
- * repo file routes gate a token on the index server-side). A GET added later is no token's but
+ * no credential, no shell or log output, no configured command, nothing the user typed or pasted
+ * outside a task's own text, and no file outside the repository index (the run and repo file
+ * routes gate a token on the index server-side). What each one may say in free text is pinned
+ * per field in `api-tokens.test.ts`. A GET added later is no token's but
  * its family owner's until it is listed here; `api-tokens.test.ts` keeps every entry a real route.
  */
 export const READ_ROUTES: ReadonlySet<string> = new Set([
   '/runs', '/runs/:id', '/runs/:id/changes', '/runs/:id/commit/:sha', '/runs/:id/commits', '/runs/:id/diff',
-  '/runs/:id/drafts', '/runs/:id/drafts/:surface/images/:imageId', '/runs/:id/files',
-  '/runs/:id/git/status', '/runs/:id/images/:file', '/runs/:id/layouts', '/runs/:id/search', '/runs/:id/tracker-issue', '/runs/:id/tree',
+  '/runs/:id/files',
+  '/runs/:id/git/status', '/runs/:id/layouts', '/runs/:id/search', '/runs/:id/tracker-issue', '/runs/:id/tree',
   '/groups/:groupId', '/events',
   '/workflows', '/workflows/nodes', '/skills', '/skills/importable',
   '/projects/:projectId/icon',
@@ -130,13 +132,13 @@ export const READ_ROUTES: ReadonlySet<string> = new Set([
   '/github/prs/:number/merge-state', '/github/ref-status', '/github/search',
   '/tracker', '/tracker/:id', '/tracker/:id/transitions', '/tracker/association', '/tracker/automation-options',
   '/tracker/candidates', '/tracker/search', '/tracker/watch/:watchId',
-  '/docker', '/e2e', '/ui-state', '/open-targets', '/providers/status', '/star-count',
+  '/docker', '/e2e', '/open-targets', '/providers/status', '/star-count',
   '/telemetry/consent',
   '/workspace/branding-logo', '/workspace/dashboard',
   '/workspace/dashboard/automations', '/workspace/dashboard/costs', '/workspace/dashboard/feed',
   '/workspace/dashboard/insights', '/workspace/dashboard/overview', '/workspace/dashboard/tasks',
   '/workspace/dashboard/telemetry', '/workspace/events', '/workspace/host-usage', '/workspace/runs-index',
-  '/workspace/self-update', '/workspace/self-update/development', '/workspace/skills-update', '/workspace/ui-state',
+  '/workspace/self-update', '/workspace/skills-update',
 ]);
 
 /**

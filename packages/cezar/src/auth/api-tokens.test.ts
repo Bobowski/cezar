@@ -114,6 +114,19 @@ describe('API token scopes, per route family', () => {
     expect(apiTokenAllows(['read'], 'GET', '/api/v1/workspace/dashboard/automations')).toBe(true);
   });
 
+  it('read carries nothing the user typed or pasted: drafts, attachments and saved cockpit state', () => {
+    for (const path of [
+      '/api/v1/runs/1/drafts', '/api/v1/runs/1/drafts/composer/images/i1', '/api/v1/runs/1/images/shot.png',
+      // The cockpit's own prefs: an open bag, prompt templates among them.
+      '/api/v1/ui-state', '/api/v1/workspace/ui-state',
+      // cezar's own task titles and commit subjects, and a GitHub round trip.
+      '/api/v1/workspace/self-update/development',
+    ]) {
+      expect(apiTokenAllows(['read'], 'GET', path), path).toBe(false);
+    }
+    expect(apiTokenAllows(['tasks'], 'GET', '/api/v1/runs/1/drafts')).toBe(true);
+  });
+
   it('every route the read allowlist names is a real GET route', () => {
     const gets = new Set(Object.keys(routeContracts).filter((key) => key.startsWith('GET ')).map((key) => key.slice(4)));
     expect([...READ_ROUTES].filter((route) => !gets.has(route))).toEqual([]);

@@ -44,7 +44,9 @@ import {
   packageRootOf,
   previousId,
   readManifest,
+  recordServerRunning,
   removeInstalled,
+  serverRunningId,
   versionsDir,
   type InstallKind,
 } from './layout.ts';
@@ -624,10 +626,16 @@ export class SelfUpdateService {
     }
   }
 
-  /** Keep the newest `BRANCH_BUILDS_KEPT` branch builds; never the active one, `previous`, or
-   *  the one this process runs from (`current` may have moved under it, e.g. `cezar use`). */
+  /** The serving process records the install it runs, for prunes run by other processes. */
+  recordRunning(): void {
+    if (this.runningId) recordServerRunning(this.runningId, this.env);
+  }
+
+  /** Keep the newest `BRANCH_BUILDS_KEPT` branch builds; never the active one, `previous`, the
+   *  one this process runs from, or the one the server runs from (`current` may have moved under
+   *  either, e.g. `cezar use` or `cezar update` from the CLI). */
   private pruneBranchBuilds(log: (line: string) => void): void {
-    const keep = new Set([activeId(this.env), previousId(this.env), this.runningId]);
+    const keep = new Set([activeId(this.env), previousId(this.env), this.runningId, serverRunningId(this.env)]);
     const builds = listInstalled(this.env).filter((entry) => entry.source === 'branch');
     for (const entry of builds.slice(BRANCH_BUILDS_KEPT)) {
       if (keep.has(entry.id)) continue;

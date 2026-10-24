@@ -399,6 +399,7 @@ async function serveCommand(
       });
     },
   });
+  selfUpdate.recordRunning();
   void selfUpdate.updateAvailable().then((latest) => {
     if (!latest) return;
     update.latest = latest;

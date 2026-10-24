@@ -556,6 +556,28 @@ describe('applying a branch build', () => {
     expect(readdirSync(join(home, 'versions'))).toContain(running);
   });
 
+  it('a CLI `cezar update` never prunes the build the live server runs from', async () => {
+    const { running, target } = await prepared();
+    for (const [n, day] of [
+      ['11111111', '02'],
+      ['22222222', '03'],
+      ['33333333', '04'],
+    ] as const) {
+      fakeInstall(`0.17.0+${n}`, { version: '0.17.0', source: 'branch', installedAt: `2026-10-${day}T00:00:00.000Z`, commit: { sha: n, subject: '', at: `2026-10-${day}T00:00:00.000Z`, branch: 'brutus' } });
+    }
+    // The server boots through `current` (= `running`) and records it.
+    service().recordRunning();
+    // `cezar use` twice from a shell, then `cezar update` run by the build `current` now names.
+    activate('0.17.0+33333333', env);
+    activate('0.17.0+22222222', env);
+    const { deps } = stubs();
+    const cli = service({ ...deps, entry: join(home, 'versions', '0.17.0+22222222', 'node_modules', '@open-mercato', 'cezar', 'dist', 'index.js') });
+    expect((await cli.installBranchTip(() => {})).id).toBe(target);
+    const left = readdirSync(join(home, 'versions'));
+    expect(left).toContain(running);
+    expect(left).not.toContain('0.17.0+11111111');
+  });
+
   it('never builds, or swaps the remote, while another process builds in the clone', async () => {
     const { running, target } = await prepared();
     const { calls, deps } = stubs();

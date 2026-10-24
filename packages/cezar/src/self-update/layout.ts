@@ -208,6 +208,27 @@ export function activate(id: string, env: NodeJS.ProcessEnv = process.env): void
  *  it on that id's first launch to arm its crash rollback (docker/supervise.sh, spec §4.3). */
 export const FRESH_MARKER = '.fresh';
 
+/** `versions/.running`: the install the last-booted server runs, so another process's prune
+ *  never removes it from under that server once `current` has moved on. */
+export const RUNNING_MARKER = '.running';
+
+export function recordServerRunning(id: string, env: NodeJS.ProcessEnv = process.env): void {
+  try {
+    mkdirSync(versionsDir(env), { recursive: true });
+    writeFileSync(join(versionsDir(env), RUNNING_MARKER), `${id}\n`);
+  } catch {
+    // A read-only home: prune then protects only what `current`/`previous` name.
+  }
+}
+
+export function serverRunningId(env: NodeJS.ProcessEnv = process.env): string | null {
+  try {
+    return readFileSync(join(versionsDir(env), RUNNING_MARKER), 'utf8').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 function markFresh(id: string, env: NodeJS.ProcessEnv): void {
   try {
     writeFileSync(join(versionsDir(env), FRESH_MARKER), `${id}\n`);

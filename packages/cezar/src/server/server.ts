@@ -8696,6 +8696,8 @@ export function createApp(deps: ServerDeps) {
       const info = await getRepoInfo(repoRoot);
       if (!info) return c.json({ error: 'not a git repository' }, 409);
       const parsed = { data: c.req.valid('json') };
+      // Like every other checkout mutation: refuse during a landing rather than queue behind it.
+      if (landingInProgress(info.root)) return c.json({ error: LANDING_BUSY }, 409);
       const result = await serializeCheckout(info.root, () => createOrSwitchBranch(info.root, parsed.data.name, parsed.data.from));
       if (!result.ok) return c.json({ error: result.error }, 409);
       return c.json({ branch: result.branch, created: result.created });

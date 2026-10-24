@@ -278,7 +278,7 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     const { instance } = await app();
     const first = dockerLogsSchema.parse(await (await apiRequest(instance, `/api/v1/docker/containers/${C('a')}/logs`)).json());
     expect(first).toMatchObject({ topic: `docker-logs:${C('a')}`, following: true });
-    expect(spawned.at(-1)).toEqual(['logs', '--tail', '500', '--follow', C('a')]);
+    expect(spawned.at(-1)).toEqual(['logs', '--timestamps', '--tail', '500', '--follow', C('a')]);
     await new Promise((resolve) => setTimeout(resolve, 0));
     const next = dockerLogsSchema.parse(await (await apiRequest(instance, `/api/v1/docker/containers/${C('a')}/logs?cursor=${first.cursor}`)).json());
     expect(next.data).toBe('boot\nAPI_TOKEN=xxxx[REDACTED]\n');

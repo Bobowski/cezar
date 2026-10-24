@@ -310,7 +310,7 @@ describe('the webhook file across concurrent requests (one lock per project)', (
     const project = { id: 'p', root: dataDir, dataDir } as unknown as ProjectContext;
     const app = new Hono<{ Variables: { project: ProjectContext } }>()
       .use('*', async (c, next) => { c.set('project', project); await next(); })
-      .route('/api/v1', hookRoutes({ find: async (hookId) => (hookId === identity.hookId ? project : undefined), wake: () => undefined }))
+      .route('/api/v1', hookRoutes({ find: async (hookId) => (readWebhook(dataDir)?.hookId === hookId ? project : undefined), wake: () => undefined }))
       .route('/api/v1', automationWebhookRoutes({
         enabled: () => true, offMessage: 'off', canRegister: () => ({ ok: true }),
         publicOrigin: () => 'https://cezar.example', remote: async () => ({ owner: 'acme', repo: 'demo', host: 'github.com' }),
@@ -319,6 +319,8 @@ describe('the webhook file across concurrent requests (one lock per project)', (
     return { app: app as unknown as Hono, identity };
   }
   const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+  /** The response, or `waiting` when it has not come back within a moment. */
+  const soon = (response: Response | Promise<Response>) => Promise.race([Promise.resolve(response).then((r) => r.status), settle().then(() => 'waiting')]);
 
   it('a delivery that read the file before a DELETE never writes the removed hook back', async () => {
     const { app, identity } = setup(async () => '');
@@ -341,10 +343,28 @@ describe('the webhook file across concurrent requests (one lock per project)', (
     await settle();
     const delivery = heldDelivery(app, identity);
     delivery.send();
-    await settle();
+    // Recorded while GitHub has not answered: the file lock is never held across `gh api`.
+    expect(await soon(delivery.response)).toBe(202);
     answer();
     expect((await ping).status).toBe(200);
-    expect((await delivery.response).status).toBe(202);
     expect(readWebhook(dataDir)).toMatchObject({ lastDeliveryId: 'd-9', ping: { ok: true } });
+  });
+
+  it('records the ping GitHub sends while it registers the hook, and the registration keeps it', async () => {
+    let answer!: () => void;
+    const { app } = setup((args) => new Promise((resolve) => {
+      if (args.includes('POST') && args.some((arg) => arg.endsWith('/hooks'))) answer = () => resolve('{"id":9}');
+      else resolve('');
+    }));
+    const register = app.request('/api/v1/automation-webhook', { method: 'POST' });
+    await settle();
+    const pending = readWebhook(dataDir)!;
+    expect(pending.githubHookId).toBeUndefined();
+    const delivery = heldDelivery(app, pending);
+    delivery.send();
+    expect(await soon(delivery.response)).toBe(202);
+    answer();
+    expect((await register).status).toBe(200);
+    expect(readWebhook(dataDir)).toMatchObject({ hookId: pending.hookId, githubHookId: 9, lastDeliveryId: 'd-9' });
   });
 });

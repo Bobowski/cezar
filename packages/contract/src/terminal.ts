@@ -29,6 +29,9 @@ export const terminalSessionSchema = z.object({
   /** `null` = this host cannot read its process table (no `ps`), so busy-ness is unknown. The
    *  cockpit treats anything but `false` as "something may be running". */
   busy: z.boolean().nullable(),
+  /** Where the shell is now, relative to `cwd`, slash-terminated (`''` = `cwd`); `null` once it
+   *  left `cwd`; absent where the host cannot say (no `/proc`). Spec 2026-10-24-code-page-terminal §3.3. */
+  workdir: z.string().nullable().optional(),
   /** The WebSocket topic that wakes on new output. Local cockpits subscribe; hosted ones poll,
    *  because a browser WebSocket cannot carry reverse-proxy credentials. */
   topic: z.string(),

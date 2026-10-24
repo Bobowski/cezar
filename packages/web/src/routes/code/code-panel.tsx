@@ -107,10 +107,12 @@ function TerminalTab({
       if (historyRefresh.current) clearTimeout(historyRefresh.current)
       historyRefresh.current = setTimeout(() => void queryClient.invalidateQueries({ queryKey: historyKey }), 800)
     },
-    // The process table's word on the shell (`busy`); `null`, a host that cannot say, is not a prompt.
+    // The process table's word on the shell (`busy`); `null`, a host that cannot say, is not a
+    // prompt. `workdir` is where it is now, relative to where it opened — the tree's root.
     atPrompt: async (sessionId) => {
       const fresh = await queryClient.fetchQuery({ queryKey: key, queryFn: () => getCodeTerminal(tree), staleTime: 0 })
-      return fresh.sessions.find((session) => session.id === sessionId)?.busy === false
+      const session = fresh.sessions.find((entry) => entry.id === sessionId)
+      return { atPrompt: session?.busy === false, dir: session?.workdir }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [commands.data, history.data, paths, queryClient, tree])

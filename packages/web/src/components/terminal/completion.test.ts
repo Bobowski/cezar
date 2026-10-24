@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   AUTO_DELAY_MS, CompletionController, LineTracker, PROMPT_RECHECK_MS, childrenOf, filterHistory, rankCompletions, type CompletionSources, type CompletionView,
+  type PromptState,
 } from './completion'
 
 const sources: CompletionSources = {
@@ -29,6 +30,17 @@ describe('rankCompletions (spec 2026-10-24-code-page-terminal §3.3)', () => {
     expect(rankCompletions('ls -', sources)).toEqual([])
     expect(rankCompletions('ls ', sources)).toEqual([])
     expect(rankCompletions('ls ', sources, { explicit: true })).toEqual([])
+  })
+
+  it('completes paths from the shell\'s own directory when it is known', () => {
+    expect(rankCompletions('cat a', sources, { dir: 'src/' }).map((item) => item.line)).toEqual(['cat app.ts'])
+    expect(rankCompletions('vim lib/u', sources, { dir: 'src/' }).map((item) => item.insert)).toEqual(['til.ts'])
+    expect(rankCompletions('cat ../s', sources, { dir: 'src/' }).map((item) => item.line)).toEqual(['cat ../scripts/', 'cat ../src/'])
+    // Above the checkout, or a shell that left it: the tree has nothing to say.
+    expect(rankCompletions('cat ../s', sources, { dir: '' })).toEqual([])
+    expect(rankCompletions('cat s', sources, { dir: null })).toEqual([])
+    // Unknown (no `/proc` on this host): the checkout root.
+    expect(rankCompletions('cat s', sources, { dir: undefined }).map((item) => item.line)).toEqual(['cat scripts/', 'cat src/'])
   })
 
   it('never offers the line itself, and caps the list', () => {
@@ -140,7 +152,7 @@ describe('CompletionController', () => {
           return () => timers.delete(ms)
         },
         alternateScreen: () => alternate,
-        promptCheck: () => new Promise<boolean>((resolve) => answers.push(resolve)),
+        promptCheck: () => new Promise<PromptState>((resolve) => answers.push((atPrompt) => resolve({ atPrompt }))),
       })
       const key = (name: string, mods: Partial<{ ctrlKey: boolean }> = {}) =>
         controller.key({ key: name, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...mods })
@@ -194,6 +206,21 @@ describe('CompletionController', () => {
       expect(key('r', { ctrlKey: true })).toBe(true)
       expect(key('Escape')).toBe(true)
       expect(controller.current).toBeNull()
+    })
+
+    it('lists paths from the directory the prompt check reported', async () => {
+      const controller = new CompletionController({
+        write: () => {},
+        sources: () => sources,
+        onView: () => {},
+        schedule: () => () => {},
+        promptCheck: async () => ({ atPrompt: true, dir: 'src/' }),
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+      controller.typed('cat a')
+      expect(controller.key({ key: 'Tab', ctrlKey: false, metaKey: false, altKey: false, shiftKey: false })).toBe(false)
+      expect(controller.current?.mode === 'complete' && controller.current.items.map((item) => item.line)).toEqual(['cat app.ts'])
     })
 
     it('consumes Esc only while the popover is open', async () => {

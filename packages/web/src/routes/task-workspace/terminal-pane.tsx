@@ -5,7 +5,7 @@ import { useHostTransport } from '@/api/host-usage'
 import { subscribeTopic } from '@/api/ws'
 import type { TerminalOutput, TerminalSession } from '@open-mercato/cezar-api-client'
 import { attachTerminalLinks } from '@/components/terminal/attach-links'
-import { CompletionController, type CompletionSources, type CompletionView } from '@/components/terminal/completion'
+import { CompletionController, type CompletionSources, type CompletionView, type PromptState } from '@/components/terminal/completion'
 import { CompletionPopover, type PopoverPlace } from '@/components/terminal/completion-popover'
 import { cn } from '@/lib/utils'
 
@@ -76,7 +76,7 @@ export type TerminalPaneSession = Pick<TerminalSession, 'id' | 'exitCode'> & { t
  *  to tell when a line was submitted, and whether a session's shell sits at its prompt. */
 export type TerminalCompletion = CompletionSources & {
   onSubmitted?: () => void
-  atPrompt?: (sessionId: string) => Promise<boolean>
+  atPrompt?: (sessionId: string) => Promise<PromptState>
 }
 
 export function TerminalPane({
@@ -213,7 +213,7 @@ export function TerminalPane({
             onSubmitted: () => completionRef.current?.onSubmitted?.(),
             alternateScreen: () => term.buffer.active.type === 'alternate',
             ...(completionRef.current.atPrompt
-              ? { promptCheck: () => completionRef.current?.atPrompt?.(session.id) ?? Promise.resolve(false) }
+              ? { promptCheck: () => completionRef.current?.atPrompt?.(session.id) ?? Promise.resolve({ atPrompt: false }) }
               : {}),
           })
         : null

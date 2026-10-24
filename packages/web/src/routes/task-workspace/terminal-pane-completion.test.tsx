@@ -114,7 +114,7 @@ describe('TerminalPane — the Code terminal\'s completion and links', () => {
   it('on the alternate screen, Tab is the program\'s', async () => {
     const io = { read: vi.fn(async () => ({ data: '', cursor: 0, truncated: false, exitCode: null })), write: vi.fn(async () => {}), resize: vi.fn(async () => {}) }
     render(
-      <TerminalPane runId="" io={io} session={SESSION} active completion={{ commands: ['npm run dev'], history: [], paths: [], atPrompt: async () => true }} />,
+      <TerminalPane runId="" io={io} session={SESSION} active completion={{ commands: ['npm run dev'], history: [], paths: [], atPrompt: async () => ({ atPrompt: true }) }} />,
     )
     await waitFor(() => expect(term).not.toBeNull())
     await act(async () => {})
@@ -129,7 +129,7 @@ describe('TerminalPane — the Code terminal\'s completion and links', () => {
   })
 
   it('while the shell runs a program, Tab is the program\'s', async () => {
-    const atPrompt = vi.fn(async (sessionId: string) => sessionId !== 's-1')
+    const atPrompt = vi.fn(async (sessionId: string) => ({ atPrompt: sessionId !== 's-1' }))
     const io = { read: vi.fn(async () => ({ data: '', cursor: 0, truncated: false, exitCode: null })), write: vi.fn(async () => {}), resize: vi.fn(async () => {}) }
     render(
       <TerminalPane runId="" io={io} session={SESSION} active completion={{ commands: ['npm run dev'], history: [], paths: [], atPrompt }} />,

@@ -136,7 +136,10 @@ gateway that `CEZ_PREVIEW_PORTS` already configures for the VPS image.
   prompt: never on xterm's alternate screen (vim, less), and only while the last prompt check — the
   terminal state's `busy`, asked at mount and 1.1 s after each Enter/Ctrl+C/D/Z, past the
   server's one-second process-table reuse — found nothing running; until it answers, a REPL or a
-  program's prompt keeps Tab, Esc and `Ctrl+R`. Path completion needs a non-empty token.
+  program's prompt keeps Tab, Esc and `Ctrl+R`. Path completion needs a non-empty token, and lists
+  from the shell's own directory: the session's `workdir` (relative to where it opened, read from
+  Linux's `/proc/<pid>/cwd` with the busy check). A shell that left the checkout gets no paths; a
+  host with no `/proc` (macOS, Windows) cannot say, and the checkout root stands in.
 - **The gateway mapping asks once per RUNNING loopback origin**, which opens (or reuses) that
   app's gateway listener before a click — the only way to show `→ :85xx`. `Open in Browser` opens
   the loopback address in a Browser tab, which asks for its own fresh ticket as the Preview column

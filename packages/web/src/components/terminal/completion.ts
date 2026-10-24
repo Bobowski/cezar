@@ -42,8 +42,24 @@ export function childrenOf(paths: readonly string[], dir: string): string[] {
   return [...seen].sort((a, b) => a.localeCompare(b))
 }
 
-/** The path completions of the last token of `line`. */
-function pathItems(line: string, paths: readonly string[]): CompletionItem[] {
+/** `rel` (a token's directory part) inside `base`; null above the checkout's root. */
+function resolveDir(base: string, rel: string): string | null {
+  const parts: string[] = []
+  for (const part of `${base}${rel}`.split('/')) {
+    if (part === '' || part === '.') continue
+    if (part !== '..') parts.push(part)
+    else if (parts.pop() === undefined) return null
+  }
+  return parts.length === 0 ? '' : `${parts.join('/')}/`
+}
+
+/**
+ * The path completions of the last token of `line`, read from `dir` — the shell's directory
+ * relative to the checkout (`''` its root). `null`: the shell left the checkout, so the tree has
+ * nothing for it. `undefined`: the host cannot say where it is, so the checkout root stands in.
+ */
+function pathItems(line: string, paths: readonly string[], dir: string | null | undefined): CompletionItem[] {
+  if (dir === null) return []
   const token = /(\S*)$/.exec(line)?.[1] ?? ''
   // A flag is not a path; an absolute or home path is outside the checkout the tree describes.
   if (token.startsWith('-') || token.startsWith('/') || token.startsWith('~')) return []
@@ -51,9 +67,10 @@ function pathItems(line: string, paths: readonly string[]): CompletionItem[] {
   if (token === '') return []
   const relative = token.startsWith('./') ? token.slice(2) : token
   const slash = relative.lastIndexOf('/')
-  const dir = slash === -1 ? '' : relative.slice(0, slash + 1)
+  const listed = resolveDir(dir ?? '', slash === -1 ? '' : relative.slice(0, slash + 1))
+  if (listed === null) return []
   const base = relative.slice(slash + 1)
-  return childrenOf(paths, dir)
+  return childrenOf(paths, listed)
     .filter((child) => child.startsWith(base) && child !== base)
     .map((child) => {
       const insert = child.slice(base.length)
@@ -65,7 +82,11 @@ function pathItems(line: string, paths: readonly string[]): CompletionItem[] {
  * What to offer for `line`: discovered commands first, then history, then paths — each by prefix,
  * a line offered once (its first source wins), the line itself never.
  */
-export function rankCompletions(line: string, sources: CompletionSources, { explicit = false, limit = COMPLETION_LIMIT } = {}): CompletionItem[] {
+export function rankCompletions(
+  line: string,
+  sources: CompletionSources,
+  { explicit = false, limit = COMPLETION_LIMIT, dir }: { explicit?: boolean; limit?: number; dir?: string | null } = {},
+): CompletionItem[] {
   const out: CompletionItem[] = []
   const seen = new Set<string>([line])
   const offer = (item: CompletionItem) => {
@@ -81,7 +102,7 @@ export function rankCompletions(line: string, sources: CompletionSources, { expl
       if (entry.startsWith(line)) offer({ line: entry, insert: entry.slice(line.length), source: 'history' })
     }
   }
-  for (const item of pathItems(line, sources.paths)) offer(item)
+  for (const item of pathItems(line, sources.paths, dir)) offer(item)
   return out.slice(0, limit)
 }
 
@@ -157,6 +178,12 @@ export const AUTO_DELAY_MS = 300
  *  server's one-second process-table reuse, so the answer describes the shell AFTER the key. */
 export const PROMPT_RECHECK_MS = 1_100
 
+/** A prompt check's answer: whether the shell sits at its prompt, and where (`pathItems`). */
+export interface PromptState {
+  atPrompt: boolean
+  dir?: string | null
+}
+
 export interface KeyLike {
   key: string
   ctrlKey: boolean
@@ -184,6 +211,8 @@ export class CompletionController {
   private cancelRecheck: (() => void) | null = null
   /** The last prompt check's answer; a check still running counts as no. */
   private atPrompt: boolean
+  /** Where the shell is, from the same check; unknown until one says. */
+  private dir: string | null | undefined = undefined
   private checkSeq = 0
 
   constructor(
@@ -196,8 +225,9 @@ export class CompletionController {
       schedule?: (run: () => void, ms: number) => () => void
       /** The terminal shows the alternate screen — a full-screen program owns every key. */
       alternateScreen?: () => boolean
-      /** Whether the shell sits at its prompt (has nothing running). Absent: always. */
-      promptCheck?: () => Promise<boolean>
+      /** Whether the shell sits at its prompt (has nothing running), and in which directory.
+       *  Absent: always, at the checkout root. */
+      promptCheck?: () => Promise<PromptState>
     },
   ) {
     this.atPrompt = options.promptCheck === undefined
@@ -316,9 +346,11 @@ export class CompletionController {
     if (!check) return
     const seq = ++this.checkSeq
     void check()
-      .catch(() => false)
-      .then((atPrompt) => {
-        if (seq === this.checkSeq) this.atPrompt = atPrompt
+      .catch((): PromptState => ({ atPrompt: false }))
+      .then((state) => {
+        if (seq !== this.checkSeq) return
+        this.atPrompt = state.atPrompt
+        this.dir = state.dir
       })
   }
 
@@ -338,7 +370,7 @@ export class CompletionController {
   /** Recompute the list; returns whether the popover is open afterwards. */
   private refresh(explicit: boolean): boolean {
     const line = this.tracker.line
-    const items = line === null ? [] : rankCompletions(line, this.options.sources(), { explicit })
+    const items = line === null ? [] : rankCompletions(line, this.options.sources(), { explicit, dir: this.dir })
     if (items.length === 0) {
       this.close()
       return false

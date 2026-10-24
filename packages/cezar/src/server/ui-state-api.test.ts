@@ -214,4 +214,32 @@ describe('the ui-state API — skillUsage (#408)', () => {
       expect(Object.keys(rawFile().skillUsage as object)).toHaveLength(200);
     });
   });
+
+  // ---- codePages: the Code page's Browser tabs (spec 2026-10-24-code-page-browser-tabs) --------
+  describe('codePages keeps loopback pages per checkout', () => {
+    const pages = [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }, { id: 'b2', url: 'http://127.0.0.1:9000/', group: 1 }] }];
+
+    it('round-trips through GET and the file, beside unrelated keys', async () => {
+      await put({ githubView: 'prs' });
+      expect((await put({ codePages: pages })).status).toBe(200);
+      expect(rawFile()).toEqual({ githubView: 'prs', codePages: pages });
+      expect(await (await get()).json()).toEqual({ githubView: 'prs', codePages: pages });
+    });
+
+    it('refuses an address that is not loopback, carries credentials, or is not http(s)', async () => {
+      for (const url of ['https://example.com/', 'http://127.0.0.1.example.com/', 'http://user:pw@localhost:3000/', 'javascript:alert(1)']) {
+        const res = await put({ codePages: [{ tree: 'main', pages: [{ id: 'b1', url, group: 0 }] }] });
+        expect(res.status, url).toBe(400);
+      }
+      expect(() => readFileSync(uiStatePath(), 'utf8')).toThrow();
+    });
+
+    it('is bounded: too many checkouts, pages or groups are refused', async () => {
+      const tree = (name: string) => ({ tree: name, pages: [] })
+      expect((await put({ codePages: Array.from({ length: 9 }, (_, at) => tree(`t${at}`)) })).status).toBe(400);
+      const many = Array.from({ length: 13 }, (_, at) => ({ id: `b${at}`, url: 'http://localhost:3000/', group: 0 }));
+      expect((await put({ codePages: [{ tree: 'main', pages: many }] })).status).toBe(400);
+      expect((await put({ codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/', group: 4 }] }] })).status).toBe(400);
+    });
+  });
 });

@@ -229,6 +229,8 @@ export const automationRuntimeStateSchema = z.object({
   etags: z.record(z.string(), z.string()).optional(),
   backoffUntil: z.string().optional(),
   consecutiveFailures: z.number().optional(),
+  /** When a webhook delivery last woke this poll; a poll that ran across one stays due. */
+  wakeAt: z.string().optional(),
   /** Open PR heads as the last poll saw them (`number` → head): what `pull_request.synchronize`
    *  diffs against, and what a `304` on `/pulls` reuses; `left` marks one kept after its PR slid out
    *  of the capped open-PR list. */

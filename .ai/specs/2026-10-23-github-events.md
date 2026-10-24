@@ -169,6 +169,9 @@ the text above, and why:
   did not evaluate forgets its ETag, so a `304` never hides rows the cursor has not passed.
 - **`wakeNow`** is "every enabled, not backed-off GitHub poll of the project is due now", then the
   workspace scheduler's ordinary reschedule — the same leases, backoff and caps as a timer tick.
+  Deliveries the 5-second window collapses arm one trailing wake at its end, and a wake that
+  lands while a poll runs (`wakeAt` in the runtime state) keeps that poll due when it persists
+  instead of pushing it out a whole interval.
 - **Owner lookup** also counts the PR a run created (`pullRequestUrl`) and its `prRefs`, never a
   `pr-head` verifier or a run whose worktree is gone. A delivery takes the ladder a person's
   message takes (queued run → prompt queue of a live session → buffered start → Continue); an

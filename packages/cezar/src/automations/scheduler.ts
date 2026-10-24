@@ -136,6 +136,9 @@ export class ProjectAutomationScheduler {
       launch: (candidate: GithubCandidate) => this.launch(definition, candidate),
       persist: (result, current) => {
         const cursor = laterCursor(current.cursor, result.cursor);
+        // A webhook wake that arrived while this poll ran stays due: its event may be past what
+        // this poll read (spec 2026-10-23-github-events §4).
+        const wokenMeanwhile = !!current.wakeAt && current.wakeAt !== polledState.wakeAt;
         return {
           ...current, revision: definition.revision, cursor,
           frozenHighWatermark: result.truncated && cursor?.tieBreaker ? { timestamp: cursor.timestamp, tieBreaker: cursor.tieBreaker } : undefined,
@@ -146,7 +149,7 @@ export class ProjectAutomationScheduler {
           ...(result.activity?.prHeads ? { prHeads: result.activity.prHeads } : {}),
           ...(result.activity?.branchHeads ? { branchHeads: result.activity.branchHeads } : {}),
           lastSuccessAt: new Date().toISOString(),
-          nextCheckAt: new Date(Date.now() + definition.intervalSeconds * 1000).toISOString(),
+          nextCheckAt: new Date(Date.now() + (wokenMeanwhile ? 0 : definition.intervalSeconds * 1000)).toISOString(),
           consecutiveFailures: 0,
           backoffUntil: undefined,
         };

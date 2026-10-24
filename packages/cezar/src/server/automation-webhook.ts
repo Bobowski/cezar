@@ -38,7 +38,11 @@ export interface HookProject {
 
 const hookParamsSchema = z.object({ sender: z.string(), hookId: z.string() });
 
-/** Due now: every enabled GitHub poll of the project that is not backed off. */
+/**
+ * Due now: every enabled GitHub poll of the project that is not backed off. `wakeAt` is stamped
+ * on an already-due one too, so a poll in flight sees that a wake arrived and its `persist` keeps
+ * it due instead of pushing it out a whole interval. Returns how many became due.
+ */
 export function wakeGithubPolls(store: AutomationStore, now = Date.now()): number {
   const at = new Date(now).toISOString();
   let woke = 0;
@@ -46,9 +50,9 @@ export function wakeGithubPolls(store: AutomationStore, now = Date.now()): numbe
     if (!definition.enabled || !isGithubAutomation(definition)) continue;
     const state = store.state(definition.id);
     if (state?.backoffUntil && Date.parse(state.backoffUntil) > now) continue;
-    if (state?.nextCheckAt && Date.parse(state.nextCheckAt) <= now) continue;
-    store.setState(definition.id, (current) => ({ ...current, nextCheckAt: at }));
-    woke += 1;
+    const due = !!state?.nextCheckAt && Date.parse(state.nextCheckAt) <= now;
+    store.setState(definition.id, (current) => ({ ...current, wakeAt: at, ...(due ? {} : { nextCheckAt: at }) }));
+    if (!due) woke += 1;
   }
   return woke;
 }
@@ -113,7 +117,19 @@ export function hookRoutes(deps: {
     // A ping proves the route; it has nothing for a poll to find.
     const woke = event !== 'ping' && throttle.take(project.dataDir);
     // Not awaited: waking may build a project context, and GitHub gives a delivery ten seconds.
-    if (woke) void Promise.resolve().then(() => deps.wake(project)).catch(() => undefined);
+    const fire = () => { void Promise.resolve().then(() => deps.wake(project)).catch(() => undefined); };
+    if (woke) fire();
+    else if (event !== 'ping') {
+      throttle.trail(project.dataDir, () => {
+        fire();
+        const current = readWebhook(project.dataDir);
+        try {
+          if (current) writeWebhook(project.dataDir, { ...current, lastWakeAt: new Date().toISOString() });
+        } catch {
+          // Bookkeeping only.
+        }
+      });
+    }
     try {
       writeWebhook(project.dataDir, {
         ...file,

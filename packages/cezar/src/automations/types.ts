@@ -258,6 +258,8 @@ export const automationRuntimeStateSchema = z
     etags: z.record(z.string(), z.string()).optional(),
     backoffUntil: z.string().datetime().optional(),
     consecutiveFailures: z.number().int().nonnegative().optional(),
+    /** The last webhook wake (spec 2026-10-23-github-events §4); a poll that ran across one stays due. */
+    wakeAt: z.string().datetime().optional().catch(undefined),
     /** spec 2026-10-23-github-events §3: the diff bases of `pull_request.synchronize` and `push`. */
     prHeads: z.record(z.string(), z.object({ sha: z.string(), ref: z.string(), updatedAt: z.string(), left: z.boolean().optional() })).optional().catch(undefined),
     branchHeads: z.record(z.string(), z.string()).optional().catch(undefined),

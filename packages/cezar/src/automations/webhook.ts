@@ -140,20 +140,61 @@ export async function deleteGithubHook(input: { owner: string; repo: string; hos
   }
 }
 
-/** Per-project wake throttle: `true` when this delivery may wake, `false` when it collapses. */
+export interface WakeTimers {
+  set: (fire: () => void, ms: number) => unknown;
+  clear: (handle: unknown) => void;
+}
+
+const realTimers: WakeTimers = {
+  set: (fire, ms) => {
+    const handle = setTimeout(fire, ms);
+    handle.unref?.();
+    return handle;
+  },
+  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+/**
+ * Per-project wake throttle: `true` when this delivery may wake, `false` when it collapses. A
+ * collapsed delivery arms ONE trailing wake at the window's end (`trail`): the event it carried
+ * may not have been readable yet when the leading wake's poll ran.
+ */
 export class WakeThrottle {
   private readonly last = new Map<string, number>();
-  constructor(private readonly windowMs = WAKE_WINDOW_MS, private readonly now = () => Date.now()) {}
+  private readonly trailing = new Map<string, unknown>();
+  constructor(
+    private readonly windowMs = WAKE_WINDOW_MS,
+    private readonly now = () => Date.now(),
+    private readonly timers: WakeTimers = realTimers,
+  ) {}
 
   take(key: string): boolean {
     const at = this.now();
     const previous = this.last.get(key);
     if (previous !== undefined && at - previous < this.windowMs) return false;
     this.last.set(key, at);
+    // This wake covers whatever a pending trailing wake was armed for.
+    const pending = this.trailing.get(key);
+    if (pending !== undefined) {
+      this.timers.clear(pending);
+      this.trailing.delete(key);
+    }
     // Bounded: forget windows long closed so a busy workspace cannot grow the map.
     if (this.last.size > 1_000) {
-      for (const [other, when] of this.last) if (at - when >= this.windowMs) this.last.delete(other);
+      for (const [other, when] of this.last) if (at - when >= this.windowMs && !this.trailing.has(other)) this.last.delete(other);
     }
     return true;
+  }
+
+  /** After a `false` from `take`: wake once more when the window closes, however many collapsed. */
+  trail(key: string, fire: () => void): void {
+    if (this.trailing.has(key)) return;
+    const previous = this.last.get(key) ?? this.now();
+    const delay = Math.max(0, previous + this.windowMs - this.now());
+    this.trailing.set(key, this.timers.set(() => {
+      this.trailing.delete(key);
+      this.last.set(key, this.now());
+      fire();
+    }, delay));
   }
 }

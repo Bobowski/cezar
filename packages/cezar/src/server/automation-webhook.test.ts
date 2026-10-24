@@ -6,6 +6,8 @@ import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { automationWebhookResponseSchema, hookDeliveryResponseSchema } from '@open-mercato/cezar-contract';
 import { AutomationStore } from '../automations/store.ts';
+import { ProjectAutomationScheduler } from '../automations/scheduler.ts';
+import type { GithubAutomationDefinition } from '../automations/types.ts';
 import { newWebhookIdentity, readWebhook, registerGithubHook, verifySignature, WakeThrottle, writeWebhook } from '../automations/webhook.ts';
 import { isPublicHookRequest } from '../auth/guard.ts';
 import { automationWebhookRoutes, HookIndex, hookRoutes, wakeGithubPolls, type WebhookRouteDeps } from './automation-webhook.ts';
@@ -23,10 +25,15 @@ describe('POST /hooks/:sender/:hookId (spec 2026-10-23-github-events §4)', () =
     writeWebhook(dataDir, { version: 1, ...identity, githubHookId: 7 });
     const wake = vi.fn();
     const project = { id: 'p', dataDir };
+    // Timers by hand: a trailing wake fires only when the test says the window closed.
+    const timers: Array<{ fire: () => void; ms: number; cleared?: boolean }> = [];
     const app = new Hono().route('/api/v1', hookRoutes({
       find: async (hookId) => (hookId === identity.hookId ? project : undefined),
       wake,
-      throttle: new WakeThrottle(5_000, () => now.value),
+      throttle: new WakeThrottle(5_000, () => now.value, {
+        set: (fire, ms) => { const timer = { fire, ms }; timers.push(timer); return timer; },
+        clear: (handle) => { (handle as { cleared?: boolean }).cleared = true; },
+      }),
     }));
     const deliver = (body: string, headers: Record<string, string> = {}, hookId = identity.hookId) =>
       app.request(`/api/v1/hooks/github/${hookId}`, {
@@ -34,8 +41,32 @@ describe('POST /hooks/:sender/:hookId (spec 2026-10-23-github-events §4)', () =
         headers: { 'x-github-event': 'issue_comment', 'x-github-delivery': 'd-1', 'x-hub-signature-256': sign(identity.secret, body), ...headers },
         body,
       });
-    return { identity, wake, deliver, now };
+    return { identity, wake, deliver, now, timers };
   }
+
+  it('wakes once more when the window closes, for the deliveries it collapsed', async () => {
+    const { wake, deliver, now, timers } = setup();
+    await deliver('{}');
+    now.value = 1_000;
+    expect(await (await deliver('{}')).json()).toEqual({ accepted: true, woke: false });
+    now.value = 2_000;
+    await deliver('{}');
+    // One trailing wake, at the end of the window the first delivery opened.
+    expect(timers).toHaveLength(1);
+    expect(timers[0]!.ms).toBe(4_000);
+    now.value = 5_000;
+    timers[0]!.fire();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(wake).toHaveBeenCalledTimes(2);
+    expect(readWebhook(dataDir)?.lastWakeAt).toBeDefined();
+    // The trailing wake opened a window of its own.
+    now.value = 6_000;
+    expect(await (await deliver('{}')).json()).toEqual({ accepted: true, woke: false });
+    // A leading wake that comes first makes the pending trailing one unnecessary.
+    now.value = 10_000;
+    expect(await (await deliver('{}')).json()).toEqual({ accepted: true, woke: true });
+    expect(timers[1]!.cleared).toBe(true);
+  });
 
   it('wakes once per 5 s per project; later deliveries collapse', async () => {
     const { wake, deliver, now } = setup();
@@ -106,6 +137,26 @@ describe('signature, wake and index', () => {
     expect(store.state('a')?.nextCheckAt).toBe('2026-10-24T00:00:00.000Z');
     expect(store.state('b')?.nextCheckAt).toBe('2030-01-01T00:00:00.000Z');
     expect(store.state('c')).toBeUndefined();
+  });
+
+  it('marks a wake on a poll that is already due, so a poll in flight stays due after it persists', async () => {
+    const store = AutomationStore.open(dataDir);
+    const definition = store.create({ name: 'a', enabled: true, events: ['push'], intervalSeconds: 300, filters: { lookbackDays: 7, maxRecords: 25 }, task: { prompt: 'x' } }, 'a') as GithubAutomationDefinition;
+    store.setState(definition.id, () => ({ revision: definition.revision, baselineAt: '2026-01-01T00:00:00.000Z', nextCheckAt: '2026-01-01T00:00:00.000Z' }));
+    let woken = false;
+    const scheduler = new ProjectAutomationScheduler({
+      projectId: 'p', timeZone: 'UTC', store, launch: async () => ({ runId: 'r' }),
+      github: {
+        owner: 'acme', repo: 'demo',
+        // The delivery lands while the poll is reading GitHub.
+        poller: { poll: async () => { if (!woken) { woken = true; wakeGithubPolls(store); } return { candidates: [], truncated: false, pages: 1 }; } } as never,
+      },
+    });
+    await scheduler.check(definition);
+    expect(Date.parse(store.state(definition.id)!.nextCheckAt!)).toBeLessThanOrEqual(Date.now());
+    // Without a wake, the next check is an interval away as always.
+    await scheduler.check(definition);
+    expect(Date.parse(store.state(definition.id)!.nextCheckAt!)).toBeGreaterThan(Date.now() + 200_000);
   });
 
   it('rescans for an unknown id at most once per window', async () => {

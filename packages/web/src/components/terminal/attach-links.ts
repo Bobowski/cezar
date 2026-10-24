@@ -7,9 +7,13 @@ import { SCHEMED_LINK, findBareAddresses, linkTarget } from './links'
  * `@xterm/addon-web-links` for schemed URLs, a provider of our own for bare `localhost:3000`
  * (the addon accepts only what parses as a URL with a host). Both hand the click to one handler.
  */
-export async function attachTerminalLinks(term: Terminal, openInBrowser: (url: string) => void): Promise<IDisposable> {
+export async function attachTerminalLinks(
+  term: Terminal,
+  openInBrowser: (url: string) => void,
+  gatewayPorts: () => readonly number[] = () => [],
+): Promise<IDisposable> {
   const activate = (_event: MouseEvent, raw: string) => {
-    const target = linkTarget(raw, { hostname: window.location.hostname, port: window.location.port })
+    const target = linkTarget(raw, { hostname: window.location.hostname, port: window.location.port, gatewayPorts: gatewayPorts() })
     if (!target) return
     if (target.kind === 'browser') openInBrowser(target.url)
     else window.open(target.url, '_blank', 'noopener,noreferrer')

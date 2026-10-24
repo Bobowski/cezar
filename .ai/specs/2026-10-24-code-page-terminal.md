@@ -146,7 +146,10 @@ gateway that `CEZ_PREVIEW_PORTS` already configures for the VPS image.
   address in a Browser tab, which asks the gateway for its port and fresh ticket on that click, as
   the Preview column does — and shows the gateway's refusal itself. The tunnel line sits beside
   every loopback address (preview-gateway §7).
-- A "gateway address" in the output is this cockpit's own hostname on another port.
+- A "gateway address" in the output is this cockpit's own hostname on one of the pool's public
+  ports (`CEZ_PREVIEW_PUBLIC_PORTS`, else `CEZ_PREVIEW_PORTS`), which `/repo/terminal/urls` names
+  to a hosted cockpit as `gatewayPorts`; another port on that hostname is another service and
+  opens in a new window.
 - The task drawer keeps its strips as they were (user's browser + Preview); links, completion and
   the gateway mapping are the Code terminal's.
 - **The address strip polls only while it is looked at**: every 3 s while its pane is shown and

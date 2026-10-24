@@ -12,6 +12,7 @@ import { fakeServiceBinding } from '../services/testkit.ts';
 import type { RunManager } from '../workflows/run.ts';
 import { registerProject } from '../workspace/projects.ts';
 import { apiRequest } from './loopback-request.testkit.ts';
+import { PreviewGateways } from './preview/gateway.ts';
 import { createApp } from './server.ts';
 import { DetectedUrls } from './terminal/detected-urls.ts';
 import { TerminalHistory } from './terminal/history.ts';
@@ -70,13 +71,13 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  const app = async () => {
+  const app = async (extra: Partial<Parameters<typeof createApp>[0]> = {}) => {
     const project = await registerProject(root);
     return {
       id: project.id,
       instance: createApp({
         repoRoot: root, store, manager: {} as RunManager, version: 'test', bootProjectId: project.id, terminalSessions: sessions,
-        detectedUrls: detected, terminalHistory: history,
+        detectedUrls: detected, terminalHistory: history, ...extra,
         // The table as it stood when the check began; the answer arrives `psDelayMs` later.
         freshProcesses: async () => {
           const busy = shellBusy;
@@ -248,6 +249,20 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
       // A local cockpit has no tunnel to offer, so it names no account.
       expect(urls.sshUser).toBeUndefined();
       expect(session.id).toBeTruthy();
+    });
+
+    it('names the preview pool\'s public ports to a hosted cockpit, and to no other', async () => {
+      const previewGateways = new PreviewGateways({ ports: [8500, 8501], publicPorts: [9500, 9501] });
+      const local = await app({ previewGateways });
+      const read = async (instance: typeof local.instance) =>
+        projectDetectedUrlsSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal/urls')).json());
+      expect((await read(local.instance)).gatewayPorts).toBeUndefined();
+      vi.stubEnv('CEZ_REMOTE', '1');
+      vi.stubEnv('CEZ_AUTH', '0');
+      expect((await read(local.instance)).gatewayPorts).toEqual([9500, 9501]);
+      // No pool, no gateway: nothing on the cockpit's hostname is one.
+      const bare = await app({ previewGateways: new PreviewGateways({ ports: [] }) });
+      expect((await read(bare.instance)).gatewayPorts).toBeUndefined();
     });
 
     it('offers the main checkout\'s scripts', async () => {

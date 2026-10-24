@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { queryScope, type TerminalSession } from '@open-mercato/cezar-api-client'
 import { serviceAction } from '@/api/client'
 import {
-  createCodeTerminal, getCodeTerminal, getProjectTerminalHistory, readCodeTerminal, resizeCodeTerminal, stopCodeTerminal, treeKey,
+  createCodeTerminal, getCodeTerminal, getProjectTerminalHistory, getProjectTerminalUrls, readCodeTerminal, resizeCodeTerminal, stopCodeTerminal, treeKey,
   writeCodeTerminal, type CodeTree,
 } from '@/api/code'
 import { queryKeys } from '@/api/queries'
@@ -94,6 +94,13 @@ function TerminalTab({
     enabled: active && available,
     staleTime: 60_000,
   })
+  // The gateway pool's public ports, for links (§3.2): server configuration, read once.
+  const gateway = useQuery({
+    queryKey: ['code', 'terminal-gateway-ports', queryScope()],
+    queryFn: async () => (await getProjectTerminalUrls()).gatewayPorts ?? [],
+    enabled: active && available,
+    staleTime: Infinity,
+  })
   const historyKey = ['code', 'terminal-history', queryScope()] as const
   const history = useQuery({ queryKey: historyKey, queryFn: getProjectTerminalHistory, enabled: active && available })
   const historyRefresh = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -165,6 +172,7 @@ function TerminalTab({
               active={active && shown?.id === session.id}
               completion={completion}
               onOpenBrowser={onOpenBrowser}
+              gatewayPorts={gateway.data}
             />
           ))}
         </div>
@@ -199,20 +207,21 @@ function TerminalTab({
 }
 
 function CheckoutTerminal({
-  tree, session, active, completion, onOpenBrowser,
+  tree, session, active, completion, onOpenBrowser, gatewayPorts,
 }: {
   tree: CodeTree
   session: TerminalSession
   active: boolean
   completion: TerminalCompletion
   onOpenBrowser?: (url: string) => void
+  gatewayPorts?: readonly number[]
 }) {
   const io = useMemo<TerminalIo>(() => ({
     read: (cursor) => readCodeTerminal(tree, session.id, cursor),
     write: (data) => writeCodeTerminal(tree, session.id, data),
     resize: (cols, rows) => resizeCodeTerminal(tree, session.id, cols, rows),
   }), [tree, session.id])
-  return <TerminalPane runId="" io={io} session={session} active={active} completion={completion} onOpenBrowser={onOpenBrowser} />
+  return <TerminalPane runId="" io={io} session={session} active={active} completion={completion} onOpenBrowser={onOpenBrowser} gatewayPorts={gatewayPorts} />
 }
 
 function ServicesTab({ active }: { active: boolean }) {

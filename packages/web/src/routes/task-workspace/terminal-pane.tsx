@@ -85,6 +85,7 @@ export function TerminalPane({
   active,
   io,
   onOpenBrowser,
+  gatewayPorts,
   completion,
 }: {
   runId: string
@@ -95,11 +96,16 @@ export function TerminalPane({
   /** Makes addresses in the output clickable, a loopback or gateway one opening here (spec
    *  2026-10-24-code-page-terminal §3.2). Read when the screen mounts. */
   onOpenBrowser?: (url: string) => void
+  /** The preview gateway's public ports: a link to the cockpit's hostname on one of them opens
+   *  here too. May change any time. */
+  gatewayPorts?: readonly number[]
   /** Completion while typing. Read when the screen mounts; its sources may change any time. */
   completion?: TerminalCompletion
 }) {
   const openBrowserRef = useRef(onOpenBrowser)
   openBrowserRef.current = onOpenBrowser
+  const gatewayPortsRef = useRef(gatewayPorts)
+  gatewayPortsRef.current = gatewayPorts
   const completionRef = useRef(completion)
   completionRef.current = completion
   const controllerRef = useRef<CompletionController | null>(null)
@@ -261,7 +267,7 @@ export function TerminalPane({
         void ioRef.current.write(data).catch(() => {})
       })
       const links = openBrowserRef.current
-        ? attachTerminalLinks(term, (url) => openBrowserRef.current?.(url)).catch(() => null)
+        ? attachTerminalLinks(term, (url) => openBrowserRef.current?.(url), () => gatewayPortsRef.current ?? []).catch(() => null)
         : Promise.resolve(null)
 
       fitRef.current()

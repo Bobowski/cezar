@@ -27,8 +27,11 @@ describe('terminal links (spec 2026-10-24-code-page-terminal §3.2)', () => {
   })
 
   it('opens loopback and gateway addresses in the Code Browser, anything else in a new window', () => {
-    const cockpit = { hostname: 'agents.example.dev', port: '' }
+    const cockpit = { hostname: 'agents.example.dev', port: '', gatewayPorts: [8502, 8503] }
     expect(linkTarget('localhost:3000', cockpit)).toEqual({ kind: 'browser', url: 'http://localhost:3000/' })
+    // The cockpit's hostname on a port outside the gateway's pool is some other service.
+    expect(linkTarget('https://agents.example.dev:9000/', cockpit)?.kind).toBe('external')
+    expect(linkTarget('https://agents.example.dev:8503/', { ...cockpit, gatewayPorts: [] })?.kind).toBe('external')
     expect(linkTarget('0.0.0.0:5173/admin', cockpit)).toEqual({ kind: 'browser', url: 'http://localhost:5173/admin' })
     expect(linkTarget('http://[::1]:4000', cockpit)).toEqual({ kind: 'browser', url: 'http://[::1]:4000/' })
     expect(linkTarget('https://agents.example.dev:8503/', cockpit)).toEqual({ kind: 'browser', url: 'https://agents.example.dev:8503/' })

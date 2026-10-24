@@ -9101,10 +9101,16 @@ export function createApp(deps: ServerDeps) {
     // for the first two; the history is what the user typed, so it follows the terminal's policy.
     .get('/repo/terminal/urls', async (c) => {
       const urls = await detectedUrls.refresh(projectTerminalOwner(c.get('project').id));
-      // A hosted cockpit's strip may offer the tunnel line, which logs in as this account.
-      const sshUser = capabilities().localHandoff ? null : serverAccount();
+      // A hosted cockpit's strip may offer the tunnel line, which logs in as this account; its
+      // links know a gateway address by the pool's public ports.
+      const hosted = !capabilities().localHandoff;
+      const sshUser = hosted ? serverAccount() : null;
+      const gatewayPorts = hosted && previewGateways.enabled ? [...previewGateways.publicPortList] : null;
       c.header('Cache-Control', 'no-store');
-      return c.json(projectDetectedUrlsSchema.parse({ urls, ...(sshUser ? { sshUser } : {}) }), 200);
+      return c.json(
+        projectDetectedUrlsSchema.parse({ urls, ...(sshUser ? { sshUser } : {}), ...(gatewayPorts ? { gatewayPorts } : {}) }),
+        200,
+      );
     })
     .get('/repo/terminal/commands', async (c) => {
       const { root, dataDir } = c.get('project');

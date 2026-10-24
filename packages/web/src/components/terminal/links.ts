@@ -47,10 +47,12 @@ export function isLoopbackHost(hostname: string): boolean {
   return LOOPBACK_HOST.test(hostname)
 }
 
-/** Where the cockpit itself is reached. */
+/** Where the cockpit itself is reached, and the preview gateway's public ports (none on a local
+ *  cockpit, or a hosted one without a pool). */
 export interface CockpitLocation {
   hostname: string
   port: string
+  gatewayPorts: readonly number[]
 }
 
 export type LinkTarget =
@@ -62,8 +64,8 @@ export type LinkTarget =
 /**
  * Where a click on `raw` goes. A loopback address — `0.0.0.0` read as `localhost`, the bound
  * address meaning "this machine" to whoever reads it — and a gateway address (this cockpit's own
- * hostname on another port: preview-gateway spec §4) open in the Code page's Browser; anything
- * else, a documentation link or a registry URL, in a new window.
+ * hostname on one of the pool's ports: preview-gateway spec §4) open in the Code page's Browser;
+ * anything else — another service on the same host, a documentation link — in a new window.
  */
 export function linkTarget(raw: string, cockpit: CockpitLocation): LinkTarget | null {
   let url: URL
@@ -75,6 +77,6 @@ export function linkTarget(raw: string, cockpit: CockpitLocation): LinkTarget | 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
   if (url.hostname === '0.0.0.0') url.hostname = 'localhost'
   if (isLoopbackHost(url.hostname)) return { kind: 'browser', url: url.toString() }
-  const gateway = url.hostname === cockpit.hostname && url.port !== '' && url.port !== cockpit.port
+  const gateway = url.hostname === cockpit.hostname && url.port !== '' && cockpit.gatewayPorts.includes(Number(url.port))
   return { kind: gateway ? 'browser' : 'external', url: url.toString() }
 }

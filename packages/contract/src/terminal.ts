@@ -151,6 +151,9 @@ export type TerminalSessionParams = z.infer<typeof terminalSessionParamsSchema>;
  */
 export const projectDetectedUrlsSchema = detectedUrlsSchema.extend({
   sshUser: z.string().optional(),
+  /** The preview gateway's public ports, on a hosted cockpit with a pool: the only ports on its
+   *  hostname that a link may treat as a gateway address (§3.2). */
+  gatewayPorts: z.array(z.number().int()).optional(),
 });
 export type ProjectDetectedUrlsResponse = z.infer<typeof projectDetectedUrlsSchema>;
 

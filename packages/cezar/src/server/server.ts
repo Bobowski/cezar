@@ -321,6 +321,7 @@ import { enableRunTokens } from '../auth/run-tokens.ts';
 import { AuthService } from '../auth/service.ts';
 import { createSocketHub, type SocketHub, type WsUpgradeVerdict } from './ws.ts';
 import { applyKeepAlive } from './keep-alive.ts';
+import { applyRequestTimeout } from './request-timeout.ts';
 import { browseDirectory, isInsideBrowseRoot, isLexicallyInsideBrowseRoot, resolveBrowseRoot } from './fs-browse.ts';
 import { parseRemote, resolveForge, type ForgeAvailability } from './forge/index.ts';
 import { isGithubHost } from '../github-hosts.ts';
@@ -9053,6 +9054,8 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
     hostname: deps.bindHost ?? '127.0.0.1',
   });
   applyKeepAlive(server);
+  // A restore upload streams for longer than Node's 300 s; the two upload routes time out on idle.
+  applyRequestTimeout(server, isBackupUploadPath);
   const coordinator = new SkillsUpdateCoordinator(skillsUpdate, async () =>
     effectiveSkillsAutoUpdate(await loadWorkspaceConfig()));
   // Every registered project gets a handle (spec 2026-09-14): `github` only when the remote is

@@ -49,6 +49,10 @@ const TOO_LARGE = 'the archive is larger than 1 GiB — restore it with `cezar b
 
 class UploadTooLargeError extends Error {}
 
+/** The server runs without Node's 300 s `requestTimeout` for these routes (server/request-timeout.ts):
+ *  an upload is cut off once it has sent nothing for this long instead. */
+export const UPLOAD_IDLE_MS = 60_000;
+
 /** The declared size of the body, or the refusal: an upload says how big it is, up front. */
 function declaredLength(c: Context): number | Response {
   const raw = c.req.header('content-length')?.trim();
@@ -60,28 +64,41 @@ function declaredLength(c: Context): number | Response {
 }
 
 /** Stream the body to a private file under `CEZ_HOME` (never a `/tmp` shared with agents), exactly `length` bytes. */
-async function spool(body: ReadableStream<Uint8Array> | null, length: number): Promise<string> {
+export async function spool(body: ReadableStream<Uint8Array> | null, length: number, idleMs = UPLOAD_IDLE_MS): Promise<string> {
   if (!body) throw new Error('choose a backup archive');
   const home = cezarHomeDir();
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const path = join(home, `.restore-upload-${randomBytes(8).toString('hex')}.age`);
   let seen = 0;
+  const idle = new AbortController();
+  let timer: NodeJS.Timeout | undefined;
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => idle.abort(), idleMs);
+    timer.unref?.();
+  };
   try {
+    arm();
     await pipeline(
       Readable.fromWeb(body as unknown as WebReadableStream<Uint8Array>),
       async function* capped(source: AsyncIterable<Buffer>) {
         for await (const chunk of source) {
+          arm();
           seen += chunk.length;
           if (seen > length) throw new UploadTooLargeError('the upload is longer than its Content-Length');
           yield chunk;
         }
       },
       createWriteStream(path, { mode: 0o600 }),
+      { signal: idle.signal },
     );
     if (seen < length) throw new Error('the upload ended before the archive did');
   } catch (error) {
     rmSync(path, { force: true });
+    if (idle.signal.aborted) throw new Error(`the upload stalled — nothing arrived for ${Math.round(idleMs / 1000)} s`);
     throw error;
+  } finally {
+    clearTimeout(timer);
   }
   return path;
 }

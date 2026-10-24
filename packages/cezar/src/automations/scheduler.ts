@@ -301,6 +301,9 @@ const MIN_RETRY_MS = 60_000;
 export interface WorkspaceAutomationSchedulerOptions {
   coordinator: AutomationCoordinator;
   handle: (projectId: string, store: AutomationStore) => ProjectAutomationHandle | undefined;
+  /** Workspace-level items that ride the same timer — the nightly backup (spec
+   *  2026-10-23-backup-restore §4). Asked on every re-arm; one that is off is simply absent. */
+  builtins?: () => Array<{ key: string; at: number; retryAfterMs: number; fire: () => Promise<unknown> }>;
   now?: () => number;
 }
 
@@ -373,6 +376,10 @@ export class WorkspaceAutomationScheduler {
           due.push({ key, at: this.notBefore(key, at), retryAfterMs: Math.max(definition.intervalSeconds * 1000, MIN_RETRY_MS), fire: () => scheduler.check(definition) });
         }
       }
+    }
+    for (const item of this.options.builtins?.() ?? []) {
+      live.add(item.key);
+      due.push({ ...item, at: this.notBefore(item.key, item.at) });
     }
     for (const key of this.retryAfter.keys()) if (!live.has(key)) this.retryAfter.delete(key);
     if (!due.length) return;

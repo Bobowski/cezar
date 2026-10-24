@@ -177,6 +177,8 @@ import { discoverSkills } from '../skills.ts';
 import { SkillsUpdateConflictError, SkillsUpdateCoordinator, SkillsUpdateService, type SkillsUpdateState } from '../skills-update.ts';
 import { selfUpdateApplyRequestSchema, selfUpdateChannelRequestSchema, selfUpdateDevelopmentQuerySchema } from '@open-mercato/cezar-contract';
 import { SelfUpdateBusyError, SelfUpdateService } from '../self-update/service.ts';
+import { BackupService } from '../backup/service.ts';
+import { backupRoutes, isBackupUploadPath, setupRestoreRoutes } from '../backup/routes.ts';
 import { StarCountReader } from './star-count.ts';
 import { DesignProxies } from './preview/design-proxy.ts';
 import { PreviewGateways, TICKET_PARAM, parsePreviewPorts } from './preview/gateway.ts';
@@ -464,6 +466,9 @@ export interface ServerDeps {
    *  the CLI, which knows the entry file, the port and how to restart; absent in tests and for
    *  bare `createApp` callers, where the family answers a read-only "not available" status. */
   selfUpdate?: SelfUpdateService;
+  /** Backup and restore (`/api/v1/workspace/backup`, spec 2026-10-23-backup-restore). The CLI
+   *  builds it with the process restart a restore needs; absent, a restore asks for a restart. */
+  backup?: BackupService;
   /** cezar's own GitHub star count behind `GET /api/v1/star-count` (the cockpit's ⭐ ask).
    *  Defaults to a reader that asks github.com at most once per ten seconds, paced to GitHub's rate limit, and caches the answer
    *  under `~/.cache/cez/`; tests inject their own so no suite ever reaches the network. */
@@ -1744,7 +1749,9 @@ export function createApp(deps: ServerDeps) {
 
   // Reject oversized request bodies before they reach any handler (#429). GETs
   // and SSE carry no body, so this only ever gates the mutating routes.
-  app.use('*', bodyLimit({ maxSize: GLOBAL_BODY_LIMIT }));
+  // A backup archive upload rides its own, larger limit (src/backup/routes.ts).
+  const globalBodyLimit = bodyLimit({ maxSize: GLOBAL_BODY_LIMIT });
+  app.use('*', (c, next) => (isBackupUploadPath(c.req.path) ? next() : globalBodyLimit(c, next)));
 
   // ---- request-origin guard (#426) -----------------------------------------
   // This server executes agents with shell access — "start a task" ≈ run code
@@ -1854,6 +1861,9 @@ export function createApp(deps: ServerDeps) {
   // local cockpit, where this only stamps the `host` principal.
   const auth = deps.auth ?? new AuthService();
   const authIsEnforced = () => authEnforced(process.env, bindHost);
+  const backup = deps.backup ?? new BackupService({ version: deps.version, runs: deps.semaphore });
+  // A restore without a restart replaces auth.json and the sessions file under this service.
+  backup.onRestored(() => auth.reloadSessions());
   app.use('/api/*', createAuthGuard({
     service: auth,
     enforced: authIsEnforced,
@@ -8921,6 +8931,8 @@ export function createApp(deps: ServerDeps) {
   const workspaceV1 = new Hono()
     .route('/', healthRoutes)
     .route('/', authRoutes({ service: auth, enforced: authIsEnforced }))
+    .route('/', setupRestoreRoutes({ service: backup, auth, enforced: authIsEnforced }))
+    .route('/', backupRoutes({ service: backup, trusted: () => trustedOperator(process.env, bindHost) }))
     .route('/', modelsRoutes)
     .route('/', providersRoutes)
     .route('/', projectsRoutes)
@@ -9000,6 +9012,8 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
   // gone for the other.
   const auth = deps.auth ?? new AuthService();
   const authIsEnforced = () => authEnforced(process.env, deps.bindHost);
+  // One instance for the routes and the scheduler's nightly item.
+  const backup = deps.backup ?? new BackupService({ version: deps.version, runs: deps.semaphore });
   if (authIsEnforced()) {
     // Boot-time, like dispatch: a token is composed into a run's environment when it starts.
     enableRunTokens();
@@ -9008,6 +9022,7 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
   const app = createApp({
     ...deps,
     auth,
+    backup,
     onDispose: (cleanup) => { appCleanups.push(cleanup); deps.onDispose?.(cleanup); },
     contexts: sharedContexts,
     automationStore: bootAutomationStore,
@@ -9042,6 +9057,11 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
   };
   const automationScheduler = new WorkspaceAutomationScheduler({
     coordinator: automationCoordinator,
+    // The nightly backup rides this timer (spec 2026-10-23-backup-restore §4); absent while it is off.
+    builtins: () => {
+      const nightly = backup.nightlyItem();
+      return nightly ? [nightly] : [];
+    },
     handle: (projectId, store): ProjectAutomationHandle | undefined => {
       const project = automationProjects.get(projectId);
       if (!project) return undefined;
@@ -9088,6 +9108,7 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
     if (!automationsEnabled()) return;
     void automationScheduler.reschedule();
   };
+  backup.attachScheduler({ active: automationsEnabled, changed: () => rescheduleAutomations() });
   const unsubscribe = workspaceEvents.on((event, data) => {
     if (event === 'project-added') {
       const project = (data as { project?: { id?: unknown; root?: unknown; status?: unknown } }).project;

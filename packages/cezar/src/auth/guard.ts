@@ -27,7 +27,7 @@ export const PLAIN_SESSION_COOKIE = 'cez_session';
 
 const API = '/api/v1';
 const PUBLIC_PATHS = new Set(
-  ['session', 'login', 'login/verify', 'logout', 'setup/begin', 'setup/complete'].map((path) => `${API}/auth/${path}`),
+  ['session', 'login', 'login/verify', 'logout', 'setup/begin', 'setup/complete', 'setup/restore'].map((path) => `${API}/auth/${path}`),
 );
 
 export function isPublicAuthPath(pathname: string): boolean {

@@ -76,8 +76,22 @@ function message(error: unknown): string {
 
 export class BackupService {
   private job: BackupJob | null = null;
+  private readonly restoreHooks: Array<() => void> = [];
 
-  constructor(private readonly options: BackupServiceOptions) {}
+  constructor(private readonly options: BackupServiceOptions) {
+    if (options.afterRestore) this.restoreHooks.push(options.afterRestore);
+  }
+
+  /** Another in-memory cache to drop after a restore — the app adds its auth service's. */
+  onRestored(hook: () => void): void {
+    this.restoreHooks.push(hook);
+  }
+
+  /** The server wires the scheduler in after construction (the CLI builds this service first). */
+  attachScheduler(scheduler: { active: () => boolean; changed: () => void }): void {
+    this.options.schedulerActive = scheduler.active;
+    this.options.onScheduleChange = scheduler.changed;
+  }
 
   private now(): Date {
     return (this.options.now ?? (() => new Date()))();
@@ -444,7 +458,7 @@ export class BackupService {
       release = this.options.runs?.holdAdmission?.();
       if (release) log('holding new runs until the restore is in place');
       await applyStaged({ staging, manifest, cezarHome: home, locations: this.locations(), clone: this.options.clone, log });
-      this.options.afterRestore?.();
+      for (const hook of this.restoreHooks) hook();
       const restart = options.restart !== false ? this.options.restart : undefined;
       if (restart) {
         job.status = 'restarting';

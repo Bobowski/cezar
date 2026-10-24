@@ -20,10 +20,10 @@ import type { AuthFailure, AuthService, RequestMeta } from './service.ts';
  */
 
 const SESSION_MAX_AGE_SEC = 30 * 24 * 60 * 60;
-const HTTPS_REQUIRED = 'signing in needs HTTPS — reach this cockpit through its https:// address';
+export const HTTPS_REQUIRED = 'signing in needs HTTPS — reach this cockpit through its https:// address';
 
 /** How the browser reached us. Null when a session cookie could not be set safely. */
-function cookieFor(c: Context): { name: string; secure: boolean } | null {
+export function cookieFor(c: Context): { name: string; secure: boolean } | null {
   const forwarded = c.req.header('x-forwarded-proto')?.split(',')[0]?.trim().toLowerCase();
   const secure = forwarded === 'https' || (forwarded === undefined && new URL(c.req.url).protocol === 'https:');
   if (secure) return { name: SECURE_SESSION_COOKIE, secure: true };
@@ -61,14 +61,14 @@ export function deviceLabel(userAgent: string | undefined): string {
   return browser ?? os ?? 'Unknown device';
 }
 
-function metaOf(c: Context): RequestMeta {
+export function metaOf(c: Context): RequestMeta {
   // The LAST hop is the one the front appended; anything before it is whatever the client sent.
   const forwarded = c.req.header('x-forwarded-for')?.split(',').pop()?.trim();
   const socket = (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket;
   return { address: forwarded || socket?.remoteAddress || 'unknown', label: deviceLabel(c.req.header('user-agent')) };
 }
 
-function failure(c: Context, result: AuthFailure) {
+export function failure(c: Context, result: AuthFailure) {
   if (result.retryAfterSec !== undefined) c.header('retry-after', String(result.retryAfterSec));
   // Nothing an auth route answers may be cached by a front or a browser.
   c.header('cache-control', 'no-store');

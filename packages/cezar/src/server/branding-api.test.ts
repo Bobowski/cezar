@@ -7,6 +7,7 @@ import { workspaceBrandingSchema, type WorkspaceBranding } from '@open-mercato/c
 import { workspaceConfigPath } from '../paths.ts';
 import { RunStore } from '../runs/store.ts';
 import { encodePng } from '../workspace/branding-png.ts';
+import { pngBomb } from '../workspace/branding-png.testkit.ts';
 import type { RunManager } from '../workflows/run.ts';
 import { apiRequest } from './loopback-request.testkit.ts';
 import { createApp } from './server.ts';
@@ -102,6 +103,10 @@ describe('the cockpit branding API', () => {
     expect(((await tooSmall.json()) as { error: string }).error).toContain('512');
     expect((await upload('favicon', Buffer.from('<svg><script>'))).status).toBe(400);
     expect((await upload('logo', square(64))).status).toBe(400); // the logo keeps its own route
+    // A 16 × 16 interlaced header over 256 MiB of zeros: refused before anything is inflated.
+    const bomb = await upload('favicon', pngBomb({ interlace: true, inflatedMiB: 256 }));
+    expect(bomb.status).toBe(400);
+    expect(((await bomb.json()) as { error: string }).error).toContain('interlaced');
     expect((await json('PUT', '/api/v1/workspace/branding', { accent: 'lime' })).status).toBe(400);
     expect(existsSync(join(home, 'branding'))).toBe(false);
     expect((await apiRequest(app, '/api/v1/workspace/branding/favicon')).status).toBe(404);

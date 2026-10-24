@@ -1,3 +1,4 @@
+import { inflateSync } from 'node:zlib';
 import { PNG } from 'pngjs';
 
 /**
@@ -14,8 +15,10 @@ export interface Rgba {
 }
 
 const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-/** A 2 MB upload can still inflate to gigabytes; 4096² is far beyond any icon and 64 MB of RGBA. */
-export const MAX_PNG_PIXELS = 4096 * 4096;
+/** A 2 MB upload can still inflate to gigabytes; 2048² is far beyond any icon and 16 MiB of RGBA. */
+export const MAX_PNG_PIXELS = 2048 * 2048;
+/** Samples per pixel by IHDR colour type. */
+const CHANNELS: Readonly<Record<number, number>> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
 
 export function isPng(bytes: Buffer): boolean {
   return bytes.length >= 8 && bytes.subarray(0, 8).equals(SIGNATURE);
@@ -23,31 +26,66 @@ export function isPng(bytes: Buffer): boolean {
 
 export type DecodeResult = { ok: true; image: Rgba } | { ok: false; error: string };
 
-/** The dimensions from IHDR, read before any inflate, so a bomb is refused unopened. */
-function headerSize(bytes: Buffer): { width: number; height: number } | null {
-  if (!isPng(bytes) || bytes.length < 24 || bytes.toString('latin1', 12, 16) !== 'IHDR') return null;
-  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+interface Header {
+  width: number;
+  height: number;
+  bitDepth: number;
+  colorType: number;
+  interlaced: boolean;
 }
 
-/** The bytes up to the end of IEND: whatever an editor (or a polyglot) appended is not the image. */
-function throughIend(bytes: Buffer): Buffer {
+/** IHDR, read before any inflate, so a bomb is refused unopened. */
+function readHeader(bytes: Buffer): Header | null {
+  if (!isPng(bytes) || bytes.length < 29 || bytes.toString('latin1', 12, 16) !== 'IHDR') return null;
+  return {
+    width: bytes.readUInt32BE(16),
+    height: bytes.readUInt32BE(20),
+    bitDepth: bytes[24]!,
+    colorType: bytes[25]!,
+    interlaced: bytes[28] !== 0,
+  };
+}
+
+/**
+ * The bytes up to the end of IEND — whatever an editor (or a polyglot) appended is not the
+ * image — and the IDAT payload they carry.
+ */
+function chunksThroughIend(bytes: Buffer): { png: Buffer; idat: Buffer } {
+  const idat: Buffer[] = [];
   let offset = 8;
   while (offset + 12 <= bytes.length) {
-    const end = offset + 12 + bytes.readUInt32BE(offset);
-    if (bytes.toString('latin1', offset + 4, offset + 8) === 'IEND') return bytes.subarray(0, end);
+    const length = bytes.readUInt32BE(offset);
+    const end = offset + 12 + length;
+    const type = bytes.toString('latin1', offset + 4, offset + 8);
+    if (type === 'IDAT') idat.push(bytes.subarray(offset + 8, Math.min(offset + 8 + length, bytes.length)));
+    if (type === 'IEND') return { png: bytes.subarray(0, end), idat: Buffer.concat(idat) };
     offset = end;
   }
-  return bytes;
+  return { png: bytes, idat: Buffer.concat(idat) };
 }
 
 export function decodePng(bytes: Buffer): DecodeResult {
-  const size = headerSize(bytes);
-  if (!size) return { ok: false, error: 'not a PNG image' };
-  if (size.width === 0 || size.height === 0 || size.width * size.height > MAX_PNG_PIXELS) {
-    return { ok: false, error: 'the PNG is larger than 4096 × 4096 pixels' };
+  const header = readHeader(bytes);
+  if (!header) return { ok: false, error: 'not a PNG image' };
+  const { width, height, bitDepth, colorType } = header;
+  if (width === 0 || height === 0 || width * height > MAX_PNG_PIXELS) {
+    return { ok: false, error: 'the PNG is larger than 2048 × 2048 pixels' };
+  }
+  // pngjs inflates an Adam7 image without a size bound; an icon never needs interlacing.
+  if (header.interlaced) return { ok: false, error: 'an interlaced PNG is not accepted — save it without interlacing' };
+  const channels = CHANNELS[colorType];
+  if (channels === undefined || ![1, 2, 4, 8, 16].includes(bitDepth)) return { ok: false, error: 'the PNG could not be decoded' };
+  const { png: image, idat } = chunksThroughIend(bytes);
+  // One filter byte per scanline plus its packed samples: the most a well-formed IDAT inflates to.
+  const inflatedBytes = height * (1 + Math.ceil((width * channels * bitDepth) / 8));
+  try {
+    inflateSync(idat, { maxOutputLength: inflatedBytes });
+  } catch (err) {
+    if (err instanceof RangeError) return { ok: false, error: 'the PNG carries more image data than its size allows' };
+    return { ok: false, error: 'the PNG could not be decoded' };
   }
   try {
-    const png = PNG.sync.read(throughIend(bytes));
+    const png = PNG.sync.read(image);
     return { ok: true, image: { width: png.width, height: png.height, data: new Uint8Array(png.data) } };
   } catch {
     return { ok: false, error: 'the PNG could not be decoded' };

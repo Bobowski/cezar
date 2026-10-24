@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { renderManifest, renderShellHtml } from '../server/static-ui.ts';
 import { contrastRatio, deriveAccentTokens, parseHexColor } from './branding-accent.ts';
 import { decodePng, encodePng, type Rgba } from './branding-png.ts';
+import { pngBomb } from './branding-png.testkit.ts';
 import { sanitizeSvg } from './branding-svg.ts';
 import {
   brandingBody,
@@ -148,7 +149,15 @@ describe('derived sizes', () => {
     const bomb = Buffer.from(fixture(16, 16));
     bomb.writeUInt32BE(100_000, 16);
     bomb.writeUInt32BE(100_000, 20);
-    expect(decodePng(bomb)).toMatchObject({ ok: false, error: expect.stringContaining('4096') });
+    expect(decodePng(bomb)).toMatchObject({ ok: false, error: expect.stringContaining('2048') });
+  });
+
+  it('inflates within the header\'s byte budget, and refuses more than 2048² pixels', () => {
+    expect(decodePng(pngBomb({ interlace: false, inflatedMiB: 64 }))).toMatchObject({ ok: false, error: expect.stringContaining('more image data') });
+    const wide = Buffer.from(fixture(16, 16));
+    wide.writeUInt32BE(2049, 16);
+    wide.writeUInt32BE(2048, 20);
+    expect(decodePng(wide)).toMatchObject({ ok: false, error: expect.stringContaining('2048') });
   });
 });
 

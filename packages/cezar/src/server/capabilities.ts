@@ -53,6 +53,7 @@
  */
 
 import { followupsEnabled } from '../handoff.ts';
+import { parsePreviewPorts } from './preview/ports.ts';
 import type { Capabilities } from '@open-mercato/cezar-contract';
 
 /** Every IPv4 address in 127.0.0.0/8, anchored. Anchoring is load-bearing: a
@@ -223,14 +224,14 @@ function previewEnabled(env: NodeJS.ProcessEnv, bindHost?: string): boolean {
 }
 
 /**
- * Whether the Browser column may offer Design Mode (spec `2026-10-09-design-mode`).
- *
- * Only where a task's app can be previewed at all, and for the same reason: the picker proxy
- * listens on loopback, which a hosted cockpit's viewer cannot reach. `CEZ_DESIGN_MODE=0` is the
- * off switch. There is deliberately no `=1` for hosted mode — nothing it could turn on would work.
+ * Whether the Browser column may offer Design Mode (spec `2026-10-09-design-mode`), local or
+ * hosted: a hosted cockpit picks through the preview gateway instead of the loopback mirror (spec
+ * `2026-10-24-design-mode-third-cut` §3.4), so there it needs a gateway (`CEZ_PREVIEW_PORTS`).
+ * `CEZ_DESIGN_MODE=0` is the off switch everywhere.
  */
 function designModeEnabled(env: NodeJS.ProcessEnv, bindHost?: string): boolean {
-  return env.CEZ_DESIGN_MODE !== '0' && previewEnabled(env, bindHost);
+  if (env.CEZ_DESIGN_MODE === '0') return false;
+  return previewEnabled(env, bindHost) || parsePreviewPorts(env.CEZ_PREVIEW_PORTS).length > 0;
 }
 
 function terminalEnabled(env: NodeJS.ProcessEnv, bindHost?: string): boolean {

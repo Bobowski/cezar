@@ -732,6 +732,20 @@ export type RemoveQueuedPromptResponse = z.infer<typeof removeQueuedPromptRespon
  *  backlog belongs in tasks. */
 export const PROMPT_QUEUE_MAX = 20;
 
+/**
+ * `PUT /runs/:id/prompt-queue` — the waiting prompts in a new order (spec
+ * `2026-10-24-design-mode-third-cut` §3.1). `order` names every waiting prompt exactly once; any
+ * other set is a 409, because the queue may have moved since the cockpit read it.
+ */
+export const reorderPromptQueueInputSchema = z.object({
+  order: z.array(z.string().min(1).max(128)).max(PROMPT_QUEUE_MAX),
+});
+export type ReorderPromptQueueInput = z.infer<typeof reorderPromptQueueInputSchema>;
+
+/** The queue as it now stands. */
+export const reorderPromptQueueResponseSchema = z.object({ promptQueue: z.array(queuedMessageSchema) });
+export type ReorderPromptQueueResponse = z.infer<typeof reorderPromptQueueResponseSchema>;
+
 /** `PATCH /runs/:id/queued-messages/:msgId` (#472) — the replaced entry. */
 export const editQueuedMessageResponseSchema = z.object({ message: queuedMessageSchema });
 export type EditQueuedMessageResponse = z.infer<typeof editQueuedMessageResponseSchema>;

@@ -105,6 +105,8 @@ import {
   designProxyRequestSchema,
   previewGatewayRequestSchema,
   promptQueueInputSchema,
+  reorderPromptQueueInputSchema,
+  setDesignDraftsInputSchema,
   runFileCreateSchema,
   runFileRenameSchema,
   runFileWriteSchema,
@@ -220,6 +222,7 @@ import {
   writeRunDraftImage,
   writeRunDraftSurface,
 } from '../runs/drafts.ts';
+import { readProjectDesignDrafts, writeProjectDesignDrafts } from '../runs/design-drafts.ts';
 import {
   draftImageInputSchema,
   draftImageParamSchema,
@@ -3741,12 +3744,25 @@ export function createApp(deps: ServerDeps) {
         return [];
       }
     });
+  const isOriginOf = (claimed: string, origin: string | undefined): boolean => {
+    if (origin === undefined) return false;
+    try {
+      const parent = new URL(claimed);
+      return (parent.protocol === 'http:' || parent.protocol === 'https:') && parent.origin === new URL(origin).origin;
+    } catch {
+      return false;
+    }
+  };
   const previewRoutes = new Hono().post(
     '/preview/design-proxy',
     jsonZodValidator(designProxyRequestSchema),
     async (c) => {
       if (!capabilities().designMode) {
         return c.json({ error: 'Design Mode is not available on this cockpit' }, 409);
+      }
+      // A loopback mirror reaches nobody from a hosted cockpit: there the gateway is the way in.
+      if (!capabilities().preview) {
+        return c.json({ error: 'on a hosted cockpit Design Mode runs through the preview gateway' }, 409);
       }
       const host = c.req.header('host');
       const opened = await designProxies.open({
@@ -3763,6 +3779,16 @@ export function createApp(deps: ServerDeps) {
     // server itself answers on are passed as forbidden — a preview of the cockpit would be its API
     // behind a ticket instead of behind the front's login.
     .post('/preview/gateway', jsonZodValidator(previewGatewayRequestSchema), async (c) => {
+      // Design Mode as a mode of a gateway slot (spec 2026-10-24-design-mode-third-cut §3.4).
+      if (c.req.valid('json').designMode === true && !capabilities().designMode) {
+        return c.json({ error: 'Design Mode is not available on this cockpit' }, 409);
+      }
+      // `parentOrigin` becomes the slot's frame-ancestors and the origin its picker trusts, so it
+      // must be the page that asked. cezar has no configured public origin and Host is not one,
+      // so a request without an `Origin` is refused rather than guessed.
+      if (!isOriginOf(c.req.valid('json').parentOrigin, c.req.header('origin'))) {
+        return c.json({ error: 'parentOrigin must be the origin of the page asking for the preview' }, 400);
+      }
       const opened = await previewGateways.open({
         ...c.req.valid('json'),
         forbiddenPorts: ownPorts(c.req.header('host')),
@@ -5449,6 +5475,18 @@ export function createApp(deps: ServerDeps) {
       const message = manager.editQueuedPrompt(id, c.req.param('msgId'), c.req.valid('json').text);
       if (!message) return c.json({ error: 'not found' }, 404);
       return c.json({ message });
+    })
+
+    // Reordered as a whole (spec 2026-10-24-design-mode-third-cut §3.1). The order must name the
+    // waiting prompts exactly: the queue moves under the cockpit, and a stale order is refused
+    // rather than half-applied. Allowed in every run state, like removal.
+    .put('/runs/:id/prompt-queue', jsonZodValidator(reorderPromptQueueInputSchema), (c) => {
+      const { store, manager } = c.get('project');
+      const id = c.req.param('id');
+      if (!store.getRun(id)) return c.json({ error: 'not found' }, 404);
+      const promptQueue = manager.reorderQueuedPrompts(id, c.req.valid('json').order);
+      if (!promptQueue) return c.json({ error: 'the queue changed — reload it and try again' }, 409);
+      return c.json({ promptQueue });
     })
 
     // Removable in every run state — an undelivered prompt on a closed run included.
@@ -8414,6 +8452,17 @@ export function createApp(deps: ServerDeps) {
 
   // ---- chained family: repo / git (project-scoped) ----
   const repoRoutes = new Hono<ProjectApiEnv>()
+    // Design notes collected on the Code page with no task chosen (spec
+    // 2026-10-24-design-mode-third-cut §3.2), kept in the project's draft store until a task is
+    // started from them. User text: `tasks`'s to read, never `read`'s (auth/api-tokens.ts).
+    .get('/repo/design-drafts', (c) => c.json({ picks: readProjectDesignDrafts(c.get('project').dataDir) }))
+
+    .put('/repo/design-drafts', jsonZodValidator(setDesignDraftsInputSchema), (c) => {
+      const written = writeProjectDesignDrafts(c.get('project').dataDir, c.req.valid('json').picks);
+      if (!written.ok) return c.json({ error: written.error }, 400);
+      return c.json({ picks: readProjectDesignDrafts(c.get('project').dataDir) });
+    })
+
     .get('/repo', async (c) => {
       const { root: repoRoot, store } = c.get('project');
       const info = await getRepoInfo(repoRoot);

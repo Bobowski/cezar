@@ -19,7 +19,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from '@/components/ui/toaster'
 import { cn } from '@/lib/utils'
 
-import { parseDesignPick, type NewDesignPick } from '../task-thread/design-picks'
+import { parseDesignPick, withSourceUnder, type NewDesignPick } from '../task-thread/design-picks'
 
 import { FullViewExit } from './maximize'
 
@@ -73,6 +73,8 @@ export function BrowserView({
   onDesignEscape,
   singleTab = false,
   renderEmpty,
+  sourceRoots = NO_ROOTS,
+  designToolbar,
 }: {
   state: BrowserState
   /** Persisted into the column (spec §7). Called only for changes worth keeping — a successful
@@ -105,6 +107,11 @@ export function BrowserView({
   /** What an empty tab shows instead of the bare hint — the task's "Run the app". Handed the
    *  same `open` the address bar uses. Only on a cockpit that can frame a local address. */
   renderEmpty?: (open: (url: string) => void) => React.ReactNode
+  /** Where a picked element's source path may be reported relative to — the worktree, then the
+   *  checkout (third cut §3.3). A path under none of them is dropped before the host sees it. */
+  sourceRoots?: readonly string[]
+  /** Design Mode's own controls beside its toggle — the Queue chip, Start task with N notes. */
+  designToolbar?: React.ReactNode
 }) {
   const tabs = state.tabs.length > 0 ? state.tabs : ['']
   const active = Math.min(state.active, tabs.length - 1)
@@ -180,53 +187,14 @@ export function BrowserView({
   const remoteLoopback = target !== '' && !canPreview && isLoopback(target)
 
   /**
-   * The preview gateway (spec `.ai/specs/2026-10-10-preview-gateway.md`).
-   *
-   * A loopback address on a hosted cockpit is the task's app on the HOST. Where the operator
-   * gave cezar a pool of ports, the server re-serves that app on one of them and this view
-   * frames that instead. Asked before every load, because the ticket in the answer opens exactly
-   * one. A cockpit with no gateway answers with its reason, and the view shows the refusal it
-   * always showed — now saying why.
-   */
-  const [gateway, setGateway] = useState<{ target: string; src?: string; reason?: string } | null>(null)
-  useEffect(() => {
-    setGateway(null)
-    if (!remoteLoopback) return
-    let parsed: URL
-    try {
-      parsed = new URL(target)
-    } catch {
-      return
-    }
-    let cancelled = false
-    openPreviewGateway({ target: parsed.origin, parentOrigin: window.location.origin })
-      .then((opened) => {
-        if (cancelled) return
-        const url = new URL(opened.origin + parsed.pathname + parsed.search + parsed.hash)
-        url.searchParams.set(opened.ticketParam, opened.ticket)
-        setGateway({ target, src: url.toString() })
-      })
-      .catch((error: unknown) => {
-        if (cancelled) return
-        setGateway({ target, reason: error instanceof Error && error.message ? error.message : 'the preview gateway did not answer' })
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [remoteLoopback, reloadToken, target])
-  const viaGateway = remoteLoopback && gateway?.target === target ? gateway : null
-  const refused = viaGateway?.reason !== undefined
-  // Asked for but not answered yet: nothing is framed, least of all the address itself.
-  const awaitingGateway = remoteLoopback && viaGateway === null
-
-  /**
    * Design Mode.
    *
    * The framed page is cross-origin, so this view cannot see what the user points at — the whole
-   * header comment above. Design Mode therefore frames the SAME app through a second loopback
-   * origin the server opens on request, whose HTML carries a picker script; the picker reports
-   * the clicked element over `postMessage`. Only a local `http://` address can be mirrored that
-   * way, so the toggle is offered for those and nothing else.
+   * header comment above. Design Mode therefore frames the SAME app through a second origin whose
+   * HTML carries a picker script; the picker reports the clicked element over `postMessage`.
+   * Locally that origin is a loopback mirror the server opens on request; on a hosted cockpit it
+   * is a preview-gateway slot in design mode (spec `2026-10-24-design-mode-third-cut` §3.4). Only
+   * a local `http://` address can be mirrored either way, so the toggle is offered for those.
    *
    * `design` is the user's switch. `proxy` is the mirror it produced, kept after the switch goes
    * off so that leaving Design Mode does not reload the page (and lose its state) — the picker
@@ -241,6 +209,59 @@ export function BrowserView({
   const targetOrigin = designOrigin(target)
   const designActive = designAllowed && design && targetOrigin !== null
   const mirror = proxy !== null && proxy.upstream === targetOrigin ? proxy.origin : null
+  /** The gateway slot to ask for is the design one: the switch is on, or its mirror is kept. */
+  const designGateway = remoteLoopback && targetOrigin !== null && (designActive || mirror !== null)
+
+  /**
+   * The preview gateway (spec `.ai/specs/2026-10-10-preview-gateway.md`).
+   *
+   * A loopback address on a hosted cockpit is the task's app on the HOST. Where the operator
+   * gave cezar a pool of ports, the server re-serves that app on one of them and this view
+   * frames that instead. Asked before every load, because the ticket in the answer opens exactly
+   * one. A cockpit with no gateway answers with its reason, and the view shows the refusal it
+   * always showed — now saying why. In Design Mode the slot asked for is a design one, and its
+   * origin is the mirror the picker speaks from.
+   */
+  const [gateway, setGateway] = useState<{ target: string; src?: string; reason?: string } | null>(null)
+  useEffect(() => {
+    setGateway(null)
+    if (!remoteLoopback) return
+    let parsed: URL
+    try {
+      parsed = new URL(target)
+    } catch {
+      return
+    }
+    let cancelled = false
+    openPreviewGateway({ target: parsed.origin, parentOrigin: window.location.origin, ...(designGateway ? { designMode: true } : {}) })
+      .then((opened) => {
+        if (cancelled) return
+        const url = new URL(opened.origin + parsed.pathname + parsed.search + parsed.hash)
+        url.searchParams.set(opened.ticketParam, opened.ticket)
+        setGateway({ target, src: url.toString() })
+        if (designGateway) setProxy({ upstream: parsed.origin, origin: opened.origin })
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        const reason = error instanceof Error && error.message ? error.message : 'the preview gateway did not answer'
+        if (designGateway) {
+          // Back to a plain preview, which asks again and shows its own refusal if it has one.
+          setDesign(false)
+          setProxy(null)
+          toast(reason, { tone: 'danger' })
+          return
+        }
+        setGateway({ target, reason })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [designGateway, remoteLoopback, reloadToken, target])
+  const viaGateway = remoteLoopback && gateway?.target === target ? gateway : null
+  const refused = viaGateway?.reason !== undefined
+  // Asked for but not answered yet: nothing is framed, least of all the address itself.
+  const awaitingGateway = remoteLoopback && viaGateway === null
+
   // Asked for but not answered yet: nothing is framed, so the page is not loaded directly only to
   // be loaded again a moment later through the mirror.
   const awaitingProxy = designActive && mirror === null
@@ -251,8 +272,9 @@ export function BrowserView({
 
   // Asked again before every load while the switch is on. The route is idempotent, and a mirror
   // the server closed for being idle comes back on a new port this way instead of as a dead frame.
+  // A hosted cockpit's mirror is the gateway slot above.
   useEffect(() => {
-    if (!designActive || targetOrigin === null) return
+    if (!designActive || targetOrigin === null || remoteLoopback) return
     let cancelled = false
     openDesignProxy({ target: targetOrigin, parentOrigin: window.location.origin })
       .then((opened) => {
@@ -266,7 +288,7 @@ export function BrowserView({
     return () => {
       cancelled = true
     }
-  }, [designActive, reloadToken, targetOrigin])
+  }, [designActive, reloadToken, remoteLoopback, targetOrigin])
 
   // A new document means a new picker, which announces itself when it is listening.
   useEffect(() => setPickerReady(false), [frameSrc, reloadToken])
@@ -385,7 +407,8 @@ export function BrowserView({
         setRectsReported(true)
       }
       else if (data.type === 'picked') {
-        const pick = parseDesignPick(data.element)
+        const parsed = parseDesignPick(data.element)
+        const pick = parsed ? withSourceUnder(parsed, sourceRoots) : null
         if (!pick || !onPickElement?.(pick)) {
           // The page framed the element the moment it was clicked. It was not kept (malformed,
           // or the host refused it), so the page is told what IS selected and drops the frame.
@@ -405,7 +428,7 @@ export function BrowserView({
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [hasNote, mirror, onDesignEscape, onPickElement, sendMarks])
+  }, [hasNote, mirror, onDesignEscape, onPickElement, sendMarks, sourceRoots])
 
   /** With the switch off, a navigation is where the mirror is let go. */
   const releaseMirror = useCallback(() => {
@@ -634,6 +657,7 @@ export function BrowserView({
             Design Mode
           </Button>
         ) : null}
+        {designAllowed ? designToolbar : null}
       </div>
 
       <div ref={areaRef} className="relative min-h-0 flex-1">
@@ -781,6 +805,7 @@ export interface DesignMark {
 }
 
 const NO_MARKS: readonly DesignMark[] = []
+const NO_ROOTS: readonly string[] = []
 
 /** Where a marked element is, in the framed document's viewport. */
 interface MarkRect {

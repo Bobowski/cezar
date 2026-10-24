@@ -50,6 +50,8 @@ import { reduceThread } from '../task-thread/thread-state'
 import { BrowserView } from './browser-view'
 import { DesignNotePopup } from './design-note-popup'
 import { useDesignNotes } from './design-notes'
+import { PromptQueueDrawer } from './prompt-queue-drawer'
+import { useSourceRoots } from './source-roots'
 import { readDrawerState, writeDrawerState, type DrawerState } from './drawer-state'
 import { LayoutCards } from './layout-cards'
 import {
@@ -661,6 +663,7 @@ function WorkspaceView({
   // Design Mode notes (spec 2026-10-09-design-mode) are the task's, shared by every Preview column.
   const designNotes = useDesignNotes(run)
   const { addDraft, discard: discardNote, note: noteFor, marks: designMarks } = designNotes
+  const sourceRoots = useSourceRoots(run)
   const escapeNote = useCallback(
     (mark: string) => {
       if (noteFor(mark)?.phase === 'draft') discardNote(mark)
@@ -732,6 +735,8 @@ function WorkspaceView({
               onPickElement={addDraft}
               designMarks={designMarks}
               onDesignEscape={escapeNote}
+              sourceRoots={sourceRoots}
+              designToolbar={<PromptQueueDrawer run={run} notes={designNotes} />}
               renderEmpty={
                 terminalAllowed
                   ? (open) => (
@@ -764,6 +769,7 @@ function WorkspaceView({
       openReference,
       run,
       setColumnBrowser,
+      sourceRoots,
       terminalAllowed,
       projectId,
       terminalColumnShown,

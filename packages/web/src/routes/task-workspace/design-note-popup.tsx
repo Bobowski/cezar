@@ -8,6 +8,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { toast } from '@/components/ui/toaster'
 
 import { pickLabel } from '../task-thread/design-picks'
+import { formatSource } from '../task-thread/design-source'
 import type { DesignNote, DesignNotes, NotePhase } from './design-notes'
 
 /**
@@ -113,6 +114,12 @@ export function DesignNotePopup({
           <XIcon aria-hidden="true" />
         </Button>
       </div>
+
+      {note.pick.source ? (
+        <p data-slot="design-note-source" className="-mt-1 truncate font-mono text-[11px] text-soft-foreground" title={formatSource(note.pick.source)}>
+          {formatSource(note.pick.source)}
+        </p>
+      ) : null}
 
       {status ? (
         <p data-slot="design-note-status" className="flex items-center gap-1.5 text-soft-foreground">

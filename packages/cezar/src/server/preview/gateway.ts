@@ -4,7 +4,8 @@ import { connect, type Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 
 import { PLAIN_SESSION_COOKIE, SECURE_SESSION_COOKIE } from '../../auth/guard.ts';
-import { parseDesignTarget } from './design-proxy.ts';
+import { parseDesignTarget, relayWithPicker } from './design-proxy.ts';
+import { PICKER_PATH, pickerScript } from './picker-script.ts';
 
 /**
  * The preview gateway (spec `.ai/specs/2026-10-10-preview-gateway.md`).
@@ -67,6 +68,32 @@ function answerHeader(name: string, value: string | string[]): string | string[]
   return value;
 }
 
+/**
+ * The app's answer framed by the cockpit and nothing else: the app's `X-Frame-Options` and CSP
+ * `frame-ancestors` go, a policy of cezar's own — `frame-ancestors <cockpit>` — takes their place,
+ * and the rest of the app's policy stays as sent (spec 2026-10-24-design-mode-third-cut §3.4).
+ */
+export function withoutFrameBusting(answer: Record<string, string | string[]>, parentOrigin: string): Record<string, string | string[]> {
+  const out: Record<string, string | string[]> = {};
+  const policies: string[] = [];
+  for (const [name, value] of Object.entries(answer)) {
+    if (name === 'x-frame-options') continue;
+    if (name !== 'content-security-policy') {
+      out[name] = value;
+      continue;
+    }
+    // Node joins repeated CSP headers with `,`, which is also the policy-list separator; no
+    // directive value may contain one, so the split is exact.
+    for (const policy of (Array.isArray(value) ? value : [value]).flatMap((each) => each.split(','))) {
+      const directives = policy.split(';').map((directive) => directive.trim()).filter((directive) => directive !== '' && !/^frame-ancestors(\s|$)/i.test(directive));
+      if (directives.length > 0) policies.push(directives.join('; '));
+    }
+  }
+  // Every policy in the list is enforced, so this one bounds framing whatever the app's say.
+  out['content-security-policy'] = [...policies, `frame-ancestors ${parentOrigin}`].join(', ');
+  return out;
+}
+
 /** The query parameter a ticket rides in on. Stripped by the redirect that follows. */
 export const TICKET_PARAM = '__cez_preview';
 const TICKET_TTL_MS = 60_000;
@@ -118,6 +145,11 @@ export interface PreviewGatewaysOptions {
 
 interface Entry {
   upstream: URL;
+  /** A design-mode slot (spec 2026-10-24-design-mode-third-cut §3.4): the picker injected, the
+   *  frame-busting headers stripped. A slot of its own, so a plain preview is never touched. */
+  design: boolean;
+  /** The cockpit's origin — the one window the injected picker posts to and obeys. */
+  parentOrigin: string;
   /** The origin a browser reaches this listener at: the cockpit's scheme and hostname, this port. */
   publicOrigin: string;
   server: Server;
@@ -129,23 +161,7 @@ interface Entry {
   sockets: Set<Duplex>;
 }
 
-/**
- * `8500-8519`, `8500,8501`, or a mix → the ports, in order, without duplicates. Anything that is
- * not a port above the privileged range is dropped: a typo must not make cezar try to bind :80.
- */
-export function parsePreviewPorts(raw: string | undefined): number[] {
-  const ports: number[] = [];
-  for (const part of (raw ?? '').split(',')) {
-    const range = /^\s*(\d{1,5})\s*(?:-\s*(\d{1,5})\s*)?$/.exec(part);
-    if (!range) continue;
-    const from = Number(range[1]);
-    const to = range[2] === undefined ? from : Number(range[2]);
-    for (let port = from; port <= to && ports.length < 256; port += 1) {
-      if (port >= 1024 && port <= 65535 && !ports.includes(port)) ports.push(port);
-    }
-  }
-  return ports;
-}
+export { parsePreviewPorts } from './ports.ts';
 
 function socketHost(url: URL): string {
   return url.hostname.replace(/^\[|\]$/g, '');
@@ -201,7 +217,7 @@ export class PreviewGateways {
    * cookie is sent inside the frame) and never same-ORIGIN. `forbiddenPorts` are loopback ports
    * that must never be re-served: cezar's own.
    */
-  async open(input: { target: string; parentOrigin: string; forbiddenPorts?: readonly number[] }): Promise<PreviewGatewayResult> {
+  async open(input: { target: string; parentOrigin: string; forbiddenPorts?: readonly number[]; designMode?: boolean }): Promise<PreviewGatewayResult> {
     if (!this.enabled) {
       return { ok: false, code: 'disabled', reason: 'this cockpit has no preview gateway (CEZ_PREVIEW_PORTS is not set)' };
     }
@@ -224,10 +240,12 @@ export class PreviewGateways {
 
     // One listener per app AND per way of reaching the cockpit: the public origin is baked into
     // the redirects and `Origin` rewrites, and two hostnames for one cockpit must not share them.
-    const key = `${upstream.origin}|${parent.protocol}//${parent.hostname}`;
+    // A design slot also bakes in the cockpit's full origin: it is what the picker trusts.
+    const design = input.designMode === true;
+    const key = design ? `${upstream.origin}|${parent.origin}|design` : `${upstream.origin}|${parent.protocol}//${parent.hostname}`;
     let entry = this.entries.get(key);
     if (!entry) {
-      const opened = await this.listen(key, upstream, parent);
+      const opened = await this.listen(key, upstream, parent, design);
       if (!opened) {
         return { ok: false, code: 'busy', reason: 'every preview port is in use — close a preview and retry' };
       }
@@ -282,7 +300,7 @@ export class PreviewGateways {
 
   /** A listener on a free pool port — the app's usual one when it is free — or null when the
    *  pool is exhausted even after giving up the least recently used idle preview. */
-  private async listen(key: string, upstream: URL, parent: URL): Promise<Entry | null> {
+  private async listen(key: string, upstream: URL, parent: URL, design: boolean): Promise<Entry | null> {
     const inUse = () => new Set([...this.entries.values()].map((entry) => entry.port));
     if (inUse().size >= this.ports.length) {
       const idle = [...this.entries].filter(([, entry]) => entry.sockets.size === 0).sort((a, b) => a[1].lastUsed - b[1].lastUsed)[0];
@@ -293,17 +311,19 @@ export class PreviewGateways {
     for (let step = 0; step < this.ports.length; step += 1) {
       const port = this.ports[(start + step) % this.ports.length]!;
       if (inUse().has(port)) continue;
-      const entry = await this.bind(port, upstream, parent);
+      const entry = await this.bind(port, upstream, parent, design);
       if (entry) return entry;
     }
     return null;
   }
 
-  private bind(port: number, upstream: URL, parent: URL): Promise<Entry | null> {
+  private bind(port: number, upstream: URL, parent: URL, design: boolean): Promise<Entry | null> {
     return new Promise((resolve) => {
       const server = createServer();
       const entry: Entry = {
         upstream,
+        design,
+        parentOrigin: parent.origin,
         publicOrigin: `${parent.protocol}//${parent.hostname}:${this.publicPorts[this.ports.indexOf(port)] ?? port}`,
         server,
         port,
@@ -461,13 +481,23 @@ export class PreviewGateways {
       return;
     }
 
+    if (entry.design && req.method === 'GET' && (req.url ?? '').split('?')[0] === PICKER_PATH) {
+      res
+        .writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-store' })
+        .end(pickerScript({ parentOrigin: entry.parentOrigin, upstreamOrigin: entry.upstream.origin }));
+      return;
+    }
+    const headers = this.forwardHeaders(entry, req, forwarded);
+    // Uncompressed, so an HTML answer can be read and given its script tag.
+    if (entry.design) headers['accept-encoding'] = 'identity';
+
     const outgoing = httpRequest(
       {
         host: socketHost(entry.upstream),
         port: portOf(entry.upstream),
         method: req.method,
         path: req.url,
-        headers: this.forwardHeaders(entry, req, forwarded),
+        headers,
       },
       (incoming) => {
         const answer: Record<string, string | string[]> = {};
@@ -481,6 +511,10 @@ export class PreviewGateways {
         if (typeof answer.location === 'string' && URL.canParse(answer.location)) {
           const to = new URL(answer.location);
           if (to.origin === entry.upstream.origin) answer.location = entry.publicOrigin + to.pathname + to.search + to.hash;
+        }
+        if (entry.design) {
+          relayWithPicker(req, incoming, res, withoutFrameBusting(answer, entry.parentOrigin));
+          return;
         }
         res.writeHead(incoming.statusCode ?? 502, answer);
         incoming.pipe(res);

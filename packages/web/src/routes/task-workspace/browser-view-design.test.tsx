@@ -35,7 +35,6 @@ const ELEMENT = {
   rect: { x: 1, y: 2, width: 3, height: 4 },
   viewport: { width: 800, height: 600 },
   components: [],
-  source: '',
 }
 
 const frame = () => document.querySelector('iframe')!
@@ -138,6 +137,16 @@ describe('the picker conversation', () => {
     deliver({ source: 'cezar-design', type: 'picked', element: ELEMENT }, MIRROR, frame().contentWindow)
     expect(onPickElement).toHaveBeenCalledWith(ELEMENT)
     expect(toast).toHaveBeenCalledWith('Element added to your next message.')
+  })
+
+  it('keeps a source path only relative to the worktree, and drops one outside it (third cut §3.3)', async () => {
+    const onPickElement = vi.fn(() => true)
+    render(<BrowserView state={{ tabs: [APP], active: 0 }} onChange={vi.fn()} onPickElement={onPickElement} sourceRoots={['/srv/wt']} />)
+    await enterDesignMode()
+    deliver({ source: 'cezar-design', type: 'picked', element: { ...ELEMENT, source: { file: '/srv/wt/src/save.tsx', line: 7 } } }, MIRROR, frame().contentWindow)
+    expect(onPickElement).toHaveBeenLastCalledWith({ ...ELEMENT, source: { file: 'src/save.tsx', line: 7 } })
+    deliver({ source: 'cezar-design', type: 'picked', element: { ...ELEMENT, source: { file: '/home/me/other/save.tsx', line: 7 } } }, MIRROR, frame().contentWindow)
+    expect(onPickElement).toHaveBeenLastCalledWith(ELEMENT)
   })
 
   it('says nothing when the host did not keep the pick', async () => {

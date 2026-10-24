@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { newTaskPrefillHref, parseNewTaskParams, type NewTaskParams } from './new-task-params'
 
-const empty: NewTaskParams = { skill: '', ref: '', auto: false, key: '', todo: '' }
+const empty: NewTaskParams = { skill: '', ref: '', auto: false, key: '', todo: '', design: false }
 
 /** The saved-bookmarklet contract (spec 011) — protected by BACKWARD_COMPATIBILITY.md,
  *  and these links live in users' browsers, not in this repo. The cases below mirror
@@ -14,7 +14,7 @@ describe('parseNewTaskParams', () => {
     [
       'the full bookmarklet link',
       '?skill=om-code-review&ref=https%3A%2F%2Fgithub.com%2Fo%2Fr%2Fpull%2F1&auto=1&key=s3cret',
-      { skill: 'om-code-review', ref: 'https://github.com/o/r/pull/1', auto: true, key: 's3cret', todo: '' },
+      { skill: 'om-code-review', ref: 'https://github.com/o/r/pull/1', auto: true, key: 's3cret', todo: '', design: false },
     ],
     ['skill only (the "open the composer with this skill" bookmarklet)', '?skill=om-fix', { ...empty, skill: 'om-fix' }],
     // `task` is the older spelling of `ref`; app.js still accepts it, so must we.
@@ -29,6 +29,9 @@ describe('parseNewTaskParams', () => {
     // #374: the Inbox's Run adds `todo` so the composer can report the launch back.
     ['the inbox prefill link', '?skill=om-fix&ref=fix+it&todo=t1', { ...empty, skill: 'om-fix', ref: 'fix it', todo: 't1' }],
     ['whitespace around todo is trimmed', '?todo=%20t1%20', { ...empty, todo: 't1' }],
+    // Design Mode third cut §3.2: the Code page's "Start task with N notes".
+    ['design=1 marks a composer opened from collected notes', '?design=1', { ...empty, design: true }],
+    ['design is only the exact string 1', '?design=true', empty],
     // A saved bookmarklet has no `todo` — that must stay an absence, not an empty-string id.
     ['no todo is the empty string, not undefined', '?skill=om-fix&auto=1&key=k', { ...empty, skill: 'om-fix', auto: true, key: 'k' }],
   ]

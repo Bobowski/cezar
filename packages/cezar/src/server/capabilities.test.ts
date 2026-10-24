@@ -185,9 +185,20 @@ describe('resolveCapabilities — designMode (spec 2026-10-09-design-mode)', () 
     expect(resolveCapabilities({ CEZ_DESIGN_MODE: '0' }, undefined).designMode).toBe(false);
   });
 
-  it('is off on a hosted cockpit, even with CEZ_DESIGN_MODE=1 — a loopback mirror reaches nobody', () => {
-    expect(resolveCapabilities({ CEZ_REMOTE: '1', CEZ_DESIGN_MODE: '1' }, undefined).designMode).toBe(false);
-    expect(resolveCapabilities({ CEZ_DESIGN_MODE: '1' }, '0.0.0.0').designMode).toBe(false);
+  // Third cut §3.4: a hosted cockpit picks through the preview gateway, so the refusal is gone.
+  it('is on for a hosted cockpit with a gateway, and CEZ_DESIGN_MODE=0 still turns it off there', () => {
+    const ports = { CEZ_PREVIEW_PORTS: '8500-8501' };
+    expect(resolveCapabilities({ ...ports, CEZ_REMOTE: '1' }, undefined).designMode).toBe(true);
+    expect(resolveCapabilities(ports, '0.0.0.0').designMode).toBe(true);
+    expect(resolveCapabilities({ ...ports, CEZ_REMOTE: '1', CEZ_DESIGN_MODE: '0' }, undefined).designMode).toBe(false);
+    expect(resolveCapabilities({ ...ports, CEZ_DESIGN_MODE: '0' }, '0.0.0.0').designMode).toBe(false);
+  });
+
+  it('is off for a hosted cockpit with no gateway — there is no way in to pick through', () => {
+    expect(resolveCapabilities({ CEZ_REMOTE: '1' }, undefined).designMode).toBe(false);
+    expect(resolveCapabilities({}, '0.0.0.0').designMode).toBe(false);
+    // A pool that names no usable port is no gateway either.
+    expect(resolveCapabilities({ CEZ_REMOTE: '1', CEZ_PREVIEW_PORTS: '80,nope' }, undefined).designMode).toBe(false);
   });
 });
 
@@ -410,7 +421,8 @@ describe('trustedOperator vs localHandoff — the two questions hosted mode used
     // Machine properties do not move: nothing to open an editor on, nothing honest to frame.
     expect(hosted.localHandoff).toBe(false);
     expect(hosted.preview).toBe(false);
-    expect(hosted.designMode).toBe(false);
+    // Design Mode is not a local-machine property any more: it rides the gateway (third cut §3.4).
+    expect(resolveCapabilities({ CEZ_REMOTE: '1', CEZ_PREVIEW_PORTS: '8500' }, undefined).designMode).toBe(true);
   });
 
   it('is false only for a hosted cockpit that handed auth to its proxy', () => {

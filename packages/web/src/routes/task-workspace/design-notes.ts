@@ -18,6 +18,7 @@ import {
   messageWithDesignPicks,
   parseDesignPick,
   pickLabel,
+  withSourceUnder,
   type NewDesignPick,
 } from '../task-thread/design-picks'
 
@@ -127,7 +128,10 @@ export function parseDraftNotes(text: string): DraftNote[] {
   for (const item of raw.slice(0, DRAFT_NOTES_MAX) as unknown[]) {
     if (item === null || typeof item !== 'object') continue
     const record = item as Record<string, unknown>
-    const pick = parseDesignPick(record.pick)
+    // A draft stored before the third cut may carry the page's absolute path: only a relative
+    // one is kept (§3.3).
+    const parsed = parseDesignPick(record.pick)
+    const pick = parsed ? withSourceUnder(parsed, []) : null
     if (!pick || pick.mark === undefined) continue
     out.push({
       key: pick.mark,

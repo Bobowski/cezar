@@ -15,6 +15,10 @@ export interface NewTaskParams {
    *  `todoId` on POST /api/runs so the started task is recorded on the entry. NOT part of the
    *  bookmarklet contract: saved links never carry it, and it is inert on its own. */
   todo: string
+  /** The composer was opened by the Code page's **Start task with N notes** (spec
+   *  2026-10-24-design-mode-third-cut §3.2): starting the task consumes those notes. In-app only,
+   *  inert on its own — the notes it names live in memory, never in the link. */
+  design: boolean
 }
 
 export function parseNewTaskParams(search: string | URLSearchParams): NewTaskParams {
@@ -25,6 +29,7 @@ export function parseNewTaskParams(search: string | URLSearchParams): NewTaskPar
     auto: params.get('auto') === '1',
     key: params.get('key') ?? '',
     todo: (params.get('todo') ?? '').trim(),
+    design: params.get('design') === '1',
   }
 }
 

@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { BrowserView } from './browser-view'
@@ -11,8 +11,9 @@ import { BrowserView } from './browser-view'
  * gateway the server answers, or is refused with the server's own reason.
  */
 
+const health = vi.hoisted(() => ({ designMode: false }))
 vi.mock('@/api/queries', () => ({
-  useHealth: () => ({ data: { capabilities: { preview: false, designMode: false } } }),
+  useHealth: () => ({ data: { capabilities: { preview: false, designMode: health.designMode } } }),
 }))
 
 const openPreviewGateway = vi.hoisted(() => vi.fn())
@@ -32,6 +33,7 @@ function renderView(address = APP) {
 }
 
 beforeEach(() => {
+  health.designMode = false
   openPreviewGateway.mockReset().mockResolvedValue({ origin: GATEWAY, ticket: 'T1', ticketParam: '__cez_preview' })
 })
 afterEach(cleanup)
@@ -77,5 +79,47 @@ describe('an empty tab on a hosted cockpit', () => {
     render(<BrowserView state={{ tabs: [''], active: 0 }} onChange={() => {}} renderEmpty={() => <p>run panel</p>} />)
     expect(screen.queryByText('run panel')).toBeNull()
     expect(screen.getByText('Empty tab')).toBeTruthy()
+  })
+})
+
+describe('Design Mode on a hosted cockpit (spec 2026-10-24-design-mode-third-cut §3.4)', () => {
+  const DESIGN_SLOT = 'https://cezar.example.com:8502'
+
+  it('asks the gateway for a design slot, frames it, and believes only that slot’s picker', async () => {
+    health.designMode = true
+    openPreviewGateway.mockImplementation(async (input: { designMode?: boolean }) =>
+      input.designMode ? { origin: DESIGN_SLOT, ticket: 'D1', ticketParam: '__cez_preview' } : { origin: GATEWAY, ticket: 'T1', ticketParam: '__cez_preview' },
+    )
+    const onPickElement = vi.fn(() => true)
+    render(<BrowserView state={{ tabs: [APP], active: 0 }} onChange={vi.fn()} onPickElement={onPickElement} />)
+    await waitFor(() => expect(frame()?.getAttribute('src')).toBe(`${GATEWAY}/cart?step=2&__cez_preview=T1`))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Design Mode' }))
+    await waitFor(() => expect(frame()?.getAttribute('src')).toBe(`${DESIGN_SLOT}/cart?step=2&__cez_preview=D1`))
+    expect(openPreviewGateway).toHaveBeenLastCalledWith({ target: 'http://localhost:3000', parentOrigin: window.location.origin, designMode: true })
+    await act(async () => {})
+
+    const element = { url: APP, selector: 'main > button', tag: 'button', text: '', html: '<button></button>', styles: {}, rect: { x: 0, y: 0, width: 1, height: 1 }, viewport: { width: 1, height: 1 }, components: [] }
+    const deliver = (origin: string) =>
+      act(() => {
+        window.dispatchEvent(new MessageEvent('message', { data: { source: 'cezar-design', type: 'picked', element }, origin, source: frame()!.contentWindow }))
+      })
+    deliver(GATEWAY)
+    expect(onPickElement).not.toHaveBeenCalled()
+    deliver(DESIGN_SLOT)
+    expect(onPickElement).toHaveBeenCalledWith(element)
+  })
+
+  it('falls back to a plain preview, with the reason, when the design slot is refused', async () => {
+    health.designMode = true
+    openPreviewGateway.mockImplementation(async (input: { designMode?: boolean }) => {
+      if (input.designMode) throw new Error('Design Mode is not available on this cockpit')
+      return { origin: GATEWAY, ticket: 'T2', ticketParam: '__cez_preview' }
+    })
+    render(<BrowserView state={{ tabs: [APP], active: 0 }} onChange={vi.fn()} onPickElement={vi.fn(() => true)} />)
+    await waitFor(() => expect(frame()).not.toBeNull())
+    fireEvent.click(screen.getByRole('button', { name: 'Design Mode' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Design Mode' }).getAttribute('aria-pressed')).toBe('false'))
+    await waitFor(() => expect(frame()?.getAttribute('src')).toBe(`${GATEWAY}/cart?step=2&__cez_preview=T2`))
   })
 })

@@ -40,6 +40,9 @@ export type DesignProxyResponse = z.infer<typeof designProxyResponseSchema>;
 export const previewGatewayRequestSchema = z.object({
   target: z.string().min(1).max(2048),
   parentOrigin: z.string().min(1).max(512),
+  /** A slot of its own that re-serves the app with Design Mode's picker injected and its
+   *  frame-busting headers stripped (spec `2026-10-24-design-mode-third-cut` §3.4). */
+  designMode: z.boolean().optional(),
 });
 export type PreviewGatewayRequest = z.infer<typeof previewGatewayRequestSchema>;
 
@@ -56,3 +59,53 @@ export const previewGatewayResponseSchema = z.object({
   ticketParam: z.string(),
 });
 export type PreviewGatewayResponse = z.infer<typeof previewGatewayResponseSchema>;
+
+/** At most this many notes collect before a task is started from them (spec
+ *  `2026-10-24-design-mode-third-cut` §3.2) — the same cap a task's own drafts have. */
+export const DESIGN_DRAFTS_MAX = 12;
+
+const px = z.number().int().min(-1_000_000).max(1_000_000);
+
+/** Relative and staying inside its root: no leading separator, no drive or scheme prefix
+ *  (`C:`, `file:`, `webpack:`), no `..` segment in either separator. */
+const isRelativeInside = (file: string): boolean =>
+  !/^[\\/]/.test(file) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(file) && !file.split(/[\\/]/).includes('..');
+
+/**
+ * One element picked in Design Mode, as the cockpit keeps it (spec `2026-10-09-design-mode` §3,
+ * `2026-10-24-design-mode-third-cut` §3.3). Every field is bounded: it was described by a page
+ * cezar does not control and it ends up in a prompt. `source` is where a development build says
+ * the element is written, relative to the worktree — never an absolute path.
+ */
+export const designPickSchema = z.object({
+  url: z.string().max(2000),
+  selector: z.string().min(1).max(400),
+  tag: z.string().min(1).max(40),
+  text: z.string().max(200),
+  html: z.string().max(1600),
+  styles: z.record(z.string().regex(/^[a-z-]{1,40}$/), z.string().max(160)).refine((styles) => Object.keys(styles).length <= 30),
+  rect: z.object({ x: px, y: px, width: px, height: px }),
+  viewport: z.object({ width: px, height: px }),
+  components: z.array(z.string().max(80)).max(6),
+  source: z
+    .object({
+      file: z.string().min(1).max(300).refine(isRelativeInside, 'source must be relative, inside the worktree'),
+      line: z.number().int().positive().optional(),
+    })
+    .optional(),
+  /** The picker's handle on the element in the document it was picked in. */
+  mark: z.string().regex(/^[a-z0-9-]{1,24}$/).optional(),
+});
+export type DesignPick = z.infer<typeof designPickSchema>;
+
+/** A collected note: the element and what the user wrote about it. */
+export const designDraftPickSchema = designPickSchema.extend({ note: z.string().max(20_000) });
+export type DesignDraftPick = z.infer<typeof designDraftPickSchema>;
+
+/** `GET /repo/design-drafts` — the notes collected with no task chosen, oldest first. */
+export const designDraftsResponseSchema = z.object({ picks: z.array(designDraftPickSchema) });
+export type DesignDraftsResponse = z.infer<typeof designDraftsResponseSchema>;
+
+/** `PUT /repo/design-drafts` — replace them; an empty list clears them. */
+export const setDesignDraftsInputSchema = z.object({ picks: z.array(designDraftPickSchema).max(DESIGN_DRAFTS_MAX) });
+export type SetDesignDraftsInput = z.infer<typeof setDesignDraftsInputSchema>;

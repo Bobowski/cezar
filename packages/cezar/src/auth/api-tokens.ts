@@ -101,6 +101,8 @@ export const FAMILY_SCOPES: Record<string, Exclude<ApiTokenScope, 'read' | 'runs
 const ROUTE_OWNERS: ReadonlyArray<readonly [RegExp, Exclude<ApiTokenScope, 'read' | 'runs.transcript'>]> = [
   [/^\/runs\/[^/]+\/terminal(\/|$)/, 'admin'],
   [/^\/tracker\/(connection|association)(\/|$)/, 'author'],
+  // Design notes collected before a task exists: what the user typed, kin of a task's drafts.
+  [/^\/repo\/design-drafts$/, 'tasks'],
 ];
 
 /**

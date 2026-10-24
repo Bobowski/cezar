@@ -110,6 +110,58 @@ export function injectPicker(html: string): string {
   return SCRIPT_TAG + html;
 }
 
+/**
+ * Relay the app's answer with the picker's script tag placed in an HTML document. Shared by the
+ * loopback mirror and a gateway slot in design mode (spec `2026-10-24-design-mode-third-cut`
+ * §3.4). The request must have asked for `identity` encoding, or the HTML passes untouched.
+ */
+export function relayWithPicker(
+  req: IncomingMessage,
+  incoming: IncomingMessage,
+  res: ServerResponse,
+  answer: Record<string, string | string[]>,
+): void {
+  const status = incoming.statusCode ?? 502;
+  const type = String(incoming.headers['content-type'] ?? '');
+  const encoded = incoming.headers['content-encoding'];
+  const html = /^text\/html\b/i.test(type) && (encoded === undefined || encoded === 'identity') && req.method !== 'HEAD';
+  if (!html) {
+    res.writeHead(status, answer);
+    incoming.pipe(res);
+    incoming.on('error', () => res.destroy());
+    return;
+  }
+
+  const chunks: Buffer[] = [];
+  let size = 0;
+  let passthrough = false;
+  incoming.on('data', (chunk: Buffer) => {
+    if (passthrough) {
+      res.write(chunk);
+      return;
+    }
+    chunks.push(chunk);
+    size += chunk.length;
+    if (size > HTML_BUFFER_MAX) {
+      passthrough = true;
+      res.writeHead(status, answer);
+      res.write(Buffer.concat(chunks));
+      chunks.length = 0;
+    }
+  });
+  incoming.on('end', () => {
+    if (passthrough) {
+      res.end();
+      return;
+    }
+    const body = Buffer.from(injectPicker(Buffer.concat(chunks).toString('utf8')), 'utf8');
+    delete answer['content-length'];
+    res.writeHead(status, { ...answer, 'content-length': String(body.length) });
+    res.end(body);
+  });
+  incoming.on('error', () => res.destroy());
+}
+
 export class DesignProxies {
   private readonly entries = new Map<string, Entry>();
   private readonly idleMs: number;
@@ -282,44 +334,7 @@ export class DesignProxies {
         if (typeof answer.location === 'string' && answer.location.startsWith(entry.upstream.origin)) {
           answer.location = own + answer.location.slice(entry.upstream.origin.length);
         }
-        const status = incoming.statusCode ?? 502;
-        const type = String(incoming.headers['content-type'] ?? '');
-        const encoded = incoming.headers['content-encoding'];
-        const html = /^text\/html\b/i.test(type) && (encoded === undefined || encoded === 'identity') && req.method !== 'HEAD';
-        if (!html) {
-          res.writeHead(status, answer);
-          incoming.pipe(res);
-          return;
-        }
-
-        const chunks: Buffer[] = [];
-        let size = 0;
-        let passthrough = false;
-        incoming.on('data', (chunk: Buffer) => {
-          if (passthrough) {
-            res.write(chunk);
-            return;
-          }
-          chunks.push(chunk);
-          size += chunk.length;
-          if (size > HTML_BUFFER_MAX) {
-            passthrough = true;
-            res.writeHead(status, answer);
-            res.write(Buffer.concat(chunks));
-            chunks.length = 0;
-          }
-        });
-        incoming.on('end', () => {
-          if (passthrough) {
-            res.end();
-            return;
-          }
-          const body = Buffer.from(injectPicker(Buffer.concat(chunks).toString('utf8')), 'utf8');
-          delete answer['content-length'];
-          res.writeHead(status, { ...answer, 'content-length': String(body.length) });
-          res.end(body);
-        });
-        incoming.on('error', () => res.destroy());
+        relayWithPicker(req, incoming, res, answer);
       },
     );
     outgoing.on('error', () => {

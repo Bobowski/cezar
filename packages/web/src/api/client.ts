@@ -140,6 +140,9 @@ import type {
   PreviewGatewayResponse,
   PromptQueueResponse,
   RemoveQueuedPromptResponse,
+  ReorderPromptQueueResponse,
+  DesignDraftsResponse,
+  SetDesignDraftsInput,
   EditQueuedPromptResponse,
   DesignProxyResponse,
   SetTelemetryConsentInput,
@@ -786,6 +789,24 @@ export async function getRepo(opts?: ReadOptions): Promise<RepoResponse> {
   return unwrap(
     await cez.api.v1.p[':projectId'].repo.$get({ param: { projectId: queryScope() } }, init(opts)),
     '/repo',
+  )
+}
+
+/** Design Mode notes collected on the Code page with no task chosen (spec
+ *  2026-10-24-design-mode-third-cut §3.2). The project is explicit: a debounced save may fire
+ *  after the user switched projects. */
+export async function getRepoDesignDrafts(projectId: string, opts?: ReadOptions): Promise<DesignDraftsResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].repo['design-drafts'].$get({ param: { projectId } }, init(opts)),
+    '/repo/design-drafts',
+  )
+}
+
+/** Replace them; an empty list clears them. */
+export async function putRepoDesignDrafts(input: SetDesignDraftsInput, projectId: string): Promise<DesignDraftsResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].repo['design-drafts'].$put({ param: { projectId }, json: input }),
+    '/repo/design-drafts',
   )
 }
 
@@ -1746,6 +1767,18 @@ export async function removeQueuedRunPrompt(id: string, msgId: string): Promise<
       param: { projectId: queryScope(), id: encodeURIComponent(id), msgId: encodeURIComponent(msgId) },
     }),
     runPath(id, `/prompt-queue/${encodeURIComponent(msgId)}`),
+  )
+}
+
+/** Put the waiting prompts in a new order. `order` must name each exactly once — a 409 means
+ *  the queue moved since this window read it. */
+export async function reorderRunPromptQueue(id: string, order: string[]): Promise<ReorderPromptQueueResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].runs[':id']['prompt-queue'].$put({
+      param: { projectId: queryScope(), id: encodeURIComponent(id) },
+      json: { order },
+    }),
+    runPath(id, '/prompt-queue'),
   )
 }
 

@@ -124,10 +124,16 @@ describe('API token scopes, per route family', () => {
       '/api/v1/ui-state', '/api/v1/workspace/ui-state',
       // cezar's own task titles and commit subjects, and a GitHub round trip.
       '/api/v1/workspace/self-update/development',
+      // Design notes collected with no task chosen (spec 2026-10-24-design-mode-third-cut §3.2).
+      '/api/v1/repo/design-drafts', '/api/v1/p/x/repo/design-drafts',
     ]) {
       expect(apiTokenAllows(['read'], 'GET', path), path).toBe(false);
     }
     expect(apiTokenAllows(['tasks'], 'GET', '/api/v1/runs/1/drafts')).toBe(true);
+    expect(apiTokenAllows(['tasks'], 'GET', '/api/v1/repo/design-drafts')).toBe(true);
+    expect(apiTokenAllows(['tasks'], 'PUT', '/api/v1/p/x/repo/design-drafts')).toBe(true);
+    // The rest of the repo family stays admin's.
+    expect(apiTokenAllows(['tasks'], 'PUT', '/api/v1/repo/files')).toBe(false);
   });
 
   it('every route the read allowlist names is a real GET route', () => {

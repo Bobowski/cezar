@@ -11,6 +11,7 @@ const params = (over: Partial<NewTaskParams>): NewTaskParams => ({
   auto: true,
   key: 'k',
   todo: '', // saved bookmarklets never carry one (#374) — the default here says so
+  design: false,
   ...over,
 })
 

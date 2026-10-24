@@ -54,7 +54,6 @@ const PICK = {
   rect: { x: 1, y: 2, width: 3, height: 4 },
   viewport: { width: 800, height: 600 },
   components: [],
-  source: '',
   mark: 'abc-1',
 }
 const run = (over: Partial<ApiRun> = {}): ApiRun => ({ id: 'run-1', status: 'running', ...over }) as ApiRun

@@ -22,19 +22,26 @@ describe('the preview-gateway API', () => {
   let store: RunStore;
   let gateways: PreviewGateways | undefined;
   const saved = process.env.CEZ_PREVIEW_PORTS;
+  const savedRemote = process.env.CEZ_REMOTE;
 
   const makeApp = (previewGateways?: PreviewGateways): Hono =>
     createApp({ repoRoot, store, manager: {} as RunManager, version: '0.0.0-test', previewGateways });
 
-  const post = (app: Hono, body: unknown) =>
+  // As the hosted cockpit's own page sends it: Origin and Host are the cockpit's public address.
+  const post = (app: Hono, body: { parentOrigin: string } & Record<string, unknown>, origin: string | null = body.parentOrigin) =>
     apiRequest(app, '/api/v1/preview/gateway', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        host: new URL(body.parentOrigin).host,
+        ...(origin === null ? {} : { origin }),
+      },
       body: JSON.stringify(body),
     });
 
   beforeEach(() => {
     delete process.env.CEZ_PREVIEW_PORTS;
+    process.env.CEZ_REMOTE = '1';
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-gateway-api-'));
     mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
     store = RunStore.open(join(repoRoot, '.ai/cezar'));
@@ -46,6 +53,8 @@ describe('the preview-gateway API', () => {
     rmSync(repoRoot, { recursive: true, force: true });
     if (saved === undefined) delete process.env.CEZ_PREVIEW_PORTS;
     else process.env.CEZ_PREVIEW_PORTS = saved;
+    if (savedRemote === undefined) delete process.env.CEZ_REMOTE;
+    else process.env.CEZ_REMOTE = savedRemote;
   });
 
   it('does not exist by default: no pool was named, so nothing can be opened', async () => {
@@ -74,11 +83,33 @@ describe('the preview-gateway API', () => {
     expect(gateways.size).toBe(0);
   });
 
+  it('answers 400 for a parentOrigin that is not the page asking, and opens nothing', async () => {
+    gateways = new PreviewGateways({ ports: [0] });
+    // The cockpit's own page asks (it passes the origin guard), naming some other page as parent.
+    for (const parentOrigin of ['https://evil.example.com', 'http://cezar.example.com', 'https://cezar.example.com:8443']) {
+      const res = await apiRequest(makeApp(gateways), '/api/v1/preview/gateway', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', host: 'cezar.example.com', origin: 'https://cezar.example.com' },
+        body: JSON.stringify({ target: 'http://localhost:3000', parentOrigin }),
+      });
+      expect(res.status, parentOrigin).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toContain('parentOrigin');
+    }
+    expect(gateways.size).toBe(0);
+  });
+
+  it('answers 400 when the request carries no Origin: Host is not a public origin', async () => {
+    gateways = new PreviewGateways({ ports: [0] });
+    const res = await post(makeApp(gateways), { target: 'http://localhost:3000', parentOrigin: 'https://cezar.example.com' }, null);
+    expect(res.status).toBe(400);
+    expect(gateways.size).toBe(0);
+  });
+
   it('never re-serves the cockpit it was asked through', async () => {
     gateways = new PreviewGateways({ ports: [0] });
     const res = await apiRequest(makeApp(gateways), '/api/v1/preview/gateway', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', host: 'localhost:4321' },
+      headers: { 'content-type': 'application/json', host: 'localhost:4321', origin: 'http://localhost:4321' },
       body: JSON.stringify({ target: 'http://127.0.0.1:4321', parentOrigin: 'http://localhost:4321' }),
     });
     expect(res.status).toBe(400);

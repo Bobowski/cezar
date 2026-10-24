@@ -1,28 +1,36 @@
-import { XIcon } from 'lucide-react'
+import { MessageSquareIcon, XIcon } from 'lucide-react'
 import { useCallback, useMemo, useState } from 'react'
 
+import { useProjectScope } from '@/api/project-scope-context'
 import type { ApiRun } from '@open-mercato/cezar-api-client'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from '@/components/ui/toaster'
-import { messageWithDesignPicks, pickLabel, type NewDesignPick } from '@/routes/task-thread/design-picks'
+import { useNavigate } from '@/lib/project-router'
+import { readDraft, writeDraft } from '@/routes/new-task-draft'
+import { formatDesignNotesTask, messageWithDesignPicks, pickLabel } from '@/routes/task-thread/design-picks'
+import { formatSource } from '@/routes/task-thread/design-source'
 import { BrowserView, type DesignMark } from '@/routes/task-workspace/browser-view'
 import { DesignNotePopup } from '@/routes/task-workspace/design-note-popup'
-import { useDesignNotes } from '@/routes/task-workspace/design-notes'
+import { useDesignNotes, type NotePick } from '@/routes/task-workspace/design-notes'
+import { PromptQueueDrawer } from '@/routes/task-workspace/prompt-queue-drawer'
+import { useSourceRoots } from '@/routes/task-workspace/source-roots'
 
 import type { CodeBrowser } from './code-state'
+import { setPendingDesignStart, useProjectDesignDrafts } from './project-design-drafts'
 
 /**
  * A browser in an editor tab (spec 2026-10-11-code-page): the app the project serves, beside its
  * code. Design Mode picks an element of the page and turns what the user says about it into work
- * for an agent — a message to the task the agent pane shows, or, with none chosen, a NEW task.
+ * for an agent — a message to the task the agent pane shows, or, with none chosen, notes that
+ * collect until a NEW task is started from them (spec 2026-10-24-design-mode-third-cut §3.2).
  */
 export function CodeBrowserTab({
   state, onChange, run, onStartTask,
 }: {
   state: CodeBrowser
   onChange: (state: CodeBrowser) => void
-  /** The task the agent pane shows; notes go to it. `null`: each note starts a task of its own. */
+  /** The task the agent pane shows; notes go to it. `null`: notes collect for a new task. */
   run: ApiRun | null
   /** Start a task from one note's text. Resolves once the task exists. */
   onStartTask: (message: string) => Promise<void>
@@ -34,6 +42,7 @@ export function CodeBrowserTab({
 function TaskBrowser({ state, onChange, run }: { state: CodeBrowser; onChange: (state: CodeBrowser) => void; run: ApiRun }) {
   const notes = useDesignNotes(run)
   const { addDraft, discard, note: noteFor, marks } = notes
+  const sourceRoots = useSourceRoots(run)
   const escape = useCallback((mark: string) => { if (noteFor(mark)?.phase === 'draft') discard(mark) }, [discard, noteFor])
   return (
     <BrowserView
@@ -43,6 +52,8 @@ function TaskBrowser({ state, onChange, run }: { state: CodeBrowser; onChange: (
       onPickElement={addDraft}
       designMarks={marks}
       onDesignEscape={escape}
+      sourceRoots={sourceRoots}
+      designToolbar={<PromptQueueDrawer run={run} notes={notes} />}
       renderDesignNote={({ mark, close }) => {
         const note = noteFor(mark)
         return note ? <DesignNotePopup note={note} run={run} notes={notes} onClose={close} /> : null
@@ -51,35 +62,63 @@ function TaskBrowser({ state, onChange, run }: { state: CodeBrowser; onChange: (
   )
 }
 
-interface Draft {
+/** A note already started as a task of its own: framed and numbered until the page reloads. */
+interface Started {
   key: string
-  pick: NewDesignPick & { mark: string }
+  pick: NotePick
   text: string
+  number: number
 }
 
-const pathOf = (url: string): string | undefined => {
-  try {
-    return new URL(url).pathname
-  } catch {
-    return undefined
-  }
-}
-
-/** Notes with no task behind them yet: sending one is what creates the task. */
+/** Notes with no task behind them yet: they collect, and starting a task is what consumes them. */
 function NewTaskBrowser({ state, onChange, onStartTask }: { state: CodeBrowser; onChange: (state: CodeBrowser) => void; onStartTask: (message: string) => Promise<void> }) {
-  const [drafts, setDrafts] = useState<Draft[]>([])
+  const { drafts, marks: draftMarks, unsaved, draft: draftFor, add, setText, discard, consume } = useProjectDesignDrafts()
+  const { projectId } = useProjectScope()
+  const navigate = useNavigate()
+  const sourceRoots = useSourceRoots(null)
+  const [started, setStarted] = useState<Started[]>([])
   const [busy, setBusy] = useState(false)
   const marks = useMemo<DesignMark[]>(
-    () => drafts.map((draft) => ({ key: draft.key, selector: draft.pick.selector, path: pathOf(draft.pick.url), label: pickLabel(draft.pick), draft: true })),
-    [drafts],
+    () => [...draftMarks, ...started.map((note) => ({ key: note.key, n: note.number, label: pickLabel(note.pick), draft: false }))],
+    [draftMarks, started],
   )
-  const discard = useCallback((key: string) => setDrafts((all) => all.filter((draft) => draft.key !== key)), [])
-  const add = useCallback((pick: NewDesignPick): boolean => {
-    const mark = pick.mark
-    if (mark === undefined) return false
-    setDrafts((all) => (all.some((draft) => draft.key === mark) ? all : [...all, { key: mark, pick: { ...pick, mark }, text: '' }]))
-    return true
-  }, [])
+
+  /** §3.2: the `/new` composer, its text the notes in order; starting the task consumes them. */
+  const startWithAll = () => {
+    if (drafts.length === 0) return
+    let text: string
+    try {
+      text = formatDesignNotesTask(drafts)
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Too many notes for one task.', { tone: 'danger' })
+      return
+    }
+    // The composer may hold unsent work: the notes join it rather than replace it, and only once.
+    const current = readDraft(projectId)
+    const kept = current.text.trim()
+    const next = kept === '' ? text : kept.includes(text.trim()) ? current.text : `${kept}\n\n${text}`
+    writeDraft({ ...current, text: next }, projectId)
+    setPendingDesignStart(projectId, drafts.map((draft) => draft.key))
+    navigate('/new?design=1')
+  }
+
+  /** One note alone, started at once with defaults, as before the third cut. */
+  const startOne = async (key: string): Promise<boolean> => {
+    const draft = draftFor(key)
+    if (!draft || busy) return false
+    setBusy(true)
+    try {
+      await onStartTask(messageWithDesignPicks(draft.text.trim(), [{ ...draft.pick, id: draft.key }]))
+      consume([key])
+      setStarted((all) => [...all, { key, pick: draft.pick, text: draft.text.trim(), number: all.length + 1 }])
+      return true
+    } catch (error) {
+      toast(error instanceof Error && error.message ? error.message : 'Could not start the task.', { tone: 'danger' })
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <BrowserView
@@ -89,46 +128,74 @@ function NewTaskBrowser({ state, onChange, onStartTask }: { state: CodeBrowser; 
       onPickElement={add}
       designMarks={marks}
       onDesignEscape={discard}
+      sourceRoots={sourceRoots}
+      designToolbar={
+        drafts.length > 0 ? (
+          <>
+            {unsaved ? (
+              <span data-slot="design-drafts-unsaved" className="ml-1 text-xs text-destructive" title="The last save was refused — these notes are only in this tab">
+                Not saved
+              </span>
+            ) : null}
+            <Button type="button" data-slot="design-start-all" size="sm" className="ml-1" onClick={startWithAll} title="Open New task with every collected note as its text">
+              Start task with {drafts.length} {drafts.length === 1 ? 'note' : 'notes'}
+            </Button>
+          </>
+        ) : null
+      }
       renderDesignNote={({ mark, close }) => {
-        const draft = drafts.find((each) => each.key === mark)
+        const done = started.find((each) => each.key === mark)
+        if (done) {
+          return (
+            <div data-slot="design-note" data-phase="started" className="flex flex-col gap-2 p-2.5 text-xs">
+              <div className="flex items-center gap-1.5">
+                <span className="flex h-[21px] shrink-0 items-center gap-1 rounded-md bg-primary pr-[7px] pl-1.5 text-xs leading-none font-bold text-primary-foreground">
+                  <MessageSquareIcon aria-hidden="true" className="size-3" strokeWidth={2.5} />
+                  {done.number}
+                </span>
+                <span className="min-w-0 flex-1 truncate font-mono text-[11px] font-medium text-foreground">{pickLabel(done.pick)}</span>
+                <Button type="button" variant="ghost" size="icon-xs" aria-label="Close" onClick={close}>
+                  <XIcon aria-hidden="true" />
+                </Button>
+              </div>
+              <p className="text-soft-foreground">Started as a task of its own.</p>
+            </div>
+          )
+        }
+        const draft = draftFor(mark)
         if (!draft) return null
         const dismiss = () => { discard(draft.key); close() }
-        const send = async () => {
-          if (draft.text.trim() === '' || busy) return
-          setBusy(true)
-          try {
-            await onStartTask(messageWithDesignPicks(draft.text.trim(), [{ ...draft.pick, id: draft.key }]))
-            dismiss()
-          } catch (error) {
-            toast(error instanceof Error && error.message ? error.message : 'Could not start the task.', { tone: 'danger' })
-          } finally {
-            setBusy(false)
-          }
-        }
+        const index = drafts.findIndex((each) => each.key === draft.key)
         return (
           <div data-slot="design-note" data-phase="new-task" className="flex flex-col gap-2 p-2.5 text-xs">
             <div className="flex items-center gap-1.5">
+              <span data-slot="design-note-number" className="shrink-0 rounded-md border border-border px-1.5 text-[11px] font-semibold tabular-nums text-soft-foreground">{index + 1}</span>
               <span className="min-w-0 flex-1 truncate font-mono text-[11px] font-medium text-foreground" title={draft.pick.selector}>{pickLabel(draft.pick)}</span>
               <Button type="button" variant="ghost" size="icon-xs" aria-label="Discard note" title="Discard this note and deselect the element (Esc)" onClick={dismiss}>
                 <XIcon aria-hidden="true" />
               </Button>
             </div>
+            {draft.pick.source ? (
+              <p data-slot="design-note-source" className="-mt-1 truncate font-mono text-[11px] text-soft-foreground">{formatSource(draft.pick.source)}</p>
+            ) : null}
             <Textarea
               value={draft.text}
-              onChange={(event) => setDrafts((all) => all.map((each) => (each.key === draft.key ? { ...each, text: event.target.value.slice(0, 20_000) } : each)))}
+              onChange={(event) => setText(draft.key, event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Escape') { event.preventDefault(); dismiss() }
-                else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void send() }
+                else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); close() }
               }}
               placeholder="What should change here?"
-              aria-label="Task for an agent"
+              aria-label="Note for a new task"
               autoFocus
               rows={3}
               className="min-h-16 resize-none text-[13px] md:text-[13px]"
             />
             <div className="flex items-center justify-between gap-2">
-              <span className="text-soft-foreground">Starts a new task with this element attached.</span>
-              <Button type="button" size="xs" disabled={busy || draft.text.trim() === ''} onClick={() => void send()}>Start task</Button>
+              <span className="text-soft-foreground">Collected for a new task — pick more elements, then Start task.</span>
+              <Button type="button" variant="outline" size="xs" disabled={busy || draft.text.trim() === ''} onClick={() => void startOne(draft.key).then((ok) => { if (ok) close() })}>
+                Start task with this note
+              </Button>
             </div>
           </div>
         )

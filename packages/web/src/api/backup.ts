@@ -72,7 +72,8 @@ export function backupArchiveUrl(name: string): string {
 /** `/setup`: the setup code is the gate; the answer's job id is the only handle on the job. */
 export async function restoreFromSetup(archive: File, identity: string, code: string): Promise<string> {
   const res = await cez.api.v1.auth.setup.restore.$post(
-    { header: { [BACKUP_IDENTITY_HEADER]: encodeIdentity(identity), [SETUP_CODE_HEADER]: code } },
+    // The code rides the header, never the URL (`?code=` is for clients that cannot set one).
+    { header: { [BACKUP_IDENTITY_HEADER]: encodeIdentity(identity), [SETUP_CODE_HEADER]: code }, query: {} },
     { init: { body: archive } },
   )
   return (await unwrap(res, '/auth/setup/restore')).job

@@ -18,6 +18,7 @@ import {
   setBackupTargetBodySchema,
   setupRestoreHeadersSchema,
   setupRestoreQuerySchema,
+  setupRestoreUploadQuerySchema,
   type BackupJob,
 } from '@open-mercato/cezar-contract';
 import { cookieFor, failure, HTTPS_REQUIRED, metaOf } from '../auth/routes.ts';
@@ -230,13 +231,16 @@ export function setupRestoreRoutes(deps: { service: BackupService; auth: AuthSer
         if (!auth.setupRequired()) return c.json({ error: 'not found' }, 404);
         const length = declaredLength(c);
         if (typeof length !== 'number') return length;
-        const gate = auth.checkSetupCode(c.req.header(SETUP_CODE_HEADER) ?? c.req.query('code') ?? '', metaOf(c));
+        // The header, else `?code=`: either one, and an empty header does not hide the query.
+        const code = c.req.header(SETUP_CODE_HEADER)?.trim() || c.req.query('code')?.trim() || '';
+        const gate = auth.checkSetupCode(code, metaOf(c));
         if (!gate.ok) return failure(c, gate);
         const refusal = service.restoreRefusal();
         if (refusal) return c.json({ error: refusal }, 409);
         return next();
       },
       headerZodValidator(setupRestoreHeadersSchema),
+      queryZodValidator(setupRestoreUploadQuerySchema),
       async (c) => {
         // The upload can take minutes: an owner set up meanwhile closes this path (409, not 404 —
         // this caller held a valid code).

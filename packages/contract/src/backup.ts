@@ -145,9 +145,14 @@ const base64Identity = z
 export const backupRestoreHeadersSchema = z.object({ [BACKUP_IDENTITY_HEADER]: base64Identity });
 export type BackupRestoreHeaders = z.infer<typeof backupRestoreHeadersSchema>;
 
-/** `POST /api/v1/auth/setup/restore`: the same, plus the setup code. */
-export const setupRestoreHeadersSchema = backupRestoreHeadersSchema.extend({ [SETUP_CODE_HEADER]: z.string().min(1).max(256) });
+const setupCode = z.string().min(1).max(256);
+
+/** `POST /api/v1/auth/setup/restore`: the same, plus the setup code — in this header or as
+ *  `?code=` (`setupRestoreUploadQuerySchema`); the route's gate wants one of the two. */
+export const setupRestoreHeadersSchema = backupRestoreHeadersSchema.extend({ [SETUP_CODE_HEADER]: setupCode.optional() });
 export type SetupRestoreHeaders = z.infer<typeof setupRestoreHeadersSchema>;
+export const setupRestoreUploadQuerySchema = z.object({ code: setupCode.optional() });
+export type SetupRestoreUploadQuery = z.infer<typeof setupRestoreUploadQuerySchema>;
 
 /** `POST /api/v1/auth/setup/restore` answers the job's id: knowing it is what lets the page,
  *  which has no session yet, follow the job (`GET /api/v1/auth/setup/restore?job=…`). */

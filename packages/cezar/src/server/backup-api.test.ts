@@ -284,6 +284,24 @@ describe('a restore upload, before its body', () => {
     expect(direct.seen.pulls).toBe(0);
   });
 
+  it('takes the setup code as ?code= when the header is absent', async () => {
+    const issued = issueSetupCode();
+    if (!issued.ok) throw new Error('no code');
+    const wrong = watchedBody();
+    expect((await post(app, `${SETUP_PATH}?code=guessed`, { ...identity, 'content-length': '64' }, wrong.body)).status).toBe(401);
+    expect(wrong.seen.pulls).toBe(0);
+    const res = await post(app, `${SETUP_PATH}?code=${encodeURIComponent(issued.setup.code)}`, { ...identity, 'content-length': '64' }, watchedBody().body);
+    expect(res.status).toBe(200);
+    const { job } = setupRestoreResponseSchema.parse(await res.json());
+    // 64 zero bytes are no archive: the job starts, then fails on its own.
+    let polled = backupJobSchema.parse(await (await apiRequest(app, `${SETUP_PATH}?job=${job}`)).json());
+    for (let i = 0; i < 400 && polled.status === 'running'; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      polled = backupJobSchema.parse(await (await apiRequest(app, `${SETUP_PATH}?job=${job}`)).json());
+    }
+    expect(polled.status).toBe('failed');
+  });
+
   it('refuses with 409 when an owner was set up while the archive uploaded, and starts nothing', async () => {
     const issued = issueSetupCode();
     if (!issued.ok) throw new Error('no code');

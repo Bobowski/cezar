@@ -14,6 +14,7 @@ import type {
   SetBackupTargetBody,
   SetupRestoreHeaders,
   SetupRestoreResponse,
+  SetupRestoreUploadQuery,
 } from '@open-mercato/cezar-contract';
 import type { AppType } from './app-type.ts';
 
@@ -41,6 +42,7 @@ type Checks = [
   Assert<Mutual<BackupRestoreHeaders, InferRequestType<typeof backup.restore.$post>['header']>>,
   Assert<Mutual<SetupRestoreResponse, InferResponseType<typeof setupRestore.$post, 200>>>,
   Assert<Mutual<SetupRestoreHeaders, InferRequestType<typeof setupRestore.$post>['header']>>,
+  Assert<Mutual<SetupRestoreUploadQuery, InferRequestType<typeof setupRestore.$post>['query']>>,
   Assert<Mutual<BackupJob, InferResponseType<typeof setupRestore.$get, 200>>>,
   Assert<Mutual<{ job: string }, InferRequestType<typeof setupRestore.$get>['query']>>,
 ];

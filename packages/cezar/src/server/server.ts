@@ -1,5 +1,5 @@
 import {
-  detectedUrlsSchema, discoveredCommandsSchema, startAppSetSchema, startAppStateSchema,
+  detectedUrlsSchema, discoveredCommandsSchema, projectDetectedUrlsSchema, terminalHistorySchema, startAppSetSchema, startAppStateSchema,
   workspaceLayoutsResponseSchema, workspaceLayoutsSchema,
   terminalCreateSchema, terminalInputSchema, terminalOutputQuerySchema, terminalOutputSchema,
   terminalResizeSchema, terminalSessionParamsSchema, terminalSessionSchema, terminalStateSchema,
@@ -48,7 +48,8 @@ import { peekTaskSlot, taskSlotEnv } from '../task-slot.ts';
 import { discoverCommands, installCommand } from './terminal/commands.ts';
 import { effectiveStartApp, readStartApp, writeStartApp } from '../start-app.ts';
 import { DetectedUrls } from './terminal/detected-urls.ts';
-import { processSnapshot } from './terminal/foreground.ts';
+import { freshProcessSnapshot, processSnapshot, type ProcessRow } from './terminal/foreground.ts';
+import { TerminalHistory, readTerminalHistory } from './terminal/history.ts';
 import { loadPty } from './terminal/pty-module.ts';
 import { discoverShells } from './terminal/shells.ts';
 import { TerminalSessions, type TerminalSessionInfo } from './terminal/sessions.ts';
@@ -80,7 +81,7 @@ import { activityHeadsChanged } from '../automations/github-activity.ts';
 import { trackerTriggerSchema, trackerAutomationOptionsSchema, trackerAutomationOptionsQuerySchema, automationScheduleSchema, localTimeZone, nextOccurrence } from '@open-mercato/cezar-contract';
 import type { IncomingMessage } from 'node:http';
 import { access, constants as fsConstants, mkdir, readFile, realpath, rename, stat, statfs, unlink, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { homedir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Hono, type Context } from 'hono';
@@ -511,6 +512,12 @@ export interface ServerDeps {
   /** The workspace terminal's session registry. Injectable so route tests drive a fake PTY
    *  instead of forking a real shell; defaults to a real one per server. */
   terminalSessions?: TerminalSessions;
+  /** Addresses the terminals printed. Injected by tests that feed a fake PTY's output through it. */
+  detectedUrls?: DetectedUrls;
+  /** The terminals' per-project history (spec 2026-10-24-code-page-terminal §3.3). Injected by tests. */
+  terminalHistory?: TerminalHistory;
+  /** A fresh process table, for the history's "is the shell at its prompt" check. Injected by tests. */
+  freshProcesses?: () => Promise<ProcessRow[] | null>;
   /** The host-telemetry sampler behind the `host` topic and the `/workspace/host-usage` route.
    *  Defaults to the process-wide singleton; injectable so tests can drive a frame shape (a
    *  container object, for instance) that CI machines do not have. */
@@ -1693,9 +1700,28 @@ export function createApp(deps: ServerDeps) {
   // a project context — the cockpit may switch projects with a build still running.
   // Addresses this task's terminals printed. Fed by the registry as output arrives, so a dev
   // server announcing itself is noticed without anyone polling for it.
-  const detectedUrls = new DetectedUrls();
+  const detectedUrls = deps.detectedUrls ?? new DetectedUrls();
   const terminalSessions = deps.terminalSessions ?? new TerminalSessions(undefined, detectedUrls);
   deps.onDispose?.(() => terminalSessions.closeAll());
+  const terminalHistory = deps.terminalHistory ?? new TerminalHistory();
+  /** Feed what a person typed into the project's history BEFORE the shell sees it (spec
+   *  2026-10-24-code-page-terminal §3.3). A task's own credential typing is not the user's history. */
+  const recordTyped = async (c: Context, project: ProjectContext, sessionId: string, data: string) => {
+    if (principalOf(c)?.kind === 'run') return;
+    await terminalHistory.typed(project.dataDir, sessionId, data, async () => {
+      terminalSessions.observe(await (deps.freshProcesses ?? freshProcessSnapshot)());
+      return terminalSessions.get(sessionId)?.busy === false;
+    });
+  };
+  /** The account cezar runs as — a tunnel line's login (tunnel spec §3.3). A container with no
+   *  passwd entry for its uid has none to say. */
+  const serverAccount = (): string | null => {
+    try {
+      return userInfo().username || null;
+    } catch {
+      return null;
+    }
+  };
 
   /**
    * Stop everything a task's terminals own: the shells, their process trees (a `npm run dev` and
@@ -7136,6 +7162,7 @@ export function createApp(deps: ServerDeps) {
         if (!session) return c.json({ error: 'terminal session not found' }, 404);
         const refusal = terminalPolicyRefusal(capabilities());
         if (refusal) return c.json({ error: refusal }, 409);
+        await recordTyped(c, c.get('project'), session.id, c.req.valid('json').data);
         // A write to a shell that has already exited is not an error: the client may not have
         // learned about the exit yet, and the exit code is in every output read anyway.
         return c.json({ delivered: terminalSessions.write(session.id, c.req.valid('json').data) });
@@ -7208,6 +7235,7 @@ export function createApp(deps: ServerDeps) {
       const session = terminalFor(c.req.valid('param'));
       if (!session) return c.json({ error: 'terminal session not found' }, 404);
       terminalSessions.kill(session.id);
+      terminalHistory.forget(session.id);
       return c.json({ stopped: true });
     });
 
@@ -9062,6 +9090,32 @@ export function createApp(deps: ServerDeps) {
         ...(binding.available ? { shells: discoverShells() } : {}),
       }), 200);
     })
+    // The task drawer's two strips and the completion's history, for the project's own terminals
+    // (spec 2026-10-24-code-page-terminal §4). Same shapes as the run routes, same lack of a gate
+    // for the first two; the history is what the user typed, so it follows the terminal's policy.
+    .get('/repo/terminal/urls', async (c) => {
+      const urls = await detectedUrls.refresh(projectTerminalOwner(c.get('project').id));
+      // A hosted cockpit's strip may offer the tunnel line, which logs in as this account.
+      const sshUser = capabilities().localHandoff ? null : serverAccount();
+      c.header('Cache-Control', 'no-store');
+      return c.json(projectDetectedUrlsSchema.parse({ urls, ...(sshUser ? { sshUser } : {}) }), 200);
+    })
+    .get('/repo/terminal/commands', async (c) => {
+      const { root, dataDir } = c.get('project');
+      // The main checkout has no setup scripts of its own to prepare it, so the install hint stands.
+      const [commands, install] = await Promise.all([discoverCommands(root), installCommand(root)]);
+      const recipe = effectiveStartApp(await readStartApp(dataDir, root));
+      return c.json(
+        discoveredCommandsSchema.parse({ commands, ...(install ? { install } : {}), ...(recipe ? { recipe } : {}) }),
+        200,
+      );
+    })
+    .get('/repo/terminal/history', async (c) => {
+      const refusal = terminalPolicyRefusal(capabilities());
+      if (refusal) return c.json({ error: refusal }, 409);
+      c.header('Cache-Control', 'no-store');
+      return c.json(terminalHistorySchema.parse({ lines: await readTerminalHistory(c.get('project').dataDir) }), 200);
+    })
     .post('/repo/terminal', jsonZodValidator(terminalCreateSchema), async (c) => {
       const project = c.get('project');
       const refusal = terminalPolicyRefusal(capabilities());
@@ -9091,6 +9145,7 @@ export function createApp(deps: ServerDeps) {
       if (!session) return c.json({ error: 'terminal session not found' }, 404);
       const refusal = terminalPolicyRefusal(capabilities());
       if (refusal) return c.json({ error: refusal }, 409);
+      await recordTyped(c, c.get('project'), session.id, c.req.valid('json').data);
       return c.json({ delivered: terminalSessions.write(session.id, c.req.valid('json').data) }, 200);
     })
     .post('/repo/terminal/:sessionId/resize', jsonZodValidator(terminalResizeSchema), async (c) => {
@@ -9106,6 +9161,7 @@ export function createApp(deps: ServerDeps) {
       const session = projectTerminalFor(c.get('project'), c.req.param('sessionId'));
       if (!session) return c.json({ error: 'terminal session not found' }, 404);
       terminalSessions.kill(session.id);
+      terminalHistory.forget(session.id);
       return c.json({ stopped: true }, 200);
     });
 

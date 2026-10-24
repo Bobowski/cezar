@@ -140,3 +140,22 @@ export const terminalSessionParamsSchema = z.object({
   sessionId: z.string(),
 });
 export type TerminalSessionParams = z.infer<typeof terminalSessionParamsSchema>;
+
+/**
+ * The Code page's project terminals (spec `.ai/specs/2026-10-24-code-page-terminal.md` §4): the
+ * run route's address list, plus the account a tunnel line logs in as — sent by a hosted cockpit
+ * only, where the strip may offer the tunnel command (tunnel spec §3.3).
+ */
+export const projectDetectedUrlsSchema = detectedUrlsSchema.extend({
+  sshUser: z.string().optional(),
+});
+export type ProjectDetectedUrlsResponse = z.infer<typeof projectDetectedUrlsSchema>;
+
+/** Lines kept per project (spec §3.3). */
+export const TERMINAL_HISTORY_CAP = 500;
+
+/** What the user typed at this project's shell prompts: newest first, deduped, capped. */
+export const terminalHistorySchema = z.object({
+  lines: z.array(z.string()).max(TERMINAL_HISTORY_CAP),
+});
+export type TerminalHistoryResponse = z.infer<typeof terminalHistorySchema>;

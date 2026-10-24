@@ -131,6 +131,19 @@ export function processSnapshot(now = Date.now()): Promise<ProcessRow[] | null> 
   return inFlight;
 }
 
+/**
+ * A snapshot taken NOW, never the cached one: the terminal history asks whether a shell sits at
+ * its prompt at the instant a line is submitted, and a second-old answer would let a password
+ * typed into a `sudo` started a moment ago pass for a command (spec 2026-10-24-code-page-terminal §5).
+ */
+export function freshProcessSnapshot(): Promise<ProcessRow[] | null> {
+  const now = Date.now();
+  return readProcessTable().then((rows) => {
+    if (rows !== null) snapshot = { at: now, rows };
+    return rows;
+  });
+}
+
 /** Test seam: forget the cached snapshot. */
 export function resetProcessSnapshot(): void {
   snapshot = undefined;

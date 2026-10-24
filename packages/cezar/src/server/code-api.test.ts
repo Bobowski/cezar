@@ -3,19 +3,28 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { codeSearchResultSchema, codeWatchSchema, repoPullResponseSchema, repoSyncSchema,terminalSessionSchema, terminalStateSchema, worktreeEntrySchema } from '@open-mercato/cezar-contract';
+import {
+  codeSearchResultSchema, codeWatchSchema, discoveredCommandsSchema, projectDetectedUrlsSchema, repoPullResponseSchema, repoSyncSchema,
+  terminalHistorySchema, terminalSessionSchema, terminalStateSchema, worktreeEntrySchema,
+} from '@open-mercato/cezar-contract';
 import { RunStore } from '../runs/store.ts';
 import { fakeServiceBinding } from '../services/testkit.ts';
 import type { RunManager } from '../workflows/run.ts';
 import { registerProject } from '../workspace/projects.ts';
 import { apiRequest } from './loopback-request.testkit.ts';
 import { createApp } from './server.ts';
+import { DetectedUrls } from './terminal/detected-urls.ts';
+import { TerminalHistory } from './terminal/history.ts';
 import { TerminalSessions } from './terminal/sessions.ts';
 
 describe('Code page API (spec 2026-10-11-code-page)', () => {
   let root: string;
   let store: RunStore;
   let sessions: TerminalSessions;
+  let detected: DetectedUrls;
+  let history: TerminalHistory;
+  /** The process table the history's prompt check reads: the fake shell (pid 4242) with or without a child. */
+  let shellBusy = false;
   let spawned: ReturnType<typeof fakeServiceBinding>['spawned'];
   const put = (rel: string, text: string) => {
     mkdirSync(dirname(join(root, rel)), { recursive: true });
@@ -40,7 +49,10 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
     store = RunStore.open(join(root, '.ai/cezar'));
     const fake = fakeServiceBinding();
     spawned = fake.spawned;
-    sessions = new TerminalSessions(fake.binding, undefined, () => null);
+    shellBusy = false;
+    detected = new DetectedUrls();
+    history = new TerminalHistory();
+    sessions = new TerminalSessions(fake.binding, detected, () => null);
   });
   afterEach(() => {
     sessions.dispose();
@@ -53,7 +65,11 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
     const project = await registerProject(root);
     return {
       id: project.id,
-      instance: createApp({ repoRoot: root, store, manager: {} as RunManager, version: 'test', bootProjectId: project.id, terminalSessions: sessions }),
+      instance: createApp({
+        repoRoot: root, store, manager: {} as RunManager, version: 'test', bootProjectId: project.id, terminalSessions: sessions,
+        detectedUrls: detected, terminalHistory: history,
+        freshProcesses: async () => [{ pid: 4242, ppid: 1, command: 'bash' }, ...(shellBusy ? [{ pid: 5000, ppid: 4242, command: 'sudo apt update' }] : [])],
+      }),
     };
   };
   const send = (method: string, body?: unknown): RequestInit => ({
@@ -204,5 +220,48 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
     expect((await apiRequest(instance, `/api/v1/runs/some-run/terminal/${session.id}/output`)).status).toBe(404);
     expect((await apiRequest(instance, `/api/v1/repo/terminal/${session.id}`, send('DELETE'))).status).toBe(200);
     expect((await apiRequest(instance, `/api/v1/repo/terminal/${session.id}/output`)).status).toBe(404);
+  });
+
+  describe('the Code terminal\'s strips and history (spec 2026-10-24-code-page-terminal §4)', () => {
+    it('lists the addresses the project\'s own terminals printed, and no task\'s', async () => {
+      const { id, instance } = await app();
+      const session = terminalSessionSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal', send('POST', {}))).json());
+      spawned[0]?.emit('  ➜  Local:   http://localhost:5173/\r\n');
+      detected.record('some-run', 'http://localhost:9999');
+      const urls = projectDetectedUrlsSchema.parse(await (await apiRequest(instance, `/api/v1/p/${id}/repo/terminal/urls`)).json());
+      expect(urls.urls.map((entry) => entry.url)).toEqual(['http://localhost:5173']);
+      // A local cockpit has no tunnel to offer, so it names no account.
+      expect(urls.sshUser).toBeUndefined();
+      expect(session.id).toBeTruthy();
+    });
+
+    it('offers the main checkout\'s scripts', async () => {
+      put('package.json', JSON.stringify({ scripts: { dev: 'vite', test: 'vitest' } }));
+      const { instance } = await app();
+      const commands = discoveredCommandsSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal/commands')).json());
+      expect(commands.commands.map((entry) => entry.command)).toEqual(['npm run dev', 'npm run test']);
+    });
+
+    it('keeps what was typed at the prompt, never what a running program read', async () => {
+      const { instance } = await app();
+      const session = terminalSessionSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal', send('POST', {}))).json());
+      const type = (data: string) => apiRequest(instance, `/api/v1/repo/terminal/${session.id}/input`, send('POST', { data }));
+      await type('sudo apt update\r');
+      shellBusy = true;
+      await type('hunter2\r');
+      shellBusy = false;
+      await type('npm run dev\r');
+      await history.flushed();
+      const read = terminalHistorySchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal/history')).json());
+      expect(read.lines).toEqual(['npm run dev', 'sudo apt update']);
+      // The keystrokes still reached the shell, every one of them.
+      expect(spawned[0]?.written).toEqual(['sudo apt update\r', 'hunter2\r', 'npm run dev\r']);
+    });
+
+    it('refuses the history where the terminal is off', async () => {
+      vi.stubEnv('CEZ_TERMINAL', '0');
+      const { instance } = await app();
+      expect((await apiRequest(instance, '/api/v1/repo/terminal/history')).status).toBe(409);
+    });
   });
 });

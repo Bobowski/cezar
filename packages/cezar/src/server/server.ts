@@ -2016,9 +2016,6 @@ export function createApp(deps: ServerDeps) {
     // externally-depended-on JSON in the app (BACKWARD_COMPATIBILITY.md §2).
     const forge = resolveForge(repo);
     const caps = capabilities();
-    // The version chip reads health: a cockpit asking is what lets the branch channel's bounded
-    // background fetch run (spec 2026-10-23 §3.3); a closed cockpit fetches nothing.
-    selfUpdate.touch();
     return {
       version,
       // Spread rather than `latestVersion: update?.latest`: an `undefined` VALUE is dropped by
@@ -2122,7 +2119,13 @@ export function createApp(deps: ServerDeps) {
   // statement's return value is discarded, so `typeof app` would record nothing
   // and `hc<AppType>` would have no endpoint to offer. `createApp` mounts this
   // under both `/api` (the frozen legacy spelling) and `/api/v1`.
-  const healthRoutes = new Hono().get('/health', async (c) => c.json(await readHealth()));
+  // The version chip reads health, so a COCKPIT reading it keeps the branch channel's bounded
+  // fetch alive (spec 2026-10-23 §3.3): a browser's same-origin read or the topic below — never
+  // a probe or a cross-site discovery read. A closed cockpit fetches nothing.
+  const healthRoutes = new Hono().get('/health', async (c) => {
+    if (c.req.header('sec-fetch-site') === 'same-origin') selfUpdate.touch();
+    return c.json(await readHealth());
+  });
 
   // The push twin of the poll it replaced (#369): while at least one cockpit
   // holds the `health` topic the server re-reads the snapshot on the old 5 s
@@ -2138,7 +2141,11 @@ export function createApp(deps: ServerDeps) {
       snapshot: readHealth,
       start: (publish) => {
         publishHealth = publish;
-        const timer = setInterval(() => void refreshHealth(), HEALTH_TTL_MS);
+        selfUpdate.touch();
+        const timer = setInterval(() => {
+          selfUpdate.touch();
+          void refreshHealth();
+        }, HEALTH_TTL_MS);
         timer.unref?.();
         return () => {
           clearInterval(timer);

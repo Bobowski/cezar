@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Hono } from 'hono';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RunStore } from '../runs/store.ts';
 import { RegistryCache } from '../self-update/registry.ts';
 import { SelfUpdateService } from '../self-update/service.ts';
@@ -48,6 +48,7 @@ describe('the self-update API', () => {
   let home: string;
   let store: RunStore;
   let app: Hono;
+  let selfUpdate: SelfUpdateService;
   const prevRemote = process.env.CEZ_REMOTE;
   const prevHome = process.env.CEZ_HOME;
 
@@ -60,7 +61,7 @@ describe('the self-update API', () => {
     store = RunStore.open(join(repoRoot, '.ai/cezar'));
     const stubFetch = (async () =>
       new Response(JSON.stringify(registryDocument), { status: 200 })) as unknown as typeof fetch;
-    const selfUpdate = new SelfUpdateService({
+    selfUpdate = new SelfUpdateService({
       pkgName: '@open-mercato/cezar',
       version: RUNNING,
       entry: join(home, 'somewhere', 'dist', 'index.js'),
@@ -96,6 +97,14 @@ describe('the self-update API', () => {
     expect(body.version).toBe(RUNNING);
     expect(['managed', 'global-npm', 'npx', 'checkout', 'unknown']).toContain(body.installKind);
     expect(body.job).toBeNull();
+  });
+
+  it('keeps the branch check alive for a cockpit only — a probe reading health never touches it', async () => {
+    const touch = vi.spyOn(selfUpdate, 'touch');
+    expect((await apiRequest(app, '/api/v1/health')).status).toBe(200);
+    expect(touch).not.toHaveBeenCalled();
+    await apiRequest(app, '/api/v1/health', { headers: { 'sec-fetch-site': 'same-origin' } });
+    expect(touch).toHaveBeenCalledTimes(1);
   });
 
   it('rejects a body that is not a plain version string', async () => {

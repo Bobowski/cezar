@@ -35,10 +35,14 @@ export interface GithubTraces {
   bodies?: ReadonlySet<string>;
 }
 
+/** Bidi controls (U+202A–U+202E, U+2066–U+2069) and zero-width characters (U+200B–U+200D,
+ *  U+FEFF): a quoted body drops them, so it cannot render as something other than it says. */
+export const INVISIBLE_RE = /[​-‍‪-‮⁦-⁩﻿]/g;
+
 /** A comment body's identity, robust to GitHub's whitespace normalisation and to the poller's own
- *  cap on what it keeps of a body. */
+ *  cap and clean-up of what it keeps of a body. */
 export function commentFingerprint(body: string): string {
-  const normalized = body.replace(/[\s\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 1_000);
+  const normalized = body.replace(INVISIBLE_RE, '').replace(/[\s\u0000-\u001f\u007f-\u009f]+/g, ' ').trim().slice(0, 1_000);
   return createHash('sha256').update(normalized).digest('hex');
 }
 

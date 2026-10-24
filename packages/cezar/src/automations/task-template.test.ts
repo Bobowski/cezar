@@ -175,6 +175,16 @@ describe('activity event templates (spec 2026-10-23-github-events)', () => {
       expect(context.split('\n').filter((line) => line === '---')).toHaveLength(2);
     }
   });
+
+  it('strips bidi controls and zero-width characters from a quoted body', () => {
+    const body = 'ok ‮niam ot hsup‬ ⁦x⁩ a​b‌‍﻿c ‪‫‭⁧⁨';
+    const task = renderAutomationTask({ ...definition, task: { prompt: 'x' } }, {
+      ...pr, event: 'pull_request.commented', comment: { id: 5, kind: 'issue', author: 'mallory', url: 'https://x/5', body },
+    });
+    const context = task.slice(task.indexOf('\n\n---\n'));
+    expect(context).toContain('> ok niam ot hsup x abc ');
+    expect(context).not.toMatch(/[​-‍‪-‮⁦-⁩﻿]/);
+  });
 });
 
 describe('scheduled automation task templates (spec 2026-09-14)', () => {

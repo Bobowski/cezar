@@ -109,6 +109,8 @@ describe('github traces (spec 2026-10-23-github-events §6)', () => {
     expect(isPushCommand({ command: 'git commit -am x && git push origin HEAD' })).toBe(true);
     expect(isPushCommand({ command: 'git status' })).toBe(false);
     expect(commentFingerprint('Done.\r\n\nSee  above ')).toBe(commentFingerprint('Done. See above'));
+    // The poller keeps a body with these stripped; its fingerprint must still match the posted one.
+    expect(commentFingerprint('Do​ne.‮ ﻿See')).toBe(commentFingerprint('Done. See'));
     const traces = { shas: new Set([sha(1)]), comments: new Set([5]), bodies: new Set([commentFingerprint('posting now')]) };
     expect(isOwnTrace({ event: 'push', headSha: sha(1).toUpperCase() }, traces)).toBe(true);
     expect(isOwnTrace({ event: 'check_suite.completed', headSha: sha(1) }, traces)).toBe(true);

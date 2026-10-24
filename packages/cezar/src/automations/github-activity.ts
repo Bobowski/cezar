@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { GithubActivityState, GithubCandidate } from './github-poller.ts';
 import type { AutomationEvent, GithubAutomationDefinition } from './types.ts';
-import { commentFingerprint, type GithubTraces } from '../runs/github-traces.ts';
+import { commentFingerprint, INVISIBLE_RE, type GithubTraces } from '../runs/github-traces.ts';
 
 /**
  * The seven activity sources of spec 2026-10-23-github-events §3 — what happens INSIDE an issue or
@@ -294,10 +294,11 @@ function clean(value: string, max: number): string {
 /** Every line terminator a renderer might honour, so a line-by-line quote can never miss one. */
 const LINE_BREAK_RE = /\r\n|[\r\u000b\u000c\u0085\u2028\u2029]/g;
 
-/** A body as plain LF-separated lines: every terminator becomes LF and every other C0/C1 control
- *  a space, so quoting it line by line quotes all of it (spec 2026-10-23-github-events §7). */
+/** A body as plain LF-separated lines: every terminator becomes LF, every other C0/C1 control
+ *  a space, and bidi/zero-width characters go, so what is quoted reads as what it says (spec
+ *  2026-10-23-github-events §7). */
 export function normalizeCommentBody(value: string): string {
-  return value.replace(LINE_BREAK_RE, '\n').replace(/[\u0000-\u0008\u000e-\u001f\u007f-\u009f]/g, ' ');
+  return value.replace(LINE_BREAK_RE, '\n').replace(INVISIBLE_RE, '').replace(/[\u0000-\u0008\u000e-\u001f\u007f-\u009f]/g, ' ');
 }
 
 function cleanBody(value: string | null | undefined): string {

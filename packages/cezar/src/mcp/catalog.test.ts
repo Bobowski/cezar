@@ -151,6 +151,11 @@ describe('the MCP tool catalog', () => {
       ['POST', '/docker/containers/:id/stop'], ['POST', '/docker/stacks/:name/stop'],
       ['POST', '/services/:id/stop'], ['POST', '/services/stop-all'],
       ['POST', '/runs/:id/remove-worktree'], ['POST', '/workspace/self-update/apply'],
+      // Overwrites what someone wrote, or reaches outside this machine.
+      ['POST', '/workflows/graph'], ['POST', '/runs/:id/pr'], ['PUT', '/runs/:id/drafts/:surface'],
+      ['PATCH', '/runs/:id/prompt-queue/:msgId'], ['PATCH', '/runs/:id/queued-messages/:msgId'],
+      ['PUT', '/projects/:projectId/icon'], ['POST', '/projects/create'],
+      ['POST', '/tracker/:id/transition'], ['PUT', '/tracker/association'],
     ] as const) {
       expect(destructive(method, path), `${method} ${path}`).toBe(true);
     }

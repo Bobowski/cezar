@@ -555,6 +555,25 @@ describe('Browser tabs as pages (spec 2026-10-24-code-page-browser-tabs)', () =>
     await waitFor(() => expect(tabsOf(0)).toEqual(['app.ts', 'localhost:3000/admin']))
   })
 
+  it('switching back to a page found answering neither asks again nor shows "Loading…"', async () => {
+    window.localStorage.setItem(`cez:code:layout:${queryScope()}:main`, JSON.stringify({
+      groups: [{ tabs: [{ path: 'src/app.ts', preview: false }, { path: 'browser:b1', preview: false }], active: 'browser:b1' }],
+      focused: 0,
+      browsers: { b1: { url: 'http://localhost:3000/admin' } },
+    }))
+    const { sent } = setup({ at: '/code' })
+    const probes = () => sent.filter((request) => request.path === 'http://localhost:3000/admin').length
+    await waitFor(() => expect(probes()).toBe(1))
+    await waitFor(() => expect(document.querySelector('[data-slot="code-browser-asking"]')).toBeNull())
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /app\.ts/ }))
+    await waitFor(() => expect(document.querySelector('[data-slot="code-browser"]')).toBeNull())
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /localhost:3000/ }))
+    await waitFor(() => expect(document.querySelector('[data-slot="code-browser"]')).not.toBeNull())
+    expect(document.querySelector('[data-slot="code-browser-asking"]')).toBeNull()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(probes()).toBe(1)
+  })
+
   it('sends the write it is holding when the page goes, rather than dropping it with its timer', async () => {
     const { sent } = setup({ at: '/code', uiState: SAVED })
     await waitFor(() => expect(tabsOf(1)).toEqual(['localhost:3000']))

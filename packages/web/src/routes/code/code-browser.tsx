@@ -64,7 +64,7 @@ export function useDetectedAddresses(tree: CodeTree): string[] {
  * for an agent — a message to the task the agent pane shows, or, with none chosen, a NEW task.
  */
 export function CodeBrowserTab({
-  state, onChange, run, onStartTask, tree, focusAddress = 0, suggestions, onGateway, onShowTerminal,
+  state, onChange, run, onStartTask, tree, focusAddress = 0, suggestions, onGateway, onShowTerminal, remembered, onRemember,
 }: {
   state: CodeBrowser
   onChange: (state: CodeBrowser) => void
@@ -80,6 +80,10 @@ export function CodeBrowserTab({
   onGateway: (origin: string | null) => void
   /** Open the Code page's terminal panel; absent where the terminal is not allowed. */
   onShowTerminal?: () => void
+  /** What this tab knew about its address when it was last shown: a tab switched back to picks up
+   *  there instead of probing again. Held by the workbench, keyed by tab id. */
+  remembered?: PageProbe
+  onRemember?: (probe: PageProbe) => void
 }) {
   const health = useHealth()
   // Never probed before the cockpit is known to be local: on a hosted one the viewer's own
@@ -88,9 +92,10 @@ export function CodeBrowserTab({
   const terminal = health.data?.capabilities?.terminal === true
   // Only an address set from OUTSIDE the view is probed (a restored one, Retry) — never the user's
   // own navigation, which the view reports through `onChange`. The view is never unmounted for it.
-  const own = useRef<string | null>(null)
-  const [seen, setSeen] = useState(state.url)
-  const [probe, setProbe] = useState<string | null>(state.url)
+  const [initial] = useState<PageProbe>(() => remembered ?? { own: null, seen: state.url, probe: state.url, down: null })
+  const own = useRef<string | null>(initial.own)
+  const [seen, setSeen] = useState(initial.seen)
+  const [probe, setProbe] = useState<string | null>(initial.probe)
   if (state.url !== seen) {
     setSeen(state.url)
     setProbe(own.current === state.url ? null : state.url)
@@ -103,7 +108,12 @@ export function CodeBrowserTab({
   const reportGateway = useRef(onGateway)
   reportGateway.current = onGateway
   useEffect(() => () => reportGateway.current(null), [])
-  const listening = useListening(state.url, local && probe === state.url, retry, revive)
+  const listening = useListening(state.url, local && probe === state.url, retry, revive, initial.down)
+  // An address found answering is settled: nothing asks it again, here or on a remount.
+  useEffect(() => { if (listening === 'yes') setProbe(null) }, [listening])
+  const remember = useRef(onRemember)
+  remember.current = onRemember
+  useEffect(() => { remember.current?.({ own: own.current, seen, probe, down: listening === 'no' ? state.url : null }) })
   const change = useCallback((next: CodeBrowser) => {
     own.current = next.url
     onChange(next)
@@ -134,6 +144,17 @@ export function CodeBrowserTab({
   )
 }
 
+/** A Browser tab's knowledge of its address, kept across remounts (see `CodeBrowserTab`). */
+export interface PageProbe {
+  /** The last address the view itself navigated to. */
+  own: string | null
+  seen: string
+  /** The address still to be asked whether anything answers there; `null`: settled. */
+  probe: string | null
+  /** An address last found down. */
+  down: string | null
+}
+
 interface ViewProps {
   state: CodeBrowser
   onChange: (state: CodeBrowser) => void
@@ -150,11 +171,13 @@ const LISTEN_TIMEOUT_MS = 2_500
 
 /**
  * Whether anything answers at `url` — asked only for a loopback address on a LOCAL cockpit.
- * `retry` asks again at once; `onBack` fires when an address that was down answers again.
+ * `retry` asks again at once; `onBack` fires when an address that was down answers again;
+ * `knownDown` is an address already found down (a remount shows that while it asks again).
+ * `'off'`: not asked at all.
  */
-function useListening(url: string, enabled: boolean, retry: number, onBack: () => void): 'asking' | 'yes' | 'no' {
+function useListening(url: string, enabled: boolean, retry: number, onBack: () => void, knownDown: string | null = null): 'off' | 'asking' | 'yes' | 'no' {
   const ask = enabled && url !== '' && isLoopbackPageAddress(url)
-  const [answer, setAnswer] = useState<{ url: string; up: boolean } | null>(null)
+  const [answer, setAnswer] = useState<{ url: string; up: boolean } | null>(knownDown === null ? null : { url: knownDown, up: false })
   const back = useRef(onBack)
   back.current = onBack
   useEffect(() => {
@@ -181,7 +204,7 @@ function useListening(url: string, enabled: boolean, retry: number, onBack: () =
       if (timer) clearTimeout(timer)
     }
   }, [ask, url, retry])
-  if (!ask) return 'yes'
+  if (!ask) return 'off'
   return answer?.url !== url ? 'asking' : answer.up ? 'yes' : 'no'
 }
 

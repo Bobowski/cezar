@@ -43,7 +43,7 @@ import { isImagePath } from '@/routes/task-git/worktree-files'
 import { Markdown } from '@/routes/task-thread/markdown'
 
 import { AgentTab, DEFAULT_AGENT_WORKFLOW } from './code-agent'
-import { CodeBrowserTab, OpenBrowserTabContext, useDetectedAddresses, type OpenBrowserTab } from './code-browser'
+import { CodeBrowserTab, OpenBrowserTabContext, useDetectedAddresses, type OpenBrowserTab, type PageProbe } from './code-browser'
 import { MenuItems, type MenuItem } from './code-menu'
 import { CommandPalette, FileDialog, QuickOpen, type CodeCommand, type FileAction } from './code-palette'
 import { appAddress, cockpitLocation, pageTitle } from './code-pages'
@@ -389,6 +389,12 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
   /** Where Ctrl/Cmd+T last asked for the cursor: that tab's address bar. */
   const [addressFocus, setAddressFocus] = useState<{ id: string; nonce: number } | null>(null)
   const [gateways, setGateways] = useState<Record<string, string>>({})
+  // What each Browser tab knew about its address, kept across its view's remounts (a tab switch).
+  const pageProbes = useRef(new Map<string, PageProbe>())
+  useEffect(() => {
+    const open = new Set(pageIds.split(' '))
+    for (const id of pageProbes.current.keys()) if (!open.has(id)) pageProbes.current.delete(id)
+  }, [pageIds])
   /** A new page — blank, with the cursor in its address bar — here or beside (spec §3). */
   const newPage = (beside = false) => {
     const id = newTabId()
@@ -751,6 +757,7 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
                           lineMarks={lineMarks}
                           browsers={layout.browsers}
                           gateways={gateways}
+                          probes={pageProbes.current}
                           addressFocus={addressFocus}
                           suggestions={detected}
                           onGateway={setGateway}
@@ -890,7 +897,7 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
 
 /** One editor group: its tab strip, the path of the active file, and whatever that file is. */
 function EditorGroup({
-  index, group, focused, split, tree, files, changed, lineMarks, browsers, gateways, addressFocus, suggestions, onGateway, onShowTerminal, agentRun,
+  index, group, focused, split, tree, files, changed, lineMarks, browsers, gateways, probes, addressFocus, suggestions, onGateway, onShowTerminal, agentRun,
   agents, agentTitles, runs, lastFile, onAgentSelect,
   onAgentStart, wrap, fileEdit, rendered, reveal, gotoLine, find,
   menuFor, onDrop, onFocus, onActivate, onKeep, onClose, onEdit, onCursor, onSave, onReload, onToggleRendered, onSplit, onBrowser, onStartTask,
@@ -907,6 +914,8 @@ function EditorGroup({
   browsers: Record<string, CodeBrowser>
   /** The preview-gateway origin each Browser tab is framed through (hosted), by tab id. */
   gateways: Record<string, string>
+  /** What each Browser tab knew about its address, by tab id; its view reads and writes it. */
+  probes: Map<string, PageProbe>
   /** The Browser tab whose address bar Ctrl/Cmd+T asked for, and the ask's count. */
   addressFocus: { id: string; nonce: number } | null
   suggestions: readonly string[]
@@ -1087,6 +1096,8 @@ function EditorGroup({
               focusAddress={addressFocus?.id === browserId(tab) ? addressFocus.nonce : 0}
               suggestions={suggestions}
               onGateway={(origin) => onGateway(browserId(tab), origin)}
+              remembered={probes.get(browserId(tab))}
+              onRemember={(probe) => probes.set(browserId(tab), probe)}
               {...(onShowTerminal ? { onShowTerminal } : {})}
             />
           </div>

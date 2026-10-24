@@ -1,14 +1,15 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { PassThrough, Readable, Writable } from 'node:stream';
 import { generateX25519Identity } from 'age-encryption';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { BACKUP_ARCHIVE_NAME_RE } from '@open-mercato/cezar-contract';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import { compressor, decompressed, decrypted, encrypted, parseIdentity, WrongIdentityError } from './codec.ts';
-import { archiveHost, archiveStamp, backupManifestSchema, collectBackup, projectFileQualifies, projectUntrackedFiles } from './collect.ts';
+import { archiveHost, archiveStamp, backupManifestSchema, collectBackup, isSkippedDataEntry, projectFileQualifies, projectUntrackedFiles } from './collect.ts';
+import { npmFallbackCache } from '../self-update/installer.ts';
 import { safeArchivePath } from './restore.ts';
 import { readTar, tarStream, type TarEntry, type TarSource } from './tar.ts';
 import { TEST_IDENTITY, TEST_RECIPIENT } from './age-vector.testkit.ts';
@@ -240,5 +241,14 @@ describe('the archive name', () => {
     expect(BACKUP_ARCHIVE_NAME_RE.test(name.replace('Z.tar', 'Z-2.tar'))).toBe(true);
     expect(BACKUP_ARCHIVE_NAME_RE.test('../cezar-backup-x-20261023T0412Z.tar.zst.age')).toBe(false);
     expect(archiveHost('---')).toBe('cezar');
+  });
+});
+
+describe('what CEZ_HOME contributes', () => {
+  it('leaves out the caches cezar itself fills there', () => {
+    // The self-updater's fallback npm cache lives in CEZ_HOME; it is never state.
+    expect(isSkippedDataEntry(basename(npmFallbackCache({ CEZ_HOME: '/data/home' })))).toBe(true);
+    for (const name of ['npm-cache', 'cache', 'versions', 'bin', 'backups', '.restore-upload-x.age']) expect(isSkippedDataEntry(name), name).toBe(true);
+    for (const name of ['config.json', 'auth.json', 'agent-accounts.json']) expect(isSkippedDataEntry(name), name).toBe(false);
   });
 });

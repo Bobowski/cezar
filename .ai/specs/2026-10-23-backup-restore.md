@@ -152,7 +152,7 @@ Code: `packages/cezar/src/backup/` (`tar.ts`, `codec.ts`, `collect.ts`, `s3.ts`,
   ignored ones and would never qualify; the allowlist, not the ignore rules, is what keeps
   `node_modules` and build output out. `.env*` at any depth, `.ai/cezar/**` minus `worktrees/`,
   a root `config.local.json`.
-- **`data/` and `agents/`:** `CEZ_HOME` minus `backups/`, `versions/`, `bin/`, `cache/`,
+- **`data/` and `agents/`:** `CEZ_HOME` minus `backups/`, `versions/`, `bin/`, `cache/`, `npm-cache/`,
   `uploads/`, `.restore*`, locks and temp files. Agents come from `agentStateLocations()`
   (`paths.ts`): `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GH_CONFIG_DIR`, `~/.ssh`, `GIT_CONFIG_GLOBAL`,
   each falling back to the tool's default outside the container; Claude's `.claude.json` rides

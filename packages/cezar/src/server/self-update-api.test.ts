@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RunStore } from '../runs/store.ts';
+import { versionEntry, writeManifest } from '../self-update/layout.ts';
 import { RegistryCache } from '../self-update/registry.ts';
 import { SelfUpdateService } from '../self-update/service.ts';
 import type { RunManager } from '../workflows/run.ts';
@@ -145,6 +146,32 @@ describe('the self-update API', () => {
     const error = await errorOf(res);
     expect(error).not.toContain('can only update forward');
     expect(error).toMatch(/could not tell how it was installed|npx|npm -g|git checkout/);
+  });
+
+  // Spec 2026-10-23 §3.6: a branch build is dated by its commit, never by the registry.
+  it('takes a hosted branch-build apply through the forward-only rule by commit date', async () => {
+    process.env.CEZ_REMOTE = '1';
+    const branchBuild = (id: string, version: string, at: string) => {
+      const env = { ...process.env, CEZ_HOME: home };
+      writeManifest(id, { version, source: 'branch', installedAt: at, commit: { sha: id.split('+')[1]!, subject: '', at, branch: 'brutus' } }, env);
+      mkdirSync(join(versionEntry(id, env), '..'), { recursive: true });
+      writeFileSync(versionEntry(id, env), '');
+    };
+    branchBuild('0.11.1+aaaaaaaa', '0.11.1', '2026-08-01T00:00:00.000Z');
+    branchBuild('0.12.1+bbbbbbbb', '0.12.1', '2026-10-01T00:00:00.000Z');
+
+    // Not on disk and no clone to date it from.
+    let res = await apply('0.12.1+deadbeef');
+    expect(res.status).toBe(409);
+    expect(await errorOf(res)).toContain("cannot date 0.12.1+deadbeef's commit");
+    // The running build carries no commit, so its version is the floor.
+    res = await apply('0.11.1+aaaaaaaa');
+    expect(res.status).toBe(409);
+    expect(await errorOf(res)).toContain('is older than the running 0.12.1');
+    // Forward: what refuses now is the install-kind capability, not the guard.
+    res = await apply('0.12.1+bbbbbbbb');
+    expect(res.status).toBe(409);
+    expect(await errorOf(res)).not.toContain('can only update forward');
   });
 
   it('runs the same hosted guard before scheduling an update for when idle', async () => {

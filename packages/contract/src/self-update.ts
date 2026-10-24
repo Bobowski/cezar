@@ -19,9 +19,11 @@ export type UpdateChannel = z.infer<typeof updateChannelSchema>;
  *  Never a local path or `file://` — a remote is code the server will build and run. */
 export function isUpdateRemote(value: string): boolean {
   if (value.length > 512 || /\s/.test(value) || value.startsWith('-')) return false;
-  if (/^git@[A-Za-z0-9.-]+:[A-Za-z0-9._~/-]+$/.test(value)) return true;
+  // A host or user that starts with `-` is an ssh option in disguise; credentials in the URL
+  // would land in config.json — the fetch uses the git credentials already on the machine.
+  if (/^git@[A-Za-z0-9][A-Za-z0-9.-]*:[A-Za-z0-9._~][A-Za-z0-9._~/-]*$/.test(value)) return true;
   // No `URL` here: the contract is lib-free (ES2022 only). `scheme://[user@]host[:port]/path`.
-  return /^(https|ssh):\/\/([A-Za-z0-9._~-]+@)?[A-Za-z0-9.-]+(:\d{1,5})?\/[A-Za-z0-9._~/-]+$/.test(value);
+  return /^(https|ssh):\/\/([A-Za-z0-9][A-Za-z0-9._~-]*@)?[A-Za-z0-9][A-Za-z0-9.-]*(:\d{1,5})?\/[A-Za-z0-9._~/-]+$/.test(value);
 }
 
 /** A branch name git accepts and no argument parser mistakes for an option. */

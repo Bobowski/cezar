@@ -126,7 +126,10 @@ export function SelfUpdateDialog({
             ) : null}
 
             {/* The branch form: asked for when the branch channel has nothing to follow yet, or on Change. */}
-            {data.channelEditable && (editingBranch || (setChannel.isError && channelOf(setChannel.variables) === 'branch')) ? (
+            {data.channelEditable &&
+            (editingBranch ||
+              (data.channel === 'branch' && !data.branch) ||
+              (setChannel.isError && channelOf(setChannel.variables) === 'branch')) ? (
               <BranchForm
                 initial={data.branch ? { remote: data.branch.remote, branch: data.branch.branch } : null}
                 busy={setChannel.isPending}

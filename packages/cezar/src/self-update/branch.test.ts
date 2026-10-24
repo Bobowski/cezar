@@ -143,7 +143,7 @@ describe('which branch the channel follows', () => {
     expect(parseUpdateBranch('https://github.com/open-mercato/cezar.git#brutus')).toEqual({ remote: 'https://github.com/open-mercato/cezar.git', branch: 'brutus' });
     expect(parseUpdateBranch('git@github.com:open-mercato/cezar.git#feat/x')).toEqual({ remote: 'git@github.com:open-mercato/cezar.git', branch: 'feat/x' });
     expect(parseUpdateBranch('ssh://git@host:2222/cezar.git#main')?.branch).toBe('main');
-    for (const bad of ['file:///srv/cezar#main', '/srv/cezar#main', 'https://github.com/x/y.git#--upload-pack=x', 'https://github.com/x/y.git#a..b', 'https://github.com/x/y.git', '#main']) {
+    for (const bad of ['file:///srv/cezar#main', '/srv/cezar#main', 'ssh://-oProxyCommand=x/y#main', 'git@-oProxyCommand:x#main', 'https://user:token@github.com/x/y.git#main', 'https://github.com/x/y.git#--upload-pack=x', 'https://github.com/x/y.git#a..b', 'https://github.com/x/y.git', '#main']) {
       expect(parseUpdateBranch(bad)).toBeNull();
     }
   });

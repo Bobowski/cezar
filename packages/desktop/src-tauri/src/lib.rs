@@ -1202,8 +1202,8 @@ fn update_cezar(app: &AppHandle, shell: &Shell, title: &str) -> bool {
 }
 
 /// `updateChannel` from `~/.cezar/config.json` → the npm dist-tag; `latest` when unset. `None`
-/// for `development`: a worktree or PR build picked by hand follows no tag, so nothing is ever
-/// offered or installed over it.
+/// for `development` and `branch`: a hand-picked build, or one cezar built from a git branch,
+/// follows no tag, so nothing is ever offered or installed over it.
 fn release_tag() -> Option<&'static str> {
     let config = cezar_home().join("config.json");
     let channel = std::fs::read_to_string(config)
@@ -1216,7 +1216,7 @@ fn release_tag() -> Option<&'static str> {
 fn channel_tag(channel: Option<&str>) -> Option<&'static str> {
     match channel {
         Some("nightly") => Some("nightly"),
-        Some("development") => None,
+        Some("development") | Some("branch") => None,
         _ => Some("latest"),
     }
 }
@@ -2103,6 +2103,7 @@ mod tests {
     #[test]
     fn the_development_channel_follows_no_dist_tag() {
         assert_eq!(channel_tag(Some("development")), None);
+        assert_eq!(channel_tag(Some("branch")), None);
         assert_eq!(channel_tag(Some("nightly")), Some("nightly"));
         assert_eq!(channel_tag(Some("stable")), Some("latest"));
         assert_eq!(channel_tag(None), Some("latest"));

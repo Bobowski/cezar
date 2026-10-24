@@ -171,6 +171,14 @@ const LIVE_STATUSES = new Set(['queued', 'running', 'waiting']);
  */
 const SCHEDULING_FIELDS = ['autoResumeAt', 'monitoringWakeAt', 'monitoringWakeCapReached', 'activity'] as const;
 
+/** Archive-only mark on a row `settleLiveRuns` changed; the store's schema drops it on load. */
+const SETTLED_BY = 'settledByBackup';
+
+/** A row a backup settled (an older archive's: by its `interrupted — ` note). Its stamps are made up. */
+export function settledByBackup(row: Record<string, unknown>): boolean {
+  return typeof row[SETTLED_BY] === 'string' || (typeof row.error === 'string' && row.error.startsWith('interrupted — captured by '));
+}
+
 /**
  * Run rows as an archive may carry them: none still live, none still scheduled. No process travels
  * with a backup, and boot recovery on the restored host would re-queue, resume or re-arm such a row
@@ -184,6 +192,7 @@ export function settleLiveRuns(rows: unknown[], capturedBy: string, now: Date = 
     const live = typeof was === 'string' && LIVE_STATUSES.has(was);
     if (!live && !SCHEDULING_FIELDS.some((key) => (row as Record<string, unknown>)[key] !== undefined)) return row;
     const run = structuredClone(row) as Record<string, unknown>;
+    run[SETTLED_BY] = capturedBy;
     if (live) {
       const askParked = was === 'waiting' && run.askParked === true;
       run.status = 'failed';

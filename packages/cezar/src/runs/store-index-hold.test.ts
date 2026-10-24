@@ -145,6 +145,7 @@ describe('restoring over a live install keeps the tasks created after the backup
     const dataDir = join(root, '.ai', 'cezar');
     const live = RunStore.open(dataDir);
     const both = live.createRun({ title: 'here', workflow: 'quick-task', task: 'x', steps: [] });
+    live.updateRun(both.id, { status: 'done' }); // a live copy would be settled, and never win
     live.flush();
     const fromArchive = { ...live.getRun(both.id)!, title: 'newer in the archive', finishedAt: new Date(Date.now() + 60_000).toISOString() };
     const onlyArchived = { ...RESTORED[0]!, id: 'only-archived' };
@@ -165,6 +166,25 @@ describe('restoring over a live install keeps the tasks created after the backup
       expect(reopened.getRun(id)?.error, id).toMatch(/^interrupted — /);
     }
     expect(reopened.getRun('was-running')?.steps[0]?.status).toBe('failed');
+  });
+
+  it('keeps a task that was waiting at the backup and still is: the settled copy never wins', async () => {
+    const dataDir = join(root, '.ai', 'cezar');
+    const live = RunStore.open(dataDir, { keepLive: true });
+    const parked = live.createRun({ title: 'waiting', workflow: 'quick-task', task: 'w', steps: [] });
+    live.updateRun(parked.id, { status: 'waiting', startedAt: new Date(Date.now() - 60_000).toISOString() });
+    const legacy = live.createRun({ title: 'waiting too', workflow: 'quick-task', task: 'l', steps: [] });
+    live.updateRun(legacy.id, { status: 'waiting', startedAt: new Date(Date.now() - 60_000).toISOString() });
+    live.flush();
+    // The backup's copies, settled at the backup's instant — later than anything these records carry.
+    const backupAt = new Date(Date.now() + 60_000);
+    const [settled, older] = settleLiveRuns([live.getRun(parked.id), live.getRun(legacy.id)], 'backup x', backupAt) as Array<Record<string, unknown>>;
+    delete older!.settledByBackup; // an archive from before the mark: its `interrupted — ` note still tells
+
+    await apply(stage({ '.ai/cezar/runs.json': JSON.stringify([settled, older]) }));
+    const reopened = RunStore.open(dataDir, { keepLive: true });
+    expect(reopened.getRun(parked.id)?.status).toBe('waiting');
+    expect(reopened.getRun(legacy.id)?.status).toBe('waiting');
   });
 
   it('keeps no promise to resume a task the old host parked on a usage limit', async () => {

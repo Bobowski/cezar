@@ -8,7 +8,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { cezarHomeDir, expandTilde, isAbsolutePath, restoreJournalPath, type AgentStateLocations } from '../paths.ts';
 import { loadWorkspaceConfig } from '../workspace/config.ts';
 import { decompressed, decrypted } from './codec.ts';
-import { agentEntries, backupManifestSchema, isSkippedDataEntry, projectFileQualifies, settleLiveRuns, type BackupManifest } from './collect.ts';
+import { agentEntries, backupManifestSchema, isSkippedDataEntry, projectFileQualifies, settledByBackup, settleLiveRuns, type BackupManifest } from './collect.ts';
 import { readTar } from './tar.ts';
 
 /**
@@ -313,7 +313,8 @@ function recency(run: Record<string, unknown>): number {
 
 /**
  * This machine's index with the archive's folded in: a record only here is kept, one only in the
- * archive is added, and one in both takes the archive's copy only when that copy is newer.
+ * archive is added, and one in both takes the archive's copy only when that copy is newer — and
+ * never when the backup settled it: its `finishedAt` is the backup's instant, not work (round 4).
  */
 export function mergeRunIndex(here: unknown[], archived: unknown[]): { merged: unknown[]; added: number; updated: number } {
   const fromArchive = new Map(archived.filter(isRawRun).map((run) => [run.id, run]));
@@ -323,7 +324,7 @@ export function mergeRunIndex(here: unknown[], archived: unknown[]): { merged: u
     const theirs = fromArchive.get(row.id);
     if (!theirs) return row;
     fromArchive.delete(row.id);
-    if (recency(theirs) <= recency(row)) return row;
+    if (settledByBackup(theirs) || recency(theirs) <= recency(row)) return row;
     updated += 1;
     return theirs;
   });
@@ -386,8 +387,8 @@ async function mergeRunHistory(from: string, root: string, manifest: BackupManif
         log(`moved an unreadable ${destIndex} aside to runs.json.before-restore`);
         here = [];
       }
-      // An archive from before live rows were settled at backup time is settled now — stamped at
-      // the archive's own instant, so a settled copy never outdates what this machine did since.
+      // An archive from before rows were settled at backup time is settled now, at its own instant;
+      // a settled copy only fills a gap, never replaces a record this machine has.
       const createdAt = new Date(manifest.createdAt);
       const settled = settleLiveRuns(archived, `the backup from ${manifest.host}`, Number.isFinite(createdAt.getTime()) ? createdAt : new Date(0));
       const { merged, added, updated } = mergeRunIndex(here as unknown[], settled);

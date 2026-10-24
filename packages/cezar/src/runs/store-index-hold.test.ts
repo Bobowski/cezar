@@ -223,6 +223,36 @@ describe('restoring over a live install keeps the tasks created after the backup
     expect(readFileSync(join(dataDir, 'runs.json'), 'utf8')).not.toContain('settledByBackup');
   });
 
+  it('lets updatedAt decide for a settled copy when both sides carry one', () => {
+    const base = { ...RESTORED[0]!, id: 'settled', title: 'here', updatedAt: '2026-01-01T00:00:00.000Z' };
+    const settled = { ...base, title: 'archive', status: 'failed', settledByBackup: 'backup a', updatedAt: '2026-01-02T00:00:00.000Z' };
+    expect((mergeRunIndex([base], [settled]).merged[0] as { title: string }).title).toBe('archive');
+    expect((mergeRunIndex([{ ...base, updatedAt: '2026-01-03T00:00:00.000Z' }], [settled]).merged[0] as { title: string }).title).toBe('here');
+  });
+
+  it('places an event file only with the record it belongs to', async () => {
+    const dataDir = join(root, '.ai', 'cezar');
+    const here = { ...RESTORED[0]!, id: 'kept-here', title: 'here', updatedAt: '2026-01-03T00:00:00.000Z' };
+    const there = { ...RESTORED[0]!, id: 'taken', title: 'here', updatedAt: '2026-01-01T00:00:00.000Z' };
+    mkdirSync(join(dataDir, 'runs'), { recursive: true });
+    writeFileSync(join(dataDir, 'runs.json'), JSON.stringify([here, there]));
+    writeFileSync(join(dataDir, 'runs', 'kept-here.ndjson'), '{"seq":1}\n');
+    writeFileSync(join(dataDir, 'runs', 'taken.ndjson'), '{"seq":1}\n{"seq":2}\n{"seq":3}\n');
+
+    await apply(stage({
+      '.ai/cezar/runs.json': JSON.stringify([
+        { ...here, title: 'archive', updatedAt: '2026-01-02T00:00:00.000Z' },
+        { ...there, title: 'archive', updatedAt: '2026-01-02T00:00:00.000Z' },
+      ]),
+      '.ai/cezar/runs/kept-here.ndjson': '{"seq":1}\n{"seq":2}\n',
+      '.ai/cezar/runs/taken.ndjson': '{"seq":1}\n{"seq":9}\n',
+    }));
+    // This machine's record stays, and so does its transcript, longer archive copy or not.
+    expect(readFileSync(join(dataDir, 'runs', 'kept-here.ndjson'), 'utf8')).toBe('{"seq":1}\n');
+    // The archive's record wins, and its transcript comes with it.
+    expect(readFileSync(join(dataDir, 'runs', 'taken.ndjson'), 'utf8')).toBe('{"seq":1}\n{"seq":9}\n');
+  });
+
   it('keeps a task that was waiting at the backup and still is: the settled copy never wins', async () => {
     const dataDir = join(root, '.ai', 'cezar');
     const live = RunStore.open(dataDir, { keepLive: true });

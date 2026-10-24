@@ -315,31 +315,41 @@ const updatedAt = (run: Record<string, unknown>): number =>
   typeof run.updatedAt === 'string' ? Date.parse(run.updatedAt) : Number.NaN;
 
 /** Whether the archive's copy is newer: by the store's monotonic `updatedAt` when both carry one —
- *  an unpin or unarchive removes a stamp, so the heuristic would read it as older (round 4). */
+ *  an unpin or unarchive removes a stamp, so the heuristic would read it as older (round 4). Without
+ *  both, a settled copy never is: its `finishedAt` is the backup's instant, not work. */
 function archiveIsNewer(theirs: Record<string, unknown>, here: Record<string, unknown>): boolean {
   const [a, b] = [updatedAt(theirs), updatedAt(here)];
   if (Number.isFinite(a) && Number.isFinite(b)) return a > b;
+  if (settledByBackup(theirs)) return false;
   return stampedRecency(theirs) > stampedRecency(here);
 }
 
 /**
  * This machine's index with the archive's folded in: a record only here is kept, one only in the
- * archive is added, and one in both takes the archive's copy only when that copy is newer — and
- * never when the backup settled it: its `finishedAt` is the backup's instant, not work (round 4).
+ * archive is added, and one in both takes the archive's copy only when that copy is newer.
+ * `taken` and `kept` name the ids each side won, so the event files can follow their records.
  */
-export function mergeRunIndex(here: unknown[], archived: unknown[]): { merged: unknown[]; added: number; updated: number } {
+export function mergeRunIndex(here: unknown[], archived: unknown[]): {
+  merged: unknown[]; added: number; updated: number; taken: Set<string>; kept: Set<string>;
+} {
   const fromArchive = new Map(archived.filter(isRawRun).map((run) => [run.id, run]));
-  let updated = 0;
+  const taken = new Set<string>();
+  const kept = new Set<string>();
   const merged = here.map((row) => {
     if (!isRawRun(row)) return row;
     const theirs = fromArchive.get(row.id);
     if (!theirs) return row;
     fromArchive.delete(row.id);
-    if (settledByBackup(theirs) || !archiveIsNewer(theirs, row)) return row;
-    updated += 1;
+    if (!archiveIsNewer(theirs, row)) {
+      kept.add(row.id);
+      return row;
+    }
+    taken.add(row.id);
     return theirs;
   });
-  return { merged: [...merged, ...fromArchive.values()], added: fromArchive.size, updated };
+  const updated = taken.size;
+  for (const id of fromArchive.keys()) taken.add(id);
+  return { merged: [...merged, ...fromArchive.values()], added: fromArchive.size, updated, taken, kept };
 }
 
 /** JSON off disk, or `undefined` when it is absent and `null` when it is unreadable. */
@@ -366,8 +376,9 @@ async function writeAtomically(dest: string, body: string): Promise<void> {
 
 /**
  * Restore a project's run history WITHOUT losing what this machine did after the backup (spec
- * 2026-10-23 §10): the index merges (`mergeRunIndex`), and an event file goes in only where this
- * machine has none or a shorter one — an append-only log is never truncated. Files placed.
+ * 2026-10-23 §10): the index merges (`mergeRunIndex`), and an event file follows its record — in
+ * when the archive's record won, never when this machine's did, and otherwise only where this
+ * machine has none or a shorter one. Files placed.
  */
 async function mergeRunHistory(from: string, root: string, manifest: BackupManifest, log: (line: string) => void): Promise<number> {
   // As `placeTree` descends: nothing is read or written through a link or a file on the way.
@@ -382,6 +393,8 @@ async function mergeRunHistory(from: string, root: string, manifest: BackupManif
     }
   }
   let placed = 0;
+  let taken = new Set<string>();
+  let kept = new Set<string>();
   const destIndex = join(root, ...RUN_INDEX.split('/'));
   const archived = readJsonFile(join(from, ...RUN_INDEX.split('/')));
   if (archived !== undefined) {
@@ -400,15 +413,16 @@ async function mergeRunHistory(from: string, root: string, manifest: BackupManif
         log(`moved an unreadable ${destIndex} aside to runs.json.before-restore`);
         here = [];
       }
-      // An archive from before rows were settled at backup time is settled now, at its own instant;
-      // a settled copy only fills a gap, never replaces a record this machine has.
+      // An archive from before rows were settled at backup time is settled now, at its own instant.
       const createdAt = new Date(manifest.createdAt);
       const settled = settleLiveRuns(archived, `the backup from ${manifest.host}`, Number.isFinite(createdAt.getTime()) ? createdAt : new Date(0));
-      const { merged, added, updated } = mergeRunIndex(here as unknown[], settled);
+      const result = mergeRunIndex(here as unknown[], settled);
+      const { merged, added, updated } = result;
       try {
         mkdirSync(dirname(destIndex), { recursive: true, mode: 0o700 });
         await writeAtomically(destIndex, JSON.stringify(merged));
         placed += 1;
+        ({ taken, kept } = result);
         log(`merged task history: ${added} added, ${updated} updated from the archive, ${(here as unknown[]).length - updated} kept as they are here`);
       } catch (error) {
         log(`kept ${destIndex}: ${error instanceof Error ? error.message : String(error)}`);
@@ -424,10 +438,12 @@ async function mergeRunHistory(from: string, root: string, manifest: BackupManif
   }
   for (const entry of entries) {
     if (!entry.isFile() || !RUN_EVENTS.test(`.ai/cezar/runs/${entry.name}`)) continue;
+    const id = entry.name.slice(0, -'.ndjson'.length);
+    if (kept.has(id)) continue; // this machine's record stays, and so does its transcript
     const src = join(events, entry.name);
     const dest = join(root, '.ai', 'cezar', 'runs', entry.name);
     const info = await lstat(src);
-    if ((await kind(dest)) === 'file' && (await lstat(dest)).size >= info.size) continue;
+    if (!taken.has(id) && (await kind(dest)) === 'file' && (await lstat(dest)).size >= info.size) continue;
     if (await placeFile(src, dest, info.mode & 0o777 || 0o600, log)) placed += 1;
   }
   return placed;

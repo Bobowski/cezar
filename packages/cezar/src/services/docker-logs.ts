@@ -76,6 +76,20 @@ function clearHold(entry: Entry): void {
   entry.hidden = { out: 0, err: 0 };
 }
 
+/**
+ * What a killed process held never joins the next one's output — a half-held secret would leak — but
+ * kept hidden, it lets a resumed follower still match a secret the killed one was printing.
+ */
+function hideHold(entry: Entry): void {
+  for (const stream of ['out', 'err'] as const) {
+    const held = entry.skipping[stream] ? entry.dropped[stream] : entry.pending[stream];
+    entry.pending[stream] = held;
+    entry.hidden[stream] = held.length;
+    entry.skipping[stream] = false;
+    entry.dropped[stream] = '';
+  }
+}
+
 export interface DockerLogsRead { data: string; cursor: number; truncated: boolean; following: boolean }
 
 export class DockerLogFollowers {
@@ -183,11 +197,11 @@ export class DockerLogFollowers {
 
   /** Attach `docker logs`: the last `TAIL_LINES` for a fresh pane, or from where a release cut it off. */
   private start(id: string, entry: Entry, fresh: boolean): void {
-    clearHold(entry);
     const since = entry.resumeFrom;
     if (fresh || since === null) {
       entry.text = '';
       entry.start = 0;
+      clearHold(entry);
     }
     entry.resumeFrom = null;
     entry.following = true;
@@ -221,8 +235,7 @@ export class DockerLogFollowers {
     if (!proc) return;
     entry.proc = null;
     entry.following = false;
-    // What a killed process held never joins the next one's output: a half-held secret would leak.
-    clearHold(entry);
+    hideHold(entry);
     // Cut off by us, not ended by Docker: a returning reader resumes from here.
     entry.resumeFrom = this.now();
     proc.kill();

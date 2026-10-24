@@ -239,6 +239,30 @@ describe('docker logs followers (spec 2026-10-23-docker-management §3.4)', () =
       expect(followers.read(ID, 0).data).toBe('after restart\n');
     });
 
+    it('still redacts a PEM a resumed follower finishes, from the hidden start the killed one held', () => {
+      const { followers, spawned } = harness([pem, pw]);
+      followers.hold(ID);
+      const lines = pem.split('\n');
+      spawned[0]!.data('out', `boot\n${lines[0]}\n${lines[1]}\n`);
+      followers.release(ID);
+      followers.hold(ID);
+      spawned[1]!.data('out', `${lines.slice(2).join('\n')}\nok\n`);
+      expect(followers.read(ID, 0).data).toBe(`boot\n${REDACTED}\nok\n`);
+    });
+
+    it('still redacts a PEM whose start a killed follower was dropping with an over-long line', () => {
+      const { followers, spawned } = harness([pem, pw]);
+      followers.hold(ID);
+      const lines = pem.split('\n');
+      spawned[0]!.data('out', `${'x'.repeat(40 * 1024)}${lines[0]}`);
+      followers.release(ID);
+      followers.hold(ID);
+      spawned[1]!.data('out', `\n${lines.slice(1).join('\n')}\nok\n`);
+      const data = followers.read(ID, 0).data;
+      expect(data).not.toContain('MIIEvQ');
+      expect(data.endsWith(`]\n${REDACTED}\nok\n`)).toBe(true);
+    });
+
     it('does not flush a half-held PEM when Docker ends the stream', () => {
       const { followers, spawned } = harness([pem, pw]);
       followers.read(ID, 0);

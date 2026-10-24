@@ -36,8 +36,9 @@ one) serve the same catalog:
   which is the parity test's rule restated for tools.
 - **Project scope** is an input (`projectId`, default: the boot project), so one server covers
   the workspace.
-- **Annotations:** `readOnlyHint` for GET routes, `destructiveHint` for `DELETE` and for the
-  routes the cockpit confirms (discard, docker remove, branch delete).
+- **Annotations:** `readOnlyHint` for GET routes; `destructiveHint` for every write unless its
+  route-table entry says `destructive: false` (additive or trivially undone). Every write tool
+  states it, so a new write route is destructive until someone decides otherwise.
 - **Resources:** `cezar://projects`, `cezar://p/<id>/runs/<runId>/thread` (the thread as
   Markdown), `cezar://p/<id>/workflows/<name>` — the read-often shapes an agent wants to
   browse rather than call.

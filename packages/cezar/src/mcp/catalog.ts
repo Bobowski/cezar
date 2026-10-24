@@ -301,11 +301,16 @@ function buildTool(row: Collected, entry: RouteContract, collections: ReadonlySe
     annotations: {
       title: entry.summary.replace(/\.$/, ''),
       readOnlyHint: readOnly,
-      destructiveHint: row.method === 'DELETE' || entry.destructive === true,
+      destructiveHint: destructiveHintOf(row.method, entry),
       idempotentHint: readOnly || row.method === 'PUT' || row.method === 'DELETE',
       openWorldHint: OPEN_WORLD.has(familyOf(row.path)),
     },
   };
+}
+
+/** A write is destructive unless its route-table entry says otherwise. */
+export function destructiveHintOf(method: string, entry: RouteContract): boolean {
+  return method !== 'GET' && entry.destructive !== false;
 }
 
 /**

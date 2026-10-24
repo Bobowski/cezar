@@ -9,7 +9,7 @@ import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import type { RunManager } from '../workflows/run.ts';
 import { createApp } from '../server/server.ts';
 import { jsonZodValidator, queryZodValidator, routeInputOf } from '../server/validators.ts';
-import { buildCatalog, DEFAULT_TOOL_SETS, jsonSchemaOf, selectTools, toolSetsOf, type Catalog, type RouteRow } from './catalog.ts';
+import { buildCatalog, DEFAULT_TOOL_SETS, destructiveHintOf, jsonSchemaOf, selectTools, toolSetsOf, type Catalog, type RouteRow } from './catalog.ts';
 import { requestFor } from './execute.ts';
 import { PROMPT_TOOLS } from './server.ts';
 
@@ -126,6 +126,36 @@ describe('the MCP tool catalog', () => {
     expect(catalog.byName.get('runs_remove_worktree')?.annotations.destructiveHint).toBe(true);
     expect(catalog.byName.get('runs_create')?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });
     expect(catalog.byName.get('github_list')?.annotations.openWorldHint).toBe(true);
+  });
+
+  it('every write route states whether it is destructive — a new one is a decision, not a default', () => {
+    const unstated = Object.entries(routeContracts as Record<string, { notTool?: string; destructive?: boolean }>)
+      .filter(([key, entry]) => !key.startsWith('GET ') && !entry.notTool && typeof entry.destructive !== 'boolean')
+      .map(([key]) => key);
+    expect(unstated).toEqual([]);
+    // …and a write route that left it out would still be destructive.
+    expect(destructiveHintOf('POST', { summary: 'x' })).toBe(true);
+    expect(destructiveHintOf('POST', { summary: 'x', destructive: false })).toBe(false);
+    expect(destructiveHintOf('GET', { summary: 'x' })).toBe(false);
+  });
+
+  it('marks the writes that run a shell, overwrite files or config, push, stop or discard as destructive', () => {
+    const destructive = (method: string, path: string) =>
+      catalog.tools.find((tool) => tool.method === method && tool.path === path)?.annotations.destructiveHint;
+    for (const [method, path] of [
+      ['POST', '/runs/:id/terminal'], ['POST', '/runs/:id/terminal/:sessionId/input'],
+      ['POST', '/repo/terminal'], ['POST', '/repo/terminal/:sessionId/input'],
+      ['PUT', '/repo/files'], ['PUT', '/runs/:id/files'], ['POST', '/runs/:id/files'],
+      ['PUT', '/agent-config/:id'], ['PUT', '/config'], ['PUT', '/workspace/config'],
+      ['POST', '/repo/push'], ['POST', '/runs/:id/git/push'],
+      ['POST', '/docker/containers/:id/stop'], ['POST', '/docker/stacks/:name/stop'],
+      ['POST', '/services/:id/stop'], ['POST', '/services/stop-all'],
+      ['POST', '/runs/:id/remove-worktree'], ['POST', '/workspace/self-update/apply'],
+    ] as const) {
+      expect(destructive(method, path), `${method} ${path}`).toBe(true);
+    }
+    expect(destructive('POST', '/runs/:id/messages')).toBe(false);
+    expect(destructive('POST', '/runs/read-all')).toBe(false);
   });
 
   it('tool sets partition the catalog; the default is about thirty tools and covers the prompts', () => {

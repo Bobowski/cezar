@@ -401,14 +401,14 @@ function BrandingFields() {
       <BrandImageField
         kind="favicon"
         title="Favicon"
-        hint="SVG or PNG. The browser tab shows it; a PNG becomes 16, 32 and 48 px. Applies on the next reload."
+        hint="SVG, or a PNG up to 1024 px. The browser tab shows it; a PNG becomes 16, 32 and 48 px. Applies on the next reload."
         accept="image/svg+xml,image/png"
         url={brand.data?.faviconUrl ?? null}
       />
       <BrandImageField
         kind="app-icon"
         title="App icon"
-        hint="One square PNG, at least 512 px. Becomes the home-screen, PWA and desktop-app icon at every size it needs."
+        hint="One square PNG, 512 to 1024 px. Becomes the home-screen, PWA and desktop-app icon at every size it needs."
         accept="image/png"
         url={brand.data?.appIconUrl ?? null}
       />

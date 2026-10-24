@@ -15,8 +15,12 @@ export interface Rgba {
 }
 
 const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-/** A 2 MB upload can still inflate to gigabytes; 2048² is far beyond any icon and 16 MiB of RGBA. */
-export const MAX_PNG_PIXELS = 2048 * 2048;
+/**
+ * A 2 MB upload can still inflate to gigabytes, and decoding blocks the server's one thread (a
+ * 16-bit 2048² took ~500 ms). 1024² is every size an icon needs and a quarter of that work.
+ */
+export const MAX_PNG_SIDE = 1024;
+export const MAX_PNG_PIXELS = MAX_PNG_SIDE * MAX_PNG_SIDE;
 /** Samples per pixel by IHDR colour type. */
 const CHANNELS: Readonly<Record<number, number>> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
 
@@ -69,7 +73,7 @@ export function decodePng(bytes: Buffer): DecodeResult {
   if (!header) return { ok: false, error: 'not a PNG image' };
   const { width, height, bitDepth, colorType } = header;
   if (width === 0 || height === 0 || width * height > MAX_PNG_PIXELS) {
-    return { ok: false, error: 'the PNG is larger than 2048 × 2048 pixels' };
+    return { ok: false, error: `the PNG is larger than ${MAX_PNG_SIDE} × ${MAX_PNG_SIDE} pixels` };
   }
   // pngjs inflates an Adam7 image without a size bound; an icon never needs interlacing.
   if (header.interlaced) return { ok: false, error: 'an interlaced PNG is not accepted — save it without interlacing' };

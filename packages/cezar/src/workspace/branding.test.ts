@@ -174,7 +174,7 @@ describe('derived sizes', () => {
     const bomb = Buffer.from(fixture(16, 16));
     bomb.writeUInt32BE(100_000, 16);
     bomb.writeUInt32BE(100_000, 20);
-    expect(decodePng(bomb)).toMatchObject({ ok: false, error: expect.stringContaining('2048') });
+    expect(decodePng(bomb)).toMatchObject({ ok: false, error: expect.stringContaining('1024') });
     // Interlaced, the IHDR size never bounded the inflate: a 16 × 16 header over 256 MiB of zeros.
     const interlaced = pngBomb({ interlace: true, inflatedMiB: 256 });
     expect(interlaced.length).toBeLessThan(512 * 1024);
@@ -186,12 +186,14 @@ describe('derived sizes', () => {
     expect(await deriveAppIcon(interlaced)).toMatchObject({ ok: false, error: expect.stringContaining('interlaced') });
   });
 
-  it('inflates within the header\'s byte budget, and refuses more than 2048² pixels', () => {
+  it('inflates within the header\'s byte budget, and refuses more than 1024² pixels', async () => {
     expect(decodePng(pngBomb({ interlace: false, inflatedMiB: 64 }))).toMatchObject({ ok: false, error: expect.stringContaining('more image data') });
     const wide = Buffer.from(fixture(16, 16));
-    wide.writeUInt32BE(2049, 16);
-    wide.writeUInt32BE(2048, 20);
-    expect(decodePng(wide)).toMatchObject({ ok: false, error: expect.stringContaining('2048') });
+    wide.writeUInt32BE(1025, 16);
+    wide.writeUInt32BE(1024, 20);
+    expect(decodePng(wide)).toMatchObject({ ok: false, error: expect.stringContaining('1024') });
+    // Decoding blocks the server's one thread, so a 2048² icon is refused rather than decoded.
+    expect(await deriveAppIcon(fixture(2048, 2048))).toMatchObject({ ok: false, error: 'the PNG is larger than 1024 × 1024 pixels' });
   });
 });
 
@@ -205,8 +207,8 @@ describe('resizing', () => {
     expect([...up.data]).toEqual([10, 20, 30, 40, 10, 20, 30, 40, 10, 20, 30, 40, 10, 20, 30, 40]);
   });
 
-  it('a 2048² app icon derives every size, and the event loop runs between them', async () => {
-    const source = fixture(2048, 2048);
+  it('a 1024² app icon derives every size, and the event loop runs between them', async () => {
+    const source = fixture(1024, 1024);
     let turns = 0;
     const tick = () => {
       turns += 1;

@@ -86,12 +86,17 @@ Where the build settled a question the sections above left open, or deliberately
 - **Files.** `src/workspace/branding.ts` (storage, derivation, links), `branding-png.ts`
   (`pngjs`: decode, an integer area-average resize from a working copy of at most 1024² —
   derivation yields the event loop a turn between sizes — and re-encode; IHDR is read first; anything over
-  2048² or interlaced is refused unopened, and IDAT inflates under the byte budget the header
+  1024² or interlaced is refused unopened, and IDAT inflates under the byte budget the header
   allows before pngjs sees it; bytes after IEND are dropped), `branding-svg.ts` (`@xmldom/xmldom`:
   parse, keep allowlisted SVG elements, drop `on*`, foreign namespaces, every `href` that is
   not `#id`, every `url()` that is not `url(#id)` and any `style` naming `url(`, `image-set(`,
   `src(`, `expression(` or `@import`; a DOCTYPE, or nesting past 256 elements, is refused), `branding-accent.ts`.
   Both libraries are pure JS, dependency-free and pinned; CODE_REVIEW.md's budget names them.
+- **Uploads stop at 1024², not in a worker.** Decoding and deriving run on the server's one
+  thread, and a 16-bit 2048² blocked it ~500 ms. A `worker_threads` worker would need its own
+  entry that runs under tsx, vitest and the built `dist` alike (and ships in the tarball) — out
+  of proportion for an upload an operator makes once — so the cap fell from 2048² instead, a
+  quarter of the work and still every size an icon needs.
 - **Uploads are JSON** `{ data: base64 }`, the project icon's body, so the contract carries the
   request and the MCP catalog can call it (`workspace_branding_upload`). `DELETE /workspace/branding`
   is the one-click Reset (`workspace_branding_reset`).

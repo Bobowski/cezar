@@ -526,9 +526,27 @@ async function afterStop(root: string, res: GitResult, what: string, fallback: s
   return { ok: false, error: reason(res, fallback) };
 }
 
-async function isDirty(root: string): Promise<boolean> {
-  const res = await git(root, ['status', '--porcelain', '--untracked-files=no']);
-  return res.ok && res.stdout.trim() !== '';
+/** Tracked files with uncommitted changes, staged or not; an untracked file never blocks. */
+async function dirtyFiles(root: string): Promise<string[]> {
+  const res = await git(root, ['status', '--porcelain', '-z', '--untracked-files=no']);
+  if (!res.ok) return [];
+  const entries = res.stdout.split('\0');
+  const files: string[] = [];
+  for (let at = 0; at < entries.length; at++) {
+    const entry = entries[at]!;
+    if (entry.length < 4) continue;
+    files.push(entry.slice(3));
+    if (entry[0] === 'R' || entry[0] === 'C') at++; // the source path follows a rename
+  }
+  return files;
+}
+
+/** The refusal on a dirty tree, naming what is in the way (five files at most). */
+async function dirtyRefusal(root: string, before: string): Promise<{ ok: false; error: string } | null> {
+  const files = await dirtyFiles(root);
+  if (!files.length) return null;
+  const named = files.length > 5 ? `${files.slice(0, 5).join(', ')} and ${files.length - 5} more` : files.join(', ');
+  return { ok: false, error: `the working tree has uncommitted changes (${named}) — commit or stash them before ${before}` };
 }
 
 function checkName(name: string): string | null {
@@ -557,9 +575,8 @@ export function checkoutBranch(root: string, name: string): Promise<Action> {
     const found = await lookupBranch(root, name);
     if (!found) return { ok: false, error: `no branch named ${name}` };
     if (found.kind === 'local' && found.branch === (await currentBranch(root))) return done(`already on ${name}`);
-    if (await isDirty(root)) {
-      return { ok: false, error: 'the working tree has uncommitted changes — commit or stash them before switching branches' };
-    }
+    const dirty = await dirtyRefusal(root, 'switching branches');
+    if (dirty) return dirty;
     if (found.kind === 'remote') {
       if (await resolves(root, `refs/heads/${found.branch}`)) {
         return { ok: false, error: `a local ${found.branch} already exists — check that out instead` };
@@ -581,6 +598,9 @@ export function mergeBranch(root: string, name: string): Promise<Action> {
     if (await repoOperation(root)) return { ok: false, error: 'finish or abort the operation in progress first' };
     const current = await currentBranch(root);
     if (!current) return { ok: false, error: 'HEAD is detached — check out a branch to merge into' };
+    // As for checkout: edits would mix into the merge's result, and its Abort would take them too.
+    const dirty = await dirtyRefusal(root, 'merging');
+    if (dirty) return dirty;
     const res = await git(root, ['merge', '--no-edit', name]);
     if (!res.ok) return afterStop(root, res, `merging ${name}`, 'git merge failed');
     const said = res.stdout.split('\n').map((l) => l.trim()).find((l) => /up to date|fast-forward|merge made/i.test(l));

@@ -138,6 +138,18 @@ describe('the Git page against a temp repo with a bare origin', () => {
       expect(existsSync(join(repo, 'f.txt'))).toBe(true);
     });
 
+    it('refuses to merge over a dirty tree, naming the files, and leaves them as they were', async () => {
+      g(repo, 'checkout', '-q', '-b', 'feature');
+      commit(repo, 'f.txt', 'feature');
+      g(repo, 'checkout', '-q', 'main');
+      writeFileSync(join(repo, 'a.txt'), 'mine, unsaved\n');
+      const head = g(repo, 'rev-parse', 'HEAD').trim();
+      const refused = await mergeBranch(repo, 'feature');
+      expect(refused).toEqual({ ok: false, error: expect.stringMatching(/uncommitted changes \(a\.txt\)/) });
+      expect(g(repo, 'rev-parse', 'HEAD').trim()).toBe(head);
+      expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('mine, unsaved\n');
+    });
+
     it('stops on a conflict, lists the files, and Abort restores the state before it', async () => {
       g(repo, 'checkout', '-q', '-b', 'feature');
       commit(repo, 'a.txt', 'theirs');

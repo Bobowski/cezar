@@ -50,6 +50,7 @@ import {
   effectiveComposerDefault,
   loadWorkspaceConfig,
   mergeWriteWorkspaceConfig,
+  seedUpdateBranchChannel,
   workspaceConfigBackupPath,
   type WorkspaceConfig,
 } from './config.ts';
@@ -502,6 +503,33 @@ describe('workspace config', () => {
 
       expect((await loadWorkspaceConfig()).projects).toEqual([]);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('is corrupt'));
+    });
+  });
+
+  describe('seeding the branch channel (spec 2026-10-23 §4.5)', () => {
+    const seed = { remote: 'https://github.com/open-mercato/cezar.git', branch: 'brutus' };
+
+    it('writes the branch channel and the followed branch when no channel is saved, once', async () => {
+      expect(await seedUpdateBranchChannel(seed)).toBe(true);
+      const onDisk = JSON.parse(readFileSync(workspaceConfigPath(), 'utf8')) as WorkspaceConfig;
+      expect(onDisk.updateChannel).toBe('branch');
+      expect(onDisk.updateBranch).toEqual(seed);
+      expect(await seedUpdateBranchChannel({ ...seed, branch: 'other' })).toBe(false);
+      expect((await loadWorkspaceConfig()).updateBranch).toEqual(seed);
+    });
+
+    it('never overrides a channel the user saved', async () => {
+      write({ updateChannel: 'stable' });
+      expect(await seedUpdateBranchChannel(seed)).toBe(false);
+      const config = await loadWorkspaceConfig();
+      expect(config.updateChannel).toBe('stable');
+      expect(config.updateBranch).toBeUndefined();
+    });
+
+    it('keeps a saved branch when only the channel was missing', async () => {
+      write({ updateBranch: { remote: seed.remote, branch: 'mine' } });
+      expect(await seedUpdateBranchChannel(seed)).toBe(true);
+      expect((await loadWorkspaceConfig()).updateBranch).toEqual({ remote: seed.remote, branch: 'mine' });
     });
   });
 });

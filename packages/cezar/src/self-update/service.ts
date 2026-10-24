@@ -19,7 +19,7 @@ import type {
   UpdateCommit,
 } from '@open-mercato/cezar-contract';
 
-import { loadWorkspaceConfig, mergeWriteWorkspaceConfig } from '../workspace/config.ts';
+import { loadWorkspaceConfig, mergeWriteWorkspaceConfig, seedUpdateBranchChannel } from '../workspace/config.ts';
 import type { WorkspaceSemaphore } from '../workspace/semaphore.ts';
 import { installFromLocal, installFromRegistry, runNpm } from './installer.ts';
 import { buildCheckout, discoverCheckouts } from './checkouts.ts';
@@ -29,6 +29,7 @@ import {
   IMAGE_SOURCE_FILE,
   imageSourceBranch,
   parseUpdateBranch,
+  readImageSource,
   selfUpdateCheckEnabled,
   type GitRunner,
 } from './branch.ts';
@@ -154,6 +155,15 @@ export class SelfUpdateService {
     const config = await loadWorkspaceConfig();
     if (config.updateBranch) return { remote: config.updateBranch.remote, branch: config.updateBranch.branch };
     return parseUpdateBranch(this.env.CEZ_UPDATE_BRANCH) ?? imageSourceBranch(this.deps.imageSourceFile ?? IMAGE_SOURCE_FILE);
+  }
+
+  /** In the container, save the boot's branch seed (spec §4.5): the entrypoint exports it to the
+   *  server only, so `docker compose exec … cezar update` would otherwise follow stable. */
+  async persistImageSeed(): Promise<boolean> {
+    if (!readImageSource(this.deps.imageSourceFile ?? IMAGE_SOURCE_FILE)) return false;
+    if ((await this.channel()) !== 'branch') return false;
+    const branch = await this.updateBranch();
+    return branch ? seedUpdateBranchChannel(branch) : false;
   }
 
   async setChannel(channel: UpdateChannel, branch?: UpdateBranch): Promise<void> {

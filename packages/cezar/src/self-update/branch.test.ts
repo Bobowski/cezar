@@ -171,6 +171,19 @@ describe('which branch the channel follows', () => {
     expect(await svc.channel()).toBe('stable');
   });
 
+  it('saves the container seed on boot so every process follows it, and only in the container', async () => {
+    const seeded = { ...env, CEZ_UPDATE_CHANNEL: 'branch', CEZ_UPDATE_BRANCH: `${REMOTE}#brutus` };
+    const outside = new SelfUpdateService({ pkgName: 'x', version: '0.17.0', entry: '/x', restart: () => {}, env: seeded, imageSourceFile: join(root, 'none.json') });
+    expect(await outside.persistImageSeed()).toBe(false);
+    const imageSource = join(root, 'source.json');
+    writeFileSync(imageSource, JSON.stringify({ commit: 'abc', branch: 'brutus', remote: REMOTE, committedAt: '' }));
+    const inside = new SelfUpdateService({ pkgName: 'x', version: '0.17.0', entry: '/x', restart: () => {}, env: seeded, imageSourceFile: imageSource });
+    expect(await inside.persistImageSeed()).toBe(true);
+    // `docker compose exec … cezar update` runs without the entrypoint's exports.
+    expect(await service().channel()).toBe('branch');
+    expect(await service().updateBranch()).toEqual(BRANCH);
+  });
+
   it('refuses the branch channel when there is no branch to follow', async () => {
     await expect(service().setChannel('branch')).rejects.toThrow(/needs a branch/);
     await service().setChannel('branch', BRANCH);

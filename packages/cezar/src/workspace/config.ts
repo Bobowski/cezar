@@ -544,3 +544,20 @@ export async function mergeWriteWorkspaceConfig(
   }
   return next;
 }
+
+/**
+ * Persist the container's branch seed (spec 2026-10-23 §4.5) so every process follows it —
+ * `docker compose exec cezar cezar update` never sees the entrypoint's exported env. A saved
+ * channel is the user's and is never overwritten; returns whether anything was written.
+ */
+export async function seedUpdateBranchChannel(branch: { remote: string; branch: string }): Promise<boolean> {
+  if ((await loadWorkspaceConfig()).updateChannel) return false;
+  let wrote = false;
+  await mergeWriteWorkspaceConfig((config) => {
+    if (config.updateChannel) return;
+    config.updateChannel = 'branch';
+    if (!config.updateBranch) config.updateBranch = { remote: branch.remote, branch: branch.branch };
+    wrote = true;
+  });
+  return wrote;
+}

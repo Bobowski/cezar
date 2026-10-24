@@ -40,7 +40,9 @@ setpriv --reuid=node --regid=node --init-groups \
   || setpriv --reuid=node --regid=node --init-groups git config --global --add safe.directory '*'
 
 # The image follows the branch it was built from (spec 2026-10-23 §4.5). An operator's own
-# CEZ_UPDATE_* wins over this seed, and a channel saved in the cockpit wins over both.
+# CEZ_UPDATE_* wins over this seed, and a channel saved in the cockpit wins over both. The server
+# saves the seed into the workspace config on boot, and the `cezar` launcher repeats it, so
+# `docker compose exec cezar cezar update` follows the same branch.
 if [ -f /opt/cezar/source.json ]; then
   source_remote=$(jq -r '.remote // empty' /opt/cezar/source.json 2>/dev/null || true)
   source_branch=$(jq -r '.branch // empty' /opt/cezar/source.json 2>/dev/null || true)

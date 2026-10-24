@@ -105,6 +105,9 @@ services stay up, and boot recovery resumes the agents.
 - **Which branch.** The dialog's **Branch** channel shows it and, for a signed-in operator, changes
   it (`CEZ_UPDATE_BRANCH=<remote>#<branch>` sets it from the environment). A public repository
   needs no credentials; a private one uses the container's `gh` login or `/data/ssh`.
+  The container saves its branch into the workspace config on first boot, so `docker compose exec
+  cezar cezar update` follows the same branch; after that the saved channel wins — change it in the
+  dialog.
 
 ## Security, plainly
 

@@ -1,7 +1,7 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, promises as fsp, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderManifest, renderShellHtml } from '../server/static-ui.ts';
 import { contrastRatio, deriveAccentTokens, parseHexColor } from './branding-accent.ts';
 import { decodePng, encodePng, resize, type Rgba } from './branding-png.ts';
@@ -272,6 +272,23 @@ describe('content-addressed storage', () => {
   it('no directory at all is cezar\'s own brand, never an error', async () => {
     expect((await brandingState({}, null)).urls).toEqual({});
     expect(await readBrandingAsset('favicon')).toBeNull();
+  });
+
+  it('a rename Windows refuses for an instant is retried, not a failed upload', async () => {
+    const platform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    const rename = vi.spyOn(fsp, 'rename').mockRejectedValueOnce(Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' }));
+    try {
+      const derived = await deriveFavicon(fixture(16, 16));
+      if (!derived.ok) throw new Error(derived.error);
+      await saveBranding('favicon', derived.files);
+      expect(rename.mock.calls.length).toBeGreaterThan(derived.files.length);
+      expect(readdirSync(brandingDir()).filter((file) => file.endsWith('.tmp'))).toEqual([]);
+      expect(Object.keys((await brandingState({}, null)).urls).sort()).toEqual(['favicon-16', 'favicon-32', 'favicon-48']);
+    } finally {
+      rename.mockRestore();
+      Object.defineProperty(process, 'platform', { value: platform });
+    }
   });
 });
 

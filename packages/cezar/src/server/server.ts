@@ -80,7 +80,8 @@ import {
 import { activityHeadsChanged } from '../automations/github-activity.ts';
 import { trackerTriggerSchema, trackerAutomationOptionsSchema, trackerAutomationOptionsQuerySchema, automationScheduleSchema, localTimeZone, nextOccurrence } from '@open-mercato/cezar-contract';
 import type { IncomingMessage } from 'node:http';
-import { access, constants as fsConstants, mkdir, readFile, realpath, rename, stat, statfs, unlink, writeFile } from 'node:fs/promises';
+import { access, constants as fsConstants, mkdir, readFile, realpath, stat, statfs, unlink, writeFile } from 'node:fs/promises';
+import { renameWithRetry } from '../fs-rename.ts';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1348,28 +1349,6 @@ async function currentBranding(): Promise<BrandingState> {
 }
 
 const BRANDING_WRITE_REFUSAL = 'branding can only be changed by a trusted operator — this hosted cockpit runs without sign-in (CEZ_AUTH=0)';
-
-/**
- * `rename` onto an existing file. POSIX replaces the destination atomically and two writers
- * never contend, so there this is `rename` and nothing else. Windows refuses the replacement
- * (`EPERM`/`EBUSY`/`EACCES`) for the instant another handle — a second upload's rename, a reader
- * — is on the destination, which turned two racing logo uploads into a 500. Only on win32, and
- * only for those codes, the rename is retried briefly; anything else, and the last refusal,
- * still throws.
- */
-async function renameOver(from: string, to: string): Promise<void> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      await rename(from, to);
-      return;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      const contended = code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
-      if (process.platform !== 'win32' || !contended || attempt >= 10) throw error;
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 10 * (attempt + 1)));
-    }
-  }
-}
 
 /** The name half of a Host header — `localhost:4321` → `localhost`,
  *  `[::1]:4321` → `[::1]`. A bracketed IPv6 literal keeps its brackets
@@ -4073,7 +4052,8 @@ export function createApp(deps: ServerDeps) {
       const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
       try {
         await writeFile(tmp, bytes, { mode: 0o600, flag: 'wx' });
-        await renameOver(tmp, path);
+        // Windows refuses a rename onto a file another handle holds; two racing uploads 500'd.
+        await renameWithRetry(tmp, path);
       } catch (error) {
         await unlink(tmp).catch(() => {});
         throw error;

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   BRANDING_ASSETS,
@@ -7,6 +7,7 @@ import {
   type BrandingUploadKind,
   type WorkspaceBranding,
 } from '@open-mercato/cezar-contract';
+import { renameWithRetry } from '../fs-rename.ts';
 import { assertCezarHomeWriteIsSandboxed, cezarHomeDir } from '../paths.ts';
 import { deriveAccentTokens } from './branding-accent.ts';
 import { backdropOf, decodePng, encodePng, fitSquare, isPng, resize, type Rgba } from './branding-png.ts';
@@ -149,7 +150,8 @@ export function saveBranding(kind: BrandingUploadKind, files: DerivedFile[], env
       const name = brandingFileName(file);
       const tmp = join(dir, `${name}.${randomUUID()}.tmp`);
       await writeFile(tmp, file.bytes, { mode: 0o600 });
-      await rename(tmp, join(dir, name));
+      // A reader serving the previous upload holds the name on Windows for an instant.
+      await renameWithRetry(tmp, join(dir, name));
       written.add(name);
     }
     await removeGroups(BRANDING_GROUPS[kind], written, env);

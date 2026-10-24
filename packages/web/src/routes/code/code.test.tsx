@@ -23,11 +23,11 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-const health = (fileEdit: boolean): HealthResponse => ({
+const health = (fileEdit: boolean, terminal = false): HealthResponse => ({
   version: '0.0.0-test', projects: [], bootProject: 'default', repoRoot: '/repo',
   repo: { root: '/repo', branch: 'main' }, checks: [], defaultRunner: 'claude',
   forge: { kind: 'github', available: false },
-  capabilities: { localHandoff: true, terminal: false, preview: true, designMode: true, fileEdit, tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true, followups: false, singleProject: false, automations: false, dispatch: false },
+  capabilities: { localHandoff: true, terminal, preview: true, designMode: true, fileEdit, tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true, followups: false, singleProject: false, automations: false, dispatch: false },
 } as HealthResponse)
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 const entry = (path: string, content: string, hash: string): WorktreeEntry => ({ type: 'file', path, size: content.length, binary: false, tooLarge: false, content, hash, editable: true })
@@ -38,7 +38,11 @@ interface Sent { method: string; path: string; body?: unknown }
 
 const RUN = { id: 'run-1', task: 'Fix the header', title: 'Fix the header', status: 'done', archived: false, createdAt: '2026-10-12T10:00:00Z', worktreePath: '/w/run-1', workflow: 'quick-task' } as unknown as ApiRun
 
-function setup(options: { fileEdit?: boolean; at?: string; disk?: { content: string; hash: string }; putStatus?: number; runs?: ApiRun[] } = {}) {
+function setup(options: {
+  fileEdit?: boolean; at?: string; disk?: { content: string; hash: string }; putStatus?: number; runs?: ApiRun[]
+  /** What `GET /ui-state` answers; `terminal` turns the capability on; `dead`: addresses nothing listens at. */
+  uiState?: unknown; terminal?: boolean; services?: unknown; dead?: string[]
+} = {}) {
   const disk = options.disk ?? { content: 'one\n', hash: 'h1' }
   const sent: Sent[] = []
   const state = { disk, putStatus: options.putStatus ?? 200 }
@@ -46,7 +50,11 @@ function setup(options: { fileEdit?: boolean; at?: string; disk?: { content: str
     const path = String(input)
     const method = init.method ?? 'GET'
     sent.push({ method, path, body: typeof init.body === 'string' ? JSON.parse(init.body) : undefined })
-    if (path === '/api/v1/health') return json(health(options.fileEdit ?? true))
+    if (path === '/api/v1/health') return json(health(options.fileEdit ?? true, options.terminal ?? false))
+    if (options.dead?.includes(path)) throw new TypeError('Failed to fetch')
+    if (method === 'GET' && path === '/api/v1/ui-state') return json(options.uiState ?? {})
+    if (method === 'PUT' && path === '/api/v1/ui-state') return json({ ...(options.uiState as object | undefined), ...(JSON.parse(String(init.body)) as object) })
+    if (path === '/api/v1/services') return json(options.services ?? { available: false, reason: null, services: [], candidates: [], lastRunning: [], topic: 'services' })
     if (path === '/api/v1/repo/tree') return json({ paths: ['README.md', 'src/app.ts'], truncated: false })
     if (path === '/api/v1/repo/changes') return json({ files: [{ path: 'src/app.ts', status: 'modified', adds: 1, dels: 0, binary: false, patch: PATCH }], stat: { files: 1, adds: 1, dels: 0 } })
     if (path === '/api/v1/repo') return json({ info: { root: '/repo', branch: 'main' }, status: [], log: [], branches: ['main'], baseBranch: null })
@@ -422,5 +430,88 @@ describe('Code page as an editor (VS Code-like)', () => {
     fireEvent.drop(groups()[1]!, drag({ 'application/x-cezar-tab': JSON.stringify({ tab: 'README.md', from: 0 }) }))
     await waitFor(() => expect(tabsOf(1)).toEqual(['app.ts', 'README.md']))
     expect(tabsOf(0)).toEqual(['app.ts'])
+  })
+})
+
+describe('Browser tabs as pages (spec 2026-10-24-code-page-browser-tabs)', () => {
+  const groups = () => [...document.querySelectorAll('[data-slot="code-group"]')]
+  const tabsOf = (index: number) => [...(groups()[index]?.querySelectorAll('[data-slot="code-tab"]') ?? [])].map((tab) => tab.textContent)
+  const address = () => document.querySelector('[data-slot="code-browser"] input[aria-label="Address"]') as HTMLInputElement | null
+  const SAVED = { codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }, { id: 'b2', url: 'http://localhost:3000/', group: 1 }] }] }
+
+  it('opens a page on Ctrl/Cmd+T with the cursor in its address bar, and one beside on Ctrl/Cmd+Shift+T', async () => {
+    setup()
+    await view()
+    fireEvent.keyDown(window, { key: 't', ctrlKey: true })
+    await waitFor(() => expect(tabsOf(0)).toEqual(['app.ts', 'Browser']))
+    await waitFor(() => expect(document.activeElement).toBe(address()))
+    fireEvent.keyDown(window, { key: 'T', ctrlKey: true, shiftKey: true })
+    await waitFor(() => expect(groups()).toHaveLength(2))
+    expect(tabsOf(1)).toEqual(['Browser'])
+    await waitFor(() => expect(document.activeElement).toBe(groups()[1]?.querySelector('input[aria-label="Address"]')))
+  })
+
+  it('refuses an address that is not the project\'s app, inline, with a way to open it in the browser', async () => {
+    setup()
+    await view()
+    fireEvent.click(screen.getByRole('button', { name: 'Open browser' }))
+    const input = await waitFor(() => { expect(address()).not.toBeNull(); return address() as HTMLInputElement })
+    fireEvent.change(input, { target: { value: 'https://example.com/docs' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    const refusal = await waitFor(() => { const found = document.querySelector('[data-slot="browser-refused-address"]'); expect(found).not.toBeNull(); return found as HTMLElement })
+    expect(refusal.textContent).toContain('open it in your browser')
+    expect(refusal.querySelector('a')?.getAttribute('href')).toBe('https://example.com/docs')
+    expect(refusal.querySelector('a')?.getAttribute('rel')).toContain('noopener')
+    expect([...refusal.querySelectorAll('button')].map((button) => button.textContent)).toContain('Copy address')
+    expect(document.querySelector('[data-slot="code-browser"] iframe')).toBeNull()
+    // A local address is taken.
+    fireEvent.change(input, { target: { value: 'localhost:5173/admin' } })
+    expect(document.querySelector('[data-slot="browser-refused-address"]')).toBeNull()
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    await waitFor(() => expect(document.querySelector('[data-slot="code-browser"] iframe')?.getAttribute('src')).toBe('http://localhost:5173/admin'))
+    // jsdom's own origin is the cockpit here: framing it in itself is refused too.
+    fireEvent.change(input, { target: { value: window.location.origin } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    await waitFor(() => expect(document.querySelector('[data-slot="browser-refused-address"]')?.textContent).toContain('That is this cockpit'))
+  })
+
+  it('brings the saved pages back on reload, side by side, and writes a closed one back', async () => {
+    const { sent } = setup({ at: '/code', uiState: SAVED })
+    await waitFor(() => expect(tabsOf(0)).toEqual(['localhost:3000/admin']))
+    expect(tabsOf(1)).toEqual(['localhost:3000'])
+    await waitFor(() => expect(document.querySelector('[data-slot="code-browser"] iframe')?.getAttribute('src')).toBe('http://localhost:3000/admin'))
+    expect(sent.some((request) => request.method === 'PUT' && request.path === '/api/v1/ui-state')).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Close localhost:3000' }))
+    await waitFor(() => expect(sent.find((request) => request.method === 'PUT' && request.path === '/api/v1/ui-state')?.body).toEqual({
+      codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }] }],
+    }))
+  })
+
+  it('lists the open pages and the detected addresses in the palette', async () => {
+    const services = {
+      available: true, reason: null, candidates: [], lastRunning: [], topic: 'services',
+      services: [{ id: 's1', name: 'web', command: 'npm run dev', cwd: '', status: 'running', exitCode: null, reason: null, startedAt: null, topic: null,
+        urls: [{ url: 'http://localhost:5173/', lastSeenAt: '2026-10-24T10:00:00Z', running: true }, { url: 'https://example.com/', lastSeenAt: '2026-10-24T10:00:00Z', running: true }] }],
+    }
+    setup({ at: '/code', uiState: SAVED, terminal: true, services })
+    await waitFor(() => expect(tabsOf(1)).toEqual(['localhost:3000']))
+    fireEvent.keyDown(window, { key: 'F1' })
+    await waitFor(() => expect(document.querySelector('[data-slot="code-command-palette"]')).not.toBeNull())
+    const heading = (name: string) => [...document.querySelectorAll('[cmdk-group]')].find((group) => group.querySelector('[cmdk-group-heading]')?.textContent === name)
+    await waitFor(() => expect(heading('Open page')).toBeTruthy())
+    expect([...heading('Pages')!.querySelectorAll('[role=option]')].map((option) => option.textContent)).toEqual(['localhost:3000/admin · group 1', 'localhost:3000 · group 2'])
+    expect([...heading('Open page')!.querySelectorAll('[role=option]')].map((option) => option.textContent)).toEqual(['localhost:5173'])
+    fireEvent.click(heading('Open page')!.querySelector('[role=option]')!)
+    await waitFor(() => expect(tabsOf(0)).toEqual(['localhost:3000/admin', 'localhost:5173']))
+  })
+
+  it('shows "Nothing is listening" for a saved address that no longer answers, keeping the address', async () => {
+    setup({ at: '/code', uiState: { codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }] }] }, dead: ['http://localhost:3000/admin'] })
+    const dead = await waitFor(() => { const found = document.querySelector('[data-slot="code-browser-dead"]'); expect(found).not.toBeNull(); return found as HTMLElement })
+    expect(dead.textContent).toContain('Nothing is listening')
+    expect(dead.textContent).toContain('http://localhost:3000/admin')
+    expect(tabsOf(0)).toEqual(['localhost:3000/admin'])
+    fireEvent.click(screen.getByRole('button', { name: 'Edit the address' }))
+    await waitFor(() => expect(address()?.value).toBe('http://localhost:3000/admin'))
   })
 })

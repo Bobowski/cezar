@@ -356,7 +356,7 @@ function reportClientError(
 const API_SEGMENTS = new Set([
   'api', 'v1', 'agent-profiles', 'apply', 'archive', 'archive-finished', 'association',
   'auto-resume', 'automation-checks', 'automation-log', 'automation-options',
-  'automation-templates', 'branch', 'branding-logo', 'cancel', 'candidates', 'channel', 'check',
+  'automation-templates', 'branch', 'branding', 'branding-logo', 'cancel', 'candidates', 'channel', 'check',
   'checkout', 'checks', 'comments', 'commit', 'config', 'connect', 'connection', 'consent',
   'continue', 'details', 'diff', 'dispatch', 'drafts', 'enable', 'events', 'feed', 'finish',
   'groups', 'handoff', 'health', 'host-usage', 'images', 'importable', 'launch-key',

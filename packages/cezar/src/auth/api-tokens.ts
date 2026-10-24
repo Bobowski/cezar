@@ -79,6 +79,7 @@ export const FAMILY_SCOPES: Record<string, Exclude<ApiTokenScope, 'read' | 'runs
   // A backup carries every secret and the auth store.
   'workspace/backup': 'admin',
   'workspace/agent-profiles': 'admin',
+  'workspace/branding': 'admin',
   'workspace/branding-logo': 'admin',
   'workspace/config': 'admin',
   'workspace/dashboard': 'admin',
@@ -117,6 +118,10 @@ const READ_OWNERS: ReadonlyMap<string, Exclude<ApiTokenScope, 'read' | 'runs.tra
 
 /** Reads any token may make: what an agent needs to address anything at all. */
 const DISCOVERY_ROUTES: ReadonlySet<string> = new Set(['/projects', '/health', '/models']);
+
+/** Reads the sign-in page makes with no credential at all (`isPublicBrandingRequest`), so no token
+ *  is refused them. The name is the operator's own text, which is why they are not `read`'s. */
+const PUBLIC_ROUTES: ReadonlySet<string> = new Set(['/workspace/branding', '/workspace/branding/:kind', '/workspace/branding-logo']);
 
 /**
  * The GET routes `read` covers, by route template — an ALLOWLIST: each one is known to hand out
@@ -236,7 +241,7 @@ export function apiTokenAllows(scopes: readonly ApiTokenScope[], method: string,
   if (!READS.has(method.toUpperCase())) return false;
   const template = getRouteTemplateOf(path);
   if (template === null) return false;
-  if (DISCOVERY_ROUTES.has(template)) return true;
+  if (DISCOVERY_ROUTES.has(template) || PUBLIC_ROUTES.has(template)) return true;
   const reader = READ_OWNERS.get(template);
   if (reader && scopes.includes(reader)) return true;
   if (scopes.includes('runs.transcript') && TRANSCRIPT_ROUTES.has(template)) return true;

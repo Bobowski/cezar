@@ -69,6 +69,7 @@ import {
   getUiState,
   getWorkflows,
   getWorkflowNodes,
+  getWorkspaceBranding,
   getWorkspaceConfig,
   getWorkspaceUiState,
   getSkillsUpdate,
@@ -477,6 +478,9 @@ export const workspaceQueryKeys = {
   uiState: ['workspace', 'ui-state'] as const,
   /** `~/.cezar/config.json`'s workspace settings slice, including instance branding. */
   config: ['workspace', 'config'] as const,
+  /** `GET /api/v1/workspace/branding` (spec 2026-10-24-cockpit-branding) — public, so the sign-in
+   *  page shares the one cache with the shell. */
+  branding: ['workspace', 'branding'] as const,
   /** Live host totals (spec `.ai/specs/2026-09-20-host-resource-telemetry.md`). One cache for
    *  both transports: local cockpits fold pushed `host` frames into it, remote ones refetch it
    *  on mount and on the visibility/reconnect reconcile. Workspace-led because the machine is
@@ -1627,6 +1631,15 @@ export function useWorkspaceUiState() {
 
 /** The global settings slice of `~/.cezar/config.json` — Settings → Resources (step 3.5) and
  *  the Projects pane's checkout root (step 4.4). Not scope-led: one workspace, one answer. */
+/** The cockpit's brand. Readers fall back to `CEZAR_BRANDING` while it loads or on an older server. */
+export function useWorkspaceBranding() {
+  return useQuery({
+    queryKey: workspaceQueryKeys.branding,
+    queryFn: ({ signal }) => getWorkspaceBranding({ signal }),
+    staleTime: 60_000,
+  })
+}
+
 export function useWorkspaceConfig() {
   return useQuery({
     queryKey: workspaceQueryKeys.config,

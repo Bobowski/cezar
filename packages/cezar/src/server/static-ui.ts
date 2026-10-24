@@ -1,3 +1,6 @@
+import { brandingLinks, manifestIcons, type BrandingState } from '../workspace/branding.ts';
+import { accentStyleOf, deriveAccentTokens } from '../workspace/branding-accent.ts';
+
 /** Which browser UI a request for `/` gets.
  *
  *  The React cockpit built to `web/dist` is the only web UI — the legacy
@@ -22,10 +25,13 @@ export function resolveIndexHtml(opts: { distExists: boolean }): IndexTarget {
  *  served by them. */
 export type GetTarget = IndexTarget | 'passthrough';
 
+/** The web manifest, rendered from branding (spec 2026-10-24-cockpit-branding §4). */
+export const MANIFEST_PATH = '/manifest.webmanifest';
+
 /** Paths owned by routes registered before the catch-all: the built app's
- *  hashed bundles and the favicon. */
+ *  hashed bundles, the favicon and the manifest. */
 function isStaticAsset(path: string): boolean {
-  return path.startsWith('/assets/') || path === '/icon.svg' || path === '/open-mercato.svg';
+  return path.startsWith('/assets/') || path === '/icon.svg' || path === '/open-mercato.svg' || path === MANIFEST_PATH;
 }
 
 /** Decide what any GET gets, so every route in the spec's map (`/tasks/:id/changes`,
@@ -125,3 +131,50 @@ export const ASSET_CACHE_CONTROL = 'public, max-age=31536000, immutable';
  *  be reused without asking. The shell is ~5 KB and the assets beside it still
  *  carry the year. */
 export const SHELL_CACHE_CONTROL = 'no-cache';
+
+// ---- branding (spec 2026-10-24-cockpit-branding) ----------------------------------------------
+
+/** The dark surfaces of `index.css`: the splash behind a launching PWA and its title bar. */
+const MANIFEST_BACKGROUND = '#131316';
+const MANIFEST_THEME = '#0b0b0d';
+
+/** `/manifest.webmanifest`. `short_name` is what a home screen fits under an icon. */
+export function renderManifest(state: BrandingState): string {
+  const letters = [...state.name];
+  return JSON.stringify({
+    name: state.name,
+    short_name: letters.length > 12 ? letters.slice(0, 12).join('').trimEnd() : state.name,
+    start_url: '/',
+    scope: '/',
+    display: 'standalone',
+    background_color: MANIFEST_BACKGROUND,
+    theme_color: MANIFEST_THEME,
+    icons: manifestIcons(state),
+  });
+}
+
+const escapeHtml = (value: string): string =>
+  value.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]!);
+
+/**
+ * The built `index.html` with the brand in it: the `<title>`, every icon link and the manifest,
+ * Open Graph for a link to the sign-in page, and the accent as custom properties on `<html>` (read
+ * by `index.css`'s `[data-brand-accent]` rules) so it paints before the bundle runs. `origin` makes
+ * `og:image` absolute, which link previews require.
+ */
+export function renderShellHtml(html: string, state: BrandingState, origin: string | null = null): string {
+  const tokens = state.accent ? deriveAccentTokens(state.accent) : null;
+  const head = [
+    ...brandingLinks(state).map((link) =>
+      `<link rel="${link.rel}" href="${escapeHtml(link.href)}"${link.type ? ` type="${link.type}"` : ''}${link.sizes ? ` sizes="${link.sizes}"` : ''} />`),
+    `<meta property="og:title" content="${escapeHtml(state.name)}" />`,
+    ...(state.urls['app-icon'] && origin ? [`<meta property="og:image" content="${escapeHtml(`${origin}${state.urls['app-icon']}`)}" />`] : []),
+    ...(tokens ? [`<meta name="theme-color" content="${tokens.dark.primary}" />`] : []),
+  ].join('\n    ');
+  let out = html
+    .replace(/[ \t]*<link\b[^>]*\brel=["'](?:icon|shortcut icon|apple-touch-icon|manifest)["'][^>]*>[ \t]*\r?\n?/gi, '')
+    .replace(/<title>[\s\S]*?<\/title>/i, () => `<title>${escapeHtml(state.name)}</title>`)
+    .replace(/<\/head>/i, () => `  ${head}\n  </head>`);
+  if (tokens) out = out.replace(/<html\b([^>]*)>/i, (_, attrs: string) => `<html${attrs} data-brand-accent style="${accentStyleOf(tokens)}">`);
+  return out;
+}

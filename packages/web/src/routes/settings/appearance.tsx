@@ -3,9 +3,18 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 
-import { useProjects, useWorkspaceConfig, workspaceQueryKeys } from '@/api/queries'
-import type { WorkspaceConfigResponse } from '@open-mercato/cezar-api-client'
-import { deleteWorkspaceBrandingLogo, putWorkspaceConfig, uploadWorkspaceBrandingLogo } from '@/api/client'
+import { useSignedInUser } from '@/api/auth'
+import { useHealth, useProjects, useWorkspaceBranding, useWorkspaceConfig, workspaceQueryKeys } from '@/api/queries'
+import type { BrandingUploadKind, WorkspaceBranding, WorkspaceConfigResponse } from '@open-mercato/cezar-api-client'
+import {
+  deleteWorkspaceBrandingImage,
+  deleteWorkspaceBrandingLogo,
+  putWorkspaceBranding,
+  putWorkspaceConfig,
+  resetWorkspaceBranding,
+  uploadWorkspaceBrandingImage,
+  uploadWorkspaceBrandingLogo,
+} from '@/api/client'
 import type { SetWorkspaceConfigInput } from '@open-mercato/cezar-api-client'
 import { useAppearance } from '@/components/appearance-provider'
 import { useTheme } from '@/components/theme-provider'
@@ -17,7 +26,7 @@ import type { Accent, Density, Width } from '@/lib/appearance'
 import type { Theme } from '@/lib/theme'
 import { useProjectOrder } from '@/lib/use-project-order'
 import { toast } from '@/components/ui/toaster'
-import { SettingsField, SettingsGroup, SettingsPane } from './settings-field'
+import { SettingsField, SettingsGroup, SettingsNote, SettingsPane } from './settings-field'
 
 /**
  * Settings → Appearance (R6 Step 1.3, spec §"Settings").
@@ -84,10 +93,15 @@ function AccentPreview({ swatch }: { swatch: string }) {
   )
 }
 
-const ACCENT_OPTIONS: Array<ChoiceOption<Accent>> = [
-  { value: 'lime', label: 'Lime', preview: <AccentPreview swatch="var(--accent-lime)" /> },
-  { value: 'violet', label: 'Violet', preview: <AccentPreview swatch="var(--violet)" /> },
-]
+/** The default accent is the brand's when the operator set one (spec 2026-10-24-cockpit-branding). */
+function accentOptions(brandAccent: string | null): Array<ChoiceOption<Accent>> {
+  return [
+    brandAccent
+      ? { value: 'lime', label: 'Brand', preview: <AccentPreview swatch={brandAccent} /> }
+      : { value: 'lime', label: 'Lime', preview: <AccentPreview swatch="var(--accent-lime)" /> },
+    { value: 'violet', label: 'Violet', preview: <AccentPreview swatch="var(--violet)" /> },
+  ]
+}
 
 /** Three list rows at the spacing the option stands for. */
 function DensityPreview({ gap, rows }: { gap: string; rows: number }) {
@@ -229,15 +243,37 @@ function ProjectOrderField() {
   )
 }
 
+/**
+ * The server's `trustedOperator()`: a local cockpit, or a hosted one behind cezar's own sign-in.
+ * Hosted under `CEZ_AUTH=0` every branding write answers 409. Until health loads the controls
+ * show — the server still decides.
+ */
+function useBrandingEditable(): boolean {
+  const health = useHealth()
+  const signedIn = useSignedInUser() !== null
+  return health.data === undefined || health.data.capabilities.localHandoff || signedIn
+}
+
 function BrandingFields() {
+  const editable = useBrandingEditable()
   const config = useWorkspaceConfig()
+  const brand = useWorkspaceBranding()
   const queryClient = useQueryClient()
+  const brandingSaved = useBrandingSaved()
+  const reset = useMutation({
+    mutationFn: () => resetWorkspaceBranding(),
+    onSuccess: brandingSaved,
+    onError: (error: Error) => toast(error.message, { tone: 'danger' }),
+  })
   const logoInput = useRef<HTMLInputElement>(null)
   const [logoDraft, setLogoDraft] = useState<{ file: File; url: string } | null>(null)
   useEffect(() => () => { if (logoDraft) URL.revokeObjectURL(logoDraft.url) }, [logoDraft])
   const save = useMutation({
     mutationFn: (patch: SetWorkspaceConfigInput) => putWorkspaceConfig(patch),
-    onSuccess: (result) => queryClient.setQueryData(workspaceQueryKeys.config, result),
+    onSuccess: (result) => {
+      queryClient.setQueryData(workspaceQueryKeys.config, result)
+      void queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.branding })
+    },
     onError: (error: Error) => toast(error.message, { tone: 'danger' }),
   })
   const upload = useMutation({
@@ -247,6 +283,7 @@ function BrandingFields() {
     onSuccess: (logoUrl) => {
       const current = queryClient.getQueryData<WorkspaceConfigResponse>(workspaceQueryKeys.config)
       if (current) queryClient.setQueryData(workspaceQueryKeys.config, { ...current, branding: { ...current.branding, logoUrl } })
+      void queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.branding })
       setLogoDraft(null)
     },
     onError: (error: Error) => toast(error.message, { tone: 'danger' }),
@@ -261,6 +298,15 @@ function BrandingFields() {
     }
   }, [branding?.name])
   const logoSrc = logoDraft?.url ?? branding?.logoUrl ?? null
+  if (!editable) {
+    return (
+      <SettingsGroup title="Branding" description="How this cezar instance introduces itself.">
+        <SettingsNote role="note" data-slot="branding-readonly">
+          Sign-in required: this cockpit is hosted without sign-in (CEZ_AUTH=0), so its name, logo, icons and accent are changed on the machine that runs it.
+        </SettingsNote>
+      </SettingsGroup>
+    )
+  }
   return (
     <SettingsGroup title="Branding" description="How this cezar instance introduces itself.">
       <SettingsField
@@ -352,13 +398,158 @@ function BrandingFields() {
           </div>
         </div>
       </SettingsField>
+      <BrandImageField
+        kind="favicon"
+        title="Favicon"
+        hint="SVG, or a PNG up to 1024 px. The browser tab shows it; a PNG becomes 16, 32 and 48 px. Applies on the next reload."
+        accept="image/svg+xml,image/png"
+        url={brand.data?.faviconUrl ?? null}
+      />
+      <BrandImageField
+        kind="app-icon"
+        title="App icon"
+        hint="One square PNG, 512 to 1024 px. Becomes the home-screen, PWA and desktop-app icon at every size it needs."
+        accept="image/png"
+        url={brand.data?.appIconUrl ?? null}
+      />
+      <BrandAccentField accent={brand.data?.accent ?? null} />
+      <SettingsField
+        title="Reset branding"
+        hint="Back to cezar's own name, mark, icons and accent."
+        control={
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            data-slot="branding-reset"
+            disabled={!brand.data?.custom || reset.isPending}
+            onClick={() => reset.mutate()}
+          >
+            Reset
+          </Button>
+        }
+      />
     </SettingsGroup>
+  )
+}
+
+/** Keep both caches the brand lives in honest: the shell reads config, the rest reads branding. */
+function useBrandingSaved() {
+  const queryClient = useQueryClient()
+  return (result: WorkspaceBranding) => {
+    queryClient.setQueryData(workspaceQueryKeys.branding, result)
+    void queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.config })
+  }
+}
+
+function BrandImageField({ kind, title, hint, accept, url }: { kind: BrandingUploadKind; title: string; hint: string; accept: string; url: string | null }) {
+  const input = useRef<HTMLInputElement>(null)
+  const saved = useBrandingSaved()
+  const change = useMutation({
+    mutationFn: (file: File | null) => (file ? uploadWorkspaceBrandingImage(kind, file) : deleteWorkspaceBrandingImage(kind)),
+    onSuccess: saved,
+    onError: (error: Error) => toast(error.message, { tone: 'danger' }),
+  })
+  return (
+    <SettingsField title={title} hint={hint}>
+      <div className="flex flex-wrap items-center gap-3" data-slot={`branding-${kind}`}>
+        {url ? (
+          <img src={url} alt={`Current ${title.toLowerCase()}`} className="size-12 rounded-lg border border-border bg-background object-contain p-1" />
+        ) : (
+          <span aria-hidden="true" className="flex size-12 items-center justify-center rounded-lg border border-dashed border-input text-soft-foreground">
+            <ImageIcon className="size-4" />
+          </span>
+        )}
+        <Input
+          ref={input}
+          aria-label={`Upload ${title.toLowerCase()}`}
+          type="file"
+          accept={accept}
+          hidden
+          disabled={change.isPending}
+          onChange={(event) => {
+            const file = event.currentTarget.files?.[0]
+            if (file) change.mutate(file)
+            event.currentTarget.value = ''
+          }}
+        />
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" variant="outline" size="sm" disabled={change.isPending} onClick={() => input.current?.click()}>
+            <UploadIcon aria-hidden="true" className="size-3.5" />
+            {url ? `Replace ${title.toLowerCase()}` : `Upload ${title.toLowerCase()}`}
+          </Button>
+          {url ? (
+            <Button type="button" variant="ghost" size="sm" disabled={change.isPending} onClick={() => change.mutate(null)}>
+              Remove
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    </SettingsField>
+  )
+}
+
+function BrandAccentField({ accent }: { accent: string | null }) {
+  const saved = useBrandingSaved()
+  // Starts from the accent on screen — read from the token, so the colour stays in index.css.
+  const [draft, setDraft] = useState(() => accent ?? getComputedStyle(document.documentElement).getPropertyValue('--accent-lime').trim())
+  useEffect(() => { if (accent) setDraft(accent) }, [accent])
+  const save = useMutation({
+    mutationFn: (next: string | null) => putWorkspaceBranding({ accent: next }),
+    onSuccess: saved,
+    onError: (error: Error) => toast(error.message, { tone: 'danger' }),
+  })
+  const valid = /^#[0-9a-f]{6}$/i.test(draft)
+  // The picker shows the last colour that parsed, so typing a half-written hex never resets it.
+  const [picked, setPicked] = useState(valid ? draft.toLowerCase() : null)
+  useEffect(() => { if (valid) setPicked(draft.toLowerCase()) }, [draft, valid])
+  return (
+    <SettingsField
+      title="Accent colour"
+      htmlFor="branding-accent"
+      hint="The default accent for everyone on this cezar, with light and dark variants derived for contrast. Anyone who picked another accent above keeps theirs."
+    >
+      <div className="flex flex-wrap items-center gap-2" data-slot="branding-accent">
+        {picked ? (
+          <input
+            type="color"
+            aria-label="Accent colour picker"
+            value={picked}
+            onChange={(event) => setDraft(event.currentTarget.value)}
+            className="h-8 w-10 cursor-pointer rounded-md border border-input bg-background p-0.5"
+          />
+        ) : null}
+        <Input
+          id="branding-accent"
+          aria-label="Accent colour"
+          value={draft}
+          maxLength={7}
+          onChange={(event) => setDraft(event.currentTarget.value.trim())}
+          className="w-28 font-mono"
+        />
+        <Button
+          type="button"
+          variant="default"
+          size="sm"
+          disabled={!valid || save.isPending || draft.toLowerCase() === accent}
+          onClick={() => save.mutate(draft.toLowerCase())}
+        >
+          Apply
+        </Button>
+        {accent ? (
+          <Button type="button" variant="ghost" size="sm" disabled={save.isPending} onClick={() => save.mutate(null)}>
+            Use cezar&apos;s
+          </Button>
+        ) : null}
+      </div>
+    </SettingsField>
   )
 }
 
 export function AppearanceSection() {
   const { theme, setTheme } = useTheme()
   const { accent, density, width, setAccent, setDensity, setWidth } = useAppearance()
+  const brandAccent = useWorkspaceBranding().data?.accent ?? null
 
   return (
     <SettingsPane data-slot="appearance-section">
@@ -368,7 +559,7 @@ export function AppearanceSection() {
         </SettingsField>
 
         <SettingsField title="Accent" hint="The primary action color. Saved with this repo's cockpit state.">
-          <ChoiceCards slot="appearance-accent" label="Accent" value={accent} options={ACCENT_OPTIONS} onChange={setAccent} />
+          <ChoiceCards slot="appearance-accent" label="Accent" value={accent} options={accentOptions(brandAccent)} onChange={setAccent} />
         </SettingsField>
       </SettingsGroup>
 

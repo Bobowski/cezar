@@ -44,6 +44,13 @@ export function isPublicHookRequest(method: string, pathname: string): boolean {
   return method === 'POST' && HOOK_PATH_RE.test(pathname);
 }
 
+/** The brand is the sign-in page's own look (spec 2026-10-24-cockpit-branding §5): reading it —
+ *  the name, accent and the image files — needs no session. Every write stays behind the guard. */
+const BRANDING_PATH_RE = /^\/api\/v1\/workspace\/(?:branding(?:\/[a-z0-9-]+)?|branding-logo)$/;
+export function isPublicBrandingRequest(method: string, pathname: string): boolean {
+  return (method === 'GET' || method === 'HEAD') && BRANDING_PATH_RE.test(pathname);
+}
+
 /** Public only while no owner can sign in: a restore upload is a setup action, not a sign-in one. */
 const SETUP_ONLY = new Set([`POST ${API}/auth/setup/restore`]);
 
@@ -166,6 +173,7 @@ export function createAuthGuard(options: AuthGuardOptions): MiddlewareHandler<Au
     }
     c.set('principal', undefined);
     return publicNow(c.req.method, c.req.path, options.service) || isPublicHookRequest(c.req.method, c.req.path)
+      || isPublicBrandingRequest(c.req.method, c.req.path)
       ? next()
       : unauthorized(c);
   };

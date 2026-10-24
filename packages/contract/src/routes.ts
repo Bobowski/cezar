@@ -181,6 +181,7 @@ import {
   setConfigResponseSchema,
   skillsUpdateStateSchema,
   workspaceBrandingLogoResponseSchema,
+  workspaceBrandingSchema,
   workspaceConfigResponseSchema,
 } from './workspace.ts';
 import {
@@ -520,6 +521,12 @@ export const routeContracts = {
   'GET /workspace/branding-logo': { summary: 'The cockpit\'s custom logo.', notTool: 'binary' },
   'POST /workspace/branding-logo': { summary: 'Upload the cockpit\'s custom logo.', response: workspaceBrandingLogoResponseSchema, notTool: 'binary' },
   'DELETE /workspace/branding-logo': { summary: 'Remove the cockpit\'s custom logo.', response: workspaceBrandingLogoResponseSchema, destructive: true },
+  'GET /workspace/branding': { summary: 'The cockpit\'s branding: name, accent, logo, favicon and app icon.', response: workspaceBrandingSchema },
+  'PUT /workspace/branding': { summary: 'Rename the cockpit or change its accent colour.', response: workspaceBrandingSchema, destructive: true },
+  'DELETE /workspace/branding': { summary: 'Reset the cockpit to cezar\'s own name, mark, icons and accent.', response: workspaceBrandingSchema, tool: 'workspace_branding_reset', destructive: true },
+  'GET /workspace/branding/:kind': { summary: 'One branding image (favicon or app icon, any derived size).', notTool: 'binary' },
+  'PUT /workspace/branding/:kind': { summary: 'Upload the cockpit\'s favicon (SVG or PNG) or app icon (square PNG, 512 px or more), base64.', response: workspaceBrandingSchema, tool: 'workspace_branding_upload', destructive: true },
+  'DELETE /workspace/branding/:kind': { summary: 'Remove the cockpit\'s favicon, app icon or logo.', response: workspaceBrandingSchema, destructive: true },
   'GET /workspace/config': { summary: 'Workspace-wide settings (concurrency, memory, branding).', response: workspaceConfigResponseSchema },
   'PUT /workspace/config': { summary: 'Change workspace-wide settings.', response: workspaceConfigResponseSchema, destructive: true },
   'GET /workspace/dashboard': { summary: 'The dashboard: tasks across every project.', response: dashboardSnapshotSchema },

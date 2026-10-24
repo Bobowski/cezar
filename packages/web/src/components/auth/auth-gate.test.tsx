@@ -23,10 +23,14 @@ let answers: Record<string, () => Response | Promise<Response>> = {}
 const json = (payload: unknown, status = 200) =>
   new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } })
 
+const CEZAR_BRAND = { name: 'cezar', logoUrl: null, faviconUrl: null, appIconUrl: null, accent: null, accentTokens: null, custom: false }
+let brand: Record<string, unknown> = CEZAR_BRAND
+
 function serve(initial: Session | Down) {
   session = initial
   requests = []
   answers = {}
+  brand = CEZAR_BRAND
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -40,6 +44,8 @@ function serve(initial: Session | Down) {
       }
       const answer = answers[`${method} ${url}`]
       if (answer) return answer()
+      // Public, like the sign-in page that shows it (spec 2026-10-24-cockpit-branding §5).
+      if (url === '/api/v1/workspace/branding') return json(brand)
       return json({ error: 'authentication required' }, 401)
     }),
   )
@@ -255,6 +261,15 @@ describe('AuthGate', () => {
     expect((await screen.findByRole('alert')).textContent).toBe('Wrong username or password')
     // A refused sign-in is not "the session ended": it must not bounce the gate.
     expect(requests.filter((request) => request.url === '/api/v1/auth/session')).toHaveLength(1)
+  })
+
+  it('the signed-out door wears the custom brand: its name and mark', async () => {
+    serve(SIGNED_OUT)
+    brand = { ...CEZAR_BRAND, name: 'Agents', logoUrl: '/api/v1/workspace/branding-logo?v=abcdefabcdef', custom: true }
+    renderGate()
+    await screen.findByLabelText('Username')
+    await waitFor(() => expect(document.querySelector('[data-slot="brand-name"]')?.textContent).toBe('Agents'))
+    expect(document.querySelector<HTMLImageElement>('[data-slot="brand-logo"]')?.getAttribute('src')).toBe('/api/v1/workspace/branding-logo?v=abcdefabcdef')
   })
 
   it('a 401 in the middle of a session re-asks, and the sign-in screen replaces the cockpit', async () => {

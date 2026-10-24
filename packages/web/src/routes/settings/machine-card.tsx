@@ -7,7 +7,10 @@ import {
   useHostUsageRoute,
   useHostUsageSubscription,
 } from '@/api/host-usage'
+import { useHealth } from '@/api/queries'
+import { useDockerDisk } from '@/api/services'
 import { StatusDot } from '@/components/status-dot'
+import { diskSummary } from '@/routes/services/docker-disk'
 import { effectiveHostView, formatCpuCores } from '@/lib/host-effective'
 import { formatMem } from '@/lib/tasks-table'
 import { useIsDesktop } from '@/lib/use-desktop'
@@ -42,6 +45,27 @@ const CPU_WARN_PCT = 60
 const CPU_DANGER_PCT = 85
 
 const clampPct = (value: number): number => Math.min(100, Math.max(0, value))
+
+/**
+ * "Docker 41 GB, 12 GB reclaimable" (spec 2026-10-23-docker-management §3.6), in the warning tone
+ * above 85 % of the daemon's data root. Asked once per visit, never polled, and only where the
+ * Docker view may read at all (it follows the terminal policy); absent when Docker cannot be read.
+ */
+function DockerDiskLine() {
+  const terminal = useHealth().data?.capabilities?.terminal === true
+  const disk = useDockerDisk({ enabled: terminal })
+  if (!terminal || !disk.data?.available) return null
+  const { dataRoot, warning } = disk.data
+  return (
+    <div data-slot="machine-card-docker" data-warning={warning} className="mt-3.5 grid grid-cols-[96px_1fr] items-center gap-3">
+      <span className="text-[13px] text-muted-foreground">Docker</span>
+      <span className={cn('text-[13px] tabular-nums', warning && 'font-medium text-danger')}>
+        {diskSummary(disk.data).replace(/^Docker /, '')}
+        {dataRoot ? ` · disk ${Math.round(dataRoot.usedPct)} % full` : ''}
+      </span>
+    </div>
+  )
+}
 
 export function MachineCard() {
   useHostUsageSubscription({ enabled: !useIsDesktop() })
@@ -274,6 +298,8 @@ export function MachineCard() {
           </>
         )}
       </div>
+
+      <DockerDiskLine />
 
       <p
         data-slot="machine-card-caveat"

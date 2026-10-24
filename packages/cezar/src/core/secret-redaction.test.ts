@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { collectSecretValues, redactDeep, redactSecrets, REDACTED } from './secret-redaction.ts';
+import {
+  collectSecretValues, heldSecretStart, lineSafeCut, redactDeep, redactionSafeCut, redactSecrets, redactSecretsFrom, REDACTED,
+} from './secret-redaction.ts';
 
 /**
  * #427: credentials must never be persisted to a run's NDJSON transcript.
@@ -117,6 +119,75 @@ describe('redactSecrets', () => {
     const out = redactSecrets('psql://app:S3cr3t-Pr0d-Passw0rd@db/prod', secrets);
     expect(out).not.toContain('S3cr3t-Pr0d-Passw0rd');
     expect(out).toContain(REDACTED);
+  });
+});
+
+describe('a multi-line secret, whatever the line ends', () => {
+  const pem = '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----';
+  const crlf = pem.replace(/\n/g, '\r\n');
+
+  it('is redacted from CRLF output when stored with LF, and the other way round, keeping the text’s own line ends', () => {
+    expect(redactSecrets(`key:\r\n${crlf}\r\nok\r\n`, [pem])).toBe(`key:\r\n${REDACTED}\r\nok\r\n`);
+    expect(redactSecrets(`key:\n${pem}\nok\n`, [crlf])).toBe(`key:\n${REDACTED}\nok\n`);
+  });
+
+  it('is held while a CRLF tail may still be its start — a read split between CR and LF included', () => {
+    const lines = crlf.split('\r\n');
+    const text = `boot\r\n${lines[0]}\r\n${lines[1]}\r\n`;
+    expect(heldSecretStart(text, [pem])).toBe('boot\r\n'.length);
+    expect(heldSecretStart(`boot\r\n${lines[0]}\r`, [pem])).toBe('boot\r\n'.length);
+    // Complete, it is not held: it can be redacted now.
+    expect(heldSecretStart(`boot\r\n${crlf}\r\n`, [pem])).toBe(`boot\r\n${crlf}\r\n`.length);
+    expect(heldSecretStart(`boot\r\n${lines[0]}\r\nnot it\r\n`, [pem])).toBe(`boot\r\n${lines[0]}\r\nnot it\r\n`.length);
+  });
+
+  it('is never cut across by a stream, CRLF or not', () => {
+    const text = `${'x'.repeat(10)}${crlf}${'y'.repeat(200)}`;
+    expect(redactionSafeCut(text, [pem], 30)).toBe(10);
+    // A line cut inside a complete one moves to its start; one outside it stays.
+    expect(lineSafeCut(`boot\n${pem}`, [pem], `boot\n${pem}`.lastIndexOf('\n') + 1)).toBe(5);
+    expect(lineSafeCut(`boot\n${pem}\nok`, [pem], `boot\n${pem}\n`.length)).toBe(`boot\n${pem}\n`.length);
+  });
+
+  it('is redacted from a hidden prefix on: what reaches past it goes out as one mark', () => {
+    expect(redactSecretsFrom(`${pem}\nok`, [pem], 10)).toBe(`${REDACTED}\nok`);
+    expect(redactSecretsFrom(`-----BEGIN PRIVATE KEY-----\nnot it\n`, [pem], 28)).toBe('not it\n');
+    expect(redactSecretsFrom(pem, [pem], 0)).toBe(REDACTED);
+  });
+});
+
+describe('a multi-line secret seen only in part (a stream picked up mid-key)', () => {
+  const pem = '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\nSECRETBODYLINE2abcdefghijklmnop\nshort==\n-----END PRIVATE KEY-----';
+  const [, body1, body2] = pem.split('\n') as [string, string, string];
+
+  it('redacts each of its body lines standing as a line, LF or CRLF, and leaves its armor and short lines', () => {
+    expect(redactSecrets(`${body1}\n${body2}\nshort==\n-----END PRIVATE KEY-----\napp up\n`, [pem]))
+      .toBe(`${REDACTED}\n${REDACTED}\nshort==\n-----END PRIVATE KEY-----\napp up\n`);
+    expect(redactSecrets(`boot\r\n${body2}\r\nok`, [pem])).toBe(`boot\r\n${REDACTED}\r\nok`);
+    // A body line inside a longer line is not the line itself.
+    expect(redactSecrets(`x${body2}\n`, [pem])).toBe(`x${body2}\n`);
+  });
+
+  it('redacts the rest of a body line a stream chunk starts inside, and the start of one it ends inside', () => {
+    const edges = { chunkEdges: true };
+    expect(redactSecrets(`${body1.slice(20)}\n${body2}\nok\n`, [pem], edges)).toBe(`${REDACTED}\n${REDACTED}\nok\n`);
+    expect(redactSecrets(`ok\n${body1.slice(0, 30)}`, [pem], edges)).toBe(`ok\n${REDACTED}`);
+    // Under 16 chars a piece is too common to be the key's.
+    expect(redactSecrets(`${body1.slice(-10)}\nok\n`, [pem], edges)).toBe(`${body1.slice(-10)}\nok\n`);
+  });
+
+  it('leaves a text’s own edges alone unless it is a stream chunk: a stored text is whole', () => {
+    expect(redactSecrets(`${body1.slice(20)}\nok\n`, [pem])).toBe(`${body1.slice(20)}\nok\n`);
+    expect(redactSecrets(`ok\n${body1.slice(0, 30)}`, [pem])).toBe(`ok\n${body1.slice(0, 30)}`);
+    expect(redactSecretsFrom(`ok\n${body1.slice(0, 30)}`, [pem], 1)).toBe(`k\n${body1.slice(0, 30)}`);
+    expect(redactSecretsFrom(`ok\n${body1.slice(0, 30)}`, [pem], 1, { chunkEdges: true })).toBe(`k\n${REDACTED}`);
+    // A body line standing whole is still redacted either way.
+    expect(redactSecrets(`${body2}\n`, [pem])).toBe(`${REDACTED}\n`);
+  });
+
+  it('still redacts the whole value as one mark, and a stream never cuts inside a body line', () => {
+    expect(redactSecrets(`a\n${pem}\nb`, [pem])).toBe(`a\n${REDACTED}\nb`);
+    expect(redactSecretsFrom(`${body1}\n${body2}\nok\n`, [pem], 5, { chunkEdges: true })).toBe(`${REDACTED}\n${REDACTED}\nok\n`);
   });
 });
 

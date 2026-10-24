@@ -85,10 +85,75 @@ export function collectSecretValues(env: NodeJS.ProcessEnv = process.env): strin
   return [...values].sort((a, b) => b.length - a.length);
 }
 
+/** Shorter, a line of a key is too common to be its own (`AB==`); an armor line (`-----END …-----`) every key shares. */
+const SECRET_LINE_MIN = 16;
+
+interface MultiLine { whole: RegExp; lines: RegExp | null; body: string[] }
+const multiLineCache = new Map<string, MultiLine>();
+
+/**
+ * A multi-line value matches with LF or CRLF between its lines, however it was stored (a tty writes
+ * CRLF); each of its body lines matches on its own too, for a text that holds only part of it.
+ */
+function multiLine(value: string): MultiLine {
+  let found = multiLineCache.get(value);
+  if (found) return found;
+  const all = value.split(/\r?\n/);
+  const body = [...new Set(all.filter((line) => line.length >= SECRET_LINE_MIN && !/^-----.*-----$/.test(line)))]
+    .sort((a, b) => b.length - a.length);
+  found = {
+    whole: new RegExp(all.map(escapeRegExp).join('\\r?\\n'), 'g'),
+    lines: body.length > 0 ? new RegExp(`^(?:${body.map(escapeRegExp).join('|')})$`, 'gm') : null,
+    body,
+  };
+  if (multiLineCache.size >= 32) multiLineCache.clear();
+  multiLineCache.set(value, found);
+  return found;
+}
+
+/** `chunkEdges`: `text` is one piece of a stream (a Docker log read), its first and last lines possibly cut-off key lines. */
+export interface RedactOptions { chunkEdges?: boolean }
+
+/**
+ * Every `[start, end)` of `text` a multi-line `value` covers: the whole value, each body line of it
+ * standing as a line, and — in a stream chunk — the piece of one it starts or ends inside (a `--tail` begun mid-key).
+ */
+function multiLineSpans(text: string, value: string, chunkEdges: boolean): Array<[number, number]> {
+  const { whole, lines, body } = multiLine(value);
+  const spans: Array<[number, number]> = [];
+  for (const match of text.matchAll(whole)) spans.push([match.index, match.index + match[0].length]);
+  if (!lines) return spans;
+  for (const match of text.matchAll(lines)) spans.push([match.index, match.index + match[0].length]);
+  if (!chunkEdges) return spans;
+  const firstEnd = text.search(/[\r\n]/);
+  const first = firstEnd === -1 ? text : text.slice(0, firstEnd);
+  if (first.length >= SECRET_LINE_MIN && body.some((line) => line.endsWith(first))) spans.push([0, first.length]);
+  const lastStart = Math.max(text.lastIndexOf('\n'), text.lastIndexOf('\r')) + 1;
+  const last = text.slice(lastStart);
+  if (last.length >= SECRET_LINE_MIN && body.some((line) => line.startsWith(last))) spans.push([lastStart, text.length]);
+  return spans;
+}
+
+/** `text` with each run of overlapping spans replaced by one `[REDACTED]`. */
+function replaceSpans(text: string, spans: Array<[number, number]>): string {
+  if (spans.length === 0) return text;
+  let out = '';
+  let at = 0;
+  for (const [start, end] of spans.sort((a, b) => a[0] - b[0])) {
+    if (start >= at) out += text.slice(at, start) + REDACTED;
+    at = Math.max(at, end);
+  }
+  return out + text.slice(at);
+}
+
 /** Replace every known secret value / token shape in `text` with `[REDACTED]`. */
-export function redactSecrets(text: string, secretValues: readonly string[]): string {
+export function redactSecrets(text: string, secretValues: readonly string[], options: RedactOptions = {}): string {
   let out = text;
   for (const value of secretValues) {
+    if (value.includes('\n')) {
+      out = replaceSpans(out, multiLineSpans(out, value, options.chunkEdges === true));
+      continue;
+    }
     if (!out.includes(value)) continue;
     out = out.split(value).join(REDACTED);
   }
@@ -96,6 +161,84 @@ export function redactSecrets(text: string, secretValues: readonly string[]): st
     out = out.replace(re, REDACTED);
   }
   return out;
+}
+
+/**
+ * `text.slice(from)`, redacted as part of the whole `text`: a secret starting before `from` is still
+ * found, and what of it reaches past `from` goes out as `[REDACTED]`.
+ */
+export function redactSecretsFrom(text: string, secretValues: readonly string[], from: number, options: RedactOptions = {}): string {
+  if (from <= 0) return redactSecrets(text, secretValues, options);
+  const spans = secretSpans(text, secretValues, options.chunkEdges === true);
+  const reach = Math.max(from, ...spans.filter(([start]) => start < from).map(([, end]) => end));
+  return (reach > from ? REDACTED : '') + redactSecrets(text.slice(reach), secretValues, options);
+}
+
+/** Longer than any token shape needs before it can match at all (`AIza` + 35). */
+const TOKEN_HOLD = 64;
+
+/** How much of a stream's tail may still be the start of a secret value or token shape. */
+export function redactionHold(secretValues: readonly string[]): number {
+  return Math.max(TOKEN_HOLD, ...secretValues.map((value) => value.length));
+}
+
+/**
+ * Where a stream redacted piece by piece may cut `text` without splitting a secret value or token
+ * shape: at most `text.length - hold` (and `limit`), before any match reaching that point. The tail
+ * is held back, since a secret starting there may still be arriving.
+ */
+export function redactionSafeCut(text: string, secretValues: readonly string[], limit = Infinity): number {
+  let cut = Math.min(limit, text.length - redactionHold(secretValues));
+  if (cut <= 0) return 0;
+  // Latest first, so a span the moved cut now reaches is still seen; a token reaching it may still be growing.
+  const spans = secretSpans(text, secretValues, true).sort((a, b) => b[0] - a[0]);
+  for (const [start, end] of spans) if (start < cut && end >= cut) cut = start;
+  return cut;
+}
+
+/** Every `[start, end)` of `text` a secret value or token shape covers, unsorted. */
+function secretSpans(text: string, secretValues: readonly string[], chunkEdges: boolean): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  for (const value of secretValues) {
+    if (value === '') continue;
+    if (value.includes('\n')) spans.push(...multiLineSpans(text, value, chunkEdges));
+    else for (let at = text.indexOf(value); at !== -1; at = text.indexOf(value, at + 1)) spans.push([at, at + value.length]);
+  }
+  for (const re of TOKEN_PATTERNS) for (const match of text.matchAll(re)) spans.push([match.index, match.index + match[0].length]);
+  return spans;
+}
+
+/** `cut`, moved back to the start of any multi-line secret value it would split — a complete one included. */
+export function lineSafeCut(text: string, secretValues: readonly string[], cut: number): number {
+  const multiLine = secretValues.filter((value) => value.includes('\n'));
+  if (multiLine.length === 0) return cut;
+  for (const [start, end] of secretSpans(text, multiLine, true).sort((a, b) => b[0] - a[0])) if (start < cut && end > cut) cut = start;
+  return cut;
+}
+
+/**
+ * Where `text`'s tail may still be the start of a multi-line secret value (a PEM) — a stream cut at
+ * line ends must not cut past it; `text.length` when none. Single-line values never cross a line end.
+ * Line ends are compared as LF, so a CRLF stream (and a read ending between CR and LF) is held too.
+ */
+export function heldSecretStart(text: string, secretValues: readonly string[]): number {
+  let held = text.length;
+  for (const value of secretValues) {
+    if (!value.includes('\n')) continue;
+    const plain = value.replace(/\r\n/g, '\n');
+    // A CRLF tail is one char longer per line end than the value it may start.
+    const reach = plain.length + plain.split('\n').length;
+    for (let at = Math.max(0, text.length - reach); at < held; at++) {
+      if (text.charCodeAt(at) !== plain.charCodeAt(0)) continue;
+      let tail = text.slice(at).replace(/\r\n/g, '\n');
+      if (tail.endsWith('\r')) tail = tail.slice(0, -1);
+      if (tail.length < plain.length && plain.startsWith(tail)) {
+        held = at;
+        break;
+      }
+    }
+  }
+  return held;
 }
 
 /**

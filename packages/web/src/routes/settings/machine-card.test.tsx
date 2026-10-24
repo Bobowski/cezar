@@ -476,3 +476,49 @@ describe('MachineCard — review fixes (freshness basis, cache read, swap pair)'
     await waitFor(() => expect(screen.getByText('21%')).toBeTruthy())
   })
 })
+
+describe('MachineCard — Docker disk line (spec 2026-10-23-docker-management §3.6)', () => {
+  const DISK = {
+    available: true, reason: null, entries: [], totalBytes: 41e9, reclaimableBytes: 12e9, warning: true,
+    dataRoot: { path: '/var/lib/docker', sizeBytes: 100e9, freeBytes: 10e9, usedPct: 90 },
+  }
+  function serveDocker(terminal: boolean, disk: unknown) {
+    const asked: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api/v1/health')) return json({ ...HEALTH, capabilities: { ...HEALTH.capabilities, terminal } })
+      if (url.includes('/docker/disk')) {
+        asked.push(url)
+        return json(disk)
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    }))
+    return asked
+  }
+
+  it('shows Docker’s size and what Reclaim could free, in the warning tone above 85 %', async () => {
+    serveDocker(true, DISK)
+    render(<MachineCard />, { wrapper: wrapper() })
+    const line = await waitFor(() => {
+      const found = document.querySelector('[data-slot="machine-card-docker"]')
+      expect(found).not.toBeNull()
+      return found!
+    })
+    expect(line.textContent).toBe('Docker41 GB, 12 GB reclaimable · disk 90 % full')
+    expect(line.getAttribute('data-warning')).toBe('true')
+  })
+
+  it('asks nothing where the Docker view may not read, and shows nothing when Docker is down', async () => {
+    const asked = serveDocker(false, DISK)
+    render(<MachineCard />, { wrapper: wrapper() })
+    await waitFor(() => expect(document.querySelector('[data-slot="machine-card"]')).not.toBeNull())
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(asked).toEqual([])
+    cleanup()
+    const down = serveDocker(true, { ...DISK, available: false, reason: 'Docker is installed, but its daemon is not running' })
+    render(<MachineCard />, { wrapper: wrapper() })
+    await waitFor(() => expect(down).toHaveLength(1))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(document.querySelector('[data-slot="machine-card-docker"]')).toBeNull()
+  })
+})

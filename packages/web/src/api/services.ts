@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 
-import { getDocker, getServices } from './client'
+import { getDocker, getDockerDisk, getDockerImages, getDockerVolumes, getServices } from './client'
 import { useHostTransport } from './host-usage'
 import { queryKeys } from './queries'
 import { subscribeTopic } from './ws'
@@ -87,4 +87,22 @@ export function useDocker() {
     return subscribeTopic(topic, () => void queryClient.invalidateQueries({ queryKey: key }), () => setRefused(true))
   }, [queryClient, socket, topic])
   return query
+}
+
+/*
+ * Docker management's sub-views (spec 2026-10-23-docker-management). Each lives under the `docker`
+ * state key, so the view's one `docker` subscription re-reads whichever is on screen; none polls.
+ */
+export function useDockerImages({ enabled = true }: { enabled?: boolean } = {}) {
+  return useQuery({ queryKey: queryKeys.docker.images(), queryFn: ({ signal }) => getDockerImages({ signal }), enabled })
+}
+
+export function useDockerVolumes({ enabled = true }: { enabled?: boolean } = {}) {
+  return useQuery({ queryKey: queryKeys.docker.volumes(), queryFn: ({ signal }) => getDockerVolumes({ signal }), enabled })
+}
+
+/** `projectId` for a reader outside the routed scope; the disk is the machine's either way. */
+export function useDockerDisk({ enabled = true, projectId }: { enabled?: boolean; projectId?: string } = {}) {
+  const scope = projectId ?? queryKeys.docker.state()[1]
+  return useQuery({ queryKey: queryKeys.docker.diskFor(scope), queryFn: ({ signal }) => getDockerDisk({ signal }, scope), enabled })
 }

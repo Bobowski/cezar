@@ -156,6 +156,31 @@ describe('a multi-line secret, whatever the line ends', () => {
   });
 });
 
+describe('a multi-line secret seen only in part (a stream picked up mid-key)', () => {
+  const pem = '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\nSECRETBODYLINE2abcdefghijklmnop\nshort==\n-----END PRIVATE KEY-----';
+  const [, body1, body2] = pem.split('\n') as [string, string, string];
+
+  it('redacts each of its body lines standing as a line, LF or CRLF, and leaves its armor and short lines', () => {
+    expect(redactSecrets(`${body1}\n${body2}\nshort==\n-----END PRIVATE KEY-----\napp up\n`, [pem]))
+      .toBe(`${REDACTED}\n${REDACTED}\nshort==\n-----END PRIVATE KEY-----\napp up\n`);
+    expect(redactSecrets(`boot\r\n${body2}\r\nok`, [pem])).toBe(`boot\r\n${REDACTED}\r\nok`);
+    // A body line inside a longer line is not the line itself.
+    expect(redactSecrets(`x${body2}\n`, [pem])).toBe(`x${body2}\n`);
+  });
+
+  it('redacts the rest of a body line a text starts inside, and the start of one it ends inside', () => {
+    expect(redactSecrets(`${body1.slice(20)}\n${body2}\nok\n`, [pem])).toBe(`${REDACTED}\n${REDACTED}\nok\n`);
+    expect(redactSecrets(`ok\n${body1.slice(0, 30)}`, [pem])).toBe(`ok\n${REDACTED}`);
+    // Under 16 chars a piece is too common to be the key's.
+    expect(redactSecrets(`${body1.slice(-10)}\nok\n`, [pem])).toBe(`${body1.slice(-10)}\nok\n`);
+  });
+
+  it('still redacts the whole value as one mark, and a stream never cuts inside a body line', () => {
+    expect(redactSecrets(`a\n${pem}\nb`, [pem])).toBe(`a\n${REDACTED}\nb`);
+    expect(redactSecretsFrom(`${body1}\n${body2}\nok\n`, [pem], 5)).toBe(`${REDACTED}\n${REDACTED}\nok\n`);
+  });
+});
+
 describe('redactDeep', () => {
   it('scrubs string leaves in nested event structures', () => {
     const event = {

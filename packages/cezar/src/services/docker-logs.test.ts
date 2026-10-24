@@ -149,6 +149,15 @@ describe('docker logs followers (spec 2026-10-23-docker-management §3.4)', () =
     });
   });
 
+  it('redacts the body lines of a PEM a --tail starts inside', () => {
+    const pem = '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\nSECRETBODYLINE2abcdefghijklmnop\n-----END PRIVATE KEY-----';
+    const { followers, spawned } = harness([pem]);
+    followers.read(ID, 0);
+    for (const line of pem.split('\n').slice(1)) spawned[0]!.data('out', `${line}\n`);
+    spawned[0]!.data('out', 'app up\n');
+    expect(followers.read(ID, 0).data).toBe(`${REDACTED}\n${REDACTED}\n-----END PRIVATE KEY-----\napp up\n`);
+  });
+
   it('redacts a PEM stored with LF that a tty container writes with CRLF, line by line', () => {
     const pem = '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj\n-----END PRIVATE KEY-----';
     const { followers, spawned } = harness([pem]);

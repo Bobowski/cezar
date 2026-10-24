@@ -120,6 +120,10 @@ process list; `CEZ_SERVER` for the address), so
   `buildChildEnv` drops them for agents and `checkStepEnv` for check steps (`isNeverForwarded`).
 - Scopes are enforced server-side per route family, not by the tool list the client saw.
 - Token hashes only; a lost token is recreated, never recovered.
+- An `admin` token reaches the auth state through the backup routes — an archive carries all of
+  `CEZ_HOME`, so downloading one reads the users, token hashes and host key, and restoring one
+  replaces them; this is accepted as inherent to `admin`, which already reads every secret and drives
+  the self-updater.
 - stdio `cezar mcp` on a local cockpit needs no token: it is the machine's owner, like the CLI.
 - The generator never exposes a route the cockpit does not have; a tool is a route.
 

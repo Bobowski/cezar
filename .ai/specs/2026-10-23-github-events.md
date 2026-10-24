@@ -158,7 +158,13 @@ the text above, and why:
   `branchHeads` and reads `/compare/<before>...<after>` for the subjects — `/commits?since=` would
   miss a fast-forward of old commits. `synchronize` diffs `prHeads` the same way. Both record the
   heads on first sight (and after every enable) and fire nothing then; their candidates are
-  `cursorless`, deduplicated by their receipt.
+  `cursorless`, deduplicated by their receipt. Heads of PRs and branches that slide out of the
+  capped lists (100 open PRs, 300 branches) are kept — up to 1000 each, newest first; a kept PR
+  head is marked `left` and never read for check suites — so one sliding back is diffed against
+  what was last seen. A branch with no previous head is a baseline, never a push (sliding in and
+  being created look the same); its first move fires. A PR outside the window that a comment
+  names is read through `/pulls/:n`, and a moved head found that way fires `synchronize`. An edit
+  that changes the events or `branches` clears the heads, as enabling does.
 - **ETags** cover `/pulls`, `/releases` and each head's `/check-suites`. A page whose rows a poll
   did not evaluate forgets its ETag, so a `304` never hides rows the cursor has not passed.
 - **`wakeNow`** is "every enabled, not backed-off GitHub poll of the project is due now", then the

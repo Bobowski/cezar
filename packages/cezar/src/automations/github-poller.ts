@@ -97,7 +97,8 @@ export interface GithubCandidate {
 /** The diff bases and ETags a poll reads and hands back (spec 2026-10-23-github-events §3). */
 export interface GithubActivityState {
   etags?: Record<string, string>;
-  prHeads?: Record<string, { sha: string; ref: string; updatedAt: string }>;
+  /** `left`: the PR is no longer in the open-PR window this poll read (`HEADS_CAP`). */
+  prHeads?: Record<string, { sha: string; ref: string; updatedAt: string; left?: boolean }>;
   branchHeads?: Record<string, string>;
 }
 

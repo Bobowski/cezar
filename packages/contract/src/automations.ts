@@ -227,8 +227,9 @@ export const automationRuntimeStateSchema = z.object({
   backoffUntil: z.string().optional(),
   consecutiveFailures: z.number().optional(),
   /** Open PR heads as the last poll saw them (`number` → head): what `pull_request.synchronize`
-   *  diffs against, and what a `304` on `/pulls` reuses. */
-  prHeads: z.record(z.string(), z.object({ sha: z.string(), ref: z.string(), updatedAt: z.string() })).optional(),
+   *  diffs against, and what a `304` on `/pulls` reuses; `left` marks one kept after its PR slid out
+   *  of the capped open-PR list. */
+  prHeads: z.record(z.string(), z.object({ sha: z.string(), ref: z.string(), updatedAt: z.string(), left: z.boolean().optional() })).optional(),
   /** Branch heads as the last poll saw them (`branch` → sha): what `push` diffs against. */
   branchHeads: z.record(z.string(), z.string()).optional(),
 });

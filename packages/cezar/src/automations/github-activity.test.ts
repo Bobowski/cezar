@@ -316,3 +316,55 @@ describe('release.published', () => {
     expect(result.activity?.etags).toEqual({ releases: 'r' });
   });
 });
+
+describe('heads outside the capped windows (spec 2026-10-23-github-events §3)', () => {
+  const heads = Object.fromEntries(pulls.map((pull) => [String(pull.number), { sha: pull.head.sha, ref: pull.head.ref, updatedAt: pull.updated_at }]));
+  const stale = { sha: 'old-sha', ref: own.head.ref, updatedAt: '2026-09-01T00:00:00Z' };
+  const others = pulls.filter((pull) => pull.number !== own.number);
+
+  it('keeps the head of a PR that left the open-PR window, so its next head change still fires', async () => {
+    const left = await new GithubPoller({ run: gh({ 'repos/acme/demo/pulls': others }) }).poll('acme', 'demo',
+      definition(['pull_request.synchronize']), { activity: { prHeads: { ...heads, [String(own.number)]: stale } } });
+    expect(left.candidates).toEqual([]);
+    expect(left.activity?.prHeads?.[String(own.number)]).toMatchObject({ sha: 'old-sha', left: true });
+
+    const back = await new GithubPoller({ run: gh({ 'repos/acme/demo/pulls': pulls }) }).poll('acme', 'demo',
+      definition(['pull_request.synchronize']), { activity: { prHeads: left.activity!.prHeads } });
+    expect(back.candidates.map((candidate) => [candidate.event, candidate.number])).toEqual([['pull_request.synchronize', own.number]]);
+    expect(back.activity?.prHeads?.[String(own.number)]).toEqual(heads[String(own.number)]);
+  });
+
+  it('reads a PR outside the window through the comment that names it, and fires its moved head', async () => {
+    const comment = {
+      id: 901, html_url: `https://github.com/acme/demo/pull/${own.number}#issuecomment-901`,
+      issue_url: `https://api.github.com/repos/acme/demo/issues/${own.number}`,
+      created_at: '2026-10-23T20:00:00Z', updated_at: '2026-10-23T20:00:00Z', user: { login: 'dave' }, body: 'pushed a fix',
+    };
+    const run = gh({
+      'repos/acme/demo/pulls': others,
+      'repos/acme/demo/issues/comments': [comment],
+      [`repos/acme/demo/pulls/${own.number}`]: fixture('pull'),
+    });
+    const result = await new GithubPoller({ run }).poll('acme', 'demo', definition(['pull_request.synchronize', 'pull_request.commented']), {
+      since: '2026-10-23T00:00:00.000Z',
+      activity: { prHeads: { ...heads, [String(own.number)]: { ...stale, left: true } } },
+    });
+    expect(result.candidates.map((candidate) => candidate.event).sort()).toEqual(['pull_request.commented', 'pull_request.synchronize']);
+    expect(result.activity?.prHeads?.[String(own.number)]).toMatchObject({ sha: own.head.sha, left: true });
+    // A head outside the window is never a check-suite read.
+    const suites = await new GithubPoller({ run: gh({ 'repos/acme/demo/pulls': () => notModified() }) }).poll('acme', 'demo',
+      definition(['check_suite.completed']), { activity: { prHeads: { [String(own.number)]: { ...stale, left: true } }, etags: { pulls: 'W/"x"' } } });
+    expect(suites.candidates).toEqual([]);
+  });
+
+  it('baselines a branch with no previous head instead of firing, and keeps heads that left the listing', async () => {
+    const branches = fixture<Array<{ name: string; commit: { sha: string } }>>('branches');
+    const [first, ...rest] = branches;
+    const run = gh({ 'repos/acme/demo/branches': rest });
+    const result = await new GithubPoller({ run }).poll('acme', 'demo', definition(['push']), {
+      activity: { branchHeads: { [first!.name]: first!.commit.sha } },
+    });
+    expect(result.candidates).toEqual([]);
+    expect(result.activity?.branchHeads).toEqual(Object.fromEntries([...rest, first!].map((branch) => [branch.name, branch.commit.sha])));
+  });
+});

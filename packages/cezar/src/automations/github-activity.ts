@@ -35,7 +35,9 @@ const BRANCH_PAGES = 3;
 const MAX_FAILING_JOBS = 20;
 const MAX_SUBJECTS = 20;
 const MAX_BODY = 4_000;
-const ZERO_SHA = '0'.repeat(40);
+/** Heads kept for PRs and branches that slid out of the capped lists, so one sliding back in is
+ *  diffed against what was last seen instead of being new. Newest first, then dropped. */
+export const HEADS_CAP = 1_000;
 const FAILING = new Set(['failure', 'timed_out', 'action_required', 'startup_failure']);
 
 export type GhRun = (args: readonly string[]) => Promise<string>;
@@ -62,6 +64,7 @@ const labelsSchema = z.array(z.object({ name: z.string() })).nullable().optional
 const pullSchema = z.object({
   number: z.number().int().positive(),
   node_id: z.string(),
+  state: z.string().optional(),
   title: z.string(),
   html_url: z.string(),
   updated_at: z.string(),
@@ -128,6 +131,23 @@ interface Item {
   fork?: boolean;
   headSha?: string;
   headRef?: string;
+  /** Pull requests read one by one (`/pulls/:n`): their state and last update. */
+  open?: boolean;
+  updatedAt?: string;
+}
+
+type PrHeads = NonNullable<GithubActivityState['prHeads']>;
+
+/** `fresh` (the window this poll read) over `previous`, whose other entries are kept as `left`;
+ *  newest `updatedAt` first, capped at `HEADS_CAP`. */
+function retainPrHeads(previous: PrHeads | undefined, fresh: PrHeads): PrHeads {
+  const merged: PrHeads = { ...fresh };
+  for (const [number, head] of Object.entries(previous ?? {})) {
+    if (!(number in fresh)) merged[number] = { sha: head.sha, ref: head.ref, updatedAt: head.updatedAt, left: true };
+  }
+  const entries = Object.entries(merged);
+  if (entries.length <= HEADS_CAP) return merged;
+  return Object.fromEntries(entries.sort((a, b) => b[1].updatedAt.localeCompare(a[1].updatedAt)).slice(0, HEADS_CAP));
 }
 
 /** Elements that do not fit are dropped, never the page — the `/timeline` lesson (#914). */
@@ -283,7 +303,11 @@ export async function pollActivity(input: {
     fork: pull.head.repo?.full_name.toLowerCase() !== full.toLowerCase(),
     headSha: pull.head.sha,
     headRef: pull.head.ref,
+    open: pull.state === undefined || pull.state === 'open',
+    updatedAt: pull.updated_at,
   });
+  /** PRs read one by one this poll — outside the open-PR window, when its own read missed them. */
+  const readAlone = new Set<number>();
   /** One read per distinct item per poll; a deleted item (404) is `null`, anything else throws. */
   const itemOf = async (number: number, pull: boolean): Promise<Item | null> => {
     if (items.has(number)) return items.get(number)!;
@@ -292,6 +316,7 @@ export async function pollActivity(input: {
       if (pull) {
         const parsed = pullSchema.safeParse(await getJson(run, `${api}/pulls/${number}`));
         item = parsed.success ? fromPull(parsed.data) : null;
+        if (item) readAlone.add(number);
       } else {
         const parsed = issueSchema.safeParse(await getJson(run, `${api}/issues/${number}`));
         item = parsed.success ? {
@@ -316,30 +341,38 @@ export async function pollActivity(input: {
   const admit = (candidate: GithubCandidate) => input.matches(candidate) && matchesActivityFilters(candidate, definition);
 
   // ---- open PR heads: `synchronize` and the heads `check_suite.completed` reads -------------
-  if (events.has('pull_request.synchronize') || events.has('check_suite.completed')) {
+  const tracksPrHeads = events.has('pull_request.synchronize') || events.has('check_suite.completed');
+  /** The PRs the open-PR list itself returned this poll; every other stored head is `left`. */
+  let windowed = new Set<string>();
+  const synchronizeOf = (item: Item, sha: string, updatedAt: string): GithubCandidate => ({
+    ...base(item, 'pull_request.synchronize', `${full}:${item.nodeId}:pull_request.synchronize:${sha}`,
+      updatedAt, `${item.nodeId}:synchronize:${sha}`),
+    cursorless: true,
+  });
+  if (tracksPrHeads) {
     // Without stored heads a 304 would leave nothing to diff against, so no ETag is sent then.
     const read = await getConditional(run, `${api}/pulls`, ['state=open', 'sort=updated', 'direction=desc', `per_page=${PAGE}`],
       state.prHeads ? etagsIn.pulls : undefined);
-    let heads: NonNullable<GithubActivityState['prHeads']>;
+    let heads: PrHeads;
     if (read.notModified) {
-      heads = state.prHeads ?? {};
+      heads = { ...(state.prHeads ?? {}) };
+      windowed = new Set(Object.entries(heads).filter(([, head]) => !head.left).map(([number]) => number));
       if (etagsIn.pulls) etags.pulls = etagsIn.pulls;
     } else {
       const pulls = parseEach(read.body, pullSchema);
       truncated ||= pulls.length >= PAGE;
       if (read.etag) etags.pulls = read.etag;
-      heads = Object.fromEntries(pulls.map((pull) => [String(pull.number), { sha: pull.head.sha, ref: pull.head.ref, updatedAt: pull.updated_at }]));
+      const fresh: PrHeads = Object.fromEntries(pulls.map((pull) => [String(pull.number), { sha: pull.head.sha, ref: pull.head.ref, updatedAt: pull.updated_at }]));
+      windowed = new Set(Object.keys(fresh));
+      heads = retainPrHeads(state.prHeads, fresh);
       for (const pull of pulls) items.set(pull.number, fromPull(pull));
-      // First sight records the heads and fires nothing: a head is "changed" only against one seen.
+      // First sight records the heads and fires nothing: a head is "changed" only against one seen
+      // — including one kept from before the PR slid out of this capped list.
       if (events.has('pull_request.synchronize') && state.prHeads) {
         for (const pull of pulls) {
           const previous = state.prHeads[String(pull.number)];
           if (!previous || previous.sha === pull.head.sha || ownSha(pull.head.sha)) continue;
-          const candidate: GithubCandidate = {
-            ...base(fromPull(pull), 'pull_request.synchronize', `${full}:${pull.node_id}:pull_request.synchronize:${pull.head.sha}`,
-              pull.updated_at, `${pull.node_id}:synchronize:${pull.head.sha}`),
-            cursorless: true,
-          };
+          const candidate = synchronizeOf(fromPull(pull), pull.head.sha, pull.updated_at);
           if (admit(candidate)) cursorless.push(candidate);
         }
       }
@@ -349,6 +382,7 @@ export async function pollActivity(input: {
     if (events.has('check_suite.completed')) {
       const group: ActivityObservation[] = [];
       const newest = Object.entries(heads)
+        .filter(([number]) => windowed.has(number))
         .sort((a, b) => b[1].updatedAt.localeCompare(a[1].updatedAt))
         .slice(0, maxRecords);
       for (const [number, head] of newest) {
@@ -453,6 +487,22 @@ export async function pollActivity(input: {
     groups.push(group);
   }
 
+  // ---- PRs outside the open-PR window that a comment named: their head as `/pulls/:n` read it --
+  if (tracksPrHeads && next.prHeads) {
+    for (const number of readAlone) {
+      const key = String(number);
+      const item = items.get(number);
+      if (windowed.has(key) || !item?.headSha || !item.headRef || !item.updatedAt) continue;
+      const previous = state.prHeads?.[key];
+      if (events.has('pull_request.synchronize') && previous && previous.sha !== item.headSha && item.open && !ownSha(item.headSha)) {
+        const candidate = synchronizeOf(item, item.headSha, item.updatedAt);
+        if (admit(candidate)) cursorless.push(candidate);
+      }
+      next.prHeads[key] = { sha: item.headSha, ref: item.headRef, updatedAt: item.updatedAt, left: true };
+    }
+    next.prHeads = retainPrHeads(undefined, next.prHeads);
+  }
+
   // ---- releases ------------------------------------------------------------------------------
   if (events.has('release.published')) {
     const read = await getConditional(run, `${api}/releases`, [`per_page=${RELEASE_PAGE}`], etagsIn.releases);
@@ -506,27 +556,23 @@ export async function pollActivity(input: {
       let compared = 0;
       for (const [name, sha] of Object.entries(heads)) {
         const previous = state.branchHeads[name];
-        if (previous === sha) continue;
+        // No previous head is a baseline, never a push: a branch sliding into the capped listing
+        // looks exactly like a new one. Its first move after that fires.
+        if (previous === undefined || previous === sha) continue;
         if (ownSha(sha)) continue;
         if (compared >= maxRecords) {
           // Over budget: keep the old head so the next poll still sees this push.
           truncated = true;
-          if (previous) heads[name] = previous;
-          else delete heads[name];
+          heads[name] = previous;
           continue;
         }
         compared += 1;
         let commits: z.infer<typeof commitSchema>[] = [];
         let url = `${input.htmlBase}/${full}/commit/${sha}`;
         try {
-          if (previous) {
-            const compare = await getJson(run, `${api}/compare/${previous}...${sha}`) as { html_url?: unknown; commits?: unknown } | null;
-            commits = parseEach(compare?.commits, commitSchema);
-            if (typeof compare?.html_url === 'string') url = compare.html_url;
-          } else {
-            const parsed = commitSchema.safeParse(await getJson(run, `${api}/commits/${sha}`));
-            if (parsed.success) commits = [parsed.data];
-          }
+          const compare = await getJson(run, `${api}/compare/${previous}...${sha}`) as { html_url?: unknown; commits?: unknown } | null;
+          commits = parseEach(compare?.commits, commitSchema);
+          if (typeof compare?.html_url === 'string') url = compare.html_url;
         } catch (error) {
           // A force-push can leave the old head unreachable; the push still happened.
           if (!isNotFound(error)) throw error;
@@ -539,14 +585,16 @@ export async function pollActivity(input: {
           author: clean(last?.author?.login ?? last?.commit.author?.name ?? 'unknown', 200),
           assignees: [], labels: [], headSha: sha, branch: name, cursorless: true,
           push: {
-            branch: name, before: previous ?? ZERO_SHA, after: sha,
+            branch: name, before: previous, after: sha,
             subjects: commits.slice(-MAX_SUBJECTS).map((commit) => clean(commit.commit.message.split('\n', 1)[0] ?? '', 200)),
           },
         };
         if (admit(candidate)) cursorless.push(candidate);
       }
     }
-    next.branchHeads = heads;
+    // Heads that left the listing are kept (newest first), so one sliding back is diffed, not new.
+    const kept = Object.entries(state.branchHeads ?? {}).filter(([name]) => !(name in heads));
+    next.branchHeads = Object.fromEntries([...Object.entries(heads), ...kept].slice(0, HEADS_CAP));
   }
 
   next.etags = etags;

@@ -170,21 +170,41 @@ Code: `packages/cezar/src/backup/` (`tar.ts`, `codec.ts`, `collect.ts`, `s3.ts`,
   `config.json` is placed, so a fresh `/setup` vouches only for the projects directory — never to
   whatever absolute path the manifest names, and each one passes `projectFileQualifies` again
   (review 2026-10-24, round 2).
-  **Run history merges, it is never replaced** (review round 3): a project's `.ai/cezar/runs.json`
-  folds the archive's records into this machine's — a record only here stays, one only in the
-  archive is added, one in both takes the archive's copy only when its newest timestamp is later
-  (a run record has no `updatedAt`) — and a `runs/<id>.ndjson` goes in only where this machine
-  has none or a shorter one. The restore then leaves `CEZ_HOME/restore-marker.json`; the next
-  `serve` consumes it before any store opens, and for that whole process `pruneOrphans`, the
-  lifecycle's orphan cleanup and the layouts backstop list what they would remove instead of
-  removing it.
-  **No archived run is live:** the archive's copy of a `queued`/`running`/`waiting` record is
-  written `failed` with `interrupted — captured by backup <name> while it was <status>` (the
-  live record is untouched), and a restore settles any live row an older archive still carries,
-  so boot recovery on the restored host never re-queues or resumes one.
-  **While the hold lasts** `POST /runs` answers 409 with Continue's "restore in progress"
-  message, and a due automation skips its cycle (a `skipped` / `restore in progress` log row,
-  then its own retry floor) instead of launching into an index that is not being written.
+  **Run history merges, it is never replaced** (review rounds 3–5, `mergeRunIndex`): a project's
+  `.ai/cezar/runs.json` folds the archive's records into this machine's. A record only here
+  stays; one only in the archive is added; one in both takes the archive's copy only when it is
+  newer. "Newer" is the record's `updatedAt` — the store stamps it on every change, strictly
+  increasing per record (`touch`) — whenever BOTH copies carry one, settled copies included
+  (ties keep this machine's). Without it on both sides (a store from before `updatedAt`), the
+  latest instant either copy carries decides (`createdAt`, `startedAt`, `finishedAt`,
+  `archivedAt`, `pinnedAt`, `seenAt`, `worktreeReclaimedAt`, its steps' too), except that a
+  copy the backup settled never replaces a local record — its `finishedAt` is the backup's
+  instant, not work. A `runs/<id>.ndjson` follows its record: it goes in when the archive's
+  record won, never when this machine's did, and otherwise (no index merged, an id neither index
+  names) only where this machine has none or a shorter one.
+  **No archived run is live, none is scheduled** (`settleLiveRuns`, rounds 3–4): the archive's
+  copy of a `queued`/`running`/`waiting` record is written `failed` with `interrupted — captured
+  by backup <name> while it was <status>` (a still-unanswered question keeps
+  `awaitingAnswerSince`; running steps fail too), and any record's schedule — `autoResumeAt`,
+  `monitoringWakeAt`, `monitoringWakeCapReached`, `activity` — is cleared, a cancelled
+  auto-resume saying so in its `error`. The live record is untouched. A restore settles an older
+  archive's rows the same way at the archive's `createdAt`, so boot recovery on the restored host
+  never re-queues, resumes or re-arms one. A settled copy carries `settledByBackup: <name>`, and
+  that mark — not the note — is what the merge recognises: the store's schema drops the mark on
+  load, and Continue clears the note with the rest of `error`, so a pin or archive made on the
+  restored host wins a later restore (round 5).
+  **Restore marker:** the restore then leaves `CEZ_HOME/restore-marker.json`; the next `serve`
+  consumes it before any store opens, and for that whole process `pruneOrphans`, the lifecycle's
+  orphan cleanup and the layouts backstop list what they would remove instead of removing it.
+  A marker that cannot be removed is renamed `restore-marker.json.consumed`, and one that cannot
+  be renamed either is only logged — never a failed boot. Neither name is ever archived.
+  **409s:** a restore asked for while a task runs or is queued answers 409 before a byte of the
+  upload is read. From the restore's first step until the process restarts, `POST /runs`,
+  `POST /runs/:id/messages` and `POST /runs/:id/continue` (and their `/p/:projectId/` aliases)
+  answer `409 {error: "restore in progress — continue this task once cezar has restarted"}`
+  (`RESTORE_IN_PROGRESS_ERROR`, inventoried in BACKWARD_COMPATIBILITY.md §2), and a due
+  automation skips its cycle (a `skipped` / `restore in progress` log row, then its own retry
+  floor) instead of launching into an index that is not being written.
   **Leftovers:** a crash between `copyAcross`'s copy and rename leaves `.<name>.cezar-restore-<hex>`.
   Every restore first sweeps those from where it places files (`CEZ_HOME`, the agents' dirs and
   files, the vouched project roots — never `node_modules`, `.git`, task worktrees or a link) and

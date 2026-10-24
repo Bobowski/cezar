@@ -64,7 +64,8 @@ Settings → Security → **API tokens** (owner only):
   the host, so `tasks` and `author` never include it). Per-route exceptions to a family's owner
   live in `ROUTE_OWNERS`.
 - Without `runs.transcript` (or `tasks`/`admin`), a token gets every run record PROJECTED —
-  `GET /runs`, `GET /runs/:id` and the `run` events of `/events` and `/workspace/events`, all
+  `GET /runs`, `GET /runs/:id`, `GET /groups/:groupId` (whose variants also drop the
+  agent-written `handoffExcerpt`) and the `run` events of `/events` and `/workspace/events`, all
   through `redactRunForScope` (`auth/run-projection.ts`): `projected: true`, and none of what the
   agent wrote (`titleSummary`, `graphState.outputs`, `dispatch.report`/`pendingReports`/
   `pendingAsk`); `error`, `steps[].error` and `landing.error`, which quote what a command

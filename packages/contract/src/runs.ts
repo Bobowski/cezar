@@ -811,8 +811,9 @@ export const groupVariantSchema = z.object({
   outputTokens: usageCounterSchema.optional(),
   costUsd: z.number().optional(),
   diffStat: z.string(),
-  /** First lines of the handoff journal's "## Progress log" section, as markdown. */
-  handoffExcerpt: z.string(),
+  /** First lines of the handoff journal's "## Progress log" section, as markdown. Agent-written,
+   *  so absent for an API token without `runs.transcript` (spec 2026-10-24-cezar-mcp-server §4). */
+  handoffExcerpt: z.string().optional(),
 });
 export type GroupVariant = z.infer<typeof groupVariantSchema>;
 

@@ -315,7 +315,7 @@ import { agentHomePaths, cezarHomeDir, expandTilde, isAbsolutePath } from '../pa
 import { authEnforced, fileEditRefusal, isLoopbackHostHeader, normalizeHostname, resolveCapabilities, trustedOperator } from './capabilities.ts';
 import { bearerOf, createAuthGuard, principalOf, upgradeIsAuthenticated, upgradeSessionId } from '../auth/guard.ts';
 import { isApiToken, principalSeesTranscript } from '../auth/api-tokens.ts';
-import { redactRunForScope, runViewScopes } from '../auth/run-projection.ts';
+import { projectsRuns, redactRunForScope, runViewScopes } from '../auth/run-projection.ts';
 import { buildCatalog, type Catalog } from '../mcp/catalog.ts';
 import { mcpRoutes } from '../mcp/http.ts';
 import { ensureHostKey } from '../auth/host-key.ts';
@@ -6223,8 +6223,9 @@ export function createApp(deps: ServerDeps) {
       const { dataDir, store } = c.get('project');
       const runs = groupRuns(store, c.req.param('groupId'));
       if (runs.length === 0) return c.json({ error: 'not found' }, 404);
+      const scopes = runViewScopes(principalOf(c));
       const detailed = await Promise.all(
-        runs.map(async (r): Promise<GroupVariant> => ({
+        runs.map((run) => redactRunForScope(run, scopes)).map(async (r): Promise<GroupVariant> => ({
           id: r.id,
           variant: r.variant ?? '?',
           title: r.title,
@@ -6238,7 +6239,8 @@ export function createApp(deps: ServerDeps) {
             r.worktreePath && existsSync(r.worktreePath)
               ? await worktreeDiffStat(r.worktreePath, r.baseBranch ?? 'HEAD')
               : '',
-          handoffExcerpt: handoffProgressExcerpt(readHandoff(dataDir, r.id)),
+          // Agent-written, like the handoff it quotes: runs.transcript's (spec 2026-10-24-cezar-mcp-server §4).
+          ...(projectsRuns(scopes) ? {} : { handoffExcerpt: handoffProgressExcerpt(readHandoff(dataDir, r.id)) }),
         })),
       );
       return c.json({

@@ -236,6 +236,19 @@ describe('a token’s view of a task', () => {
     expect(full.error).toContain(SECRET);
   });
 
+  it('GET /groups/:groupId leaves the agent-written handoff excerpt to a token that sees transcripts', async () => {
+    const run = store.createRun({ title: 'variant', workflow: 'quick-task', task: 'variant', steps: [], groupId: 'g1', variant: 'A' });
+    mkdirSync(join(dataDir, 'runs'), { recursive: true });
+    writeFileSync(join(dataDir, 'runs', `${run.id}.handoff.md`), `# Handoff\n\n## Progress log\n- wrote ${SECRET}\n`, 'utf8');
+    const projected = (await (await request('/api/v1/groups/g1', seedToken(['read']))).json()) as { runs: Array<Record<string, unknown>> };
+    expect(JSON.stringify(projected)).not.toContain(SECRET);
+    expect(projected.runs[0]).not.toHaveProperty('handoffExcerpt');
+    expect(projected.runs[0]).toMatchObject({ id: run.id, variant: 'A', status: 'queued' });
+    // Guard: the owner's comparison view keeps it.
+    const full = (await (await request('/api/v1/groups/g1', seedToken(['read', 'runs.transcript']))).json()) as { runs: Array<Record<string, unknown>> };
+    expect(full.runs[0]!.handoffExcerpt).toBe(`- wrote ${SECRET}`);
+  });
+
   it('projects the run events of both live streams for a read token', async () => {
     const id = seedRun();
     for (const path of ['/api/v1/events', '/api/v1/workspace/events']) {

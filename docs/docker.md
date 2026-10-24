@@ -82,9 +82,16 @@ compose file passes these four through; on a VPS, export them before every `--bu
 
 ```bash
 export CEZ_SOURCE_COMMIT=$(git rev-parse HEAD) CEZ_SOURCE_BRANCH=$(git rev-parse --abbrev-ref HEAD) \
-       CEZ_SOURCE_REMOTE=$(git remote get-url origin) CEZ_SOURCE_COMMITTED_AT=$(git log -1 --format=%cI)
+       CEZ_SOURCE_REMOTE=https://github.com/open-mercato/cezar.git CEZ_SOURCE_COMMITTED_AT=$(git log -1 --format=%cI)
 docker compose -f docker/compose.yml up -d --build
 ```
+
+Give `CEZ_SOURCE_REMOTE` as a plain URL — `https://…`, `ssh://…` or `git@…`, the repository you
+build from. Never paste `$(git remote get-url origin)` when that URL carries a token
+(`https://user:token@…`): the updater rejects it (`isUpdateRemote`), so the image follows
+nothing, and as a build arg the token is baked into the image's history (`docker history`) for
+anyone who can pull it. A private repository is fetched with the container's `gh` login or
+`/data/ssh` instead.
 
 From then on the version chip lights up when that branch has new commits (one bounded
 `git fetch` at most every five minutes, only while a cockpit is open; `CEZ_SELF_UPDATE_CHECK=0`

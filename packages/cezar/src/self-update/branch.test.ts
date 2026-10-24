@@ -1,11 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { mergeWriteWorkspaceConfig } from '../workspace/config.ts';
-import { parseUpdateBranch, processStartTicks, sourceLockHolder } from './branch.ts';
+import { parseUpdateBranch, processStartTicks, sourceLockHolder, sourceLockPath, takeOverStaleLock } from './branch.ts';
 import { runSelfUpdateCommand } from './cli.ts';
 import { activate, activeId, listInstalled, previousId, readManifest, versionEntry, writeManifest } from './layout.ts';
 import { RegistryCache } from './registry.ts';
@@ -525,6 +525,35 @@ describe('applying a branch build', () => {
     mkdirSync(home, { recursive: true });
     writeFileSync(join(home, 'source.lock'), `${process.pid}\n${Date.now()}\n\nsomeone-else\n`);
     expect(sourceLockHolder(env)).toBeNull();
+  });
+
+  it('takes a stale lock over atomically: one winner, and a fresh lock is never moved or removed', () => {
+    mkdirSync(home, { recursive: true });
+    const path = sourceLockPath(env);
+    const stale = `999999
+${Date.now()}
+`;
+    writeFileSync(path, stale);
+    // Two processes judged it stale; the second finds it already moved and does nothing.
+    takeOverStaleLock(path, stale);
+    expect(existsSync(path)).toBe(false);
+    expect(() => takeOverStaleLock(path, stale)).not.toThrow();
+    // A winner's fresh lock, moved by a loser that read the stale one: it goes back.
+    const fresh = `${process.ppid}
+${Date.now()}
+
+winner
+`;
+    writeFileSync(path, fresh);
+    takeOverStaleLock(path, stale);
+    expect(readFileSync(path, 'utf8')).toBe(fresh);
+    expect(readdirSync(home).filter((name) => name.endsWith('.stale'))).toEqual([]);
+    // Our release leaves a lock someone else holds now.
+    rmSync(path);
+    const release = service().source.lock(BRANCH);
+    writeFileSync(path, fresh);
+    release();
+    expect(readFileSync(path, 'utf8')).toBe(fresh);
   });
 
   it.runIf(process.platform === 'linux')('treats a live pid that started at another time as a recycled pid', () => {

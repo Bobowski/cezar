@@ -8,7 +8,7 @@
 
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 
@@ -63,12 +63,19 @@ export function processStartTicks(pid: number | 'self'): string | null {
  *  is live only while its pid runs AND is the same process that wrote it (spec 2026-10-23 §3.5). */
 export function sourceLockHolder(env: NodeJS.ProcessEnv = process.env): number | null {
   const path = sourceLockPath(env);
-  let text: string;
+  const text = readLock(path);
+  return text === null ? null : lockHolder(path, text);
+}
+
+function readLock(path: string): string | null {
   try {
-    text = readFileSync(path, 'utf8');
+    return readFileSync(path, 'utf8');
   } catch {
     return null;
   }
+}
+
+function lockHolder(path: string, text: string): number | null {
   const [pidText, atText, startText, token] = text.trim().split(/\r?\n/).map((line) => line.trim());
   const pid = Number(pidText);
   const at = Number(atText);
@@ -104,15 +111,40 @@ function acquireSourceLock(env: NodeJS.ProcessEnv): () => void {
       } finally {
         closeSync(fd);
       }
-      return () => rmSync(path, { force: true });
+      const mine = readLock(path);
+      // Never remove a lock someone took over after ours went stale.
+      return () => {
+        if (mine !== null && readLock(path) === mine) rmSync(path, { force: true });
+      };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      const holder = sourceLockHolder(env);
+      const seen = readLock(path);
+      if (seen === null) continue;
+      const holder = lockHolder(path, seen);
       if (holder !== null) throw new BranchBusyError(holder);
-      rmSync(path, { force: true });
+      takeOverStaleLock(path, seen);
     }
   }
   throw new BranchBusyError(0);
+}
+
+/** Move a stale lock aside atomically, so of two processes that judged it stale only one moves
+ *  it; the other's `wx` then loses to the winner's new lock. */
+export function takeOverStaleLock(path: string, seen: string): void {
+  const aside = `${path}.${process.pid}.stale`;
+  try {
+    renameSync(path, aside);
+  } catch {
+    return; // Someone else moved it first.
+  }
+  try {
+    // We moved a lock taken after our read, not the stale one: put it back, never over a newer one.
+    if (readLock(aside) !== seen) linkSync(aside, path);
+  } catch {
+    // A third process already holds the path.
+  } finally {
+    rmSync(aside, { force: true });
+  }
 }
 
 /** The default-on background fetch; `CEZ_SELF_UPDATE_CHECK=0` turns it off (Check still works). */

@@ -23,11 +23,11 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-const health = (fileEdit: boolean, terminal = false): HealthResponse => ({
+const health = (fileEdit: boolean, terminal = false, preview = true): HealthResponse => ({
   version: '0.0.0-test', projects: [], bootProject: 'default', repoRoot: '/repo',
   repo: { root: '/repo', branch: 'main' }, checks: [], defaultRunner: 'claude',
   forge: { kind: 'github', available: false },
-  capabilities: { localHandoff: true, terminal, preview: true, designMode: true, fileEdit, tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true, followups: false, singleProject: false, automations: false, dispatch: false },
+  capabilities: { localHandoff: true, terminal, preview, designMode: true, fileEdit, tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true, followups: false, singleProject: false, automations: false, dispatch: false },
 } as HealthResponse)
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 const entry = (path: string, content: string, hash: string): WorktreeEntry => ({ type: 'file', path, size: content.length, binary: false, tooLarge: false, content, hash, editable: true })
@@ -44,6 +44,8 @@ function setup(options: {
   uiState?: unknown; terminal?: boolean; services?: unknown; dead?: string[]
   /** Held until it settles: the `GET` and the `PUT` of `/ui-state`. */
   uiStateRead?: Promise<void>; uiStateWrite?: Promise<void>
+  /** A hosted cockpit, whose loopback pages go through the preview gateway. */
+  hosted?: boolean
 } = {}) {
   const disk = options.disk ?? { content: 'one\n', hash: 'h1' }
   const sent: Sent[] = []
@@ -52,7 +54,7 @@ function setup(options: {
     const path = String(input)
     const method = init.method ?? 'GET'
     sent.push({ method, path, body: typeof init.body === 'string' ? JSON.parse(init.body) : undefined })
-    if (path === '/api/v1/health') return json(health(options.fileEdit ?? true, options.terminal ?? false))
+    if (path === '/api/v1/health') return json(health(options.fileEdit ?? true, options.terminal ?? false, options.hosted !== true))
     if (options.dead?.includes(path)) throw new TypeError('Failed to fetch')
     if (method === 'GET' && path === '/api/v1/ui-state') { await options.uiStateRead; return json(options.uiState ?? {}) }
     if (method === 'PUT' && path === '/api/v1/ui-state') { await options.uiStateWrite; return json({ ...(options.uiState as object | undefined), ...(JSON.parse(String(init.body)) as object) }) }
@@ -62,6 +64,7 @@ function setup(options: {
     if (path === '/api/v1/repo') return json({ info: { root: '/repo', branch: 'main' }, status: [], log: [], branches: ['main'], baseBranch: null })
     if (path === '/api/v1/repo/watch') return json({ topic: null })
     if (method === 'POST' && path === '/api/v1/preview/design-proxy') return json({ origin: 'http://127.0.0.1:47000' })
+    if (method === 'POST' && path === '/api/v1/preview/gateway') return json({ origin: 'http://cockpit.test:47100', ticket: 't1', ticketParam: 'cez_ticket' })
     if (method === 'GET' && path === '/api/v1/runs') return json(options.runs ?? [])
     if (method === 'POST' && path === '/api/v1/runs') return json({ ...RUN, id: 'new-run', task: (JSON.parse(String(init.body)) as { task: string }).task }, 201)
     if (path === '/api/v1/workflows') return json({ workflows: [], issues: [] })
@@ -538,6 +541,18 @@ describe('Browser tabs as pages (spec 2026-10-24-code-page-browser-tabs)', () =>
     } finally {
       setApiScope(null)
     }
+  })
+
+  it('forgets a page\'s gateway origin once its view is no longer shown', async () => {
+    window.localStorage.setItem(`cez:code:layout:${queryScope()}:main`, JSON.stringify({
+      groups: [{ tabs: [{ path: 'src/app.ts', preview: false }, { path: 'browser:b1', preview: false }], active: 'browser:b1' }],
+      focused: 0,
+      browsers: { b1: { url: 'http://localhost:3000/admin' } },
+    }))
+    setup({ at: '/code', hosted: true })
+    await waitFor(() => expect(tabsOf(0)).toEqual(['app.ts', 'localhost:3000/admin → :47100']))
+    fireEvent.mouseDown(screen.getByRole('tab', { name: /app\.ts/ }))
+    await waitFor(() => expect(tabsOf(0)).toEqual(['app.ts', 'localhost:3000/admin']))
   })
 
   it('sends the write it is holding when the page goes, rather than dropping it with its timer', async () => {

@@ -99,6 +99,10 @@ export function CodeBrowserTab({
   const [revived, setRevived] = useState(0)
   const [edit, setEdit] = useState(0)
   const revive = useCallback(() => setRevived((count) => count + 1), [])
+  // A gateway origin is only true of a mounted view: switching away or closing the tab forgets it.
+  const reportGateway = useRef(onGateway)
+  reportGateway.current = onGateway
+  useEffect(() => () => reportGateway.current(null), [])
   const listening = useListening(state.url, local && probe === state.url, retry, revive)
   const change = useCallback((next: CodeBrowser) => {
     own.current = next.url

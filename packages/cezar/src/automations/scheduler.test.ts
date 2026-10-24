@@ -426,6 +426,67 @@ describe('ProjectAutomationScheduler — a saturated overlap band (#982)', () =>
 });
 
 describe('WorkspaceAutomationScheduler', () => {
+  it('fires a built-in item with no project automation at all, and backs a rejected one off by its own floor', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.UTC(2026, 9, 24, 2, 59));
+      // Like the nightly backup: a busy workspace throws, a run moves the next one a day out.
+      let at = Date.UTC(2026, 9, 24, 3, 0);
+      const fire = vi.fn(async () => {
+        if (fire.mock.calls.length === 1) throw new Error('waiting for idle');
+        at += 86_400_000;
+      });
+      let enabled = true;
+      const scheduler = new WorkspaceAutomationScheduler({
+        coordinator: { refresh: async () => undefined, enabledProjectIds: () => [], store: () => undefined } as never,
+        handle: () => undefined,
+        builtins: () => (enabled ? [{ key: 'builtin:backup-nightly', at, retryAfterMs: 600_000, fire }] : []),
+      });
+      await scheduler.start();
+      expect(scheduler.hasTimer()).toBe(true);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(fire).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(599_000);
+      expect(fire).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(fire).toHaveBeenCalledTimes(2);
+      enabled = false;
+      await scheduler.reschedule();
+      expect(scheduler.hasTimer()).toBe(false);
+      scheduler.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('skips the cycle while a restore holds admission, with a log row, and fires once it is lifted', async () => {
+    vi.useFakeTimers();
+    try {
+      const { store, definition } = await setup();
+      const poll = vi.fn(async () => ({ candidates: [], truncated: false, pages: 1 }));
+      const builtin = vi.fn(async () => undefined);
+      let held = true;
+      const scheduler = new WorkspaceAutomationScheduler({
+        coordinator: { refresh: async () => undefined, enabledProjectIds: () => ['p'], store: () => store } as never,
+        handle: () => ({ projectId: 'p', timeZone: 'UTC', store, github: { owner: 'acme', repo: 'demo', poller: { poll } as never } }),
+        builtins: () => [{ key: 'builtin:backup-nightly', at: Date.now(), retryAfterMs: 600_000, fire: builtin }],
+        held: () => held,
+      });
+      await scheduler.start();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(poll).not.toHaveBeenCalled();
+      expect(builtin).not.toHaveBeenCalled();
+      expect(store.logs({ automationId: definition.id }).map((row) => [row.result, row.reason])).toContainEqual(['skipped', 'restore in progress']);
+      held = false;
+      await vi.advanceTimersByTimeAsync(601_000);
+      expect(poll).toHaveBeenCalled();
+      expect(builtin).toHaveBeenCalled();
+      scheduler.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('arms its first timer when a definition is enabled after startup', async () => {
     const { store, definition } = await setup();
     store.update(definition.id, definition.revision, { ...definition, enabled: false });

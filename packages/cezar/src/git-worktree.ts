@@ -5,6 +5,7 @@ import { basename, join, normalize, resolve } from 'node:path';
 import { resolveTaskDiffBase } from './git-diff-base.ts';
 import { isSafeGitRef } from './git-refs.ts';
 import { resolveTaskRemotes, splitRemoteRef, type TaskRemotes } from './git-remotes.ts';
+import { orphanPruneSuspended } from './restore-guard.ts';
 
 /**
  * Git worktree per task (spec 006). Each run gets its own branch
@@ -908,6 +909,7 @@ export async function pruneOrphans(
   repoRoot: string,
   validIds: ReadonlySet<string>,
   canRemove?: (runId: string) => Promise<boolean>,
+  log: (line: string) => void = console.log,
 ): Promise<string[]> {
   await git(repoRoot, ['worktree', 'prune']);
   let entries: Dirent[];
@@ -918,6 +920,12 @@ export async function pruneOrphans(
   }
   const removed: string[] = [];
   const registered = await registeredWorktrees(repoRoot);
+  // The first boot after a restore lists instead of removing (spec 2026-10-23-backup-restore §10).
+  if (orphanPruneSuspended()) {
+    const kept = entries.filter((entry) => entry.isDirectory() && !validIds.has(entry.name)).map((entry) => entry.name);
+    if (kept.length > 0) log(`  restore: kept ${kept.length} worktree(s) a prune would have removed: ${kept.map((id) => id.slice(0, 8)).join(', ')}`);
+    return [];
+  }
   for (const entry of entries) {
     if (!entry.isDirectory() || validIds.has(entry.name)) continue;
     if (canRemove && !await canRemove(entry.name).catch(() => false)) continue;

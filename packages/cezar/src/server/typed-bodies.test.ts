@@ -90,6 +90,10 @@ describe('every mutating route carries a typed body into AppType', () => {
     Assert<HasTypedBody<'/api/v1/docker/reclaim', '$post'>>,
     Assert<HasTypedBody<'/api/v1/docker/images/:id', '$delete'>>,
     Assert<HasTypedBody<'/api/v1/docker/volumes/:name', '$delete'>>,
+    Assert<HasTypedBody<'/api/v1/workspace/backup', '$post'>>,
+    Assert<HasTypedBody<'/api/v1/workspace/backup/recipient', '$put'>>,
+    Assert<HasTypedBody<'/api/v1/workspace/backup/target', '$put'>>,
+    Assert<HasTypedBody<'/api/v1/workspace/backup/schedule', '$put'>>,
   ];
 
   type WorkspaceUiStatePutBody = Schema['/api/v1/workspace/ui-state']['$put']['input']['json'];

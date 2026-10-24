@@ -235,6 +235,9 @@ type GraphParkOutcome =
 /** Runs a restart interrupts — the self-update dialog's "N tasks are running" (#1524). */
 const RESTART_SENSITIVE: ReadonlySet<RunRecord['status']> = new Set<RunRecord['status']>(['queued', 'waiting', 'running']);
 
+/** A restore holds admission (spec 2026-10-23-backup-restore §4): nothing starts or resumes until cezar restarts. */
+export const RESTORE_IN_PROGRESS_ERROR = 'restore in progress — continue this task once cezar has restarted';
+
 const GRAPH_TAKEN_CAP = 500;
 
 /** Tail of an agent node's last turn kept as `{{nodes.<id>.summary}}`. */
@@ -1884,6 +1887,8 @@ export class RunManager {
         // below is the only slot gate: resumes never pass through it. A run
         // starts only under BOTH the workspace cap and this project's ceiling.
         const capacity = () =>
+          // A restore in progress starts nothing (spec 2026-10-23-backup-restore §4).
+          !this.semaphore.admissionHeld?.() &&
           this.semaphore.busy() < maxParallel &&
           this.busySlots() < projectMax &&
           (repo !== null || this.busySlots() < 1);
@@ -3960,6 +3965,11 @@ export class RunManager {
    * while `waiting`). Returns false when there is no open session — the GUI
    * then offers "Continue" instead.
    */
+  /** A restore is replacing the state runs write: the queue holds, and no session resumes. */
+  restoreInProgress(): boolean {
+    return this.semaphore.admissionHeld?.() ?? false;
+  }
+
   sendMessage(runId: string, content: PastedContent[]): boolean {
     const delivered = this.deliverMessage(runId, content, true);
     if (delivered) {
@@ -3979,6 +3989,9 @@ export class RunManager {
     preparedUserMessage?: PreparedUserMessage,
   ): boolean {
     if (this.lifecycle.isBlocked(runId)) return false;
+    // A parked session woken now would write the state the restore is replacing; callers fall
+    // back to queueing (a deferred continuation the held pump does not start).
+    if (this.restoreInProgress()) return false;
     const state = this.active.get(runId);
     // A graph gate/question parked with no session (1c) takes the user's reply as its answer.
     // Only a USER-authored message answers it: a child report or a wake nudge must not approve a gate.
@@ -4191,6 +4204,9 @@ export class RunManager {
     deferForCapacity = false,
   ): { ok: boolean; error?: string } {
     if (this.lifecycle.isBlocked(runId)) return {ok: false, error: 'Resolve the worktree lifecycle operation first'};
+    // A deferred continuation only queues, and the held pump does not start it; an immediate one
+    // would skip that gate (resumes never pass through the pump).
+    if (!deferForCapacity && this.restoreInProgress()) return { ok: false, error: RESTORE_IN_PROGRESS_ERROR };
     if (agentModelsLocked(this.repoRoot) && opts.model?.trim()) {
       return { ok: false, error: AGENT_MODELS_LOCKED_ERROR };
     }

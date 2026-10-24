@@ -188,6 +188,8 @@ import { discoverSkills } from '../skills.ts';
 import { SkillsUpdateConflictError, SkillsUpdateCoordinator, SkillsUpdateService, type SkillsUpdateState } from '../skills-update.ts';
 import { selfUpdateApplyRequestSchema, selfUpdateChannelRequestSchema, selfUpdateDevelopmentQuerySchema } from '@open-mercato/cezar-contract';
 import { SelfUpdateBusyError, SelfUpdateService } from '../self-update/service.ts';
+import { BackupService } from '../backup/service.ts';
+import { backupRoutes, isBackupUploadPath, setupRestoreRoutes } from '../backup/routes.ts';
 import { StarCountReader } from './star-count.ts';
 import { DesignProxies } from './preview/design-proxy.ts';
 import { PreviewGateways, TICKET_PARAM, parsePreviewPorts } from './preview/gateway.ts';
@@ -229,7 +231,7 @@ import {
   repoFileQuerySchema,
   type DeleteDraftResponse,
 } from '@open-mercato/cezar-contract';
-import { toPastedContent, type PastedContent, type RunManager } from '../workflows/run.ts';
+import { RESTORE_IN_PROGRESS_ERROR, toPastedContent, type PastedContent, type RunManager } from '../workflows/run.ts';
 import { checkoutGitStatus } from '../workflows/landing.ts';
 import { deleteUpload, readUpload, writeUpload } from '../uploads.ts';
 import { branchesCheckedOutElsewhere, removeWorktree, worktreeDiff, worktreeDiffStat, worktreeSizeBytes } from '../git-worktree.ts';
@@ -332,6 +334,7 @@ import { enableRunTokens } from '../auth/run-tokens.ts';
 import { AuthService } from '../auth/service.ts';
 import { createSocketHub, type SocketHub, type WsUpgradeVerdict } from './ws.ts';
 import { applyKeepAlive } from './keep-alive.ts';
+import { applyRequestTimeout } from './request-timeout.ts';
 import { browseDirectory, isInsideBrowseRoot, isLexicallyInsideBrowseRoot, resolveBrowseRoot } from './fs-browse.ts';
 import { parseRemote, resolveForge, type ForgeAvailability } from './forge/index.ts';
 import { isGithubHost } from '../github-hosts.ts';
@@ -481,6 +484,9 @@ export interface ServerDeps {
    *  the CLI, which knows the entry file, the port and how to restart; absent in tests and for
    *  bare `createApp` callers, where the family answers a read-only "not available" status. */
   selfUpdate?: SelfUpdateService;
+  /** Backup and restore (`/api/v1/workspace/backup`, spec 2026-10-23-backup-restore). The CLI
+   *  builds it with the process restart a restore needs; absent, a restore asks for a restart. */
+  backup?: BackupService;
   /** cezar's own GitHub star count behind `GET /api/v1/star-count` (the cockpit's ⭐ ask).
    *  Defaults to a reader that asks github.com at most once per ten seconds, paced to GitHub's rate limit, and caches the answer
    *  under `~/.cache/cez/`; tests inject their own so no suite ever reaches the network. */
@@ -1765,7 +1771,9 @@ export function createApp(deps: ServerDeps) {
 
   // Reject oversized request bodies before they reach any handler (#429). GETs
   // and SSE carry no body, so this only ever gates the mutating routes.
-  app.use('*', bodyLimit({ maxSize: GLOBAL_BODY_LIMIT }));
+  // A backup archive upload rides its own, larger limit (src/backup/routes.ts).
+  const globalBodyLimit = bodyLimit({ maxSize: GLOBAL_BODY_LIMIT });
+  app.use('*', (c, next) => (isBackupUploadPath(c.req.path) ? next() : globalBodyLimit(c, next)));
 
   // ---- request-origin guard (#426) -----------------------------------------
   // This server executes agents with shell access — "start a task" ≈ run code
@@ -1875,6 +1883,9 @@ export function createApp(deps: ServerDeps) {
   // local cockpit, where this only stamps the `host` principal.
   const auth = deps.auth ?? new AuthService();
   const authIsEnforced = () => authEnforced(process.env, bindHost);
+  const backup = deps.backup ?? new BackupService({ version: deps.version, runs: deps.semaphore });
+  // A restore without a restart replaces auth.json and the sessions file under this service.
+  backup.onRestored(() => auth.reloadSessions());
   app.use('/api/*', createAuthGuard({
     service: auth,
     enforced: authIsEnforced,
@@ -5026,6 +5037,8 @@ export function createApp(deps: ServerDeps) {
 
     .post('/runs', jsonZodValidator(startRunSchema), async (c) => {
       const { root: repoRoot, dataDir, manager, store } = c.get('project');
+      // It would queue into an index the restore holds unwritten (`?.`: test managers are stubs).
+      if (manager.restoreInProgress?.()) return c.json({ error: RESTORE_IN_PROGRESS_ERROR }, 409);
       const parsed = { data: c.req.valid('json') };
       if (agentModelsLocked(repoRoot) && parsed.data.model?.trim()) {
         return c.json({ error: AGENT_MODELS_LOCKED_ERROR }, 409);
@@ -5250,6 +5263,8 @@ export function createApp(deps: ServerDeps) {
       const id = c.req.param('id');
       const run = store.getRun(id);
       if (!run) return c.json({ error: 'not found' }, 404);
+      // Nothing resumes, and no queued prompt changes, under a restore (`?.`: test managers are stubs).
+      if (manager.restoreInProgress?.()) return c.json({ error: RESTORE_IN_PROGRESS_ERROR }, 409);
       const parsed = { data: c.req.valid('json') };
       // Stacking onto a queued prompt mutates an existing task and invokes no provider.
       // Provider availability still gates live delivery after the record leaves `queued`, but
@@ -9382,6 +9397,8 @@ export function createApp(deps: ServerDeps) {
   const workspaceV1 = new Hono()
     .route('/', healthRoutes)
     .route('/', authRoutes({ service: auth, enforced: authIsEnforced }))
+    .route('/', setupRestoreRoutes({ service: backup, auth, enforced: authIsEnforced }))
+    .route('/', backupRoutes({ service: backup, trusted: () => trustedOperator(process.env, bindHost) }))
     .route('/', modelsRoutes)
     .route('/', providersRoutes)
     .route('/', projectsRoutes)
@@ -9462,6 +9479,19 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
   // gone for the other.
   const auth = deps.auth ?? new AuthService();
   const authIsEnforced = () => authEnforced(process.env, deps.bindHost);
+  // One instance for the routes and the scheduler's nightly item.
+  const backup = deps.backup ?? new BackupService({ version: deps.version, runs: deps.semaphore });
+  // Every open run store stops writing before a restore places files — a store opened meanwhile
+  // too — so no flush, the restart's included, merges stale records over the restored index.
+  backup.onPlacing(() => {
+    const stores = new Set([deps.store, ...sharedContexts.ids().flatMap((id) => sharedContexts.peek(id)?.store ?? [])]);
+    const releases = [...stores].map((store) => store.holdIndex());
+    const unsubscribe = sharedContexts.onStoreCreated((store) => releases.push(store.holdIndex()));
+    return () => {
+      unsubscribe();
+      for (const release of releases) release();
+    };
+  });
   if (authIsEnforced()) {
     // Boot-time, like dispatch: a token is composed into a run's environment when it starts.
     enableRunTokens();
@@ -9470,6 +9500,7 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
   const app = createApp({
     ...deps,
     auth,
+    backup,
     onDispose: (cleanup) => { appCleanups.push(cleanup); deps.onDispose?.(cleanup); },
     contexts: sharedContexts,
     automationStore: bootAutomationStore,
@@ -9489,6 +9520,8 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
     hostname: deps.bindHost ?? '127.0.0.1',
   });
   applyKeepAlive(server);
+  // A restore upload streams for longer than Node's 300 s; the two upload routes time out on idle.
+  applyRequestTimeout(server, isBackupUploadPath);
   const coordinator = new SkillsUpdateCoordinator(skillsUpdate, async () =>
     effectiveSkillsAutoUpdate(await loadWorkspaceConfig()));
   // Every registered project gets a handle (spec 2026-09-14): `github` only when the remote is
@@ -9504,6 +9537,13 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
   };
   const automationScheduler = new WorkspaceAutomationScheduler({
     coordinator: automationCoordinator,
+    // The nightly backup rides this timer (spec 2026-10-23-backup-restore §4); absent while it is off.
+    builtins: () => {
+      const nightly = backup.nightlyItem();
+      return nightly ? [nightly] : [];
+    },
+    // Under a restore a launch would queue into a run index that is not being written.
+    held: () => deps.semaphore?.admissionHeld() ?? false,
     handle: (projectId, store): ProjectAutomationHandle | undefined => {
       const project = automationProjects.get(projectId);
       if (!project) return undefined;
@@ -9551,6 +9591,7 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
     if (!automationsEnabled()) return;
     void automationScheduler.reschedule();
   };
+  backup.attachScheduler({ active: automationsEnabled, changed: () => rescheduleAutomations() });
   const unsubscribe = workspaceEvents.on((event, data) => {
     if (event === 'project-added') {
       const project = (data as { project?: { id?: unknown; root?: unknown; status?: unknown } }).project;

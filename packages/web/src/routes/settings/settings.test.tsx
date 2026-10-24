@@ -163,6 +163,8 @@ const GLOBAL_SECTIONS = [
   // Agent accounts (spec 2026-07-29-agent-profiles) sit beside Projects: both describe the
   // machine and the person at it, not any one repo.
   'workspace-secrets',
+  // Backup and restore (spec 2026-10-23-backup-restore) — the whole machine's state.
+  'backup',
   'accounts',
   'projects',
   // Telemetry consent (docs/telemetry.md) — one answer per machine.
@@ -189,7 +191,7 @@ describe('the section registry', () => {
     // Accounts survives: a single-project cockpit still runs on ONE of possibly several logins,
     // so "which account" is orthogonal to "how many projects".
     expect(visibleSettingsSections('global', { singleProject: true }).map((s) => s.id)).toEqual([
-      'appearance', 'notifications', 'keyboard', 'resources', 'skills', 'workspace-secrets', 'accounts', 'privacy',
+      'appearance', 'notifications', 'keyboard', 'resources', 'skills', 'workspace-secrets', 'backup', 'accounts', 'privacy',
     ])
     expect(visibleSettingsSections('global', { singleProject: false }).map((s) => s.id)).toEqual(GLOBAL_SECTIONS)
     expect(visibleSettingsSections('global').map((s) => s.id)).toEqual(GLOBAL_SECTIONS)

@@ -21,6 +21,7 @@ import { collectSecretValues, redactDeep, redactSecrets } from '../core/secret-r
 // Sibling module, files only — a draft belongs to a run and is deleted with it (#939).
 import { deleteRunDrafts } from './drafts.ts';
 import { deleteRunLayouts, pruneOrphanLayouts } from './layouts.ts';
+import { orphanPruneSuspended } from '../restore-guard.ts';
 import { failureKind, taskFailedLabel } from './failure-kind.ts';
 import { track } from '../telemetry.ts';
 import { reportAgentError } from './agent-error-telemetry.ts';
@@ -449,6 +450,9 @@ export const runRecordSchema = z.object({
    *  runs, on every run not yet opened, and on one `setUnread` put back to unread
    *  (#775) — the unread rule treats all three alike. */
   seenAt: z.string().optional(),
+  /** When this store last changed the record, strictly increasing per record (`touch`). What a
+   *  restore's merge compares (spec 2026-10-23-backup-restore §10); absent on older records. */
+  updatedAt: z.string().optional(),
   /** Highest `seq` handed out for this run, ephemeral frames included, so a restart resumes the
    *  counter without parsing the transcript. Absent on older records, which fall back to that parse. */
   lastSeq: z.number().int().nonnegative().optional(),
@@ -967,6 +971,8 @@ export class RunStore extends EventEmitter {
   /** Ids this process removed on purpose — see `forget`, which is the only thing that writes it. */
   private forgotten = new Set<string>();
   private saveTimer: NodeJS.Timeout | null = null;
+  /** `holdIndex` callers still holding: a restore placed a runs.json this process must not write. */
+  private indexHolds = 0;
   // Preserve failed-load evidence even after a later save rewrites the index. A workspace
   // summary must not call an owner that silently dropped records a complete empty project.
   private indexReadHealth: { state: 'complete' | 'unavailable'; omittedRuns: number; reason?: string } = { state: 'complete', omittedRuns: 0 };
@@ -1009,7 +1015,8 @@ export class RunStore extends EventEmitter {
           }
           // The layouts backstop (§5.3). Only behind an index that actually loaded — an unreadable
           // one knows no run, and every layout would look orphaned.
-          pruneOrphanLayouts(dataDir, new Set(store.runs.keys()), ORPHAN_LAYOUT_GRACE_MS);
+          // Not on the first boot after a restore: an unknown run may be one made after the backup.
+          if (!orphanPruneSuspended()) pruneOrphanLayouts(dataDir, new Set(store.runs.keys()), ORPHAN_LAYOUT_GRACE_MS);
         } else {
           store.indexReadHealth = { state: 'unavailable', omittedRuns: Array.isArray(raw) ? raw.length : 0, reason: 'Task index could not be loaded by this server' };
         }
@@ -1830,6 +1837,23 @@ export class RunStore extends EventEmitter {
     this.saveNow(options.throwOnError, options.pretty ?? false);
   }
 
+  /**
+   * Stop writing `runs.json` until the returned release. A restore merges the archive's index into
+   * the file under a live store; every flush after that, the restart's shutdown flush above all,
+   * would merge this process's stale records over it (spec 2026-10-23-backup-restore §10). A pending
+   * debounced save goes out first, so the merge sees it rather than losing it (review round 4).
+   */
+  holdIndex(): () => void {
+    if (this.saveTimer) this.flush();
+    this.indexHolds += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.indexHolds -= 1;
+    };
+  }
+
   // ---- internals -----------------------------------------------------------
 
   private seqs = new Map<string, number>();
@@ -1909,6 +1933,9 @@ export class RunStore extends EventEmitter {
   }
 
   private touch(run: RunRecord): void {
+    // Monotonic even when the clock steps back or two writes share a millisecond.
+    const previous = run.updatedAt ? Date.parse(run.updatedAt) : Number.NaN;
+    run.updatedAt = new Date(Number.isFinite(previous) ? Math.max(Date.now(), previous + 1) : Date.now()).toISOString();
     this.scheduleSave();
     this.emit('run', run);
   }
@@ -1956,7 +1983,7 @@ export class RunStore extends EventEmitter {
 
   /** Debounced so token-usage updates don't rewrite the index per event. */
   private scheduleSave(): void {
-    if (this.saveTimer) return;
+    if (this.saveTimer || this.indexHolds > 0) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
       this.saveNow();
@@ -1965,6 +1992,7 @@ export class RunStore extends EventEmitter {
   }
 
   private saveNow(throwOnError = false, pretty = false): void {
+    if (this.indexHolds > 0) return;
     const indexPath = join(this.dataDir, 'runs.json');
     const tmpPath = `${indexPath}.tmp`;
     try {

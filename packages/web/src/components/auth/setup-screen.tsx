@@ -13,6 +13,7 @@ import { AuthFrame, errorText } from './auth-frame'
 import { CodeField } from './code-field'
 import { QrCode } from './qr-code'
 import { RecoveryCodes } from './recovery-codes'
+import { SetupRestoreCard } from './setup-restore-card'
 
 /** The one-time code `cezar auth setup` put in the link's fragment — never sent anywhere but the API. */
 export function setupCodeFromLocation(hash: string = window.location.hash): string {
@@ -206,6 +207,7 @@ export function SetupScreen({ onDone }: { onDone: () => void }) {
       title="Set up this cockpit"
       description="Create the owner account. You will sign in with it on every device."
       footer="There is no email recovery: a lost password is reset from the server, with cezar auth reset."
+      aside={<SetupRestoreCard setupCode={setupCode} onDone={onDone} />}
     >
       <Steps current={0} />
       <form onSubmit={submitAccount} noValidate>

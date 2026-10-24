@@ -116,11 +116,13 @@ describe('cockpit authentication', () => {
     }
     expect([...open].sort()).toEqual([
       'GET /api/v1/auth/session',
+      'GET /api/v1/auth/setup/restore',
       'POST /api/v1/auth/login',
       'POST /api/v1/auth/login/verify',
       'POST /api/v1/auth/logout',
       'POST /api/v1/auth/setup/begin',
       'POST /api/v1/auth/setup/complete',
+      'POST /api/v1/auth/setup/restore',
     ]);
     for (const entry of open) expect(isPublicAuthPath(entry.split(' ')[1]!)).toBe(true);
   }, 30_000);

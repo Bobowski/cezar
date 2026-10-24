@@ -364,8 +364,15 @@ const MIN_RETRY_MS = 60_000;
 export interface WorkspaceAutomationSchedulerOptions {
   coordinator: AutomationCoordinator;
   handle: (projectId: string, store: AutomationStore) => ProjectAutomationHandle | undefined;
+  /** Workspace-level items that ride the same timer — the nightly backup (spec
+   *  2026-10-23-backup-restore §4). Asked on every re-arm; one that is off is simply absent. */
+  builtins?: () => Array<{ key: string; at: number; retryAfterMs: number; fire: () => Promise<unknown> }>;
+  /** A restore holds admission: a due item skips its cycle instead of launching (spec 2026-10-23 §4). */
+  held?: () => boolean;
   now?: () => number;
 }
+
+type DueItem = { key: string; at: number; retryAfterMs: number; fire: () => Promise<unknown>; skip?: (reason: string) => void };
 
 /** One workspace timer, created only while at least one enabled definition exists. */
 export class WorkspaceAutomationScheduler {
@@ -409,7 +416,7 @@ export class WorkspaceAutomationScheduler {
   private schedule(): void {
     if (this.stopped) return;
     const now = this.options.now?.() ?? Date.now();
-    const due: Array<{ key: string; at: number; retryAfterMs: number; fire: () => Promise<unknown> }> = [];
+    const due: DueItem[] = [];
     const live = new Set<string>();
     for (const projectId of this.options.coordinator.enabledProjectIds()) {
       const store = this.options.coordinator.store(projectId);
@@ -419,23 +426,28 @@ export class WorkspaceAutomationScheduler {
       for (const definition of store.list().filter((item) => item.enabled)) {
         const key = `${projectId}:${definition.id}`;
         live.add(key);
+        const skip = (reason: string) => { store.appendLog({ automationId: definition.id, revision: definition.revision, result: 'skipped', reason }); };
         if (isGithubAutomation(definition)) {
           if (!handle.github) continue;
           const scheduler = new ProjectAutomationScheduler(handle);
           const at = Date.parse(store.state(definition.id)?.nextCheckAt ?? new Date(now).toISOString());
-          due.push({ key, at: this.notBefore(key, at), retryAfterMs: Math.max(definition.intervalSeconds * 1_000, MIN_RETRY_MS), fire: () => scheduler.check(definition) });
+          due.push({ key, at: this.notBefore(key, at), retryAfterMs: Math.max(definition.intervalSeconds * 1_000, MIN_RETRY_MS), fire: () => scheduler.check(definition), skip });
         } else if (isScheduleAutomation(definition)) {
           const runner = new ScheduleRunner({ ...handle, launch: handle.launchSchedule, now: this.options.now });
           const at = runner.dueAt(definition);
           if (at === null) continue;
-          due.push({ key, at: this.notBefore(key, at), retryAfterMs: MIN_RETRY_MS, fire: () => runner.fire(definition) });
+          due.push({ key, at: this.notBefore(key, at), retryAfterMs: MIN_RETRY_MS, fire: () => runner.fire(definition), skip });
         } else if (isTrackerAutomation(definition)) {
           if (!handle.tracker) continue;
           const scheduler = new ProjectTrackerAutomationScheduler(handle);
           const at = Date.parse(store.state(definition.id)?.nextCheckAt ?? new Date(now).toISOString());
-          due.push({ key, at: this.notBefore(key, at), retryAfterMs: Math.max(definition.intervalSeconds * 1000, MIN_RETRY_MS), fire: () => scheduler.check(definition) });
+          due.push({ key, at: this.notBefore(key, at), retryAfterMs: Math.max(definition.intervalSeconds * 1000, MIN_RETRY_MS), fire: () => scheduler.check(definition), skip });
         }
       }
+    }
+    for (const item of this.options.builtins?.() ?? []) {
+      live.add(item.key);
+      due.push({ ...item, at: this.notBefore(item.key, item.at) });
     }
     for (const key of this.retryAfter.keys()) if (!live.has(key)) this.retryAfter.delete(key);
     if (!due.length) return;
@@ -443,6 +455,17 @@ export class WorkspaceAutomationScheduler {
     const next = due[0]!;
     this.timer = setTimeout(() => {
       this.timer = undefined;
+      // A launch now would queue into a run index the restore is not writing; skip, and wait out
+      // the item's own floor like a failure (no zero-delay spin, #983).
+      if (this.options.held?.()) {
+        try {
+          if (next.skip) next.skip('restore in progress');
+          else console.log(`  automations: skipped ${next.key} — restore in progress`);
+        } catch { /* the log row is best-effort */ }
+        this.retryAfter.set(next.key, (this.options.now?.() ?? Date.now()) + next.retryAfterMs);
+        this.schedule();
+        return;
+      }
       void next.fire().then(
         () => { this.retryAfter.delete(next.key); },
         // Never re-arm a rejected item at its own past `at` (#983): that is a zero-delay spin, and

@@ -29,6 +29,8 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
   let psDelayMs = 0;
   /** The history's clock, moved by hand where the time between lines matters. */
   let now = 0;
+  /** A host whose process table cannot be read (no `ps`: Windows). */
+  let psUnreadable = false;
   let spawned: ReturnType<typeof fakeServiceBinding>['spawned'];
   const put = (rel: string, text: string) => {
     mkdirSync(dirname(join(root, rel)), { recursive: true });
@@ -56,6 +58,7 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
     shellBusy = false;
     psDelayMs = 0;
     now = 0;
+    psUnreadable = false;
     detected = new DetectedUrls();
     history = new TerminalHistory(() => now);
     sessions = new TerminalSessions(fake.binding, detected, () => null);
@@ -77,6 +80,7 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
         // The table as it stood when the check began; the answer arrives `psDelayMs` later.
         freshProcesses: async () => {
           const busy = shellBusy;
+          if (psUnreadable) return null;
           await new Promise((resolve) => setTimeout(resolve, psDelayMs));
           return [{ pid: 4242, ppid: 1, command: 'bash' }, ...(busy ? [{ pid: 5000, ppid: 4242, command: 'sudo apt update' }] : [])];
         },
@@ -268,6 +272,18 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
       expect(read.lines).toEqual(['npm run dev', 'sudo apt update']);
       // The keystrokes still reached the shell, every one of them.
       expect(spawned[0]?.written).toEqual(['sudo apt update\r', 'hunter2\r', 'npm run dev\r']);
+    });
+
+    it('keeps nothing where the process table cannot be read, and still delivers every keystroke', async () => {
+      const { instance } = await app();
+      const session = terminalSessionSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal', send('POST', {}))).json());
+      psUnreadable = true;
+      const answer = await apiRequest(instance, `/api/v1/repo/terminal/${session.id}/input`, send('POST', { data: 'ls\r' }));
+      expect(await answer.json()).toEqual({ delivered: true });
+      await history.flushed();
+      const read = terminalHistorySchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal/history')).json());
+      expect(read.lines).toEqual([]);
+      expect(spawned[0]?.written).toEqual(['ls\r']);
     });
 
     it('keeps a pasted command and never the password pasted after it', async () => {

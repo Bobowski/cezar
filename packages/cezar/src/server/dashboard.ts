@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import {
   dashboardOverviewQuerySchema,
   dashboardAutomationsQuerySchema,
@@ -8,15 +8,20 @@ import {
   dashboardFeedQuerySchema,
   dashboardTasksQuerySchema,
 } from '@open-mercato/cezar-contract';
+import { principalOf } from '../auth/guard.ts';
+import { projectsRuns, projectTaskRow, runViewScopes } from '../auth/run-projection.ts';
 import { DashboardReader } from '../workspace/dashboard.ts';
 import type { CostVisibility } from '../workspace/dashboard-costs.ts';
 import { queryZodValidator } from './validators.ts';
 
 /** Redact at response time, never in the immutable snapshot shared by other readers. */
-function visibleTask(row: DashboardTaskRow, policy: CostVisibility): DashboardTaskRow {
-  const { costUsd, ...rest } = row;
+function visibleTask(row: DashboardTaskRow, policy: CostVisibility, projected: boolean): DashboardTaskRow {
+  const { costUsd, ...rest } = projected ? projectTaskRow(row) : row;
   return { ...rest, ...(policy.cost && costUsd !== undefined ? { costUsd } : {}) };
 }
+
+/** A token without `runs.transcript` sees no agent-written title (spec 2026-10-24-cezar-mcp-server §4). */
+const projectedFor = (c: Context) => projectsRuns(runViewScopes(principalOf(c)));
 
 /** Keep the family chained: this return value is part of AppType and the typed client. */
 export function dashboardRoutes(
@@ -45,11 +50,11 @@ export function dashboardRoutes(
         ...snapshot,
         questions: {
           ...snapshot.questions,
-          rows: snapshot.questions.rows.map((row) => visibleTask(row, policy)),
+          rows: snapshot.questions.rows.map((row) => visibleTask(row, policy, projectedFor(c))),
         },
         reviews: {
           ...snapshot.reviews,
-          rows: snapshot.reviews.rows.map((row) => visibleTask(row, policy)),
+          rows: snapshot.reviews.rows.map((row) => visibleTask(row, policy, projectedFor(c))),
         },
       });
     })
@@ -57,7 +62,7 @@ export function dashboardRoutes(
       '/workspace/dashboard/overview',
       queryZodValidator(dashboardOverviewQuerySchema),
       async (c) => {
-        const result = await reader.overview(c.req.valid('query'));
+        const result = await reader.overview(c.req.valid('query'), projectedFor(c) ? projectTaskRow : undefined);
         return result
           ? c.json(result)
           : c.json(
@@ -79,7 +84,7 @@ export function dashboardRoutes(
         return result
           ? c.json({
               ...result,
-              page: { ...result.page, rows: result.page.rows.map((row) => visibleTask(row, policy)) },
+              page: { ...result.page, rows: result.page.rows.map((row) => visibleTask(row, policy, projectedFor(c))) },
             })
           : c.json(
               {
@@ -109,7 +114,7 @@ export function dashboardRoutes(
     .get(
       '/workspace/dashboard/insights',
       queryZodValidator(dashboardInsightsQuerySchema),
-      async (c) => c.json(await reader.insights(c.req.valid('query'), visibility)),
+      async (c) => c.json(await reader.insights(c.req.valid('query'), visibility, projectedFor(c))),
     )
     .get('/workspace/dashboard/telemetry', async (c) => c.json(await reader.telemetry()))
     .get('/workspace/dashboard/feed', queryZodValidator(dashboardFeedQuerySchema), async (c) => {
@@ -118,7 +123,7 @@ export function dashboardRoutes(
       return c.json({
         ...feed,
         rows: feed.rows.map((row) =>
-          row.kind === 'task-result' ? { ...row, run: visibleTask(row.run, policy) } : row,
+          row.kind === 'task-result' ? { ...row, run: visibleTask(row.run, policy, projectedFor(c)) } : row,
         ),
       });
     });

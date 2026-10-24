@@ -1,5 +1,5 @@
 import type { ApiTokenScope } from '@open-mercato/cezar-contract';
-import { failureKind, type FailureKind } from '../runs/failure-kind.ts';
+import { failureLine } from '../runs/failure-kind.ts';
 import type { RunRecord, StepState } from '../runs/store.ts';
 import { scopesSeeTranscript } from './api-tokens.ts';
 import type { Principal } from './guard.ts';
@@ -21,24 +21,16 @@ export function projectsRuns(scopes: readonly ApiTokenScope[] | undefined): scop
   return scopes !== undefined && !scopesSeeTranscript(scopes);
 }
 
-const FAILURE_LINE: Record<FailureKind, string> = {
-  missing_session: 'agent session missing',
-  usage_limit: 'usage limit reached',
-  auth: 'agent sign-in failed',
-  timeout: 'timed out',
-  other: 'failed',
-};
-
-/** A failure as one line naming its kind — `run.error` and a step's quote command output. */
-export function failureLine(error: string): string {
-  const kind = failureKind(error);
-  return kind === undefined ? 'interrupted' : FAILURE_LINE[kind];
-}
-
 /** `landing.error` carries a required check's whole output (`workflows/landing.ts`). */
 export function landingFailureLine(stage: string | undefined): string {
   if (stage === 'checks') return 'required check failed';
   return stage ? `landing failed at ${stage}` : 'landing failed';
+}
+
+/** A slim task row (runs index, dashboard) as a projected principal sees it: no `titleSummary`. */
+export function projectTaskRow<T extends { titleSummary?: string }>(row: T): T {
+  const { titleSummary: _summary, ...rest } = row;
+  return rest as T;
 }
 
 function projectStep(step: StepState): StepState {

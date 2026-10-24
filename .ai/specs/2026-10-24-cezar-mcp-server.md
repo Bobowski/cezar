@@ -70,7 +70,9 @@ Settings → Security → **API tokens** (owner only):
   agent wrote (`titleSummary`, `graphState.outputs`, `dispatch.report`/`pendingReports`/
   `pendingAsk`); `error`, `steps[].error` and `landing.error`, which quote what a command
   printed, become one line naming the kind (`required check failed`). Status, timing, counters,
-  branch and PR stay; the contract's `apiRunSchema` names the marker.
+  branch and PR stay; the contract's `apiRunSchema` names the marker. The slim task rows of
+  `/workspace/runs-index` and the dashboard (`projectTaskRow`) drop `titleSummary` the same way,
+  and the dashboard's failure insights name a failure's kind instead of quoting it.
 - **A scope bounds the API surface, not the machine.** A token that can start or continue a run —
   `tasks`, and `author`, whose workflows and automations start them — can execute code as the OS
   user cezar runs as: agents run Bash, and a check step is a command. That user can read and write

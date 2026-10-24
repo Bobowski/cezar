@@ -315,7 +315,7 @@ import { agentHomePaths, cezarHomeDir, expandTilde, isAbsolutePath } from '../pa
 import { authEnforced, fileEditRefusal, isLoopbackHostHeader, normalizeHostname, resolveCapabilities, trustedOperator } from './capabilities.ts';
 import { bearerOf, createAuthGuard, principalOf, upgradeIsAuthenticated, upgradeSessionId } from '../auth/guard.ts';
 import { isApiToken, principalSeesTranscript } from '../auth/api-tokens.ts';
-import { projectsRuns, redactRunForScope, runViewScopes } from '../auth/run-projection.ts';
+import { projectsRuns, projectTaskRow, redactRunForScope, runViewScopes } from '../auth/run-projection.ts';
 import { buildCatalog, type Catalog } from '../mcp/catalog.ts';
 import { mcpRoutes } from '../mcp/http.ts';
 import { ensureHostKey } from '../auth/host-key.ts';
@@ -8787,6 +8787,7 @@ export function createApp(deps: ServerDeps) {
         // active project's own run list, which it holds either way.
       }
       const bootId = await resolveBootProject(projects);
+      const projected = projectsRuns(runViewScopes(principalOf(c)));
       const runs: RunIndexEntry[] = [];
       const truncated: string[] = [];
       // Statuses the server already holds, shipped WITH the rows that carry the references. The
@@ -8812,7 +8813,7 @@ export function createApp(deps: ServerDeps) {
         if (recent.length > RUNS_INDEX_PER_PROJECT) truncated.push(project.id);
         const mentioned: number[] = [];
         for (const run of recent.slice(0, RUNS_INDEX_PER_PROJECT)) {
-          runs.push(runIndexEntry(project.id, run));
+          runs.push(projected ? projectTaskRow(runIndexEntry(project.id, run)) : runIndexEntry(project.id, run));
           mentioned.push(...mentionedReferenceNumbers(run));
         }
         if (mentioned.length > 0) {

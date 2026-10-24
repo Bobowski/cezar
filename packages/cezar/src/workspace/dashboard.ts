@@ -336,6 +336,7 @@ export class DashboardReader {
   async insights(
     query: DashboardInsightsQuery,
     policy: CostVisibility | (() => CostVisibility),
+    projected = false,
   ) {
     let projection = await this.projection();
     while (projection.generation !== this.generation) projection = await this.projection();
@@ -348,6 +349,7 @@ export class DashboardReader {
       query,
       visibility,
       this.now(),
+      projected,
     );
   }
 
@@ -390,14 +392,16 @@ export class DashboardReader {
     return snapshot;
   }
 
-  async overview(query: DashboardOverviewQuery) {
+  /** `mapRow` shapes each row for the caller before paging — a projected principal's view. */
+  async overview(query: DashboardOverviewQuery, mapRow?: (row: DashboardTaskRow) => DashboardTaskRow) {
     await this.projects();
     const snapshot = query.snapshotId
       ? this.saved.find((s) => s.snapshot.snapshotId === query.snapshotId)?.snapshot
       : await this.snapshot();
     if (!snapshot) return undefined;
     const saved = this.saved.find((s) => s.snapshot.snapshotId === snapshot.snapshotId);
-    return saved ? buildDashboardOverview(saved.rows, snapshot, query) : undefined;
+    if (!saved) return undefined;
+    return buildDashboardOverview(mapRow ? saved.rows.map(mapRow) : saved.rows, snapshot, query);
   }
 
   async tasks(

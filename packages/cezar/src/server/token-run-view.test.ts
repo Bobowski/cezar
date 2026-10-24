@@ -11,6 +11,7 @@ import { base32Decode, hotp, totpStep } from '../auth/totp.ts';
 import { RunStore } from '../runs/store.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import { todosWatchActive } from '../todos.ts';
+import { registerProject } from '../workspace/projects.ts';
 import type { RunManager } from '../workflows/run.ts';
 import { createApp } from './server.ts';
 
@@ -247,6 +248,49 @@ describe('a token’s view of a task', () => {
     // Guard: the owner's comparison view keeps it.
     const full = (await (await request('/api/v1/groups/g1', seedToken(['read', 'runs.transcript']))).json()) as { runs: Array<Record<string, unknown>> };
     expect(full.runs[0]!.handoffExcerpt).toBe(`- wrote ${SECRET}`);
+  });
+
+  it('the workspace runs index and the dashboard carry no agent-written title or failure output for a read token', async () => {
+    await registerProject(repoRoot);
+    const now = new Date().toISOString();
+    const review = store.createRun({ title: 'review me', workflow: 'quick-task', task: 'review me', steps: [] });
+    store.updateRun(review.id, { status: 'review', titleSummary: `Summary quoting ${SECRET}`, startedAt: now, finishedAt: now });
+    const failed = store.createRun({ title: 'broke', workflow: 'quick-task', task: 'broke', steps: [] });
+    store.updateRun(failed.id, {
+      status: 'failed', titleSummary: `Summary ${SECRET}`, startedAt: now, finishedAt: now,
+      error: `step "check" failed: printed ${SECRET}`,
+      steps: [{ id: 'check', name: 'Check', kind: 'check', status: 'failed', iterations: 1, tokensUsed: 0, error: `exit 1: ${SECRET}` }],
+    });
+    store.flush();
+    const read = seedToken(['read']);
+    const get = async (path: string, headers: Record<string, string>) => {
+      const response = await request(path, headers);
+      expect(response.status, path).toBe(200);
+      return (await response.json()) as Record<string, unknown>;
+    };
+    const snapshot = await get('/api/v1/workspace/dashboard', read);
+    for (const path of [
+      '/api/v1/workspace/runs-index',
+      '/api/v1/workspace/dashboard',
+      `/api/v1/workspace/dashboard/tasks?snapshotId=${snapshot.snapshotId as string}&group=reviews`,
+      '/api/v1/workspace/dashboard/overview?group=failed',
+      '/api/v1/workspace/dashboard/overview?group=needs-you',
+      '/api/v1/workspace/dashboard/feed',
+      '/api/v1/workspace/dashboard/insights',
+    ]) {
+      const body = JSON.stringify(await get(path, read));
+      expect(body, path).not.toContain(SECRET);
+    }
+    expect(JSON.stringify(snapshot)).toContain('review me');
+    const index = await get('/api/v1/workspace/runs-index', read);
+    expect((index.runs as Array<Record<string, unknown>>).map((row) => row.title).sort()).toEqual(['broke', 'review me']);
+    const insights = await get('/api/v1/workspace/dashboard/insights', read);
+    expect(JSON.stringify(insights)).toContain('broke');
+    // Guard: the owner's views keep the summary and the failure text.
+    const full = seedToken(['read', 'runs.transcript']);
+    expect(JSON.stringify(await get('/api/v1/workspace/runs-index', full))).toContain(SECRET);
+    expect(JSON.stringify(await get('/api/v1/workspace/dashboard', full))).toContain(SECRET);
+    expect(JSON.stringify(await get('/api/v1/workspace/dashboard/insights', full))).toContain(SECRET);
   });
 
   it('projects the run events of both live streams for a read token', async () => {

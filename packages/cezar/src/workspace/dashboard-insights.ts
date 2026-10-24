@@ -10,6 +10,7 @@ import type {
   RunRecord,
   RunStatus,
 } from '@open-mercato/cezar-contract';
+import { failureLine } from '../runs/failure-kind.ts';
 import { projectCostTask, type CostVisibility } from './dashboard-costs.ts';
 
 /** Explicit allowlist, like `projectCostTask`: never prompts, step payloads or session ids. */
@@ -17,6 +18,8 @@ export type InsightRow = {
   projectId: string;
   id: string;
   title: string;
+  /** The title without the agent-derived summary — what a projected principal sees. */
+  plainTitle: string;
   status: RunStatus;
   createdAt: string;
   startedAt?: string;
@@ -61,6 +64,7 @@ export function projectInsightRow(projectId: string, run: RunRecord): InsightRow
     projectId,
     id: run.id,
     title: run.titleSummary || run.title,
+    plainTitle: run.title,
     status: run.status,
     createdAt: run.createdAt,
     ...(run.startedAt !== undefined ? { startedAt: run.startedAt } : {}),
@@ -104,19 +108,22 @@ function firstLine(text: string, max: number) {
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
 
-export function classifyFailure(row: InsightRow): {
+/** `projected`: the failure's kind in place of its text, which quotes what a command printed
+ *  (spec 2026-10-24-cezar-mcp-server §4). The category is still read from the text. */
+export function classifyFailure(row: InsightRow, projected = false): {
   category: DashboardFailureCategory;
   label: string;
   message: string;
 } {
   const raw = row.failedStep?.error ?? row.error ?? '';
-  const message = raw ? firstLine(raw, MESSAGE_MAX) : 'No error recorded';
+  const kind = row.failedStep?.kind === 'check' && row.failedStep.error ? 'check failed' : failureLine(raw);
+  const message = !raw ? 'No error recorded' : projected ? kind : firstLine(raw, MESSAGE_MAX);
   for (const [category, label, pattern] of PATTERNS)
     if (pattern.test(raw)) return { category, label, message };
   // A check step is the workflow saying no (tests, lint) — group by which check.
   if (row.failedStep?.kind === 'check')
     return { category: 'check', label: `Check failed: ${row.failedStep.name}`, message };
-  return { category: 'other', label: raw ? firstLine(raw, 60) : 'No error recorded', message };
+  return { category: 'other', label: !raw ? 'No error recorded' : projected ? kind : firstLine(raw, 60), message };
 }
 
 const median = (values: number[]): number | null => {
@@ -148,6 +155,7 @@ export function buildDashboardInsights(
   query: DashboardInsightsQuery,
   visibility: CostVisibility,
   at: number,
+  projected = false,
 ): DashboardInsights {
   const offset = query.tzOffsetMinutes * 60000;
   const start =
@@ -183,7 +191,7 @@ export function buildDashboardInsights(
 
   const reasons = new Map<string, DashboardFailureReason>();
   for (const r of [...failed].sort((a, b) => Date.parse(b.finishedAt!) - Date.parse(a.finishedAt!))) {
-    const { category, label, message } = classifyFailure(r);
+    const { category, label, message } = classifyFailure(r, projected);
     const key = `${category}\u0000${label}`;
     const existing = reasons.get(key);
     if (existing) existing.count++;
@@ -195,7 +203,7 @@ export function buildDashboardInsights(
         latest: {
           projectId: r.projectId,
           id: r.id,
-          title: r.title,
+          title: projected ? r.plainTitle : r.title,
           at: new Date(Date.parse(r.finishedAt!)).toISOString(),
           ...(r.failedStep ? { step: r.failedStep.name } : {}),
           message,

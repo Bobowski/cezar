@@ -27,3 +27,17 @@ export function failureKind(error: string | undefined): FailureKind | undefined 
 export function taskFailedLabel(runner: string | undefined, kind: FailureKind): string {
   return `${runner ?? 'unknown'}:${kind}`;
 }
+
+const FAILURE_LINE: Record<FailureKind, string> = {
+  missing_session: 'agent session missing',
+  usage_limit: 'usage limit reached',
+  auth: 'agent sign-in failed',
+  timeout: 'timed out',
+  other: 'failed',
+};
+
+/** A failure as one line naming its kind, never the text — for a view without the transcript. */
+export function failureLine(error: string): string {
+  const kind = failureKind(error);
+  return kind === undefined ? 'interrupted' : FAILURE_LINE[kind];
+}

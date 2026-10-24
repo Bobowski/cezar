@@ -28,6 +28,9 @@ export const authSessionResponseSchema = z.object({
   /** No account exists yet: only the setup flow is served (`cezar auth setup` on the host). */
   setupRequired: z.boolean(),
   user: authUserSchema.optional(),
+  /** `CEZ_INSTANCE_ID`, when server-install set one: how its anonymous probe tells that a domain
+   *  reaches THIS install (the health route's twin needs a session). A random id, no secret. */
+  instanceId: z.string().optional(),
 });
 export type AuthSessionResponse = z.infer<typeof authSessionResponseSchema>;
 

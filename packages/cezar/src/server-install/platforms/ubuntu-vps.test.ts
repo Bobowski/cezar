@@ -1161,7 +1161,9 @@ describe("ubuntu-vps identity step — cezar's own sign-in", () => {
           inputs.push({ argv: args.join(' '), stdin: opts.input });
           return { code: 0, stdout: over.authed ?? '{"instanceId":"this-install"}\n200', stderr: '' };
         }
-        if (target.endsWith('/api/v1/auth/session')) return { code: 0, stdout: over.session ?? '{"enforced":true,"authenticated":false,"setupRequired":true}\n200', stderr: '' };
+        if (target.endsWith('/api/v1/auth/session')) {
+          return { code: 0, stdout: over.session ?? '{"enforced":true,"authenticated":false,"setupRequired":true,"instanceId":"this-install"}\n200', stderr: '' };
+        }
         if (target.endsWith('/api/v1/health')) return { code: 0, stdout: over.anon ?? '401', stderr: '' };
         return { code: 0, stdout: '200', stderr: '' }; // the upstream answers
       },
@@ -1232,6 +1234,10 @@ describe("ubuntu-vps identity step — cezar's own sign-in", () => {
     ['sign-in not enforced', { session: '{"enforced":false}\n200' }, {}, 'did not report sign-in as enforced'],
     ['an owner request that does not arrive', { authed: '\n502' }, {}, 'did not reach cezar'],
     ['another install answering', { authed: '{"instanceId":"other"}\n200' }, {}, 'serving another install'],
+    // The owner probe goes straight to the upstream, so only the anonymous session proves the
+    // DOMAIN's vhost reaches this install.
+    ['the domain reaching another install', { session: '{"enforced":true,"authenticated":false,"setupRequired":true,"instanceId":"other"}\n200' }, {}, 'through nginx is not this install'],
+    ['the domain reaching a cockpit that names no install', { session: '{"enforced":true,"authenticated":false,"setupRequired":true}\n200' }, {}, 'through nginx is not this install'],
   ] as const)('fails the install on %s', async (_label, answers, state, expected) => {
     const { ctx, out } = signInCtx(signInRunner(answers).runner, state);
     await expect(stepById('identity').run(ctx)).rejects.toBeInstanceOf(StepAborted);

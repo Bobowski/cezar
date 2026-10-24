@@ -84,13 +84,15 @@ export function authRoutes(deps: { service: AuthService; enforced: () => boolean
   return new Hono<AuthEnv>()
     .get('/auth/session', (c) => {
       c.header('cache-control', 'no-store');
-      if (!enforced()) return c.json({ enforced: false, authenticated: true, setupRequired: false });
+      const instance = process.env.CEZ_INSTANCE_ID ? { instanceId: process.env.CEZ_INSTANCE_ID } : {};
+      if (!enforced()) return c.json({ enforced: false, authenticated: true, setupRequired: false, ...instance });
       const principal = c.get('principal');
       return c.json({
         enforced: true,
         authenticated: principal !== undefined,
         setupRequired: service.setupRequired(),
         ...(principal?.kind === 'user' ? { user: principal.user } : {}),
+        ...instance,
       });
     })
     .post('/auth/login', jsonZodValidator(authLoginBodySchema), async (c) => {

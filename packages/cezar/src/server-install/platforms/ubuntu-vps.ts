@@ -1535,10 +1535,18 @@ async function verifyCezarSignIn(
     );
   }
   const session = await curlResponse(ctx, [...probe.args, `${probe.base}api/v1/auth/session`]);
+  let served: { enforced?: unknown; instanceId?: unknown } | null = null;
   try {
-    if ((JSON.parse(session.body) as { enforced?: unknown }).enforced !== true) throw new Error('not enforced');
+    served = JSON.parse(session.body) as { enforced?: unknown; instanceId?: unknown };
   } catch {
+    // reported just below
+  }
+  if (served?.enforced !== true) {
     problems.push(`/api/v1/auth/session through ${probe.through} did not report sign-in as enforced (got "${session.code}")`);
+  } else if (ctx.state.instanceId && served.instanceId !== ctx.state.instanceId) {
+    // The owner probe goes straight to the upstream; only this anonymous read proves the front
+    // (the domain's vhost) reaches THIS install.
+    problems.push(`the cockpit answering through ${probe.through} is not this install (it names ${typeof served.instanceId === 'string' ? `"${served.instanceId}"` : 'no install'})`);
   }
   if (probe.upstream === null) return problems;
   // The owner's view of the same route proves a credentialed request reaches THIS install.
@@ -1601,7 +1609,7 @@ const identityStep: InstallStep = {
       if (upstreamUp && https) problems.push(...(await verifyCezarSignIn(ctx, { base, args: [...tls, ...host], through: 'nginx', upstream: isLoopbackHost(upstreamHost(ctx)) ? `http://127.0.0.1:${port}/` : null })));
       if (problems.length === 0) {
         const url = ctx.state.publicUrl!;
-        ctx.ui.success(`Cockpit is live at ${url} — cezar's sign-in guards it, and an authenticated request reached this install.`);
+        ctx.ui.success(`Cockpit is live at ${url} — cezar's sign-in guards it, the domain reaches this install, and an authenticated request reached it.`);
         announceSignIn(ctx, url);
         return { artifacts: [] };
       }

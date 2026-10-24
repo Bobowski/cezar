@@ -97,7 +97,9 @@ process list; `CEZ_SERVER` for the address), so
   host key opens nothing at all: an L4 proxy (TCP passthrough) adds no header to tell its callers
   from a local shell, and a proxy that wants host-key use would have to speak PROXY protocol,
   which cezar does not. The installer's owner probe therefore goes to the loopback upstream, not
-  through nginx, and there is none behind an external proxy.
+  through nginx, and there is none behind an external proxy. What the probe through the domain
+  still proves is identity: the anonymous `GET /auth/session` carries `instanceId`
+  (`CEZ_INSTANCE_ID`), and the install fails unless the domain's vhost names this install.
 - A revoked or expired token ends the SSE streams it opened within one keepalive beat
   (`sseSessionEnded`); a token opens no WebSocket under sign-in, so there is none to end.
 - `CEZ_TOKEN`/`CEZ_SERVER`/`CEZ_API_TOKEN` in the cockpit's own environment reach no child:

@@ -228,6 +228,18 @@ describe('cockpit authentication', () => {
     expect((await request('/api/v1/health')).status).toBe(200);
   });
 
+  it('names this install on the anonymous session read, so an installer can tell its own vhost', async () => {
+    const saved = process.env.CEZ_INSTANCE_ID;
+    process.env.CEZ_INSTANCE_ID = 'install-a';
+    try {
+      const anonymous = authSessionResponseSchema.strict().parse(await (await request('/api/v1/auth/session')).json());
+      expect(anonymous).toEqual({ enforced: true, authenticated: false, setupRequired: true, instanceId: 'install-a' });
+    } finally {
+      if (saved === undefined) delete process.env.CEZ_INSTANCE_ID;
+      else process.env.CEZ_INSTANCE_ID = saved;
+    }
+  });
+
   it('walks setup → session → sign-out → two-step sign-in, matching the contract at every step', async () => {
     const before = authSessionResponseSchema.strict().parse(await (await request('/api/v1/auth/session')).json());
     expect(before).toEqual({ enforced: true, authenticated: false, setupRequired: true });

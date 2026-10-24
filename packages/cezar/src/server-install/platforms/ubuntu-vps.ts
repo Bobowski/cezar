@@ -1067,6 +1067,9 @@ export function systemdUnit(
   /** The front authenticates (`signIn: 'proxy'`): cezar's own sign-in is switched off. Absent
    *  for cezar's sign-in AND for a record that predates the choice, whose unit stays as it was. */
   proxyAuth = false,
+  /** `--external-proxy`: every connection is the operator's proxy's, so the host key opens
+   *  nothing (spec 2026-10-24-cezar-mcp-server §5). */
+  externalProxy = false,
 ): string {
   const userLine = scope === 'system' ? `User=${userInfo().username}\n` : '';
   const installTarget = scope === 'system' ? 'multi-user.target' : 'default.target';
@@ -1092,7 +1095,7 @@ Wants=network-online.target
 Type=simple
 ${userLine}WorkingDirectory=${repoRoot}
 Environment=CEZ_REMOTE=1
-${proxyAuth ? 'Environment=CEZ_AUTH=0\n' : ''}${instanceId ? `Environment=CEZ_INSTANCE_ID=${sysd(instanceId)}\n` : ''}Environment=PATH=${sysd(pathDirs.join(':'))}
+${externalProxy ? 'Environment=CEZ_EXTERNAL_PROXY=1\n' : ''}${proxyAuth ? 'Environment=CEZ_AUTH=0\n' : ''}${instanceId ? `Environment=CEZ_INSTANCE_ID=${sysd(instanceId)}\n` : ''}Environment=PATH=${sysd(pathDirs.join(':'))}
 ExecStart=${sysd(execStart)} serve --no-open --port ${port}${sysd(bind)}
 Restart=on-failure
 RestartSec=5
@@ -1270,7 +1273,7 @@ async function applyServiceUnit(
     ctx.ui.info(`DRY RUN — would write ${unitPath} and enable it (systemctl --user enable --now cezar).`);
     return { scope, artifact };
   }
-  const unit = systemdUnit(ctx.repoRoot, ctx.state.primaryPort, scope, execStart, ctx.state.bindHost, ctx.state.instanceId, ctx.state.signIn === 'proxy');
+  const unit = systemdUnit(ctx.repoRoot, ctx.state.primaryPort, scope, execStart, ctx.state.bindHost, ctx.state.instanceId, ctx.state.signIn === 'proxy', ctx.state.externalProxy === true);
   const previous = userBus ? (existsSync(unitPath) ? readFileSync(unitPath, 'utf8') : null) : await readHostFile(ctx, unitPath);
   const differs = previous !== null && previous.trimEnd() !== unit.trimEnd();
   const mustRestart = restart === 'always' || (previous !== null && unitBehaviour(previous) !== unitBehaviour(unit));
@@ -1425,8 +1428,8 @@ async function verifyBehindExternalProxy(ctx: InstallContext): Promise<{ artifac
   }
 
   if (ctx.state.signIn === 'cezar') {
-    const upstream = isLoopbackHost(host) ? `http://127.0.0.1:${port}/` : null;
-    const problems = await verifyCezarSignIn(ctx, { base: `${target}/`, args: [], through: target, upstream });
+    // No owner probe: behind an external proxy the service refuses the host key (CEZ_EXTERNAL_PROXY).
+    const problems = await verifyCezarSignIn(ctx, { base: `${target}/`, args: [], through: target, upstream: null });
     if (problems.length > 0) {
       ctx.ui.error(`The cockpit is NOT fully working yet:\n` + problems.map((p) => `  • ${p}`).join('\n'));
       throw new StepAborted('cockpit verification failed — see the diagnostics above');

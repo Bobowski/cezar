@@ -1,7 +1,8 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { Hono, type Context } from 'hono';
 import { selectTools, type Catalog } from './catalog.ts';
-import { forwardedHeaders, type Dispatch } from './execute.ts';
+import { forwardedHeaders } from './execute.ts';
 import { createCezarMcpServer } from './server.ts';
 
 /**
@@ -16,21 +17,24 @@ import { createCezarMcpServer } from './server.ts';
 export interface McpRoutesDeps {
   /** Built on first use, after every route is registered. */
   catalog: () => Catalog;
-  dispatch: Dispatch;
+  /** `env` is the outer request's (its socket): the guard reads where a call came from off it. */
+  dispatch: (request: Request, env: unknown) => Promise<Response>;
   version: string;
 }
 
 export function mcpRoutes(deps: McpRoutesDeps) {
+  const callerEnv = new AsyncLocalStorage<unknown>();
   const handler = createMcpHandler(
     (ctx) => {
       const request = ctx.requestInfo;
       const url = new URL(request?.url ?? 'http://127.0.0.1/');
+      const env = callerEnv.getStore();
       const catalog = deps.catalog();
       const selected = selectTools(catalog, url.searchParams.get('tools') ?? undefined);
       return createCezarMcpServer({
         catalog,
         tools: 'tools' in selected ? selected.tools : [],
-        context: { dispatch: deps.dispatch, origin: url.origin, headers: forwardedHeaders(request?.headers ?? new Headers()) },
+        context: { dispatch: (inner) => deps.dispatch(inner, env), origin: url.origin, headers: forwardedHeaders(request?.headers ?? new Headers()) },
         version: deps.version,
       });
     },
@@ -39,7 +43,7 @@ export function mcpRoutes(deps: McpRoutesDeps) {
   const serve = async (c: Context) => {
     const selected = selectTools(deps.catalog(), c.req.query('tools'));
     if ('error' in selected) return c.json({ error: selected.error }, 400);
-    return handler.fetch(c.req.raw);
+    return callerEnv.run(c.env, () => handler.fetch(c.req.raw));
   };
 
   return new Hono().post('/mcp', serve).get('/mcp', serve).delete('/mcp', serve);

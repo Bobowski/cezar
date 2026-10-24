@@ -325,7 +325,8 @@ describe('cockpit authentication', () => {
   it('this host’s key file authenticates a shell, and a wrong key does not', async () => {
     ensureHostKey();
     const key = readHostKey()!;
-    const local = (headers: Record<string, string>) => app.request('/api/v1/health', { headers: { host: '127.0.0.1:4321', ...headers } });
+    const local = (headers: Record<string, string>) =>
+      app.request('/api/v1/health', { headers: { host: '127.0.0.1:4321', ...headers } }, { incoming: { socket: { remoteAddress: '127.0.0.1' } } });
     expect((await local({ authorization: `Bearer ${key}` })).status).toBe(200);
     expect((await local({ authorization: `Bearer ${key}x` })).status).toBe(401);
     if (process.platform !== 'win32') {
@@ -339,24 +340,56 @@ describe('cockpit authentication', () => {
     const bearer = { authorization: `Bearer ${readHostKey()!}` };
     // Through the public front — a key a task read out and handed to a token holder.
     expect((await request('/api/v1/health', { headers: bearer })).status).toBe(401);
-    // A loopback Host behind a proxy on this box is the proxy's caller, not this shell.
-    for (const forwarded of ['x-forwarded-for', 'forwarded', 'x-real-ip']) {
-      const headers: Record<string, string> = { host: '127.0.0.1:4321', ...bearer, [forwarded]: '203.0.113.9' };
-      expect((await app.request('/api/v1/health', { headers })).status).toBe(401);
-    }
-    expect((await app.request('/api/v1/health', { headers: { host: '127.0.0.1:4321', origin: 'http://127.0.0.1:4321', ...bearer } })).status).toBe(401);
-    // The socket says where the request came from whenever the server knows.
-    const from = (remoteAddress: string) =>
-      app.request('/api/v1/health', { headers: { host: '127.0.0.1:4321', ...bearer } }, { incoming: { socket: { remoteAddress } } });
+    // The socket decides, and a request whose socket the server does not know is no shell's.
+    const from = (remoteAddress: string | undefined, headers: Record<string, string> = {}) =>
+      app.request(
+        '/api/v1/health',
+        { headers: { host: '127.0.0.1:4321', ...bearer, ...headers } },
+        remoteAddress === undefined ? undefined : { incoming: { socket: { remoteAddress } } },
+      );
     expect((await from('203.0.113.9')).status).toBe(401);
+    expect((await from(undefined)).status).toBe(401);
     expect((await from('::ffff:127.0.0.1')).status).toBe(200);
     expect((await from('::1')).status).toBe(200);
+    // A loopback socket behind a proxy on this box is the proxy's caller, not this shell —
+    // any X-Forwarded-* at all, Forwarded, X-Real-IP, or a page's Origin.
+    for (const forwarded of ['x-forwarded-for', 'x-forwarded-port', 'x-forwarded-proto', 'forwarded', 'x-real-ip']) {
+      expect((await from('127.0.0.1', { [forwarded]: '203.0.113.9' })).status, forwarded).toBe(401);
+    }
+    expect((await from('127.0.0.1', { origin: 'http://127.0.0.1:4321' })).status).toBe(401);
+    // Behind an external proxy, an L4 one adds no header to tell its callers from a shell.
+    const saved = process.env.CEZ_EXTERNAL_PROXY;
+    process.env.CEZ_EXTERNAL_PROXY = '1';
+    try {
+      expect((await from('127.0.0.1')).status).toBe(401);
+    } finally {
+      if (saved === undefined) delete process.env.CEZ_EXTERNAL_PROXY;
+      else process.env.CEZ_EXTERNAL_PROXY = saved;
+    }
     // The WebSocket twin answers the same.
     const upgrade = (headers: Record<string, string>, remoteAddress = '127.0.0.1') =>
       upgradeIsAuthenticated({ headers: { ...bearer, ...headers }, socket: { remoteAddress } } as unknown as IncomingMessage, { service: new AuthService(), enforced: () => true });
     expect(upgrade({ host: '127.0.0.1:4321' })).toBe(true);
     expect(upgrade({ host: HOST })).toBe(false);
     expect(upgrade({ host: '127.0.0.1:4321' }, '203.0.113.9')).toBe(false);
+    expect(upgrade({ host: '127.0.0.1:4321', 'x-forwarded-port': '443' })).toBe(false);
+    expect(upgradeIsAuthenticated({ headers: { ...bearer, host: '127.0.0.1:4321' } } as unknown as IncomingMessage, { service: new AuthService(), enforced: () => true })).toBe(false);
+  });
+
+  it('a host-key MCP call reaches its tool’s route: the inner request keeps the caller’s socket', async () => {
+    ensureHostKey();
+    const headers = {
+      host: '127.0.0.1:4321', authorization: `Bearer ${readHostKey()!}`,
+      'content-type': 'application/json', accept: 'application/json, text/event-stream',
+    };
+    const call = await app.request('/api/v1/mcp', {
+      method: 'POST', headers,
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'runs_list', arguments: {} } }),
+    }, { incoming: { socket: { remoteAddress: '127.0.0.1' } } });
+    expect(call.status).toBe(200);
+    const text = await call.text();
+    expect(text).toContain('"result"');
+    expect(text).not.toContain('"isError":true');
   });
 
   it('a signed-in owner is a trusted operator: the hosted gates open for them and for nobody else', async () => {

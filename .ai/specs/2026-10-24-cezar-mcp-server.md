@@ -89,9 +89,15 @@ process list; `CEZ_SERVER` for the address), so
 - `tasks` and `author` are code execution as the cezar user (§4). What the server does stop is
   that turning into the cockpit's owner credential off the box: the host key
   (`~/.cezar/auth-host.key`, `0600`, readable by any task) is accepted only from a loopback
-  request — loopback `Host` and socket, no `X-Forwarded-*`/`Forwarded`/`X-Real-IP`/`Origin` — so a
+  request — the SOCKET's remote address is loopback (an unknown socket is not), the `Host` is
+  loopback, and no `X-Forwarded-*`/`Forwarded`/`X-Real-IP`/`Origin` header is present — so a
   key a task reads out and hands to a token holder opens nothing through the public front. The
-  installer's owner probe therefore goes to the loopback upstream, not through nginx.
+  MCP endpoint dispatches each tool call with the outer request's socket, so a host-key MCP
+  session keeps working. Behind `--external-proxy` the unit sets `CEZ_EXTERNAL_PROXY=1` and the
+  host key opens nothing at all: an L4 proxy (TCP passthrough) adds no header to tell its callers
+  from a local shell, and a proxy that wants host-key use would have to speak PROXY protocol,
+  which cezar does not. The installer's owner probe therefore goes to the loopback upstream, not
+  through nginx, and there is none behind an external proxy.
 - A revoked or expired token ends the SSE streams it opened within one keepalive beat
   (`sseSessionEnded`); a token opens no WebSocket under sign-in, so there is none to end.
 - `CEZ_TOKEN`/`CEZ_SERVER`/`CEZ_API_TOKEN` in the cockpit's own environment reach no child:

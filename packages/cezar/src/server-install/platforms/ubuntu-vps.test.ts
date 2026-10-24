@@ -568,6 +568,14 @@ describe('systemdUnit — sign-in', () => {
     expect(systemdUnit('/srv/app', 4321, 'user', '/usr/local/bin/cezar', undefined, undefined, true))
       .toContain('Environment=CEZ_REMOTE=1\nEnvironment=CEZ_AUTH=0\n');
   });
+
+  it('tells the service it sits behind an external proxy, so the host key opens nothing there', () => {
+    const base = systemdUnit('/srv/app', 4321, 'user', '/usr/local/bin/cezar');
+    expect(base).not.toContain('CEZ_EXTERNAL_PROXY');
+    expect(systemdUnit('/srv/app', 4321, 'user', '/usr/local/bin/cezar', undefined, undefined, false, false)).toBe(base);
+    expect(systemdUnit('/srv/app', 4321, 'user', '/usr/local/bin/cezar', undefined, undefined, false, true))
+      .toContain('Environment=CEZ_REMOTE=1\nEnvironment=CEZ_EXTERNAL_PROXY=1\n');
+  });
 });
 
 describe('systemdUnit', () => {
@@ -1196,6 +1204,13 @@ describe("ubuntu-vps identity step — cezar's own sign-in", () => {
   it('never sends the host key to an upstream that is not loopback', async () => {
     const { runner, inputs } = signInRunner();
     const { ctx } = signInCtx(runner, { externalProxy: true, bindHost: '172.17.0.1', publicUrl: undefined });
+    await expect(stepById('identity').run(ctx)).resolves.toBeTruthy();
+    expect(inputs).toHaveLength(0);
+  });
+
+  it('sends no host key behind an external proxy at all: the service refuses it there (CEZ_EXTERNAL_PROXY)', async () => {
+    const { runner, inputs } = signInRunner();
+    const { ctx } = signInCtx(runner, { externalProxy: true, publicUrl: undefined });
     await expect(stepById('identity').run(ctx)).resolves.toBeTruthy();
     expect(inputs).toHaveLength(0);
   });

@@ -8971,7 +8971,7 @@ export function createApp(deps: ServerDeps) {
     .route('/', workspaceEventsRoutes)
     .route('/', telemetryRoutes)
     // The catalog is read off the assembled app on first use: every route is registered by then.
-    .route('/', mcpRoutes({ catalog: () => (mcpCatalog ??= buildCatalog(app.routes).catalog), dispatch: async (request) => app.fetch(request), version }));
+    .route('/', mcpRoutes({ catalog: () => (mcpCatalog ??= buildCatalog(app.routes).catalog), dispatch: async (request, env) => app.fetch(request, env as object | undefined), version }));
   let mcpCatalog: Catalog | undefined;
 
   // ---- mount ---------------------------------------------------------------

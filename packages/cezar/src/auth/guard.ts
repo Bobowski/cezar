@@ -57,18 +57,26 @@ export function bearerOf(header: string | undefined): string | undefined {
 }
 
 /** Headers a proxy or a browser adds: a request carrying one is not this machine's own shell. */
-const NOT_A_SHELL = ['x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'forwarded', 'x-real-ip', 'origin'];
+const isProxyOrPageHeader = (name: string): boolean =>
+  name.startsWith('x-forwarded-') || name === 'forwarded' || name === 'x-real-ip' || name === 'origin';
 
 /**
  * Whether a request may present the host key: a shell on this machine talking straight to its own
- * cockpit — loopback Host, loopback socket (when the server knows it), no proxy or page between.
- * Code a token runs can read the key file, so off the box the key must open nothing (spec
- * 2026-10-24-cezar-mcp-server §5).
+ * cockpit — a loopback SOCKET, loopback Host, and no proxy or page header. Code a token runs can
+ * read the key file, so off the box the key must open nothing (spec 2026-10-24-cezar-mcp-server
+ * §5). An unknown socket is not a shell, and nor is anything behind `--external-proxy`
+ * (`CEZ_EXTERNAL_PROXY=1`): an L4 proxy adds no header to tell its callers from one.
  */
-export function hostKeyRequestIsLocal(header: (name: string) => string | undefined, remoteAddress: string | undefined): boolean {
-  if (!isLoopbackHostHeader(header('host'))) return false;
-  if (NOT_A_SHELL.some((name) => header(name) !== undefined)) return false;
-  return remoteAddress === undefined || isLoopbackHostHeader(remoteAddress.replace(/^::ffff:(?=\d+\.)/i, ''));
+export function hostKeyRequestIsLocal(
+  request: { host: string | undefined; headerNames: Iterable<string>; remoteAddress: string | undefined },
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (env.CEZ_EXTERNAL_PROXY === '1') return false;
+  const { remoteAddress } = request;
+  if (remoteAddress === undefined || !isLoopbackHostHeader(remoteAddress.replace(/^::ffff:(?=\d+\.)/i, ''))) return false;
+  if (!isLoopbackHostHeader(request.host)) return false;
+  for (const name of request.headerNames) if (isProxyOrPageHeader(name.toLowerCase())) return false;
+  return true;
 }
 
 function socketAddressOf(c: Context): string | undefined {
@@ -76,11 +84,7 @@ function socketAddressOf(c: Context): string | undefined {
 }
 
 function upgradeHostKeyIsLocal(req: IncomingMessage): boolean {
-  const header = (name: string) => {
-    const value = req.headers[name];
-    return Array.isArray(value) ? value[0] : value;
-  };
-  return hostKeyRequestIsLocal(header, req.socket?.remoteAddress);
+  return hostKeyRequestIsLocal({ host: req.headers.host, headerNames: Object.keys(req.headers), remoteAddress: req.socket?.remoteAddress });
 }
 
 export interface AuthGuardOptions {
@@ -133,7 +137,8 @@ export function createAuthGuard(options: AuthGuardOptions): MiddlewareHandler<Au
       return next();
     }
     if (bearer !== undefined && isHostKey(bearer)) {
-      if (!hostKeyRequestIsLocal((name) => c.req.header(name), socketAddressOf(c)) || !verifyHostKey(bearer)) return unauthorized(c);
+      const local = hostKeyRequestIsLocal({ host: c.req.header('host'), headerNames: c.req.raw.headers.keys(), remoteAddress: socketAddressOf(c) });
+      if (!local || !verifyHostKey(bearer)) return unauthorized(c);
       c.set('principal', { kind: 'host', role: 'owner' });
       return next();
     }

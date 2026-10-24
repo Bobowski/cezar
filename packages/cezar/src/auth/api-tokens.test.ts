@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { routeContracts } from '@open-mercato/cezar-contract';
+import { AGENT_WRITTEN, agentWrittenRun } from '../test-fixtures/agent-written-run.testkit.ts';
 import { apiTokenAllows, apiTokenIdOf, isApiToken, mintApiToken, READ_ROUTES, routeFamily } from './api-tokens.ts';
+import { redactRunForScope } from './run-projection.ts';
 import { AuthService } from './service.ts';
 import { issueSetupCode, readAuthStore } from './store.ts';
 import { base32Decode, hotp, totpStep } from './totp.ts';
@@ -219,7 +221,8 @@ describe('API token scopes, per route family', () => {
 const FREE_TEXT_WORDS = [
   'title', 'task', 'summary', 'log', 'error', 'errors', 'output', 'body', 'message', 'messages', 'excerpt',
   'reason', 'detail', 'command', 'prompt', 'text', 'subject', 'description', 'content', 'stdout', 'stderr',
-  'note', 'comment', 'preview',
+  'note', 'comment', 'preview', 'result', 'evidence', 'effects', 'suggestions', 'questions', 'hint', 'action',
+  'criteria',
 ];
 
 /**
@@ -234,22 +237,26 @@ const FREE_TEXT_WORDS = [
  */
 type FreeTextOrigin = 'projected' | 'repository' | 'forge' | 'degrade';
 
+/** A task record's free text and open paths; `/runs` names the same ones under `[]`. */
+const RUN_FREE_TEXT = [
+  'title', 'titleSummary', 'task', 'queuedMessages', 'queuedMessages[].text', 'promptQueue[].text', 'systemPrompt',
+  'trackerLinks[].title', 'dispatch.report.result', 'dispatch.report.evidence', 'dispatch.report.side_effects',
+  'dispatch.report.errors', 'dispatch.report.recommended_next_action', 'dispatch.report.suggestions',
+  'dispatch.pendingReports[].title', 'dispatch.pendingReports[].report.result', 'dispatch.pendingReports[].report.evidence',
+  'dispatch.pendingReports[].report.side_effects', 'dispatch.pendingReports[].report.errors',
+  'dispatch.pendingReports[].report.recommended_next_action', 'dispatch.pendingReports[].report.suggestions',
+  'dispatch.pendingAsk.questions', 'graphState.outputs.*', 'graphState.outputs.*.*',
+  'landing.error', 'error', 'steps[].error', 'workflowDef.description', 'workflowDef.steps[].prompt',
+  'workflowDef.steps[].command', 'workflowDef.graph.nodes[].prompt', 'workflowDef.graph.nodes[].command',
+  'workflowDef.graph.nodes[].message', 'workflowDef.graph.nodes[].title', 'workflowDef.graph.nodes[].body',
+];
+
+/** What a projected task record keeps verbatim: the user's own task text and the tracker's title. */
+const RUN_SURVIVES = ['title', 'task', 'trackerLinks[].title'];
+
 const READ_FREE_TEXT: Record<string, { from: FreeTextOrigin; fields: string[] }> = {
-  '/runs': { from: 'projected', fields: [
-    '[].title', '[].titleSummary', '[].task', '[].queuedMessages', '[].queuedMessages[].text', '[].promptQueue[].text',
-    '[].systemPrompt', '[].trackerLinks[].title', '[].dispatch.report.errors', '[].dispatch.pendingReports[].title',
-    '[].dispatch.pendingReports[].report.errors', '[].landing.error', '[].error', '[].steps[].error',
-    '[].workflowDef.description', '[].workflowDef.steps[].prompt', '[].workflowDef.steps[].command',
-    '[].workflowDef.graph.nodes[].prompt', '[].workflowDef.graph.nodes[].command', '[].workflowDef.graph.nodes[].message',
-    '[].workflowDef.graph.nodes[].title', '[].workflowDef.graph.nodes[].body',
-  ] },
-  '/runs/:id': { from: 'projected', fields: [
-    'title', 'titleSummary', 'task', 'queuedMessages', 'queuedMessages[].text', 'promptQueue[].text', 'systemPrompt',
-    'trackerLinks[].title', 'dispatch.report.errors', 'dispatch.pendingReports[].title', 'dispatch.pendingReports[].report.errors',
-    'landing.error', 'error', 'steps[].error', 'workflowDef.description', 'workflowDef.steps[].prompt',
-    'workflowDef.steps[].command', 'workflowDef.graph.nodes[].prompt', 'workflowDef.graph.nodes[].command',
-    'workflowDef.graph.nodes[].message', 'workflowDef.graph.nodes[].title', 'workflowDef.graph.nodes[].body',
-  ] },
+  '/runs': { from: 'projected', fields: RUN_FREE_TEXT.map((field) => `[].${field}`) },
+  '/runs/:id': { from: 'projected', fields: RUN_FREE_TEXT },
   '/groups/:groupId': { from: 'projected', fields: ['runs[].title', 'runs[].handoffExcerpt'] },
   '/worktrees': { from: 'projected', fields: ['worktrees[].title'] },
   '/worktree-lifecycle': { from: 'projected', fields: [
@@ -267,7 +274,7 @@ const READ_FREE_TEXT: Record<string, { from: FreeTextOrigin; fields: string[] }>
   ] },
   '/workspace/runs-index': { from: 'projected', fields: ['runs[].title', 'runs[].titleSummary'] },
   '/workspace/dashboard': { from: 'projected', fields: [
-    'coverage.projects[].reason', 'questions.rows[].title', 'questions.rows[].titleSummary', 'reviews.rows[].title', 'reviews.rows[].titleSummary',
+    'coverage.projects[].reason', 'questions', 'questions.rows[].title', 'questions.rows[].titleSummary', 'reviews.rows[].title', 'reviews.rows[].titleSummary',
   ] },
   '/workspace/dashboard/costs': { from: 'projected', fields: ['coverage.projects[].reason', 'tasks.rows[].title'] },
   '/workspace/dashboard/feed': { from: 'projected', fields: [
@@ -279,7 +286,7 @@ const READ_FREE_TEXT: Record<string, { from: FreeTextOrigin; fields: string[] }>
   '/workspace/dashboard/overview': { from: 'projected', fields: ['coverage.projects[].reason', 'page.rows[].title', 'page.rows[].titleSummary'] },
   '/workspace/dashboard/tasks': { from: 'projected', fields: ['coverage.projects[].reason', 'page.rows[].title', 'page.rows[].titleSummary'] },
   '/workspace/self-update': { from: 'projected', fields: ['reason', 'job.log', 'job.error'] },
-  '/repo': { from: 'repository', fields: ['log', 'log[].subject'] },
+  '/repo': { from: 'repository', fields: ['log', 'log[].subject', 'checkedOutElsewhere.*'] },
   '/repo/search': { from: 'repository', fields: ['matches[].text'] },
   '/repo/sync': { from: 'repository', fields: ['incoming[].subject'] },
   '/runs/:id/commits': { from: 'repository', fields: ['commits[].subject'] },
@@ -292,24 +299,21 @@ const READ_FREE_TEXT: Record<string, { from: FreeTextOrigin; fields: string[] }>
     'workflows[].graph.nodes[].body', 'issues[].message',
   ] },
   '/workflows/nodes': { from: 'repository', fields: ['nodes[].description'] },
-  '/github': { from: 'forge', fields: ['reason', 'issues[].title', 'issues[].body', 'prs[].title', 'prs[].body'] },
+  '/github': { from: 'forge', fields: ['reason', 'issues[].title', 'issues[].body', 'prs[].title', 'prs[].body', 'labelColors.*'] },
   '/github/comments/:kind/:number': { from: 'forge', fields: [
     'reason', 'comments[].body', 'events[].message', 'events[].subject', 'events[].refTitle', 'detail', 'detail.body',
   ] },
   '/github/prs/:number/merge-state': { from: 'forge', fields: ['mergeState.title', 'mergeState.checksReason', 'mergeState.blockers[].message', 'reason'] },
-  '/github/search': { from: 'forge', fields: ['reason', 'items[].title', 'items[].body'] },
-  '/runs/:id/tracker-issue': { from: 'forge', fields: [
-    'item.title', 'item.body', 'item.unsupportedContent', 'comments.items[].body', 'comments.items[].unsupportedContent', 'comments.reason', 'reason',
-  ] },
-  '/tracker': { from: 'forge', fields: ['items[].title', 'items[].body', 'items[].unsupportedContent', 'reason'] },
-  '/tracker/:id': { from: 'forge', fields: [
-    'item.title', 'item.body', 'item.unsupportedContent', 'comments.items[].body', 'comments.items[].unsupportedContent', 'comments.reason', 'reason',
-  ] },
-  '/tracker/search': { from: 'forge', fields: ['items[].title', 'items[].body', 'items[].unsupportedContent', 'reason'] },
-  '/tracker/watch/:watchId': { from: 'forge', fields: ['result.items[].title', 'result.items[].body', 'result.items[].unsupportedContent', 'result.reason'] },
+  '/github/search': { from: 'forge', fields: ['reason', 'items[].title', 'items[].body', 'labelColors.*'] },
+  '/runs/:id/tracker-issue': { from: 'forge', fields: ['item.title', 'item.body', 'comments.items[].body', 'comments.reason', 'reason'] },
+  '/tracker': { from: 'forge', fields: ['items[].title', 'items[].body', 'reason'] },
+  '/tracker/:id': { from: 'forge', fields: ['item.title', 'item.body', 'comments.items[].body', 'comments.reason', 'reason'] },
+  '/tracker/search': { from: 'forge', fields: ['items[].title', 'items[].body', 'reason'] },
+  '/tracker/watch/:watchId': { from: 'forge', fields: ['result', 'result.items[].title', 'result.items[].body', 'result.reason'] },
   '/docker': { from: 'degrade', fields: ['reason'] },
   '/github/checks': { from: 'degrade', fields: ['reason'] },
-  '/github/prs/:number/changes': { from: 'degrade', fields: ['files[].patchUnavailableReason', 'reason'] },
+  '/github/prs/:number/changes': { from: 'degrade', fields: ['reason'] },
+  '/providers/status': { from: 'degrade', fields: ['providers[].hint'] },
   '/github/ref-status': { from: 'degrade', fields: ['reason'] },
   '/tracker/:id/transitions': { from: 'degrade', fields: ['targets[].reason', 'reason'] },
   '/tracker/automation-options': { from: 'degrade', fields: ['reason'] },
@@ -332,27 +336,58 @@ const READ_WITHOUT_SCHEMA: Record<string, 'projected stream' | 'image' | 'reposi
   '/runs/:id/files': 'repository',
 };
 
-/** Every field path a response schema names (`a.b[].c`), and the objects that pass unknown keys through. */
-function responseFields(schema: z.ZodType): { fields: string[]; open: string[] } {
+// zod's internal def, read structurally: the walk needs no schema type.
+const defOf = (node: unknown) => (node as { _zod?: { def: Record<string, any> } } | undefined)?._zod?.def;
+
+/** Whether a value of this schema can carry a string anywhere (a record of counts cannot). */
+function holdsText(node: unknown, seen = new Set<unknown>()): boolean {
+  const def = defOf(node);
+  if (!def || seen.has(node)) return false;
+  seen.add(node);
+  switch (def.type) {
+    case 'string': case 'unknown': case 'any': case 'template_literal': return true;
+    case 'object': return Object.values(def.shape as Record<string, unknown>).some((value) => holdsText(value, seen))
+      || Boolean(def.catchall && def.catchall._zod.def.type !== 'never');
+    case 'array': return holdsText(def.element, seen);
+    case 'record': return holdsText(def.valueType, seen);
+    case 'union': return (def.options as unknown[]).some((option) => holdsText(option, seen));
+    case 'intersection': return holdsText(def.left, seen) || holdsText(def.right, seen);
+    case 'tuple': return (def.items as unknown[]).some((item) => holdsText(item, seen));
+    case 'lazy': return holdsText(def.getter(), seen);
+    case 'pipe': return holdsText(def.out._zod.def.type === 'transform' ? def.in : def.out, seen);
+    default: return def.innerType ? holdsText(def.innerType, seen) : false;
+  }
+}
+
+/**
+ * Every field path a response schema names (`a.b[].c`), and the OPEN paths: an object that passes
+ * unknown keys through, or a record whose values can hold text (`graphState.outputs.*`) — its
+ * keys are nobody's field names, so a name-based pin cannot judge what it carries.
+ */
+function responseFields(schema: z.ZodType): { fields: string[]; open: string[]; textual: string[] } {
   const fields = new Set<string>();
+  const textual = new Set<string>();
   const open = new Set<string>();
   const seen = new Set<unknown>();
   const join = (prefix: string, key: string) => (prefix ? `${prefix}.${key}` : key);
   const walk = (node: unknown, prefix: string): void => {
-    // zod's internal def, read structurally: the walk needs no schema type.
-    const def = (node as { _zod?: { def: Record<string, any> } } | undefined)?._zod?.def;
+    const def = defOf(node);
     if (!def || seen.has(node)) return;
     seen.add(node);
     switch (def.type) {
       case 'object':
         for (const [key, value] of Object.entries(def.shape as Record<string, unknown>)) {
           fields.add(join(prefix, key));
+          if (holdsText(value)) textual.add(join(prefix, key));
           walk(value, join(prefix, key));
         }
-        if (def.catchall && def.catchall._zod.def.type !== 'never') open.add(prefix || '(root)');
+        if (def.catchall && def.catchall._zod.def.type !== 'never') open.add(join(prefix, '*'));
         break;
       case 'array': walk(def.element, `${prefix}[]`); break;
-      case 'record': walk(def.valueType, join(prefix, '*')); break;
+      case 'record':
+        if (holdsText(def.valueType)) open.add(join(prefix, '*'));
+        walk(def.valueType, join(prefix, '*'));
+        break;
       case 'union': for (const option of def.options as unknown[]) walk(option, prefix); break;
       case 'intersection': walk(def.left, prefix); walk(def.right, prefix); break;
       case 'tuple': for (const item of def.items as unknown[]) walk(item, `${prefix}[]`); break;
@@ -363,13 +398,32 @@ function responseFields(schema: z.ZodType): { fields: string[]; open: string[] }
     seen.delete(node);
   };
   walk(schema, '');
-  return { fields: [...fields], open: [...open] };
+  return { fields: [...fields], open: [...open], textual: [...textual] };
+}
+
+/** Every value at a field path (`a.b[].c`, `outputs.*`); `[]` and `*` fan out, a missing key yields none. */
+function valuesAt(root: unknown, path: string): unknown[] {
+  let current: unknown[] = [root];
+  for (const segment of path.split('.')) {
+    const many = segment.endsWith('[]');
+    const key = many ? segment.slice(0, -2) : segment;
+    let next: unknown[] = [];
+    for (const value of current) {
+      if (value === null || typeof value !== 'object') continue;
+      if (key === '') next.push(value);
+      else if (key === '*') next.push(...Object.values(value));
+      else if ((value as Record<string, unknown>)[key] !== undefined) next.push((value as Record<string, unknown>)[key]);
+    }
+    if (many) next = next.flatMap((value) => (Array.isArray(value) ? value : []));
+    current = next;
+  }
+  return current;
 }
 
 /** A field is free text when its name's last word is one of {@link FREE_TEXT_WORDS}. */
 function isFreeText(path: string): boolean {
   const name = path.split('.').pop()!.replace(/\[\]$/, '');
-  return FREE_TEXT_WORDS.includes(name.split(/(?=[A-Z])/).pop()!.toLowerCase());
+  return FREE_TEXT_WORDS.includes(name.split(/(?=[A-Z])|_/).pop()!.toLowerCase());
 }
 
 describe('what read may say, per route and field', () => {
@@ -385,11 +439,14 @@ describe('what read may say, per route and field', () => {
     for (const route of READ_ROUTES) {
       const schema = contracts[`GET ${route}`]?.response;
       if (!schema) continue;
-      const { fields, open } = responseFields(schema);
-      const free = fields.filter(isFreeText);
+      const { open: openPaths, textual } = responseFields(schema);
       const declared = READ_FREE_TEXT[route]?.fields ?? [];
+      // A count or an enum named `questions` or `action` says nothing.
+      const free = textual.filter(isFreeText);
       const undeclared = free.filter((field) => !declared.includes(field));
-      const stale = declared.filter((field) => !free.includes(field));
+      // An open path fails like an undeclared field until a route lists it.
+      const open = openPaths.filter((path) => !declared.includes(path));
+      const stale = declared.filter((field) => !free.includes(field) && !openPaths.includes(field));
       if (undeclared.length || stale.length || open.length) {
         drift[route] = { ...(undeclared.length ? { undeclared } : {}), ...(stale.length ? { stale } : {}), ...(open.length ? { open } : {}) };
       }
@@ -398,16 +455,44 @@ describe('what read may say, per route and field', () => {
     expect(Object.keys(READ_FREE_TEXT).filter((route) => !READ_ROUTES.has(route))).toEqual([]);
   });
 
+  it('a task record’s listed fields are absent or reduced on the projected record, but the user’s own', () => {
+    const full = agentWrittenRun();
+    const projected = redactRunForScope(full, ['read']);
+    const kept: string[] = [];
+    for (const [route, sample, original] of [['/runs/:id', projected, full], ['/runs', [projected], [full]]] as const) {
+      for (const field of READ_FREE_TEXT[route]!.fields) {
+        const before = valuesAt(original, field);
+        // The fixture fills every listed field, or this check proves nothing about it.
+        expect(before.length, `${route} ${field}: the fixture leaves it empty`).toBeGreaterThan(0);
+
+        const after = valuesAt(sample, field);
+        if (RUN_SURVIVES.includes(field.replace(/^\[\]\./, ''))) {
+          expect(after, `${route} ${field}`).toEqual(before);
+          kept.push(field);
+        } else {
+          expect(JSON.stringify(before), `${route} ${field}: the fixture writes no marker there`).toContain(AGENT_WRITTEN);
+          expect(JSON.stringify(after), `${route} ${field}`).not.toContain(AGENT_WRITTEN);
+        }
+      }
+    }
+    expect(kept).toHaveLength(RUN_SURVIVES.length * 2);
+  });
+
   it('sees nested, optional, array, union and open fields', () => {
     const schema = z.object({
       id: z.string(),
       rows: z.array(z.object({ titleSummary: z.string().optional(), outputTokens: z.number() })).nullable(),
       job: z.union([z.object({ log: z.array(z.string()) }), z.object({ projected: z.literal(true) })]),
       bag: z.looseObject({ ok: z.boolean() }),
+      loops: z.record(z.string(), z.number()),
+      outputs: z.record(z.string(), z.record(z.string(), z.union([z.string(), z.number()]))).optional(),
+      report: z.object({ result: z.string(), side_effects: z.array(z.string()) }),
     });
-    const { fields, open } = responseFields(schema);
-    expect(fields.filter(isFreeText).sort()).toEqual(['job.log', 'rows[].titleSummary']);
-    expect(open).toEqual(['bag']);
+    const { fields, open, textual } = responseFields(schema);
+    expect(textual.filter(isFreeText).sort()).toEqual(['job.log', 'report.result', 'report.side_effects', 'rows[].titleSummary']);
+    expect(fields).toContain('rows[].outputTokens');
+    // A record of counts is closed; a record of text is open, however deep it nests.
+    expect(open.sort()).toEqual(['bag.*', 'outputs.*', 'outputs.*.*']);
     expect(isFreeText('steps[].error')).toBe(true);
   });
 });

@@ -11,6 +11,7 @@ import { base32Decode, hotp, totpStep } from '../auth/totp.ts';
 import { AutomationStore } from '../automations/store.ts';
 import { RunStore } from '../runs/store.ts';
 import type { SelfUpdateService } from '../self-update/service.ts';
+import { AGENT_WRITTEN, agentWrittenRunPatch } from '../test-fixtures/agent-written-run.testkit.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import { todosWatchActive } from '../todos.ts';
 import { registerProject } from '../workspace/projects.ts';
@@ -160,26 +161,12 @@ describe('a token’s view of a task', () => {
     }
   });
 
-  // Not token-shaped: the store's own scrubber (CEZ_REDACT_SECRETS) must not be what hides it.
-  const SECRET = 'MARKER-the-agent-printed-this';
+  const SECRET = AGENT_WRITTEN;
 
-  /** A run carrying agent-authored text in every field the projection strips. */
+  /** A run carrying agent-authored text in every field the projection strips (the shared fixture). */
   function seedRun() {
     const run = store.createRun({ title: 'fix the build', workflow: 'quick-task', task: 'fix the build', steps: [] });
-    store.updateRun(run.id, {
-      titleSummary: `Title quoting ${SECRET}`,
-      branch: 'cez/abc',
-      prNumber: 12,
-      tokensUsed: 345,
-      graphState: { loops: { review: 1 }, taken: ['a.done->b'], cursor: 'b', outputs: { a: { summary: `printed ${SECRET}`, verdict: 'pass', costUsd: 0.1 } } },
-      dispatch: {
-        rootRunId: run.id,
-        budgetUsd: 2,
-        report: { status: 'done', result: `done, key ${SECRET}`, evidence: [], side_effects: [], errors: [], suggestions: [] },
-        pendingReports: [{ fromRunId: 'c1', title: 'child', at: '2026-10-24T00:00:00Z', report: { status: 'done', result: SECRET, evidence: [], side_effects: [], errors: [], suggestions: [] } }],
-        pendingAsk: { questions: [`may I use ${SECRET}?`], askedAt: '2026-10-24T00:00:00Z' },
-      },
-    });
+    store.updateRun(run.id, agentWrittenRunPatch(run.id));
     return run.id;
   }
 
@@ -190,7 +177,7 @@ describe('a token’s view of a task', () => {
     expect(body.graphState, label).toEqual({ loops: { review: 1 }, taken: ['a.done->b'], cursor: 'b' });
     expect(body.dispatch, label).toEqual({ rootRunId: body.id, budgetUsd: 2 });
     // Status, timing, counters, branch and PR stay.
-    expect(body, label).toMatchObject({ status: 'queued', branch: 'cez/abc', prNumber: 12, tokensUsed: 345, title: 'fix the build' });
+    expect(body, label).toMatchObject({ status: 'queued', branch: 'cez/abc', prNumber: 12, tokensUsed: 345, title: 'fix the build', error: 'failed' });
     expect(body.createdAt, label).toBeTypeOf('string');
   }
 

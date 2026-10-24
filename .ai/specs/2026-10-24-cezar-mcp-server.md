@@ -196,7 +196,11 @@ are client-side conveniences documented in `.env.example`.
   `/workspace/self-update` gives a non-`admin` token the job's status, target and timing
   (`projected: true`), not npm's log or the error. `api-tokens.test.ts` pins every free-text
   field each `read` route's contract response names, with where its words come from
-  (projected, repository, forge or a degrade reason); a new one fails until it is decided.
+  (projected, repository, forge or a degrade reason); a new one fails until it is decided. A
+  field counts when it can hold text, an open object or a record of text counts as a field of
+  its own (`graphState.outputs.*`), and on the shared fixture
+  (`test-fixtures/agent-written-run.testkit.ts`) every field a task record lists is absent or
+  reduced once projected, except the user's own `title`/`task` and the tracker's title.
 - **Origin guard**: only a token that VERIFIES skips it; an unverified Bearer is checked like
   any request and then refused by the auth guard.
 - **The CLI**: `CEZ_SERVER`/`CEZ_TOKEN` are ignored inside a task and never forwarded into an

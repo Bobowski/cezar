@@ -182,6 +182,9 @@ Code: `packages/cezar/src/backup/` (`tar.ts`, `codec.ts`, `collect.ts`, `s3.ts`,
   written `failed` with `interrupted — captured by backup <name> while it was <status>` (the
   live record is untouched), and a restore settles any live row an older archive still carries,
   so boot recovery on the restored host never re-queues or resumes one.
+  **While the hold lasts** `POST /runs` answers 409 with Continue's "restore in progress"
+  message, and a due automation skips its cycle (a `skipped` / `restore in progress` log row,
+  then its own retry floor) instead of launching into an index that is not being written.
   The restart re-execs the running entry (the managed `current`
   only for a managed install). The CLI restore never restarts anything.
 - **Nightly** is a built-in item on the workspace automations timer (`builtins` on

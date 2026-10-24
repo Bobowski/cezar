@@ -4925,6 +4925,8 @@ export function createApp(deps: ServerDeps) {
 
     .post('/runs', jsonZodValidator(startRunSchema), async (c) => {
       const { root: repoRoot, dataDir, manager, store } = c.get('project');
+      // It would queue into an index the restore holds unwritten (`?.`: test managers are stubs).
+      if (manager.restoreInProgress?.()) return c.json({ error: RESTORE_IN_PROGRESS_ERROR }, 409);
       const parsed = { data: c.req.valid('json') };
       if (agentModelsLocked(repoRoot) && parsed.data.model?.trim()) {
         return c.json({ error: AGENT_MODELS_LOCKED_ERROR }, 409);
@@ -9078,6 +9080,8 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
       const nightly = backup.nightlyItem();
       return nightly ? [nightly] : [];
     },
+    // Under a restore a launch would queue into a run index that is not being written.
+    held: () => deps.semaphore?.admissionHeld() ?? false,
     handle: (projectId, store): ProjectAutomationHandle | undefined => {
       const project = automationProjects.get(projectId);
       if (!project) return undefined;

@@ -1883,6 +1883,8 @@ export class RunManager {
         // below is the only slot gate: resumes never pass through it. A run
         // starts only under BOTH the workspace cap and this project's ceiling.
         const capacity = () =>
+          // A restore in progress starts nothing (spec 2026-10-23-backup-restore §4).
+          !this.semaphore.admissionHeld?.() &&
           this.semaphore.busy() < maxParallel &&
           this.busySlots() < projectMax &&
           (repo !== null || this.busySlots() < 1);

@@ -11,10 +11,7 @@ import { compressor, decompressed, decrypted, encrypted, parseIdentity, WrongIde
 import { archiveHost, archiveStamp, backupManifestSchema, collectBackup, projectFileQualifies, projectUntrackedFiles } from './collect.ts';
 import { safeArchivePath } from './restore.ts';
 import { readTar, tarStream, type TarEntry, type TarSource } from './tar.ts';
-
-/** A fixed X25519 test vector: `age-keygen` output, and the recipient `age-keygen -y` derives. */
-export const TEST_IDENTITY = 'AGE-SECRET-KEY-1QR4F256FCES52DV24YG4PDN4YFPCA7S79VZ60D3HU4GG5ASPWMGSU4L3C6';
-export const TEST_RECIPIENT = 'age18j35t29smu32hg0lgmtsh3x7cad66hl7p5n2cdyd5jtsy5w6gc7swv3dp3';
+import { TEST_IDENTITY, TEST_RECIPIENT } from './age-vector.testkit.ts';
 
 async function collectBytes(stream: AsyncIterable<Buffer | Uint8Array>): Promise<Buffer> {
   const chunks: Buffer[] = [];

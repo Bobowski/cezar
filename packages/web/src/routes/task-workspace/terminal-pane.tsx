@@ -4,6 +4,9 @@ import { readRunTerminal, resizeRunTerminal, writeRunTerminal } from '@/api/clie
 import { useHostTransport } from '@/api/host-usage'
 import { subscribeTopic } from '@/api/ws'
 import type { TerminalOutput, TerminalSession } from '@open-mercato/cezar-api-client'
+import { attachTerminalLinks } from '@/components/terminal/attach-links'
+import { CompletionController, type CompletionSources, type CompletionView } from '@/components/terminal/completion'
+import { CompletionPopover, type PopoverPlace } from '@/components/terminal/completion-popover'
 import { cn } from '@/lib/utils'
 
 import '@xterm/xterm/css/xterm.css'
@@ -69,18 +72,36 @@ export interface TerminalIo {
  *  nothing more (a stopped service's kept output): it is read once and never polled. */
 export type TerminalPaneSession = Pick<TerminalSession, 'id' | 'exitCode'> & { topic: string | null }
 
+/** The Code terminal's completion (spec 2026-10-24-code-page-terminal §3.3): what to offer, and
+ *  who to tell when a line was submitted. */
+export type TerminalCompletion = CompletionSources & { onSubmitted?: () => void }
+
 export function TerminalPane({
   runId,
   session,
   active,
   io,
+  onOpenBrowser,
+  completion,
 }: {
   runId: string
   session: TerminalPaneSession
   active: boolean
   /** Omit for a task's terminal. Must be stable for a given `session.id`. */
   io?: TerminalIo
+  /** Makes addresses in the output clickable, a loopback or gateway one opening here (spec
+   *  2026-10-24-code-page-terminal §3.2). Read when the screen mounts. */
+  onOpenBrowser?: (url: string) => void
+  /** Completion while typing. Read when the screen mounts; its sources may change any time. */
+  completion?: TerminalCompletion
 }) {
+  const openBrowserRef = useRef(onOpenBrowser)
+  openBrowserRef.current = onOpenBrowser
+  const completionRef = useRef(completion)
+  completionRef.current = completion
+  const controllerRef = useRef<CompletionController | null>(null)
+  const [completionView, setCompletionView] = useState<CompletionView>(null)
+  const [completionPlace, setCompletionPlace] = useState<PopoverPlace>({ left: 12, offset: 12, above: false })
   const transport = useHostTransport()
   const ioRef = useRef<TerminalIo>(null as unknown as TerminalIo)
   ioRef.current = io ?? {
@@ -170,8 +191,32 @@ export function TerminalPane({
        * and Ctrl-Shift-C elsewhere — and even then only when there is a selection, so a stray
        * Cmd-C on an empty screen still interrupts.
        */
+      // The completion's keys come first (spec 2026-10-24-code-page-terminal §3.3): one it takes
+      // never reaches the shell, and its default (Tab moving focus) is cancelled with it.
+      const controller = completionRef.current
+        ? new CompletionController({
+            write: (data) => {
+              void ioRef.current.write(data).catch(() => {})
+            },
+            sources: () => completionRef.current ?? { commands: [], history: [], paths: [] },
+            onView: (view) => {
+              if (view !== null) setCompletionPlace(popoverPlace(term, host))
+              setCompletionView((previous) => {
+                // The history list held focus; give it back to the shell it searched for.
+                if (view === null && previous?.mode === 'history') queueMicrotask(() => term.focus())
+                return view
+              })
+            },
+            onSubmitted: () => completionRef.current?.onSubmitted?.(),
+          })
+        : null
+      controllerRef.current = controller
       term.attachCustomKeyEventHandler((event) => {
         if (event.type !== 'keydown') return true
+        if (controller && !controller.key(event)) {
+          event.preventDefault()
+          return false
+        }
         if (!event.metaKey && !event.ctrlKey) return true
         const key = event.key.toLowerCase()
         // `metaKey` is macOS's modifier; `shiftKey` is the Ctrl-Shift- form everywhere else.
@@ -205,8 +250,12 @@ export function TerminalPane({
       }
       term.onResize(pushSize)
       term.onData((data) => {
+        controller?.typed(data)
         void ioRef.current.write(data).catch(() => {})
       })
+      const links = openBrowserRef.current
+        ? attachTerminalLinks(term, (url) => openBrowserRef.current?.(url)).catch(() => null)
+        : Promise.resolve(null)
 
       fitRef.current()
       pushSize({ cols: term.cols, rows: term.rows })
@@ -217,6 +266,8 @@ export function TerminalPane({
       observer?.observe(host)
       detach = () => {
         observer?.disconnect()
+        controller?.dispose()
+        void links.then((attached) => attached?.dispose())
         term.dispose()
       }
     })()
@@ -228,10 +279,17 @@ export function TerminalPane({
       termRef.current = null
       fitRef.current = null
       focusRef.current = null
+      controllerRef.current = null
+      setCompletionView(null)
       setScreenReady(false)
       detach?.()
     }
   }, [runId, session.id])
+
+  // A background tab's popover would complete for a line nobody is looking at.
+  useEffect(() => {
+    if (!active) controllerRef.current?.close()
+  }, [active])
 
   // A pane that was hidden measured zero, so its size is stale the moment it is shown again.
   useEffect(() => {
@@ -319,6 +377,38 @@ export function TerminalPane({
       {/* The emulator's host is the box INSIDE the padding: the fit addon measures its parent's
           full box, so padding on the host itself would be rows the shell thinks it has. */}
       <div ref={hostRef} className="size-full" />
+      {completionView !== null && active ? (
+        <CompletionPopover
+          view={completionView}
+          place={completionPlace}
+          onAccept={(index) => controllerRef.current?.accept(index)}
+          onPickHistory={(line) => controllerRef.current?.pickHistory(line)}
+          onFilter={(filter) => controllerRef.current?.setHistoryFilter(filter)}
+          onClose={() => controllerRef.current?.close()}
+        />
+      ) : null}
     </div>
   )
+}
+
+/** The pane's padding (`p-3`): the screen starts this far in. */
+const PANE_PADDING = 12
+
+/** Under the cursor row, or above it when the cursor sits in the lower half of the screen. */
+function popoverPlace(
+  term: { cols: number; rows: number; buffer: { active: { cursorX: number; cursorY: number } } },
+  host: HTMLElement,
+): PopoverPlace {
+  const screen = host.querySelector<HTMLElement>('.xterm-screen')
+  const width = screen?.clientWidth || host.clientWidth
+  const height = screen?.clientHeight || host.clientHeight
+  const cellWidth = term.cols > 0 ? width / term.cols : 0
+  const cellHeight = term.rows > 0 ? height / term.rows : 0
+  const { cursorX, cursorY } = term.buffer.active
+  const above = cursorY > term.rows / 2
+  return {
+    left: PANE_PADDING + Math.max(0, Math.min(cursorX * cellWidth, width - 240)),
+    offset: above ? host.clientHeight + PANE_PADDING - cursorY * cellHeight : PANE_PADDING + (cursorY + 1) * cellHeight,
+    above,
+  }
 }

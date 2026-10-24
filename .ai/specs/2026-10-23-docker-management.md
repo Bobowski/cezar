@@ -202,6 +202,8 @@ Nothing to configure. Reclaim is a click, never a timer. All new state is Docker
   redacted as one string. A line still arriving past 32 KiB goes out only up to a head that splits
   no secret (`redactionSafeCut`), marked `… [line cut at 32 KiB]`, and the rest of it is dropped up
   to its newline — never flushed, since a secret its last read ended inside would go out half-redacted.
+  Lines that may be the start of a multi-line secret value (a PEM) are held with it
+  (`heldSecretStart`), so a value spanning line ends is still redacted as one string.
 - **`force` acts on what the confirm named.** The image and volume `DELETE`s take
   `{users: [containerId]}` — the users the dialog listed. With `?force=1`, a current set of users
   that differs (one started from the image since, one stopped mounting the volume) is a 409 and

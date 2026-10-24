@@ -90,6 +90,19 @@ describe('docker logs followers (spec 2026-10-23-docker-management §3.4)', () =
     ]);
   });
 
+  it('redacts a multi-line secret (a PEM) that line ends and reads split', () => {
+    const pem = '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj\n-----END PRIVATE KEY-----';
+    const { followers, spawned } = harness([pem]);
+    followers.read(ID, 0);
+    spawned[0]!.data('out', 'boot\n-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nBKcw');
+    spawned[0]!.data('out', 'ggSjAgEAAoIBAQC7VJTUt9Us8cKj\n');
+    expect(followers.read(ID, 0).data).toBe('boot\n');
+    spawned[0]!.data('out', '-----END PRIVATE KEY-----\nok\n');
+    // A held prefix that turns out not to be the secret goes out as it was.
+    spawned[0]!.data('out', '-----BEGIN PRIVATE KEY-----\nnot it\n');
+    expect(followers.read(ID, 0).data).toBe('boot\n[REDACTED]\nok\n-----BEGIN PRIVATE KEY-----\nnot it\n');
+  });
+
   it('keeps a line under the cap whole and redacts a secret its read ended inside', () => {
     const { followers, spawned } = harness();
     followers.read(ID, 0);

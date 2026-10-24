@@ -127,6 +127,24 @@ export function redactionSafeCut(text: string, secretValues: readonly string[], 
 }
 
 /**
+ * Where `text`'s tail may still be the start of a multi-line secret value (a PEM) — a stream cut at
+ * line ends must not cut past it; `text.length` when none. Single-line values never cross a line end.
+ */
+export function heldSecretStart(text: string, secretValues: readonly string[]): number {
+  let held = text.length;
+  for (const value of secretValues) {
+    if (!value.includes('\n')) continue;
+    for (let at = Math.max(0, text.length - value.length + 1); at < held; at++) {
+      if (text.charCodeAt(at) === value.charCodeAt(0) && value.startsWith(text.slice(at))) {
+        held = at;
+        break;
+      }
+    }
+  }
+  return held;
+}
+
+/**
  * Deep-copy `value`, redacting every string leaf. Structure/keys are
  * preserved; only string values (and string keys are left untouched — keys are
  * event field names, never secrets) are scrubbed.

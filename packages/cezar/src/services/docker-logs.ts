@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { collectSecretValues, redactionHold, redactionSafeCut, redactSecrets } from '../core/secret-redaction.ts';
+import { collectSecretValues, heldSecretStart, redactionHold, redactionSafeCut, redactSecrets } from '../core/secret-redaction.ts';
 
 /**
  * `docker logs --tail 500 --follow <id>`, one process per container while someone looks (spec
@@ -111,7 +111,8 @@ export class DockerLogFollowers {
     }
     const values = this.redacting() ? this.secretValues() : [];
     const pending = entry.pending[stream] + text;
-    const cut = pending.lastIndexOf('\n') + 1;
+    // Not past a tail a multi-line secret (a PEM) may still be arriving in: it is redacted whole too.
+    const cut = Math.min(pending.lastIndexOf('\n') + 1, heldSecretStart(pending, values));
     const out = this.capped(pending.slice(0, cut), values);
     const rest = pending.slice(cut);
     if (rest.length <= MAX_LINE + redactionHold(values)) {

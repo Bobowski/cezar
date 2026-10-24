@@ -1874,11 +1874,13 @@ export function createApp(deps: ServerDeps) {
     },
   }) as unknown as MiddlewareHandler);
   // An SSE stream is authenticated once, when it opens; each keepalive tick re-asks whether the
-  // session behind it still stands (spec 2026-10-12-cockpit-authentication §6). Host-key and
-  // auth-off principals have no session, so nothing changes for them.
+  // session or API token behind it still stands (spec 2026-10-12-cockpit-authentication §6,
+  // 2026-10-24-cezar-mcp-server §5). A token means its scopes even with sign-in off. Host-key and
+  // auth-off principals have neither, so nothing changes for them.
   const ssePingMs = deps.ssePingMs ?? 15_000;
   const sseSessionEnded = (c: Context): boolean => {
     const principal = principalOf(c);
+    if (principal?.kind === 'token') return !auth.apiTokenAlive(principal.tokenId);
     return principal?.kind === 'user' && authIsEnforced() && !auth.sessionAlive(principal.sessionId);
   };
 

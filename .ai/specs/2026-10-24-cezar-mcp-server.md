@@ -83,6 +83,8 @@ process list; `CEZ_SERVER` for the address), so
   request — loopback `Host` and socket, no `X-Forwarded-*`/`Forwarded`/`X-Real-IP`/`Origin` — so a
   key a task reads out and hands to a token holder opens nothing through the public front. The
   installer's owner probe therefore goes to the loopback upstream, not through nginx.
+- A revoked or expired token ends the SSE streams it opened within one keepalive beat
+  (`sseSessionEnded`); a token opens no WebSocket under sign-in, so there is none to end.
 - Scopes are enforced server-side per route family, not by the tool list the client saw.
 - Token hashes only; a lost token is recreated, never recovered.
 - stdio `cezar mcp` on a local cockpit needs no token: it is the machine's owner, like the CLI.

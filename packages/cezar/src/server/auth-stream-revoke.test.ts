@@ -148,6 +148,50 @@ describe('streams end with the session that opened them', () => {
     expect(ended).toBe(true);
   });
 
+  /** A token row written straight into the store (minting through the route needs a TOTP step). */
+  async function seedToken(expiresAt?: number): Promise<{ id: string; value: string }> {
+    await createOwner();
+    const { mintApiToken } = await import('../auth/api-tokens.ts');
+    const { mutateAuthStore, sha256 } = await import('../auth/store.ts');
+    const minted = mintApiToken();
+    mutateAuthStore((stored) => {
+      stored.tokens.push({
+        id: minted.id, userId: stored.users[0]!.id, name: 'mcp', hash: sha256(minted.value), scopes: ['admin'],
+        createdAt: Date.now(), ...(expiresAt !== undefined ? { expiresAt } : {}),
+      });
+    });
+    return minted;
+  }
+
+  it('ends each SSE route a token opened once that token is revoked', async () => {
+    const token = await seedToken();
+    const headers = { authorization: `Bearer ${token.value}` };
+    const streams = await Promise.all(ssePaths().map(async ([label, path]) => ({ label, stream: await openStream(path, headers) })));
+    for (const { label, stream } of streams) expect(await stream.endedWithin(TICK_MS * 3), `${label}: open while the token stands`).toBe(false);
+    expect(auth.revokeApiToken(undefined, token.id)).toBe(true);
+    const ended = await Promise.all(streams.map(async ({ label, stream }) => [label, await stream.endedWithin(1_500)] as const));
+    await Promise.all(streams.map(({ stream }) => stream.cancel()));
+    expect(ended).toEqual([['workspace events', true], ['project events', true], ['run events', true]]);
+  });
+
+  // Guard: a token opens no socket under sign-in, so there is no token-opened socket to end.
+  it('refuses a WebSocket upgrade that shows only an API token', async () => {
+    const token = await seedToken();
+    expect(wsUpgradeVerifier).toBeTypeOf('function');
+    const req = { headers: { host: HOST, authorization: `Bearer ${token.value}` } } as unknown as IncomingMessage;
+    expect(wsUpgradeVerifier!(auth, () => true)(req)).toBe(false);
+  });
+
+  it('ends a token’s SSE stream when the token expires', async () => {
+    const token = await seedToken(Date.now() + DAY_MS);
+    const stream = await openStream('/api/v1/workspace/events', { authorization: `Bearer ${token.value}` });
+    expect(await stream.endedWithin(TICK_MS * 5)).toBe(false);
+    clock = 2 * DAY_MS;
+    const ended = await stream.endedWithin(1_500);
+    await stream.cancel();
+    expect(ended).toBe(true);
+  });
+
   // Guard: passes with and without the fix — a cockpit without auth must not change.
   it('leaves a stream alone when auth is not enforced', async () => {
     process.env.CEZ_AUTH = '0';

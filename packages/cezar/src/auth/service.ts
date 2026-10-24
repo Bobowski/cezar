@@ -663,6 +663,15 @@ export class AuthService {
     return { tokenId: token.id, name: token.name, scopes: token.scopes, user: publicUser(user) };
   }
 
+  /** Whether a token still opens anything — what a stream it opened re-asks each keepalive beat. */
+  apiTokenAlive(tokenId: string): boolean {
+    const store = this.store();
+    const token = store.tokens.find((entry) => entry.id === tokenId);
+    if (!token || (token.expiresAt !== undefined && token.expiresAt <= this.now())) return false;
+    const user = store.users.find((entry) => entry.id === token.userId);
+    return user !== undefined && hasCredentials(user);
+  }
+
   /** `lastUsedAt` is a display value: in memory at once, on disk at most every few minutes. */
   private touchToken(token: StoredApiToken, now: number): void {
     this.tokenTouch.set(token.id, now);

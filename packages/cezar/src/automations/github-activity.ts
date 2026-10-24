@@ -45,9 +45,11 @@ const MAX_BODY = 4_000;
 export const HEADS_CAP = 1_000;
 const FAILING = new Set(['failure', 'timed_out', 'action_required', 'startup_failure']);
 /** Who may speak into an existing run by default (`deliver: 'owning-run'`), as GitHub's
- *  `author_association` names them. `MEMBER` is only ORG membership, so a member is admitted when
- *  the repo's own permission lookup says write or admin (`WritePermissions`). */
-const TRUSTED_ASSOCIATIONS = new Set(['OWNER', 'COLLABORATOR']);
+ *  `author_association` names them: the owner outright. `MEMBER` is only ORG membership and
+ *  `COLLABORATOR` includes read and triage access, so both are admitted only when the repo's own
+ *  permission lookup says write, maintain or admin (`WritePermissions`). */
+const TRUSTED_ASSOCIATIONS = new Set(['OWNER']);
+const ASKED_ASSOCIATIONS = new Set(['MEMBER', 'COLLABORATOR']);
 const WRITE_PERMISSIONS = new Set(['admin', 'maintain', 'write']);
 
 /** `/collaborators/:login/permission` answers per repo and login, kept ten minutes, bounded. A
@@ -276,9 +278,9 @@ export function matchesActivityFilters(candidate: GithubCandidate, definition: G
   if (candidate.comment && filters.mentions?.length
     && !filters.mentions.some((who) => mentions(candidate.comment!.body ?? '', who))) return false;
   // A comment delivered INTO a running task is a message to an agent holding a worktree and the
-  // user's credentials: by default only collaborators may send one (spec 2026-10-23-github-events §7).
+  // user's credentials: by default only the owner and writers may send one (spec 2026-10-23-github-events §7).
   if (needsTrustedAuthor(candidate, definition) && !TRUSTED_ASSOCIATIONS.has(candidate.comment!.association ?? '')
-    && !(candidate.comment!.association === 'MEMBER' && candidate.comment!.memberWrite === true)) return false;
+    && !(ASKED_ASSOCIATIONS.has(candidate.comment!.association ?? '') && candidate.comment!.writeAccess === true)) return false;
   if (candidate.check && !conclusionMatches(candidate.check.conclusion, filters.conclusion)) return false;
   if (candidate.release) {
     if (filters.prerelease !== undefined && candidate.release.prerelease !== filters.prerelease) return false;
@@ -413,11 +415,11 @@ export async function pollActivity(input: {
     permissions.set(key, write);
     return write;
   };
-  /** `admit` for a comment, asking the repo about an org member only when it decides. */
+  /** `admit` for a comment, asking the repo about a member or collaborator only when it decides. */
   const admitComment = async (candidate: GithubCandidate): Promise<boolean> => {
     if (!input.matches(candidate)) return false;
     const comment = candidate.comment!;
-    if (comment.association === 'MEMBER' && needsTrustedAuthor(candidate, definition)) comment.memberWrite = await canWrite(comment.author);
+    if (ASKED_ASSOCIATIONS.has(comment.association ?? '') && needsTrustedAuthor(candidate, definition)) comment.writeAccess = await canWrite(comment.author);
     return matchesActivityFilters(candidate, definition);
   };
 

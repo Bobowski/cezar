@@ -89,8 +89,8 @@ export interface GithubCandidate {
   cursorless?: boolean;
   /** The comment events. `body` never reaches a receipt (`store.reserveReceipt`). */
   /** `association`: GitHub's `author_association` (OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, …). */
-  /** `memberWrite`: a `MEMBER`'s write access to this repo, looked up only when it decides. */
-  comment?: { id: number; kind: 'issue' | 'review'; author: string; url: string; body?: string; association?: string; memberWrite?: boolean };
+  /** `writeAccess`: a `MEMBER`'s or `COLLABORATOR`'s write access to this repo, looked up only when it decides. */
+  comment?: { id: number; kind: 'issue' | 'review'; author: string; url: string; body?: string; association?: string; writeAccess?: boolean };
   check?: { id: number; name: string; conclusion: string; url: string; failingJobs: string[] };
   push?: { branch: string; before: string; after: string; subjects: string[] };
   release?: { tag: string; name: string; prerelease: boolean };

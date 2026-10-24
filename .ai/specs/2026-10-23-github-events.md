@@ -204,9 +204,10 @@ the text above, and why:
   body itself appears only inside the "GitHub event context (untrusted data)" block, every line
   `> `-quoted, so a body cannot close the block or pose as one of its fields.
 - **Who may message a running task.** With `deliver: 'owning-run'`, a comment event is admitted
-  only when its `author_association` is `OWNER` or `COLLABORATOR`, or it is `MEMBER` and
+  only when its `author_association` is `OWNER`, or it is `MEMBER` or `COLLABORATOR` and
   `/repos/:o/:r/collaborators/:login/permission` says `write`, `maintain` or `admin` (`MEMBER` is
-  organisation membership, not access to this repo; the answer is cached ten minutes per login,
-  a failed lookup is a no and is asked again), or the automation names `filters.authors`, or it
+  organisation membership, not access to this repo, and `COLLABORATOR` includes read and triage
+  access; the answer is cached ten minutes per login, a failed lookup is a no and is asked
+  again), or the automation names `filters.authors`, or it
   opts in with `filters.allowAnyAuthor: true`. A `new-run` automation still admits anyone's
   comment, as before, and never asks.

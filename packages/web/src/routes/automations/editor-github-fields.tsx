@@ -101,7 +101,7 @@ export function EditorGithubFields({
                 onCheckedChange={(checked) => setFilter('allowAnyAuthor', checked === true)}
               />
               <Label htmlFor="filter-any-author" className="text-[13px] font-normal">
-                Comments from anyone (otherwise only collaborators, or the authors filter)
+                Comments from anyone (otherwise only the owner and writers, or the authors filter)
               </Label>
             </span>
           ) : null}

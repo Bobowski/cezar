@@ -1050,11 +1050,12 @@ export async function getDockerVolumes(opts?: ReadOptions): Promise<DockerVolume
 export async function getDockerDisk(opts?: ReadOptions, projectId: string = queryScope()): Promise<DockerDisk> {
   return unwrap(await dockerApi().disk.$get({ param: { projectId } }, init(opts)), '/docker/disk')
 }
-export async function removeDockerImage(id: string, force: boolean): Promise<void> {
-  await unwrap(await dockerApi().images[':id'].$delete({ param: { ...scopeParam(), id }, ...forceQuery(force) }), '/docker/images')
+/** `users`: the containers the confirm named; with `force` the server acts on exactly those, or 409s. */
+export async function removeDockerImage(id: string, force: boolean, users: string[] = []): Promise<void> {
+  await unwrap(await dockerApi().images[':id'].$delete({ param: { ...scopeParam(), id }, ...forceQuery(force), json: force ? { users } : {} }), '/docker/images')
 }
-export async function removeDockerVolume(name: string, force: boolean): Promise<void> {
-  await unwrap(await dockerApi().volumes[':name'].$delete({ param: { ...scopeParam(), name }, ...forceQuery(force) }), '/docker/volumes')
+export async function removeDockerVolume(name: string, force: boolean, users: string[] = []): Promise<void> {
+  await unwrap(await dockerApi().volumes[':name'].$delete({ param: { ...scopeParam(), name }, ...forceQuery(force), json: force ? { users } : {} }), '/docker/volumes')
 }
 export async function removeDockerContainer(id: string, force: boolean): Promise<void> {
   await unwrap(await dockerApi().containers[':id'].$delete({ param: { ...scopeParam(), id }, ...forceQuery(force) }), '/docker/containers')

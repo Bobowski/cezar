@@ -12,7 +12,7 @@ import {
   repoSyncQuerySchema, type RepoPullResponse, type RepoSync,
   PROJECT_ICON_MAX_BYTES, setProjectIconSchema, type ProjectIconCandidates,
   dockerContainerParamsSchema, dockerStackParamsSchema, type DockerState,
-  dockerForceQuerySchema, dockerImageParamsSchema, dockerLogsQuerySchema, dockerReclaimRequestSchema, dockerStackDownSchema,
+  dockerForceBodySchema, dockerForceQuerySchema, dockerImageParamsSchema, dockerLogsQuerySchema, dockerReclaimRequestSchema, dockerStackDownSchema,
   dockerVolumeParamsSchema, type DockerDisk, type DockerImages, type DockerLogs, type DockerReclaimPlan, type DockerReclaimResult, type DockerStack,
   type DockerVolumes,
   githubReposQuerySchema, type GithubReposResponse,
@@ -7427,6 +7427,12 @@ export function createApp(deps: ServerDeps) {
     return { bsize: Number(stats.bsize), blocks: Number(stats.blocks), bavail: Number(stats.bavail) };
   });
   const dockerOk = { ok: true } as const;
+  // `?force=1` acts on the containers the confirm named, never on whatever uses the object by now.
+  const confirmedUsers = (named: readonly string[] | undefined, current: ReadonlyArray<{ id: string }>): boolean => {
+    const shown = new Set(named ?? []);
+    return shown.size === current.length && current.every((user) => shown.has(user.id));
+  };
+  const usersChanged = 'what uses it changed since the confirm; review it again';
   const dockerRemove = async (c: Context, args: string[], timeoutMs = 60_000) => {
     const result = await docker(args, { timeoutMs });
     dockerChanged();
@@ -7609,7 +7615,7 @@ export function createApp(deps: ServerDeps) {
       const state: DockerImages = { available: true, reason: null, images: images.images };
       return c.json(state, 200);
     })
-    .delete('/docker/images/:id', paramZodValidator(dockerImageParamsSchema), queryZodValidator(dockerForceQuerySchema), async (c) => {
+    .delete('/docker/images/:id', paramZodValidator(dockerImageParamsSchema), queryZodValidator(dockerForceQuerySchema), jsonZodValidator(dockerForceBodySchema, { absent: {} }), async (c) => {
       const refusal = dockerRemovalRefusal(c);
       if (refusal) return c.json({ error: refusal }, 409);
       const { id } = c.req.valid('param');
@@ -7625,9 +7631,11 @@ export function createApp(deps: ServerDeps) {
       if (!image) return c.json({ error: 'no such image' }, 404);
       // Always `-f` (spec §2, Docker Desktop style): every tag goes, and stopped users do not block.
       // A running user does even then, so `?force=1` — the confirm said so — stops it first.
+      const force = c.req.valid('query').force === '1';
+      if (force && !confirmedUsers(c.req.valid('json').users, image.usedBy)) return c.json({ error: usersChanged }, 409);
       const running = image.usedBy.filter((user) => user.running);
       if (running.length > 0) {
-        if (c.req.valid('query').force !== '1') return c.json({ error: `${running.map((user) => user.name).join(', ')} run from it; removing it stops them first (force)` }, 409);
+        if (!force) return c.json({ error: `${running.map((user) => user.name).join(', ')} run from it; removing it stops them first (force)` }, 409);
         const stopped = await docker(['stop', ...running.map((user) => user.id)], { timeoutMs: 120_000 });
         if (!stopped.ok) {
           dockerChanged();
@@ -7649,7 +7657,7 @@ export function createApp(deps: ServerDeps) {
       const state: DockerVolumes = { available: true, reason: null, volumes: buildVolumes(inventory.volumeRows, sizes, inventory.containers, inventory.stacks) };
       return c.json(state, 200);
     })
-    .delete('/docker/volumes/:name', paramZodValidator(dockerVolumeParamsSchema), queryZodValidator(dockerForceQuerySchema), async (c) => {
+    .delete('/docker/volumes/:name', paramZodValidator(dockerVolumeParamsSchema), queryZodValidator(dockerForceQuerySchema), jsonZodValidator(dockerForceBodySchema, { absent: {} }), async (c) => {
       const refusal = dockerRemovalRefusal(c);
       if (refusal) return c.json({ error: refusal }, 409);
       const { name } = c.req.valid('param');
@@ -7661,8 +7669,10 @@ export function createApp(deps: ServerDeps) {
       // Docker refuses a volume any container still references, stopped or running, `-f` or not —
       // so `?force=1` (spec §2; the confirm names them) removes those containers first.
       const users = listed.containers.filter((container) => container.mounts.includes(name));
+      const force = c.req.valid('query').force === '1';
+      if (force && !confirmedUsers(c.req.valid('json').users, users)) return c.json({ error: usersChanged }, 409);
       if (users.length > 0) {
-        if (c.req.valid('query').force !== '1') return c.json({ error: `${users.map((user) => user.name).join(', ')} mount it; removing it removes them first (force)` }, 409);
+        if (!force) return c.json({ error: `${users.map((user) => user.name).join(', ')} mount it; removing it removes them first (force)` }, 409);
         const removed = await docker(['rm', '-f', ...users.map((user) => user.id)], { timeoutMs: 120_000 });
         if (!removed.ok) {
           dockerChanged();

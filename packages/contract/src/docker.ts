@@ -224,6 +224,10 @@ export type DockerImageParams = z.infer<typeof dockerImageParamsSchema>;
 export const dockerForceQuerySchema = z.object({ force: z.enum(['0', '1']).optional() });
 export type DockerForceQuery = z.infer<typeof dockerForceQuerySchema>;
 
+/** With `?force=1`: the containers the confirm named. A different current set is a 409, so the cockpit asks again. */
+export const dockerForceBodySchema = z.object({ users: z.array(dockerContainerParamsSchema.shape.id).max(1000).optional() }).strict();
+export type DockerForceBody = z.infer<typeof dockerForceBodySchema>;
+
 export const dockerStackDownSchema = z.object({ volumes: z.boolean().optional() }).strict();
 export type DockerStackDown = z.infer<typeof dockerStackDownSchema>;
 

@@ -201,3 +201,7 @@ Nothing to configure. Reclaim is a click, never a timer. All new state is Docker
 - **An over-long log line (8 KiB, no newline) goes out cut where no secret is split**
   (`redactionSafeCut`): the tail that could still hold a secret's start is held back, redacted with
   what follows. A held tail past 32 KiB (a token shape that never ends) goes out redacted whole.
+- **`force` acts on what the confirm named.** The image and volume `DELETE`s take
+  `{users: [containerId]}` — the users the dialog listed. With `?force=1`, a current set of users
+  that differs (one started from the image since, one stopped mounting the volume) is a 409 and
+  nothing runs, so the cockpit asks again instead of acting on containers nobody confirmed.

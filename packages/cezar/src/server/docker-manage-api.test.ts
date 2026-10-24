@@ -144,7 +144,7 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     const { instance } = await app();
     expect((await apiRequest(instance, `/api/v1/docker/containers/${C('a')}?force=1`, { method: 'DELETE' })).status).toBe(200);
     expect((await apiRequest(instance, `/api/v1/docker/images/${I('2b').slice(0, 12)}`, { method: 'DELETE' })).status).toBe(200);
-    expect((await apiRequest(instance, '/api/v1/docker/volumes/gone_pg?force=1', { method: 'DELETE' })).status).toBe(200);
+    expect((await apiRequest(instance, '/api/v1/docker/volumes/gone_pg?force=1', json('DELETE', { users: [C('b')] }))).status).toBe(200);
     expect(ran()).toEqual([`rm -f ${C('a')}`, `image rm -f ${I('2b')}`, `rm -f ${C('b')}`, 'volume rm gone_pg']);
     expect((await apiRequest(instance, `/api/v1/docker/containers/${C('9')}`, { method: 'DELETE' })).status).toBe(404);
     expect((await apiRequest(instance, `/api/v1/docker/images/${'9'.repeat(12)}`, { method: 'DELETE' })).status).toBe(404);
@@ -160,9 +160,22 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     expect((await apiRequest(instance, '/api/v1/docker/volumes/live_pg', { method: 'DELETE' })).status).toBe(409);
     expect(ran()).toEqual([]);
     // 1a carries two tags: without -f Docker would refuse it as "referenced in multiple repositories".
-    expect((await apiRequest(instance, `/api/v1/docker/images/${I('1a')}?force=1`, { method: 'DELETE' })).status).toBe(200);
-    expect((await apiRequest(instance, '/api/v1/docker/volumes/live_pg?force=1', { method: 'DELETE' })).status).toBe(200);
+    expect((await apiRequest(instance, `/api/v1/docker/images/${I('1a')}?force=1`, json('DELETE', { users: [C('c'), C('b'), C('a')] }))).status).toBe(200);
+    expect((await apiRequest(instance, '/api/v1/docker/volumes/live_pg?force=1', json('DELETE', { users: [C('c')] }))).status).toBe(200);
     expect(ran()).toEqual([`stop ${C('a')} ${C('b')} ${C('c')}`, `image rm -f ${I('1a')}`, `rm -f ${C('c')}`, 'volume rm live_pg']);
+  });
+
+  it('force acts only on the users the confirm named: a changed set is a 409 and nothing runs', async () => {
+    const { instance } = await app();
+    // The dialog showed two users of 1a; a third has started from it since.
+    const image = await apiRequest(instance, `/api/v1/docker/images/${I('1a')}?force=1`, json('DELETE', { users: [C('a'), C('b')] }));
+    expect(image.status).toBe(409);
+    expect((await image.json() as { error: string }).error).toMatch(/changed/);
+    // The dialog showed no users of live_pg (or a client sent none): force does not stretch to cover them.
+    expect((await apiRequest(instance, '/api/v1/docker/volumes/live_pg?force=1', { method: 'DELETE' })).status).toBe(409);
+    expect((await apiRequest(instance, '/api/v1/docker/volumes/live_pg?force=1', json('DELETE', { users: [C('a')] }))).status).toBe(409);
+    expect(ran()).toEqual([]);
+    expect((await apiRequest(instance, '/api/v1/docker/volumes/live_pg?force=1', json('DELETE', { users: ['nope'] }))).status).toBe(400);
   });
 
   it('removes an image by its exact id or a unique prefix, and refuses an ambiguous one', async () => {

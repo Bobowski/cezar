@@ -136,8 +136,8 @@ type DockerMutation =
   | { kind: 'stack' | 'container'; id: string; action: 'start' | 'stop' }
   | { kind: 'down'; id: string; volumes: boolean }
   | { kind: 'rm'; ids: string[]; force: boolean }
-  | { kind: 'image'; id: string; force: boolean }
-  | { kind: 'volume'; id: string; force: boolean }
+  | { kind: 'image'; id: string; force: boolean; users: string[] }
+  | { kind: 'volume'; id: string; force: boolean; users: string[] }
 
 async function runMutation(input: DockerMutation): Promise<void> {
   switch (input.kind) {
@@ -145,8 +145,8 @@ async function runMutation(input: DockerMutation): Promise<void> {
     case 'container': return dockerContainerAction(input.id, input.action)
     case 'down': return dockerStackDown(input.id, input.volumes)
     case 'rm': for (const id of input.ids) await removeDockerContainer(id, input.force); return
-    case 'image': return removeDockerImage(input.id, input.force)
-    case 'volume': return removeDockerVolume(input.id, input.force)
+    case 'image': return removeDockerImage(input.id, input.force, input.users)
+    case 'volume': return removeDockerVolume(input.id, input.force, input.users)
   }
 }
 
@@ -252,10 +252,10 @@ export function DockerView({ header }: { header: ReactNode }) {
           </ToggleGroup>
         ) : null}
         {available && tab === 'images' ? (
-          <DockerImagesView busy={busy} onConfirm={setConfirm} onRemove={(image: DockerImage, force) => act.mutate({ kind: 'image', id: image.id, force })} />
+          <DockerImagesView busy={busy} onConfirm={setConfirm} onRemove={(image: DockerImage, force) => act.mutate({ kind: 'image', id: image.id, force, users: image.usedBy.map((user) => user.id) })} />
         ) : null}
         {available && tab === 'volumes' ? (
-          <DockerVolumesView busy={busy} onConfirm={setConfirm} onRemove={(volume: DockerVolume, force) => act.mutate({ kind: 'volume', id: volume.name, force })} />
+          <DockerVolumesView busy={busy} onConfirm={setConfirm} onRemove={(volume: DockerVolume, force) => act.mutate({ kind: 'volume', id: volume.name, force, users: volume.usedBy.map((user) => user.id) })} />
         ) : null}
         {available && tab === 'disk' ? <DockerDiskView /> : null}
         {tab === 'containers' && conflicts.length > 0 ? (

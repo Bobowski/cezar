@@ -186,7 +186,8 @@ describe('Docker management (spec 2026-10-23-docker-management)', () => {
     // Docker refuses `rm -f` of an image a running container uses: the confirm says it is stopped first.
     expect(dialog.textContent).toContain('it is stopped first, then the image is removed')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Stop and remove image' }))
-    await waitFor(() => expect(calls).toEqual([`DELETE /docker/images/${'1a'.repeat(32)}?force=1`]))
+    // With force it names the users the confirm showed, so the server acts on exactly those.
+    await waitFor(() => expect(calls).toEqual([`DELETE /docker/images/${'1a'.repeat(32)}?force=1 {"users":["bbbbbbbbbbbb"]}`]))
   })
 
   it('removes an unused image without stopping anything', async () => {
@@ -195,7 +196,7 @@ describe('Docker management (spec 2026-10-23-docker-management)', () => {
     const dialog = await confirmDialog()
     expect(dialog.textContent).toContain('Nothing uses it.')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Remove image' }))
-    await waitFor(() => expect(calls).toEqual([`DELETE /docker/images/${'3c'.repeat(32)}`]))
+    await waitFor(() => expect(calls).toEqual([`DELETE /docker/images/${'3c'.repeat(32)} {}`]))
   })
 
   it('asks to type the name only for a volume with data and no container', async () => {
@@ -229,7 +230,7 @@ describe('Docker management (spec 2026-10-23-docker-management)', () => {
     fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'ffp-3900_pg' } })
     expect(remove.disabled).toBe(false)
     fireEvent.click(remove)
-    await waitFor(() => expect(calls).toEqual(['DELETE /docker/volumes/ffp-3900_pg']))
+    await waitFor(() => expect(calls).toEqual(['DELETE /docker/volumes/ffp-3900_pg {}']))
   })
 
   it('shows disk usage with its warning, and Reclaims only the lines left checked', async () => {

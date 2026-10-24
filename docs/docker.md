@@ -172,8 +172,14 @@ What the box itself needs:
   of trust for the cockpit's accounts.
 - **Firewall:** allow `22`, `80`, `443`, `8500-8519`. Docker opens published ports past `ufw`
   on its own, so nothing else must be published: never add `ports:` to the `cezar` service.
-- **Backups.** The `data` volume holds the agents' and `gh` logins and the cockpit's accounts —
-  a backup of it is a secret; keep it encrypted and off the box:
+- **Backups.** Settings → Backup (spec `.ai/specs/2026-10-23-backup-restore.md`) writes an age-
+  encrypted archive of `/data` plus each project's untracked `.env*` and `.ai/cezar/` files: paste
+  an `age1…` public key once (`age-keygen` on your laptop), then **Back up now** and download it,
+  or set an S3-compatible bucket (R2, B2, MinIO) and switch **Nightly** on. A rebuilt box restores
+  from the `/setup` page before any account exists — the setup code still gates it — or with
+  `cezar backup restore <file>`. The archive opens with `age -d -i key.txt f.age | zstd -d | tar t`.
+  The manual way still works: the `data` volume holds the agents' and `gh` logins and the
+  cockpit's accounts — a backup of it is a secret; keep it encrypted and off the box:
 
   ```bash
   docker run --rm -v cezar_data:/data:ro -v "$PWD:/backup" alpine tar czf /backup/cezar-data.tgz -C /data .

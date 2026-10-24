@@ -1,6 +1,6 @@
 # Backup and restore — an encrypted snapshot of everything a rebuild cannot recreate
 
-> Status: proposed (2026-10-23), not built. Branch: `brutus`.
+> Status: built (2026-10-24) — see §10 As built. Branch: `brutus`.
 > Builds on: `2026-10-10-cezar-in-a-container.md` (what lives in `/data` and `/projects`),
 > `2026-10-12-cockpit-authentication.md` (the `/setup` page before an owner exists),
 > `2026-10-12-project-env-files.md` and `2026-10-21-env-references.md` (the untracked project
@@ -132,3 +132,49 @@ Zod in `packages/contract/src/backup.ts`; archive names validated against the pa
 - VPS: Backup now → download → `age -d` on the laptop lists the expected entries; set an R2
   target → Test → nightly on → next morning one object; fresh container with empty volumes →
   `/setup` → Restore → sign in with the old owner, fancy-fence-panels listed with its `.env`.
+
+## 10. As built (2026-10-24)
+
+Code: `packages/cezar/src/backup/` (`tar.ts`, `codec.ts`, `collect.ts`, `s3.ts`, `state.ts`,
+`restore.ts`, `service.ts`, `routes.ts`, `cli.ts`), `packages/contract/src/backup.ts`,
+`packages/web/src/routes/settings/backup-section.tsx`, `packages/web/src/components/auth/setup-restore-card.tsx`.
+
+- **age:** `age-encryption@0.3.1`, pinned exactly, streaming (`Encrypter.encrypt(ReadableStream)`).
+  Recipients `age1…` and `age1pq1…`; the passphrase recipient is scrypt at age's default work
+  factor. A pasted `age-keygen` file (comments included) is accepted as the identity.
+- **zstd:** Node's `zlib.createZstdCompress`, level 3. A Node without it (older than 22.15/23.8)
+  writes `.tar.gz.age` and says so in the job log; the reader sniffs the magic bytes, so either
+  archive restores anywhere zstd is available. The tar is a minimal ustar + PAX writer/reader of
+  our own (regular files and directories; symlinks are skipped).
+- **Project allowlist:** `git ls-files --others` **without** `--exclude-standard`, restricted by
+  pathspec to the allowlist and re-checked in `projectFileQualifies`. With `--exclude-standard`
+  the files worth keeping — `.env` and the run history under `.ai/cezar/` — are exactly the
+  ignored ones and would never qualify; the allowlist, not the ignore rules, is what keeps
+  `node_modules` and build output out. `.env*` at any depth, `.ai/cezar/**` minus `worktrees/`,
+  a root `config.local.json`.
+- **`data/` and `agents/`:** `CEZ_HOME` minus `backups/`, `versions/`, `bin/`, `cache/`,
+  `uploads/`, `.restore*`, locks and temp files. Agents come from `agentStateLocations()`
+  (`paths.ts`): `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GH_CONFIG_DIR`, `~/.ssh`, `GIT_CONFIG_GLOBAL`,
+  each falling back to the tool's default outside the container; Claude's `.claude.json` rides
+  as `agents/claude.json` when it lives beside its dir.
+- **Restore** stages under `CEZ_HOME/.restore-<job>`, verifies the manifest, holds run admission
+  (`WorkspaceSemaphore.holdAdmission`), then overlays: a file in the archive replaces the one on
+  disk, nothing else is deleted. The restart re-execs the running entry (the managed `current`
+  only for a managed install). The CLI restore never restarts anything.
+- **Nightly** is a built-in item on the workspace automations timer (`builtins` on
+  `WorkspaceAutomationScheduler`): 03:00 server time, retried every 10 minutes while the workspace
+  is busy, once per night otherwise (a failure is recorded in `lastError`). It needs an `age1…`
+  recipient (a passphrase is never stored) and a target; under `CEZ_AUTOMATIONS=0` there is no
+  timer and the status says so. Remote retention counts only this host's archives under the prefix.
+- **S3:** SigV4 by hand (pinned to AWS's worked GET example), path-style URLs, the payload hashed
+  before the PUT. Default region `us-east-1`. `s3.test.ts` runs against an in-memory S3 always
+  and against a real endpoint only with `BACKUP_S3_TEST_ENDPOINT` set (skipped otherwise).
+- **`/setup`:** `POST /api/v1/auth/setup/restore` (public by path; setup code, enforced sign-in,
+  HTTPS or loopback, no owner yet) answers `{ job }`; the page follows it with
+  `GET /api/v1/auth/setup/restore?job=` — the unguessable id is the only handle — and moves to
+  sign-in once the restarted cockpit answers.
+- **Uploads** ride their own 1 GiB body limit; the multipart reader holds the archive in memory
+  before it is spooled to `CEZ_HOME`, so a VPS with little RAM restores a large archive with the
+  CLI instead.
+- **Not done:** a passphrase prompt that hides input in the CLI (it reads a line or stdin); listing
+  remote archives in the cockpit; restoring onto a machine whose project roots differ.

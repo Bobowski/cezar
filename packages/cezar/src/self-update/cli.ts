@@ -230,7 +230,8 @@ async function useCommand(id: string | undefined): Promise<number> {
     console.error('  usage: cezar use <id>   (see: cezar versions)');
     return 1;
   }
-  const match = listInstalled().find((entry) => entry.id === id || entry.version === id);
+  // An exact id, else the registry release of that version — never a `+<sha8>`/`+local` build of it.
+  const match = findInstalled(id);
   if (!match) {
     console.error(`  ✗ ${id} is not installed — see: cezar versions`);
     return 1;

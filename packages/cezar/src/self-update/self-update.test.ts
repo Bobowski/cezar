@@ -63,6 +63,30 @@ describe('managed layout', () => {
     writeManifest(id, { version, source, installedAt: new Date(Date.parse('2026-09-25T10:00:00Z') + (source === 'local' ? 1 : 0)).toISOString() }, env);
   };
 
+  it('cezar use <version> picks that release, never a build of the same version', async () => {
+    vi.stubEnv('CEZ_HOME', home);
+    const entry = versionEntry('0.17.0+abcd1234', env);
+    mkdirSync(join(entry, '..'), { recursive: true });
+    writeFileSync(entry, '// entry\n');
+    writeManifest('0.17.0+abcd1234', { version: '0.17.0', source: 'branch', installedAt: '2026-10-20T00:00:00Z' }, env);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const use = (id: string) => runSelfUpdateCommand('use', [id], { service: null as unknown as SelfUpdateService, modifyPath: false });
+    try {
+      expect(await use('0.17.0')).toBe(1);
+      expect(activeId(env)).toBeNull();
+      fakeInstall('0.17.0', '0.17.0', 'registry');
+      expect(await use('0.17.0')).toBe(0);
+      expect(activeId(env)).toBe('0.17.0');
+      expect(await use('0.17.0+abcd1234')).toBe(0);
+      expect(activeId(env)).toBe('0.17.0+abcd1234');
+    } finally {
+      errors.mockRestore();
+      log.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('lists complete installs only and flips `current` atomically', () => {
     fakeInstall('0.11.0', '0.11.0', 'registry');
     fakeInstall('0.11.1+local', '0.11.1', 'local');

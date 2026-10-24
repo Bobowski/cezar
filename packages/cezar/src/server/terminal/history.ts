@@ -166,6 +166,30 @@ export function atPromptFor(children: readonly string[], line: string): boolean 
   return children.every((child) => child.trim().split(/\s+/).slice(0, 2).some((word) => own.has(baseName(word))));
 }
 
+/** Programs that read a secret from the terminal. The table sees them run — but a line begun in
+ *  the instant before the shell forked one would not, so after one the next prompt must be
+ *  confirmed by a check begun once it had time to start. */
+const READS_SECRET = new Set(['ssh', 'sudo', 'su', 'doas', 'passwd', 'gpg', 'gpg2', 'ssh-add', 'ssh-keygen']);
+/** How long after such a line a check may still be racing the shell's fork. */
+export const SECRET_SETTLE_MS = 500;
+
+/** What a submitted line does to the lines after it, as far as its text says. */
+function lineEffects(line: string): { replacesShell: boolean; secretNextLine: boolean; readsSecret: boolean } {
+  const effects = { replacesShell: false, secretNextLine: false, readsSecret: false };
+  for (const segment of line.split(/\|\|?|&&?|;/)) {
+    const words = segment.trim().split(/\s+/).filter((word) => word !== '' && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
+    const [first, ...rest] = words;
+    if (!first) continue;
+    // `exec ssh host` makes the shell's own pid the program: no child shows, ever again.
+    // `exec 2>&1` only redirects.
+    if (first === 'exec' && rest.some((word) => !/^(\d*[<>]|&)/.test(word))) effects.replacesShell = true;
+    // A builtin: the shell itself reads the secret, so no process shows it.
+    if (first === 'read' && rest.some((word) => /^-[A-Za-z]*s/.test(word))) effects.secretNextLine = true;
+    if (READS_SECRET.has(baseName(first))) effects.readsSecret = true;
+  }
+  return effects;
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => resolve(null), ms);
@@ -182,12 +206,24 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
   });
 }
 
+interface PromptCheck {
+  found: Promise<readonly string[] | null>;
+  at: number;
+}
+
 interface SessionState {
   line: TypedLine;
-  /** The prompt check of the line being typed, begun with its first keystroke. */
-  check: Promise<readonly string[] | null> | null;
+  /** The prompt check of the line being typed, begun with its first keystroke; null for a line
+   *  begun after another in the same chunk, which no prompt can have been shown for. */
+  check: PromptCheck | null;
   /** Decisions, in submission order, so lines land in the file in the order they were typed. */
   decided: Promise<void>;
+  /** `exec` replaced the shell: nothing typed here is a prompt line again. */
+  replaced: boolean;
+  /** The last line was `read -s`: the next one is what it read. */
+  secretNext: boolean;
+  /** Set when a line started a program that reads secrets, until a prompt is confirmed again. */
+  guard: { since: number } | null;
 }
 
 /**
@@ -199,28 +235,55 @@ export class TerminalHistory {
   private readonly sessions = new Map<string, SessionState>();
   private readonly writes = new Map<string, Promise<void>>();
 
+  constructor(private readonly now: () => number = Date.now) {}
+
   /**
    * Keystrokes typed into one session of a project. Call it as they are written to the shell: a
    * line's check starts here, with its first keystroke, so it sees the shell as the line found it.
+   *
+   * Each line of a chunk is judged on its own. Only the chunk's first line can have met a prompt
+   * — a paste's later lines reach the shell together with the Enter before them. Echo-off input
+   * (a program's own password prompt) is not visible from here at all; the process table, and the
+   * rules after `exec`, `read -s` and the programs in `READS_SECRET`, are what stand in for it.
    */
   typed(dataDir: string, sessionId: string, data: string, children: ShellChildren): void {
     let state = this.sessions.get(sessionId);
     if (!state) {
-      state = { line: new TypedLine(), check: null, decided: Promise.resolve() };
+      state = { line: new TypedLine(), check: null, decided: Promise.resolve(), replaced: false, secretNext: false, guard: null };
       this.sessions.set(sessionId, state);
     }
+    let chunkChecked = false;
     for (const event of state.line.events(data)) {
       if (event.kind === 'begin') {
-        state.check = withTimeout(children(), PROMPT_CHECK_TIMEOUT_MS);
+        state.check = chunkChecked || state.replaced ? null : { found: withTimeout(children(), PROMPT_CHECK_TIMEOUT_MS), at: this.now() };
+        chunkChecked = true;
         continue;
       }
       const check = state.check;
       state.check = null;
+      const secret = state.secretNext;
+      state.secretNext = false;
+      const guard = state.guard;
+      if (event.text !== null) {
+        // Even a line not kept (led by a space) starts what it starts.
+        const effects = lineEffects(event.text);
+        if (effects.replacesShell) state.replaced = true;
+        if (effects.secretNextLine) state.secretNext = true;
+        if (effects.readsSecret) state.guard = { since: this.now() };
+      }
       const entry = event.text === null ? null : historyLine(event.text);
-      if (entry === null || check === null) continue;
+      if (entry === null || check === null || secret) continue;
+      const self = state;
       state.decided = state.decided.then(async () => {
-        const found = await check;
-        if (found !== null && atPromptFor(found, entry)) this.append(dataDir, [entry]);
+        const found = await check.found;
+        if (found === null || !atPromptFor(found, entry)) return;
+        if (guard !== null) {
+          // Begun too soon after a `sudo`: the table may not show it yet.
+          if (check.at - guard.since < SECRET_SETTLE_MS) return;
+          // Confirmed — unless this line, or a later one, started another such program.
+          if (self.guard === guard) self.guard = null;
+        }
+        this.append(dataDir, [entry]);
       });
     }
   }

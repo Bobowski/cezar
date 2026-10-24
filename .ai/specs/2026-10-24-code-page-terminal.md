@@ -118,7 +118,14 @@ gateway that `CEZ_PREVIEW_PORTS` already configures for the VPS image.
   chunk can carry a whole line, and the shell forks it while `ps` starts). That is what keeps a
   password a running `sudo`/`ssh` reads out of the file; a host with no readable process table
   (Windows) therefore keeps no history. The check never holds a keystroke: it runs beside the
-  write, and an answer later than 300 ms keeps nothing. A line led by a space is not kept
+  write, and an answer later than 300 ms keeps nothing. Each line of a chunk is judged alone, and
+  only a chunk's first line can have met a prompt: a pasted `ssh host⏎passw0rd⏎` keeps
+  `ssh host`. What the table cannot see is ruled by text: after `exec …` nothing is kept again
+  (the shell's own pid became the program), the line after `read -s` is never kept, and after
+  `ssh`/`sudo`/`su`/`doas`/`passwd`/`gpg`/`ssh-add`/`ssh-keygen` a line is kept only once a check
+  begun 500 ms or more later confirms the prompt (a line typed ahead may beat the fork). Echo-off
+  input is invisible from the keystrokes, so those rules are the whole account of it; a recalled
+  (arrow-key) `read -s` or `exec` line is unknown text and sets no rule. A line led by a space is not kept
   (bash's `ignorespace`). Both the checkout's terminals and the project's task terminals feed it;
   a task's own credential never does.
 - **`/repo/terminal/urls` adds `sshUser`** (`projectDetectedUrlsSchema`), the account cezar runs

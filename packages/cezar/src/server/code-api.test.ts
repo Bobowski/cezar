@@ -27,6 +27,8 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
   let shellBusy = false;
   /** How long that table takes to read. */
   let psDelayMs = 0;
+  /** The history's clock, moved by hand where the time between lines matters. */
+  let now = 0;
   let spawned: ReturnType<typeof fakeServiceBinding>['spawned'];
   const put = (rel: string, text: string) => {
     mkdirSync(dirname(join(root, rel)), { recursive: true });
@@ -53,8 +55,9 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
     spawned = fake.spawned;
     shellBusy = false;
     psDelayMs = 0;
+    now = 0;
     detected = new DetectedUrls();
-    history = new TerminalHistory();
+    history = new TerminalHistory(() => now);
     sessions = new TerminalSessions(fake.binding, detected, () => null);
   });
   afterEach(() => {
@@ -258,12 +261,22 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
       shellBusy = true;
       await type('hunter2\r');
       shellBusy = false;
+      now = 5_000;
       await type('npm run dev\r');
       await history.flushed();
       const read = terminalHistorySchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal/history')).json());
       expect(read.lines).toEqual(['npm run dev', 'sudo apt update']);
       // The keystrokes still reached the shell, every one of them.
       expect(spawned[0]?.written).toEqual(['sudo apt update\r', 'hunter2\r', 'npm run dev\r']);
+    });
+
+    it('keeps a pasted command and never the password pasted after it', async () => {
+      const { instance } = await app();
+      const session = terminalSessionSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal', send('POST', {}))).json());
+      await apiRequest(instance, `/api/v1/repo/terminal/${session.id}/input`, send('POST', { data: 'ssh host\rpassw0rd\r' }));
+      await history.flushed();
+      const read = terminalHistorySchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal/history')).json());
+      expect(read.lines).toEqual(['ssh host']);
     });
 
     it('never lets a keystroke overtake the Enter whose prompt check is still running', async () => {

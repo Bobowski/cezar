@@ -87,6 +87,48 @@ describe('TerminalHistory', () => {
     expect(await readTerminalHistory(dataDir)).toEqual(['ls | wc -l', 'npm run dev']);
   });
 
+  it('keeps only the first line of a paste: the shell could show no prompt for the rest', async () => {
+    let now = 0;
+    const history = new TerminalHistory(() => now);
+    history.typed(dataDir, 's1', 'ssh host\rpassw0rd\r', async () => []);
+    now = 5_000;
+    history.typed(dataDir, 's1', 'make build\rmake test\r', async () => []);
+    await history.flushed();
+    expect(await readTerminalHistory(dataDir)).toEqual(['make build', 'ssh host']);
+    expect(readFileSync(join(dataDir, 'terminal-history.json'), 'utf8')).not.toContain('passw0rd');
+  });
+
+  it('keeps nothing after `exec`, which replaced the shell, and not the line `read -s` read', async () => {
+    const history = new TerminalHistory();
+    // `exec ssh`: the shell IS ssh now, so its table shows no child while the password is typed.
+    history.typed(dataDir, 's1', 'exec ssh host\r', async () => []);
+    history.typed(dataDir, 's1', 'passw0rd\r', async () => []);
+    history.typed(dataDir, 's1', 'ls\r', async () => []);
+    history.typed(dataDir, 's2', 'read -rsp "token: " TOKEN\r', async () => []);
+    history.typed(dataDir, 's2', 's3cret\r', async () => []);
+    history.typed(dataDir, 's2', 'echo done\r', async () => []);
+    await history.flushed();
+    expect(await readTerminalHistory(dataDir)).toEqual(['echo done', 'read -rsp "token: " TOKEN', 'exec ssh host']);
+  });
+
+  it('after ssh, sudo, su, passwd or gpg keeps nothing until a prompt is confirmed again', async () => {
+    let now = 0;
+    const history = new TerminalHistory(() => now);
+    history.typed(dataDir, 's1', 'sudo -v\r', async () => []);
+    // Typed ahead, before the shell had forked `sudo`: the table shows nothing yet.
+    now = 20;
+    history.typed(dataDir, 's1', 'hunter2\r', async () => []);
+    // A check that cannot answer confirms nothing either.
+    now = 2_000;
+    history.typed(dataDir, 's1', 'make\r', async () => null);
+    now = 3_000;
+    history.typed(dataDir, 's1', 'git status\r', async () => []);
+    history.typed(dataDir, 's1', 'ls\r', async () => []);
+    await history.flushed();
+    expect(await readTerminalHistory(dataDir)).toEqual(['ls', 'git status', 'sudo -v']);
+    expect(readFileSync(join(dataDir, 'terminal-history.json'), 'utf8')).not.toContain('hunter2');
+  });
+
   it('keeps nothing whose check timed out or could not read the table', async () => {
     const history = new TerminalHistory();
     history.typed(dataDir, 's1', 'ls\r', () => new Promise(() => {}));

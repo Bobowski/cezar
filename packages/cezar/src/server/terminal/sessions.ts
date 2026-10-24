@@ -184,6 +184,26 @@ export function closeAllTerminals(): void {
 
 export class TerminalSessions {
   private entries = new Map<string, Entry>();
+  private readonly endedListeners = new Set<(id: string) => void>();
+
+  /** Fires when a session's shell exits and again when it is forgotten (killed, reaped, closed):
+   *  per-session state kept elsewhere — the history's line — goes then. */
+  onEnded(listener: (id: string) => void): () => void {
+    this.endedListeners.add(listener);
+    return () => {
+      this.endedListeners.delete(listener);
+    };
+  }
+
+  private ended(id: string): void {
+    for (const listener of [...this.endedListeners]) {
+      try {
+        listener(id);
+      } catch {
+        // A listener must not be able to break an exit or a shutdown.
+      }
+    }
+  }
 
   /** `binding` is injectable so tests drive a fake PTY and never fork a real shell. `urls`, when
    *  given, is fed every chunk of output so a task's printed addresses are collected as they
@@ -266,6 +286,7 @@ export class TerminalSessions {
       child.onExit(({ exitCode }) => {
         entry.info.exitCode = exitCode;
         this.notify(entry);
+        this.ended(entry.info.id);
         // Keep the corpse briefly so a client still polling sees the last line and the code.
         entry.reap = setTimeout(() => this.remove(entry.info.id), EXITED_RETENTION_MS);
         entry.reap.unref?.();
@@ -480,6 +501,7 @@ export class TerminalSessions {
       }
     }
     this.entries.delete(id);
+    this.ended(id);
     // Tell listeners the session is gone, AFTER it is: the WS topic disposes itself on exactly
     // this call, and without it every session ever opened left a topic behind (spec §6).
     for (const listener of [...entry.listeners]) {

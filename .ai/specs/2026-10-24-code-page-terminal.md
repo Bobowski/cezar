@@ -133,8 +133,10 @@ gateway that `CEZ_PREVIEW_PORTS` already configures for the VPS image.
   credential — the transcript redactor's `SECRET_NAME_RE`, plus `PASS`/`PWD`/`KEY`/`PIN` as a
   name part — is stored as `NAME=***`. What the shell itself reads is kept as bash's own history
   keeps it: a heredoc body, and the answer to a `read -s` run by a sourced script or a function
-  (no child shows and no typed line says `read -s`). Both the checkout's terminals and the project's task terminals feed it;
-  a task's own credential never does.
+  (no child shows and no typed line says `read -s`). Both the checkout's terminals and the
+  project's task terminals feed it; a task's own credential never does, nor an API token (an MCP
+  client), nor anyone typing into a session a token opened. A session's line state is dropped
+  when its shell exits or the session is closed.
 - **`/repo/terminal/urls` adds `sshUser`** (`projectDetectedUrlsSchema`), the account cezar runs
   as, on a hosted cockpit only — the tunnel line's login (tunnel spec §3.3).
 - **Tab**: with the popover closed, Tab opens it when there is something to offer and is the

@@ -336,6 +336,15 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
       expect(read.lines).toEqual([]);
     });
 
+    it('forgets a session\'s half-typed line when its shell exits, not only on DELETE', async () => {
+      const forget = vi.spyOn(history, 'forget');
+      const { instance } = await app();
+      const session = terminalSessionSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal', send('POST', {}))).json());
+      await apiRequest(instance, `/api/v1/repo/terminal/${session.id}/input`, send('POST', { data: 'git sta' }));
+      spawned[0]!.finish(0);
+      expect(forget).toHaveBeenCalledWith(session.id);
+    });
+
     it('refuses the history where the terminal is off', async () => {
       vi.stubEnv('CEZ_TERMINAL', '0');
       const { instance } = await app();

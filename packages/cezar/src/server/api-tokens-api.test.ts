@@ -18,9 +18,12 @@ import { AuthService } from '../auth/service.ts';
 import { issueSetupCode } from '../auth/store.ts';
 import { base32Decode, hotp, totpStep } from '../auth/totp.ts';
 import { RunStore } from '../runs/store.ts';
+import { fakeServiceBinding } from '../services/testkit.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import type { RunManager } from '../workflows/run.ts';
 import { createApp } from './server.ts';
+import { TerminalHistory, readTerminalHistory } from './terminal/history.ts';
+import { TerminalSessions } from './terminal/sessions.ts';
 
 /**
  * Owner API tokens through the real routes and guards (spec 2026-10-24-cezar-mcp-server §4, §8):
@@ -38,8 +41,10 @@ describe('API tokens', () => {
   let app: Hono;
   let secret: string;
   let cookie: string;
+  let sessions: TerminalSessions;
+  let history: TerminalHistory;
   let clock = Date.now();
-  const saved = { home: process.env.CEZ_HOME, remote: process.env.CEZ_REMOTE, auth: process.env.CEZ_AUTH };
+  const saved = { home: process.env.CEZ_HOME, remote: process.env.CEZ_REMOTE, auth: process.env.CEZ_AUTH, terminal: process.env.CEZ_TERMINAL };
 
   const request = (path: string, init: RequestInit & { headers?: Record<string, string> } = {}) =>
     app.request(path, { ...init, headers: { ...HOSTED, ...init.headers } });
@@ -64,7 +69,13 @@ describe('API tokens', () => {
     mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
     writeFileSync(join(repoRoot, '.ai/cezar', 'config.json'), '{"skillsRepos": []}\n', 'utf8');
     store = RunStore.open(join(repoRoot, '.ai/cezar'), { keepLive: true });
+    sessions = new TerminalSessions(fakeServiceBinding().binding, undefined, () => null);
+    history = new TerminalHistory();
     app = createApp({
+      terminalSessions: sessions,
+      terminalHistory: history,
+      // The fake shell (pid 4242) sits at its prompt.
+      freshProcesses: async () => [{ pid: 4242, ppid: 1, command: 'bash' }],
       repoRoot,
       store,
       manager: { isActive: () => false } as unknown as RunManager,
@@ -85,9 +96,10 @@ describe('API tokens', () => {
   });
 
   afterEach(async () => {
+    sessions.dispose();
     store.flush();
     await removeTempDir(home, repoRoot);
-    for (const [key, value] of [['CEZ_HOME', saved.home], ['CEZ_REMOTE', saved.remote], ['CEZ_AUTH', saved.auth]] as const) {
+    for (const [key, value] of [['CEZ_HOME', saved.home], ['CEZ_REMOTE', saved.remote], ['CEZ_AUTH', saved.auth], ['CEZ_TERMINAL', saved.terminal]] as const) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
@@ -265,6 +277,23 @@ describe('API tokens', () => {
     } finally {
       await client.close();
     }
+  });
+
+  it('keeps no history of what a token typed, nor of anything typed into a session a token opened', async () => {
+    process.env.CEZ_TERMINAL = '1';
+    const admin = await mint(['admin']);
+    const open = async (headers: Record<string, string>) =>
+      ((await (await json('POST', '/api/v1/repo/terminal', {}, headers)).json()) as { id: string }).id;
+    const type = async (id: string, data: string, headers: Record<string, string>) =>
+      expect((await json('POST', `/api/v1/repo/terminal/${id}/input`, { data }, headers)).status).toBe(200);
+    const agents = await open(bearer(admin.value));
+    await type(agents, 'ls\r', bearer(admin.value));
+    await type(agents, 'pwd\r', { cookie });
+    const owners = await open({ cookie });
+    await type(owners, 'make\r', bearer(admin.value));
+    await type(owners, 'git status\r', { cookie });
+    await history.flushed();
+    expect(await readTerminalHistory(join(repoRoot, '.ai/cezar'))).toEqual(['git status']);
   });
 
   it('every route family the app serves has a scope owner — a new family is a decision', () => {

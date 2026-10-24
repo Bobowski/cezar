@@ -1704,14 +1704,26 @@ export function createApp(deps: ServerDeps) {
   const terminalSessions = deps.terminalSessions ?? new TerminalSessions(undefined, detectedUrls);
   deps.onDispose?.(() => terminalSessions.closeAll());
   const terminalHistory = deps.terminalHistory ?? new TerminalHistory();
+  /** Sessions an API token (an MCP client) opened: an agent's shell, whose lines are nobody's history. */
+  const historyExempt = new Set<string>();
+  const releaseEnded = terminalSessions.onEnded((id) => {
+    terminalHistory.forget(id);
+    historyExempt.delete(id);
+  });
+  deps.onDispose?.(releaseEnded);
+  /** Every terminal-opening route calls this with the session it just made. */
+  const noteTerminalOpener = (c: Context, sessionId: string): void => {
+    if (principalOf(c)?.kind === 'token') historyExempt.add(sessionId);
+  };
   /**
    * Keystrokes into a terminal, fed to the project's history as they are written (spec
    * 2026-10-24-code-page-terminal §3.3). The history's prompt check runs beside the write, never
-   * before it — no keystroke waits on a process table. A task's own credential's typing is not
-   * the user's history.
+   * before it — no keystroke waits on a process table. A task's own credential's typing, an API
+   * token's, and anything typed into a session a token opened are not the user's history.
    */
   const typeInto = (c: Context, project: ProjectContext, sessionId: string, data: string): boolean => {
-    if (principalOf(c)?.kind !== 'run') {
+    const kind = principalOf(c)?.kind;
+    if (kind !== 'run' && kind !== 'token' && !historyExempt.has(sessionId)) {
       terminalHistory.typed(project.dataDir, sessionId, data, async () => {
         const rows = await (deps.freshProcesses ?? freshProcessSnapshot)();
         terminalSessions.observe(rows);
@@ -7139,6 +7151,7 @@ export function createApp(deps: ServerDeps) {
       });
       if (!created.ok) return c.json({ error: created.reason }, 409);
       registerTerminalTopic(created.session.id);
+      noteTerminalOpener(c, created.session.id);
       return c.json(terminalSessionSchema.parse(withTopic(created.session)), 201);
     })
     .get(
@@ -9140,6 +9153,7 @@ export function createApp(deps: ServerDeps) {
       });
       if (!created.ok) return c.json({ error: created.reason }, 409);
       registerTerminalTopic(created.session.id);
+      noteTerminalOpener(c, created.session.id);
       return c.json(terminalSessionSchema.parse(withTopic(created.session)), 201);
     })
     .get('/repo/terminal/:sessionId/output', queryZodValidator(terminalOutputQuerySchema), async (c) => {

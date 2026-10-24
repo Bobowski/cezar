@@ -8533,8 +8533,10 @@ async function captureCheckArtifacts(dir: string, owned: Map<string, string>): P
   for (const path of await worktreeChangedPaths(dir)) owned.set(path, fileSnapshot(dir, path));
 }
 
-function applyTemplate(template: string, task: string): string {
-  return template.replaceAll('{{task}}', task);
+/** `{{task}}` filled in by a function replacer: a string replacement would expand `$&`-style
+ *  patterns that happen to be in the task. */
+export function applyTemplate(template: string, task: string): string {
+  return template.replaceAll('{{task}}', () => task);
 }
 
 /**

@@ -3744,6 +3744,15 @@ export function createApp(deps: ServerDeps) {
         return [];
       }
     });
+  const isOriginOf = (claimed: string, origin: string | undefined): boolean => {
+    if (origin === undefined) return false;
+    try {
+      const parent = new URL(claimed);
+      return (parent.protocol === 'http:' || parent.protocol === 'https:') && parent.origin === new URL(origin).origin;
+    } catch {
+      return false;
+    }
+  };
   const previewRoutes = new Hono().post(
     '/preview/design-proxy',
     jsonZodValidator(designProxyRequestSchema),
@@ -3773,6 +3782,12 @@ export function createApp(deps: ServerDeps) {
       // Design Mode as a mode of a gateway slot (spec 2026-10-24-design-mode-third-cut §3.4).
       if (c.req.valid('json').designMode === true && !capabilities().designMode) {
         return c.json({ error: 'Design Mode is not available on this cockpit' }, 409);
+      }
+      // `parentOrigin` becomes the slot's frame-ancestors and the origin its picker trusts, so it
+      // must be the page that asked. cezar has no configured public origin and Host is not one,
+      // so a request without an `Origin` is refused rather than guessed.
+      if (!isOriginOf(c.req.valid('json').parentOrigin, c.req.header('origin'))) {
+        return c.json({ error: 'parentOrigin must be the origin of the page asking for the preview' }, 400);
       }
       const opened = await previewGateways.open({
         ...c.req.valid('json'),

@@ -23,10 +23,15 @@ describe('Design Mode, third cut — the API', () => {
   let app: Hono;
   const saved = { remote: process.env.CEZ_REMOTE, design: process.env.CEZ_DESIGN_MODE, ports: process.env.CEZ_PREVIEW_PORTS };
 
+  // A gateway request comes from the hosted cockpit's own page: Origin and Host are its address.
+  const pageOf = (path: string, body: unknown): Record<string, string> => {
+    const parent = path.endsWith('/preview/gateway') ? (body as { parentOrigin?: string } | undefined)?.parentOrigin : undefined;
+    return parent ? { host: new URL(parent).host, origin: parent } : {};
+  };
   const send = (path: string, method: string, body?: unknown) =>
     apiRequest(app, path, {
       method,
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...pageOf(path, body) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
 

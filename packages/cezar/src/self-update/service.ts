@@ -515,8 +515,8 @@ export class SelfUpdateService {
 
   /**
    * Install `target` (a registry version, an already-installed id such as `0.11.1+local`, the
-   * id of a built cezar checkout `status()` lists — linked on the spot — or, on the branch
-   * channel, a `<version>+<sha8>` built from the followed branch), activate it and restart.
+   * id of a built cezar checkout `status()` lists — linked on the spot — or a
+   * `<version>+<sha8>`, always built from the followed branch), activate it and restart.
    * Returns as soon as the job is started; progress is on `status()`. A branch build switches
    * only once the workspace is idle when `whenIdle` asks for it or runs are active (spec §3.5):
    * the build itself never waits.
@@ -536,7 +536,9 @@ export class SelfUpdateService {
     void (async () => {
       try {
         const installed = findInstalled(target, this.env);
-        if (!installed && (await this.isBranchTarget(target))) {
+        // Classified by shape alone, as `forwardOnlyRefusal` does: a `+<sha8>` is always built
+        // from the clone (or refused when no branch is configured), whatever the channel.
+        if (!installed && isBranchInstallId(target)) {
           const id = await this.buildBranch(target, log);
           if (opts.whenIdle || !this.idle()) {
             log(`built ${id} — switching once no task is running`);
@@ -546,12 +548,6 @@ export class SelfUpdateService {
             return;
           }
           this.switchTo(id, job, log);
-          return;
-        }
-        if (opts.whenIdle) {
-          // `scheduleWhenIdle` guessed a branch build from the id's shape; it is not one.
-          if (this.job === job) this.job = null;
-          this.waitForIdle(target);
           return;
         }
         // A linked checkout goes through discovery too: it may need a rebuild before it runs.
@@ -584,11 +580,6 @@ export class SelfUpdateService {
 
   private idle(): boolean {
     return !this.deps.runs || this.deps.runs.idle();
-  }
-
-  /** A target the branch channel builds: an id shaped `<version>+<sha8>`, on that channel. */
-  private async isBranchTarget(target: string): Promise<boolean> {
-    return isBranchInstallId(target) && (await this.channel()) === 'branch';
   }
 
   /**
@@ -659,7 +650,6 @@ export class SelfUpdateService {
     const { canSelfUpdate, reason } = this.capability();
     if (!canSelfUpdate) throw new Error(reason ?? 'self-update is not available for this install');
     if (!findInstalled(target, this.env) && isBranchInstallId(target)) {
-      // The channel is checked again inside `apply`; a non-branch id falls through to the registry.
       this.apply(target, { whenIdle: true });
       return;
     }

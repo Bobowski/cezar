@@ -47,6 +47,8 @@ export interface InstallResult {
 /** Install `version` from the npm registry. Returns the existing install untouched when present. */
 export async function installFromRegistry(version: string, opts: InstallOptions = {}): Promise<InstallResult> {
   const env = opts.env ?? process.env;
+  // npm drops build metadata: `0.17.0+<sha8>` would install the bare 0.17.0 under the build's id.
+  if (version.includes('+')) throw new Error(`${version} is not a registry version — a build with a + suffix is installed from its source, never from npm`);
   const id = installId(version, 'registry');
   if (existsSync(versionEntry(id, env))) {
     opts.onLog?.(`${id} is already installed`);

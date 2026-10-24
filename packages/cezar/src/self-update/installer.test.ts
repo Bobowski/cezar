@@ -136,6 +136,20 @@ describe('installing into the managed layout', () => {
     expect(readFileSync(versionEntry('0.12.1', env), 'utf8')).toContain('first');
   });
 
+  it('refuses an id with build metadata: npm would drop the suffix and install the bare release', async () => {
+    let ran = false;
+    await expect(
+      installFromRegistry('0.17.0+abcd1234', {
+        env,
+        runNpm: async () => {
+          ran = true;
+        },
+      }),
+    ).rejects.toThrow(/not a registry version/);
+    expect(ran).toBe(false);
+    expect(existsSync(versionDir('0.17.0+abcd1234', env))).toBe(false);
+  });
+
   it('never builds a path from an unsafe version id', async () => {
     let ran = false;
     await expect(

@@ -499,6 +499,41 @@ describe('applying a branch build', () => {
     expect(readManifest(target, env)).toMatchObject({ source: 'branch', commit: { sha: tip, subject: 'fix: two', branch: 'brutus' } });
   });
 
+  it('builds a <version>+<sha8> from the clone off the branch channel too, never from the registry', async () => {
+    const c1 = commit('feat: one', '2026-10-21T10:00:00Z', { 'packages/cezar/package.json': pkg() });
+    const c2 = commit('fix: two', '2026-10-23T10:00:00Z');
+    runningBuild(c1, '2026-10-21T10:00:00.000Z');
+    await mergeWriteWorkspaceConfig((config) => {
+      config.updateChannel = 'stable';
+      config.updateChannelSource = 'user';
+    });
+    env.CEZ_UPDATE_BRANCH = `${REMOTE}#brutus`;
+    const target = `0.17.0+${c2.slice(0, 8)}`;
+    const { calls, deps } = stubs();
+    const restart = vi.fn();
+    const svc = service({ ...deps, restart });
+    expect(await svc.channel()).toBe('stable');
+    svc.apply(target);
+    await vi.waitFor(() => expect(restart).toHaveBeenCalled(), { timeout: 15_000 });
+    expect(calls).toEqual([`build@${c2.slice(0, 8)}`, 'pack', 'install']);
+    expect(readManifest(target, env)).toMatchObject({ source: 'branch', commit: { sha: c2 } });
+  });
+
+  it('refuses a <version>+<sha8> outright when no branch is configured', async () => {
+    const c1 = commit('feat: one', '2026-10-21T10:00:00Z', { 'packages/cezar/package.json': pkg() });
+    fakeInstall('0.16.0', { version: '0.16.0', source: 'registry', installedAt: '2026-09-01T00:00:00.000Z' });
+    activate('0.16.0', env);
+    const { calls, deps } = stubs();
+    const restart = vi.fn();
+    const svc = service({ ...deps, restart });
+    svc.apply(`0.17.0+${c1.slice(0, 8)}`);
+    await vi.waitFor(async () => expect((await svc.status()).job?.status).toBe('failed'), { timeout: 15_000 });
+    expect((await svc.status()).job?.error).toMatch(/no branch to follow/);
+    expect(calls).toEqual([]);
+    expect(activeId(env)).toBe('0.16.0');
+    expect(restart).not.toHaveBeenCalled();
+  });
+
   it('leaves current and previous untouched when the build fails', async () => {
     const { running, target } = await prepared();
     fakeInstall('0.16.0', { version: '0.16.0', source: 'registry', installedAt: '2026-09-01T00:00:00.000Z' });

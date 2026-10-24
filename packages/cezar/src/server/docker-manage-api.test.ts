@@ -119,12 +119,24 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     expect((await apiRequest(instance, `/api/v1/docker/containers/${C('a')}?force=1`, { method: 'DELETE' })).status).toBe(200);
     expect((await apiRequest(instance, `/api/v1/docker/images/${I('2b').slice(0, 12)}`, { method: 'DELETE' })).status).toBe(200);
     expect((await apiRequest(instance, '/api/v1/docker/volumes/gone_pg?force=1', { method: 'DELETE' })).status).toBe(200);
-    expect(ran()).toEqual([`rm -f ${C('a')}`, `image rm ${I('2b')}`, 'volume rm -f gone_pg']);
+    expect(ran()).toEqual([`rm -f ${C('a')}`, `image rm -f ${I('2b')}`, `rm -f ${C('b')}`, 'volume rm gone_pg']);
     expect((await apiRequest(instance, `/api/v1/docker/containers/${C('9')}`, { method: 'DELETE' })).status).toBe(404);
     expect((await apiRequest(instance, `/api/v1/docker/images/${'9'.repeat(12)}`, { method: 'DELETE' })).status).toBe(404);
     expect((await apiRequest(instance, '/api/v1/docker/volumes/nope', { method: 'DELETE' })).status).toBe(404);
     expect((await apiRequest(instance, '/api/v1/docker/volumes/--all', { method: 'DELETE' })).status).toBe(400);
     expect((await apiRequest(instance, `/api/v1/docker/containers/${C('a')}?force=yes`, { method: 'DELETE' })).status).toBe(400);
+  });
+
+  it('does what the confirm says for what is in use: an image always with -f, its running users stopped first, a volume’s users removed first', async () => {
+    const { instance } = await app();
+    // Not confirmed: Docker would refuse either, so nothing runs.
+    expect((await apiRequest(instance, `/api/v1/docker/images/${I('1a')}`, { method: 'DELETE' })).status).toBe(409);
+    expect((await apiRequest(instance, '/api/v1/docker/volumes/live_pg', { method: 'DELETE' })).status).toBe(409);
+    expect(ran()).toEqual([]);
+    // 1a carries two tags: without -f Docker would refuse it as "referenced in multiple repositories".
+    expect((await apiRequest(instance, `/api/v1/docker/images/${I('1a')}?force=1`, { method: 'DELETE' })).status).toBe(200);
+    expect((await apiRequest(instance, '/api/v1/docker/volumes/live_pg?force=1', { method: 'DELETE' })).status).toBe(200);
+    expect(ran()).toEqual([`stop ${C('a')} ${C('b')} ${C('c')}`, `image rm -f ${I('1a')}`, `rm -f ${C('c')}`, 'volume rm live_pg']);
   });
 
   it('removes an image by its exact id or a unique prefix, and refuses an ambiguous one', async () => {

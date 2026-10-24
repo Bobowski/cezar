@@ -7566,15 +7566,28 @@ export function createApp(deps: ServerDeps) {
       const refusal = dockerRemovalRefusal(c);
       if (refusal) return c.json({ error: refusal }, 409);
       const { id } = c.req.valid('param');
-      const list = await docker(['image', 'ls', '--no-trunc', '--format', 'json']);
-      if (!list.ok) return c.json({ error: list.reason }, 409);
-      const rows = parseImageList(list.stdout);
+      const listed = await listContainers(docker);
+      if (!listed.ok) return c.json({ error: listed.reason }, 409);
+      const images = await imagesOf(listed.containers);
+      if (!images.ok) return c.json({ error: images.reason }, 409);
+      const rows = images.images;
       // An exact id, else a prefix only one image has — never the first of several it matches.
       const matches = rows.some((entry) => entry.id === id) ? rows.filter((entry) => entry.id === id) : rows.filter((entry) => entry.id.startsWith(id));
       if (matches.length > 1) return c.json({ error: `image id ${id} is ambiguous: ${matches.length} images start with it` }, 409);
       const image = matches[0];
       if (!image) return c.json({ error: 'no such image' }, 404);
-      return dockerRemove(c, ['image', 'rm', ...(c.req.valid('query').force === '1' ? ['-f'] : []), image.id]);
+      // Always `-f` (spec §2, Docker Desktop style): every tag goes, and stopped users do not block.
+      // A running user does even then, so `?force=1` — the confirm said so — stops it first.
+      const running = image.usedBy.filter((user) => user.running);
+      if (running.length > 0) {
+        if (c.req.valid('query').force !== '1') return c.json({ error: `${running.map((user) => user.name).join(', ')} run from it; removing it stops them first (force)` }, 409);
+        const stopped = await docker(['stop', ...running.map((user) => user.id)], { timeoutMs: 120_000 });
+        if (!stopped.ok) {
+          dockerChanged();
+          return c.json({ error: stopped.reason }, 409);
+        }
+      }
+      return dockerRemove(c, ['image', 'rm', '-f', image.id]);
     })
     .get('/docker/volumes', async (c) => {
       c.header('Cache-Control', 'no-store');
@@ -7596,7 +7609,20 @@ export function createApp(deps: ServerDeps) {
       const list = await docker(['volume', 'ls', '--format', 'json']);
       if (!list.ok) return c.json({ error: list.reason }, 409);
       if (!parseVolumeList(list.stdout).some((entry) => entry.name === name)) return c.json({ error: 'no such volume' }, 404);
-      return dockerRemove(c, ['volume', 'rm', ...(c.req.valid('query').force === '1' ? ['-f'] : []), name]);
+      const listed = await listContainers(docker);
+      if (!listed.ok) return c.json({ error: listed.reason }, 409);
+      // Docker refuses a volume any container still references, stopped or running, `-f` or not —
+      // so `?force=1` (spec §2; the confirm names them) removes those containers first.
+      const users = listed.containers.filter((container) => container.mounts.includes(name));
+      if (users.length > 0) {
+        if (c.req.valid('query').force !== '1') return c.json({ error: `${users.map((user) => user.name).join(', ')} mount it; removing it removes them first (force)` }, 409);
+        const removed = await docker(['rm', '-f', ...users.map((user) => user.id)], { timeoutMs: 120_000 });
+        if (!removed.ok) {
+          dockerChanged();
+          return c.json({ error: removed.reason }, 409);
+        }
+      }
+      return dockerRemove(c, ['volume', 'rm', name]);
     })
     .get('/docker/disk', async (c) => {
       c.header('Cache-Control', 'no-store');

@@ -220,7 +220,7 @@ export type DockerVolumeParams = z.infer<typeof dockerVolumeParamsSchema>;
 export const dockerImageParamsSchema = z.object({ id: z.string().regex(/^[a-f0-9]{12,64}$/) });
 export type DockerImageParams = z.infer<typeof dockerImageParamsSchema>;
 
-/** `?force=1` removes what is in use or running. */
+/** `?force=1`: the confirm named what is in use — an image's running users are stopped first, a volume's users removed. */
 export const dockerForceQuerySchema = z.object({ force: z.enum(['0', '1']).optional() });
 export type DockerForceQuery = z.infer<typeof dockerForceQuerySchema>;
 

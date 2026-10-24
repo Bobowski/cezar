@@ -179,3 +179,8 @@ Nothing to configure. Reclaim is a click, never a timer. All new state is Docker
   Exec opens `/code?terminal=<session>` on a main-checkout terminal with the command typed in.
 - Machine glance asks `GET /docker/disk` once per visit, and only where the terminal policy lets
   the Docker view read.
+- **What "force" does is what Docker allows.** Image removal is always `image rm -f` (every tag
+  goes; stopped users do not block). Docker refuses that while a container *runs* from the image,
+  so `?force=1` stops those containers first. A volume is refused while any container references
+  it, stopped or running, `-f` or not, so `?force=1` removes those containers (`rm -f`) first.
+  Without `force` an in-use object is a 409 and nothing runs; the confirm states the step.

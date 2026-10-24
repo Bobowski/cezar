@@ -16,20 +16,22 @@ import { formatBytes } from './docker-format'
 export const isOrphanedData = (volume: DockerVolume): boolean => (volume.sizeBytes ?? 0) > 0 && volume.usedBy.length === 0
 
 /**
- * The confirm for one volume. The one typed confirm the cockpit keeps (spec §3.3): data in a
- * volume no container owns has no undo.
+ * The confirm for one volume. Docker refuses a volume any container still mounts, stopped or not,
+ * so with users the server removes those containers first (`force`) — and the confirm says so.
+ * The one typed confirm the cockpit keeps (spec §3.3): data in a volume no container owns has no undo.
  */
 export function volumeRemoval(volume: DockerVolume, remove: (force: boolean) => void): DockerConfirmRequest {
+  const users = volume.usedBy.length
   return {
     title: `Delete volume ${volume.name}?`,
-    body: volume.usedBy.length > 0
-      ? 'Containers mount it, so it is force-removed from under them. Its data is gone for good.'
+    body: users > 0
+      ? `Docker will not delete a volume a container still mounts, so ${users === 1 ? 'the container below is' : `the ${users} containers below are`} removed first (rm -f), then the volume. Its data is gone for good.`
       : `${formatBytes(volume.sizeBytes)} of data${volume.stack ? ` from stack ${volume.stack}` : ''}. It is gone for good.`,
-    warnings: volume.usedBy.filter((user) => user.running).map((user) => `${user.name} is running with it mounted`),
-    items: { label: 'Mounted by', names: volume.usedBy.map((user) => `${user.name}${user.running ? ' (running)' : ''}`) },
+    warnings: volume.usedBy.filter((user) => user.running).map((user) => `${user.name} is running with it mounted and is removed`),
+    items: { label: 'Removed with it', names: volume.usedBy.map((user) => `${user.name}${user.running ? ' (running)' : ''}`) },
     ...(isOrphanedData(volume) ? { typeToConfirm: volume.name } : {}),
-    confirmLabel: 'Delete volume',
-    onConfirm: () => remove(volume.usedBy.length > 0),
+    confirmLabel: users > 0 ? 'Remove containers and volume' : 'Delete volume',
+    onConfirm: () => remove(users > 0),
   }
 }
 

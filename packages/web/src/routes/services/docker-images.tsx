@@ -22,18 +22,25 @@ const FILTERS: Record<ImageFilter, (image: DockerImage) => boolean> = {
 
 const imageName = (image: DockerImage): string => image.tags[0] ?? `<none> ${image.id.slice(0, 12)}`
 
-/** The confirm for one image: in use means `-f`, and the containers it is used by are named. */
+/**
+ * The confirm for one image, saying what the server does: always `image rm -f` (every tag goes),
+ * and Docker refuses that while a container runs from it, so `force` stops those first.
+ */
 export function imageRemoval(image: DockerImage, remove: (force: boolean) => void): DockerConfirmRequest {
   const running = image.usedBy.filter((user) => user.running)
+  const tags = image.tags.length > 1 ? ` All ${image.tags.length} of its tags go with it.` : ''
+  const body = running.length > 0
+    ? `${running.length === 1 ? 'A container runs' : `${running.length} containers run`} from it: ${running.length === 1 ? 'it is' : 'they are'} stopped first, then the image is removed (rm -f). Its containers stay, stopped, but cannot be recreated from it.${tags}`
+    : image.usedBy.length > 0
+      ? `It is removed with -f: the stopped containers that use it stay, but cannot be recreated from it.${tags}`
+      : `${formatBytes(image.sizeBytes)} on disk. Nothing uses it.${tags}`
   return {
     title: `Remove ${imageName(image)}?`,
-    body: image.usedBy.length > 0
-      ? 'It is in use, so it is force-removed: the containers keep running, but cannot be recreated from it.'
-      : `${formatBytes(image.sizeBytes)} on disk. Nothing uses it.`,
-    warnings: running.map((user) => `${user.name} is running from it`),
+    body,
+    warnings: running.map((user) => `${user.name} is running from it and is stopped first`),
     items: { label: 'Used by', names: image.usedBy.map((user) => `${user.name}${user.running ? ' (running)' : ''}`) },
-    confirmLabel: 'Remove image',
-    onConfirm: () => remove(image.usedBy.length > 0),
+    confirmLabel: running.length > 0 ? 'Stop and remove image' : 'Remove image',
+    onConfirm: () => remove(running.length > 0),
   }
 }
 

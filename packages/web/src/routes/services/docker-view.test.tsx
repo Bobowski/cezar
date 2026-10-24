@@ -173,7 +173,7 @@ describe('Docker management (spec 2026-10-23-docker-management)', () => {
     await waitFor(() => expect(calls).toEqual([`DELETE /docker/containers/${B}?force=1`]))
   })
 
-  it('lists images with who uses them, filters dangling ones, and force-removes one in use', async () => {
+  it('lists images with who uses them, filters dangling ones, and stops a running user before removing its image', async () => {
     const calls = setup(DOCKER, '/docker?tab=images')
     await waitFor(() => expect(document.querySelectorAll('[data-slot="docker-image"]')).toHaveLength(2))
     fireEvent.click(screen.getByRole('radio', { name: 'Dangling' }))
@@ -182,8 +182,19 @@ describe('Docker management (spec 2026-10-23-docker-management)', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Remove postgres:16' }))
     const dialog = await confirmDialog()
     expect(dialog.querySelector('[data-slot="docker-confirm-items"]')?.textContent).toContain('shop-b-postgres-1 (running)')
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove image' }))
+    // Docker refuses `rm -f` of an image a running container uses: the confirm says it is stopped first.
+    expect(dialog.textContent).toContain('it is stopped first, then the image is removed')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop and remove image' }))
     await waitFor(() => expect(calls).toEqual([`DELETE /docker/images/${'1a'.repeat(32)}?force=1`]))
+  })
+
+  it('removes an unused image without stopping anything', async () => {
+    const calls = setup(DOCKER, '/docker?tab=images')
+    fireEvent.click(await screen.findByRole('button', { name: `Remove <none> ${'3c'.repeat(6)}` }))
+    const dialog = await confirmDialog()
+    expect(dialog.textContent).toContain('Nothing uses it.')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove image' }))
+    await waitFor(() => expect(calls).toEqual([`DELETE /docker/images/${'3c'.repeat(32)}`]))
   })
 
   it('asks to type the name only for a volume with data and no container', async () => {
@@ -191,6 +202,9 @@ describe('Docker management (spec 2026-10-23-docker-management)', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Delete shop-b_pg' }))
     let dialog = await confirmDialog()
     expect(within(dialog).queryByRole('textbox')).toBeNull()
+    // Docker refuses a mounted volume even with -f: the confirm says its container goes first.
+    expect(dialog.textContent).toContain('the container below is removed first (rm -f), then the volume')
+    expect(within(dialog).getByRole('button', { name: 'Remove containers and volume' })).toBeTruthy()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
 

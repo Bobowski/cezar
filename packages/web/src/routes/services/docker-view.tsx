@@ -71,7 +71,7 @@ export function stackDown(stack: DockerStack, down: (volumes: boolean) => void):
 export function stackRemove(stack: DockerStack, remove: () => void): DockerConfirmRequest {
   return {
     title: `Remove ${stack.containers.length === 1 ? 'its container' : `all ${stack.containers.length} containers`} of ${stackLabel(stack)}?`,
-    body: 'Each is force-removed. Volumes stay; delete them on the Volumes tab.',
+    body: `Each is force-removed${stackOwner(stack) ? ` (${stackOwner(stack)})` : ''}. Volumes stay; delete them on the Volumes tab.`,
     warnings: [...taskWarnings(stack), ...stack.containers.filter((c) => c.running).map((c) => `${c.name} is running`)],
     items: { label: 'Containers', names: stack.containers.map((c) => c.name) },
     confirmLabel: 'Remove',

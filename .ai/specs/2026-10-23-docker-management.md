@@ -1,6 +1,10 @@
 # Docker management — images, volumes, stack teardown, logs, exec and disk reclaim
 
-> Status: proposed (2026-10-23), not built. Branch: `brutus`.
+> Status: implemented (2026-10-24). Branch: `brutus`.
+> Implementation: `packages/contract/src/docker.ts`, `packages/cezar/src/services/docker-manage.ts`
+> (parsers, Reclaim planner), `services/docker-logs.ts` (the follower), the `dockerRoutes` family in
+> `server/server.ts`, `packages/web/src/routes/services/docker-*.tsx`. Where the build differs from the
+> text below, §9 says so.
 > Builds on: `2026-10-13-docker-view.md` (the view, its `docker` topic, the 3 s re-read while a
 > view holds it), `2026-10-11-project-services.md` (pinned `docker compose up` services),
 > `2026-10-10-worktree-lifecycle-events.md` (teardown scripts on worktree removal),
@@ -152,3 +156,26 @@ Nothing to configure. Reclaim is a click, never a timer. All new state is Docker
 - VPS: discard a task with its stack up by hand first → Reclaim lists that stack; Down of an
   ffp task stack with volumes removes `ffp-<port>_pg` et al.; Logs of the main Postgres
   streams; Exec opens `psql` in the terminal; Machine glance shows the Docker line.
+
+## 9. As built (2026-10-24)
+
+- **Logs content rides HTTP, not the bus.** `docker-logs:<id>` carries `{cursor}` only, and the
+  bytes come from one more route, `GET /docker/containers/:id/logs?cursor=`, the way terminal and
+  service output already do: topics are workspace-level, and a hosted cockpit (the VPS) opens no
+  socket at all, so it polls that same read. The follower lives while a subscriber holds the topic
+  (the last release kills it) or a poller read it within 15 s.
+- **Used-by for images** comes from `docker container inspect` (`.Image`, the digest), matched
+  against `image ls --no-trunc`, rather than `image inspect`: a tag can move while a container
+  still runs the old image.
+- **"A stack compose does not know"** is one whose working dir is gone, or the standalone group:
+  those get Remove (`rm -f` of each container) instead of Down. Down runs in the stack's dir when
+  it exists (compose reads its file), else in the temp dir so no stray `compose.yml` is picked up.
+- **A dir is "gone" only when this host can judge it** (`dirState`: a WSL path seen from Windows is
+  `unknown`), and Reclaim lists `gone` stacks only. Step 4 lists stopped *standalone* containers of
+  those stacks' images; a stopped container of a stack whose dir exists stays that stack's.
+- **Reclaim re-plans on apply** and runs only the steps the fresh plan still holds; a step that
+  dropped out is logged as skipped.
+- The page is `/p/:projectId/docker` (the Docker tab moved there), sub-view in `?tab=`.
+  Exec opens `/code?terminal=<session>` on a main-checkout terminal with the command typed in.
+- Machine glance asks `GET /docker/disk` once per visit, and only where the terminal policy lets
+  the Docker view read.

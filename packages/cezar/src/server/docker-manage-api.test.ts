@@ -7,6 +7,7 @@ import {
   dockerStateSchema, dockerVolumesSchema,
 } from '@open-mercato/cezar-contract';
 import { RunStore } from '../runs/store.ts';
+import { SecretStore } from '../workspace/secrets.ts';
 import type { DockerExec } from '../services/docker.ts';
 import type { DockerSpawn } from '../services/docker-logs.ts';
 import type { RunManager } from '../workflows/run.ts';
@@ -24,6 +25,8 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
   let calls: Array<{ args: string; cwd?: string }>;
   let liveRun: string;
   let extraImages: string;
+  let logText: string;
+  let secrets: SecretStore;
   beforeEach(() => {
     root = realpathSync(mkdtempSync(join(tmpdir(), 'cez-docker-manage-')));
     vi.stubEnv('CEZ_HOME', join(root, 'home'));
@@ -36,6 +39,8 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     mkdirSync(join(root, '.ai/cezar/worktrees', liveRun), { recursive: true });
     calls = [];
     extraImages = '';
+    logText = `boot\nAPI_TOKEN=${'x'.repeat(4)}ghp_abcdefghijklmnopqrstuvwxyz123456\n`;
+    secrets = new SecretStore(process.env, { keychain: async () => null });
   });
   afterEach(() => {
     store.flush();
@@ -68,14 +73,14 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
   const spawned: string[][] = [];
   const spawn: DockerSpawn = (args, on) => {
     spawned.push(args);
-    queueMicrotask(() => on.data('out', `boot\nAPI_TOKEN=${'x'.repeat(4)}ghp_abcdefghijklmnopqrstuvwxyz123456\n`));
+    queueMicrotask(() => on.data('out', logText));
     return { kill: () => undefined };
   };
   const app = async () => {
     const project = await registerProject(root);
     const instance = createApp({
       repoRoot: root, store, manager: {} as RunManager, version: 'test', bootProjectId: project.id,
-      dockerExec: exec, dockerSpawn: spawn, dockerStatfs: async () => ({ bsize: 4096, blocks: 1_000_000, bavail: 100_000 }),
+      secrets, dockerExec: exec, dockerSpawn: spawn, dockerStatfs: async () => ({ bsize: 4096, blocks: 1_000_000, bavail: 100_000 }),
     });
     return { id: project.id, instance };
   };
@@ -180,6 +185,17 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     const next = dockerLogsSchema.parse(await (await apiRequest(instance, `/api/v1/docker/containers/${C('a')}/logs?cursor=${first.cursor}`)).json());
     expect(next.data).toBe('boot\nAPI_TOKEN=xxxx[REDACTED]\n');
     expect((await apiRequest(instance, `/api/v1/docker/containers/${C('9')}/logs`)).status).toBe(404);
+  });
+
+  it('redacts from logs what a run registered and what is stored for the project, as the run log does', async () => {
+    await secrets.set({ kind: 'workspace' }, 'SHOP_DB_PASSWORD', 'stored-value-0123456789', ['checks']);
+    store.registerRunSecrets(liveRun, ['run-registered-0123456789']);
+    logText = 'pw=stored-value-0123456789 tok=run-registered-0123456789\n';
+    const { instance } = await app();
+    const first = dockerLogsSchema.parse(await (await apiRequest(instance, `/api/v1/docker/containers/${C('c')}/logs`)).json());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const next = dockerLogsSchema.parse(await (await apiRequest(instance, `/api/v1/docker/containers/${C('c')}/logs?cursor=${first.cursor}`)).json());
+    expect(next.data).toBe('pw=[REDACTED] tok=[REDACTED]\n');
   });
 
   it('refuses every removal on a hosted cockpit without its own sign-in, and reads still work', async () => {

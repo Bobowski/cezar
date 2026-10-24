@@ -33,6 +33,7 @@ import {
   planReclaim, readDisk, stepKey, volumesByStack, withImageIds, worktreeRunOf, type StatFs,
 } from '../services/docker-manage.ts';
 import { DockerLogFollowers, dockerSpawn, type DockerSpawn } from '../services/docker-logs.ts';
+import { MIN_SECRET_LEN } from '../core/secret-redaction.ts';
 import { findIconCandidates, readProjectIcon, removeProjectIcons, saveProjectIcon } from '../workspace/project-icons.ts';
 import { searchCheckout } from './code-search.ts';
 import { refreshRepoSync, watchRepoSync } from '../git-sync.ts';
@@ -7459,10 +7460,31 @@ export function createApp(deps: ServerDeps) {
   // it. The topic carries a cursor only — log content is read over authenticated HTTP.
   const dockerLogsTopic = (id: string) => `docker-logs:${id}`;
   const dockerLogTopics = new Map<string, { remove: () => void; publish: Set<(payload: { cursor: number }) => void> }>();
+  // Spec §5: what the run log redacts (host env, every live run's registered values) plus the
+  // stored secrets of each project that read logs — refreshed by a read, at most every 10 s.
+  const dockerLogStored = new Map<string, { values: readonly string[]; until: number }>();
+  const refreshDockerLogSecrets = async (project: ProjectContext): Promise<void> => {
+    if ((dockerLogStored.get(project.id)?.until ?? 0) > Date.now()) return;
+    const scope = project.id === 'default' ? undefined : { projectId: project.id, root: project.root };
+    const reads = await Promise.all([
+      secretStore.read({ kind: 'workspace' }),
+      ...(scope ? [secretStore.read({ kind: 'project', ...scope })] : []),
+    ]).catch(() => []);
+    const values = reads.flatMap((read) => Object.values(read.values).map((entry) => entry.value)).filter((value) => value.length >= MIN_SECRET_LEN);
+    dockerLogStored.set(project.id, { values, until: Date.now() + 10_000 });
+  };
+  const dockerLogSecrets = (): readonly string[] => {
+    const values = new Set<string>();
+    const stores = [bootContext.store, ...contexts.ids().map((id) => contexts.peek(id)?.store)];
+    for (const store of stores) for (const value of store?.redactionSecrets() ?? []) values.add(value);
+    for (const stored of dockerLogStored.values()) for (const value of stored.values) values.add(value);
+    return [...values].sort((a, b) => b.length - a.length);
+  };
   const dockerLogs = new DockerLogFollowers(
     deps.dockerSpawn ?? dockerSpawn,
     (id, cursor) => { for (const publish of dockerLogTopics.get(id)?.publish ?? []) publish({ cursor }); },
     (id) => { dockerLogTopics.get(id)?.remove(); dockerLogTopics.delete(id); },
+    { secrets: dockerLogSecrets },
   );
   deps.onDispose?.(() => dockerLogs.close());
   const registerDockerLogsTopic = (id: string): void => {
@@ -7551,6 +7573,8 @@ export function createApp(deps: ServerDeps) {
       if (!known.ok) return c.json({ error: known.reason }, 409);
       if (!known.listed) return c.json({ error: 'no such container' }, 404);
       registerDockerLogsTopic(id);
+      // Before the read can start a follower: its first chunk is redacted with these.
+      await refreshDockerLogSecrets(c.get('project'));
       const logs: DockerLogs = { ...dockerLogs.read(id, c.req.valid('query').cursor ?? 0), topic: dockerLogsTopic(id) };
       c.header('Cache-Control', 'no-store');
       return c.json(logs, 200);

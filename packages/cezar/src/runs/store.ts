@@ -1718,6 +1718,11 @@ export class RunStore extends EventEmitter {
     this.streamRedaction.clear(runId);
   }
 
+  /** Every value this store's run logs redact: the host's plus each live run's registered ones. */
+  redactionSecrets(): readonly string[] {
+    return [...this.hostSecrets(), ...[...this.runSecrets.values()].flat()];
+  }
+
   private secretsForRun(runId?: string): readonly string[] {
     return [...this.hostSecrets(), ...(runId ? this.runSecrets.get(runId) ?? [] : [])]
       .sort((a, b) => b.length - a.length);

@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { toast } from '@/components/ui/toaster'
 import { cn } from '@/lib/utils'
 
-import { gatewayPortLabel, loopbackOrigin, useGatewayMapping, type GatewayAnswer } from './gateway'
+import { loopbackOrigin } from './gateway'
 import { scopeKey, terminalUrls, type TerminalScope } from './scope'
 import { tunnelCommand, tunnelPorts } from './tunnel'
 
@@ -16,8 +16,9 @@ import { tunnelCommand, tunnelPorts } from './tunnel'
  * lifted for the Code page by `2026-10-24-code-page-terminal.md` §3.1).
  *
  * Nothing here does anything on its own: an address opens only when the user clicks. On a hosted
- * cockpit (§3.4) each running loopback address shows the gateway port it is served on, and where
- * the gateway refuses it the strip offers the ssh tunnel line instead of a dead link.
+ * cockpit (§3.4) a loopback address says it goes through the gateway, and the ssh tunnel line sits
+ * beside it. The gateway's port is opened by the click — the Browser tab asks for it — never by
+ * the strip showing, so a list of addresses holds no listener and evicts no one's Preview.
  */
 
 /** How often the strip re-probes. Each refresh is one TCP connect per address on the server, and
@@ -44,7 +45,6 @@ export function DetectedUrlsStrip({
   // Hosted: the addresses are the server's loopback, so they go through the gateway (§3.4).
   // Only where the strip opens inside the cockpit — the task drawer keeps its behaviour.
   const hosted = onOpen !== undefined && health.data?.capabilities?.localHandoff === false
-  const gateway = useGatewayMapping(urls, hosted)
 
   const key = scopeKey(scope)
   useEffect(() => {
@@ -79,9 +79,6 @@ export function DetectedUrlsStrip({
       <span className="text-xs text-muted-foreground">Detected addresses</span>
       {urls.map((entry) => {
         const origin = loopbackOrigin(entry.url)
-        const answer: GatewayAnswer | undefined = hosted && origin ? gateway.get(origin) : undefined
-        // Refused by the gateway: a dead link is worse than the line that does work (§3.4).
-        const refused = answer?.status === 'refused'
         return (
           <span
             key={entry.url}
@@ -103,15 +100,15 @@ export function DetectedUrlsStrip({
               )}
             />
             <span className="font-mono">{entry.url}</span>
-            {answer?.status === 'mapped' ? (
-              <span data-slot="gateway-port" className="font-mono text-muted-foreground" title={answer.origin}>
-                → {gatewayPortLabel(answer.origin)}
+            {hosted && origin ? (
+              <span data-slot="gateway-port" className="font-mono text-muted-foreground" title="Opened through the preview gateway, on its own port">
+                → gateway
               </span>
             ) : null}
-            <span className="text-soft-foreground" title={refused ? answer.reason : undefined}>
+            <span className="text-soft-foreground">
               {entry.running === true ? 'running' : entry.running === false ? 'not responding' : '…'}
             </span>
-            {refused ? null : onOpen ? (
+            {onOpen ? (
               <Button
                 type="button"
                 variant="ghost"
@@ -150,9 +147,9 @@ export function DetectedUrlsStrip({
                 <span>Open Preview</span>
               </Button>
             ) : null}
-            {/* Also beside a mapped address: an app that calls another loopback port by absolute
-                address works only through the tunnel (preview-gateway §7). */}
-            {tunnel && origin ? <CopyTunnel command={tunnel} prominent={refused} /> : null}
+            {/* An app that calls another loopback port by absolute address works only through the
+                tunnel (preview-gateway §7). */}
+            {tunnel && origin ? <CopyTunnel command={tunnel} /> : null}
           </span>
         )
       })}
@@ -165,7 +162,7 @@ export function DetectedUrlsStrip({
   )
 }
 
-function CopyTunnel({ command, prominent }: { command: string; prominent: boolean }) {
+function CopyTunnel({ command }: { command: string }) {
   return (
     <Button
       type="button"
@@ -179,10 +176,10 @@ function CopyTunnel({ command, prominent }: { command: string; prominent: boolea
           .then(() => toast('Tunnel command copied — run it on your own machine.'))
           .catch(() => toast(command, { durationMs: 15_000 }))
       }}
-      className={cn('h-auto px-1.5 py-0.5 text-[length:inherit] hover:bg-background', !prominent && 'text-muted-foreground')}
+      className="h-auto px-1.5 py-0.5 text-[length:inherit] text-muted-foreground hover:bg-background"
     >
       <CopyIcon aria-hidden="true" className="size-3" />
-      <span>{prominent ? 'Copy tunnel command' : 'Tunnel'}</span>
+      <span>Tunnel</span>
     </Button>
   )
 }

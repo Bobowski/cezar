@@ -73,19 +73,22 @@ describe('DetectedUrlsStrip (spec 2026-10-24-code-page-terminal §3.1)', () => {
     expect(screen.queryByRole('button', { name: 'Copy tunnel command' })).toBeNull()
   })
 
-  it('hosted: shows the gateway port a running address is served on (§3.4)', async () => {
+  it('hosted: says the address goes through the gateway, and opens no gateway port to say so (§3.4)', async () => {
     localHandoff = false
-    render(<DetectedUrlsStrip scope={{ kind: 'project' }} onOpen={vi.fn()} />)
+    const onOpen = vi.fn()
+    render(<DetectedUrlsStrip scope={{ kind: 'project' }} onOpen={onOpen} />)
 
-    expect(await screen.findByText('→ :8503')).toBeTruthy()
-    expect(openPreviewGateway).toHaveBeenCalledTimes(1)
-    expect(openPreviewGateway.mock.calls[0]?.[0]).toEqual({ target: 'http://localhost:3570', parentOrigin: window.location.origin })
-    expect(screen.getByRole('button', { name: 'Open http://localhost:3570 in Browser' })).toBeTruthy()
+    expect(await screen.findByText('→ gateway')).toBeTruthy()
+    // Rendering is not a click: no listener is opened, no ticket minted, no Preview evicted.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(openPreviewGateway).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Open http://localhost:3570 in Browser' }))
+    // The Browser tab asks the gateway for its port and ticket itself, on this click.
+    expect(onOpen).toHaveBeenCalledWith('http://localhost:3570')
   })
 
-  it('hosted with no free gateway port: the tunnel line instead of a dead link', async () => {
+  it('hosted: the tunnel line beside the address, for what the gateway cannot carry', async () => {
     localHandoff = false
-    openPreviewGateway.mockRejectedValueOnce(new Error('every preview port is in use — close a preview and retry'))
     const writeText = vi.fn(async () => {})
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
     // A cockpit reached at a real hostname, the only place a tunnel goes to.
@@ -93,12 +96,9 @@ describe('DetectedUrlsStrip (spec 2026-10-24-code-page-terminal §3.1)', () => {
     Object.defineProperty(window, 'location', { value: { ...location, hostname: 'agents.example.dev', origin: 'https://agents.example.dev' }, configurable: true })
     try {
       render(<DetectedUrlsStrip scope={{ kind: 'project' }} onOpen={vi.fn()} />)
-      // Once the gateway has refused: the line leads, and the dead link is gone.
-      await screen.findByText('Copy tunnel command')
-      const copy = screen.getByRole('button', { name: 'Copy tunnel command' })
-      expect(screen.queryByRole('button', { name: 'Open http://localhost:3570 in Browser' })).toBeNull()
-      fireEvent.click(copy)
+      fireEvent.click(await screen.findByRole('button', { name: 'Copy tunnel command' }))
       await waitFor(() => expect(writeText).toHaveBeenCalledWith('ssh -N -L 3570:localhost:3570 kinel@agents.example.dev'))
+      expect(openPreviewGateway).not.toHaveBeenCalled()
     } finally {
       Object.defineProperty(window, 'location', { value: location, configurable: true })
     }

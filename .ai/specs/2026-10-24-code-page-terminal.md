@@ -140,11 +140,12 @@ gateway that `CEZ_PREVIEW_PORTS` already configures for the VPS image.
   from the shell's own directory: the session's `workdir` (relative to where it opened, read from
   Linux's `/proc/<pid>/cwd` with the busy check). A shell that left the checkout gets no paths; a
   host with no `/proc` (macOS, Windows) cannot say, and the checkout root stands in.
-- **The gateway mapping asks once per RUNNING loopback origin**, which opens (or reuses) that
-  app's gateway listener before a click — the only way to show `→ :85xx`. `Open in Browser` opens
-  the loopback address in a Browser tab, which asks for its own fresh ticket as the Preview column
-  does. Beside a mapped address the strip still offers the tunnel line (preview-gateway §7), and
-  in place of the link where the gateway refused.
+- **The strip never opens a gateway port.** Opening one to learn its number would hold a listener
+  for every running address before any click, and could evict a user's Preview from a full pool.
+  A hosted strip says `→ gateway` (known without asking) and `Open in Browser` opens the loopback
+  address in a Browser tab, which asks the gateway for its port and fresh ticket on that click, as
+  the Preview column does — and shows the gateway's refusal itself. The tunnel line sits beside
+  every loopback address (preview-gateway §7).
 - A "gateway address" in the output is this cockpit's own hostname on another port.
 - The task drawer keeps its strips as they were (user's browser + Preview); links, completion and
   the gateway mapping are the Code terminal's.

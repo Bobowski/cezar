@@ -688,4 +688,33 @@ describe('Browser tabs as pages (spec 2026-10-24-code-page-browser-tabs)', () =>
     expect(document.querySelector('[data-slot="browser-view"]')).toBe(shown)
     expect(document.querySelector('[data-slot="code-browser"] iframe')?.getAttribute('src')).toBe('http://localhost:3000/admin')
   })
+
+  it('asks a dead saved address again every 3 s, and reloads the page in place once it answers', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const dead = ['http://localhost:3000/admin']
+      const { sent } = setup({ at: '/code', uiState: { codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }] }] }, dead })
+      const asked = () => sent.filter((request) => request.path === 'http://localhost:3000/admin').length
+      const frame = () => document.querySelector('[data-slot="code-browser"] iframe')
+      await waitFor(() => expect(document.querySelector('[data-slot="code-browser-dead"]')).not.toBeNull())
+      const shown = document.querySelector('[data-slot="browser-view"]')
+      const before = frame()
+      const first = asked()
+      // Still down: asked again on its own, and still says so.
+      await act(() => vi.advanceTimersByTimeAsync(3_000))
+      await waitFor(() => expect(asked()).toBe(first + 1))
+      expect(document.querySelector('[data-slot="code-browser-dead"]')).not.toBeNull()
+      expect(frame()).toBe(before)
+      // The app is up: the next ask finds it, and the page reloads in the same view.
+      dead.length = 0
+      await act(() => vi.advanceTimersByTimeAsync(3_000))
+      await waitFor(() => expect(document.querySelector('[data-slot="code-browser-dead"]')).toBeNull())
+      expect(asked()).toBe(first + 2)
+      expect(document.querySelector('[data-slot="browser-view"]')).toBe(shown)
+      await waitFor(() => expect(frame()).not.toBe(before))
+      expect(frame()?.getAttribute('src')).toBe('http://localhost:3000/admin')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

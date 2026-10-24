@@ -119,10 +119,13 @@ export function hookRoutes(deps: {
   find: (hookId: string) => Promise<HookProject | undefined>;
   wake: (project: HookProject) => void | Promise<void>;
   throttle?: WakeThrottle;
+  /** The automations capability: off (`CEZ_AUTOMATIONS=0`), no hook exists to call. */
+  enabled?: () => boolean;
 }) {
   const throttle = deps.throttle ?? new WakeThrottle();
   return new Hono().post('/hooks/:sender/:hookId', paramZodValidator(hookParamsSchema), async (c) => {
     const { sender, hookId } = c.req.valid('param');
+    if (deps.enabled && !deps.enabled()) return c.json({ error: 'not found' }, 404);
     // The id is the first factor: anything that does not name a stored hook is a 404.
     if (sender !== 'github' || !isWebhookId(hookId)) return c.json({ error: 'not found' }, 404);
     const project = await deps.find(hookId);

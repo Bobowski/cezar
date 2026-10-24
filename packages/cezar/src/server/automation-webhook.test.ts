@@ -99,6 +99,19 @@ describe('POST /hooks/:sender/:hookId (spec 2026-10-23-github-events §4)', () =
     expect(wake).not.toHaveBeenCalled();
   });
 
+  it('answers 404 and writes nothing under CEZ_AUTOMATIONS=0', async () => {
+    const identity = newWebhookIdentity();
+    writeWebhook(dataDir, { version: 1, ...identity, githubHookId: 7 });
+    const wake = vi.fn();
+    const app = new Hono().route('/api/v1', hookRoutes({ find: async () => ({ id: 'p', dataDir }), wake, enabled: () => false }));
+    const response = await app.request(`/api/v1/hooks/github/${identity.hookId}`, {
+      method: 'POST', headers: { 'x-github-event': 'issue_comment', 'x-hub-signature-256': sign(identity.secret, '{}') }, body: '{}',
+    });
+    expect(response.status).toBe(404);
+    expect(wake).not.toHaveBeenCalled();
+    expect(readWebhook(dataDir)).not.toHaveProperty('lastDeliveryAt');
+  });
+
   it('records a ping as proof of the route without waking a poll', async () => {
     const { wake, deliver } = setup();
     expect(await (await deliver('{"zen":"x"}', { 'x-github-event': 'ping' })).json()).toEqual({ accepted: true, woke: false });

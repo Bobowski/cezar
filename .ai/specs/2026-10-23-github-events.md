@@ -67,6 +67,10 @@ can fork from the failing head as the e2e automations already do.
   cycle immediately instead of at `nextCheckAt`. Rate-limited to one wake per 5 s per project;
   extra deliveries collapse. Never a launch from the payload.
 - The Automations page shows the hook's last delivery time and the result of a **Ping**.
+- Under `CEZ_AUTOMATIONS=0` every id answers `404` and nothing is recorded: there is nothing
+  for a delivery to wake.
+- One project's webhook file is mutated by one request at a time (an in-process lock), each
+  re-reading it inside: a delivery never writes back a hook removed or re-registered meanwhile.
 
 Without a webhook, the poll interval is unchanged. With one, the interval can stay long (the
 redesign's default) and latency drops to about a minute — the 60-second minimum between two

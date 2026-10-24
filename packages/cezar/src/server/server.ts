@@ -9015,7 +9015,7 @@ export function createApp(deps: ServerDeps) {
     .route('/', workspaceSecretsRoutes)
     .route('/', fsBrowseRoutes)
     .route('/', automationChecksRoutes)
-    .route('/', hookRoutes({ find: (hookId) => hookIndex.find(hookId), wake: wakeHookProject }))
+    .route('/', hookRoutes({ find: (hookId) => hookIndex.find(hookId), wake: wakeHookProject, enabled: () => capabilities().automations }))
     .route('/', runsIndexRoutes)
     .route('/', dashboardRoutes(dashboard, () => ({ tokens: capabilities().tokenUsageMetrics, cost: capabilities().costMetrics }), () => capabilities().automations))
     .route('/', workspaceEventsRoutes)

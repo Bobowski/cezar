@@ -179,7 +179,8 @@ import type {
   TrackerItemsResponse,
   TrackerKind, TrackerCredentials, TrackerConnectionResponse, TrackerConnectionSourcesResponse,
   SecretsList, SecretValueInput, EnvFileContent, EnvFileRender, EnvFilesList, EnvFilesRerender, RerenderEnvFilesInput, RenderEnvFileInput, SetEnvFileInput,
-  DockerState, GithubReposResponse, ServicePatch, ServicePin, ServicePinInput, ServicesState,
+  DockerState, DockerDisk, DockerImages, DockerLogs, DockerReclaimPlan, DockerReclaimResult, DockerReclaimStep, DockerVolumes,
+  GithubReposResponse, ServicePatch, ServicePin, ServicePinInput, ServicesState,
   E2eStatus, E2eSetupInput, E2eSetupResponse,
 } from '@open-mercato/cezar-api-client'
 import { parseProviderStatusResponse } from '@/lib/provider-status'
@@ -1034,6 +1035,41 @@ export async function dockerStackAction(name: string, action: 'start' | 'stop'):
 }
 export async function dockerContainerAction(id: string, action: 'start' | 'stop'): Promise<void> {
   await expectNoContent(await dockerApi().containers[':id'][action].$post({ param: { ...scopeParam(), id } }))
+}
+
+// ---- Docker management (spec 2026-10-23-docker-management) ----
+
+const forceQuery = (force: boolean) => ({ query: force ? { force: '1' as const } : {} })
+export async function getDockerImages(opts?: ReadOptions): Promise<DockerImages> {
+  return unwrap(await dockerApi().images.$get({ param: scopeParam() }, init(opts)), '/docker/images')
+}
+export async function getDockerVolumes(opts?: ReadOptions): Promise<DockerVolumes> {
+  return unwrap(await dockerApi().volumes.$get({ param: scopeParam() }, init(opts)), '/docker/volumes')
+}
+/** `projectId` names a scope for a reader outside the routed one (Settings' Machine card). */
+export async function getDockerDisk(opts?: ReadOptions, projectId: string = queryScope()): Promise<DockerDisk> {
+  return unwrap(await dockerApi().disk.$get({ param: { projectId } }, init(opts)), '/docker/disk')
+}
+export async function removeDockerImage(id: string, force: boolean): Promise<void> {
+  await unwrap(await dockerApi().images[':id'].$delete({ param: { ...scopeParam(), id }, ...forceQuery(force) }), '/docker/images')
+}
+export async function removeDockerVolume(name: string, force: boolean): Promise<void> {
+  await unwrap(await dockerApi().volumes[':name'].$delete({ param: { ...scopeParam(), name }, ...forceQuery(force) }), '/docker/volumes')
+}
+export async function removeDockerContainer(id: string, force: boolean): Promise<void> {
+  await unwrap(await dockerApi().containers[':id'].$delete({ param: { ...scopeParam(), id }, ...forceQuery(force) }), '/docker/containers')
+}
+export async function dockerStackDown(name: string, volumes: boolean): Promise<void> {
+  await unwrap(await dockerApi().stacks[':name'].down.$post({ param: { ...scopeParam(), name }, json: { volumes } }), '/docker/stacks/down')
+}
+export async function readDockerLogs(id: string, cursor: number): Promise<DockerLogs> {
+  return unwrap(await dockerApi().containers[':id'].logs.$get({ param: { ...scopeParam(), id }, query: { cursor: String(cursor) } }), '/docker/containers/logs')
+}
+export async function planDockerReclaim(): Promise<DockerReclaimPlan> {
+  return unwrap(await dockerApi().reclaim.plan.$post({ param: scopeParam() }), '/docker/reclaim/plan')
+}
+export async function applyDockerReclaim(steps: DockerReclaimStep[]): Promise<DockerReclaimResult> {
+  return unwrap(await dockerApi().reclaim.$post({ param: scopeParam(), json: { steps } }), '/docker/reclaim')
 }
 
 // ---- project services (spec 2026-10-11-project-services) ----

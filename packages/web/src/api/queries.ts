@@ -170,6 +170,12 @@ export const queryKeys = {
   },
   docker: {
     state: () => ['docker', queryScope()] as const,
+    // Under `state()`'s prefix, so the `docker` topic's re-read refreshes every sub-view.
+    images: () => ['docker', queryScope(), 'images'] as const,
+    volumes: () => ['docker', queryScope(), 'volumes'] as const,
+    diskFor: (projectId: string) => ['docker', projectId, 'disk'] as const,
+    // Outside that prefix: the dialog's list must not change under a user choosing from it.
+    reclaimPlan: () => ['docker-reclaim-plan', queryScope()] as const,
   },
   envFiles: {
     allFor: (projectId: string) => ['env-files', projectId] as const,

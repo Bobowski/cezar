@@ -178,18 +178,35 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
   // this page has not read. A failed read leaves the pages to this browser alone.
   const uiState = useUiState()
   const [pagesRestored, setPagesRestored] = useState(false)
+  // Pages closed before that answer: the server's list still names them, so they are struck from
+  // it rather than reopened, and the first write then drops them there too.
+  const closedEarly = useRef(new Set<string>())
+  const pageIds = browserTabs(layout).map((tab) => tab.id).join(' ')
+  const shownPages = useRef(pageIds)
+  useEffect(() => {
+    if (!pagesRestored) {
+      const now = new Set(pageIds.split(' '))
+      for (const id of shownPages.current.split(' ')) if (id !== '' && !now.has(id)) closedEarly.current.add(id)
+    }
+    shownPages.current = pageIds
+  }, [pageIds, pagesRestored])
   useEffect(() => {
     if (pagesRestored || !uiState.isSuccess) return
-    setLayout((state) => restorePages(state, savedPagesFor(uiState.data.codePages, key)))
+    const closed = closedEarly.current
+    setLayout((state) => restorePages(state, savedPagesFor(uiState.data.codePages, key)?.filter((page) => !closed.has(page.id))))
     setPagesRestored(true)
   }, [key, pagesRestored, uiState.data, uiState.isSuccess])
   const pagesJson = JSON.stringify(pagesOf(layout))
   // This workbench's project (it is keyed by scope): an answer that arrives after the user moved
   // to another project lands in the cache of the one it was written for.
   const [uiStateKey] = useState(() => queryKeys.uiState)
+  // The write the debounce is holding, sent at once when the page goes (unmount, another tree or
+  // project, a reload) instead of being dropped with its timer.
+  const pendingWrite = useRef<(() => void) | null>(null)
   useEffect(() => {
     if (!pagesRestored) return
-    const timer = setTimeout(() => {
+    const write = () => {
+      pendingWrite.current = null
       const cached = queryClient.getQueryData<UiState>(uiStateKey)
       const saved = savedPagesFor(cached?.codePages, key)
       // A checkout never saved and still without pages is not worth a slot on the server.
@@ -202,9 +219,20 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
         // Only a page the server's answer names is held; until then its list cannot close it.
         setLayout((state) => markSaved(state, savedPagesFor(merged.codePages, key) ?? []))
       }, () => {})
-    }, 400)
+    }
+    pendingWrite.current = write
+    const timer = setTimeout(write, 400)
+    // A newer layout replaces the held write (the next run holds its own); unmounting flushes it below.
     return () => clearTimeout(timer)
   }, [key, pagesJson, pagesRestored, queryClient, uiStateKey])
+  useEffect(() => {
+    const flush = () => pendingWrite.current?.()
+    window.addEventListener('pagehide', flush)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      flush()
+    }
+  }, [])
 
   // The focused file's path IS the page's address, replaced rather than pushed (as `/git/files`).
   useEffect(() => {

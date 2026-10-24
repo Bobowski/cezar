@@ -540,6 +540,36 @@ describe('Browser tabs as pages (spec 2026-10-24-code-page-browser-tabs)', () =>
     }
   })
 
+  it('sends the write it is holding when the page goes, rather than dropping it with its timer', async () => {
+    const { sent } = setup({ at: '/code', uiState: SAVED })
+    await waitFor(() => expect(tabsOf(1)).toEqual(['localhost:3000']))
+    fireEvent.click(screen.getByRole('button', { name: 'Close localhost:3000' }))
+    cleanup()
+    await waitFor(() => expect(sent.find((request) => request.method === 'PUT' && request.path === '/api/v1/ui-state')?.body).toEqual({
+      codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }] }],
+    }))
+  })
+
+  it('keeps a page closed before the server\'s list arrived closed, and writes the close back', async () => {
+    window.localStorage.setItem(`cez:code:layout:${queryScope()}:main`, JSON.stringify({
+      groups: [{ tabs: [{ path: 'browser:b1', preview: false }, { path: 'browser:b2', preview: false }], active: 'browser:b2' }],
+      focused: 0,
+      browsers: { b1: { url: 'http://localhost:3000/admin' }, b2: { url: 'http://localhost:3000/' } },
+      onServer: ['b1', 'b2'],
+    }))
+    let read = () => {}
+    const { sent } = setup({ at: '/code', uiState: SAVED, uiStateRead: new Promise<void>((resolve) => { read = resolve }) })
+    await waitFor(() => expect(tabsOf(0)).toEqual(['localhost:3000/admin', 'localhost:3000']))
+    fireEvent.click(screen.getByRole('button', { name: 'Close localhost:3000' }))
+    await waitFor(() => expect(tabsOf(0)).toEqual(['localhost:3000/admin']))
+    await act(async () => { read() })
+    await waitFor(() => expect(sent.find((request) => request.method === 'PUT' && request.path === '/api/v1/ui-state')?.body).toEqual({
+      codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }] }],
+    }))
+    expect(groups()).toHaveLength(1)
+    expect(tabsOf(0)).toEqual(['localhost:3000/admin'])
+  })
+
   it('merges the server\'s pages: one opened here and not saved yet stays and is written, one closed elsewhere closes', async () => {
     window.localStorage.setItem(`cez:code:layout:${queryScope()}:main`, JSON.stringify({
       groups: [{ tabs: [{ path: 'browser:b1', preview: false }, { path: 'browser:b2', preview: false }, { path: 'browser:b5', preview: false }], active: 'browser:b1' }],

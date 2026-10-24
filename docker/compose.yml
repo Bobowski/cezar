@@ -12,6 +12,13 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      # The commit the image is built from, for the cockpit's updater (docs/docker.md § Updating).
+      # Set them from the checkout when building; left empty, the image is of unknown age.
+      args:
+        CEZ_SOURCE_COMMIT: ${CEZ_SOURCE_COMMIT:-}
+        CEZ_SOURCE_BRANCH: ${CEZ_SOURCE_BRANCH:-}
+        CEZ_SOURCE_REMOTE: ${CEZ_SOURCE_REMOTE:-}
+        CEZ_SOURCE_COMMITTED_AT: ${CEZ_SOURCE_COMMITTED_AT:-}
     image: cezar:local
     init: true
     # For the Docker daemon inside the container, which runs the PROJECT's own services

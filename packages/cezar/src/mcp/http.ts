@@ -1,7 +1,9 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { Hono, type Context } from 'hono';
-import { selectTools, type Catalog } from './catalog.ts';
+import { apiTokenAllows } from '../auth/api-tokens.ts';
+import { principalOf, type Principal } from '../auth/guard.ts';
+import { selectTools, type Catalog, type CatalogTool } from './catalog.ts';
 import { forwardedHeaders } from './execute.ts';
 import { createCezarMcpServer } from './server.ts';
 
@@ -22,20 +24,30 @@ export interface McpRoutesDeps {
   version: string;
 }
 
+/** A token lists the tools its scopes reach; every other caller the whole selection. */
+export function toolsAllowedFor(principal: Principal | undefined): ((tool: CatalogTool) => boolean) | undefined {
+  if (principal?.kind !== 'token') return undefined;
+  const { scopes } = principal;
+  // A template's `:params` stand in as one segment each; the scope check reads the route, not the value.
+  return (tool) => apiTokenAllows(scopes, tool.method, `/api/v1${tool.path.replace(/:[^/]+/g, '_')}`);
+}
+
 export function mcpRoutes(deps: McpRoutesDeps) {
-  const callerEnv = new AsyncLocalStorage<unknown>();
+  const caller = new AsyncLocalStorage<{ env: unknown; principal: Principal | undefined }>();
   const handler = createMcpHandler(
     (ctx) => {
       const request = ctx.requestInfo;
       const url = new URL(request?.url ?? 'http://127.0.0.1/');
-      const env = callerEnv.getStore();
+      const { env, principal } = caller.getStore() ?? { env: undefined, principal: undefined };
       const catalog = deps.catalog();
       const selected = selectTools(catalog, url.searchParams.get('tools') ?? undefined);
+      const allows = toolsAllowedFor(principal);
       return createCezarMcpServer({
         catalog,
         tools: 'tools' in selected ? selected.tools : [],
         context: { dispatch: (inner) => deps.dispatch(inner, env), origin: url.origin, headers: forwardedHeaders(request?.headers ?? new Headers()) },
         version: deps.version,
+        ...(allows ? { allows } : {}),
       });
     },
   );
@@ -43,7 +55,7 @@ export function mcpRoutes(deps: McpRoutesDeps) {
   const serve = async (c: Context) => {
     const selected = selectTools(deps.catalog(), c.req.query('tools'));
     if ('error' in selected) return c.json({ error: selected.error }, 400);
-    return callerEnv.run(c.env, () => handler.fetch(c.req.raw));
+    return caller.run({ env: c.env, principal: principalOf(c) }, () => handler.fetch(c.req.raw));
   };
 
   return new Hono().post('/mcp', serve).get('/mcp', serve).delete('/mcp', serve);

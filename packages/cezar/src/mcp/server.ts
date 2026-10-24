@@ -9,11 +9,25 @@ import { readResource, ResourceError, RESOURCE_TEMPLATES, STATIC_RESOURCES } fro
  * and a fresh instance is built per HTTP request, so registration must cost nothing.
  */
 
-const INSTRUCTIONS = `cezar runs coding-agent tasks in git worktrees and stops each at a review gate.
-Every tool is one cezar HTTP route. Project tools take an optional projectId (from projects_list;
-omit it for the project the cockpit was started in). To start work: runs_create, then poll
-runs_get until the status is review or done, and read runs_history or the
-cezar://p/{projectId}/runs/{runId}/thread resource. Never land, merge or delete unless asked.`;
+/**
+ * The server's instructions for the tools this connection lists: a pointer to a tool the client
+ * cannot call (a `read` token, a narrow `?tools=`) would only send it into a refusal.
+ */
+export function instructionsFor(names: ReadonlySet<string>): string {
+  const lines = [
+    'cezar runs coding-agent tasks in git worktrees and stops each at a review gate.',
+    'Every tool is one cezar HTTP route. Project tools take an optional projectId (from projects_list;',
+    'omit it for the project the cockpit was started in).',
+  ];
+  const thread = names.has('runs_history') ? ', and read runs_history or the cezar://p/{projectId}/runs/{runId}/thread resource' : '';
+  if (names.has('runs_create') && names.has('runs_get')) {
+    lines.push(`To start work: runs_create, then poll runs_get until the status is review or done${thread}.`);
+    lines.push('Never land, merge or delete unless asked.');
+  } else if (names.has('runs_get')) {
+    lines.push(`This connection follows tasks: ${names.has('runs_list') ? 'runs_list and ' : ''}runs_get report their status${thread}.`);
+  }
+  return lines.join('\n');
+}
 
 export const PROMPTS = [
   {
@@ -24,6 +38,7 @@ export const PROMPTS = [
       { name: 'objective', description: 'What the task should do.', required: true },
       { name: 'projectId', description: 'The project (projects_list); omit for the default one.', required: false },
     ],
+    tools: ['projects_list', 'workflows_list', 'runs_create', 'runs_get', 'runs_history', 'runs_changes'],
   },
   {
     name: 'write-workflow',
@@ -33,11 +48,17 @@ export const PROMPTS = [
       { name: 'goal', description: 'What the workflow is for.', required: true },
       { name: 'projectId', description: 'The project (projects_list); omit for the default one.', required: false },
     ],
+    tools: ['workflows_list', 'skills_list', 'workflows_nodes', 'workflows_parse', 'workflows_put'],
   },
 ];
 
 /** The tool names the prompts mention; `catalog.test.ts` checks they exist. */
-export const PROMPT_TOOLS = ['projects_list', 'workflows_list', 'runs_create', 'runs_get', 'runs_history', 'runs_changes', 'skills_list', 'workflows_nodes', 'workflows_parse', 'workflows_put'];
+export const PROMPT_TOOLS = [...new Set(PROMPTS.flatMap((prompt) => prompt.tools))];
+
+/** The prompts whose every tool this connection lists. */
+function promptsFor(names: ReadonlySet<string>) {
+  return PROMPTS.filter((prompt) => prompt.tools.every((tool) => names.has(tool)));
+}
 
 export function promptText(name: string, args: Record<string, string | undefined>): string | null {
   const project = args.projectId ? ` in project ${args.projectId} (pass projectId: "${args.projectId}")` : '';
@@ -74,18 +95,23 @@ export interface McpServerOptions {
   tools: CatalogTool[];
   context: CallContext;
   version: string;
+  /** Whether the caller's credential reaches this tool's route; absent = every tool (the owner). */
+  allows?: (tool: CatalogTool) => boolean;
 }
 
 export function createCezarMcpServer(options: McpServerOptions): Server {
   const { tools, context } = options;
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  // What is listed, not what may be called: a call still goes to its route, and the guard decides.
+  const listed = options.allows ? tools.filter(options.allows) : tools;
+  const names = new Set(listed.map((tool) => tool.name));
   const server = new Server(
     { name: 'cezar', title: 'cezar', version: options.version },
-    { capabilities: { tools: {}, resources: {}, prompts: {} }, instructions: INSTRUCTIONS },
+    { capabilities: { tools: {}, resources: {}, prompts: {} }, instructions: instructionsFor(names) },
   );
 
   server.setRequestHandler('tools/list', () => ({
-    tools: tools.map((tool) => ({
+    tools: listed.map((tool) => ({
       name: tool.name,
       title: tool.annotations.title,
       description: tool.description,
@@ -120,11 +146,12 @@ export function createCezarMcpServer(options: McpServerOptions): Server {
     }
   });
 
-  server.setRequestHandler('prompts/list', () => ({ prompts: PROMPTS }));
+  const prompts = promptsFor(names);
+  server.setRequestHandler('prompts/list', () => ({ prompts: prompts.map(({ tools: _tools, ...prompt }) => prompt) }));
   server.setRequestHandler('prompts/get', (request) => {
-    const text = promptText(request.params.name, (request.params.arguments ?? {}) as Record<string, string | undefined>);
-    if (text === null) throw new Error(`unknown prompt: ${request.params.name}`);
-    const prompt = PROMPTS.find((entry) => entry.name === request.params.name)!;
+    const prompt = prompts.find((entry) => entry.name === request.params.name);
+    const text = prompt ? promptText(prompt.name, (request.params.arguments ?? {}) as Record<string, string | undefined>) : null;
+    if (!prompt || text === null) throw new Error(`unknown prompt: ${request.params.name}`);
     return { description: prompt.description, messages: [{ role: 'user', content: { type: 'text', text } }] };
   });
 

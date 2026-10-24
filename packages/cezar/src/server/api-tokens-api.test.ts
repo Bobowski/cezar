@@ -234,7 +234,7 @@ describe('API tokens', () => {
     expect((await app.request('/api/v1/runs/read-all', { method: 'POST', headers: { host: '127.0.0.1:4321', ...bearer(created.value) } })).status).toBe(403);
   });
 
-  it('over MCP, a scope is enforced on the route each tool calls — not by the tools the client saw', async () => {
+  it('over MCP, a token lists only the tools its scopes reach, and the route each one calls still decides', async () => {
     const read = await mint(['read']);
     const fetchApp = (async (input: string | URL | Request, init?: RequestInit) => {
       const request = new Request(input, init);
@@ -250,9 +250,16 @@ describe('API tokens', () => {
     }));
     try {
       const names = (await client.listTools()).tools.map((tool) => tool.name);
-      expect(names).toContain('runs_read_all'); // shown…
+      expect(names).toEqual(expect.arrayContaining(['runs_list', 'runs_get', 'projects_list']));
+      for (const hidden of ['runs_read_all', 'runs_create', 'runs_history', 'workflows_put', 'automations_list']) expect(names).not.toContain(hidden);
+      // The instructions and prompts point at nothing it cannot call.
+      const instructions = client.getInstructions() ?? '';
+      expect(instructions).toContain('runs_get');
+      for (const hidden of ['runs_create', 'runs_history', '/thread']) expect(instructions).not.toContain(hidden);
+      expect((await client.listPrompts()).prompts).toEqual([]);
+      // Guard: a tool it was not shown is still refused by the route, not by the list.
       const refused = await client.callTool({ name: 'runs_read_all', arguments: {} });
-      expect(refused.isError).toBe(true); // …and still refused by the guard
+      expect(refused.isError).toBe(true);
       expect(JSON.stringify(refused.content)).toContain('403');
       expect((await client.callTool({ name: 'runs_list', arguments: {} })).isError).toBeFalsy();
     } finally {

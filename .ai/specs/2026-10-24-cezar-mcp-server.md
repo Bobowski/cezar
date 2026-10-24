@@ -168,7 +168,10 @@ are client-side conveniences documented in `.env.example`.
   `runs_send_message`). A response that is not an object travels as `{ result }`.
 - **SDK**: `@modelcontextprotocol/server` 2.4 (`createMcpHandler`, stateless; it serves the
   2025 `initialize` handshake and the 2026-07-28 envelope). A tool call is a request through the
-  whole app with the caller's own headers, so the guard checks the scope on the route.
+  whole app with the caller's own headers, so the guard checks the scope on the route. A token
+  is LISTED only the tools its scopes reach (`toolsAllowedFor`, `mcp/http.ts`), and the server's
+  instructions and prompts name only listed tools; calling an unlisted one still reaches its
+  route and its `403`.
 - **`cezar mcp`** is a stdio↔HTTP bridge to the cockpit's `/api/v1/mcp`, not a second server:
   local default address and the host key, or `--server`/`--token`. `bridgeTarget()` in
   `mcp/cli.ts` is where `--as-run` (the chat spec) adds the task's own address and token.

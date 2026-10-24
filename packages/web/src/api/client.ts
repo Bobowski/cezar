@@ -166,6 +166,7 @@ import type {
   SkillsUpdateState,
   SelfUpdateDevelopment,
   SelfUpdateStatus,
+  UpdateBranch,
   UpdateChannel,
   TrackerAssociation,
   TrackerAssociationInput,
@@ -3013,10 +3014,10 @@ export async function getSelfUpdateDevelopment(opts?: ReadOptions & { refresh?: 
   )
 }
 
-/** Persist the release channel (`stable`, `nightly` or `development`) in `~/.cezar/config.json`. */
-export async function setSelfUpdateChannel(channel: UpdateChannel): Promise<SelfUpdateStatus> {
+/** Persist the release channel in `~/.cezar/config.json` — and, for `branch`, the followed branch. */
+export async function setSelfUpdateChannel(channel: UpdateChannel, branch?: UpdateBranch): Promise<SelfUpdateStatus> {
   return unwrap(
-    await cez.api.v1.workspace['self-update'].channel.$put({ json: { channel } }),
+    await cez.api.v1.workspace['self-update'].channel.$put({ json: branch ? { channel, branch } : { channel } }),
     '/workspace/self-update/channel',
   )
 }

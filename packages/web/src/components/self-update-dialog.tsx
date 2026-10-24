@@ -24,6 +24,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 
+import { BranchBuilds, BranchForm, BranchPanel } from './self-update-branch'
 import { DevelopmentPanel, pullOfVersion } from './self-update-development'
 import { bareButton } from '@/components/bare-control'
 import { offerWhenIdle, targetName, WhenIdleButton } from './self-update-when-idle'
@@ -59,6 +60,7 @@ export function SelfUpdateDialog({
   const schedule = useScheduleSelfUpdate()
   const cancelScheduled = useCancelScheduledSelfUpdate()
   const [picked, setPicked] = useState<string>('')
+  const [editingBranch, setEditingBranch] = useState(false)
   const data = status.data
   const contentRef = useRef<HTMLDivElement>(null)
   const autoApplied = useRef(false)
@@ -110,20 +112,59 @@ export function SelfUpdateDialog({
               busy={setChannel.isPending}
               onChange={(channel) => {
                 setPicked('')
+                setEditingBranch(false)
                 setChannel.mutate(channel)
               }}
             />
 
-            <LatestCard
-              data={data}
-              checking={refresh.isPending}
-              onCheck={() => refresh.mutate()}
-              onApply={(version) => apply.mutate(version)}
-              onSchedule={(version) => schedule.mutate(version)}
-              applying={apply.isPending || schedule.isPending}
-            />
+            {data.rollback ? (
+              <p data-slot="self-update-rollback" className="rounded-lg bg-danger/10 px-3.5 py-2.5 text-[13px] text-foreground">
+                Rolled back from <span className="font-mono">{data.rollback.from}</span> to{' '}
+                <span className="font-mono">{data.rollback.to}</span>: it exited with {data.rollback.exitCode} within 30 s of
+                starting.
+              </p>
+            ) : null}
 
-            {data.channel === 'development' ? (
+            {/* The branch form: asked for when the branch channel has nothing to follow yet, or on Change. */}
+            {data.channelEditable && (editingBranch || (setChannel.isError && channelOf(setChannel.variables) === 'branch')) ? (
+              <BranchForm
+                initial={data.branch ? { remote: data.branch.remote, branch: data.branch.branch } : null}
+                busy={setChannel.isPending}
+                onCancel={() => {
+                  setEditingBranch(false)
+                  setChannel.reset()
+                }}
+                onSubmit={(branch) =>
+                  setChannel.mutate({ channel: 'branch', branch }, { onSuccess: () => setEditingBranch(false) })
+                }
+              />
+            ) : null}
+
+            {data.channel === 'branch' ? (
+              <>
+                <BranchPanel
+                  data={data}
+                  checking={refresh.isPending}
+                  onCheck={() => refresh.mutate()}
+                  onApply={(target) => apply.mutate(target)}
+                  onSchedule={(target) => schedule.mutate(target)}
+                  onEditBranch={() => setEditingBranch(true)}
+                  applying={apply.isPending || schedule.isPending}
+                />
+                <BranchBuilds data={data} onApply={(id) => apply.mutate(id)} applying={apply.isPending || schedule.isPending} />
+              </>
+            ) : (
+              <LatestCard
+                data={data}
+                checking={refresh.isPending}
+                onCheck={() => refresh.mutate()}
+                onApply={(version) => apply.mutate(version)}
+                onSchedule={(version) => schedule.mutate(version)}
+                applying={apply.isPending || schedule.isPending}
+              />
+            )}
+
+            {data.channel === 'branch' ? null : data.channel === 'development' ? (
               <DevelopmentPanel
                 data={data}
                 onApply={(target) => apply.mutate(target)}
@@ -163,7 +204,7 @@ export function SelfUpdateDialog({
                   Cancel
                 </Button>
               </div>
-            ) : data.activeRuns > 0 && data.canSelfUpdate ? (
+            ) : data.activeRuns > 0 && data.canSelfUpdate && data.channel !== 'branch' ? (
               <p className="rounded-lg bg-pending/10 px-3.5 py-2.5 text-[13px] text-foreground">
                 {data.activeRuns} task{data.activeRuns === 1 ? ' is' : 's are'} running. A restart interrupts
                 them; {brandName} re-queues or resumes them on the way back up.
@@ -200,12 +241,19 @@ const CHANNELS: { value: UpdateChannel; label: string }[] = [
   { value: 'stable', label: 'Stable' },
   { value: 'nightly', label: 'Nightly' },
   { value: 'development', label: 'Development' },
+  { value: 'branch', label: 'Branch' },
 ]
 
 const CHANNEL_HINTS: Record<UpdateChannel, string> = {
   stable: 'Tagged releases.',
   nightly: 'A fresh build of main every night.',
   development: 'A cezar worktree or an open pull request. Never updates on its own.',
+  branch: 'A git branch, built on this machine. Updates when you click.',
+}
+
+/** The channel a `setChannel` mutation was asked for — a bare channel or `{ channel, branch }`. */
+function channelOf(input: UpdateChannel | { channel: UpdateChannel } | undefined): UpdateChannel | undefined {
+  return typeof input === 'string' ? input : input?.channel
 }
 
 function ChannelToggle({
@@ -223,6 +271,7 @@ function ChannelToggle({
         <div className="text-[13.5px] font-medium">Release channel</div>
         <div className="text-xs text-muted-foreground">
           {CHANNEL_HINTS[data.channel]}
+          {data.channelEditable ? null : ' Only a signed-in operator can change it.'}
         </div>
       </div>
       <div
@@ -240,7 +289,7 @@ function ChannelToggle({
               type="button"
               role="radio"
               aria-checked={active}
-              disabled={busy}
+              disabled={busy || !data.channelEditable}
               onClick={() => !active && onChange(channel.value)}
               className={cn(
                 bareButton,
@@ -283,7 +332,7 @@ function LatestCard({
   const dev = active && (active.source === 'link' || active.source === 'local' || pr !== null) ? active : null
   if (dev || data.channel === 'development') {
     // Development never offers an update; the way back to releases is the channel toggle.
-    const release = data.channel === 'development' ? null : data.latest[data.channel]
+    const release = data.channel === 'stable' || data.channel === 'nightly' ? data.latest[data.channel] : null
     // "Back to" only when that release is really on disk; otherwise it is a download.
     const releaseInstalled = release !== null && data.installed.some((entry) => entry.source === 'registry' && entry.id === release)
     // Stacked rather than side by side: branch names and nightly versions are long enough to
@@ -485,6 +534,13 @@ function ActiveBadge({ data }: { data: SelfUpdateStatus | undefined }) {
   const active = data?.installed.find((entry) => entry.active)
   if (active?.source === 'local') return <Badge variant="outline">local build</Badge>
   if (active?.source === 'link') return <Badge variant="outline">worktree · {active.branch ?? active.id}</Badge>
+  if ((active?.source === 'branch' || active?.source === 'image') && active.commit) {
+    return (
+      <Badge variant="outline">
+        {active.commit.branch || 'branch'} · {active.commit.sha.slice(0, 8)}
+      </Badge>
+    )
+  }
   const pr = active ? pullOfVersion(active.version) : null
   if (pr !== null) return <Badge variant="outline">PR #{pr} build</Badge>
   return null

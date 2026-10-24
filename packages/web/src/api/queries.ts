@@ -140,6 +140,7 @@ import type {
   TrackerAssociation,
   TrackerItemsResponse,
   TrackerKind,
+  UpdateBranch,
   UpdateChannel,
 } from '@open-mercato/cezar-api-client'
 import { subscribeTopic } from './ws'
@@ -1751,7 +1752,9 @@ export function useRefreshSelfUpdate() {
 export function useSetSelfUpdateChannel() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (channel: UpdateChannel) => setSelfUpdateChannel(channel),
+    // A bare channel, or the branch channel with the branch it should follow.
+    mutationFn: (input: UpdateChannel | { channel: UpdateChannel; branch: UpdateBranch }) =>
+      typeof input === 'string' ? setSelfUpdateChannel(input) : setSelfUpdateChannel(input.channel, input.branch),
     onSuccess: (state) => queryClient.setQueryData(workspaceQueryKeys.selfUpdate, state),
   })
 }

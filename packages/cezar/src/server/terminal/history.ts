@@ -118,15 +118,19 @@ export function historyLine(raw: string, secrets: readonly string[] = []): strin
  *  `secrets` (host env, live runs, stored secrets) and token shapes as `[REDACTED]`. Idempotent. */
 export function redactHistoryLine(line: string, secrets: readonly string[] = []): string {
   // URL userinfo first: `https://x-access-token:…@` is no header.
-  let out = redactAssignments(line)
+  // A query parameter before assignments: `'…&key=x'` is no shell assignment, and its quote stays.
+  let out = redactAssignments(line.replace(QUERY_PARAM, (whole, lead: string, name: string) => (secretName(name) ? `${lead}${name}=***` : whole)))
     .replace(URL_USERINFO, (whole, scheme: string, info: string) =>
       /^https?:\/\/$/i.test(scheme) || info.includes(':') ? `${scheme}***@` : whole)
+    .replace(FROM_LITERAL, (whole, lead: string, flag: string, key: string) =>
+      (secretName(key) || /key/i.test(key) ? `${lead}${flag}${key}=***` : whole))
     .replace(SECRET_FLAG_EQ, (whole, lead: string, flag: string) => (secretFlag(flag) ? `${lead}${flag}=***` : whole))
     .replace(SECRET_FLAG_SPACED, '$1$2$3***')
     .replace(USER_PASSWORD_FLAG, '$1$2$3$4:***')
+    .replace(GLUED_USER_PASSWORD, '$1-u$2:***')
     .replace(SECRET_HEADER, '$1$2$3***');
-  out = out.split(/(\|\|?|&&?|;)/).map(redactShortPassword).join('');
-  if (STDIN_SECRET_FLAG.test(out)) {
+  out = out.split(/(\|\|?|&&?|;)/).map(redactClientPassword).join('');
+  if (STDIN_SECRET_FLAG.test(out) || SUDO_STDIN.test(out)) {
     out = out.replace(HERE_STRING, '<<< ***').replace(ECHOED, '$1$2$3 ***');
   }
   return redactSecrets(out, secrets);
@@ -135,27 +139,51 @@ export function redactHistoryLine(line: string, secrets: readonly string[] = [])
 /** A shell word: quoted (closed or not), or up to the next separator or quote. */
 const WORD = String.raw`(?:"(?:[^"\\]|\\.)*"?|'[^']*'?|[^\s;&|)\`"']+)`;
 const SECRET_FLAG_EQ = new RegExp(String.raw`(^|\s)(--?[A-Za-z][A-Za-z0-9_-]*)=${WORD}`, 'g');
-const secretFlag = (flag: string): boolean => {
-  const name = flag.replace(/^-+/, '').replace(/-/g, '_');
+const secretName = (raw: string): boolean => {
+  const name = raw.replace(/[-.]/g, '_');
   return SECRET_NAME_RE.test(name) || SECRET_NAME_PART.test(name);
 };
+const secretFlag = (flag: string): boolean => secretName(flag.replace(/^-+/, ''));
+/** `?access_token=…`, `&key=…`: a secret-named query parameter. */
+const QUERY_PARAM = /([?&])([A-Za-z0-9_.-]+)=[^&\s#"']+/g;
+/** `kubectl create secret --from-literal=password=…`: the key names the secret. */
+const FROM_LITERAL = new RegExp(String.raw`(^|\s)(--from-literal(?:=|\s+))([A-Za-z0-9_.-]+)=${WORD}`, 'g');
 /** `--password hunter2`: only names that end in the secret itself, and never a redirect or flag after them. */
 const SECRET_FLAG_SPACED = new RegExp(String.raw`(^|\s)(--(?:[A-Za-z0-9]+-)*(?:password|passwd|token|secret|api-?key))(\s+)(?![-<>|&;])${WORD}`, 'gi');
 const USER_PASSWORD_FLAG = /(^|\s)(-u|--user)(\s+|=)([^\s:"']+):[^\s"']+/g;
-const SECRET_HEADER = /\b((?:proxy-)?authorization|cookie|x-[a-z0-9-]*(?:token|key|secret|auth)[a-z0-9-]*)(\s*:\s*)((?:bearer|basic|token|digest|bot)\s+)?[^\s"']+/gi;
+/** curl's glued `-uadmin:hunter2`. */
+const GLUED_USER_PASSWORD = /(^|\s)-u([^\s:"'-][^\s:"']*):[^\s"']+/g;
+const SECRET_HEADER = /\b((?:proxy-)?authorization|cookie|private-token|api-?key|x-[a-z0-9-]*(?:token|key|secret|auth)[a-z0-9-]*)(\s*:\s*)((?:bearer|basic|token|digest|bot)\s+)?[^\s"']+/gi;
 const URL_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)([^\s/?#@"']*)@/gi;
 /** A flag that reads the secret from stdin: what the line feeds it is the secret. */
-const STDIN_SECRET_FLAG = /(^|\s)--[A-Za-z0-9-]*(?:token|password|passwd|secret)[A-Za-z0-9-]*(?=\s|$)/i;
+const STDIN_SECRET_FLAG = /(^|\s)(?:--[A-Za-z0-9-]*(?:token|password|passwd|secret)[A-Za-z0-9-]*|--stdin)(?=\s|$)/i;
+/** `sudo -S` (or `-kS`) reads the password from stdin. Case matters: `-s` is a shell. */
+const SUDO_STDIN = /(^|[\s|;&(])sudo\s+(?:[^|;&]*\s)?-[A-Za-z]*S[A-Za-z]*(?=\s|$)/;
 const HERE_STRING = new RegExp(String.raw`<<<\s*${WORD}`, 'g');
 const ECHOED = new RegExp(String.raw`(^|[\s(])(echo|printf)((?:\s+-[A-Za-z]+)*)\s+${WORD}`, 'g');
 /** Clients whose `-p` glues the password on (`mysql -phunter2`); `-p` alone makes them ask. */
 const GLUED_PASSWORD = new Set(['mysql', 'mysqldump', 'mysqladmin', 'mysqlimport', 'mysqlshow', 'mysqlcheck', 'mariadb', 'mariadb-dump', 'sshpass']);
 const GLUED_PASSWORD_FLAG = new RegExp(String.raw`(\s)-p(?=[^\s])${WORD}`, 'g');
 
-function redactShortPassword(segment: string): string {
+/** Registry clients whose `login -p` takes the password; `-p` is a port or a publish elsewhere. */
+const LOGIN_PASSWORD = new Set(['docker', 'podman', 'nerdctl', 'buildah', 'skopeo', 'helm', 'oras']);
+
+/** The short flag whose next word is this command's password, if it has one. */
+function spacedPasswordFlag(command: string, words: readonly string[]): string | null {
+  if (GLUED_PASSWORD.has(command)) return '-p';
+  if (command === 'redis-cli') return '-a';
+  return LOGIN_PASSWORD.has(command) && words.includes('login') ? '-p' : null;
+}
+
+function redactClientPassword(segment: string): string {
   const words = segment.trim().split(/\s+/).filter((word) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
-  const command = words[0] === 'sudo' || words[0] === 'exec' ? words[1] : words[0];
-  return command && GLUED_PASSWORD.has(baseName(command)) ? segment.replace(GLUED_PASSWORD_FLAG, '$1-p***') : segment;
+  const head = words[0] === 'sudo' || words[0] === 'exec' ? words[1] : words[0];
+  if (!head) return segment;
+  const command = baseName(head);
+  const out = GLUED_PASSWORD.has(command) ? segment.replace(GLUED_PASSWORD_FLAG, '$1-p***') : segment;
+  const flag = spacedPasswordFlag(command, words);
+  if (flag === null) return out;
+  return out.replace(new RegExp(String.raw`(\s)(${flag})(\s+)(?![-<>|&;])${WORD}`, 'g'), '$1$2$3***');
 }
 
 /** Short names the shared credential heuristic leaves out: `DB_PASS`, `KEY`, `SMTP_PWD`. */
@@ -165,8 +193,8 @@ const ASSIGNMENT = /(^|[\s;&|(`])([A-Za-z_][A-Za-z0-9_]*)=("(?:[^"\\]|\\.)*"?|'[
 
 /** `line` with the value of every secret-named assignment replaced by `***`. */
 export function redactAssignments(line: string): string {
-  return line.replace(ASSIGNMENT, (whole, lead: string, name: string) =>
-    SECRET_NAME_RE.test(name) || SECRET_NAME_PART.test(name) ? `${lead}${name}=***` : whole);
+  return line.replace(ASSIGNMENT, (whole, lead: string, name: string, value: string) =>
+    !/^\*\*\*(?=$|["'])/.test(value) && (SECRET_NAME_RE.test(name) || SECRET_NAME_PART.test(name)) ? `${lead}${name}=***` : whole);
 }
 
 /** The stored lines, redacted again on the way out: a line kept before a rule existed is served under it. */

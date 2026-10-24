@@ -80,6 +80,61 @@ describe('history folding', () => {
     expect(historyLine('git clone ssh://git@github.com/o/r.git')).toBe('git clone ssh://git@github.com/o/r.git');
     expect(historyLine('gh auth login --with-token < token.txt')).toBe('gh auth login --with-token < token.txt');
   });
+
+  it('stores no password a spaced short flag carries, for the clients that take one', () => {
+    expect(historyLine('sshpass -p hunter2 ssh me@host')).toBe('sshpass -p *** ssh me@host');
+    expect(historyLine('docker login -u me -p hunter2 registry.io')).toBe('docker login -u me -p *** registry.io');
+    expect(historyLine('podman login -p "a b" quay.io')).toBe('podman login -p *** quay.io');
+    expect(historyLine('redis-cli -h cache -a hunter2 ping')).toBe('redis-cli -h cache -a *** ping');
+    expect(historyLine('mysql -u root -p hunter2 shop')).toBe('mysql -u root -p *** shop');
+    expect(historyLine('sudo mysql -p hunter2')).toBe('sudo mysql -p ***');
+    expect(historyLine('mysql --password hunter2 shop')).toBe('mysql --password *** shop');
+    expect(historyLine('vault login --token hunter2')).toBe('vault login --token ***');
+    // `-p` is a port, a publish or a parent flag everywhere else.
+    expect(historyLine('docker run -p 8080:80 nginx')).toBe('docker run -p 8080:80 nginx');
+    expect(historyLine('mkdir -p build/out')).toBe('mkdir -p build/out');
+    expect(historyLine('redis-cli -h cache ping')).toBe('redis-cli -h cache ping');
+  });
+
+  it('stores no password curl\'s -u carries, glued or spaced', () => {
+    expect(historyLine('curl -uadmin:hunter2 http://x')).toBe('curl -uadmin:*** http://x');
+    expect(historyLine('curl -u admin:hunter2 http://x')).toBe('curl -u admin:*** http://x');
+    expect(historyLine('curl --user=admin:hunter2 http://x')).toBe('curl --user=admin:*** http://x');
+    expect(historyLine('curl -u admin http://x')).toBe('curl -u admin http://x');
+  });
+
+  it('stores no password echoed into sudo -S or a --stdin flag', () => {
+    expect(historyLine('echo hunter2 | sudo -S apt update')).toBe('echo *** | sudo -S apt update');
+    expect(historyLine("printf 'hunter2\\n' | sudo -k -S true")).toBe('printf *** | sudo -k -S true');
+    expect(historyLine('echo hunter2 | sudo -kS ls')).toBe('echo *** | sudo -kS ls');
+    expect(historyLine('echo hunter2 | passwd --stdin me')).toBe('echo *** | passwd --stdin me');
+    // Without a reader of the password, an echo is an echo.
+    expect(historyLine('echo hello | sudo tee /etc/motd')).toBe('echo hello | sudo tee /etc/motd');
+    expect(historyLine('echo hello | sudo -s')).toBe('echo hello | sudo -s');
+  });
+
+  it('stores no token a vendor header carries', () => {
+    expect(historyLine('curl -H "PRIVATE-TOKEN: glpat-abc123" https://gitlab.com/api'))
+      .toBe('curl -H "PRIVATE-TOKEN: ***" https://gitlab.com/api');
+    expect(historyLine("curl -H 'X-Api-Key: abc123' https://x")).toBe("curl -H 'X-Api-Key: ***' https://x");
+    expect(historyLine('curl -H X-Auth-Token:abc123 https://x')).toBe('curl -H X-Auth-Token:*** https://x');
+    expect(historyLine('curl -H "Content-Type: application/json" https://x')).toBe('curl -H "Content-Type: application/json" https://x');
+  });
+
+  it('stores no token a URL query carries', () => {
+    expect(historyLine('curl "https://api.x.io/v1?access_token=abc123&page=2"')).toBe('curl "https://api.x.io/v1?access_token=***&page=2"');
+    expect(historyLine('curl https://x.io/a?page=2&token=abc123')).toBe('curl https://x.io/a?page=2&token=***');
+    expect(historyLine("wget 'https://maps.x.com/api?q=a&key=AIzaabc'")).toBe("wget 'https://maps.x.com/api?q=a&key=***'");
+    expect(historyLine('curl https://x.io/a?page=2&sort=name')).toBe('curl https://x.io/a?page=2&sort=name');
+  });
+
+  it('stores no secret kubectl --from-literal carries', () => {
+    expect(historyLine('kubectl create secret generic db --from-literal=password=hunter2'))
+      .toBe('kubectl create secret generic db --from-literal=password=***');
+    expect(historyLine('kubectl create secret generic s --from-literal=api-key=abc --from-literal=user=app'))
+      .toBe('kubectl create secret generic s --from-literal=api-key=*** --from-literal=user=app');
+    expect(historyLine('kubectl create secret generic s --from-literal sshKey="a b"')).toBe('kubectl create secret generic s --from-literal sshKey=***');
+  });
 });
 
 describe('TerminalHistory', () => {

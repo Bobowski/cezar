@@ -378,9 +378,10 @@ export async function pollActivity(input: {
   // ---- conversation comments: one repo-wide read covers PRs and issues ---------------------
   if (events.has('pull_request.commented') || events.has('issue.commented')) {
     const rows = parseEach(await getJson(run, `${api}/issues/comments`, ['sort=updated', 'direction=asc', `since=${since}`, `per_page=${PAGE}`]), commentSchema);
-    truncated ||= rows.length >= PAGE;
+    // The record budget bounds the per-item reads too: rows past it wait for the next poll.
+    truncated ||= rows.length >= PAGE || rows.length > maxRecords;
     const group: ActivityObservation[] = [];
-    for (const row of rows) {
+    for (const row of rows.slice(0, maxRecords)) {
       // Observed at `updated_at` so an edit-only page still moves the cursor; launched only as
       // the comment it was when it was CREATED after the cursor.
       const observation: ActivityObservation = { timestamp: row.updated_at, tieBreaker: `comment:${row.id}` };
@@ -397,7 +398,6 @@ export async function pollActivity(input: {
         comment: { id: row.id, kind: 'issue', author: row.user?.login ?? 'ghost', url: row.html_url, body: cleanBody(row.body) },
       };
       if (admit(candidate)) observation.candidate = candidate;
-      if (group.length >= maxRecords) break;
     }
     groups.push(group);
   }
@@ -405,9 +405,10 @@ export async function pollActivity(input: {
   // ---- review (diff) comments ---------------------------------------------------------------
   if (events.has('pull_request.review_commented')) {
     const rows = parseEach(await getJson(run, `${api}/pulls/comments`, ['sort=updated', 'direction=asc', `since=${since}`, `per_page=${PAGE}`]), commentSchema);
-    truncated ||= rows.length >= PAGE;
+    // The record budget bounds the per-item reads too: rows past it wait for the next poll.
+    truncated ||= rows.length >= PAGE || rows.length > maxRecords;
     const group: ActivityObservation[] = [];
-    for (const row of rows) {
+    for (const row of rows.slice(0, maxRecords)) {
       const observation: ActivityObservation = { timestamp: row.updated_at, tieBreaker: `review-comment:${row.id}` };
       group.push(observation);
       const number = Number(row.pull_request_url?.match(/\/pulls\/(\d+)$/)?.[1]);
@@ -420,7 +421,6 @@ export async function pollActivity(input: {
         comment: { id: row.id, kind: 'review', author: row.user?.login ?? 'ghost', url: row.html_url, body: cleanBody(row.body) },
       };
       if (admit(candidate)) observation.candidate = candidate;
-      if (group.length >= maxRecords) break;
     }
     // A submitted review is N comments at once: one launch per PR per poll, carrying them all.
     const byPull = new Map<number, ActivityObservation[]>();

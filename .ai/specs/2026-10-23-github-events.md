@@ -1,6 +1,6 @@
 # GitHub events, extended — PR updates, comments, CI results, pushes and releases; webhook wake-ups; delivery to the owning task
 
-> Status: proposed (2026-10-23), not built. Branch: `brutus`.
+> Status: built (2026-10-24) on `brutus` — see §11 for where the build differs from the text.
 > Builds on: `2026-07-25-github-automations.md` (the shipped poll), `2026-09-14-automations-redesign.md`
 > (the surface, `kind`, schedules), `2026-10-06-agentic-e2e-checks.md` Phase 3 (`checkout: 'pr-head'`),
 > `2026-10-12-cockpit-authentication.md` (the VPS has a public, authenticated origin).
@@ -142,3 +142,33 @@ place a loop is possible, so it also carries the existing per-automation launch 
 - VPS: register the hook on fancy-fence-panels; open a task that makes a PR; comment on it →
   the comment arrives in the thread within seconds; push a commit that breaks CI → the failure
   is delivered to the same run; the run's own push does not re-trigger.
+
+## 11. As built (2026-10-24)
+
+Where the code (`automations/github-activity.ts`, `automations/owning-run.ts`,
+`automations/webhook.ts`, `server/automation-webhook.ts`, `runs/github-traces.ts`) differs from
+the text above, and why:
+
+- **Comment sources are repo-wide**: `/repos/:r/issues/comments?since=` and
+  `/pulls/comments?since=` — one read each, instead of one per issue. A comment is observed at its
+  `updated_at` (an edit-only page still moves the cursor) and launches only if CREATED since the
+  cursor. A submitted review's diff comments collapse to one candidate per PR per poll, bodies
+  joined. Comment bodies never reach a receipt; a retry points the prompt at the comment's URL.
+- **`push` diffs branch heads** (`/branches`, or `/branches/<name>` for an exact name) against
+  `branchHeads` and reads `/compare/<before>...<after>` for the subjects — `/commits?since=` would
+  miss a fast-forward of old commits. `synchronize` diffs `prHeads` the same way. Both record the
+  heads on first sight (and after every enable) and fire nothing then; their candidates are
+  `cursorless`, deduplicated by their receipt.
+- **ETags** cover `/pulls`, `/releases` and each head's `/check-suites`. A page whose rows a poll
+  did not evaluate forgets its ETag, so a `304` never hides rows the cursor has not passed.
+- **`wakeNow`** is "every enabled, not backed-off GitHub poll of the project is due now", then the
+  workspace scheduler's ordinary reschedule — the same leases, backoff and caps as a timer tick.
+- **Owner lookup** also counts the PR a run created (`pullRequestUrl`) and its `prRefs`, never a
+  `pr-head` verifier or a run whose worktree is gone. A delivery takes the ladder a person's
+  message takes (queued run → prompt queue of a live session → buffered start → Continue); an
+  owner that cannot take it falls back to a new run, and the log row says why.
+- **Traces** are also recorded for the task push route, the graph `git.push` node, an in-place
+  landing, the `github.pr-comment` node and the agent's own `git push` / `gh … comment` tool calls.
+  The repo-sync push of the project checkout belongs to no run and records nothing.
+- **Registering** needs a hosted cockpit with cezar's own sign-in (not `CEZ_AUTH=0`, where the
+  proxy would also stand between GitHub and the route). The secret goes to `gh` on stdin.

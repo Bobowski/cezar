@@ -10,26 +10,65 @@ import { z } from 'zod';
 
 /** Release channels map onto npm dist-tags: `stable` → `latest`, `nightly` → `nightly`.
  *  `development` follows no tag: nothing is ever offered as an update, and the dialog picks a
- *  cezar worktree or an open pull request's preview build by hand instead. */
-export const updateChannelSchema = z.enum(['stable', 'nightly', 'development']);
+ *  cezar worktree or an open pull request's preview build by hand instead. `branch` follows a git
+ *  branch, built on this machine (spec 2026-10-23-branch-channel-self-update). */
+export const updateChannelSchema = z.enum(['stable', 'nightly', 'development', 'branch']);
 export type UpdateChannel = z.infer<typeof updateChannelSchema>;
+
+/** A remote the `branch` channel may clone: `https://`, `ssh://` or scp-like `git@host:path`.
+ *  Never a local path or `file://` — a remote is code the server will build and run. */
+export function isUpdateRemote(value: string): boolean {
+  if (value.length > 512 || /\s/.test(value) || value.startsWith('-')) return false;
+  if (/^git@[A-Za-z0-9.-]+:[A-Za-z0-9._~/-]+$/.test(value)) return true;
+  // No `URL` here: the contract is lib-free (ES2022 only). `scheme://[user@]host[:port]/path`.
+  return /^(https|ssh):\/\/([A-Za-z0-9._~-]+@)?[A-Za-z0-9.-]+(:\d{1,5})?\/[A-Za-z0-9._~/-]+$/.test(value);
+}
+
+/** A branch name git accepts and no argument parser mistakes for an option. */
+export function isUpdateBranchName(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= 200 &&
+    /^[A-Za-z0-9._/-]+$/.test(value) &&
+    !value.startsWith('-') &&
+    !value.startsWith('/') &&
+    !value.endsWith('/') &&
+    !value.endsWith('.lock') &&
+    !value.includes('..') &&
+    !value.includes('//')
+  );
+}
+
+/** The branch the `branch` channel follows. */
+export const updateBranchSchema = z.object({
+  remote: z.string().refine(isUpdateRemote, 'remote must be an https://, ssh:// or git@host:path URL'),
+  branch: z.string().refine(isUpdateBranchName, 'branch must be a plain branch name'),
+});
+export type UpdateBranch = z.infer<typeof updateBranchSchema>;
+
+/** One commit as the dialog shows it. `at` is the committer date (ISO). */
+export const updateCommitSchema = z.object({ sha: z.string(), subject: z.string(), at: z.string() });
+export type UpdateCommit = z.infer<typeof updateCommitSchema>;
 
 /** How the running process was installed — decides whether a self-update is possible. */
 export const installKindSchema = z.enum(['managed', 'global-npm', 'npx', 'checkout', 'unknown']);
 export type InstallKind = z.infer<typeof installKindSchema>;
 
 /** One entry under `~/.cezar/versions/`. `id` is the directory name; a local build carries a
- *  `+local` suffix so it never collides with the registry version it was built from, and a
- *  linked checkout (`link`, `cezar link`) a `+<branch>` one. */
+ *  `+local` suffix so it never collides with the registry version it was built from, a linked
+ *  checkout (`link`, `cezar link`) a `+<branch>` one, a `branch`-channel build `+<sha8>` and the
+ *  container image's own install `+image[.<sha8>]`. */
 export const installedVersionSchema = z.object({
   id: z.string(),
   version: z.string(),
-  source: z.enum(['registry', 'local', 'link']),
+  source: z.enum(['registry', 'local', 'link', 'branch', 'image']),
   installedAt: z.string(),
   active: z.boolean(),
   /** `link` only: the checkout's branch, and its package root (absent in hosted mode). */
   branch: z.string().optional(),
   checkout: z.string().optional(),
+  /** `branch` and `image` builds: the commit they were built from, when known. */
+  commit: updateCommitSchema.extend({ branch: z.string() }).optional(),
 });
 export type InstalledVersion = z.infer<typeof installedVersionSchema>;
 
@@ -65,6 +104,35 @@ export const selfUpdateScheduledSchema = z.object({
 });
 export type SelfUpdateScheduled = z.infer<typeof selfUpdateScheduledSchema>;
 
+/** The `branch` channel's view of its branch (spec 2026-10-23 §3.4). */
+export const selfUpdateBranchSchema = z.object({
+  remote: z.string(),
+  branch: z.string(),
+  /** The commit the running version was built from; null for a registry install. */
+  running: updateCommitSchema.nullable(),
+  /** The branch tip as of the last fetch; null before the first. */
+  tip: updateCommitSchema.nullable(),
+  /** Commits on the tip the running build does not have. 0 when up to date. */
+  behind: z.number().int().min(0),
+  /** false when `running` is not an ancestor of `tip` (a force-push, a rebase). */
+  fastForward: z.boolean(),
+  /** Paths under docker/ the pending commits touch — a rebuild via ssh is also due. */
+  touchesImage: z.array(z.string()),
+  fetchedAt: z.string().nullable(),
+  error: z.string().optional(),
+});
+export type SelfUpdateBranch = z.infer<typeof selfUpdateBranchSchema>;
+
+/** A crash-on-boot rollback the container's supervisor did (`<CEZ_HOME>/rollback.json`): `from`
+ *  exited with `exitCode` within 30 s of being activated, so `to` — what ran before — was relinked. */
+export const selfUpdateRollbackSchema = z.object({
+  from: z.string(),
+  to: z.string(),
+  exitCode: z.number().int(),
+  at: z.string(),
+});
+export type SelfUpdateRollback = z.infer<typeof selfUpdateRollbackSchema>;
+
 /** `GET /api/v1/workspace/self-update` (and every mutation on the family). */
 export const selfUpdateStatusSchema = z.object({
   version: z.string(),
@@ -94,6 +162,12 @@ export const selfUpdateStatusSchema = z.object({
   scheduled: selfUpdateScheduledSchema.nullable(),
   /** Runs in flight across the workspace — a restart interrupts them (boot recovery re-queues). */
   activeRuns: z.number().int().min(0),
+  /** Whether the caller may change the channel and the followed branch (`trustedOperator()`). */
+  channelEditable: z.boolean(),
+  /** The `branch` channel only: the followed branch. Absent on every other channel. */
+  branch: selfUpdateBranchSchema.optional(),
+  /** The last crash-on-boot rollback, until the next successful apply. */
+  rollback: selfUpdateRollbackSchema.optional(),
 });
 export type SelfUpdateStatus = z.infer<typeof selfUpdateStatusSchema>;
 
@@ -111,8 +185,11 @@ export const selfUpdateApplyRequestSchema = z
   .strict();
 export type SelfUpdateApplyRequest = z.infer<typeof selfUpdateApplyRequestSchema>;
 
-/** `PUT /api/v1/workspace/self-update/channel`. */
-export const selfUpdateChannelRequestSchema = z.object({ channel: updateChannelSchema }).strict();
+/** `PUT /api/v1/workspace/self-update/channel`. `branch` also sets the followed branch, which the
+ *  `branch` channel takes from here, else `CEZ_UPDATE_BRANCH`, else the container image. */
+export const selfUpdateChannelRequestSchema = z
+  .object({ channel: updateChannelSchema, branch: updateBranchSchema.optional() })
+  .strict();
 export type SelfUpdateChannelRequest = z.infer<typeof selfUpdateChannelRequestSchema>;
 
 /** The cezar task that owns a worktree (`.ai/cezar/worktrees/<runId>` in the repo's run index). */

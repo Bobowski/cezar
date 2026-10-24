@@ -6,7 +6,7 @@ import { z } from 'zod';
 // Contract VALUES, like `workspaceUiStateSchema` in workspace/migrations.ts: the tag bounds this
 // file must not `.catch` away are the same constants the PATCH route validates against, so they
 // are imported rather than repeated.
-import { PROJECT_TAGS_MAX, PROJECT_TAG_MAX_LENGTH } from '@open-mercato/cezar-contract';
+import { PROJECT_TAGS_MAX, PROJECT_TAG_MAX_LENGTH, updateBranchSchema, updateChannelSchema } from '@open-mercato/cezar-contract';
 import { PROVIDER_IDS, type ProviderId } from '../core/provider-auth.ts';
 import { assertCezarHomeWriteIsSandboxed, isAbsolutePath, workspaceConfigPath } from '../paths.ts';
 
@@ -210,9 +210,12 @@ const workspaceConfigSchema = z
      *  and must stay absent on unrelated merge-writes. */
     skillsAutoUpdate: z.boolean().optional().catch(undefined),
     /** Release channel the self-updater follows (`stable` → npm `latest`, `nightly` → `nightly`,
-     *  `development` → none: a worktree or PR preview picked by hand). Absent inherits
-     *  `CEZ_UPDATE_CHANNEL`, then stable. */
-    updateChannel: z.enum(['stable', 'nightly', 'development']).optional().catch(undefined),
+     *  `development` → none: a worktree or PR preview picked by hand, `branch` → a git branch built
+     *  here). Absent inherits `CEZ_UPDATE_CHANNEL`, then stable. */
+    updateChannel: updateChannelSchema.optional().catch(undefined),
+    /** The branch the `branch` channel follows (spec 2026-10-23 §3.1). Absent inherits
+     *  `CEZ_UPDATE_BRANCH`, then the container image's own source. */
+    updateBranch: updateBranchSchema.passthrough().optional().catch(undefined),
     /** The telemetry install id (random UUIDv7). Written on the first send after consent;
      *  removed when consent is withdrawn. */
     cezarId: z.string().uuid().optional().catch(undefined),

@@ -79,6 +79,12 @@ export function createAuthGuard(options: AuthGuardOptions): MiddlewareHandler<Au
         return c.json({ error: 'forbidden: an API token cannot manage sign-in or tokens' }, 403);
       }
       const token = options.service.verifyApiToken(bearer, { touch: true });
+      // A local cockpit without sign-in needs no credential from its own machine, so a token it
+      // never minted (a shell's exported CEZ_TOKEN for another cockpit) is no credential at all.
+      if (!token && !options.enforced() && isLoopbackHostHeader(c.req.header('host'))) {
+        c.set('principal', { kind: 'host', role: 'owner' });
+        return next();
+      }
       if (!token) return unauthorized(c);
       if (!apiTokenAllows(token.scopes, c.req.method, c.req.path)) {
         return c.json({ error: `forbidden: this token's scopes (${token.scopes.join(', ')}) do not cover ${c.req.method} ${c.req.path}` }, 403);

@@ -128,5 +128,7 @@ are client-side conveniences documented in `.env.example`.
   family map is `FAMILY_SCOPES` in `auth/api-tokens.ts`; an unmapped family is `admin`'s.
 - **Origin guard**: only a token that VERIFIES skips it; an unverified Bearer is checked like
   any request and then refused by the auth guard.
-- **The CLI**: the host key is only ever sent to a loopback cockpit; from a shell (no
+- **The CLI**: `CEZ_SERVER`/`CEZ_TOKEN` are ignored inside a task and never forwarded into an
+  agent's environment (`core/agent-env.ts`), and a local cockpit without sign-in treats a token
+  it never minted (from a loopback Host) as no credential; the host key is only ever sent to a loopback cockpit; from a shell (no
   `CEZ_TASK_ID`) `cez task create` starts a top-level task (`--workflow`, `--runner`, `--model`).

@@ -66,6 +66,13 @@ describe('cez --server / --token', () => {
     expect(shell).toMatchObject({ CEZ_API_URL: 'https://c.dev', CEZ_API_TOKEN: 'ceztok_2' });
   });
 
+  it('inside a task, CEZ_SERVER / CEZ_TOKEN never fill in: the cockpit set what the task talks to', () => {
+    const task: NodeJS.ProcessEnv = { CEZ_TASK_ID: 'r1', CEZ_API_URL: 'http://127.0.0.1:4321', CEZ_SERVER: 'https://vps.example', CEZ_TOKEN: 'ceztok_vps' };
+    takeServerFlags(['task', 'create', 'x'], task);
+    expect(task.CEZ_API_URL).toBe('http://127.0.0.1:4321');
+    expect(task.CEZ_API_TOKEN).toBeUndefined();
+  });
+
   it('refuses a flag without a value', () => {
     expect(() => takeServerFlags(['task', '--server'], {})).toThrow(/--server needs a value/);
   });

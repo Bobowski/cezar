@@ -35,7 +35,8 @@ export function cockpitCredential(env: { CEZ_API_TOKEN?: string; CEZ_TASK_ID?: s
 /**
  * `cez --server <url> --token <token> <command>` (spec 2026-10-24-cezar-mcp-server §4): the flags,
  * anywhere on the line, become `CEZ_API_URL` / `CEZ_API_TOKEN` for the cockpit-facing commands;
- * without them `CEZ_SERVER` / `CEZ_TOKEN` fill in what a task's own environment did not set.
+ * without them `CEZ_SERVER` / `CEZ_TOKEN` fill in what is unset — from a shell only: inside a task
+ * the cockpit set the address and credential, and a user's exported VPS token is not the task's.
  * Answers the arguments with the two flags taken out.
  */
 export function takeServerFlags(args: readonly string[], env: NodeJS.ProcessEnv): string[] {
@@ -52,6 +53,7 @@ export function takeServerFlags(args: readonly string[], env: NodeJS.ProcessEnv)
     if (match[1] === 'server') env.CEZ_API_URL = value;
     else env.CEZ_API_TOKEN = value;
   }
+  if (env.CEZ_TASK_ID) return rest;
   if (!env.CEZ_API_URL && env.CEZ_SERVER) env.CEZ_API_URL = env.CEZ_SERVER;
   if (!env.CEZ_API_TOKEN && env.CEZ_TOKEN) env.CEZ_API_TOKEN = env.CEZ_TOKEN;
   return rest;

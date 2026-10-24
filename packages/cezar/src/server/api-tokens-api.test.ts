@@ -12,6 +12,8 @@ import {
   type ApiTokenScope,
 } from '@open-mercato/cezar-contract';
 import { FAMILY_SCOPES, routeFamily } from '../auth/api-tokens.ts';
+import { takeServerFlags } from '../cockpit-address.ts';
+import { runTaskCommand } from '../dispatch/task-cli.ts';
 import { AuthService } from '../auth/service.ts';
 import { issueSetupCode } from '../auth/store.ts';
 import { base32Decode, hotp, totpStep } from '../auth/totp.ts';
@@ -163,6 +165,27 @@ describe('API tokens', () => {
     }
     // The signed-in owner's own cockpit is unchanged.
     expect((await files('.env', { cookie })).status).toBe(200);
+  });
+
+  it('a local cockpit without sign-in never needs a token: an exported CEZ_TOKEN does not lock its own CLI out', async () => {
+    delete process.env.CEZ_REMOTE;
+    const env: NodeJS.ProcessEnv = { CEZ_API_URL: 'http://127.0.0.1:4321', CEZ_TOKEN: 'ceztok_0123456789ab_aaaaaaaaaaaaaaaaaaaaaaaaaaaa' };
+    const args = takeServerFlags(['task', 'create', 'Fix it', '--workflow', 'no-such-workflow'], env);
+    const sent: string[] = [];
+    const errors: string[] = [];
+    const io = {
+      fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+        const headers = new Headers(init?.headers);
+        sent.push(headers.get('authorization') ?? '');
+        headers.set('host', '127.0.0.1:4321');
+        return app.request(String(input), { ...init, headers });
+      }) as typeof fetch,
+      log: () => {},
+      error: (line: string) => errors.push(line),
+    };
+    expect(await runTaskCommand(args.slice(1), env, io)).toBe(1);
+    expect(sent[0]).toContain('ceztok_'); // the shell's token for another cockpit rode along…
+    expect(errors.join(' ')).toContain('unknown workflow'); // …and this one served its own machine
   });
 
   it('an unknown or malformed token is a 401, never a pass', async () => {

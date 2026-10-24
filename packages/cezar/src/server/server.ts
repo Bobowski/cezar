@@ -9625,6 +9625,8 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
   const automationsEnabled = () => resolveCapabilities(process.env, deps.bindHost).automations;
   let rescheduleAutomations = () => {};
   const appCleanups: Array<() => void> = [];
+  // Held here so shutdown can wait for the lines already typed to be written (spec 2026-10-24-code-page-terminal §9).
+  const terminalHistory = deps.terminalHistory ?? new TerminalHistory();
   // One instance for the route guard and the upgrade hook, so a session revoked through one is
   // gone for the other.
   const auth = deps.auth ?? new AuthService();
@@ -9651,6 +9653,7 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
     ...deps,
     auth,
     backup,
+    terminalHistory,
     onDispose: (cleanup) => { appCleanups.push(cleanup); deps.onDispose?.(cleanup); },
     contexts: sharedContexts,
     automationStore: bootAutomationStore,
@@ -9790,7 +9793,7 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
       coordinator.stop();
       automationScheduler.stop();
       shutdownPromise = (async () => {
-        const results = await Promise.allSettled([deps.manager.lifecycle.shutdown(), sharedContexts.shutdownAll()]);
+        const results = await Promise.allSettled([deps.manager.lifecycle.shutdown(), sharedContexts.shutdownAll(), terminalHistory.flushed()]);
         deps.manager.dispose();
         deps.store.flush({throwOnError: true});
         const failure = results.find(result => result.status === 'rejected');

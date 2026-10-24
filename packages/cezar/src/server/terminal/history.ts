@@ -8,25 +8,8 @@ import { SECRET_NAME_RE, redactSecrets } from '../../core/secret-redaction.ts';
 import { atomicWriteJson } from '../../workspace/config.ts';
 import { FRESH_SNAPSHOT_TIMEOUT_MS } from './foreground.ts';
 
-/**
- * The Code terminal's per-project history (spec `.ai/specs/2026-10-24-code-page-terminal.md`
- * §3.3): the lines the user typed at THIS project's shell prompts, newest first, deduped, capped.
- *
- * Read off the keystrokes the input routes already carry — the shell's own history file is per
- * shell, per user and shared across projects. A line counts only when its text is certain (plain
- * typing, backspace, a paste) and the shell sat at its prompt when it was begun: an arrow key,
- * a Tab or a Ctrl chord leaves the line unknown, and a busy shell is a program reading input — a
- * `sudo` or `ssh` password prompt among them — so neither is kept.
- *
- * "At its prompt" is a process-table read started on the line's first word and never awaited
- * by any keystroke (one shared `ps` per host, `freshSnapshotReader`): the shell has no child
- * then, or only the line's own command (one chunk can carry a whole line, and the shell forks it
- * while `ps` starts). An answer later than `PROMPT_CHECK_CAP_MS` keeps nothing.
- *
- * A secret-named assignment (`export GITHUB_TOKEN=…`) is stored with its value as `***`. What the
- * shell itself reads is kept as bash's own history keeps it: a heredoc body, and the answer to a
- * `read -s` run by a sourced script or a function (no child shows, no line says `read -s`).
- */
+/** The Code terminal's per-project history, read off the input routes' keystrokes: what is kept,
+ *  when, and how it is redacted is spec 2026-10-24-code-page-terminal §9. */
 
 export const HISTORY_CAP = TERMINAL_HISTORY_CAP;
 /** Longer than any line worth completing; past it the line is dropped rather than stored. */
@@ -228,11 +211,8 @@ function lineCommands(line: string): string[] {
 
 const baseName = (word: string): string => word.slice(word.lastIndexOf('/') + 1);
 
-/**
- * Whether a shell with these children was at its prompt for `line`: none, or each one the line's
- * own command — `ps` reads `node /usr/bin/npm run dev` for `npm run dev`, so either of its first
- * two words may be the name.
- */
+/** Whether a shell with these children was at its prompt for `line`: none, or each the line's own
+ *  command (either of its first two words, as `ps` shows `node /usr/bin/npm run dev`). */
 export function atPromptFor(children: readonly string[], line: string): boolean {
   const own = new Set(lineCommands(line).map(baseName));
   return children.every((child) => child.trim().split(/\s+/).slice(0, 2).some((word) => own.has(baseName(word))));
@@ -298,26 +278,16 @@ interface SessionState {
   guard: { since: number } | null;
 }
 
-/**
- * Every project's history, fed by the input routes. Nothing here is awaited by a keystroke: the
- * check runs beside the write, and writes are serialized per data directory; a failed write (a
- * read-only checkout) loses that line, nothing more.
- */
+/** Every project's history. Never awaited by a keystroke; writes are serialized per data
+ *  directory, and a failed one (a read-only checkout) loses that line only (spec §9). */
 export class TerminalHistory {
   private readonly sessions = new Map<string, SessionState>();
   private readonly writes = new Map<string, Promise<void>>();
 
   constructor(private readonly now: () => number = Date.now) {}
 
-  /**
-   * Keystrokes typed into one session of a project. Call it as they are written to the shell: a
-   * line's check starts here, with its first keystroke, so it sees the shell as the line found it.
-   *
-   * Each line of a chunk is judged on its own. Only the chunk's first line can have met a prompt
-   * — a paste's later lines reach the shell together with the Enter before them. Echo-off input
-   * (a program's own password prompt) is not visible from here at all; the process table, and the
-   * rules after `exec`, `read -s` and the programs in `READS_SECRET`, are what stand in for it.
-   */
+  /** Keystrokes as they are written to the shell: a line's check starts on its first word, and only
+   *  a chunk's first line can have met a prompt (spec §9). */
   typed(dataDir: string, sessionId: string, data: string, children: ShellChildren, secrets: HistorySecrets = noSecrets): void {
     let state = this.sessions.get(sessionId);
     if (!state) {

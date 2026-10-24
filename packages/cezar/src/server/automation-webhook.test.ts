@@ -139,6 +139,22 @@ describe('signature, wake and index', () => {
     expect(store.state('c')).toBeUndefined();
   });
 
+  it('never polls sooner than a minute after the last poll: wakes inside it collapse into one trailing poll', () => {
+    const store = AutomationStore.open(dataDir);
+    const definition = store.create({ name: 'a', enabled: true, events: ['push'], intervalSeconds: 300, filters: { lookbackDays: 7, maxRecords: 25 }, task: { prompt: 'x' } }, 'a');
+    const now = Date.parse('2026-10-24T00:00:00.000Z');
+    store.setState(definition.id, () => ({ lastSuccessAt: new Date(now - 10_000).toISOString(), nextCheckAt: new Date(now + 290_000).toISOString() }));
+    expect(wakeGithubPolls(store, now)).toBe(1);
+    expect(store.state(definition.id)?.nextCheckAt).toBe(new Date(now + 50_000).toISOString());
+    // A second wake inside the minute is the same trailing poll.
+    expect(wakeGithubPolls(store, now + 5_000)).toBe(0);
+    expect(store.state(definition.id)?.nextCheckAt).toBe(new Date(now + 50_000).toISOString());
+    // A poll more than a minute ago: due now.
+    store.setState(definition.id, (state) => ({ ...state, lastSuccessAt: new Date(now - 120_000).toISOString(), nextCheckAt: new Date(now + 180_000).toISOString() }));
+    expect(wakeGithubPolls(store, now)).toBe(1);
+    expect(store.state(definition.id)?.nextCheckAt).toBe(new Date(now).toISOString());
+  });
+
   it('marks a wake on a poll that is already due, so a poll in flight stays due after it persists', async () => {
     const store = AutomationStore.open(dataDir);
     const definition = store.create({ name: 'a', enabled: true, events: ['push'], intervalSeconds: 300, filters: { lookbackDays: 7, maxRecords: 25 }, task: { prompt: 'x' } }, 'a') as GithubAutomationDefinition;
@@ -153,7 +169,9 @@ describe('signature, wake and index', () => {
       },
     });
     await scheduler.check(definition);
-    expect(Date.parse(store.state(definition.id)!.nextCheckAt!)).toBeLessThanOrEqual(Date.now());
+    // Due again within the minute a wake waits after a poll, not an interval away.
+    expect(Date.parse(store.state(definition.id)!.nextCheckAt!)).toBeLessThanOrEqual(Date.now() + 60_000);
+    expect(Date.parse(store.state(definition.id)!.nextCheckAt!)).toBeGreaterThan(Date.now() + 50_000);
     // Without a wake, the next check is an interval away as always.
     await scheduler.check(definition);
     expect(Date.parse(store.state(definition.id)!.nextCheckAt!)).toBeGreaterThan(Date.now() + 200_000);

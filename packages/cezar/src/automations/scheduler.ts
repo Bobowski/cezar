@@ -9,6 +9,7 @@ import type { TrackerDriver } from '../server/tracker/types.ts';
 import type { TrackerFailure } from '@open-mercato/cezar-contract';
 import { TrackerPoller, type TrackerAutomationCandidate } from './tracker-poller.ts';
 import { isGithubAutomation, isScheduleAutomation, isTrackerAutomation, type AutomationRuntimeState, type GithubAutomationDefinition, type TrackerAutomationDefinition } from './types.ts';
+import { MIN_WAKE_POLL_MS } from './webhook.ts';
 
 const CURSOR_OVERLAP_MS = 120_000;
 
@@ -136,8 +137,8 @@ export class ProjectAutomationScheduler {
       launch: (candidate: GithubCandidate) => this.launch(definition, candidate),
       persist: (result, current) => {
         const cursor = laterCursor(current.cursor, result.cursor);
-        // A webhook wake that arrived while this poll ran stays due: its event may be past what
-        // this poll read (spec 2026-10-23-github-events §4).
+        // A webhook wake that arrived while this poll ran stays due — a minute on, the shortest
+        // gap a wake allows: its event may be past what this poll read (spec 2026-10-23-github-events §4).
         const wokenMeanwhile = !!current.wakeAt && current.wakeAt !== polledState.wakeAt;
         return {
           ...current, revision: definition.revision, cursor,
@@ -150,7 +151,7 @@ export class ProjectAutomationScheduler {
           ...(result.activity?.branchHeads ? { branchHeads: result.activity.branchHeads } : {}),
           ...(result.activity?.headsRepo ? { headsRepo: result.activity.headsRepo } : {}),
           lastSuccessAt: new Date().toISOString(),
-          nextCheckAt: new Date(Date.now() + (wokenMeanwhile ? 0 : definition.intervalSeconds * 1000)).toISOString(),
+          nextCheckAt: new Date(Date.now() + Math.min(wokenMeanwhile ? MIN_WAKE_POLL_MS : Number.POSITIVE_INFINITY, definition.intervalSeconds * 1000)).toISOString(),
           consecutiveFailures: 0,
           backoffUntil: undefined,
         };

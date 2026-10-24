@@ -173,7 +173,10 @@ the text above, and why:
   workspace scheduler's ordinary reschedule — the same leases, backoff and caps as a timer tick.
   Deliveries the 5-second window collapses arm one trailing wake at its end, and a wake that
   lands while a poll runs (`wakeAt` in the runtime state) keeps that poll due when it persists
-  instead of pushing it out a whole interval.
+  instead of pushing it out a whole interval. A wake never makes a poll due sooner than a minute
+  after its last one (`MIN_WAKE_POLL_MS`, the shortest interval): wakes inside that minute
+  collapse into one trailing poll at its end, so a burst of deliveries cannot spend the rate
+  limit.
 - **Owner lookup** also counts the PR a run created (`pullRequestUrl`) and its `prRefs`, never a
   `pr-head` verifier or a run whose worktree is gone. A delivery takes the ladder a person's
   message takes (queued run → prompt queue of a live session → buffered start → Continue); an

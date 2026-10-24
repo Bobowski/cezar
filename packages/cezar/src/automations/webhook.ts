@@ -19,6 +19,8 @@ import { atomicWriteJsonSync } from '../workspace/config.ts';
 export const WEBHOOK_FILE = 'github-webhook.json';
 /** One wake per project per window; deliveries inside it collapse into the wake already done. */
 export const WAKE_WINDOW_MS = 5_000;
+/** However many deliveries arrive, a poll runs at most once a minute (the shortest interval). */
+export const MIN_WAKE_POLL_MS = 60_000;
 /** What GitHub is asked to send — the events the poll sources read, nothing else. */
 export const WEBHOOK_EVENTS = [
   'pull_request', 'pull_request_review', 'pull_request_review_comment', 'issue_comment',

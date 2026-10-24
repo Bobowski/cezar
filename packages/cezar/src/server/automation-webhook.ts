@@ -13,6 +13,7 @@ import {
   registerGithubHook,
   sameHookId,
   verifySignature,
+  MIN_WAKE_POLL_MS,
   WakeThrottle,
   webhookPath,
   writeWebhook,
@@ -39,9 +40,11 @@ export interface HookProject {
 const hookParamsSchema = z.object({ sender: z.string(), hookId: z.string() });
 
 /**
- * Due now: every enabled GitHub poll of the project that is not backed off. `wakeAt` is stamped
- * on an already-due one too, so a poll in flight sees that a wake arrived and its `persist` keeps
- * it due instead of pushing it out a whole interval. Returns how many became due.
+ * Due now — or a minute after its last poll (`MIN_WAKE_POLL_MS`), so a burst of deliveries is one
+ * trailing poll — for every enabled GitHub poll of the project that is not backed off. `wakeAt` is
+ * stamped on one already due as well, so a poll in flight sees that a wake arrived and its
+ * `persist` keeps it due soon instead of pushing it out a whole interval. Returns how many moved
+ * earlier.
  */
 export function wakeGithubPolls(store: AutomationStore, now = Date.now()): number {
   const at = new Date(now).toISOString();
@@ -50,9 +53,12 @@ export function wakeGithubPolls(store: AutomationStore, now = Date.now()): numbe
     if (!definition.enabled || !isGithubAutomation(definition)) continue;
     const state = store.state(definition.id);
     if (state?.backoffUntil && Date.parse(state.backoffUntil) > now) continue;
-    const due = !!state?.nextCheckAt && Date.parse(state.nextCheckAt) <= now;
-    store.setState(definition.id, (current) => ({ ...current, wakeAt: at, ...(due ? {} : { nextCheckAt: at }) }));
-    if (!due) woke += 1;
+    const lastPoll = state?.lastSuccessAt ? Date.parse(state.lastSuccessAt) : Number.NaN;
+    const target = Number.isFinite(lastPoll) ? Math.max(now, lastPoll + MIN_WAKE_POLL_MS) : now;
+    const scheduled = state?.nextCheckAt ? Date.parse(state.nextCheckAt) : Number.POSITIVE_INFINITY;
+    const sooner = !(scheduled <= target);
+    store.setState(definition.id, (current) => ({ ...current, wakeAt: at, ...(sooner ? { nextCheckAt: new Date(target).toISOString() } : {}) }));
+    if (sooner) woke += 1;
   }
   return woke;
 }

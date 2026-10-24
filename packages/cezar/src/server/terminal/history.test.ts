@@ -139,6 +139,16 @@ describe('history folding', () => {
     expect(historyLine('curl https://x.io/a?page=2&sort=name')).toBe('curl https://x.io/a?page=2&sort=name');
   });
 
+  it('stores a line that is only a long base64 or hex blob as ***: a token pasted at the prompt', () => {
+    expect(historyLine('dGhpcyBpcyBhIHNlY3JldCB0b2tlbiB0aGF0IHdhcyBwYXN0ZWQgYnkgbWlzdGFrZQ==')).toBe('***');
+    expect(historyLine('Zm9vYmFyMTIzX2Jhel9xdXV4LWNvcnJlY3QtaG9yc2UtYmF0dGVyeS1zdGFwbGUtOTk')).toBe('***');
+    expect(historyLine('9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08')).toBe('***');
+    // A command word, a short hash or a long plain name is no pasted token.
+    expect(historyLine('git checkout 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08')).not.toBe('***');
+    expect(historyLine('3b039edc9f86d081884c7d659a2feaa0c55ad015')).toBe('3b039edc9f86d081884c7d659a2feaa0c55ad015');
+    expect(historyLine('run-the-very-long-named-integration-suite-against-staging-now')).toBe('run-the-very-long-named-integration-suite-against-staging-now');
+  });
+
   it('stores no secret kubectl --from-literal carries', () => {
     expect(historyLine('kubectl create secret generic db --from-literal=password=hunter2'))
       .toBe('kubectl create secret generic db --from-literal=password=***');

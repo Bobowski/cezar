@@ -117,6 +117,7 @@ export function historyLine(raw: string, secrets: readonly string[] = []): strin
 /** `line` with every credential it may carry masked (spec 2026-10-24-code-page-terminal §9): shapes as `***`,
  *  `secrets` (host env, live runs, stored secrets) and token shapes as `[REDACTED]`. Idempotent. */
 export function redactHistoryLine(line: string, secrets: readonly string[] = []): string {
+  if (loneBlob(line)) return '***';
   // URL userinfo first: `https://x-access-token:…@` is no header.
   // A query parameter before assignments: `'…&key=x'` is no shell assignment, and its quote stays.
   let out = redactAssignments(line.replace(QUERY_PARAM, (whole, lead: string, name: string) => (secretName(name) ? `${lead}${name}=***` : whole)))
@@ -134,6 +135,15 @@ export function redactHistoryLine(line: string, secrets: readonly string[] = [])
     out = out.replace(HERE_STRING, '<<< ***').replace(ECHOED, '$1$2$3 ***');
   }
   return redactSecrets(out, secrets);
+}
+
+/** A line that is one 60+ character hex or base64 word — a token pasted at the prompt, no command.
+ *  Base64 must mix digits and both cases, so a long hyphenated script name is not one. */
+function loneBlob(line: string): boolean {
+  const word = line.trim();
+  if (word.length < 60 || /\s/.test(word)) return false;
+  if (/^[0-9a-f]+$/i.test(word)) return true;
+  return /^[A-Za-z0-9+/_-]+={0,2}$/.test(word) && /\d/.test(word) && /[a-z]/.test(word) && /[A-Z]/.test(word);
 }
 
 /** A shell word: quoted (closed or not), or up to the next separator or quote. */

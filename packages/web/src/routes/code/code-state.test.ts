@@ -297,8 +297,22 @@ describe('Browser tabs as pages (spec 2026-10-24-code-page-browser-tabs)', () =>
     expect(withPages(raw, 'main', [])).toEqual([{ tree: 'main', pages: [] }, { tree: 'run-1', pages: [{ id: 'b1', url: A, group: 0 }] }])
     const many = Array.from({ length: 12 }, (_, at) => ({ tree: `run-${at}`, pages: [] }))
     expect(withPages(many, 'main', [])).toHaveLength(8)
-    // Past the cap a checkout with no pages goes first, so main's pages are not pushed out by visits.
-    const full = [{ tree: 'run-0', pages: [] }, ...Array.from({ length: 7 }, (_, at) => ({ tree: `run-${at + 1}`, pages: [{ id: 'b1', url: A, group: 0 }] }))]
-    expect(withPages(full, 'main', [{ id: 'b1', url: B, group: 0 }]).map((entry) => entry.tree)).toEqual(['main', 'run-1', 'run-2', 'run-3', 'run-4', 'run-5', 'run-6', 'run-7'])
+  })
+
+  it('past the checkout cap drops the least recently saved task tree — never main, never this one', () => {
+    const page = [{ id: 'b1', url: A, group: 0 }]
+    const trees = (list: Array<{ tree: string }>) => list.map((entry) => entry.tree)
+    // Most recent first; main is the oldest entry, with pages, and a task tree is saved now.
+    const full = [...Array.from({ length: 7 }, (_, at) => ({ tree: `run-${at + 1}`, pages: page })), { tree: 'main', pages: page }]
+    expect(trees(withPages(full, 'run-9', page))).toEqual(['run-9', 'run-1', 'run-2', 'run-3', 'run-4', 'run-5', 'run-6', 'main'])
+    // main is kept with NO pages too: "everything closed" must not turn back into "never saved".
+    const closed = [...Array.from({ length: 7 }, (_, at) => ({ tree: `run-${at + 1}`, pages: page })), { tree: 'main', pages: [] }]
+    const kept = withPages(closed, 'run-9', page)
+    expect(savedPagesFor(kept, 'main')).toEqual([])
+    // An empty entry is a saved answer like any other: it is not dropped ahead of older ones.
+    const recent = [{ tree: 'run-0', pages: [] }, ...Array.from({ length: 7 }, (_, at) => ({ tree: `run-${at + 1}`, pages: page }))]
+    const pruned = withPages(recent, 'main', page)
+    expect(trees(pruned)).toEqual(['main', 'run-0', 'run-1', 'run-2', 'run-3', 'run-4', 'run-5', 'run-6'])
+    expect(savedPagesFor(pruned, 'run-0')).toEqual([])
   })
 })

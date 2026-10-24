@@ -13,6 +13,49 @@
  * CLIs work from any shell given the address, so that is what they are told.
  */
 import { readHostKey } from './auth/host-key.ts';
+import { isLoopbackHost } from './server/capabilities.ts';
+
+/**
+ * The credential a cockpit-facing CLI presents: a token it was given, else — for a person at a
+ * shell, never a task, and only toward THIS machine — the host key. The host key is a local
+ * secret: `--server https://elsewhere` must never carry it off the box.
+ */
+export function cockpitCredential(env: { CEZ_API_TOKEN?: string; CEZ_TASK_ID?: string; CEZ_API_URL?: string }): string | undefined {
+  if (env.CEZ_API_TOKEN) return env.CEZ_API_TOKEN;
+  if (env.CEZ_TASK_ID) return undefined;
+  let hostname: string | undefined;
+  try {
+    hostname = env.CEZ_API_URL ? new URL(env.CEZ_API_URL).hostname : undefined;
+  } catch {
+    return undefined;
+  }
+  return hostname === undefined || isLoopbackHost(hostname) ? readHostKey() : undefined;
+}
+
+/**
+ * `cez --server <url> --token <token> <command>` (spec 2026-10-24-cezar-mcp-server §4): the flags,
+ * anywhere on the line, become `CEZ_API_URL` / `CEZ_API_TOKEN` for the cockpit-facing commands;
+ * without them `CEZ_SERVER` / `CEZ_TOKEN` fill in what a task's own environment did not set.
+ * Answers the arguments with the two flags taken out.
+ */
+export function takeServerFlags(args: readonly string[], env: NodeJS.ProcessEnv): string[] {
+  const rest: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    const match = /^--(server|token)(?:=(.*))?$/.exec(arg);
+    if (!match) {
+      rest.push(arg);
+      continue;
+    }
+    const value = match[2] ?? args[++index];
+    if (value === undefined || value === '') throw new Error(`--${match[1]} needs a value`);
+    if (match[1] === 'server') env.CEZ_API_URL = value;
+    else env.CEZ_API_TOKEN = value;
+  }
+  if (!env.CEZ_API_URL && env.CEZ_SERVER) env.CEZ_API_URL = env.CEZ_SERVER;
+  if (!env.CEZ_API_TOKEN && env.CEZ_TOKEN) env.CEZ_API_TOKEN = env.CEZ_TOKEN;
+  return rest;
+}
 
 export const DEFAULT_COCKPIT_URL = 'http://127.0.0.1:4321';
 
@@ -44,9 +87,9 @@ export function missingCockpitMessage(message: MissingCockpitMessage, env: { CEZ
  */
 export function withCockpitAuth<T extends { fetch: typeof fetch }>(
   io: T,
-  env: { CEZ_API_TOKEN?: string; CEZ_TASK_ID?: string },
+  env: { CEZ_API_TOKEN?: string; CEZ_TASK_ID?: string; CEZ_API_URL?: string },
 ): T {
-  const token = env.CEZ_API_TOKEN || (env.CEZ_TASK_ID ? undefined : readHostKey());
+  const token = cockpitCredential(env);
   if (!token) return io;
   return {
     ...io,

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ensureHostKey, readHostKey } from './auth/host-key.ts';
-import { withCockpitAuth } from './cockpit-address.ts';
+import { takeServerFlags, withCockpitAuth } from './cockpit-address.ts';
 
 describe('withCockpitAuth', () => {
   let home: string;
@@ -35,5 +35,38 @@ describe('withCockpitAuth', () => {
     await withCockpitAuth(io, {}).fetch('http://x/api');
     expect(new Headers(calls[0]![1]!.headers).get('authorization')).toBe(`Bearer ${readHostKey()}`);
     expect(withCockpitAuth(io, { CEZ_TASK_ID: 'r1' })).toBe(io);
+  });
+
+  it('never carries the host key to another machine — `--server https://elsewhere` needs a token', async () => {
+    ensureHostKey();
+    expect(withCockpitAuth(io, { CEZ_API_URL: 'https://agents.example.dev' })).toBe(io);
+    expect(withCockpitAuth(io, { CEZ_API_URL: 'http://127.0.0.1:4321' })).not.toBe(io);
+    expect(withCockpitAuth(io, { CEZ_API_URL: 'http://localhost:4321' })).not.toBe(io);
+    await withCockpitAuth(io, { CEZ_API_URL: 'https://agents.example.dev', CEZ_API_TOKEN: 'ceztok_x' }).fetch('https://agents.example.dev/api');
+    expect(new Headers(calls[0]![1]!.headers).get('authorization')).toBe('Bearer ceztok_x');
+  });
+});
+
+describe('cez --server / --token', () => {
+  it('takes both flags anywhere on the line, in either spelling, into the CLI address variables', () => {
+    const env: NodeJS.ProcessEnv = {};
+    expect(takeServerFlags(['--server', 'https://a.dev', 'task', 'create', 'x', '--token=ceztok_1'], env)).toEqual(['task', 'create', 'x']);
+    expect(env).toMatchObject({ CEZ_API_URL: 'https://a.dev', CEZ_API_TOKEN: 'ceztok_1' });
+  });
+
+  it('beats a task’s own address; CEZ_SERVER / CEZ_TOKEN only fill what is unset', () => {
+    const flagged: NodeJS.ProcessEnv = { CEZ_API_URL: 'http://127.0.0.1:4321' };
+    takeServerFlags(['--server=https://b.dev'], flagged);
+    expect(flagged.CEZ_API_URL).toBe('https://b.dev');
+    const task: NodeJS.ProcessEnv = { CEZ_API_URL: 'http://127.0.0.1:4321', CEZ_API_TOKEN: 'cezrun_1', CEZ_SERVER: 'https://c.dev', CEZ_TOKEN: 'ceztok_2' };
+    takeServerFlags([], task);
+    expect(task).toMatchObject({ CEZ_API_URL: 'http://127.0.0.1:4321', CEZ_API_TOKEN: 'cezrun_1' });
+    const shell: NodeJS.ProcessEnv = { CEZ_SERVER: 'https://c.dev', CEZ_TOKEN: 'ceztok_2' };
+    takeServerFlags([], shell);
+    expect(shell).toMatchObject({ CEZ_API_URL: 'https://c.dev', CEZ_API_TOKEN: 'ceztok_2' });
+  });
+
+  it('refuses a flag without a value', () => {
+    expect(() => takeServerFlags(['task', '--server'], {})).toThrow(/--server needs a value/);
   });
 });

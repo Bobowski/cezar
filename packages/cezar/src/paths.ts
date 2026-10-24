@@ -244,3 +244,44 @@ export function authAuditPath(env: NodeJS.ProcessEnv = process.env): string {
 export function authHostKeyPath(env: NodeJS.ProcessEnv = process.env): string {
   return join(cezarHomeDir(env), 'auth-host.key');
 }
+
+/** Backup state (spec `2026-10-23-backup-restore.md` §7): the local archives, the remote target
+ *  (`0600`, it holds the one secret cezar keeps) and the recipient + schedule. */
+export function backupsDir(env: NodeJS.ProcessEnv = process.env): string {
+  return join(cezarHomeDir(env), 'backups');
+}
+
+export function backupTargetPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(cezarHomeDir(env), 'backup-target.json');
+}
+
+export function backupStatePath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(cezarHomeDir(env), 'backup.json');
+}
+
+/** The agents' and git's own state a backup carries beside `CEZ_HOME` (spec 2026-10-23 §3). In the
+ *  container each is relocated under `/data` by its env var; elsewhere it is the tool's default.
+ *  `claudeState` is Claude's `.claude.json` when it lives OUTSIDE its config dir (no override). */
+export interface AgentStateLocations {
+  claude: string;
+  claudeState: string | null;
+  codex: string;
+  gh: string;
+  ssh: string;
+  gitconfig: string;
+}
+
+export function agentStateLocations(env: NodeJS.ProcessEnv = process.env): AgentStateLocations {
+  const home = env.HOME || env.USERPROFILE || homedir();
+  const { claude, codex } = agentHomePaths(env);
+  const state = claudeStateFilePath(claude, env);
+  const xdgConfig = env.XDG_CONFIG_HOME?.trim() || join(home, '.config');
+  return {
+    claude,
+    claudeState: dirname(state) === claude ? null : state,
+    codex,
+    gh: env.GH_CONFIG_DIR?.trim() || join(xdgConfig, 'gh'),
+    ssh: join(home, '.ssh'),
+    gitconfig: env.GIT_CONFIG_GLOBAL?.trim() || join(home, '.gitconfig'),
+  };
+}

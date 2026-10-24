@@ -366,3 +366,37 @@ describe.skipIf(!haveShell)('the container launcher', () => {
     expect(run.stdout).toContain(' update');
   });
 });
+
+// docker/image-install.sh: a token pasted with CEZ_SOURCE_REMOTE never reaches source.json.
+describe.skipIf(!haveBootTools)('the image install', () => {
+  const INSTALL = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../../docker/image-install.sh');
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cez-image-install-'));
+    mkdirSync(join(dir, 'package'));
+    writeFileSync(join(dir, 'package', 'package.json'), JSON.stringify({ name: '@open-mercato/cezar', version: '0.17.0' }));
+    expect(spawnSync('tar', ['-czf', join(dir, 'cezar.tgz'), '-C', dir, 'package']).status).toBe(0);
+    mkdirSync(join(dir, 'bin'));
+    // `npm install --prefix <dir> …`: lay the entry down instead of installing.
+    writeFileSync(join(dir, 'bin', 'npm'), `#!/bin/sh\nmkdir -p "$3/${ENTRY.replace(/\/index\.js$/, '')}" && touch "$3/${ENTRY}"\n`);
+    chmodSync(join(dir, 'bin', 'npm'), 0o755);
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it.each([
+    ['https://ghp_abc123@github.com/x/y.git', 'https://github.com/x/y.git'],
+    ['https://github_pat_11AB_cd@github.com/x/y.git', 'https://github.com/x/y.git'],
+    ['https://user:token@github.com/x/y.git', 'https://github.com/x/y.git'],
+    ['ssh://git@github.com/x/y.git', 'ssh://git@github.com/x/y.git'],
+    ['git@github.com:x/y.git', 'git@github.com:x/y.git'],
+  ])('records %s as %s', (given, want) => {
+    const run = spawnSync('sh', [INSTALL, join(dir, 'cezar.tgz'), join(dir, 'opt')], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${join(dir, 'bin')}:${process.env.PATH ?? ''}`, CEZ_SOURCE_COMMIT: 'c0ffee00aabb', CEZ_SOURCE_BRANCH: 'brutus', CEZ_SOURCE_REMOTE: given, CEZ_SOURCE_COMMITTED_AT: '2026-10-20T00:00:00Z' },
+    });
+    expect(run.status, run.stderr).toBe(0);
+    const source = readFileSync(join(dir, 'opt', 'source.json'), 'utf8');
+    expect(JSON.parse(source).remote).toBe(want);
+    expect(source).not.toMatch(/ghp_|github_pat_|token/);
+  });
+});

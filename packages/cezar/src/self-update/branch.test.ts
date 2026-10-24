@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { isUpdateRemote, redactRemote } from '@open-mercato/cezar-contract';
+
 import { mergeWriteWorkspaceConfig } from '../workspace/config.ts';
 import { parseUpdateBranch, processStartTicks, sourceLockHolder, sourceLockPath, takeOverStaleLock } from './branch.ts';
 import { runSelfUpdateCommand } from './cli.ts';
@@ -147,6 +149,24 @@ describe('which branch the channel follows', () => {
     for (const bad of ['file:///srv/cezar#main', '/srv/cezar#main', 'ssh://-oProxyCommand=x/y#main', 'git@-oProxyCommand:x#main', 'https://user:token@github.com/x/y.git#main', 'https://github.com/x/y.git#--upload-pack=x', 'https://github.com/x/y.git#a..b', 'https://github.com/x/y.git', '#main']) {
       expect(parseUpdateBranch(bad)).toBeNull();
     }
+  });
+
+  it('refuses any credentials before an https host, a bare token as the username too', () => {
+    for (const bad of ['https://ghp_abc123@github.com/x/y.git', 'https://github_pat_11AB_cd@github.com/x/y.git', 'https://user@github.com/x/y.git']) {
+      expect(isUpdateRemote(bad)).toBe(false);
+      expect(parseUpdateBranch(`${bad}#main`)).toBeNull();
+    }
+    // ssh keeps its user: the key, not the URL, is the credential.
+    expect(isUpdateRemote('ssh://git@github.com/x/y.git')).toBe(true);
+    expect(isUpdateRemote('git@github.com:x/y.git')).toBe(true);
+  });
+
+  it('redacts a remote\'s credentials wherever it is shown, whatever an old value holds', () => {
+    expect(redactRemote('https://ghp_abc123@github.com/x/y.git')).toBe('https://***@github.com/x/y.git');
+    expect(redactRemote('https://user:tok@en@github.com/x/y.git')).toBe('https://***@github.com/x/y.git');
+    expect(redactRemote('http://github_pat_11AB@host/x.git')).toBe('http://***@host/x.git');
+    expect(redactRemote('ssh://u:secret@host/x.git')).toBe('ssh://***@host/x.git');
+    for (const kept of ['https://github.com/x/y.git', 'ssh://git@github.com/x/y.git', 'git@github.com:x/y.git']) expect(redactRemote(kept)).toBe(kept);
   });
 
   it('prefers the saved branch, then CEZ_UPDATE_BRANCH, then the image source', async () => {

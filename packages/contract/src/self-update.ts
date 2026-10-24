@@ -19,11 +19,18 @@ export type UpdateChannel = z.infer<typeof updateChannelSchema>;
  *  Never a local path or `file://` — a remote is code the server will build and run. */
 export function isUpdateRemote(value: string): boolean {
   if (value.length > 512 || /\s/.test(value) || value.startsWith('-')) return false;
-  // A host or user that starts with `-` is an ssh option in disguise; credentials in the URL
-  // would land in config.json — the fetch uses the git credentials already on the machine.
+  // A host or user that starts with `-` is an ssh option in disguise.
   if (/^git@[A-Za-z0-9][A-Za-z0-9.-]*:[A-Za-z0-9._~][A-Za-z0-9._~/-]*$/.test(value)) return true;
-  // No `URL` here: the contract is lib-free (ES2022 only). `scheme://[user@]host[:port]/path`.
-  return /^(https|ssh):\/\/([A-Za-z0-9][A-Za-z0-9._~-]*@)?[A-Za-z0-9][A-Za-z0-9.-]*(:\d{1,5})?\/[A-Za-z0-9._~/-]+$/.test(value);
+  // No `URL` here: the contract is lib-free (ES2022 only). https takes no userinfo at all — a bare
+  // `ghp_…@` is a token as surely as `user:token@`; credentials belong in git's helper or the ssh key.
+  if (/^https:\/\/[A-Za-z0-9][A-Za-z0-9.-]*(:\d{1,5})?\/[A-Za-z0-9._~/-]+$/.test(value)) return true;
+  return /^ssh:\/\/([A-Za-z0-9][A-Za-z0-9._~-]*@)?[A-Za-z0-9][A-Za-z0-9.-]*(:\d{1,5})?\/[A-Za-z0-9._~/-]+$/.test(value);
+}
+
+/** A remote as it may be shown or logged: an http(s) URL's userinfo, or any `user:password@`,
+ *  masked — so even a value saved before `isUpdateRemote` refused it never leaks a token. */
+export function redactRemote(value: string): string {
+  return value.replace(/^(https?:\/\/)[^/]*@/i, '$1***@').replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/@]*:[^/]*@/, '$1***@');
 }
 
 /** A branch name git accepts and no argument parser mistakes for an option. */
@@ -43,7 +50,7 @@ export function isUpdateBranchName(value: string): boolean {
 
 /** The branch the `branch` channel follows. */
 export const updateBranchSchema = z.object({
-  remote: z.string().refine(isUpdateRemote, 'remote must be an https://, ssh:// or git@host:path URL'),
+  remote: z.string().refine(isUpdateRemote, 'remote must be an https://, ssh:// or git@host:path URL with no credentials in it'),
   branch: z.string().refine(isUpdateBranchName, 'branch must be a plain branch name'),
 });
 export type UpdateBranch = z.infer<typeof updateBranchSchema>;

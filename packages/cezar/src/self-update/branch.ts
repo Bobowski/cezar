@@ -12,7 +12,7 @@ import { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, ren
 import { join } from 'node:path';
 import { z } from 'zod';
 
-import { updateBranchSchema, type SelfUpdateBranch, type UpdateBranch, type UpdateCommit } from '@open-mercato/cezar-contract';
+import { redactRemote, updateBranchSchema, type SelfUpdateBranch, type UpdateBranch, type UpdateCommit } from '@open-mercato/cezar-contract';
 
 import { REPO_FETCH_INTERVAL_MS } from '../git-sync.ts';
 import { cezarHomeDir } from '../paths.ts';
@@ -398,7 +398,7 @@ export class BranchSource {
     target: UpdateBranch,
     running: UpdateCommit | null,
   ): Promise<Omit<SelfUpdateBranch, 'fetchedAt' | 'error'> & { tipId: string | null }> {
-    const base = { remote: target.remote, branch: target.branch, running };
+    const base = { remote: redactRemote(target.remote), branch: target.branch, running };
     const tipSha = await this.tipSha(target);
     const tip = tipSha ? await this.commit(tipSha) : null;
     if (!tip) return { ...base, tip: null, behind: 0, fastForward: true, touchesImage: [], tipId: null };

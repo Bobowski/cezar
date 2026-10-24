@@ -18,6 +18,7 @@ import type {
   UpdateChannel,
   UpdateCommit,
 } from '@open-mercato/cezar-contract';
+import { redactRemote } from '@open-mercato/cezar-contract';
 
 import { loadWorkspaceConfig, mergeWriteWorkspaceConfig } from '../workspace/config.ts';
 import type { WorkspaceSemaphore } from '../workspace/semaphore.ts';
@@ -595,7 +596,7 @@ export class SelfUpdateService {
     // One build in the clone at a time, across processes: the server's job and `cezar update`.
     const release = this.source.lock(branch);
     try {
-      log(`fetching ${branch.branch} from ${branch.remote}`);
+      log(`fetching ${branch.branch} from ${redactRemote(branch.remote)}`);
       await this.fetchBranch(branch);
       if (this.check.error) log(`fetch failed (${this.check.error}) — building from the clone as it is`);
       const short = target.split('+').pop() ?? '';

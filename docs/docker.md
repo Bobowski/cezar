@@ -87,11 +87,12 @@ docker compose -f docker/compose.yml up -d --build
 ```
 
 Give `CEZ_SOURCE_REMOTE` as a plain URL — `https://…`, `ssh://…` or `git@…`, the repository you
-build from. Never paste `$(git remote get-url origin)` when that URL carries a token
-(`https://user:token@…`): the updater rejects it (`isUpdateRemote`), so the image follows
-nothing, and as a build arg the token is baked into the image's history (`docker history`) for
-anyone who can pull it. A private repository is fetched with the container's `gh` login or
-`/data/ssh` instead.
+build from. Never paste `$(git remote get-url origin)` when that URL carries a token — anything
+before the host, `https://user:token@…` or a bare `https://ghp_…@…`: the updater refuses any
+`https://` remote with a `user@` in it (`isUpdateRemote`), the image records only the plain URL
+in `source.json`, but as a build arg the token is still baked into the image's history
+(`docker history`) for anyone who can pull it. A private repository is fetched with the
+container's `gh` login or `/data/ssh` instead.
 
 From then on the version chip lights up when that branch has new commits (one bounded
 `git fetch` at most every five minutes, only while a cockpit is open; `CEZ_SELF_UPDATE_CHECK=0`

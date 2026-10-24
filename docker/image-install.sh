@@ -31,11 +31,14 @@ jq -n \
    + (if $sha != "" and $at != "" then {commit: {sha: $sha, subject: "", at: $at, branch: $branch}} else {} end)' \
   >"$dir/.cezar-install.json"
 
+# A token pasted with the URL (`https://ghp_…@…`, `user:token@`) never reaches source.json, which
+# every container reads: the plain URL is recorded, and fetched with the container's own git login.
+remote=$(printf '%s' "${CEZ_SOURCE_REMOTE:-}" | sed -E -e 's#^(https?://)[^/]*@#\1#' -e 's#^(ssh://)[^/@]*:[^/]*@#\1#')
 if [ -n "$commit" ]; then
   jq -n \
     --arg commit "$commit" \
     --arg branch "${CEZ_SOURCE_BRANCH:-}" \
-    --arg remote "${CEZ_SOURCE_REMOTE:-}" \
+    --arg remote "$remote" \
     --arg at "$committed_at" \
     '{commit: $commit, branch: $branch, remote: $remote, committedAt: $at}' >"$root/source.json"
 fi

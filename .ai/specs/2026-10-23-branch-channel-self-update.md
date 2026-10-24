@@ -69,7 +69,8 @@ Seeds, lowest precedence first: `CEZ_UPDATE_CHANNEL=branch` and
 `CEZ_UPDATE_BRANCH=<remote>#<branch>` (the same precedence `CEZ_UPDATE_CHANNEL` has today — a
 value saved from the dialog wins); in the container, the image's own source (§4.5). Both keys
 are optional with `.catch`, like every workspace-config field. `remote` must parse as an
-`https://` or `ssh://`/`git@` git URL; `branch` passes `isSafeGitRef`.
+`https://` (with no userinfo: a bare `ghp_…@` is a token too) or `ssh://`/`git@` git URL, and
+is shown and logged through `redactRemote`; `branch` passes `isSafeGitRef`.
 
 As built: precedence is resolved at READ time, and no seed is ever written. A save through the
 dialog or `cezar update --channel` also writes `updateChannelSource: "user"`, and only a marked

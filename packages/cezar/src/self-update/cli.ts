@@ -6,6 +6,8 @@
 
 import { resolve } from 'node:path';
 
+import { redactRemote } from '@open-mercato/cezar-contract';
+
 import { branchOf, cezarPackageRoot, discoverCheckouts } from './checkouts.ts';
 import { activate, activeId, findInstalled, linkCheckout, listInstalled, listLinks, removeInstalled } from './layout.ts';
 import { ensurePathHook, isOnPath, writeLaunchers } from './launcher.ts';
@@ -151,7 +153,7 @@ async function checkCommand(service: SelfUpdateService, channel: Channel): Promi
       console.log('  no branch to follow — set CEZ_UPDATE_BRANCH=<remote>#<branch> or pick one in the cockpit\n');
       return 1;
     }
-    console.log(`  following ${branch.branch} of ${branch.remote}`);
+    console.log(`  following ${branch.branch} of ${redactRemote(branch.remote)}`);
     console.log(`  running   ${branch.running ? commitLine(branch.running) : 'a build not made from this branch'}`);
     console.log(`  tip       ${branch.tip ? commitLine(branch.tip) : '— (not fetched yet)'}`);
     if (branch.error) console.log(`  ✗ fetch failed: ${branch.error}`);

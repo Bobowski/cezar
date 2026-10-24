@@ -12,8 +12,8 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemSeparat
 import type { DockerConfirmRequest } from './docker-confirm'
 import { formatBytes } from './docker-format'
 
-/** A volume with data and no container: the orphaned task database this view exists for. */
-export const isOrphanedData = (volume: DockerVolume): boolean => (volume.sizeBytes ?? 0) > 0 && volume.usedBy.length === 0
+/** A volume with data and no container: the orphaned task database this view exists for. An unknown size may be data. */
+export const isOrphanedData = (volume: DockerVolume): boolean => (volume.sizeBytes === null || volume.sizeBytes > 0) && volume.usedBy.length === 0
 
 /**
  * The confirm for one volume. Docker refuses a volume any container still mounts, stopped or not,

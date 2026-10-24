@@ -55,6 +55,7 @@ const VOLUMES: DockerVolumes = {
     { name: 'shop-b_pg', driver: 'local', sizeBytes: 48e6, stack: 'shop-b', project: { id: 'b', name: 'Shop B' }, mine: false, usedBy: [{ id: B, name: 'shop-b-postgres-1', running: true }] },
     { name: 'ffp-3900_pg', driver: 'local', sizeBytes: 330e6, stack: 'ffp-3900', project: null, mine: false, usedBy: [] },
     { name: 'scratch', driver: 'local', sizeBytes: 0, stack: null, project: null, mine: false, usedBy: [] },
+    { name: 'unsized', driver: 'local', sizeBytes: null, stack: null, project: null, mine: false, usedBy: [] },
   ],
 }
 const DISK: DockerDisk = {
@@ -211,6 +212,13 @@ describe('Docker management (spec 2026-10-23-docker-management)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete scratch' }))
     dialog = await confirmDialog()
     expect(within(dialog).queryByRole('textbox')).toBeNull()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+
+    // A size Docker did not report may be data: unknown is never taken for empty.
+    fireEvent.click(screen.getByRole('button', { name: 'Delete unsized' }))
+    dialog = await confirmDialog()
+    expect(within(dialog).queryByRole('textbox')).not.toBeNull()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
 

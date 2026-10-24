@@ -110,6 +110,23 @@ describe('TerminalHistory', () => {
     expect(readFileSync(join(dataDir, 'terminal-history.json'), 'utf8')).not.toContain('passw0rd');
   });
 
+  it('checks no line begun after an Enter or Ctrl+C in the same chunk, even one that ends an earlier line', async () => {
+    let now = 0;
+    const history = new TerminalHistory(() => now);
+    let asked = 0;
+    const children = async () => { asked += 1; return []; };
+    history.typed(dataDir, 's1', 'mysql -u root -p', children);
+    // The Enter and the password typed ahead of the prompt arrive as one chunk.
+    history.typed(dataDir, 's1', '\rhunter2\r', children);
+    now = 5_000;
+    history.typed(dataDir, 's1', 'npm run dev', children);
+    history.typed(dataDir, 's1', '\x03s3cret\r', children);
+    await history.flushed();
+    expect(asked).toBe(2);
+    expect(await readTerminalHistory(dataDir)).toEqual(['mysql -u root -p']);
+    expect(readFileSync(join(dataDir, 'terminal-history.json'), 'utf8')).not.toMatch(/hunter2|s3cret/);
+  });
+
   it('keeps nothing after `exec`, which replaced the shell, and not the line `read -s` read', async () => {
     const history = new TerminalHistory();
     // `exec ssh`: the shell IS ssh now, so its table shows no child while the password is typed.

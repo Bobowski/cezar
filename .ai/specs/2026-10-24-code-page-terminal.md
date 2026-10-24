@@ -122,7 +122,8 @@ gateway that `CEZ_PREVIEW_PORTS` already configures for the VPS image.
   line asks nothing; one `ps` runs at a time per host, a burst shares the one read queued behind
   it (never a read begun before it asked), and a `ps` past 300 ms is killed. Each line of a chunk is judged alone, and
   only a chunk's first line can have met a prompt: a pasted `ssh host⏎passw0rd⏎` keeps
-  `ssh host`. What the table cannot see is ruled by text: after `exec …` nothing is kept again
+  `ssh host`, and nothing begun after an Enter, Ctrl+C or Ctrl+Z in the same chunk is checked —
+  `⏎hunter2⏎` finishing an earlier line keeps only that line. What the table cannot see is ruled by text: after `exec …` nothing is kept again
   (the shell's own pid became the program), the line after `read -s` is never kept, and after
   `ssh`/`sudo`/`su`/`doas`/`passwd`/`gpg`/`ssh-add`/`ssh-keygen` a line is kept only once a check
   begun 500 ms or more later confirms the prompt (a line typed ahead may beat the fork). Echo-off

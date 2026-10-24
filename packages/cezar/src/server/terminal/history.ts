@@ -35,9 +35,10 @@ const fileSchema = z.object({
 // eslint-disable-next-line no-control-regex
 const PASTE_MARKERS = /\x1b\[20[01]~/g;
 
-/** What one chunk of keystrokes did to the line, in order: a line got its first word, or one was
- *  submitted (`text` null when only the shell knows what it said). */
-export type LineEvent = { kind: 'begin' } | { kind: 'submit'; text: string | null };
+/** What one chunk of keystrokes did to the line, in order: a line got its first word, one was
+ *  submitted (`text` null when only the shell knows what it said), or a Ctrl+C/Ctrl+Z — which
+ *  may end a program — abandoned it. */
+export type LineEvent = { kind: 'begin' } | { kind: 'submit'; text: string | null } | { kind: 'abandon' };
 
 /** One session's line as it is being typed. */
 export class TypedLine {
@@ -63,6 +64,7 @@ export class TypedLine {
       } else if (char === '\x03' || char === '\x15' || char === '\x1a') {
         // Ctrl+C abandons the line (or a program), Ctrl+U kills it, Ctrl+Z suspends a program:
         // what follows is a new line, owed a prompt check of its own.
+        if (char !== '\x15') out.push({ kind: 'abandon' });
         this.reset();
       } else if (char === '\x1b') {
         this.known = false;
@@ -254,11 +256,18 @@ export class TerminalHistory {
       state = { line: new TypedLine(), check: null, decided: Promise.resolve(), replaced: false, secretNext: false, guard: null };
       this.sessions.set(sessionId, state);
     }
-    let chunkChecked = false;
+    // Once this chunk began a line, or ended one, no later line in it can have met a prompt:
+    // `\rhunter2\r` finishing an earlier line reaches the shell with the Enter before it.
+    let promptPassed = false;
     for (const event of state.line.events(data)) {
       if (event.kind === 'begin') {
-        state.check = chunkChecked || state.replaced ? null : { found: withTimeout(children(), PROMPT_CHECK_TIMEOUT_MS), at: this.now() };
-        chunkChecked = true;
+        state.check = promptPassed || state.replaced ? null : { found: withTimeout(children(), PROMPT_CHECK_TIMEOUT_MS), at: this.now() };
+        promptPassed = true;
+        continue;
+      }
+      promptPassed = true;
+      if (event.kind === 'abandon') {
+        state.check = null;
         continue;
       }
       const check = state.check;

@@ -453,7 +453,14 @@ const nulList = (res: GitResult): Set<string> => new Set(res.ok ? res.stdout.spl
 export function discardPaths(root: string, change: IndexChange & { confirm?: boolean; untracked?: boolean }): Promise<GitOk> {
   return serializeCheckout(root, async () => {
     if (change.confirm !== true) return { ok: false, error: 'discarding cannot be undone — confirm it first ({ confirm: true })' };
-    if (change.path && change.hunk) return applyHunk(root, change.path, change.hunk, 'unstaged', ['-R']);
+    if (change.path && change.hunk) {
+      // An untracked file's one hunk is the whole "new file": reversing it deletes the file.
+      const untracked = await git(root, ['ls-files', '--others', '--exclude-standard', '-z', '--', change.path], { env: LITERAL });
+      if (nulList(untracked).has(change.path) && change.untracked !== true) {
+        return { ok: false, error: `${change.path} is untracked — discarding deletes it; confirm that too ({ untracked: true })` };
+      }
+      return applyHunk(root, change.path, change.hunk, 'unstaged', ['-R']);
+    }
     const paths = change.paths ?? [];
     const [untrackedOut, modifiedOut] = await Promise.all([
       git(root, ['ls-files', '--others', '--exclude-standard', '-z', '--', ...paths], { env: LITERAL }),

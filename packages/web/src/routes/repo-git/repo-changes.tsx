@@ -96,7 +96,13 @@ function IndexSection({ header }: { header: ReactNode }) {
   )
   const unstagedHunk = (path: string, hunk: string) => (
     <>
-      <Button variant="ghost" size="xs" data-action="discard-hunk" onClick={() => discard({ path, hunk }, path)}>
+      <Button
+        variant="ghost"
+        size="xs"
+        data-action="discard-hunk"
+        // An untracked file's hunk is the whole file: the server wants that said, as for the file.
+        onClick={() => discard({ path, hunk, ...(unstaged.some((f) => f.path === path && f.untracked) ? { untracked: true } : {}) }, path)}
+      >
         <Undo2Icon aria-hidden="true" />
         Discard
       </Button>

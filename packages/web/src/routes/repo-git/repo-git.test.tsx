@@ -449,6 +449,34 @@ describe('the repo view Changes segment — staging', () => {
     expect(posted(sent, '/api/v1/repo/discard')[0]!.body).toEqual({ paths: ['notes.md'], untracked: true, confirm: true })
   })
 
+  it('a hunk of an untracked file is discarded with the untracked flag too', async () => {
+    const untracked: RepoIndex = { ...INDEX, unstaged: [{ ...CHANGES.files[0]!, untracked: true }] }
+    const sent = stubFetch({
+      'GET /api/v1/repo/status': () => jsonResponse(untracked),
+      'POST /api/v1/repo/discard': () => jsonResponse(INDEX),
+    })
+    renderAt('/git')
+    const hunkButton = await waitFor(() => {
+      const element = document.querySelector('[data-slot="diff-hunk-actions"] [data-action="discard-hunk"]')
+      expect(element).not.toBeNull()
+      return element!
+    })
+    fireEvent.click(hunkButton)
+    const confirm = await waitFor(() => {
+      const element = document.querySelector('[data-action="confirm-discard"]')
+      expect(element).not.toBeNull()
+      return element!
+    })
+    fireEvent.click(confirm)
+    await waitFor(() => expect(posted(sent, '/api/v1/repo/discard')).toHaveLength(1))
+    expect(posted(sent, '/api/v1/repo/discard')[0]!.body).toEqual({
+      path: 'notes.md',
+      hunk: '@@ -0,0 +1,2 @@',
+      untracked: true,
+      confirm: true,
+    })
+  })
+
   it('commits the staged side with the typed message; nothing staged, nothing to commit', async () => {
     const staged: RepoIndex = { ...INDEX, staged: [CHANGES.files[1]!], unstaged: [CHANGES.files[0]!] }
     const sent = stubFetch({

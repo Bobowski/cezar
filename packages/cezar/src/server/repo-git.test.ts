@@ -356,6 +356,19 @@ describe('the Git page against a temp repo with a bare origin', () => {
       expect(readFileSync(join(repo, 'h.txt'), 'utf8')).toBe('rewritten\n');
     });
 
+    it('a hunk of an untracked file is discarded only with the untracked flag too', async () => {
+      writeFileSync(join(repo, 'new.txt'), 'new\n');
+      const index = await repoIndex(repo);
+      const hunk = index.ok ? index.index.unstaged.find((f) => f.path === 'new.txt')!.patch.split('\n').find((l) => l.startsWith('@@'))! : '';
+      expect(await discardPaths(repo, { path: 'new.txt', hunk, confirm: true })).toMatchObject({
+        ok: false,
+        error: expect.stringMatching(/untracked/),
+      });
+      expect(readFileSync(join(repo, 'new.txt'), 'utf8')).toBe('new\n');
+      expect(await discardPaths(repo, { path: 'new.txt', hunk, confirm: true, untracked: true })).toEqual({ ok: true });
+      expect(existsSync(join(repo, 'new.txt'))).toBe(false);
+    });
+
     it('stashes, lists and pops', async () => {
       writeFileSync(join(repo, 'h.txt'), 'wip\n');
       expect(await stashPush(repo, { message: 'my wip' })).toEqual({ ok: true, message: 'stashed “my wip”' });

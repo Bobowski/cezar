@@ -306,7 +306,13 @@ export const automationReceiptSchema = z
         headSha: z.string().optional(),
         branch: z.string().optional(),
         cursorless: z.boolean().optional(),
-        comment: z.object({ id: z.number(), kind: z.enum(['issue', 'review']), author: z.string(), url: z.string() }).passthrough().optional(),
+        // `fingerprint`/`parts[].hash`: body fingerprints (never the body), so a held event can still
+        // be matched against a trace that names only the body.
+        comment: z.object({
+          id: z.number(), kind: z.enum(['issue', 'review']), author: z.string(), url: z.string(),
+          fingerprint: z.string().optional(),
+          parts: z.array(z.object({ id: z.number(), at: z.string(), hash: z.string() })).max(100).optional(),
+        }).passthrough().optional(),
         check: z.object({ id: z.number(), name: z.string(), conclusion: z.string(), url: z.string(), failingJobs: z.array(z.string()) }).passthrough().optional(),
         push: z.object({ branch: z.string(), before: z.string(), after: z.string(), subjects: z.array(z.string()) }).passthrough().optional(),
         release: z.object({ tag: z.string(), name: z.string(), prerelease: z.boolean() }).passthrough().optional(),

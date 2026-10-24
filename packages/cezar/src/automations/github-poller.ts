@@ -90,11 +90,18 @@ export interface GithubCandidate {
   /** The comment events. `body` never reaches a receipt (`store.reserveReceipt`). */
   /** `association`: GitHub's `author_association` (OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, …). */
   /** `writeAccess`: a `MEMBER`'s or `COLLABORATOR`'s write access to this repo, looked up only when it decides. */
-  comment?: { id: number; kind: 'issue' | 'review'; author: string; url: string; body?: string; association?: string; writeAccess?: boolean };
+  /** `parts`: a collapsed review's comments, each with its creation time and body fingerprint. */
+  comment?: {
+    id: number; kind: 'issue' | 'review'; author: string; url: string; body?: string; association?: string; writeAccess?: boolean;
+    parts?: GithubCommentPart[];
+  };
   check?: { id: number; name: string; conclusion: string; url: string; failingJobs: string[] };
   push?: { branch: string; before: string; after: string; subjects: string[] };
   release?: { tag: string; name: string; prerelease: boolean };
 }
+
+/** One comment of a collapsed review batch: its id, `created_at` and `commentFingerprint`. */
+export type GithubCommentPart = { id: number; at: string; hash: string };
 
 /** The diff bases and ETags a poll reads and hands back (spec 2026-10-23-github-events §3). */
 export interface GithubActivityState {

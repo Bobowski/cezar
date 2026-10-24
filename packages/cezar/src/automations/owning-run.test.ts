@@ -218,6 +218,18 @@ describe('owning-run delivery never feeds a run its own reply, nor an unbounded 
     expect(delivered).toHaveLength(2);
   });
 
+  it('decides a collapsed review per comment: one of its comments inside the turn holds the batch', async () => {
+    const { runs, owner, delivered, fire, lastLog } = await setup();
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    runs.appendEvent(owner.id, { type: 'turn.completed', turnId: 't1' });
+    const later = new Date(Date.now() + 10 * 60_000);
+    const batch = comment(9, 'cezar-bot', later);
+    batch.comment!.parts = [{ id: 8, at: new Date().toISOString(), hash: 'a'.repeat(64) }, { id: 9, at: later.toISOString(), hash: 'b'.repeat(64) }];
+    await fire(batch);
+    expect(delivered).toEqual([]);
+    expect(lastLog()?.reason).toContain('own-comment');
+  });
+
   it('allowSelfComments delivers a comment of its own login, during a turn', async () => {
     const { runs, owner, delivered, fire } = await setup();
     runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });

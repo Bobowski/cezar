@@ -186,8 +186,10 @@ export async function owningRunRefusal(input: {
   if (delivered >= cap) return `delivery-cap: ${delivered} events of this automation already went into run ${owner.id} for #${candidate.number} in the last hour (cap ${cap}, the automation's maxRecords).`;
   const comment = candidate.comment;
   if (!comment || definition.filters.allowSelfComments === true) return undefined;
-  const at = Date.parse(candidate.timestamp);
-  if (!Number.isFinite(at) || !duringActiveSpan(activeSpans(owner, events, input.live, now), at)) return undefined;
+  // A collapsed review is decided per comment: any one of them inside the window holds it.
+  const spans = activeSpans(owner, events, input.live, now);
+  const times = (comment.parts?.map((part) => part.at) ?? [candidate.timestamp]).map((value) => Date.parse(value));
+  if (!times.some((at) => Number.isFinite(at) && duringActiveSpan(spans, at))) return undefined;
   const login = await input.selfLogin();
   if (login !== undefined && login.toLowerCase() !== comment.author.toLowerCase()) return undefined;
   return login === undefined

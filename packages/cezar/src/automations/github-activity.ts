@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { GithubActivityState, GithubCandidate } from './github-poller.ts';
 import type { AutomationEvent, GithubAutomationDefinition } from './types.ts';
-import { INVISIBLE_RE, isOwnCommentBody, type GithubTraces } from '../runs/github-traces.ts';
+import { INVISIBLE_RE, commentFingerprint, isOwnCommentBody, type GithubTraces } from '../runs/github-traces.ts';
 
 /**
  * The seven activity sources of spec 2026-10-23-github-events §3 — what happens INSIDE an issue or
@@ -581,16 +581,21 @@ export async function pollActivity(input: {
       };
       if (await admitComment(candidate)) observation.candidate = candidate;
     }
-    // A submitted review is N comments at once: one launch per PR per poll, carrying them all.
-    const byPull = new Map<number, ActivityObservation[]>();
+    // A submitted review is N comments at once: one launch per PR and author per poll, carrying
+    // them all — never one author's comment under another's name, which the guards decide on.
+    const byPull = new Map<string, ActivityObservation[]>();
     for (const observation of group) {
-      const number = observation.candidate?.number;
-      if (number !== undefined) byPull.set(number, [...(byPull.get(number) ?? []), observation]);
+      const candidate = observation.candidate;
+      if (candidate?.number === undefined || !candidate.comment) continue;
+      const key = `${candidate.number}\n${candidate.comment.author.toLowerCase()}`;
+      byPull.set(key, [...(byPull.get(key) ?? []), observation]);
     }
     for (const batch of byPull.values()) {
       if (batch.length < 2) continue;
       const last = batch.at(-1)!;
-      last.candidate!.comment!.body = cleanBody(batch.map((observation) => observation.candidate!.comment!.body ?? '').join('\n\n---\n\n'));
+      const comments = batch.map((observation) => ({ at: observation.candidate!.timestamp, comment: observation.candidate!.comment! }));
+      last.candidate!.comment!.body = cleanBody(comments.map(({ comment }) => comment.body ?? '').join('\n\n---\n\n'));
+      last.candidate!.comment!.parts = comments.map(({ at, comment }) => ({ id: comment.id, at, hash: commentFingerprint(comment.body ?? '') }));
       for (const observation of batch.slice(0, -1)) observation.candidate = undefined;
     }
     groups.push(group);

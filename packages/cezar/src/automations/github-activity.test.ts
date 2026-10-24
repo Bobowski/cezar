@@ -187,8 +187,9 @@ describe('comment events', () => {
     expect(result.cursor).toEqual({ timestamp: '2026-10-22T00:00:00Z', tieBreaker: `comment:${edited.id}` });
   });
 
-  it('collapses one submitted review into one candidate per PR carrying every body', async () => {
-    const reviewComments = fixture<Comment[]>('review-comments');
+  it('collapses one submitted review into one candidate per PR and author carrying every body', async () => {
+    // One reviewer's two comments on #14798 (the fixture's carol becomes erin), frank's on #14804.
+    const reviewComments = fixture<Comment[]>('review-comments').map((row) => (row.user.login === 'carol' ? { ...row, user: { login: 'erin' } } : row));
     const run = gh({
       'repos/acme/demo/pulls/comments': [...reviewComments].reverse(),
       'repos/acme/demo/pulls/14798': { ...own, number: 14798, node_id: 'PR_14798', html_url: 'https://github.com/acme/demo/pull/14798', title: 'One', user: { login: 'alice' }, labels: [], assignees: [] },
@@ -200,6 +201,22 @@ describe('comment events', () => {
     expect(batch.comment?.kind).toBe('review');
     expect(batch.comment?.body).toContain('Synthetic comment body 1.');
     expect(batch.comment?.body).toContain('Synthetic comment body 3.');
+    // Each comment's own id, creation time and body fingerprint, for the guards that decide per comment.
+    expect(batch.comment?.parts?.map((part) => [part.id, part.at])).toEqual([[4361121192, '2026-10-23T15:17:32Z'], [4363240945, '2026-10-23T19:02:01Z']]);
+    expect(batch.comment?.parts?.every((part) => /^[0-9a-f]{64}$/.test(part.hash))).toBe(true);
+  });
+
+  it('never folds one author’s review comment into another’s batch: the batch’s author is every comment’s', async () => {
+    const reviewComments = fixture<Comment[]>('review-comments');
+    const run = gh({
+      'repos/acme/demo/pulls/comments': [...reviewComments].reverse(),
+      'repos/acme/demo/pulls/14798': { ...own, number: 14798, node_id: 'PR_14798', html_url: 'https://github.com/acme/demo/pull/14798', title: 'One', user: { login: 'alice' }, labels: [], assignees: [] },
+      'repos/acme/demo/pulls/14804': { ...own, number: 14804, node_id: 'PR_14804', html_url: 'https://github.com/acme/demo/pull/14804', title: 'Two', user: { login: 'alice' }, labels: [], assignees: [] },
+    });
+    const result = await new GithubPoller({ run }).poll('acme', 'demo', definition(['pull_request.review_commented']), { since: '2026-10-23T00:00:00.000Z' });
+    const onOne = result.candidates.filter((candidate) => candidate.number === 14798);
+    expect(onOne.map((candidate) => candidate.comment?.author).sort()).toEqual(['carol', 'erin']);
+    for (const candidate of onOne) expect(candidate.comment?.parts).toBeUndefined();
   });
 });
 

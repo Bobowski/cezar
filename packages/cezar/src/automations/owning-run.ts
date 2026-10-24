@@ -1,4 +1,6 @@
-import { GITHUB_COM, isSafeHostname } from '../github-hosts.ts';
+import { statSync } from 'node:fs';
+import { join } from 'node:path';
+import { GITHUB_COM, ghConfigDir, isSafeHostname } from '../github-hosts.ts';
 import type { RunEvent, RunRecord } from '../runs/store.ts';
 import type { RunManager } from '../workflows/run.ts';
 import type { GithubCandidate } from './github-poller.ts';
@@ -113,19 +115,35 @@ export function duringActiveSpan(spans: ReadonlyArray<[number, number]>, at: num
 }
 
 const loginCache = new Map<string, { login?: string; at: number }>();
-const LOGIN_TTL_MS = 60 * 60_000;
+const hostCache = new Map<string, { host: string; at: number }>();
+const LOGIN_TTL_MS = 10 * 60_000;
 const LOGIN_RETRY_MS = 60_000;
 
-/** The login cezar's `gh` speaks as on `repo`'s host (`gh api user`), cached an hour per repo; a failed
- *  lookup is `undefined` and is asked again a minute later. Never under `CEZ_DRY_RUN=1`. */
-export async function githubSelfLogin(root: string, repo: string, exec: CommandRunner = runCommand, now = Date.now()): Promise<string | undefined> {
+/** When `gh`'s own config last changed — `gh auth switch`/`login`/`logout` rewrite `hosts.yml`. */
+export function ghConfigStamp(): string {
+  const dir = ghConfigDir();
+  const mtime = (path: string) => { try { return String(statSync(path).mtimeMs); } catch { return '-'; } };
+  return `${mtime(dir)}:${mtime(join(dir, 'hosts.yml'))}`;
+}
+
+/** The login cezar's `gh` speaks as on `repo`'s host (`gh api user`), cached ten minutes per host and
+ *  `gh` config state, so a `gh auth switch` is seen on the next ask; a failed lookup is `undefined`
+ *  and is asked again a minute later. Never under `CEZ_DRY_RUN=1`. */
+export async function githubSelfLogin(
+  root: string, repo: string, exec: CommandRunner = runCommand, now = Date.now(), stamp: () => string = ghConfigStamp,
+): Promise<string | undefined> {
   if (process.env.CEZ_DRY_RUN === '1') return undefined;
-  const key = repo.toLowerCase();
+  const repoKey = repo.toLowerCase();
+  let host = hostCache.get(repoKey);
+  if (!host || now - host.at >= LOGIN_TTL_MS) {
+    const remote = await remoteForRepo(exec, root, repo).catch(() => ({ host: undefined }));
+    host = { host: remote.host && isSafeHostname(remote.host) ? remote.host.toLowerCase() : GITHUB_COM, at: now };
+    hostCache.set(repoKey, host);
+  }
+  const key = `${host.host}\n${stamp()}`;
   const cached = loginCache.get(key);
   if (cached && now - cached.at < (cached.login ? LOGIN_TTL_MS : LOGIN_RETRY_MS)) return cached.login;
-  const remote = await remoteForRepo(exec, root, repo).catch(() => ({ host: undefined }));
-  const host = remote.host && isSafeHostname(remote.host) ? remote.host : GITHUB_COM;
-  const answer = await exec('gh', ['api', ...(host === GITHUB_COM ? [] : ['--hostname', host]), 'user', '--jq', '.login'], root);
+  const answer = await exec('gh', ['api', ...(host.host === GITHUB_COM ? [] : ['--hostname', host.host]), 'user', '--jq', '.login'], root);
   const login = answer.ok && /^[A-Za-z0-9-]{1,39}(?:\[bot\])?$/.test(answer.stdout.trim()) ? answer.stdout.trim() : undefined;
   loginCache.set(key, { ...(login ? { login } : {}), at: now });
   return login;
@@ -134,6 +152,7 @@ export async function githubSelfLogin(root: string, repo: string, exec: CommandR
 /** Test seam: forget every cached login. */
 export function forgetGithubSelfLogins(): void {
   loginCache.clear();
+  hostCache.clear();
 }
 
 /** What a delivery note carries so the per-PR cap can count it back. */

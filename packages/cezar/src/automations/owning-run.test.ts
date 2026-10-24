@@ -241,7 +241,36 @@ describe('owning-run delivery never feeds a run its own reply, nor an unbounded 
 describe('githubSelfLogin', () => {
   afterEach(() => forgetGithubSelfLogins());
 
-  it('asks gh once an hour per repo, never keeps a failure long, and never runs dry', async () => {
+  it('asks again after `gh auth switch` (the gh config changed) and at most ten minutes on', async () => {
+    const saved = process.env.CEZ_DRY_RUN;
+    delete process.env.CEZ_DRY_RUN;
+    try {
+      let login = 'alice';
+      const calls: string[][] = [];
+      const exec = async (command: string, args: string[]) => {
+        if (command === 'gh') calls.push(args);
+        return command === 'gh' ? { ok: true, stdout: `${login}\n`, stderr: '' } : { ok: false, stdout: '', stderr: '' };
+      };
+      let stamp = 'mtime-1';
+      const now = Date.parse('2026-10-24T10:00:00.000Z');
+      expect(await githubSelfLogin('/r', 'acme/demo', exec, now, () => stamp)).toBe('alice');
+      expect(await githubSelfLogin('/r', 'acme/demo', exec, now + 60_000, () => stamp)).toBe('alice');
+      expect(calls).toHaveLength(1);
+      login = 'bob';
+      stamp = 'mtime-2';
+      expect(await githubSelfLogin('/r', 'acme/demo', exec, now + 2 * 60_000, () => stamp)).toBe('bob');
+      expect(calls).toHaveLength(2);
+      login = 'carol';
+      expect(await githubSelfLogin('/r', 'acme/demo', exec, now + 9 * 60_000, () => stamp)).toBe('bob');
+      expect(await githubSelfLogin('/r', 'acme/demo', exec, now + 13 * 60_000, () => stamp)).toBe('carol');
+      expect(calls).toHaveLength(3);
+    } finally {
+      if (saved === undefined) delete process.env.CEZ_DRY_RUN;
+      else process.env.CEZ_DRY_RUN = saved;
+    }
+  });
+
+  it('asks gh once per host and gh config, never keeps a failure long, and never runs dry', async () => {
     const saved = process.env.CEZ_DRY_RUN;
     delete process.env.CEZ_DRY_RUN;
     try {
@@ -252,15 +281,16 @@ describe('githubSelfLogin', () => {
         return command === 'gh' ? answer : { ok: false, stdout: '', stderr: '' };
       };
       const now = Date.parse('2026-10-24T10:00:00.000Z');
-      expect(await githubSelfLogin('/r', 'acme/demo', exec, now)).toBe('cezar-bot');
-      expect(await githubSelfLogin('/r', 'acme/demo', exec, now + 30 * 60_000)).toBe('cezar-bot');
+      const stamp = () => 'same';
+      expect(await githubSelfLogin('/r', 'acme/demo', exec, now, stamp)).toBe('cezar-bot');
+      expect(await githubSelfLogin('/r', 'acme/demo', exec, now + 5 * 60_000, stamp)).toBe('cezar-bot');
       expect(calls).toEqual([['api', 'user', '--jq', '.login']]);
       answer = { ok: false, stdout: '', stderr: 'HTTP 401' };
-      expect(await githubSelfLogin('/r', 'acme/other', exec, now)).toBeUndefined();
+      expect(await githubSelfLogin('/r', 'acme/other', exec, now + 11 * 60_000, stamp)).toBeUndefined();
       answer = { ok: true, stdout: 'ops-user\n', stderr: '' };
-      expect(await githubSelfLogin('/r', 'acme/other', exec, now + 61_000)).toBe('ops-user');
+      expect(await githubSelfLogin('/r', 'acme/other', exec, now + 12 * 60_000 + 1_000, stamp)).toBe('ops-user');
       process.env.CEZ_DRY_RUN = '1';
-      expect(await githubSelfLogin('/r', 'acme/third', exec, now)).toBeUndefined();
+      expect(await githubSelfLogin('/r', 'acme/third', exec, now, stamp)).toBeUndefined();
       expect(calls).toHaveLength(3);
     } finally {
       if (saved === undefined) delete process.env.CEZ_DRY_RUN;

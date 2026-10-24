@@ -185,7 +185,8 @@ the text above, and why:
   owner that cannot take it falls back to a new run, and the log row says why.
 - **The owning-run guard** holds whatever a trace missed. A delivery is refused — `skipped`,
   never a new run instead — when the comment's author is the login cezar's `gh` runs as
-  (`gh api user`, cached an hour per repository) and it was CREATED while the owning run was at
+  (`gh api user`, cached ten minutes per host and `gh` config mtime, so `gh auth switch` is seen at
+  once) and it was CREATED while the owning run was at
   work: inside a turn (`turn.started` to `turn.completed`/`session.ended` in its event log, the
   open one up to now while the run is live) or within two minutes after one. A login that
   cannot be read counts as cezar's (a loop costs more than a held comment); `filters.allowSelfComments:

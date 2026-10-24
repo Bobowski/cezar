@@ -112,6 +112,21 @@ describe('the Git page routes', () => {
     expect(g(repo, 'log', '-1', '--format=%s').trim()).toBe('from the cockpit');
   });
 
+  it('a hosted cockpit without cezar’s own sign-in refuses every git mutation', async () => {
+    g(repo, 'branch', 'other');
+    process.env.CEZ_REMOTE = '1';
+    process.env.CEZ_AUTH = '0';
+    try {
+      const res = await apiRequest(app, '/api/v1/repo/branch/other/checkout', { method: 'POST' });
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as { error: string }).error).toMatch(/sign-in/);
+    } finally {
+      delete process.env.CEZ_REMOTE;
+      delete process.env.CEZ_AUTH;
+    }
+    expect(g(repo, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('main');
+  });
+
   it('GET /repo/remotes names the PR target and the push default with their reasons', async () => {
     const res = await apiRequest(app, '/api/v1/repo/remotes');
     expect(res.status).toBe(200);

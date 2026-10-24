@@ -8465,6 +8465,10 @@ export function createApp(deps: ServerDeps) {
     options: { movesTree?: boolean } = {},
   ): Promise<{ error: string } | { value: Omit<R, 'ok'> }> => {
     if (principal?.kind === 'run') return { error: 'a task may not change the main checkout' };
+    // Spec §5: hosted, these are the signed-in owner's; behind a proxy alone (`CEZ_AUTH=0`), nobody's.
+    if (!trustedOperator(process.env, bindHost)) {
+      return { error: 'git actions need cezar’s own sign-in on a hosted cockpit — use a terminal on the host' };
+    }
     const root = await checkoutRoot(project);
     if (!root) return { error: 'not a git repository' };
     if (options.movesTree && inPlaceTaskBusy(project)) {

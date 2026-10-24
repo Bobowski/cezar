@@ -469,7 +469,8 @@ function BrandImageField({ kind, title, hint, accept, url }: { kind: BrandingUpl
 
 function BrandAccentField({ accent }: { accent: string | null }) {
   const saved = useBrandingSaved()
-  const [draft, setDraft] = useState(accent ?? '#a8f372')
+  // Starts from the accent on screen — read from the token, so the colour stays in index.css.
+  const [draft, setDraft] = useState(() => accent ?? getComputedStyle(document.documentElement).getPropertyValue('--accent-lime').trim())
   useEffect(() => { if (accent) setDraft(accent) }, [accent])
   const save = useMutation({
     mutationFn: (next: string | null) => putWorkspaceBranding({ accent: next }),
@@ -477,6 +478,9 @@ function BrandAccentField({ accent }: { accent: string | null }) {
     onError: (error: Error) => toast(error.message, { tone: 'danger' }),
   })
   const valid = /^#[0-9a-f]{6}$/i.test(draft)
+  // The picker shows the last colour that parsed, so typing a half-written hex never resets it.
+  const [picked, setPicked] = useState(valid ? draft.toLowerCase() : null)
+  useEffect(() => { if (valid) setPicked(draft.toLowerCase()) }, [draft, valid])
   return (
     <SettingsField
       title="Accent colour"
@@ -484,13 +488,15 @@ function BrandAccentField({ accent }: { accent: string | null }) {
       hint="The default accent for everyone on this cezar, with light and dark variants derived for contrast. Anyone who picked another accent above keeps theirs."
     >
       <div className="flex flex-wrap items-center gap-2" data-slot="branding-accent">
-        <input
-          type="color"
-          aria-label="Accent colour picker"
-          value={valid ? draft.toLowerCase() : '#a8f372'}
-          onChange={(event) => setDraft(event.currentTarget.value)}
-          className="h-8 w-10 cursor-pointer rounded-md border border-input bg-background p-0.5"
-        />
+        {picked ? (
+          <input
+            type="color"
+            aria-label="Accent colour picker"
+            value={picked}
+            onChange={(event) => setDraft(event.currentTarget.value)}
+            className="h-8 w-10 cursor-pointer rounded-md border border-input bg-background p-0.5"
+          />
+        ) : null}
         <Input
           id="branding-accent"
           aria-label="Accent colour"

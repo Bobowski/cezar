@@ -2,7 +2,7 @@ import { useServicesBadge } from '@/api/services'
 import { memo, useEffect, useMemo, type ReactNode } from 'react'
 import { useLocation } from 'react-router'
 
-import { useHealth, useProjectRuns, useProjects, useRunsForProject, useSkillsUpdate, useStarCount, useTodos, useUiState, useWorkspaceConfig } from '@/api/queries'
+import { useHealth, useProjectRuns, useProjects, useRunsForProject, useSkillsUpdate, useStarCount, useTodos, useUiState, useWorkspaceBranding, useWorkspaceConfig } from '@/api/queries'
 import type { HealthResponse, SkillsUpdateState } from '@open-mercato/cezar-api-client'
 import { useSignedInUser } from '@/api/auth'
 import { AppShell, type Crumb, type RepoChip } from '@/components/app-shell'
@@ -18,6 +18,7 @@ import { TelemetryConsentBanner } from '@/components/telemetry-consent'
 import { TaskQuickListContainer } from '@/components/task-quick-list'
 import { ToolsMenu } from '@/components/tools-menu'
 import { useDocumentTitle } from '@/lib/use-document-title'
+import { useBrandAccent } from '@/lib/brand-accent'
 import { useActiveProjectId } from '@/lib/project-router'
 import { unreadDoneCount } from '@/lib/read-state'
 import { orderProjects } from '@/lib/project-order'
@@ -70,10 +71,11 @@ export const AppShellContainer = memo(function AppShellContainer({ children }: {
   const signOut = useSignOut()
   const account = useMemo(() => (signedIn ? { name: signedIn.name, onSignOut: signOut } : null), [signedIn, signOut])
   const workspaceConfig = useWorkspaceConfig()
+  const brand = useWorkspaceBranding()
   const branding = workspaceConfig.data?.branding
-  const customBranding = branding !== undefined && (
+  const customBranding = brand.data?.custom === true || (branding !== undefined && (
     branding.name !== 'cezar' || branding.logoUrl !== null
-  )
+  ))
   const starCount = useStarCount(!customBranding && workspaceConfig.data !== undefined)
   // The global inbox is opt-in (#471). With the capability off there is no Inbox nav item to
   // badge and the endpoint can only answer [], so the query parks rather than polls.
@@ -126,7 +128,16 @@ export const AppShellContainer = memo(function AppShellContainer({ children }: {
       (isBootProject ? (repoChipOf(health.data)?.name ?? null) : null))
   const pageLabel = titleLabel ?? titleContext.pageLabel
 
-  useDocumentTitle({ projectName, pageLabel, brandName: workspaceConfig.data?.branding.name, brandLogoUrl: workspaceConfig.data?.branding.logoUrl })
+  useDocumentTitle({
+    projectName,
+    pageLabel,
+    brandName: workspaceConfig.data?.branding.name,
+    brandLogoUrl: workspaceConfig.data?.branding.logoUrl,
+    // An older server has no branding route: that is "no favicon", not "still loading".
+    brandFaviconUrl: brand.isError ? null : brand.data?.faviconUrl,
+    brandAppIconUrl: brand.data?.appIconUrl ?? null,
+  })
+  useBrandAccent(brand.isError ? null : brand.data?.accentTokens)
 
   // The switcher lists the registry in the user's hand-picked order (#952), shared with ⌘K.
   const { order } = useProjectOrder()

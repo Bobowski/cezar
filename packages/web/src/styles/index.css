@@ -302,6 +302,23 @@
   --ring: var(--violet);
 }
 
+/* The operator's brand accent (spec 2026-10-24-cockpit-branding) replaces the DEFAULT accent only:
+ * a viewer who picked violet keeps it. The server writes the derived `--brand-*` values onto <html>
+ * with `data-brand-accent` (static-ui.ts `renderShellHtml`); lib/brand-accent.ts does it live. */
+:root[data-brand-accent]:not([data-accent]) {
+  --accent-lime: var(--brand-dark-primary);
+  --primary-foreground: var(--brand-dark-primary-foreground);
+  --primary-strong: var(--brand-dark-primary-strong);
+  --ring: var(--brand-dark-ring);
+}
+
+:root.light[data-brand-accent]:not([data-accent]) {
+  --accent-lime: var(--brand-light-primary);
+  --primary-foreground: var(--brand-light-primary-foreground);
+  --primary-strong: var(--brand-light-primary-strong);
+  --ring: var(--brand-light-ring);
+}
+
 :root[data-density='compact'] {
   --spacing: 0.21875rem;
 }

@@ -80,6 +80,8 @@ describe('cockpit brand asset', () => {
     expect(css).toMatch(/--brand: 'Chakra Petch', var\(--sans\);/)
   })
 
+  // cezar's own mark only (spec 2026-10-24-cockpit-branding §5): an operator's favicon is swapped
+  // in when the server renders the shell, lives under CEZ_HOME/branding, and is never compared here.
   it('points the favicon at /icon.svg', () => {
     const html = readFileSync(resolve(webRoot, 'index.html'), 'utf8')
     expect(html).toMatch(/rel=["']icon["'][^>]*href=["']\/icon\.svg["']/)

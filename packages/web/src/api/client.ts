@@ -6,6 +6,7 @@ import type {
 } from '@open-mercato/cezar-api-client'
 import { trackerReadScope, resolveApiUrl, workspaceBrandingLogoResponseSchema } from '@open-mercato/cezar-api-client'
 import type { TaskActionSurface, TrackerAutomationOptions } from '@open-mercato/cezar-api-client'
+import type { BrandingRemovableKind, BrandingUploadKind, SetWorkspaceBrandingInput, WorkspaceBranding } from '@open-mercato/cezar-api-client'
 import { trackerWatchHandleSchema, trackerWatchSnapshotSchema, type TrackerWatchInput } from "@open-mercato/cezar-api-client"
 import type {
   AgentConfigFileContent,
@@ -2896,6 +2897,43 @@ export async function deleteWorkspaceBrandingLogo(): Promise<string | null> {
   const result = workspaceBrandingLogoResponseSchema.safeParse(parseJson(body))
   if (!result.success) throw new ApiError(response.status, 'the cezar server answered /workspace/branding-logo with an unexpected body')
   return result.data.logoUrl ? resolveApiUrl(result.data.logoUrl) : null
+}
+
+/** The default an older server (no `/workspace/branding`) answers with: cezar's own brand. */
+export const CEZAR_BRANDING: WorkspaceBranding = {
+  name: 'cezar', logoUrl: null, faviconUrl: null, appIconUrl: null, accent: null, accentTokens: null, custom: false,
+}
+
+const resolveBranding = (branding: WorkspaceBranding): WorkspaceBranding => ({
+  ...branding,
+  logoUrl: branding.logoUrl ? resolveApiUrl(branding.logoUrl) : null,
+  faviconUrl: branding.faviconUrl ? resolveApiUrl(branding.faviconUrl) : null,
+  appIconUrl: branding.appIconUrl ? resolveApiUrl(branding.appIconUrl) : null,
+})
+
+/** The cockpit's brand (spec 2026-10-24-cockpit-branding) — public, so the sign-in page reads it too. */
+export async function getWorkspaceBranding(opts?: ReadOptions): Promise<WorkspaceBranding> {
+  return resolveBranding(await unwrap(await cez.api.v1.workspace.branding.$get({}, init(opts)), '/workspace/branding'))
+}
+export async function putWorkspaceBranding(input: SetWorkspaceBrandingInput): Promise<WorkspaceBranding> {
+  return resolveBranding(await unwrap(await cez.api.v1.workspace.branding.$put({ json: input }), '/workspace/branding'))
+}
+/** Back to cezar's own name, mark, icons and accent. */
+export async function resetWorkspaceBranding(): Promise<WorkspaceBranding> {
+  return resolveBranding(await unwrap(await cez.api.v1.workspace.branding.$delete({}), '/workspace/branding'))
+}
+/** Upload a favicon (SVG or PNG) or an app icon (square PNG ≥ 512 px); the server derives every size. */
+export async function uploadWorkspaceBrandingImage(kind: BrandingUploadKind, file: File): Promise<WorkspaceBranding> {
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  return resolveBranding(await unwrap(
+    await cez.api.v1.workspace.branding[':kind'].$put({ param: { kind }, json: { data: btoa(binary) } }),
+    `/workspace/branding/${kind}`,
+  ))
+}
+export async function deleteWorkspaceBrandingImage(kind: BrandingRemovableKind): Promise<WorkspaceBranding> {
+  return resolveBranding(await unwrap(await cez.api.v1.workspace.branding[':kind'].$delete({ param: { kind } }), `/workspace/branding/${kind}`))
 }
 
 /**

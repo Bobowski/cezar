@@ -19,8 +19,12 @@ const RESET = '[data-slot="appearance-project-order-reset"]'
 
 let requests: Array<{ method: string; url: string; body?: unknown }> = []
 
+const BRAND = { name: 'cezar', logoUrl: null, faviconUrl: null as string | null, appIconUrl: null, accent: null as string | null, accentTokens: null, custom: false }
+let brand = BRAND
+
 function serve(uiState: Record<string, unknown> = {}) {
   requests = []
+  brand = BRAND
   let workspaceConfig = {
     branding: { name: 'cezar', logoUrl: null as string | null },
     browseRoot: '~/', projectsDir: '~/cezar/projects', skillsAutoUpdate: null, effectiveSkillsAutoUpdate: true,
@@ -48,6 +52,16 @@ function serve(uiState: Record<string, unknown> = {}) {
       }
       if (url === '/api/v1/workspace/branding-logo' && method === 'POST') return json({ logoUrl: '/api/v1/workspace/branding-logo?v=abc123' })
       if (url === '/api/v1/workspace/branding-logo' && method === 'DELETE') return json({ logoUrl: null })
+      if (url === '/api/v1/workspace/branding' && method === 'GET') return json(brand)
+      if (url === '/api/v1/workspace/branding' && method === 'PUT') {
+        const patch = body as { accent?: string | null }
+        brand = { ...brand, accent: patch.accent ?? null, custom: patch.accent != null }
+        return json(brand)
+      }
+      if (url === '/api/v1/workspace/branding' && method === 'DELETE') return json((brand = BRAND))
+      if (url === '/api/v1/workspace/branding/favicon' && method === 'PUT') {
+        return json((brand = { ...brand, faviconUrl: '/api/v1/workspace/branding/favicon?v=aaaaaaaaaaaa', custom: true }))
+      }
       return new Promise<never>(() => {})
     }),
   )
@@ -105,6 +119,31 @@ describe('Settings → Appearance: project order', () => {
     expect(requests.some((request) => request.url === '/api/v1/workspace/branding-logo' && request.method === 'POST')).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: 'Save logo' }))
     await waitFor(() => expect(requests.some((request) => request.url === '/api/v1/workspace/branding-logo' && request.method === 'POST')).toBe(true))
+  })
+
+  it('uploads a favicon as soon as it is chosen, applies an accent, and resets the whole brand', async () => {
+    renderSection(['cezar'])
+    const reset = () => document.querySelector<HTMLButtonElement>('[data-slot="branding-reset"]')!
+    await waitFor(() => expect(requests.some((request) => request.url === '/api/v1/workspace/branding')).toBe(true))
+    expect(reset().disabled).toBe(true) // nothing to reset yet
+    const svg = new File(['<svg xmlns="http://www.w3.org/2000/svg"/>'], 'favicon.svg', { type: 'image/svg+xml' })
+    fireEvent.change(screen.getByLabelText('Upload favicon'), { target: { files: [svg] } })
+    expect(await screen.findByAltText('Current favicon')).toBeTruthy()
+    const upload = requests.find((request) => request.url === '/api/v1/workspace/branding/favicon')!
+    expect(upload.method).toBe('PUT')
+    expect(atob((upload.body as { data: string }).data)).toBe('<svg xmlns="http://www.w3.org/2000/svg"/>')
+
+    fireEvent.change(screen.getByLabelText('Accent colour'), { target: { value: '#7C3AED' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => expect(requests.some((request) => request.method === 'PUT' && request.url === '/api/v1/workspace/branding')).toBe(true))
+    expect(requests.find((request) => request.method === 'PUT' && request.url === '/api/v1/workspace/branding')!.body).toEqual({ accent: '#7c3aed' })
+    // The default accent option now names the brand's colour.
+    expect(await screen.findByText('Brand')).toBeTruthy()
+
+    await waitFor(() => expect(reset().disabled).toBe(false))
+    fireEvent.click(reset())
+    await waitFor(() => expect(requests.some((request) => request.method === 'DELETE' && request.url === '/api/v1/workspace/branding')).toBe(true))
+    await waitFor(() => expect(screen.queryByAltText('Current favicon')).toBeNull())
   })
 
   it('offers the reset once an order has been stored', async () => {

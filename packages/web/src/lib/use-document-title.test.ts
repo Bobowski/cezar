@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   documentTitleOf,
   type DocumentTitleParts,
+  tabIconOf,
   useDocumentTitle,
 } from './use-document-title'
 
@@ -68,5 +69,35 @@ describe('useDocumentTitle', () => {
     expect(icon.href).toContain('/api/v1/workspace/branding-logo?v=abc')
     rerender({ projectName: null, pageLabel: null, brandLogoUrl: null })
     expect(icon.getAttribute('href')).toBe('/icon.svg')
+  })
+
+  it('leaves the server-rendered favicon set alone while it names the favicon, and replaces it when that changes', () => {
+    document.head.querySelectorAll('link[rel="icon"]').forEach((link) => link.remove())
+    for (const [href, sizes] of [['/api/v1/workspace/branding/favicon-32?v=1', '32x32'], ['/api/v1/workspace/branding/favicon?v=2', '']]) {
+      const link = document.createElement('link')
+      link.rel = 'icon'
+      link.href = href!
+      if (sizes) link.setAttribute('sizes', sizes)
+      document.head.append(link)
+    }
+    const icons = () => [...document.querySelectorAll<HTMLLinkElement>('link[rel="icon"]')].map((link) => link.getAttribute('href'))
+    const { rerender } = renderHook((parts: DocumentTitleParts) => useDocumentTitle(parts), {
+      // Still loading: nothing is touched, not even by the logo the config already knows.
+      initialProps: { projectName: null, pageLabel: null } as DocumentTitleParts,
+    })
+    expect(icons()).toHaveLength(2)
+    rerender({ projectName: null, pageLabel: null, brandLogoUrl: '/logo?v=3', brandFaviconUrl: '/api/v1/workspace/branding/favicon?v=2' })
+    expect(icons()).toHaveLength(2)
+    rerender({ projectName: null, pageLabel: null, brandLogoUrl: '/logo?v=3', brandFaviconUrl: '/api/v1/workspace/branding/favicon?v=9' })
+    expect(icons()).toEqual(['/api/v1/workspace/branding/favicon?v=9'])
+    rerender({ projectName: null, pageLabel: null, brandLogoUrl: '/logo?v=3', brandFaviconUrl: null })
+    expect(icons()).toEqual(['/logo?v=3'])
+  })
+
+  it('orders the tab icon like the server does: favicon, logo, app icon, then cezar\'s', () => {
+    expect(tabIconOf({ brandFaviconUrl: '/f', brandLogoUrl: '/l', brandAppIconUrl: '/a' })).toBe('/f')
+    expect(tabIconOf({ brandFaviconUrl: null, brandLogoUrl: '/l', brandAppIconUrl: '/a' })).toBe('/l')
+    expect(tabIconOf({ brandFaviconUrl: null, brandLogoUrl: null, brandAppIconUrl: '/a' })).toBe('/a')
+    expect(tabIconOf({})).toBe('/icon.svg')
   })
 })

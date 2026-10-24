@@ -2,7 +2,7 @@ import { hashKey, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { ArrowUpRightIcon, StarIcon } from 'lucide-react'
 
-import { queryKeys, useStarCount, useWorkspaceConfig } from '@/api/queries'
+import { queryKeys, useStarCount, useWorkspaceBranding, useWorkspaceConfig } from '@/api/queries'
 import { useDashboardInsights } from '@/api/dashboard-insights'
 import type { ApiRun, RunStatus } from '@open-mercato/cezar-api-client'
 import {
@@ -55,10 +55,12 @@ const otherDialogOpen = () => document.querySelector('[role="dialog"],[role="ale
 export function StarPromo() {
   const queryClient = useQueryClient()
   const workspaceConfig = useWorkspaceConfig()
+  const brand = useWorkspaceBranding()
   const branding = workspaceConfig.data?.branding
-  const customBranding = branding !== undefined && (
+  // A white-labelled cockpit never asks for cezar's stars, whichever part of the brand it changed.
+  const customBranding = brand.data?.custom === true || (branding !== undefined && (
     branding.name !== 'cezar' || branding.logoUrl !== null
-  )
+  ))
   const starCount = useStarCount(workspaceConfig.data !== undefined && !customBranding)
   const allowed = !customBranding && starCount.data?.available === true
   const count = !customBranding && starCount.data?.available ? (starCount.data.count ?? null) : null

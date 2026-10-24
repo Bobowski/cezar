@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 
+import { useWorkspaceBranding } from '@/api/queries'
 import { BrandLockup } from '@/components/brand-mark'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Toaster } from '@/components/ui/toaster'
@@ -24,6 +25,8 @@ export function AuthFrame({
   children: ReactNode
   'data-screen': string
 }) {
+  // Public (spec 2026-10-24-cockpit-branding §5): the door wears the brand before anyone signs in.
+  const brand = useWorkspaceBranding().data
   return (
     <main
       data-slot="auth-screen"
@@ -31,7 +34,7 @@ export function AuthFrame({
       {...props}
     >
       <div className="flex w-full max-w-sm flex-col gap-6">
-        <BrandLockup className="justify-center text-foreground" />
+        <BrandLockup className="justify-center text-foreground" name={brand?.name} logoUrl={brand?.logoUrl ?? null} />
         <Card>
           <CardHeader>
             <CardTitle>

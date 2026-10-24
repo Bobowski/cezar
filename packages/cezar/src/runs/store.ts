@@ -10,6 +10,7 @@ import {
   readFileSync,
   readSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -1761,6 +1762,17 @@ export class RunStore extends EventEmitter {
   private hostSecrets(): readonly string[] {
     if (this.secretValues === null) this.secretValues = collectSecretValues();
     return this.secretValues;
+  }
+
+  /** The run's event file as `size:mtime`, `undefined` when it has none — what a cache of
+   *  something derived from `readEvents` keys on. */
+  eventsStamp(runId: string): string | undefined {
+    try {
+      const stat = statSync(this.eventsPath(runId));
+      return `${stat.size}:${stat.mtimeMs}`;
+    } catch {
+      return undefined;
+    }
   }
 
   readEvents(runId: string): RunEvent[] {

@@ -109,22 +109,49 @@ export const DELIVERY_CAP_WINDOW_MS = 60 * 60_000;
 /** GitHub's clock against this machine's: a comment this close before a turn began counts as in it. */
 const CLOCK_SKEW_MS = 60_000;
 
-/** When the run's current turn began, while it is working: the last `turn.started` with no
- *  `turn.completed`/`session.ended` after it, on a live run. A live run whose backend never says
- *  `turn.*` is working since it started. `undefined` when the run is at rest. */
-export function openTurnSince(run: Pick<RunRecord, 'startedAt' | 'createdAt'>, events: readonly RunEvent[], live: boolean): number | undefined {
-  if (!live) return undefined;
-  let start: number | undefined;
+/** What the holds need of a run's events: where its open turn began, whether it ever said
+ *  `turn.*`, and the automation deliveries into it. */
+export type RunActivity = { openTurnAt?: number; sawTurn: boolean; deliveries: ReadonlyArray<{ mark: Partial<DeliveryMark>; at: number }> };
+
+export function runActivityOf(events: readonly RunEvent[]): RunActivity {
+  let openTurnAt: number | undefined;
   let sawTurn = false;
+  const deliveries: Array<{ mark: Partial<DeliveryMark>; at: number }> = [];
   for (const event of events) {
     const at = Date.parse(event.ts);
     if (!Number.isFinite(at)) continue;
     if (event.type === 'turn.started') {
       sawTurn = true;
-      start ??= at;
-    } else if (event.type === 'turn.completed' || event.type === 'session.ended') start = undefined;
+      openTurnAt ??= at;
+    } else if (event.type === 'turn.completed' || event.type === 'session.ended') openTurnAt = undefined;
+    else if (event.type === 'note' && event.automationDelivery) deliveries.push({ mark: event.automationDelivery as Partial<DeliveryMark>, at });
   }
-  return sawTurn ? start : Date.parse(run.startedAt ?? run.createdAt);
+  return { ...(openTurnAt !== undefined ? { openTurnAt } : {}), sawTurn, deliveries };
+}
+
+const activityCache = new Map<string, { stamp: string; activity: RunActivity }>();
+const ACTIVITY_CACHE_CAP = 500;
+
+/** `runActivityOf` a run's events, parsed again only when its event file's `stamp` (size and
+ *  mtime) changed — a poll must not re-parse every NDJSON on the item for every candidate. */
+export function cachedRunActivity(runId: string, stamp: string | undefined, read: () => readonly RunEvent[]): RunActivity {
+  if (stamp === undefined) return { sawTurn: false, deliveries: [] };
+  const cached = activityCache.get(runId);
+  if (cached?.stamp === stamp) return cached.activity;
+  const activity = runActivityOf(read());
+  activityCache.delete(runId);
+  activityCache.set(runId, { stamp, activity });
+  while (activityCache.size > ACTIVITY_CACHE_CAP) activityCache.delete(activityCache.keys().next().value!);
+  return activity;
+}
+
+/** When the run's current turn began, while it is working: the last `turn.started` with no
+ *  `turn.completed`/`session.ended` after it, on a live run. A live run whose backend never says
+ *  `turn.*` is working since it started. `undefined` when the run is at rest. */
+export function openTurnSince(run: Pick<RunRecord, 'startedAt' | 'createdAt'>, events: readonly RunEvent[] | RunActivity, live: boolean): number | undefined {
+  if (!live) return undefined;
+  const activity = Array.isArray(events) ? runActivityOf(events) : events as RunActivity;
+  return activity.sawTurn ? activity.openTurnAt : Date.parse(run.startedAt ?? run.createdAt);
 }
 
 const loginCache = new Map<string, { login?: string; at: number }>();
@@ -197,7 +224,8 @@ export async function automationHold(input: {
   candidate: GithubCandidate;
   owner?: RunRecord;
   runs: readonly RunRecord[];
-  readEvents: (runId: string) => readonly RunEvent[];
+  /** A run's turn boundaries and deliveries (`cachedRunActivity`); asked only of a live run, or the owner. */
+  activity: (runId: string) => RunActivity;
   isLive: (runId: string) => boolean;
   selfLogin: () => Promise<string | undefined>;
   now?: number;
@@ -208,11 +236,9 @@ export async function automationHold(input: {
   const recent = (at: string) => now - Date.parse(at) < DELIVERY_CAP_WINDOW_MS;
   const item = { repo: candidate.repo.toLowerCase(), number: candidate.number };
   if (owner) {
-    const delivered = input.readEvents(owner.id).filter((event) => {
-      const mark = event.automationDelivery as Partial<DeliveryMark> | undefined;
-      return event.type === 'note' && mark?.automationId === definition.id && mark.number === candidate.number
-        && mark.repo?.toLowerCase() === item.repo && recent(event.ts);
-    }).length;
+    const delivered = input.activity(owner.id).deliveries.filter(({ mark, at }) =>
+      mark.automationId === definition.id && mark.number === candidate.number
+        && mark.repo?.toLowerCase() === item.repo && now - at < DELIVERY_CAP_WINDOW_MS).length;
     if (delivered >= cap) return { result: 'held', reason: `delivery-cap: ${delivered} events of this automation already went into run ${owner.id} for #${candidate.number} in the last hour (cap ${cap}, the automation's maxRecords) — held until the window frees.` };
   } else if (candidate.comment) {
     const launches = new Set(input.runs.filter((run) => {
@@ -228,7 +254,9 @@ export async function automationHold(input: {
   const onItem = runsOnItem(input.runs, candidate);
   if (owner && !onItem.some((run) => run.id === owner.id)) onItem.push(owner);
   const working = onItem.find((run) => {
-    const since = openTurnSince(run, input.readEvents(run.id), input.isLive(run.id));
+    // A run at rest has no open turn: its events are never read for it.
+    if (!input.isLive(run.id)) return false;
+    const since = openTurnSince(run, input.activity(run.id), true);
     return since !== undefined && times.some((at) => at >= since - CLOCK_SKEW_MS);
   });
   if (!working) return undefined;

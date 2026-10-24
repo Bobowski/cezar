@@ -11,7 +11,7 @@ import { normalizeCommentBody } from './github-activity.ts';
 import type { ScheduleOccurrence } from './schedule-runner.ts';
 import type { TrackerAutomationCandidate } from './tracker-poller.ts';
 import { resolvePrHead, type CommandRunner } from './pr-head.ts';
-import { automationHold, deliverAutomationMessage, findOwningRun, githubSelfLogin, type DeliveryMark } from './owning-run.ts';
+import { automationHold, cachedRunActivity, deliverAutomationMessage, findOwningRun, githubSelfLogin, type DeliveryMark } from './owning-run.ts';
 import type { AutomationDefinition, GithubAutomationDefinition, ScheduleAutomationDefinition, TrackerAutomationDefinition } from './types.ts';
 
 const GITHUB_PLACEHOLDERS = new Set([
@@ -256,7 +256,7 @@ export async function launchAutomationRun(options: {
   // Neither a run's own reply nor an unbounded stream: held, never a new run instead (§11).
   const holdOf = (owner?: RunRecord) => automationHold({
     definition, candidate, owner, runs,
-    readEvents: (runId) => options.store.readEvents(runId),
+    activity: (runId) => cachedRunActivity(runId, options.store.eventsStamp(runId), () => options.store.readEvents(runId)),
     isLive: (runId) => options.manager.isActive?.(runId) ?? false,
     selfLogin: options.selfLogin ?? (() => githubSelfLogin(options.root, candidate.repo, options.runCommand)),
   });

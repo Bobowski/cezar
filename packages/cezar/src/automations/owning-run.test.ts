@@ -323,6 +323,25 @@ describe('owning-run delivery never feeds a run its own reply, nor an unbounded 
     expect(lastLog()).toMatchObject({ result: 'held' });
   });
 
+  it('reads no events of a run at rest, and a live run’s once until its event file changes', async () => {
+    const { runs, owner, started, state, fire } = await setup({ deliver: undefined });
+    const read = vi.spyOn(runs, 'readEvents');
+    const ownerReads = () => read.mock.calls.filter(([id]) => id === owner.id).length;
+    await fire(comment(31, 'cezar-bot', new Date()));
+    expect(started).toHaveLength(1);
+    expect(ownerReads()).toBe(0);
+    state.live = true;
+    for (const id of [owner.id, ...started]) runs.appendEvent(id, { type: 'turn.started', turnId: 't1' });
+    read.mockClear();
+    await fire(comment(32, 'cezar-bot', new Date()));
+    await fire(comment(33, 'cezar-bot', new Date()));
+    expect(started).toHaveLength(1);
+    // Every run on the item is live now; each one's file is parsed once for both candidates.
+    const ids = read.mock.calls.map(([id]) => id);
+    expect(ids.length).toBeGreaterThan(0);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   it('new-run: caps the runs one comment automation launches for one PR at maxRecords an hour, holding the rest', async () => {
     const { started, fire, lastLog, receiptOf } = await setup({ deliver: undefined });
     const later = new Date(Date.now() + 10 * 60_000);

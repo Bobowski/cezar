@@ -174,9 +174,10 @@ const SCHEDULING_FIELDS = ['autoResumeAt', 'monitoringWakeAt', 'monitoringWakeCa
 /** Archive-only mark on a row `settleLiveRuns` changed; the store's schema drops it on load. */
 const SETTLED_BY = 'settledByBackup';
 
-/** A row a backup settled (an older archive's: by its `interrupted — ` note). Its stamps are made up. */
+/** A row a backup settled, by its mark alone: the note outlives the settling on a restored host,
+ *  where a later pin or archive must still win (round 5). Its stamps are made up. */
 export function settledByBackup(row: Record<string, unknown>): boolean {
-  return typeof row[SETTLED_BY] === 'string' || (typeof row.error === 'string' && row.error.startsWith('interrupted — captured by '));
+  return typeof row[SETTLED_BY] === 'string';
 }
 
 /**

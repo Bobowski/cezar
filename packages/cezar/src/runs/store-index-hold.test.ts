@@ -203,6 +203,26 @@ describe('restoring over a live install keeps the tasks created after the backup
     expect((mergeRunIndex([{ ...here, finishedAt: '2026-03-01T00:00:00.000Z' }], [archived]).merged[0] as { title: string }).title).toBe('here');
   });
 
+  it('lets a later pin win from an archive whose row an earlier restore settled: the note alone is not the mark', () => {
+    // Host B restored A's backup (the row came back settled), the user pinned it on B, B was backed up.
+    const base = { ...RESTORED[0]!, id: 'moved-on', status: 'failed', error: 'interrupted — captured by backup a while it was running', finishedAt: '2026-01-02T00:00:00.000Z' };
+    const archived = { ...base, title: 'pinned on B', pinned: true, pinnedAt: '2026-02-01T00:00:00.000Z' };
+    expect((mergeRunIndex([base], [archived]).merged[0] as { title: string }).title).toBe('pinned on B');
+    // The mark is what a backup writes, and a marked copy without `updatedAt` on both sides still never wins.
+    expect((mergeRunIndex([base], [{ ...archived, settledByBackup: 'backup b' }]).merged[0] as { title: string }).title).toBe('from the backup');
+  });
+
+  it('never keeps the mark past a load: the store writes back the run it parsed, without it', () => {
+    const dataDir = join(root, '.ai', 'cezar');
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(dataDir, 'runs.json'), JSON.stringify([{ ...RESTORED[0]!, status: 'failed', error: 'interrupted — captured by backup a while it was running', settledByBackup: 'backup a' }]));
+    const store = RunStore.open(dataDir);
+    expect(store.getRun('restored-1')).not.toHaveProperty('settledByBackup');
+    store.setPinned('restored-1', true);
+    store.flush();
+    expect(readFileSync(join(dataDir, 'runs.json'), 'utf8')).not.toContain('settledByBackup');
+  });
+
   it('keeps a task that was waiting at the backup and still is: the settled copy never wins', async () => {
     const dataDir = join(root, '.ai', 'cezar');
     const live = RunStore.open(dataDir, { keepLive: true });
@@ -214,7 +234,7 @@ describe('restoring over a live install keeps the tasks created after the backup
     // The backup's copies, settled at the backup's instant — later than anything these records carry.
     const backupAt = new Date(Date.now() + 60_000);
     const [settled, older] = settleLiveRuns([live.getRun(parked.id), live.getRun(legacy.id)], 'backup x', backupAt) as Array<Record<string, unknown>>;
-    delete older!.settledByBackup; // an archive from before the mark: its `interrupted — ` note still tells
+    delete older!.settledByBackup; // an archive from before the mark: the equal updatedAt keeps this copy
 
     await apply(stage({ '.ai/cezar/runs.json': JSON.stringify([settled, older]) }));
     const reopened = RunStore.open(dataDir, { keepLive: true });

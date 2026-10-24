@@ -178,6 +178,8 @@ What the box itself needs:
   or set an S3-compatible bucket (R2, B2, MinIO) and switch **Nightly** on. A rebuilt box restores
   from the `/setup` page before any account exists — the setup code still gates it — or with
   `cezar backup restore <file>`. The archive opens with `age -d -i key.txt f.age | zstd -d | tar t`.
+  A restore merges task history rather than replacing it, but keeps no record of deletions: a
+  task deleted after the backup was taken comes back on restore — delete it again.
   Caddy caps request bodies at 32 MB except on the two restore uploads
   (`/api/v1/auth/setup/restore`, `/api/v1/workspace/backup/restore`), which get 1 GiB — cezar's
   own cap; a hand-written proxy in front of cezar needs the same exception.

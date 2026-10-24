@@ -182,6 +182,9 @@ Code: `packages/cezar/src/backup/` (`tar.ts`, `codec.ts`, `collect.ts`, `s3.ts`,
   instant, not work. A `runs/<id>.ndjson` follows its record: it goes in when the archive's
   record won, never when this machine's did, and otherwise (no index merged, an id neither index
   names) only where this machine has none or a shorter one.
+  **No tombstones:** a deletion is remembered only by the process that made it, so a task deleted
+  after the backup comes back on restore (its record and transcript, never its worktree); delete
+  it again.
   **No archived run is live, none is scheduled** (`settleLiveRuns`, rounds 3–4): the archive's
   copy of a `queued`/`running`/`waiting` record is written `failed` with `interrupted — captured
   by backup <name> while it was <status>` (a still-unanswered question keeps

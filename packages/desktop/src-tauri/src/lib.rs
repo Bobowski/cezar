@@ -360,7 +360,8 @@ fn installed_versions() -> Vec<InstalledVersion> {
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let id = entry.file_name().to_string_lossy().into_owned();
-            if id == "current" || id.starts_with('.') {
+            // `previous` is the rollback link `activate` writes beside `current`, not a version.
+            if id == "current" || id == "previous" || id.starts_with('.') {
                 continue;
             }
             let manifest = std::fs::read_to_string(entry.path().join(".cezar-install.json"))

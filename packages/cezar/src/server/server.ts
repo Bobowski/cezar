@@ -1560,6 +1560,7 @@ export function createApp(deps: ServerDeps) {
       restart: () => {},
       readOnly: true,
       trimPaths: () => !capabilities().localHandoff,
+      channelEditable: () => trustedOperator(process.env, bindHost),
     });
   const starCount = deps.starCount ?? new StarCountReader();
 
@@ -2015,6 +2016,9 @@ export function createApp(deps: ServerDeps) {
     // externally-depended-on JSON in the app (BACKWARD_COMPATIBILITY.md §2).
     const forge = resolveForge(repo);
     const caps = capabilities();
+    // The version chip reads health: a cockpit asking is what lets the branch channel's bounded
+    // background fetch run (spec 2026-10-23 §3.3); a closed cockpit fetches nothing.
+    selfUpdate.touch();
     return {
       version,
       // Spread rather than `latestVersion: update?.latest`: an `undefined` VALUE is dropped by
@@ -3712,11 +3716,26 @@ export function createApp(deps: ServerDeps) {
       c.json(await selfUpdate.development({ refresh: c.req.valid('query').refresh === '1' })),
     )
 
-    .put('/workspace/self-update/channel', jsonZodValidator(selfUpdateChannelRequestSchema, { message: 'body must be { channel: "stable" | "nightly" | "development" }' }), async (c) => {
-      const { channel } = c.req.valid('json');
-      await selfUpdate.setChannel(channel);
-      return c.json(await selfUpdate.status());
-    })
+    // SECURITY: a followed branch is code this server will build and run (spec 2026-10-23 §3.7),
+    // so the channel is a trusted-operator write — the line agent-config writes draw.
+    .put(
+      '/workspace/self-update/channel',
+      jsonZodValidator(selfUpdateChannelRequestSchema, {
+        message: 'body must be { channel: "stable" | "nightly" | "development" | "branch", branch?: { remote: https://, ssh:// or git@ URL, branch } }',
+      }),
+      async (c) => {
+        if (!trustedOperator(process.env, bindHost)) {
+          return c.json({ error: 'the update channel can only be changed by a trusted operator — this hosted cockpit runs without sign-in (CEZ_AUTH=0)' }, 409);
+        }
+        const { channel, branch } = c.req.valid('json');
+        try {
+          await selfUpdate.setChannel(channel, branch);
+        } catch (error) {
+          return c.json({ error: error instanceof Error ? error.message : String(error) }, 409);
+        }
+        return c.json(await selfUpdate.status());
+      },
+    )
 
     .post('/workspace/self-update/apply', jsonZodValidator(selfUpdateApplyRequestSchema, { message: 'body must be { version, whenIdle? }' }), async (c) => {
       const { version: target } = c.req.valid('json');

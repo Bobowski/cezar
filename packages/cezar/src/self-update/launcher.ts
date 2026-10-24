@@ -11,7 +11,7 @@ import { appendFileSync, chmodSync, mkdirSync, readFileSync, writeFileSync } fro
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { binDir, CURRENT_LINK, PACKAGE_NAME, versionsDir } from './layout.ts';
+import { binDir, CURRENT_LINK, PACKAGE_NAME, PREVIOUS_LINK, versionsDir } from './layout.ts';
 
 const PATH_MARKER = '# cezar managed install';
 
@@ -32,7 +32,7 @@ if [ "$1" = "use" ] && [ -n "$2" ]; then
   if [ ! -f "$CEZ_VERSIONS/$2/node_modules/${PACKAGE_NAME}/dist/index.js" ]; then
     echo "cezar: version '$2' is not installed under $CEZ_VERSIONS" >&2
     echo "installed:" >&2
-    ls -1 "$CEZ_VERSIONS" 2>/dev/null | grep -v '^${CURRENT_LINK}$' | grep -v '^\\.' | sed 's/^/  /' >&2
+    ls -1 "$CEZ_VERSIONS" 2>/dev/null | grep -v '^${CURRENT_LINK}$' | grep -v '^${PREVIOUS_LINK}$' | grep -v '^\\.' | sed 's/^/  /' >&2
     exit 1
   fi
   # \`ln -sfn\` replaces the link itself; a \`mv\` onto a symlink-to-directory would move INTO it.

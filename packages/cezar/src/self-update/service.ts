@@ -2,23 +2,62 @@
  * The self-update service behind `/api/v1/workspace/self-update` and `cezar update`. Owns the
  * registry cache, the release-channel setting, the managed-layout view and the ONE install job
  * a process runs at a time. Applying an update = install (npm) → activate (`current` link) →
- * restart (re-exec, or exit for a supervisor to relaunch — see `restart.ts`).
+ * restart (re-exec, or exit for a supervisor to relaunch — see `restart.ts`). The `branch`
+ * channel builds its install from a git branch first (spec 2026-10-23, `branch.ts`).
  */
 
-import type { SelfUpdateDevelopment, SelfUpdateJob, SelfUpdateScheduled, SelfUpdateStatus, UpdateChannel } from '@open-mercato/cezar-contract';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+
+import type {
+  SelfUpdateBranch,
+  SelfUpdateDevelopment,
+  SelfUpdateJob,
+  SelfUpdateScheduled,
+  SelfUpdateStatus,
+  UpdateBranch,
+  UpdateChannel,
+  UpdateCommit,
+} from '@open-mercato/cezar-contract';
 
 import { loadWorkspaceConfig, mergeWriteWorkspaceConfig } from '../workspace/config.ts';
 import type { WorkspaceSemaphore } from '../workspace/semaphore.ts';
-import { installFromLocal, installFromRegistry } from './installer.ts';
+import { installFromLocal, installFromRegistry, runNpm } from './installer.ts';
 import { buildCheckout, discoverCheckouts } from './checkouts.ts';
-import { activate, detectInstallKind, findInstalled, linkCheckout, listInstalled, packageRootOf, type InstallKind } from './layout.ts';
+import {
+  BRANCH_CHECK_INTERVAL_MS,
+  BranchSource,
+  IMAGE_SOURCE_FILE,
+  imageSourceBranch,
+  parseUpdateBranch,
+  selfUpdateCheckEnabled,
+  type GitRunner,
+} from './branch.ts';
+import {
+  activate,
+  activeId,
+  CURRENT_LINK,
+  detectInstallKind,
+  findInstalled,
+  isBranchInstallId,
+  linkCheckout,
+  listInstalled,
+  packageRootOf,
+  previousId,
+  readManifest,
+  removeInstalled,
+  versionsDir,
+  type InstallKind,
+} from './layout.ts';
 import { CEZAR_REPO, fetchOpenPulls, OpenPullsCache, type OpenPulls } from './pulls.ts';
 import { distTagFor, RegistryCache, type PackageDocument } from './registry.ts';
-import { classifyVersion, isNewer } from './semver.ts';
+import { clearRollback, readRollback } from './rollback.ts';
+import { classifyVersion, compareVersions, isNewer } from './semver.ts';
 
 const LOG_CAP = 200;
 /** How often a scheduled "update when idle" re-checks the workspace. */
 const IDLE_POLL_MS = 5_000;
+/** `branch` builds kept on disk after an activate (spec §3.5); registry installs are not pruned. */
+const BRANCH_BUILDS_KEPT = 3;
 
 export interface SelfUpdateDeps {
   pkgName: string;
@@ -36,6 +75,9 @@ export interface SelfUpdateDeps {
   idlePollMs?: number;
   /** Hosted mode trims the absolute entry path off the wire (#431). */
   trimPaths?: () => boolean;
+  /** Whether the caller may change the channel and the followed branch — the same
+   *  `trustedOperator()` the `PUT …/channel` route enforces. Absent: yes. */
+  channelEditable?: () => boolean;
   supervised?: boolean;
   /** Report only: `capability()` answers false whatever the install kind, so `apply()` can
    *  never install or activate. For a service that has no way to restart the process. */
@@ -46,6 +88,14 @@ export interface SelfUpdateDeps {
   pulls?: () => Promise<OpenPulls>;
   /** Builds an unbuilt or stale checkout before it is linked. Defaults to npm in the worktree. */
   buildCheckout?: typeof buildCheckout;
+  /** npm for the branch channel's build and pack; tests substitute one that touches no network. */
+  runNpm?: typeof runNpm;
+  /** git for the branch channel's clone. */
+  git?: GitRunner;
+  /** The container image's source record (spec §4.4); the last seed of the followed branch. */
+  imageSourceFile?: string;
+  /** A branch check found (or lost) a newer build: the health chip's `latestVersion`. */
+  onUpdateAvailable?: (target: string | null) => void;
 }
 
 export class SelfUpdateBusyError extends Error {
@@ -53,6 +103,8 @@ export class SelfUpdateBusyError extends Error {
     super('an update is already running');
   }
 }
+
+type BranchView = SelfUpdateBranch & { tipId: string | null };
 
 export class SelfUpdateService {
   readonly installKind: InstallKind;
@@ -62,12 +114,25 @@ export class SelfUpdateService {
   private scheduled: SelfUpdateScheduled | null = null;
   private idleTimer: ReturnType<typeof setInterval> | null = null;
   private readonly pulls: OpenPullsCache;
+  readonly source: BranchSource;
+  /** The install this process runs, resolved once: `current` may be flipped under it later. */
+  private readonly runningId: string | null;
+  /** The branch check: last attempt (throttle), last success, last error, the one in flight. */
+  private check: { key: string; attemptAt: number | null; fetchedAt: string | null; error?: string; inflight: Promise<void> | null } = {
+    key: '',
+    attemptAt: null,
+    fetchedAt: null,
+    inflight: null,
+  };
+  private branchCache: { key: string; view: BranchView } | null = null;
 
   constructor(private readonly deps: SelfUpdateDeps) {
     this.env = deps.env ?? process.env;
     this.installKind = detectInstallKind(deps.entry, this.env);
     this.registry = deps.registry ?? new RegistryCache(deps.pkgName);
     this.pulls = new OpenPullsCache(deps.pulls ?? (() => fetchOpenPulls(CEZAR_REPO, { env: this.env })));
+    this.source = new BranchSource(this.env, deps.git);
+    this.runningId = runningInstallId(deps.entry, this.env);
   }
 
   /** The raw running version — what update checks compare, never the shown `-dev` one. */
@@ -80,28 +145,111 @@ export class SelfUpdateService {
     const config = await loadWorkspaceConfig();
     if (config.updateChannel) return config.updateChannel;
     const seed = this.env.CEZ_UPDATE_CHANNEL;
-    return seed === 'nightly' || seed === 'development' ? seed : 'stable';
+    return seed === 'nightly' || seed === 'development' || seed === 'branch' ? seed : 'stable';
   }
 
-  async setChannel(channel: UpdateChannel): Promise<void> {
+  /** The branch the `branch` channel follows: workspace config, then `CEZ_UPDATE_BRANCH`, then
+   *  the container image's own source. Null when none of them names a valid one. */
+  async updateBranch(): Promise<UpdateBranch | null> {
+    const config = await loadWorkspaceConfig();
+    if (config.updateBranch) return { remote: config.updateBranch.remote, branch: config.updateBranch.branch };
+    return parseUpdateBranch(this.env.CEZ_UPDATE_BRANCH) ?? imageSourceBranch(this.deps.imageSourceFile ?? IMAGE_SOURCE_FILE);
+  }
+
+  async setChannel(channel: UpdateChannel, branch?: UpdateBranch): Promise<void> {
+    if (channel === 'branch' && !branch && !(await this.updateBranch())) {
+      throw new Error('the branch channel needs a branch to follow — give a remote and a branch, or set CEZ_UPDATE_BRANCH=<remote>#<branch>');
+    }
     await mergeWriteWorkspaceConfig((config) => {
       config.updateChannel = channel;
+      if (branch) config.updateBranch = { remote: branch.remote, branch: branch.branch };
     });
+    this.branchCache = null;
   }
 
   /** The channel's newest version when it is newer than the running one — what health's
-   *  `latestVersion` reports and the version chip pulses for. */
+   *  `latestVersion` reports and the version chip pulses for. The branch channel answers from
+   *  its clone without fetching: the boot check must not reach the network on its behalf. */
   async updateAvailable(refresh = false): Promise<string | null> {
-    const doc = refresh ? await this.registry.refresh() : await this.registry.get();
     const channel = await this.channel();
+    if (channel === 'branch') {
+      const view = await this.branchView(refresh);
+      return view && view.behind > 0 ? view.tipId : null;
+    }
+    const doc = refresh ? await this.registry.refresh() : await this.registry.get();
     // Development runs whatever was picked by hand; nothing is ever "newer" than a worktree.
     if (!doc || channel === 'development') return null;
     const target = doc.distTags[distTagFor(channel)];
     return target && isNewer(target, this.deps.version) ? target : null;
   }
 
+  /** "A cockpit is asking" (spec §3.3): start the branch channel's background fetch when one is
+   *  due. At most one per `BRANCH_CHECK_INTERVAL_MS`, never with `CEZ_SELF_UPDATE_CHECK=0`. */
+  touch(): void {
+    if (!selfUpdateCheckEnabled(this.env)) return;
+    void (async () => {
+      if ((await this.channel()) !== 'branch') return;
+      const branch = await this.updateBranch();
+      if (!branch) return;
+      const key = branchKey(branch);
+      const state = this.check.key === key ? this.check : null;
+      if (state?.inflight) return;
+      if (state?.attemptAt != null && Date.now() - state.attemptAt < BRANCH_CHECK_INTERVAL_MS) return;
+      await this.fetchBranch(branch);
+    })().catch(() => {});
+  }
+
+  /** Fetch the followed branch now (single-flight), then recompute the view and tell the chip. */
+  private fetchBranch(branch: UpdateBranch): Promise<void> {
+    const key = branchKey(branch);
+    if (this.check.key !== key) this.check = { key, attemptAt: null, fetchedAt: null, inflight: null };
+    const state = this.check;
+    if (state.inflight) return state.inflight;
+    state.attemptAt = Date.now();
+    state.inflight = (async () => {
+      const fetched = await this.source.fetch(branch);
+      if (fetched.ok) {
+        state.fetchedAt = new Date().toISOString();
+        delete state.error;
+      } else {
+        state.error = fetched.error;
+      }
+      this.branchCache = null;
+      const view = await this.branchView(false);
+      this.deps.onUpdateAvailable?.(view && view.behind > 0 ? view.tipId : null);
+    })().finally(() => {
+      state.inflight = null;
+    });
+    return state.inflight;
+  }
+
+  /** The branch panel, from the clone (cached until the next fetch). `refresh` fetches first. */
+  private async branchView(refresh: boolean): Promise<BranchView | null> {
+    const branch = await this.updateBranch();
+    if (!branch) return null;
+    if (refresh) await this.fetchBranch(branch);
+    const key = `${branchKey(branch)}@${this.runningCommit()?.sha ?? ''}`;
+    if (this.branchCache?.key !== key) {
+      const local = await this.source.view(branch, this.runningCommit());
+      this.branchCache = { key, view: { ...local, fetchedAt: null } };
+    }
+    const check = this.check.key === branchKey(branch) ? this.check : null;
+    return {
+      ...this.branchCache.view,
+      fetchedAt: check?.fetchedAt ?? null,
+      ...(check?.error ? { error: check.error } : {}),
+    };
+  }
+
+  /** The commit the running build came from; null for a registry or local install. */
+  private runningCommit(): UpdateCommit | null {
+    const commit = this.runningId ? readManifest(this.runningId, this.env)?.commit : undefined;
+    return commit ? { sha: commit.sha, subject: commit.subject, at: commit.at } : null;
+  }
+
   /** Read the status without waiting on the network: the cached document answers, and a stale
-   *  or missing one is refreshed behind the response. `refresh` forces a registry round trip. */
+   *  or missing one is refreshed behind the response. `refresh` forces a registry round trip
+   *  (and, on the branch channel, a fetch of the followed branch). */
   async status(opts: { refresh?: boolean } = {}): Promise<SelfUpdateStatus> {
     let doc: PackageDocument | null;
     if (opts.refresh) doc = await this.registry.refresh();
@@ -110,6 +258,8 @@ export class SelfUpdateService {
       void this.registry.get().catch(() => {});
     }
     const channel = await this.channel();
+    if (channel === 'branch' && !opts.refresh) this.touch();
+    const branchView = channel === 'branch' ? await this.branchView(opts.refresh === true) : null;
     const installed = listInstalled(this.env);
     const installedIds = new Set(installed.map((entry) => entry.id));
     const stable = doc?.distTags.latest ?? null;
@@ -117,6 +267,12 @@ export class SelfUpdateService {
     const target = channel === 'stable' ? stable : channel === 'nightly' ? nightly : null;
     const { canSelfUpdate, reason } = this.capability();
     const trim = this.deps.trimPaths?.() ?? false;
+    const rollback = readRollback(this.env);
+    let branch: SelfUpdateBranch | undefined;
+    if (branchView) {
+      const { tipId: _tipId, ...rest } = branchView;
+      branch = rest;
+    }
     return {
       version: this.deps.displayVersion ?? this.deps.version,
       installKind: this.installKind,
@@ -126,8 +282,15 @@ export class SelfUpdateService {
       channel,
       restartMode: this.deps.supervised ? 'supervisor' : 'reexec',
       latest: { stable, nightly },
-      updateAvailable: target && isNewer(target, this.deps.version) ? target : null,
-      checkedAt: doc?.fetchedAt ?? null,
+      updateAvailable:
+        channel === 'branch'
+          ? branchView && branchView.behind > 0
+            ? branchView.tipId
+            : null
+          : target && isNewer(target, this.deps.version)
+            ? target
+            : null,
+      checkedAt: channel === 'branch' ? (branchView?.fetchedAt ?? null) : (doc?.fetchedAt ?? null),
       installed: installed.map((entry) => ({
         id: entry.id,
         version: entry.version,
@@ -136,6 +299,7 @@ export class SelfUpdateService {
         active: entry.active,
         ...(entry.branch ? { branch: entry.branch } : {}),
         ...(entry.checkout && !trim ? { checkout: entry.checkout } : {}),
+        ...(entry.commit ? { commit: { sha: entry.commit.sha, subject: entry.commit.subject, at: entry.commit.at, branch: entry.commit.branch } } : {}),
       })),
       // Previews (`-pr123.`, `-develop.`) are noise in a picker meant for stable ↔ nightly
       // moves; the PoC lists stable releases and nightlies only.
@@ -151,6 +315,9 @@ export class SelfUpdateService {
       job: this.job,
       scheduled: this.scheduled,
       activeRuns: this.deps.runs?.activeRuns() ?? 0,
+      channelEditable: this.deps.channelEditable?.() ?? true,
+      ...(branch ? { branch } : {}),
+      ...(rollback ? { rollback } : {}),
     };
   }
 
@@ -209,13 +376,17 @@ export class SelfUpdateService {
    * nightly cut months earlier and restart into code that predates the guards this rule exists
    * to protect. The registry's publish dates are the honest signal; when it cannot supply them
    * (offline, or a version it does not list) the residual risk is a prerelease outranking a
-   * release, so that shape is refused outright.
+   * release, so that shape is refused outright. A branch build is dated by its COMMITTER date.
    *
    * Returns the refusal reason, or null when the target may be applied.
    */
   async forwardOnlyRefusal(target: string): Promise<string | null> {
     const running = this.deps.version;
     const suffix = 'apply it on the host itself (`cezar use <id>`)';
+    const installed = findInstalled(target, this.env);
+    if (installed?.source === 'branch' || installed?.source === 'image' || (!installed && isBranchInstallId(target))) {
+      return this.branchForwardRefusal(target, installed?.commit?.at ?? null, suffix);
+    }
     if (!isNewer(target, running)) {
       return `a hosted cockpit can only update forward — ${target} is not newer than the running ${running}; ${suffix}`;
     }
@@ -232,6 +403,24 @@ export class SelfUpdateService {
       return `a hosted cockpit can only update forward — ${target} is a prerelease and the registry gave no publish date to check it against; ${suffix}`;
     }
     return null;
+  }
+
+  /** Forward-only for a branch build (spec §3.6): committed no earlier than the running build.
+   *  Ancestry is reported on the status, never enforced here. */
+  private async branchForwardRefusal(target: string, installedAt: string | null, suffix: string): Promise<string | null> {
+    const targetAt = installedAt ?? (await this.source.commit(target.split('+').pop() ?? ''))?.at ?? null;
+    if (!targetAt) return `a hosted cockpit can only update forward — cezar cannot date ${target}'s commit; ${suffix}`;
+    const runningAt = this.runningCommit()?.at;
+    if (runningAt) {
+      return Date.parse(targetAt) >= Date.parse(runningAt)
+        ? null
+        : `a hosted cockpit can only update forward — ${target} was committed before the running build; ${suffix}`;
+    }
+    // The running build carries no commit (a registry release, an image of unknown age): its
+    // version is all there is to compare, so at least never step back a release.
+    return compareVersions(target.split('+')[0] ?? target, this.deps.version) >= 0
+      ? null
+      : `a hosted cockpit can only update forward — ${target} is older than the running ${this.deps.version}; ${suffix}`;
   }
 
   capability(): { canSelfUpdate: boolean; reason?: string } {
@@ -257,11 +446,14 @@ export class SelfUpdateService {
   }
 
   /**
-   * Install `target` (a registry version, an already-installed id such as `0.11.1+local`, or the
-   * id of a built cezar checkout `status()` lists — linked on the spot), activate it and restart.
-   * Returns as soon as the job is started; progress is on `status()`.
+   * Install `target` (a registry version, an already-installed id such as `0.11.1+local`, the
+   * id of a built cezar checkout `status()` lists — linked on the spot — or, on the branch
+   * channel, a `<version>+<sha8>` built from the followed branch), activate it and restart.
+   * Returns as soon as the job is started; progress is on `status()`. A branch build switches
+   * only once the workspace is idle when `whenIdle` asks for it or runs are active (spec §3.5):
+   * the build itself never waits.
    */
-  apply(target: string): SelfUpdateJob {
+  apply(target: string, opts: { whenIdle?: boolean } = {}): SelfUpdateJob {
     if (this.job?.status === 'running' || this.job?.status === 'restarting') throw new SelfUpdateBusyError();
     const { canSelfUpdate, reason } = this.capability();
     if (!canSelfUpdate) throw new Error(reason ?? 'self-update is not available for this install');
@@ -276,17 +468,29 @@ export class SelfUpdateService {
     void (async () => {
       try {
         const installed = findInstalled(target, this.env);
+        if (!installed && (await this.isBranchTarget(target))) {
+          const id = await this.buildBranch(target, log);
+          if (opts.whenIdle || !this.idle()) {
+            log(`built ${id} — switching once no task is running`);
+            // The build is done; what is left is the idle wait the dialog already shows.
+            if (this.job === job) this.job = null;
+            this.waitForIdle(id);
+            return;
+          }
+          this.switchTo(id, job, log);
+          return;
+        }
+        if (opts.whenIdle) {
+          // `scheduleWhenIdle` guessed a branch build from the id's shape; it is not one.
+          if (this.job === job) this.job = null;
+          this.waitForIdle(target);
+          return;
+        }
         // A linked checkout goes through discovery too: it may need a rebuild before it runs.
         const linked = !installed || installed.source === 'link' ? await this.linkDiscovered(target, log) : null;
         const id = linked ?? installed?.id ?? (await installFromRegistry(target, { onLog: log, env: this.env })).id;
         if (installed && !linked) log(`${id} is already installed`);
-        activate(id, this.env);
-        log(`activated ${id}`);
-        job.status = 'restarting';
-        job.finishedAt = new Date().toISOString();
-        log('restarting…');
-        // Let the status poll that observes `restarting` get its answer before the listener goes.
-        setTimeout(() => this.deps.restart(), 750);
+        this.switchTo(id, job, log);
       } catch (error) {
         job.status = 'failed';
         job.finishedAt = new Date().toISOString();
@@ -297,15 +501,91 @@ export class SelfUpdateService {
     return job;
   }
 
+  /** Activate, prune, and hand over to the restart. */
+  private switchTo(id: string, job: SelfUpdateJob, log: (line: string) => void): void {
+    activate(id, this.env);
+    log(`activated ${id}`);
+    clearRollback(this.env);
+    if (readManifest(id, this.env)?.source === 'branch') this.pruneBranchBuilds(log);
+    job.status = 'restarting';
+    job.finishedAt = new Date().toISOString();
+    log('restarting…');
+    // Let the status poll that observes `restarting` get its answer before the listener goes.
+    setTimeout(() => this.deps.restart(), 750);
+  }
+
+  private idle(): boolean {
+    return !this.deps.runs || this.deps.runs.idle();
+  }
+
+  /** A target the branch channel builds: an id shaped `<version>+<sha8>`, on that channel. */
+  private async isBranchTarget(target: string): Promise<boolean> {
+    return isBranchInstallId(target) && (await this.channel()) === 'branch';
+  }
+
+  /**
+   * Build `target` from the followed branch into `versions/<version>+<sha8>` (spec §3.5 steps
+   * 1–3). A failure leaves `current` and `previous` untouched and the clone on the attempted sha
+   * — the next attempt resets it.
+   */
+  private async buildBranch(target: string, log: (line: string) => void): Promise<string> {
+    const branch = await this.updateBranch();
+    if (!branch) throw new Error('the branch channel has no branch to follow');
+    log(`fetching ${branch.branch} from ${branch.remote}`);
+    await this.fetchBranch(branch);
+    if (this.check.error) log(`fetch failed (${this.check.error}) — building from the clone as it is`);
+    const short = target.split('+').pop() ?? '';
+    const commit = await this.source.commit(short);
+    if (!commit) throw new Error(`commit ${short} is not on ${branch.branch}`);
+    const id = await this.source.installIdAt(commit.sha);
+    if (id !== target) throw new Error(`${target} does not name commit ${short} (it builds as ${id ?? 'nothing cezar can install'})`);
+    log(`checking out ${commit.sha.slice(0, 8)} — ${commit.subject}`);
+    await this.source.checkout(commit.sha);
+    const npm: typeof runNpm = (args, cwd, onLog) => (this.deps.runNpm ?? runNpm)(args, cwd, onLog, { nice: true });
+    await (this.deps.buildCheckout ?? buildCheckout)({ worktree: this.source.dir, packageRoot: join(this.source.dir, 'packages', 'cezar') }, log, npm);
+    const result = await installFromLocal(join(this.source.dir, 'packages', 'cezar'), {
+      onLog: log,
+      env: this.env,
+      runNpm: npm,
+      branchCommit: { ...commit, branch: branch.branch },
+    });
+    return result.id;
+  }
+
+  /** Keep the newest `BRANCH_BUILDS_KEPT` branch builds; never the active one or `previous`. */
+  private pruneBranchBuilds(log: (line: string) => void): void {
+    const keep = new Set([activeId(this.env), previousId(this.env)]);
+    const builds = listInstalled(this.env).filter((entry) => entry.source === 'branch');
+    for (const entry of builds.slice(BRANCH_BUILDS_KEPT)) {
+      if (keep.has(entry.id)) continue;
+      try {
+        removeInstalled(entry.id, this.env);
+        log(`removed the older build ${entry.id}`);
+      } catch {
+        // Not removable right now: the next prune tries again.
+      }
+    }
+  }
+
   /**
    * "Update when idle": apply `target` once no task is running or queued, so the user can close
    * the dialog and keep working. Applies at once when the workspace is already idle; replaces an
-   * earlier schedule. The same refusals as `apply()` are raised up front.
+   * earlier schedule. The same refusals as `apply()` are raised up front. A branch build that is
+   * not on disk yet starts building now and only its switch waits.
    */
   scheduleWhenIdle(target: string): void {
     if (this.job?.status === 'running' || this.job?.status === 'restarting') throw new SelfUpdateBusyError();
     const { canSelfUpdate, reason } = this.capability();
     if (!canSelfUpdate) throw new Error(reason ?? 'self-update is not available for this install');
+    if (!findInstalled(target, this.env) && isBranchInstallId(target)) {
+      // The channel is checked again inside `apply`; a non-branch id falls through to the registry.
+      this.apply(target, { whenIdle: true });
+      return;
+    }
+    this.waitForIdle(target);
+  }
+
+  private waitForIdle(target: string): void {
     this.scheduled = { target, requestedAt: new Date().toISOString() };
     if (!this.idleTimer) {
       this.idleTimer = setInterval(() => this.applyIfIdle(), this.deps.idlePollMs ?? IDLE_POLL_MS);
@@ -323,7 +603,7 @@ export class SelfUpdateService {
   private applyIfIdle(): void {
     const scheduled = this.scheduled;
     if (!scheduled) return;
-    if (this.deps.runs && !this.deps.runs.idle()) return;
+    if (!this.idle()) return;
     try {
       this.apply(scheduled.target);
     } catch (error) {
@@ -359,4 +639,33 @@ export class SelfUpdateService {
     activate(result.id, this.env);
     return result;
   }
+
+  /**
+   * `cezar update` on the branch channel (spec §3.8): fetch, build the tip, install and activate
+   * it. Never restarts a server — the CLI says what to restart. Null when already up to date.
+   */
+  async installBranchTip(onLog: (line: string) => void): Promise<{ id: string; branch: SelfUpdateBranch } | { id: null; branch: SelfUpdateBranch | null }> {
+    const view = await this.branchView(true);
+    if (!view) return { id: null, branch: null };
+    const { tipId, ...branch } = view;
+    if (view.behind === 0 || !tipId) return { id: null, branch };
+    const id = findInstalled(tipId, this.env)?.id ?? (await this.buildBranch(tipId, onLog));
+    activate(id, this.env);
+    clearRollback(this.env);
+    this.pruneBranchBuilds(onLog);
+    return { id, branch };
+  }
+}
+
+function branchKey(branch: UpdateBranch): string {
+  return `${branch.remote}#${branch.branch}`;
+}
+
+/** The managed install a running entry belongs to: `versions/<id>/…`, or `current`'s target at
+ *  boot when it was launched through the link. Null outside the managed layout. */
+function runningInstallId(entry: string, env: NodeJS.ProcessEnv): string | null {
+  const rel = relative(resolve(versionsDir(env)), resolve(entry));
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return null;
+  const first = rel.split(sep)[0] ?? '';
+  return first === CURRENT_LINK ? activeId(env) : first || null;
 }

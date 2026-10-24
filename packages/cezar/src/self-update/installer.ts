@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 
 import { cezarHomeDir } from '../paths.ts';
-import { assertSafeId, installId, PACKAGE_NAME, versionDir, versionEntry, versionsDir, writeManifest } from './layout.ts';
+import { assertSafeId, branchInstallId, installId, PACKAGE_NAME, versionDir, versionEntry, versionsDir, writeManifest, type InstallManifest } from './layout.ts';
 
 const packageJsonSchema = z.object({ name: z.string(), version: z.string().min(1) }).passthrough();
 
@@ -57,14 +57,21 @@ export async function installFromRegistry(version: string, opts: InstallOptions 
 }
 
 /** Pack the package at `packageRoot` (must be built) and install the tarball as `<version>+local`. */
-export async function installFromLocal(packageRoot: string, opts: InstallOptions = {}): Promise<InstallResult> {
+export async function installFromLocal(
+  packageRoot: string,
+  opts: InstallOptions & {
+    /** A `branch`-channel build: installed as `<version>+<sha8>` with its commit in the manifest. */
+    branchCommit?: NonNullable<InstallManifest['commit']>;
+  } = {},
+): Promise<InstallResult> {
   const env = opts.env ?? process.env;
   // The package.json is read back off disk, so it goes through a schema like every other
   // persisted file cezar parses — a malformed one is "not a built package", never a crash.
   const pkg = packageJsonSchema.safeParse(readJson(join(packageRoot, 'package.json')));
   if (!pkg.success || pkg.data.name !== PACKAGE_NAME) throw new Error(`${packageRoot} is not a built ${PACKAGE_NAME} package`);
   const version = pkg.data.version;
-  const id = installId(version, 'local');
+  const commit = opts.branchCommit;
+  const id = commit ? branchInstallId(version, commit.sha) : installId(version, 'local');
   const packDir = join(tmpdir(), `cezar-pack-${process.pid}-${Date.now()}`);
   mkdirSync(packDir, { recursive: true });
   try {
@@ -75,7 +82,7 @@ export async function installFromLocal(packageRoot: string, opts: InstallOptions
     // A local reinstall replaces the previous local build of the same version — it is the
     // point of the exercise when iterating on a checkout.
     rmSync(versionDir(id, env), { recursive: true, force: true });
-    await installSpec(id, join(packDir, tarball), { version, source: 'local' }, opts);
+    await installSpec(id, join(packDir, tarball), commit ? { version, source: 'branch', commit } : { version, source: 'local' }, opts);
   } finally {
     rmSync(packDir, { recursive: true, force: true });
   }
@@ -85,7 +92,7 @@ export async function installFromLocal(packageRoot: string, opts: InstallOptions
 async function installSpec(
   id: string,
   spec: string,
-  manifest: { version: string; source: 'registry' | 'local' },
+  manifest: { version: string; source: InstallManifest['source']; commit?: InstallManifest['commit'] },
   opts: InstallOptions,
 ): Promise<void> {
   const env = opts.env ?? process.env;
@@ -124,6 +131,12 @@ async function installSpec(
   }
 }
 
+/** `nice` on a POSIX host; never on Windows, which has none. */
+function niceBinary(): string | null {
+  if (process.platform === 'win32') return null;
+  return ['/usr/bin/nice', '/bin/nice'].find((path) => existsSync(path)) ?? null;
+}
+
 /** The value of npm's `npm error <field> <value>` line (`npm ERR!` before npm 10). */
 function npmErrorField(output: readonly string[], field: string): string | undefined {
   for (const line of output) {
@@ -154,15 +167,21 @@ export function npmFallbackCache(env: NodeJS.ProcessEnv = process.env): string {
  * were started by npm, else the `npm` on PATH (`npm.cmd` via a shell on Windows). Output is
  * streamed line by line to `onLog` so the cockpit can show progress.
  */
-export function runNpm(args: string[], cwd: string, onLog?: (line: string) => void): Promise<void> {
+export function runNpm(args: string[], cwd: string, onLog?: (line: string) => void, opts: { nice?: boolean } = {}): Promise<void> {
   const npmExecpath = process.env.npm_execpath;
   const viaNode = npmExecpath !== undefined && npmExecpath !== '';
-  const file = viaNode ? process.execPath : process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  const full = npmExecpath ? [npmExecpath, ...args] : args;
+  let file = viaNode ? process.execPath : process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  let full = npmExecpath ? [npmExecpath, ...args] : args;
+  // A branch build runs beside live agents (spec 2026-10-23 §3.5): lower its priority where `nice` exists.
+  const nice = opts.nice ? niceBinary() : null;
+  if (nice) {
+    full = ['-n', '10', file, ...full];
+    file = nice;
+  }
   return new Promise((resolvePromise, reject) => {
     const child = spawn(file, full, {
       cwd,
-      shell: !viaNode && process.platform === 'win32',
+      shell: !viaNode && !nice && process.platform === 'win32',
       env: { ...process.env, NO_UPDATE_NOTIFIER: '1', npm_config_update_notifier: 'false' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

@@ -25,7 +25,7 @@ import { RunStore } from './runs/store.ts';
 import { RunManager } from './workflows/run.ts';
 import { resolveTrackerAgentEnv } from './server/tracker/agent-credentials.ts';
 import { loadWorkflows } from './workflows/load.ts';
-import { resolveCapabilities } from './server/capabilities.ts';
+import { resolveCapabilities, trustedOperator } from './server/capabilities.ts';
 import { startServer, WorkspaceEventBus } from './server/server.ts';
 import {
   ProviderRuntimeAuthObserver,
@@ -82,7 +82,8 @@ Usage:
   cezar install             install THIS cezar permanently under ~/.cezar (a \`cezar\`
                             command on PATH that updates itself from the cockpit)
   cezar update              update the managed install to the channel's newest version
-                            (--channel stable|nightly, --version <x> to pin or downgrade)
+                            (--channel stable|nightly|branch, --version <x> to pin or downgrade;
+                            on branch it fetches, builds and activates the tip; --check only reports)
   cezar versions            list installed versions and cezar worktrees (\`cezar use <id>\` switches)
   cezar link [<dir>]        run a cezar checkout/worktree (default: cwd) as a version — a
                             link, not a copy, so rebuilds are live (--use to switch to it now);
@@ -183,6 +184,7 @@ async function main(): Promise<void> {
       version: { type: 'string' },
       'no-modify-path': { type: 'boolean', default: false },
       use: { type: 'boolean', default: false },
+      check: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
     allowPositionals: true,
@@ -266,6 +268,7 @@ async function main(): Promise<void> {
         version: values.version,
         modifyPath: !values['no-modify-path'],
         use: Boolean(values.use),
+        check: Boolean(values.check),
       });
       return;
     default:
@@ -375,6 +378,12 @@ async function serveCommand(
     // The server's own predicate, not a second spelling of it: the `/apply` guard decides hosted
     // mode through `resolveCapabilities`, and the two must never disagree (they did, on 127.0.0.2).
     trimPaths: () => !resolveCapabilities(process.env, bindHost).localHandoff,
+    channelEditable: () => trustedOperator(process.env, bindHost),
+    // A branch check that finds new commits lights the version chip (spec 2026-10-23 §3.4).
+    onUpdateAvailable: (latest) => {
+      if (latest) update.latest = latest;
+      else delete update.latest;
+    },
     restart: () => {
       void (httpServer?.shutdownLifecycle() ?? manager.lifecycle.shutdown()).then(() => {
         store.flush({ pretty: true });
@@ -904,7 +913,9 @@ function openStore(repoRoot: string, opts?: { keepLive?: boolean }): RunStore {
 
 /** The self-update service over THIS process: its package, version and entry file. */
 function buildSelfUpdateService(
-  overrides: Partial<Pick<ConstructorParameters<typeof SelfUpdateService>[0], 'restart' | 'runs' | 'trimPaths'>> & {
+  overrides: Partial<
+    Pick<ConstructorParameters<typeof SelfUpdateService>[0], 'restart' | 'runs' | 'trimPaths' | 'channelEditable' | 'onUpdateAvailable'>
+  > & {
     restart: () => void;
   },
 ): SelfUpdateService {

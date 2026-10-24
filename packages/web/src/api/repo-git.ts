@@ -6,6 +6,7 @@ import {
   type RepoCommitInput,
   type RepoCommitResponse,
   type RepoCompare,
+  type RepoDiscard,
   type RepoGitActionResponse,
   type RepoGraph,
   type RepoGraphFilter,
@@ -116,17 +117,17 @@ export async function runOperation(step: 'abort' | 'continue'): Promise<RepoGitA
   return unwrap(res, `/repo/merge/${step}`)
 }
 
-export type IndexStep = 'stage' | 'unstage' | 'discard'
+export type IndexStep = 'stage' | 'unstage'
 
 export async function changeIndex(step: IndexStep, change: RepoIndexChange): Promise<RepoIndex> {
   const body = { param: scope(), json: change }
-  const res =
-    step === 'stage'
-      ? await repo().stage.$post(body)
-      : step === 'unstage'
-        ? await repo().unstage.$post(body)
-        : await repo().discard.$post(body)
+  const res = step === 'stage' ? await repo().stage.$post(body) : await repo().unstage.$post(body)
   return unwrap(res, `/repo/${step}`)
+}
+
+/** Only from the confirm dialog: the server refuses a discard without `confirm: true`. */
+export async function discardChange(change: RepoDiscard): Promise<RepoIndex> {
+  return unwrap(await repo().discard.$post({ param: scope(), json: change }), '/repo/discard')
 }
 
 export async function commitIndex(input: RepoCommitInput): Promise<RepoCommitResponse> {

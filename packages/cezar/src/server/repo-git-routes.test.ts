@@ -151,6 +151,19 @@ describe('the Git page routes', () => {
     expect(g(repo, 'log', '-1', '--format=%s').trim()).toBe('from the cockpit');
   });
 
+  it('POST /repo/discard 409s without the confirm, and for an untracked file without its own flag', async () => {
+    writeFileSync(join(repo, 'a.txt'), 'changed\n');
+    writeFileSync(join(repo, 'new.txt'), 'new\n');
+    const discard = (body: Record<string, unknown>) =>
+      apiRequest(app, '/api/v1/repo/discard', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json' } });
+    expect((await discard({ paths: ['a.txt'] })).status).toBe(409);
+    expect((await discard({ paths: ['new.txt'], confirm: true })).status).toBe(409);
+    expect(g(repo, 'status', '--porcelain', '--', 'a.txt', 'new.txt')).toBe(' M a.txt\n?? new.txt\n');
+    const ok = await discard({ paths: ['a.txt', 'new.txt'], confirm: true, untracked: true });
+    expect(ok.status).toBe(200);
+    expect(((await ok.json()) as RepoIndex).unstaged).toEqual([]);
+  });
+
   it('a hosted cockpit without cezar’s own sign-in refuses every git mutation', async () => {
     g(repo, 'branch', 'other');
     process.env.CEZ_REMOTE = '1';

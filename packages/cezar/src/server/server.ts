@@ -11,7 +11,7 @@ import {
   codeSearchQuerySchema, codeWatchQuerySchema, repoFilePathQuerySchema, type CodeWatch,
   repoSyncQuerySchema, type RepoPullResponse, type RepoSync,
   repoBranchDeleteQuerySchema, repoBranchParamSchema, repoBranchPushSchema, repoBranchRenameSchema, repoCommitSchema,
-  repoCommitShaParamSchema, repoCompareQuerySchema, repoGraphQuerySchema, repoIndexChangeSchema, repoRemoteParamSchema,
+  repoCommitShaParamSchema, repoCompareQuerySchema, repoDiscardSchema, repoGraphQuerySchema, repoIndexChangeSchema, repoRemoteParamSchema,
   repoStashParamSchema, repoStashPushSchema,
   PROJECT_ICON_MAX_BYTES, setProjectIconSchema, type ProjectIconCandidates,
   dockerContainerParamsSchema, dockerStackParamsSchema, type DockerState,
@@ -8834,7 +8834,7 @@ export function createApp(deps: ServerDeps) {
       const r = await mutateCheckout(c.get('project'), principalOf(c), thenIndex((root) => unstagePaths(root, change)));
       return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
     })
-    .post('/repo/discard', jsonZodValidator(repoIndexChangeSchema), async (c) => {
+    .post('/repo/discard', jsonZodValidator(repoDiscardSchema), async (c) => {
       const change = c.req.valid('json');
       const r = await mutateCheckout(c.get('project'), principalOf(c), thenIndex((root) => discardPaths(root, change)), { movesTree: true });
       return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);

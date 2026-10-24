@@ -4,7 +4,7 @@ import { useSearchParams } from 'react-router'
 
 import { ApiError } from '@/api/client'
 import { useRepoCompare, useRepoIndex } from '@/api/repo-git'
-import type { RepoIndexChange, RepoIndexFile } from '@open-mercato/cezar-api-client'
+import type { RepoDiscard, RepoIndexChange, RepoIndexFile } from '@open-mercato/cezar-api-client'
 import { ContextSidebar } from '@/components/context-sidebar'
 import { canPreviewMarkdown, Diff, type DiffHandle, type DiffMode } from '@/components/diff'
 import { PageBody, PageToolbar } from '@/components/page'
@@ -64,7 +64,7 @@ function IndexSection({ header }: { header: ReactNode }) {
   const view = useDiffView()
   const change = useIndexChange()
   const [selected, setSelected] = useState<string | null>(null)
-  const [discarding, setDiscarding] = useState<{ change: RepoIndexChange; label: string } | null>(null)
+  const [discarding, setDiscarding] = useState<{ change: RepoDiscard; label: string } | null>(null)
   const stagedRef = useRef<DiffHandle | null>(null)
   const unstagedRef = useRef<DiffHandle | null>(null)
 
@@ -85,7 +85,7 @@ function IndexSection({ header }: { header: ReactNode }) {
     setSelected(`${side}:${path}`)
     ;(side === 'staged' ? stagedRef : unstagedRef).current?.scrollToPath(path)
   }
-  const discard = (pending: RepoIndexChange, label: string) => setDiscarding({ change: pending, label })
+  const discard = (pending: RepoDiscard, label: string) => setDiscarding({ change: pending, label })
   const run = (step: 'stage' | 'unstage', body: RepoIndexChange) => change.mutate({ step, change: body }, { onError })
 
   const stagedHunk = (path: string, hunk: string) => (

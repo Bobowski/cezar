@@ -445,16 +445,32 @@ export function unstagePaths(root: string, change: IndexChange): Promise<GitOk> 
   });
 }
 
+const nulList = (res: GitResult): Set<string> => new Set(res.ok ? res.stdout.split('\0').filter(Boolean) : []);
+
 /** Throw away unstaged work: restore tracked files from the index, delete untracked ones, or
- *  reverse one hunk in the working tree. The caller confirmed. */
-export function discardPaths(root: string, change: IndexChange): Promise<GitOk> {
+ *  reverse one hunk in the working tree. Only with the confirm's answer, and only for files
+ *  named exactly — a directory or a stale path is refused (spec 2026-10-24-git-view §5). */
+export function discardPaths(root: string, change: IndexChange & { confirm?: boolean; untracked?: boolean }): Promise<GitOk> {
   return serializeCheckout(root, async () => {
+    if (change.confirm !== true) return { ok: false, error: 'discarding cannot be undone — confirm it first ({ confirm: true })' };
     if (change.path && change.hunk) return applyHunk(root, change.path, change.hunk, 'unstaged', ['-R']);
     const paths = change.paths ?? [];
-    const untrackedOut = await git(root, ['ls-files', '--others', '--exclude-standard', '-z', '--', ...paths], { env: LITERAL });
-    const untracked = new Set(untrackedOut.ok ? untrackedOut.stdout.split('\0').filter(Boolean) : []);
-    const tracked = paths.filter((path) => !untracked.has(path));
-    if (untracked.size) {
+    const [untrackedOut, modifiedOut] = await Promise.all([
+      git(root, ['ls-files', '--others', '--exclude-standard', '-z', '--', ...paths], { env: LITERAL }),
+      git(root, ['diff', '--name-only', '-z', '--', ...paths], { env: LITERAL }),
+    ]);
+    const untrackedNow = nulList(untrackedOut);
+    const modified = nulList(modifiedOut);
+    const unknown = paths.filter((path) => !untrackedNow.has(path) && !modified.has(path));
+    if (unknown.length) {
+      return { ok: false, error: `not an unstaged file: ${unknown.join(', ')} — name each file exactly, then try again` };
+    }
+    const untracked = paths.filter((path) => untrackedNow.has(path));
+    if (untracked.length && change.untracked !== true) {
+      return { ok: false, error: `${untracked.join(', ')} ${untracked.length === 1 ? 'is' : 'are'} untracked — discarding deletes ${untracked.length === 1 ? 'it' : 'them'}; confirm that too ({ untracked: true })` };
+    }
+    const tracked = paths.filter((path) => !untrackedNow.has(path));
+    if (untracked.length) {
       const res = await git(root, ['clean', '-f', '-q', '--', ...untracked], { env: LITERAL });
       if (!res.ok) return { ok: false, error: reason(res, 'git clean failed') };
     }

@@ -423,7 +423,30 @@ describe('the repo view Changes segment — staging', () => {
     expect(posted(sent, '/api/v1/repo/discard')).toHaveLength(0)
     fireEvent.click(confirm)
     await waitFor(() => expect(posted(sent, '/api/v1/repo/discard')).toHaveLength(1))
-    expect(posted(sent, '/api/v1/repo/discard')[0]!.body).toEqual({ paths: ['src/util/a.ts'] })
+    expect(posted(sent, '/api/v1/repo/discard')[0]!.body).toEqual({ paths: ['src/util/a.ts'], confirm: true })
+  })
+
+  it('says so when the discarded file is untracked, since the server deletes it only then', async () => {
+    const untracked: RepoIndex = { ...INDEX, unstaged: [{ ...CHANGES.files[0]!, untracked: true }] }
+    const sent = stubFetch({
+      'GET /api/v1/repo/status': () => jsonResponse(untracked),
+      'POST /api/v1/repo/discard': () => jsonResponse(INDEX),
+    })
+    renderAt('/git')
+    const row = await waitFor(() => {
+      const element = document.querySelector('[data-slot="index-file"][data-path="notes.md"]')
+      expect(element).not.toBeNull()
+      return element as HTMLElement
+    })
+    fireEvent.click(row.querySelector('[data-action="discard-file"]')!)
+    const confirm = await waitFor(() => {
+      const element = document.querySelector('[data-action="confirm-discard"]')
+      expect(element).not.toBeNull()
+      return element!
+    })
+    fireEvent.click(confirm)
+    await waitFor(() => expect(posted(sent, '/api/v1/repo/discard')).toHaveLength(1))
+    expect(posted(sent, '/api/v1/repo/discard')[0]!.body).toEqual({ paths: ['notes.md'], untracked: true, confirm: true })
   })
 
   it('commits the staged side with the typed message; nothing staged, nothing to commit', async () => {

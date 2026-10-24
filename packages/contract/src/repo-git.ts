@@ -113,6 +113,22 @@ export const repoIndexChangeSchema = z
   });
 export type RepoIndexChange = z.infer<typeof repoIndexChangeSchema>;
 
+/** `POST /repo/discard` — a change as above, sent only after the cockpit's confirm: without
+ *  `confirm: true` it 409s, every path must be an unstaged file named exactly, and an untracked
+ *  one (deleted, not restored) also needs `untracked: true` (spec 2026-10-24-git-view §5). */
+export const repoDiscardSchema = z
+  .object({
+    paths: z.array(z.string().min(1).max(4096)).min(1).max(2000).optional(),
+    path: z.string().min(1).max(4096).optional(),
+    hunk: z.string().min(1).max(2000).optional(),
+    confirm: z.boolean().optional(),
+    untracked: z.boolean().optional(),
+  })
+  .refine((body) => (body.paths !== undefined) !== (body.path !== undefined && body.hunk !== undefined), {
+    message: 'send either paths, or path and hunk',
+  });
+export type RepoDiscard = z.infer<typeof repoDiscardSchema>;
+
 /** `POST /repo/commit` — commit the index (never `-a`); `amend` rewrites an unpushed HEAD. */
 export const repoCommitSchema = z.object({
   message: z.string().max(20_000),

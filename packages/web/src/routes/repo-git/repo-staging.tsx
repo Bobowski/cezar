@@ -4,6 +4,7 @@ import { useState, type FormEvent } from 'react'
 import {
   changeIndex,
   commitIndex,
+  discardChange,
   popStash,
   pushStash,
   runOperation,
@@ -11,7 +12,7 @@ import {
   useRepoStashes,
   type IndexStep,
 } from '@/api/repo-git'
-import type { RepoIndex, RepoIndexChange, RepoIndexFile } from '@open-mercato/cezar-api-client'
+import type { RepoDiscard, RepoIndex, RepoIndexChange, RepoIndexFile } from '@open-mercato/cezar-api-client'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import {
   AlertDialog,
@@ -39,7 +40,7 @@ import { useCloseSidebarSheet } from './repo-sidebar'
 
 const onError = (error: Error) => toast(error.message, { tone: 'danger' })
 
-/** Stage / unstage / discard, files or one hunk. Discard always goes through `confirmDiscard`. */
+/** Stage / unstage, files or one hunk. Discard has its own path, through `DiscardDialog` only. */
 export function useIndexChange() {
   return useRepoGitAction(({ step, change }: { step: IndexStep; change: RepoIndexChange }) => changeIndex(step, change))
 }
@@ -64,7 +65,7 @@ export function IndexFileList({
   files: RepoIndexFile[]
   selected: string | null
   onSelect: (path: string) => void
-  onDiscard: (change: RepoIndexChange, label: string) => void
+  onDiscard: (change: RepoDiscard, label: string) => void
 }) {
   const closeSheet = useCloseSidebarSheet()
   const change = useIndexChange()
@@ -104,7 +105,7 @@ export function IndexFileList({
                   className="right-7"
                   aria-label={`Discard changes to ${file.path}`}
                   data-action="discard-file"
-                  onClick={() => onDiscard({ paths: [file.path] }, file.path)}
+                  onClick={() => onDiscard({ paths: [file.path], ...(file.untracked ? { untracked: true } : {}) }, file.path)}
                 >
                   <Undo2Icon aria-hidden="true" />
                 </SidebarMenuAction>
@@ -141,10 +142,11 @@ export function DiscardDialog({
   pending,
   onClose,
 }: {
-  pending: { change: RepoIndexChange; label: string } | null
+  pending: { change: RepoDiscard; label: string } | null
   onClose: () => void
 }) {
-  const change = useIndexChange()
+  // The dialog's answer travels with the request: the server refuses a discard without it.
+  const discard = useRepoGitAction((change: RepoDiscard) => discardChange({ ...change, confirm: true }))
   return (
     <AlertDialog open={pending !== null} onOpenChange={(open) => !open && onClose()}>
       <AlertDialogContent data-slot="discard-confirm">
@@ -160,9 +162,9 @@ export function DiscardDialog({
           <AlertDialogAction
             data-action="confirm-discard"
             className="bg-danger text-danger-foreground hover:bg-danger/90"
-            disabled={change.isPending}
+            disabled={discard.isPending}
             onClick={() => {
-              if (pending) change.mutate({ step: 'discard', change: pending.change }, { onError })
+              if (pending) discard.mutate(pending.change, { onError })
               onClose()
             }}
           >

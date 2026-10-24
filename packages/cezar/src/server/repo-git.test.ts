@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -284,7 +284,7 @@ describe('the Git page against a temp repo with a bare origin', () => {
     it('discards a file, an untracked file and a hunk', async () => {
       writeFileSync(join(repo, 'h.txt'), 'rewritten\n');
       writeFileSync(join(repo, 'junk.txt'), 'junk\n');
-      expect(await discardPaths(repo, { paths: ['h.txt', 'junk.txt'] })).toEqual({ ok: true });
+      expect(await discardPaths(repo, { paths: ['h.txt', 'junk.txt'], confirm: true, untracked: true })).toEqual({ ok: true });
       expect(readFileSync(join(repo, 'h.txt'), 'utf8')).toBe(`${TEN.join('\n')}\n`);
       expect(existsSync(join(repo, 'junk.txt'))).toBe(false);
 
@@ -295,10 +295,31 @@ describe('the Git page against a temp repo with a bare origin', () => {
       g(repo, 'config', 'diff.context', '1');
       const index = await repoIndex(repo);
       const first = index.ok ? index.index.unstaged[0]!.patch.split('\n').find((l) => l.startsWith('@@'))! : '';
-      expect(await discardPaths(repo, { path: 'h.txt', hunk: first })).toEqual({ ok: true });
+      expect(await discardPaths(repo, { path: 'h.txt', hunk: first })).toMatchObject({ ok: false });
+      expect(await discardPaths(repo, { path: 'h.txt', hunk: first, confirm: true })).toEqual({ ok: true });
       const now = readFileSync(join(repo, 'h.txt'), 'utf8');
       expect(now).toContain('line 1\n');
       expect(now).toContain('ten\n');
+    });
+
+    it('discards nothing without the confirm, a directory or stale path, or an untracked file it was not told about', async () => {
+      mkdirSync(join(repo, 'dir'));
+      writeFileSync(join(repo, 'dir/keep.txt'), 'mine\n');
+      writeFileSync(join(repo, 'h.txt'), 'rewritten\n');
+      const refused = await discardPaths(repo, { paths: ['h.txt'] });
+      expect(refused).toMatchObject({ ok: false, error: expect.stringMatching(/confirm/) });
+      expect(readFileSync(join(repo, 'h.txt'), 'utf8')).toBe('rewritten\n');
+      // A directory would match every file under it; only an exact file is accepted.
+      expect(await discardPaths(repo, { paths: ['dir'], confirm: true, untracked: true })).toMatchObject({
+        ok: false,
+        error: expect.stringMatching(/not an unstaged file: dir/),
+      });
+      expect(await discardPaths(repo, { paths: ['dir/keep.txt'], confirm: true })).toMatchObject({
+        ok: false,
+        error: expect.stringMatching(/untracked/),
+      });
+      expect(existsSync(join(repo, 'dir/keep.txt'))).toBe(true);
+      expect(readFileSync(join(repo, 'h.txt'), 'utf8')).toBe('rewritten\n');
     });
 
     it('stashes, lists and pops', async () => {

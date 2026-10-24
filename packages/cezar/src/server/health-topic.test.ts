@@ -7,6 +7,7 @@ import { RunStore } from '../runs/store.ts';
 import type { RunManager } from '../workflows/run.ts';
 import { createApp, type ServerDeps } from './server.ts';
 import type { SocketHub, TopicPublisher } from './ws.ts';
+import { SelfUpdateService } from '../self-update/service.ts';
 import { apiRequest } from './loopback-request.testkit.ts';
 
 /**
@@ -82,7 +83,7 @@ describe('health topic + cache (live-server path)', () => {
     writeFileSync(join(repoRoot, '.ai/cezar/config.json'), JSON.stringify({ defaultRunner: runner }));
   };
 
-  const build = () => {
+  const build = (extra: Partial<ServerDeps> = {}) => {
     const { hub, topics, registrations } = stubHub();
     const deps: ServerDeps = {
       repoRoot,
@@ -90,9 +91,38 @@ describe('health topic + cache (live-server path)', () => {
       manager: {} as RunManager,
       version: '0.0.0-test',
       socketHub: hub,
+      ...extra,
     };
     return { app: createApp(deps), topics, registrations };
   };
+  const cockpit = { trusted: () => true };
+
+  // Spec 2026-10-23 §3.3: health is loopbackReadable, so a foreign local page may hold the topic;
+  // only a trusted socket (the cockpit) keeps the branch channel's fetch alive.
+  it('counts only a trusted subscriber as a cockpit for the branch check', async () => {
+    const selfUpdate = new SelfUpdateService({
+      pkgName: '@open-mercato/cezar',
+      version: '0.0.0-test',
+      entry: join(repoRoot, 'dist', 'index.js'),
+      restart: () => {},
+      env: { ...process.env, CEZ_HOME: join(repoRoot, 'home'), CEZ_SELF_UPDATE_CHECK: '0' },
+    });
+    const touch = vi.spyOn(selfUpdate, 'touch');
+    const { topics } = build({ selfUpdate });
+    const health = topics.get('health');
+    if (!health) throw new Error('no health topic registered');
+    let trusted = false;
+    const stop = health.start(() => undefined, { trusted: () => trusted });
+    try {
+      expect(touch).not.toHaveBeenCalled();
+      trusted = true;
+      stop();
+      health.start(() => undefined, { trusted: () => trusted })();
+      expect(touch).toHaveBeenCalledTimes(1);
+    } finally {
+      stop();
+    }
+  });
 
   /** One health snapshot spawns the CLI/forge probes and shells out to git, which costs
    *  ~1 s on a warm dev box and several seconds on a loaded CI runner. `vi.waitFor` defaults
@@ -221,7 +251,7 @@ describe('health topic + cache (live-server path)', () => {
     const health = topics.get('health');
     if (!health) throw new Error('no health topic registered');
     const published: unknown[] = [];
-    const stop = health.start((data) => published.push(data));
+    const stop = health.start((data) => published.push(data), cockpit);
     try {
       // A refresh that finds nothing new must not wake every subscriber's reducer.
       vi.setSystemTime(warmedAt + 2 * 60 * 60 * 1_000);
@@ -247,7 +277,7 @@ describe('health topic + cache (live-server path)', () => {
     const health = topics.get('health');
     if (!health) throw new Error('no health topic registered');
     const published: unknown[] = [];
-    health.start((data) => published.push(data))(); // start, then immediately stop
+    health.start((data) => published.push(data), cockpit)(); // start, then immediately stop
 
     setRunner('codex');
     vi.setSystemTime(warmedAt + 2 * 60 * 60 * 1_000);

@@ -8,6 +8,7 @@ import {
   createSocketHub,
   WS_PATH,
   type SocketHub,
+  type TopicDemand,
   type TopicOptions,
   type TopicPublisher,
   type WsUpgradeVerdict,
@@ -245,6 +246,29 @@ describe('createSocketHub', () => {
     expect(await client.next()).toEqual({ type: 'event', topic: 'ticker', data: { ok: true } });
     expect(state.started).toBe(1);
     client.ws.close();
+  });
+
+  it('tells a running publisher whether a trusted connection holds it', async () => {
+    let demand: TopicDemand | undefined;
+    const publisher: TopicPublisher = {
+      snapshot: async () => ({ ok: true }),
+      start: (_publish, given) => {
+        demand = given;
+        return () => undefined;
+      },
+    };
+    const { url } = await boot(publisher, (req) => ({ trusted: req.url?.includes('cockpit') === true }), undefined, { loopbackReadable: true });
+    const foreign = await connect(url);
+    foreign.send({ type: 'subscribe', topic: 'ticker' });
+    await foreign.next();
+    expect(demand?.trusted()).toBe(false);
+    const cockpit = await connect(`${url}?cockpit`);
+    cockpit.send({ type: 'subscribe', topic: 'ticker' });
+    await cockpit.next();
+    expect(demand?.trusted()).toBe(true);
+    cockpit.ws.close();
+    await vi.waitFor(() => expect(demand?.trusted()).toBe(false));
+    foreign.ws.close();
   });
 
   it('refuses a duplicate topic registration', () => {

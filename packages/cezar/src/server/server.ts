@@ -2120,10 +2120,12 @@ export function createApp(deps: ServerDeps) {
   // and `hc<AppType>` would have no endpoint to offer. `createApp` mounts this
   // under both `/api` (the frozen legacy spelling) and `/api/v1`.
   // The version chip reads health, so a COCKPIT reading it keeps the branch channel's bounded
-  // fetch alive (spec 2026-10-23 §3.3): a browser's same-origin read or the topic below — never
-  // a probe or a cross-site discovery read. A closed cockpit fetches nothing.
+  // fetch alive (spec 2026-10-23 §3.3): an authenticated browser's same-origin read, or a trusted
+  // socket on the topic below — never a probe, a cross-site discovery read, an anonymous hosted
+  // read or a foreign local page. A closed cockpit fetches nothing.
   const healthRoutes = new Hono().get('/health', async (c) => {
-    if (c.req.header('sec-fetch-site') === 'same-origin') selfUpdate.touch();
+    const principal = principalOf(c);
+    if (c.req.header('sec-fetch-site') === 'same-origin' && principal && principal.kind !== 'run') selfUpdate.touch();
     return c.json(await readHealth());
   });
 
@@ -2139,11 +2141,12 @@ export function createApp(deps: ServerDeps) {
     'health',
     {
       snapshot: readHealth,
-      start: (publish) => {
+      start: (publish, demand) => {
         publishHealth = publish;
-        selfUpdate.touch();
+        // health is loopbackReadable, so any local page may hold it: only the cockpit counts.
+        if (demand.trusted()) selfUpdate.touch();
         const timer = setInterval(() => {
-          selfUpdate.touch();
+          if (demand.trusted()) selfUpdate.touch();
           void refreshHealth();
         }, HEALTH_TTL_MS);
         timer.unref?.();

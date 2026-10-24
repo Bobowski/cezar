@@ -228,7 +228,10 @@ async function commitTask(
   const unresolved = await unresolvedConflicts(root, status.stdout);
   if (unresolved) return { result: 'failed', error: `refusing to commit: ${unresolved}` };
   // Everything the task left: what an agent staged is incidental (spec 2026-10-24-git-view §4).
-  const add = await git(root, ['add', '-A', ...PATHSPEC]);
+  // `git add` exits 1 on a pathspec naming an ignored path, so drop the exclude when .gitignore
+  // already keeps .ai/cezar out (#1597).
+  const ignored = (await git(root, ['check-ignore', '-q', '.ai/cezar/'])).ok;
+  const add = await git(root, ['add', '-A', ...(ignored ? ['--', '.'] : PATHSPEC)]);
   if (!add.ok) return { result: 'failed', error: reason(add, 'git add failed') };
   const nameStatus = await git(root, ['diff', '--cached', '--name-status']);
   const files = nameStatus.stdout

@@ -63,6 +63,19 @@ describe('landInPlace', () => {
     expect(git(checkout, 'ls-files', '.ai')).toBe('');
   });
 
+  it('lands when .gitignore ignores .ai/ or .ai/cezar/, and leaves nothing staged', async () => {
+    for (const ignore of ['.ai/\n', '.ai/cezar/\n']) {
+      writeFileSync(join(checkout, '.gitignore'), ignore);
+      execFileSync('mkdir', ['-p', join(checkout, '.ai/cezar')]);
+      writeFileSync(join(checkout, '.ai/cezar/runs.json'), '{}\n');
+      writeFileSync(join(checkout, 'person.md'), ignore);
+      const landed = await landInPlace(checkout, { describe: async () => `ignore ${ignore.trim()}`, checks: [] });
+      expect(landed).toMatchObject({ result: 'landed', pushed: true });
+      expect(git(checkout, 'status', '--porcelain')).toBe('');
+      expect(git(checkout, 'ls-files', '.ai')).toBe('');
+    }
+  });
+
   it('lands nothing on a clean checkout, without touching the network', async () => {
     expect(await landInPlace(checkout, { describe: async () => 'x', checks: [] })).toEqual({ result: 'nothing' });
   });

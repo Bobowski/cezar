@@ -35,7 +35,7 @@ describe('terminal links (spec 2026-10-24-code-page-terminal §3.2)', () => {
     // The cockpit itself is not its own app.
     expect(linkTarget('https://agents.example.dev/p/x', cockpit)?.kind).toBe('external')
     expect(linkTarget('https://docs.npmjs.com/cli', cockpit)).toEqual({ kind: 'external', url: 'https://docs.npmjs.com/cli' })
-    expect(linkTarget('javascript:alert(1)', cockpit)).toBeNull()
+    expect(linkTarget('javascript:void(0)', cockpit)).toBeNull()
   })
 })
 

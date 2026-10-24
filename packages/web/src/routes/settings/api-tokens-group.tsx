@@ -25,7 +25,8 @@ import { SettingsError, SettingsGroup, SettingsLoading } from './settings-field'
  */
 
 const SCOPES: Array<{ id: ApiTokenScope; label: string; hint: string }> = [
-  { id: 'read', label: 'Read', hint: 'Reads that carry no secret: tasks, threads, workflows, the repo. Runs nothing — the one to share.' },
+  { id: 'read', label: 'Read', hint: 'Reads that carry no secret: task status, workflows, the repo. Runs nothing — the one to share.' },
+  { id: 'runs.transcript', label: 'Transcripts', hint: 'Read a task’s thread and live events — tool output can hold secrets. Tasks includes it.' },
   { id: 'tasks', label: 'Tasks', hint: 'Start, steer and stop tasks; dispatch. A task runs code as cezar’s user on this machine.' },
   { id: 'author', label: 'Author', hint: 'Write workflows, skills, automations and env files — which run code too.' },
   { id: 'admin', label: 'Admin', hint: 'Everything, terminals, settings and self-update included.' },

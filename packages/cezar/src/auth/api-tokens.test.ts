@@ -72,6 +72,21 @@ describe('API token scopes, per route family', () => {
     expect(apiTokenAllows(['read'], 'GET', '/api/v1/tracker/T-1')).toBe(true);
   });
 
+  it('read carries no transcript: that is runs.transcript, which tasks implies', () => {
+    const transcript = ['/api/v1/runs/1/events', '/api/v1/p/x/runs/1/history', '/api/v1/runs/1/history-context'];
+    for (const path of transcript) {
+      expect(apiTokenAllows(['read'], 'GET', path), path).toBe(false);
+      expect(apiTokenAllows(['runs.transcript'], 'GET', path), path).toBe(true);
+      expect(apiTokenAllows(['tasks'], 'GET', path), path).toBe(true);
+    }
+    // The list and the summary stay read's.
+    expect(apiTokenAllows(['read'], 'GET', '/api/v1/runs')).toBe(true);
+    expect(apiTokenAllows(['read'], 'GET', '/api/v1/runs/1')).toBe(true);
+    // runs.transcript is the transcript and nothing else.
+    expect(apiTokenAllows(['runs.transcript'], 'GET', '/api/v1/runs/1/files')).toBe(false);
+    expect(apiTokenAllows(['runs.transcript'], 'POST', '/api/v1/runs/1/history')).toBe(false);
+  });
+
   it('every route the read allowlist names is a real GET route', () => {
     const gets = new Set(Object.keys(routeContracts).filter((key) => key.startsWith('GET ')).map((key) => key.slice(4)));
     expect([...READ_ROUTES].filter((route) => !gets.has(route))).toEqual([]);

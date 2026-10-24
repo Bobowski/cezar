@@ -32,7 +32,7 @@ export function apiTokenIdOf(value: string): string | null {
  * `api-tokens.test.ts`: every family a built app serves must be listed, so a new family is a
  * decision, not a default.
  */
-export const FAMILY_SCOPES: Record<string, Exclude<ApiTokenScope, 'read'>> = {
+export const FAMILY_SCOPES: Record<string, Exclude<ApiTokenScope, 'read' | 'runs.transcript'>> = {
   runs: 'tasks',
   groups: 'tasks',
   todos: 'tasks',
@@ -102,9 +102,8 @@ const DISCOVERY_ROUTES: ReadonlySet<string> = new Set(['/projects', '/health', '
  */
 export const READ_ROUTES: ReadonlySet<string> = new Set([
   '/runs', '/runs/:id', '/runs/:id/changes', '/runs/:id/commit/:sha', '/runs/:id/commits', '/runs/:id/diff',
-  '/runs/:id/drafts', '/runs/:id/drafts/:surface/images/:imageId', '/runs/:id/events', '/runs/:id/files',
-  '/runs/:id/git/status', '/runs/:id/handoff', '/runs/:id/history', '/runs/:id/history-context',
-  '/runs/:id/images/:file', '/runs/:id/layouts', '/runs/:id/search', '/runs/:id/tracker-issue', '/runs/:id/tree',
+  '/runs/:id/drafts', '/runs/:id/drafts/:surface/images/:imageId', '/runs/:id/files',
+  '/runs/:id/git/status', '/runs/:id/handoff', '/runs/:id/images/:file', '/runs/:id/layouts', '/runs/:id/search', '/runs/:id/tracker-issue', '/runs/:id/tree',
   '/groups/:groupId', '/todos', '/events',
   '/workflows', '/workflows/nodes', '/skills', '/skills/importable',
   '/projects/:projectId/icon',
@@ -124,6 +123,12 @@ export const READ_ROUTES: ReadonlySet<string> = new Set([
   '/workspace/dashboard/telemetry', '/workspace/events', '/workspace/host-usage', '/workspace/runs-index',
   '/workspace/self-update', '/workspace/self-update/development', '/workspace/skills-update', '/workspace/ui-state',
 ]);
+
+/**
+ * A task's event stream and transcript: tool output, which can carry whatever a command printed —
+ * `runs.transcript`'s, never `read`'s. `tasks` has them as the owner of the `runs` family.
+ */
+export const TRANSCRIPT_ROUTES: ReadonlySet<string> = new Set(['/runs/:id/events', '/runs/:id/history', '/runs/:id/history-context']);
 
 const GET_TEMPLATES = Object.keys(routeContracts)
   .filter((key) => key.startsWith('GET '))
@@ -193,5 +198,6 @@ export function apiTokenAllows(scopes: readonly ApiTokenScope[], method: string,
   const template = getRouteTemplateOf(routePath(pathname)!);
   if (template === null) return false;
   if (DISCOVERY_ROUTES.has(template)) return true;
+  if (scopes.includes('runs.transcript') && TRANSCRIPT_ROUTES.has(template)) return true;
   return scopes.includes('read') && READ_ROUTES.has(template);
 }

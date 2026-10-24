@@ -55,7 +55,9 @@ Settings → Security → **API tokens** (owner only):
 
 - `POST /auth/tokens { name, scopes, expiresAt? }` → the token value, shown once
   (`ceztok_<id>_<secret>`); stored hashed (argon2, the password store's hash) in the auth store.
-- Scopes: `read` (allowlisted GETs), `tasks` (runs, messages, dispatch), `author` (workflows, skills,
+- Scopes: `read` (allowlisted GETs), `runs.transcript` (`/runs/:id/events`, `/runs/:id/history`,
+  `/runs/:id/history-context`: tool output can carry secrets, so `read` has only the run list and
+  summary; `tasks` implies it), `tasks` (runs, messages, dispatch), `author` (workflows, skills,
   automations, env), `admin` (everything, including settings, self-update and terminals — a task
   terminal is a shell on the host, so `tasks` and `author` never include it: `ADMIN_ROUTES`).
 - **A scope bounds the API surface, not the machine.** A token that can start or continue a run —

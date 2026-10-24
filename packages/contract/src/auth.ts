@@ -119,10 +119,11 @@ export type AuthOkResponse = z.infer<typeof authOkResponseSchema>;
 // ---- API tokens (spec 2026-10-24-cezar-mcp-server §4) -------------------------------------
 
 /**
- * What a token may do. `read` is the GETs that carry no secret; `tasks`, `author` and `admin` also write, each in its
- * own route families (`packages/cezar/src/auth/api-tokens.ts` holds the map); `admin` is all of it.
+ * What a token may do. `read` is the GETs that carry no secret; `runs.transcript` a task's event stream and
+ * transcript (tool output can hold secrets; `tasks` implies it); `tasks`, `author` and `admin` also write, each in
+ * its own route families (`packages/cezar/src/auth/api-tokens.ts` holds the map); `admin` is all of it.
  */
-export const apiTokenScopeSchema = z.enum(['read', 'tasks', 'author', 'admin']);
+export const apiTokenScopeSchema = z.enum(['read', 'runs.transcript', 'tasks', 'author', 'admin']);
 export type ApiTokenScope = z.infer<typeof apiTokenScopeSchema>;
 
 export const apiTokenSchema = z.object({
@@ -143,7 +144,7 @@ export type ApiTokensResponse = z.infer<typeof apiTokensResponseSchema>;
 /** Minting a credential asks for a fresh authenticator code, like every other credential change. */
 export const createApiTokenBodySchema = z.object({
   name: z.string().trim().min(1).max(100),
-  scopes: z.array(apiTokenScopeSchema).min(1).max(4),
+  scopes: z.array(apiTokenScopeSchema).min(1).max(5),
   expiresAt: z.iso.datetime({ offset: true }).optional(),
   code: z.string().min(1).max(16),
 });

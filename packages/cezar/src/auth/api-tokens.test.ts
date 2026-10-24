@@ -43,7 +43,7 @@ describe('API token scopes, per route family', () => {
   });
 
   it('the brand any signed-out page reads, any token reads; changing it is admin\'s', () => {
-    for (const path of ['/api/v1/workspace/branding', '/api/v1/workspace/branding/favicon-32']) {
+    for (const path of ['/api/v1/workspace/branding', '/api/v1/workspace/branding/favicon-32', '/api/v1/workspace/branding-logo']) {
       expect(apiTokenAllows(['tasks'], 'GET', path), path).toBe(true);
       expect(apiTokenAllows(['read'], 'GET', path), path).toBe(true);
     }

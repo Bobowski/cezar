@@ -119,7 +119,7 @@ const DISCOVERY_ROUTES: ReadonlySet<string> = new Set(['/projects', '/health', '
 
 /** Reads the sign-in page makes with no credential at all (`isPublicBrandingRequest`), so no token
  *  is refused them. The name is the operator's own text, which is why they are not `read`'s. */
-const PUBLIC_ROUTES: ReadonlySet<string> = new Set(['/workspace/branding', '/workspace/branding/:kind']);
+const PUBLIC_ROUTES: ReadonlySet<string> = new Set(['/workspace/branding', '/workspace/branding/:kind', '/workspace/branding-logo']);
 
 /**
  * The GET routes `read` covers, by route template — an ALLOWLIST: each one is known to hand out

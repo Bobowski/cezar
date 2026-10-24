@@ -260,6 +260,56 @@ export function githubTracesOf(runs: Iterable<RunTraceFields>, now = Date.now())
   return bodies.size ? { shas, comments, bodies } : { shas, comments };
 }
 
+/**
+ * What a `git push` output says it updated: the new sha of each `old..new` line and the source
+ * ref of each `[new branch]`. Tags, rejections and up-to-date refs move no branch head.
+ */
+export function pushedRefsIn(output: string): { refs: string[]; upToDate: boolean } {
+  const refs: string[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    const range = /^\s*\+?\s*[0-9a-f]{7,64}\.{2,3}([0-9a-f]{7,64})\s+\S+\s+->\s+\S+/.exec(line);
+    if (range) refs.push(range[1]!);
+    const created = /^\s*\*\s+\[new branch\]\s+(\S+)\s+->\s+\S+/.exec(line);
+    if (created) refs.push(created[1]!);
+  }
+  return { refs: [...new Set(refs)], upToDate: /Everything up-to-date/.test(output) };
+}
+
+/**
+ * A finished `git push` tool call: the shas it really pushed — read off its output, else `HEAD`
+ * as the call left it — and the start-time `HEAD` recorded as `provisional`, to drop when it is
+ * not one of them (the push failed, pushed nothing, or a `git commit` ran before it).
+ */
+export async function settlePush(input: {
+  provisional?: string;
+  item: { status?: string; output?: string };
+  resolve: (refs: readonly string[]) => Promise<string[]>;
+  head: () => Promise<string | undefined>;
+}): Promise<{ add: string[]; drop?: string }> {
+  const completed = input.item.status === undefined || input.item.status === 'completed';
+  const { refs, upToDate } = pushedRefsIn(input.item.output ?? '');
+  let add: string[] = [];
+  if (refs.length) add = await input.resolve(refs);
+  else if (completed && !upToDate) {
+    const sha = await input.head();
+    if (sha) add = [sha];
+  }
+  add = [...new Set(add.map((sha) => sha.toLowerCase()).filter((sha) => /^[0-9a-f]{40,64}$/.test(sha)))];
+  const provisional = input.provisional?.toLowerCase();
+  return provisional && !add.includes(provisional) ? { add, drop: provisional } : { add };
+}
+
+/** Each ref's commit sha in `dir`, skipping what does not resolve — never throws. */
+export async function resolveCommits(dir: string, refs: readonly string[]): Promise<string[]> {
+  const shas = await Promise.all(refs.slice(0, 10).map((ref) => new Promise<string | undefined>((resolveSha) => {
+    execFile('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: dir, timeout: 10_000, encoding: 'utf8' }, (error, stdout) => {
+      const sha = String(stdout ?? '').trim();
+      resolveSha(!error && /^[0-9a-f]{40,64}$/i.test(sha) ? sha.toLowerCase() : undefined);
+    });
+  })));
+  return shas.filter((sha): sha is string => !!sha);
+}
+
 /** `HEAD` of a checkout, or undefined — never throws (a trace is best-effort). */
 export function headShaOf(dir: string): Promise<string | undefined> {
   return new Promise((resolve) => {

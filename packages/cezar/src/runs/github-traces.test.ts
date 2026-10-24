@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { commentFingerprint, commentIdsIn, githubTracesOf, isOwnTrace, isPushCommand, mergeTraces, POSTED_BODIES_CAP, POSTED_COMMENTS_CAP, postingCommentBody, PUSHED_SHAS_CAP, toolTraces } from './github-traces.ts';
+import { commentFingerprint, commentIdsIn, githubTracesOf, isOwnTrace, isPushCommand, mergeTraces, POSTED_BODIES_CAP, POSTED_COMMENTS_CAP, postingCommentBody, pushedRefsIn, PUSHED_SHAS_CAP, settlePush, toolTraces } from './github-traces.ts';
 import { RunStore } from './store.ts';
 
 const sha = (n: number) => n.toString(16).padStart(40, '0');
@@ -63,6 +63,46 @@ describe('github traces (spec 2026-10-23-github-events §6)', () => {
     expect(isOwnTrace({ event: 'pull_request.commented', comment: { id: 9, body: 'Pushed the fix.' } }, traces)).toBe(true);
     // Matched by body alone too: the id never printed (or the output was lost).
     expect(isOwnTrace({ event: 'pull_request.commented', comment: { id: 10, body: 'Pushed the fix.\r\n' } }, traces)).toBe(true);
+  });
+
+  it('reads what a push really pushed off its output', () => {
+    const out = [
+      'To github.com:acme/demo.git',
+      '   1a2b3c4..5d6e7f8  main -> main',
+      ' + 0a0b0c0...9f9e9d9 cez/abc -> cez/abc (forced update)',
+      ' * [new branch]      cez/new -> cez/new',
+      ' * [new tag]         v1 -> v1',
+      ' ! [rejected]        other -> other (non-fast-forward)',
+    ].join('\n');
+    expect(pushedRefsIn(out)).toEqual({ refs: ['5d6e7f8', '9f9e9d9', 'cez/new'], upToDate: false });
+    expect(pushedRefsIn('Everything up-to-date\n')).toEqual({ refs: [], upToDate: true });
+    expect(pushedRefsIn('')).toEqual({ refs: [], upToDate: false });
+  });
+
+  it('settles a push: the shas it pushed, the start-time HEAD dropped when it was not one of them', async () => {
+    const resolve = async (refs: readonly string[]) => refs.map((ref) => (ref === '5d6e7f8' ? sha(2) : sha(3)));
+    const head = async () => sha(4);
+    const committedThenPushed = { input: { command: 'git commit -am x && git push' }, status: 'completed', output: '   1a2b3c4..5d6e7f8  main -> main' };
+    // HEAD at the call's start was the commit BEFORE `git commit`: not what was pushed.
+    expect(await settlePush({ provisional: sha(1), item: committedThenPushed, resolve, head })).toEqual({ add: [sha(2)], drop: sha(1) });
+    expect(await settlePush({ provisional: sha(2), item: committedThenPushed, resolve, head })).toEqual({ add: [sha(2)] });
+    // A failed push, or one that pushed nothing, leaves no trace.
+    expect(await settlePush({ provisional: sha(1), item: { ...committedThenPushed, status: 'failed', output: 'error: failed to push some refs' }, resolve, head })).toEqual({ add: [], drop: sha(1) });
+    // A push that worked inside a call that failed later (`git push && false`) still counts.
+    expect(await settlePush({ provisional: sha(1), item: { ...committedThenPushed, status: 'failed' }, resolve, head })).toEqual({ add: [sha(2)], drop: sha(1) });
+    expect(await settlePush({ provisional: sha(1), item: { ...committedThenPushed, output: 'Everything up-to-date' }, resolve, head })).toEqual({ add: [], drop: sha(1) });
+    // An output that names nothing (a backend that drops stderr): HEAD as the call left it.
+    expect(await settlePush({ provisional: sha(1), item: { ...committedThenPushed, output: '' }, resolve, head })).toEqual({ add: [sha(4)], drop: sha(1) });
+    expect(await settlePush({ item: { ...committedThenPushed, output: undefined }, resolve, head })).toEqual({ add: [sha(4)] });
+  });
+
+  it('drops a pushed sha from the record', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cezar-traces-')); dirs.push(dir);
+    const store = RunStore.open(dir);
+    const run = store.createRun({ title: 't', workflow: 'quick-task', task: 't', steps: [] });
+    store.recordGithubTraces(run.id, { shas: [sha(1), sha(2)] });
+    store.dropPushedSha(run.id, sha(1).toUpperCase());
+    expect(store.getRun(run.id)?.pushedShas).toEqual([sha(2)]);
   });
 
   it('knows a push as it starts, and its own events by sha, id or the body being posted', () => {

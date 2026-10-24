@@ -178,7 +178,12 @@ the text above, and why:
   owner that cannot take it falls back to a new run, and the log row says why.
 - **Traces** are also recorded for the task push route, the graph `git.push` node, an in-place
   landing, the `github.pr-comment` node and the agent's own `git push` / `gh … comment` tool calls.
-  The repo-sync push of the project checkout belongs to no run and records nothing. A comment's
+  The repo-sync push of the project checkout belongs to no run and records nothing. An agent's
+  `git push` call records `HEAD` provisionally as it starts (so a webhook-woken poll already
+  knows it); when it finishes, the shas it really pushed are read off its output (`old..new`,
+  `[new branch]`) — or `HEAD` as it left the checkout when the output names nothing — and the
+  provisional sha is dropped unless it is one of them (a failed push, `Everything up-to-date`, a
+  `git commit && git push`). A comment's
   body is a trace BEFORE it is posted: its fingerprint goes on the run record
   (`postedCommentBodies`, at most 100, each kept 24 hours), so a poll that reads the comment
   before its id comes back — or after a restart — still knows it, and a candidate matches by id

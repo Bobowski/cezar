@@ -1662,6 +1662,14 @@ export class RunStore extends EventEmitter {
     if (patch) this.updateRun(runId, patch);
   }
 
+  /** A start-time push trace that turned out not to be what the push pushed (`settlePush`). */
+  dropPushedSha(runId: string, sha: string): void {
+    const run = this.runs.get(runId);
+    const wanted = sha.toLowerCase();
+    if (!run?.pushedShas?.includes(wanted)) return;
+    this.updateRun(runId, { pushedShas: run.pushedShas.filter((entry) => entry !== wanted) });
+  }
+
   /** A comment this run is ABOUT to post: its body is a trace before GitHub returns the id, and
    *  stays one on the record — across a restart — whether or not the id ever comes back. */
   notePostingComment(runId: string, body: string, now = Date.now()): void {

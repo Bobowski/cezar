@@ -7488,6 +7488,7 @@ export function createApp(deps: ServerDeps) {
     const listed = await listContainers(docker);
     if (!listed.ok) return listed;
     const found = listed.containers.some((entry) => entry.id === id);
+    for (const [known, until] of dockerLogIds) if (until <= Date.now()) dockerLogIds.delete(known);
     if (found) dockerLogIds.set(id, Date.now() + 10_000);
     return { ok: true, listed: found };
   };

@@ -2,11 +2,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { RunStore, type RunRecord } from '../runs/store.ts';
+import { RunStore, type RunEvent, type RunRecord } from '../runs/store.ts';
 import type { RunManager } from '../workflows/run.ts';
 import { launchEventCandidate, releaseHeldEvents } from './event-poll-cycle.ts';
 import type { GithubCandidate } from './github-poller.ts';
-import { deliverAutomationMessage, findOwningRun, forgetGithubSelfLogins, githubSelfLogin } from './owning-run.ts';
+import { deliverAutomationMessage, findOwningRun, forgetGithubSelfLogins, githubSelfLogin, openTurnSince } from './owning-run.ts';
+import { ProjectAutomationScheduler } from './scheduler.ts';
 import { AutomationStore } from './store.ts';
 import { launchAutomationRun } from './task-template.ts';
 import type { GithubAutomationDefinition } from './types.ts';
@@ -424,5 +425,116 @@ describe('githubSelfLogin', () => {
       if (saved === undefined) delete process.env.CEZ_DRY_RUN;
       else process.env.CEZ_DRY_RUN = saved;
     }
+  });
+});
+
+describe('openTurnSince', () => {
+  const at = (iso: string) => Date.parse(iso);
+  const event = (type: string, ts: string) => ({ type, ts, seq: 0 }) as unknown as RunEvent;
+  const record = run({ startedAt: '2026-10-24T09:00:00.000Z' });
+
+  it('is the start of a live run’s open turn, and nothing once the turn ended or the run is at rest', () => {
+    const open = [event('turn.started', '2026-10-24T10:00:00.000Z'), event('turn.completed', '2026-10-24T10:05:00.000Z'), event('turn.started', '2026-10-24T10:10:00.000Z')];
+    expect(openTurnSince(record, open, true)).toBe(at('2026-10-24T10:10:00.000Z'));
+    expect(openTurnSince(record, open, false)).toBeUndefined();
+    expect(openTurnSince(record, open.slice(0, 2), true)).toBeUndefined();
+    expect(openTurnSince(record, [...open, event('session.ended', '2026-10-24T10:12:00.000Z')], true)).toBeUndefined();
+    // A backend that never says `turn.*`: a live run is working since it started.
+    expect(openTurnSince(record, [], true)).toBe(at('2026-10-24T09:00:00.000Z'));
+  });
+});
+
+describe('held events through the poll cycle (spec 2026-10-23-github-events §11)', () => {
+  const dirs: string[] = [];
+  afterEach(async () => {
+    vi.useRealTimers();
+    await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  const comment = (id: number, author: string, at: Date): GithubCandidate => ({
+    eventId: `acme/demo:comment:${id}`, event: 'pull_request.commented', timestamp: at.toISOString(), tieBreaker: `comment:${id}`,
+    repo: 'acme/demo', nodeId: 'PR_8', number: 8, title: 'Feature', url: 'https://github.com/acme/demo/pull/8', author: 'alice',
+    assignees: [], labels: [], comment: { id, kind: 'issue', author, url: `https://github.com/acme/demo/pull/8#issuecomment-${id}`, body: `Comment ${id}.` },
+  });
+
+  async function setup(maxRecords = 25) {
+    const root = await mkdtemp(join(tmpdir(), 'cezar-held-')); dirs.push(root);
+    const runs = RunStore.open(join(root, '.ai/cezar'));
+    const automations = AutomationStore.open(join(root, '.ai/cezar'));
+    const definition = automations.create({
+      name: 'Answer reviews', enabled: true, kind: 'github', events: ['pull_request.commented'], intervalSeconds: 300, deliver: 'owning-run',
+      filters: { lookbackDays: 7, maxRecords }, task: { prompt: 'Answer: {{github.comment.body}}', workflow: 'quick-task' },
+    }, 'talk') as GithubAutomationDefinition;
+    const delivered: string[] = [];
+    const state = { live: false };
+    const manager = {
+      enqueueMessage: () => null, hasLiveSession: () => false, deferMessage: () => false, isActive: () => state.live,
+      continueRun: (_id: string, opts: { text?: string }) => { delivered.push(opts.text ?? ''); return { ok: true }; },
+      startRun: () => { throw new Error('no new run expected'); },
+    } as unknown as RunManager;
+    const owner = runs.createRun({ title: 'made the PR', workflow: 'quick-task', task: 't', steps: [] });
+    runs.updateRun(owner.id, { pullRequestUrl: 'https://github.com/acme/demo/pull/8', worktreePath: join(root, 'wt'), status: 'review', startedAt: new Date().toISOString() });
+    const polls: GithubCandidate[][] = [];
+    const scheduler = new ProjectAutomationScheduler({
+      projectId: 'p', timeZone: 'UTC', store: automations,
+      github: { owner: 'acme', repo: 'demo', poller: { poll: async () => ({ candidates: polls.shift() ?? [], truncated: false, pages: 1 }) } as never },
+      traces: () => runs.githubTraces(),
+      launch: (def, candidate, receiptId, options) => launchAutomationRun({ root, manager, store: runs, definition: def, candidate, receiptId, selfLogin: async () => 'cezar-bot', admit: options?.admit }),
+    });
+    const poll = async (...candidates: GithubCandidate[]) => { polls.push(candidates); await scheduler.check(definition); };
+    const receiptOf = (id: number) => automations.latestReceipts().get(`talk:acme/demo:comment:${id}`);
+    const results = () => automations.logs({ automationId: 'talk' }).filter((row) => row.receiptId).map((row) => row.result).reverse();
+    return { runs, owner, delivered, state, poll, receiptOf, results };
+  }
+
+  it('holds cezar’s own-login comment while the live turn is open, poll after poll, and delivers it on the first poll after the turn ends', async () => {
+    const { runs, owner, delivered, state, poll, receiptOf, results } = await setup();
+    state.live = true;
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    await poll(comment(1, 'cezar-bot', new Date()));
+    expect(receiptOf(1)).toMatchObject({ status: 'held' });
+    await poll();
+    await poll();
+    expect(delivered).toEqual([]);
+    expect(results()).toEqual(['held']);
+    runs.appendEvent(owner.id, { type: 'turn.completed', turnId: 't1' });
+    await poll();
+    expect(delivered).toHaveLength(1);
+    // Delivered from the candidate the poll read, body included.
+    expect(delivered[0]).toContain('> Comment 1.');
+    expect(receiptOf(1)).toMatchObject({ status: 'launched', delivered: true, runId: owner.id });
+    expect(results()).toEqual(['held', 'delivered']);
+  });
+
+  it('skips a held comment once a trace on the run claims it — the run’s own reply, posted after all', async () => {
+    const { runs, owner, delivered, state, poll, receiptOf } = await setup();
+    state.live = true;
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    await poll(comment(2, 'cezar-bot', new Date()));
+    runs.recordGithubTraces(owner.id, { comments: [2] });
+    runs.appendEvent(owner.id, { type: 'turn.completed', turnId: 't1' });
+    await poll();
+    expect(delivered).toEqual([]);
+    expect(receiptOf(2)).toMatchObject({ status: 'skipped' });
+  });
+
+  it('releases what the hourly cap held once the window frees, oldest first, and never counts it before', async () => {
+    const { delivered, poll, receiptOf, results } = await setup(1);
+    const start = Date.now();
+    await poll(comment(3, 'dave', new Date(start + 1_000)), comment(4, 'erin', new Date(start + 2_000)), comment(5, 'frank', new Date(start + 3_000)));
+    expect(delivered).toHaveLength(1);
+    expect(receiptOf(4)).toMatchObject({ status: 'held' });
+    await poll();
+    expect(delivered).toHaveLength(1);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(start + 61 * 60_000);
+    await poll();
+    expect(delivered).toHaveLength(2);
+    expect(delivered[1]).toContain('issuecomment-4');
+    expect(receiptOf(5)).toMatchObject({ status: 'held' });
+    vi.setSystemTime(start + 122 * 60_000);
+    await poll();
+    expect(delivered).toHaveLength(3);
+    expect(results()).toEqual(['delivered', 'held', 'held', 'delivered', 'delivered']);
   });
 });

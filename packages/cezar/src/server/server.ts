@@ -8419,6 +8419,7 @@ export function createApp(deps: ServerDeps) {
     ...(await repoSyncStatus(root, taskOwnedBranches(project.store))),
     topic: repoSyncTopic(project.id, root),
   });
+  const LANDING_BUSY = 'a landing is in progress in this checkout — try again once it is done';
   const runRepoSyncAction = async (
     project: ProjectContext,
     action: (root: string) => Promise<SyncActionResult>,
@@ -8432,6 +8433,8 @@ export function createApp(deps: ServerDeps) {
         .some((r) => r.worktree === false && (r.status === 'running' || r.status === 'waiting'));
       if (live) return { error: 'an in-place task is running in this checkout — wait for it to finish' };
     }
+    // Refuse rather than queue: a required check calling /repo/fetch would wait on its own landing.
+    if (landingInProgress(info.root)) return { error: LANDING_BUSY };
     const result = await action(info.root);
     if (!result.ok) return { error: result.error };
     return { message: result.message, sync: await repoSyncAnswer(project, info.root) };
@@ -8475,7 +8478,7 @@ export function createApp(deps: ServerDeps) {
       return { error: 'an in-place task is running in this checkout — wait for it to finish' };
     }
     // Nothing awaits between this and `work` joining the checkout's queue (`serializeLanding`).
-    if (landingInProgress(root)) return { error: 'a landing is in progress in this checkout — try again once it is done' };
+    if (landingInProgress(root)) return { error: LANDING_BUSY };
     const result = await work(root);
     if (result.ok !== true) return { error: (result as { error: string }).error };
     ringRepoViews(project.id);

@@ -153,6 +153,40 @@ describe('the Git page routes', () => {
     expect((await apiRequest(app, '/api/v1/repo/branch/other/checkout', { method: 'POST' })).status).toBe(200);
   });
 
+  it('fetch, pull, push and sync answer 409 during a landing instead of queueing behind it', async () => {
+    writeFileSync(join(repo, 'a.txt'), 'landed\n');
+    let checking!: () => void;
+    const inChecks = new Promise<void>((resolve) => (checking = resolve));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const landing = landInPlace(repo, {
+      describe: async () => 'the landing',
+      checks: ['slow check'],
+      runCheck: async () => {
+        checking();
+        await gate;
+        return { ok: true, output: '' };
+      },
+    });
+    await inChecks;
+    try {
+      for (const path of ['/api/v1/repo/fetch', '/api/v1/repo/pull', '/api/v1/repo/push', '/api/v1/repo/sync']) {
+        // A queued request would wait for the gate; a refusal answers at once.
+        const answer = await Promise.race([
+          apiRequest(app, path, { method: 'POST' }),
+          new Promise<'queued'>((resolve) => setTimeout(() => resolve('queued'), 3_000)),
+        ]);
+        expect(answer, path).not.toBe('queued');
+        const res = answer as Response;
+        expect(res.status, path).toBe(409);
+        expect(((await res.json()) as { error: string }).error).toMatch(/landing is in progress/);
+      }
+    } finally {
+      release();
+    }
+    expect(await landing).toMatchObject({ result: 'landed', pushed: true });
+  });
+
   it('stage → index → commit through the API, the body validated as middleware', async () => {
     writeFileSync(join(repo, 'a.txt'), 'changed\n');
     expect((await apiRequest(app, '/api/v1/repo/stage', { method: 'POST', body: JSON.stringify({ path: 'a.txt' }), headers: { 'content-type': 'application/json' } })).status).toBe(400);

@@ -285,16 +285,35 @@ describe('owning-run delivery never feeds a run its own reply, nor an unbounded 
     expect(delivered).toHaveLength(1);
   });
 
-  it('caps deliveries into one PR’s run at the automation’s maxRecords an hour', async () => {
-    const { delivered, started, fire, lastLog } = await setup();
-    const later = new Date(Date.now() + 10 * 60_000);
-    await fire(comment(6, 'dave', later));
-    await fire(comment(7, 'erin', later));
-    await fire(comment(8, 'frank', later));
+  it('caps deliveries into one PR’s run at the automation’s maxRecords an hour, holding the rest, and delivers them oldest first as the window frees', async () => {
+    const { delivered, started, fire, lastLog, receiptOf, release } = await setup();
+    const at = (minutes: number) => new Date(Date.now() + minutes * 60_000);
+    await fire(comment(6, 'dave', at(1)));
+    await fire(comment(7, 'erin', at(2)));
+    await fire(comment(10, 'frank', at(5)));
+    await fire(comment(8, 'gina', at(3)));
+    await fire(comment(9, 'hal', at(4)));
     expect(delivered).toHaveLength(2);
     expect(started).toEqual([]);
-    expect(lastLog()).toMatchObject({ result: 'skipped' });
+    expect(lastLog()).toMatchObject({ result: 'held' });
     expect(lastLog()?.reason).toContain('delivery-cap');
+    for (const id of [8, 9, 10]) expect(receiptOf(id)).toMatchObject({ status: 'held' });
+    // Within the hour a poll changes nothing; the held events never count toward the cap.
+    await release();
+    expect(delivered).toHaveLength(2);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + 61 * 60_000);
+      await release();
+    } finally {
+      vi.useRealTimers();
+    }
+    // The window freed two slots: the two oldest held comments went in, by creation time.
+    expect(delivered).toHaveLength(4);
+    expect(delivered[2]).toContain('issuecomment-8');
+    expect(delivered[3]).toContain('issuecomment-9');
+    expect(receiptOf(8)).toMatchObject({ status: 'launched', delivered: true });
+    expect(receiptOf(10)).toMatchObject({ status: 'held' });
   });
 });
 

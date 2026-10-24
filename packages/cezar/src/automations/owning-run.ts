@@ -147,7 +147,7 @@ export function forgetGithubSelfLogins(): void {
 export type DeliveryMark = { automationId: string; repo: string; number: number };
 
 /** Why an event does not go into its owning run now: `held` is re-decided on every poll. */
-export type OwningRunHold = { result: 'held' | 'skipped'; reason: string };
+export type OwningRunHold = { result: 'held'; reason: string };
 
 /**
  * Why an event must NOT go into its owning run now, or `undefined` (spec 2026-10-23-github-events
@@ -176,7 +176,8 @@ export async function owningRunHold(input: {
       && mark.repo?.toLowerCase() === candidate.repo.toLowerCase() && now - Date.parse(event.ts) < DELIVERY_CAP_WINDOW_MS;
   }).length;
   const cap = definition.filters.maxRecords;
-  if (delivered >= cap) return { result: 'skipped', reason: `delivery-cap: ${delivered} events of this automation already went into run ${owner.id} for #${candidate.number} in the last hour (cap ${cap}, the automation's maxRecords).` };
+  // Only deliveries count; an event over the cap is held, and goes in when the window frees.
+  if (delivered >= cap) return { result: 'held', reason: `delivery-cap: ${delivered} events of this automation already went into run ${owner.id} for #${candidate.number} in the last hour (cap ${cap}, the automation's maxRecords) — held until the window frees.` };
   const comment = candidate.comment;
   if (!comment || definition.filters.allowSelfComments === true) return undefined;
   const since = openTurnSince(owner, events, input.live);

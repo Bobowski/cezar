@@ -198,7 +198,8 @@ the text above, and why:
   A held event's receipt keeps its body's fingerprint, never the body: after a restart it is
   delivered pointing at the comment's URL, as a retry is. And whatever the event, one automation
   delivers at most `filters.maxRecords` events into one PR's run per hour — the delivery notes
-  on the run (`automationDelivery`) are what it counts.
+  on the run (`automationDelivery`) are what it counts, so only deliveries do. An event over the
+  cap is held too, and delivered when the window frees, oldest (by GitHub's timestamp) first.
 - **Traces** are also recorded for the task push route, the graph `git.push` node, an in-place
   landing, the `github.pr-comment` node and the agent's own `git push` and comment-posting tool calls.
   The repo-sync push of the project checkout belongs to no run and records nothing. An agent's

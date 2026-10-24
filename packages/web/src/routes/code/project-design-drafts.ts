@@ -23,6 +23,8 @@ export interface ProjectDraft {
 }
 
 interface Store {
+  /** The project every read and write of this store addresses — never the scope at fire time. */
+  scope: string
   /** `undefined` until the stored drafts arrived — before that an add would overwrite them. */
   drafts: ProjectDraft[] | undefined
   version: number
@@ -34,11 +36,13 @@ interface Store {
 
 const stores = new Map<string, Store>()
 const storeKey = (projectId: string | null) => projectId ?? ''
+/** `'default'` is the server's alias for the boot project — the sentinel `queryScope()` uses. */
+const apiScope = (projectId: string | null) => projectId ?? 'default'
 function storeFor(projectId: string | null): Store {
   const key = storeKey(projectId)
   let store = stores.get(key)
   if (!store) {
-    store = { drafts: undefined, version: 0, listeners: new Set(), timer: undefined, chain: Promise.resolve(), loading: false }
+    store = { scope: apiScope(projectId), drafts: undefined, version: 0, listeners: new Set(), timer: undefined, chain: Promise.resolve(), loading: false }
     stores.set(key, store)
   }
   return store
@@ -69,12 +73,16 @@ const toWire = (drafts: readonly ProjectDraft[]): DesignDraftPick[] =>
     return { ...pick, ...(source ? { source } : {}), note: draft.text }
   })
 
+function save(store: Store): void {
+  clearTimeout(store.timer)
+  store.timer = undefined
+  const picks = toWire(store.drafts ?? [])
+  store.chain = store.chain.catch(() => {}).then(() => putRepoDesignDrafts({ picks }, store.scope)).catch(() => {})
+}
+
 function persist(store: Store, delayMs: number): void {
   clearTimeout(store.timer)
-  store.timer = setTimeout(() => {
-    const picks = toWire(store.drafts ?? [])
-    store.chain = store.chain.catch(() => {}).then(() => putRepoDesignDrafts({ picks })).catch(() => {})
-  }, delayMs)
+  store.timer = setTimeout(() => save(store), delayMs)
 }
 
 const pathOf = (url: string): string | undefined => {
@@ -108,10 +116,13 @@ export function useProjectDesignDrafts(): ProjectDesignDrafts {
   )
   useSyncExternalStore(subscribe, () => store.version)
 
+  // Leaving the project (or the page) writes a still-debounced edit now, to its own project.
+  useEffect(() => () => { if (store.timer !== undefined) save(store) }, [store])
+
   useEffect(() => {
     if (store.drafts !== undefined || store.loading) return
     store.loading = true
-    getRepoDesignDrafts()
+    getRepoDesignDrafts(store.scope)
       .then((answer) => { store.drafts ??= fromWire(answer.picks) })
       // A cockpit that cannot read them still collects new ones, in memory.
       .catch(() => { store.drafts ??= [] })
@@ -207,10 +218,11 @@ export async function consumeProjectDesignDrafts(projectId: string | null, keys:
     store.drafts = store.drafts.filter((draft) => !gone.has(draft.key))
     publish(store)
     clearTimeout(store.timer)
+    store.timer = undefined
     const picks = toWire(store.drafts)
-    await (store.chain = store.chain.catch(() => {}).then(() => putRepoDesignDrafts({ picks })))
+    await (store.chain = store.chain.catch(() => {}).then(() => putRepoDesignDrafts({ picks }, store.scope)))
     return
   }
-  const answer = await getRepoDesignDrafts()
-  await putRepoDesignDrafts({ picks: answer.picks.filter((pick) => !gone.has(pick.mark ?? '')) })
+  const answer = await getRepoDesignDrafts(store.scope)
+  await putRepoDesignDrafts({ picks: answer.picks.filter((pick) => !gone.has(pick.mark ?? '')) }, store.scope)
 }

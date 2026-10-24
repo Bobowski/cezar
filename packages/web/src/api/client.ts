@@ -793,18 +793,19 @@ export async function getRepo(opts?: ReadOptions): Promise<RepoResponse> {
 }
 
 /** Design Mode notes collected on the Code page with no task chosen (spec
- *  2026-10-24-design-mode-third-cut §3.2). */
-export async function getRepoDesignDrafts(opts?: ReadOptions): Promise<DesignDraftsResponse> {
+ *  2026-10-24-design-mode-third-cut §3.2). The project is explicit: a debounced save may fire
+ *  after the user switched projects. */
+export async function getRepoDesignDrafts(projectId: string, opts?: ReadOptions): Promise<DesignDraftsResponse> {
   return unwrap(
-    await cez.api.v1.p[':projectId'].repo['design-drafts'].$get({ param: { projectId: queryScope() } }, init(opts)),
+    await cez.api.v1.p[':projectId'].repo['design-drafts'].$get({ param: { projectId } }, init(opts)),
     '/repo/design-drafts',
   )
 }
 
 /** Replace them; an empty list clears them. */
-export async function putRepoDesignDrafts(input: SetDesignDraftsInput): Promise<DesignDraftsResponse> {
+export async function putRepoDesignDrafts(input: SetDesignDraftsInput, projectId: string): Promise<DesignDraftsResponse> {
   return unwrap(
-    await cez.api.v1.p[':projectId'].repo['design-drafts'].$put({ param: { projectId: queryScope() }, json: input }),
+    await cez.api.v1.p[':projectId'].repo['design-drafts'].$put({ param: { projectId }, json: input }),
     '/repo/design-drafts',
   )
 }

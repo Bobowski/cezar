@@ -42,15 +42,27 @@ function queryValue(value: unknown): string[] {
   return [typeof value === 'object' ? JSON.stringify(value) : String(value)];
 }
 
+/**
+ * A path parameter that stays one segment of THIS route: `..` survives `encodeURIComponent` and
+ * URL normalisation would resolve it into another route; a slash or control character never
+ * belongs in an id.
+ */
+function isSafeSegment(value: string): boolean {
+  // eslint-disable-next-line no-control-regex
+  return value !== '.' && !value.includes('..') && !/[/\\\u0000-\u001f\u007f]/.test(value);
+}
+
 /** `/api/v1[/p/<id>]/runs/<id>?…` and the body, from one flat argument object. */
 export function requestFor(tool: CatalogTool, args: Record<string, unknown>, origin: string): { url: string; body?: string } | { error: string } {
   let path = tool.path;
   for (const name of tool.params) {
     const value = args[name];
     if (value === undefined || value === null || value === '') return { error: `missing ${name}` };
+    if (!isSafeSegment(String(value))) return { error: `invalid ${name}: ${JSON.stringify(String(value))}` };
     path = path.replace(`:${name}`, encodeURIComponent(String(value)));
   }
   const projectId = tool.scoped && typeof args.projectId === 'string' && args.projectId !== '' ? args.projectId : undefined;
+  if (projectId !== undefined && !isSafeSegment(projectId)) return { error: `invalid projectId: ${JSON.stringify(projectId)}` };
   const url = new URL(`/api/v1${projectId ? `/p/${encodeURIComponent(projectId)}` : ''}${path}`, origin);
   for (const name of tool.query) {
     for (const value of queryValue(args[name])) url.searchParams.append(name, value);

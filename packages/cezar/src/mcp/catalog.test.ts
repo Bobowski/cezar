@@ -197,14 +197,25 @@ describe('a tool call\'s request', () => {
   it('fills and encodes path params, scopes to a project only when asked, and sends a flat body', () => {
     const tool = catalog.byName.get('runs_send_message')!;
     expect(tool.body).toBe('flat');
-    expect(requestFor(tool, { id: 'a/b', text: 'hi' }, 'http://127.0.0.1:4321')).toEqual({
-      url: 'http://127.0.0.1:4321/api/v1/runs/a%2Fb/messages',
+    expect(requestFor(tool, { id: 'a b', text: 'hi' }, 'http://127.0.0.1:4321')).toEqual({
+      url: 'http://127.0.0.1:4321/api/v1/runs/a%20b/messages',
       body: '{"text":"hi"}',
     });
     expect(requestFor(tool, { id: 'r1', text: 'hi', projectId: 'p 1' }, 'https://agents.example.dev')).toMatchObject({
       url: 'https://agents.example.dev/api/v1/p/p%201/runs/r1/messages',
     });
     expect(requestFor(tool, { text: 'hi' }, 'http://x')).toEqual({ error: 'missing id' });
+  });
+
+  it('refuses a path parameter that could change the route: a slash, a dot segment, a control character', () => {
+    const tool = catalog.byName.get('runs_send_message')!;
+    for (const id of ['a/b', '..', '.', '../workflows', 'a\\b', 'r1\n', 'r\u00001', '..%2F']) {
+      expect(requestFor(tool, { id, text: 'hi' }, 'http://x'), JSON.stringify(id)).toMatchObject({ error: expect.stringMatching(/^invalid id/) });
+    }
+    for (const projectId of ['..', 'p/q', 'p\t']) {
+      expect(requestFor(tool, { id: 'r1', text: 'hi', projectId }, 'http://x'), projectId).toMatchObject({ error: expect.stringMatching(/^invalid projectId/) });
+    }
+    expect(requestFor(tool, { id: 'a.b-c_1', text: 'hi' }, 'http://x')).toMatchObject({ url: 'http://x/api/v1/runs/a.b-c_1/messages' });
   });
 
   it('repeats an array query key and sends no body on a GET', () => {

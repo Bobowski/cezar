@@ -45,18 +45,12 @@ describe('landInPlace', () => {
     expect(await hasUnlanded(checkout)).toBe(false);
   });
 
-  it('the user’s Commit lands only what they staged, and an agent’s landing still takes everything', async () => {
+  it('a landing takes everything the task left, whatever happens to be staged', async () => {
     writeFileSync(join(checkout, 'staged.md'), 's\n');
     writeFileSync(join(checkout, 'later.md'), 'l\n');
     git(checkout, 'add', 'staged.md');
-    const user = await landInPlace(checkout, { describe: async () => 'only staged', checks: [], honorIndex: true });
-    expect(user).toMatchObject({ result: 'landed', pushed: true, files: ['staged.md'] });
-    expect(git(checkout, 'status', '--porcelain')).toBe('?? later.md');
-
-    writeFileSync(join(checkout, 'more.md'), 'm\n');
-    git(checkout, 'add', 'more.md');
-    const agent = await landInPlace(checkout, { describe: async () => 'all', checks: [] });
-    expect(agent).toMatchObject({ result: 'landed' });
+    const landed = await landInPlace(checkout, { describe: async () => 'all', checks: [] });
+    expect(landed).toMatchObject({ result: 'landed', pushed: true, files: ['later.md', 'staged.md'] });
     expect(git(checkout, 'status', '--porcelain')).toBe('');
   });
 

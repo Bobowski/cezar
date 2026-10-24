@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RunStore, type RunRecord } from '../runs/store.ts';
+import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import { RunManager } from './run.ts';
 import type { WorkflowDef } from './types.ts';
 
@@ -45,7 +46,7 @@ describe('trunk-based projects', () => {
     manager = new RunManager(store, repoRoot);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const record of store.listRuns()) manager.cancel(record.id);
     manager.dispose();
     for (const [key, value] of Object.entries(savedEnv)) {
@@ -53,7 +54,7 @@ describe('trunk-based projects', () => {
       else process.env[key] = value;
     }
     store.flush();
-    rmSync(repoRoot, { recursive: true, force: true });
+    await removeTempDir(repoRoot);
   });
 
   const waitFor = async (id: string, pred: (r: RunRecord | undefined) => boolean, ms = 20_000) => {
@@ -149,6 +150,42 @@ describe('trunk-based projects', () => {
     expect(await manager.land(record.id)).toMatchObject({ outcome: 'busy' });
     expect(await landing).toMatchObject({ outcome: 'landed' });
     expect(await manager.land(record.id)).toEqual({ outcome: 'nothing', message: 'nothing to commit' });
+  }, 30_000);
+
+  const stageOneOfTwo = async () => {
+    writeFileSync(join(repoRoot, 'staged.md'), 's\n');
+    writeFileSync(join(repoRoot, 'loose.md'), 'l\n');
+    await run('git', ['add', 'staged.md'], { cwd: repoRoot });
+  };
+
+  it('the task’s Commit lands the whole tree, never only what happens to be staged', async () => {
+    writeConfig({ taskWorkspace: 'in-place', landing: 'auto' });
+    const record = manager.startRun(SINGLE_STEP, { task: 'mock:done' });
+    await waitFor(record.id, (r) => r?.status === 'waiting');
+    // With the session open (the agent may have staged this)…
+    await stageOneOfTwo();
+    expect(await manager.land(record.id)).toMatchObject({ outcome: 'landed' });
+    await waitFor(record.id, (r) => r?.status === 'done');
+    expect(await clean()).toBe('');
+    // …and directly, once it is gone.
+    writeFileSync(join(repoRoot, 'staged.md'), 's2\n');
+    writeFileSync(join(repoRoot, 'loose.md'), 'l2\n');
+    await run('git', ['add', 'staged.md'], { cwd: repoRoot });
+    expect(await manager.land(record.id)).toMatchObject({ outcome: 'landed' });
+    expect(await clean()).toBe('');
+  }, 30_000);
+
+  it('a Commit retried after a failed check takes the same whole tree', async () => {
+    // The open session keeps the policy it started with: the check reads a flag cezar never lands.
+    writeConfig({ taskWorkspace: 'in-place', landing: 'auto', requiredChecks: ['test -f .ai/cezar/ok.flag'] });
+    const record = manager.startRun(SINGLE_STEP, { task: 'mock:done' });
+    await waitFor(record.id, (r) => r?.status === 'waiting');
+    await stageOneOfTwo();
+    expect(await manager.land(record.id)).toMatchObject({ outcome: 'failed' });
+    await waitFor(record.id, (r) => r?.status === 'waiting' && notes(record.id).some((n) => n.startsWith('auto-land failed at checks — sent back')));
+    writeFileSync(join(repoRoot, '.ai/cezar/ok.flag'), '');
+    expect(await manager.land(record.id)).toMatchObject({ outcome: 'landed' });
+    expect(await clean()).toBe('');
   }, 30_000);
 
   it('never lands mid-turn: Finish during a running turn closes first and lands after', async () => {

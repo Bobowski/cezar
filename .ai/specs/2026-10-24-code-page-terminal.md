@@ -1,6 +1,6 @@
 # The Code page terminal — detected addresses, project commands, clickable links, completion, and the gateway
 
-> Status: proposed (2026-10-24), not built. Branch: `brutus`.
+> Status: built (2026-10-24), see §9 for what the build settled. Branch: `brutus`.
 > Builds on: `2026-10-11-code-page.md` (the bottom panel's project terminal),
 > `2026-10-07-task-workspace.md` §6–§7 (the two strips the TASK terminal already has:
 > `task-workspace/terminal-extras.tsx`, `detectedUrlSchema`, `discoveredCommandSchema`),
@@ -108,3 +108,27 @@ gateway that `CEZ_PREVIEW_PORTS` already configures for the VPS image.
 - VPS: `npm run dev` from the Code terminal → the strip shows `:3570 → :8503` → Open in
   Browser shows the storefront; a printed `http://localhost:9000` in the output is a link to
   the same gateway port; `Tab` after `npm run ` lists the project's scripts.
+
+## 9. Settled while building
+
+- **History comes off the input routes**, `server/terminal/history.ts`: a line is kept only when
+  its text is certain (typing, backspace, paste — an arrow, a Tab or a Ctrl chord makes it
+  unknown) and the shell had no foreground child when it was submitted, read from a FRESH process
+  table. That is what keeps a password a running `sudo`/`ssh` reads out of the file; a host with no
+  readable process table (Windows) therefore keeps no history. A line led by a space is not kept
+  (bash's `ignorespace`). Both the checkout's terminals and the project's task terminals feed it;
+  a task's own credential never does. Input is chained per session so a keystroke cannot overtake
+  the Enter whose check is running.
+- **`/repo/terminal/urls` adds `sshUser`** (`projectDetectedUrlsSchema`), the account cezar runs
+  as, on a hosted cockpit only — the tunnel line's login (tunnel spec §3.3).
+- **Tab**: with the popover closed, Tab opens it when there is something to offer and is the
+  shell's otherwise; after `Esc`, Tab is the shell's until the line is submitted or abandoned.
+  `Ctrl+R` is always the popover's in a Code terminal.
+- **The gateway mapping asks once per RUNNING loopback origin**, which opens (or reuses) that
+  app's gateway listener before a click — the only way to show `→ :85xx`. `Open in Browser` opens
+  the loopback address in a Browser tab, which asks for its own fresh ticket as the Preview column
+  does. Beside a mapped address the strip still offers the tunnel line (preview-gateway §7), and
+  in place of the link where the gateway refused.
+- A "gateway address" in the output is this cockpit's own hostname on another port.
+- The task drawer keeps its strips as they were (user's browser + Preview); links, completion and
+  the gateway mapping are the Code terminal's.

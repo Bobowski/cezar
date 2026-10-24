@@ -84,7 +84,8 @@ Default is cezar's own branding; everything is state under `CEZ_HOME/branding/`.
 Where the build settled a question the sections above left open, or deliberately stopped short:
 
 - **Files.** `src/workspace/branding.ts` (storage, derivation, links), `branding-png.ts`
-  (`pngjs`: decode, area-average resize, re-encode — IHDR is read first; anything over
+  (`pngjs`: decode, an integer area-average resize from a working copy of at most 1024² —
+  derivation yields the event loop a turn between sizes — and re-encode; IHDR is read first; anything over
   2048² or interlaced is refused unopened, and IDAT inflates under the byte budget the header
   allows before pngjs sees it; bytes after IEND are dropped), `branding-svg.ts` (`@xmldom/xmldom`:
   parse, keep allowlisted SVG elements, drop `on*`, foreign namespaces, every `href` that is

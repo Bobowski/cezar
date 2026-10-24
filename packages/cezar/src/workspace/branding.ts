@@ -9,7 +9,7 @@ import {
 } from '@open-mercato/cezar-contract';
 import { assertCezarHomeWriteIsSandboxed, cezarHomeDir } from '../paths.ts';
 import { deriveAccentTokens } from './branding-accent.ts';
-import { backdropOf, decodePng, encodePng, fitSquare, isPng } from './branding-png.ts';
+import { backdropOf, decodePng, encodePng, fitSquare, isPng, resize, type Rgba } from './branding-png.ts';
 import { sanitizeSvg } from './branding-svg.ts';
 
 /**
@@ -42,15 +42,39 @@ export interface DerivedFile {
 }
 export type DeriveResult = { ok: true; files: DerivedFile[] } | { ok: false; error: string };
 
-const png = (asset: BrandingAsset, bytes: Buffer): DerivedFile => ({ asset, ext: 'png', bytes });
+/** The longest side any size is derived from; a larger upload is reduced to it once. */
+const WORKING_SIZE = 1024;
+
+// Derivation is CPU work on the server's one thread, so it yields a turn between steps.
+const nextTurn = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+async function workingImage(image: Rgba): Promise<Rgba> {
+  await nextTurn();
+  const longest = Math.max(image.width, image.height);
+  if (longest <= WORKING_SIZE) return image;
+  const scale = WORKING_SIZE / longest;
+  const reduced = resize(image, Math.max(1, Math.round(image.width * scale)), Math.max(1, Math.round(image.height * scale)));
+  await nextTurn();
+  return reduced;
+}
+
+async function renderEach(steps: ReadonlyArray<readonly [BrandingAsset, () => Rgba]>): Promise<DerivedFile[]> {
+  const files: DerivedFile[] = [];
+  for (const [asset, render] of steps) {
+    files.push({ asset, ext: 'png', bytes: encodePng(render()) });
+    await nextTurn();
+  }
+  return files;
+}
 
 /** SVG is sanitised and kept as the vector favicon; PNG becomes 16, 32 and 48 px squares. */
-export function deriveFavicon(bytes: Buffer): DeriveResult {
+export async function deriveFavicon(bytes: Buffer): Promise<DeriveResult> {
   if (isPng(bytes)) {
     const decoded = decodePng(bytes);
     if (!decoded.ok) return decoded;
     if (Math.min(decoded.image.width, decoded.image.height) < 16) return { ok: false, error: 'a favicon PNG is at least 16 × 16 pixels' };
-    return { ok: true, files: ([16, 32, 48] as const).map((size) => png(`favicon-${size}`, encodePng(fitSquare(decoded.image, size)))) };
+    const image = await workingImage(decoded.image);
+    return { ok: true, files: await renderEach(([16, 32, 48] as const).map((size) => [`favicon-${size}`, () => fitSquare(image, size)] as const)) };
   }
   const text = bytes.toString('utf8');
   if (!/<svg[\s>]/i.test(text.slice(0, 4096))) return { ok: false, error: 'a favicon is an SVG or a PNG image' };
@@ -64,26 +88,27 @@ export function deriveFavicon(bytes: Buffer): DeriveResult {
  * inside the 80% safe zone, and the 180 px apple-touch-icon. The two that must be opaque stand on
  * the icon's own corner colour (white when the corner is transparent).
  */
-export function deriveAppIcon(bytes: Buffer): DeriveResult {
+export async function deriveAppIcon(bytes: Buffer): Promise<DeriveResult> {
   if (!isPng(bytes)) return { ok: false, error: 'an app icon is a PNG image' };
   const decoded = decodePng(bytes);
   if (!decoded.ok) return decoded;
-  const { image } = decoded;
-  if (image.width !== image.height) return { ok: false, error: `an app icon is square — this one is ${image.width} × ${image.height}` };
-  if (image.width < 512) return { ok: false, error: `an app icon is at least 512 × 512 pixels — this one is ${image.width} × ${image.height}` };
-  const fill = backdropOf(image);
+  const { width, height } = decoded.image;
+  if (width !== height) return { ok: false, error: `an app icon is square — this one is ${width} × ${height}` };
+  if (width < 512) return { ok: false, error: `an app icon is at least 512 × 512 pixels — this one is ${width} × ${height}` };
+  const fill = backdropOf(decoded.image);
+  const image = await workingImage(decoded.image);
   return {
     ok: true,
-    files: [
-      png('app-icon', encodePng(fitSquare(image, 512))),
-      png('app-icon-192', encodePng(fitSquare(image, 192))),
-      png('app-icon-maskable', encodePng(fitSquare(image, 512, { inner: 410, fill }))),
-      png('apple-touch-icon', encodePng(fitSquare(image, 180, { fill }))),
-    ],
+    files: await renderEach([
+      ['app-icon', () => fitSquare(image, 512)],
+      ['app-icon-192', () => fitSquare(image, 192)],
+      ['app-icon-maskable', () => fitSquare(image, 512, { inner: 410, fill })],
+      ['apple-touch-icon', () => fitSquare(image, 180, { fill })],
+    ]),
   };
 }
 
-export const deriveBranding = (kind: BrandingUploadKind, bytes: Buffer): DeriveResult =>
+export const deriveBranding = (kind: BrandingUploadKind, bytes: Buffer): Promise<DeriveResult> =>
   kind === 'favicon' ? deriveFavicon(bytes) : deriveAppIcon(bytes);
 
 export const brandingFileName = (file: DerivedFile): string =>

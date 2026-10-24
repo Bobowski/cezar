@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { renderManifest, renderShellHtml } from '../server/static-ui.ts';
 import { contrastRatio, deriveAccentTokens, parseHexColor } from './branding-accent.ts';
-import { decodePng, encodePng, type Rgba } from './branding-png.ts';
+import { decodePng, encodePng, resize, type Rgba } from './branding-png.ts';
 import { pngBomb } from './branding-png.testkit.ts';
 import { sanitizeSvg } from './branding-svg.ts';
 import {
@@ -80,8 +80,8 @@ describe('the favicon SVG sanitiser', () => {
 });
 
 describe('derived sizes', () => {
-  it('a PNG favicon becomes 16, 32 and 48 px squares, fitted without stretching', () => {
-    const result = deriveFavicon(fixture(64, 32));
+  it('a PNG favicon becomes 16, 32 and 48 px squares, fitted without stretching', async () => {
+    const result = await deriveFavicon(fixture(64, 32));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.files.map((file) => [file.asset, file.ext, sizeOf(file.bytes)])).toEqual([
@@ -96,8 +96,8 @@ describe('derived sizes', () => {
     expect(pixel(decoded.image, 40, 30)).toEqual([200, 30, 90, 255]);
   });
 
-  it('an SVG favicon is kept as the vector, sanitised', () => {
-    const result = deriveFavicon(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><script>x()</script><rect width="1" height="1"/></svg>'));
+  it('an SVG favicon is kept as the vector, sanitised', async () => {
+    const result = await deriveFavicon(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><script>x()</script><rect width="1" height="1"/></svg>'));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.files).toHaveLength(1);
@@ -105,13 +105,13 @@ describe('derived sizes', () => {
     expect(result.files[0]!.bytes.toString('utf8')).not.toContain('script');
   });
 
-  it('refuses a favicon that is neither, or too small to read', () => {
-    expect(deriveFavicon(Buffer.from([0xff, 0xd8, 0xff, 0xe0]))).toMatchObject({ ok: false });
-    expect(deriveFavicon(fixture(8, 8))).toMatchObject({ ok: false, error: expect.stringContaining('16') });
+  it('refuses a favicon that is neither, or too small to read', async () => {
+    expect(await deriveFavicon(Buffer.from([0xff, 0xd8, 0xff, 0xe0]))).toMatchObject({ ok: false });
+    expect(await deriveFavicon(fixture(8, 8))).toMatchObject({ ok: false, error: expect.stringContaining('16') });
   });
 
-  it('an app icon becomes 512, 192, a maskable 512 and the 180 px apple-touch-icon', () => {
-    const result = deriveAppIcon(fixture(600, 600));
+  it('an app icon becomes 512, 192, a maskable 512 and the 180 px apple-touch-icon', async () => {
+    const result = await deriveAppIcon(fixture(600, 600));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.files.map((file) => [file.asset, sizeOf(file.bytes)])).toEqual([
@@ -135,15 +135,15 @@ describe('derived sizes', () => {
     expect(pixel(decode(0), 0, 0)[3]).toBe(0);
   });
 
-  it('refuses an app icon that is not a square PNG of at least 512 px', () => {
-    expect(deriveAppIcon(fixture(600, 500))).toMatchObject({ ok: false, error: expect.stringContaining('square') });
-    expect(deriveAppIcon(fixture(256, 256))).toMatchObject({ ok: false, error: expect.stringContaining('512') });
-    expect(deriveAppIcon(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'))).toMatchObject({ ok: false });
+  it('refuses an app icon that is not a square PNG of at least 512 px', async () => {
+    expect(await deriveAppIcon(fixture(600, 500))).toMatchObject({ ok: false, error: expect.stringContaining('square') });
+    expect(await deriveAppIcon(fixture(256, 256))).toMatchObject({ ok: false, error: expect.stringContaining('512') });
+    expect(await deriveAppIcon(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'))).toMatchObject({ ok: false });
   });
 
-  it('re-encodes: nothing but the pixels survives, and a decompression bomb is refused unopened', () => {
+  it('re-encodes: nothing but the pixels survives, and a decompression bomb is refused unopened', async () => {
     const marker = Buffer.from('<script>polyglot</script>');
-    const result = deriveAppIcon(Buffer.concat([fixture(512, 512), marker]));
+    const result = await deriveAppIcon(Buffer.concat([fixture(512, 512), marker]));
     expect(result.ok).toBe(true);
     if (result.ok) for (const file of result.files) expect(file.bytes.includes(marker)).toBe(false);
     const bomb = Buffer.from(fixture(16, 16));
@@ -157,8 +157,8 @@ describe('derived sizes', () => {
     expect(decodePng(interlaced)).toMatchObject({ ok: false, error: expect.stringContaining('interlaced') });
     expect(process.memoryUsage().arrayBuffers - before).toBeLessThan(32 * 1024 * 1024);
     // The same bomb deriving a favicon or an app icon is refused the same way.
-    expect(deriveFavicon(interlaced)).toMatchObject({ ok: false, error: expect.stringContaining('interlaced') });
-    expect(deriveAppIcon(interlaced)).toMatchObject({ ok: false, error: expect.stringContaining('interlaced') });
+    expect(await deriveFavicon(interlaced)).toMatchObject({ ok: false, error: expect.stringContaining('interlaced') });
+    expect(await deriveAppIcon(interlaced)).toMatchObject({ ok: false, error: expect.stringContaining('interlaced') });
   });
 
   it('inflates within the header\'s byte budget, and refuses more than 2048² pixels', () => {
@@ -167,6 +167,34 @@ describe('derived sizes', () => {
     wide.writeUInt32BE(2049, 16);
     wide.writeUInt32BE(2048, 20);
     expect(decodePng(wide)).toMatchObject({ ok: false, error: expect.stringContaining('2048') });
+  });
+});
+
+describe('resizing', () => {
+  it('area-averages premultiplied pixels, fractional spans included', () => {
+    const halfClear = resize({ width: 2, height: 1, data: new Uint8Array([255, 0, 0, 255, 0, 0, 255, 0]) }, 1, 1);
+    expect([...halfClear.data]).toEqual([255, 0, 0, 128]);
+    const thirds = resize({ width: 3, height: 1, data: new Uint8Array([0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255]) }, 2, 1);
+    expect([...thirds.data]).toEqual([85, 85, 85, 255, 85, 85, 85, 255]);
+    const up = resize({ width: 1, height: 1, data: new Uint8Array([10, 20, 30, 40]) }, 2, 2);
+    expect([...up.data]).toEqual([10, 20, 30, 40, 10, 20, 30, 40, 10, 20, 30, 40, 10, 20, 30, 40]);
+  });
+
+  it('a 2048² app icon derives every size, and the event loop runs between them', async () => {
+    const source = fixture(2048, 2048);
+    let turns = 0;
+    const tick = () => {
+      turns += 1;
+      if (pending) setImmediate(tick);
+    };
+    let pending = true;
+    setImmediate(tick);
+    const result = await deriveAppIcon(source);
+    pending = false;
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.files.map((file) => sizeOf(file.bytes))).toEqual([[512, 512], [192, 192], [512, 512], [180, 180]]);
+    expect(turns).toBeGreaterThanOrEqual(4);
   });
 });
 
@@ -184,7 +212,7 @@ describe('content-addressed storage', () => {
   });
 
   it('names each file <asset>-<sha256[:12]>.<ext> under CEZ_HOME/branding and addresses it by that hash', async () => {
-    const derived = deriveAppIcon(fixture(512, 512));
+    const derived = await deriveAppIcon(fixture(512, 512));
     if (!derived.ok) throw new Error(derived.error);
     await saveBranding('app-icon', derived.files);
     const files = readdirSync(brandingDir()).sort();
@@ -199,9 +227,9 @@ describe('content-addressed storage', () => {
   });
 
   it('a new upload replaces its whole group and nothing else; removal clears it', async () => {
-    const first = deriveFavicon(fixture(32, 32));
-    const second = deriveFavicon(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>'));
-    const icon = deriveAppIcon(fixture(512, 512));
+    const first = await deriveFavicon(fixture(32, 32));
+    const second = await deriveFavicon(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>'));
+    const icon = await deriveAppIcon(fixture(512, 512));
     if (!first.ok || !second.ok || !icon.ok) throw new Error('fixtures');
     await saveBranding('favicon', first.files);
     await saveBranding('app-icon', icon.files);

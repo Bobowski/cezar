@@ -4135,7 +4135,7 @@ export function createApp(deps: ServerDeps) {
       const bytes = Buffer.from(c.req.valid('json').data, 'base64');
       if (bytes.length === 0) return c.json({ error: 'the image is empty' }, 400);
       if (bytes.length > BRANDING_UPLOAD_MAX_BYTES) return c.json({ error: 'an image is at most 2 MB' }, 400);
-      const derived = deriveBranding(kind, bytes);
+      const derived = await deriveBranding(kind, bytes);
       if (!derived.ok) return c.json({ error: derived.error }, 400);
       try {
         await saveBranding(kind, derived.files);

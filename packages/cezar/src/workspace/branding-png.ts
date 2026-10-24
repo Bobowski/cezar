@@ -99,50 +99,90 @@ export function encodePng(image: Rgba): Buffer {
 }
 
 /**
- * One axis of an area-average resample over premultiplied channels: each output sample is the
- * coverage-weighted mean of the input samples its span overlaps. Downscaling is a box filter;
- * upscaling degrades to nearest-ish, which is fine for the rare favicon under 48 px.
+ * For each output sample of a `srcLen` → `dstLen` axis, the source samples its span overlaps and
+ * by how much. Spans are measured in 1/(srcLen·dstLen) steps, so every weight is an integer and
+ * one output's weights sum to `srcLen`.
  */
-function resampleAxis(src: Float64Array, srcLen: number, dstLen: number, lines: number, horizontal: boolean, srcStride: number): Float64Array {
-  const out = new Float64Array(dstLen * lines * 4);
-  const scale = srcLen / dstLen;
-  for (let line = 0; line < lines; line += 1) {
-    for (let d = 0; d < dstLen; d += 1) {
-      const start = d * scale;
-      const end = start + scale;
-      const acc = [0, 0, 0, 0];
-      let weightSum = 0;
-      for (let s = Math.floor(start); s < Math.min(Math.ceil(end), srcLen); s += 1) {
-        const weight = Math.min(s + 1, end) - Math.max(s, start);
-        if (weight <= 0) continue;
-        const i = horizontal ? (line * srcStride + s) * 4 : (s * srcStride + line) * 4;
-        for (let c = 0; c < 4; c += 1) acc[c]! += src[i + c]! * weight;
-        weightSum += weight;
+function axisSpans(srcLen: number, dstLen: number): { offsets: Int32Array; index: Int32Array; weight: Int32Array } {
+  const offsets = new Int32Array(dstLen + 1);
+  const index: number[] = [];
+  const weight: number[] = [];
+  for (let d = 0; d < dstLen; d += 1) {
+    offsets[d] = index.length;
+    const lo = d * srcLen;
+    const hi = lo + srcLen;
+    for (let s = Math.floor(lo / dstLen); s < srcLen && s * dstLen < hi; s += 1) {
+      const w = Math.min((s + 1) * dstLen, hi) - Math.max(s * dstLen, lo);
+      if (w > 0) {
+        index.push(s);
+        weight.push(w);
       }
-      const o = horizontal ? (line * dstLen + d) * 4 : (d * lines + line) * 4;
-      for (let c = 0; c < 4; c += 1) out[o + c] = weightSum > 0 ? acc[c]! / weightSum : 0;
     }
   }
-  return out;
+  offsets[dstLen] = index.length;
+  return { offsets, index: Int32Array.from(index), weight: Int32Array.from(weight) };
 }
 
+/** Round-half-up division of non-negative integers. */
+const roundDiv = (n: number, d: number): number => Math.floor((n + Math.floor(d / 2)) / d);
+
+/**
+ * An area-average resample over premultiplied channels, in integers: each output pixel is the
+ * coverage-weighted mean of the input pixels its span overlaps (a box filter downscaling,
+ * nearest-ish upscaling). The one intermediate is 16-bit, `c·a` and `a·255` both being ≤ 65025.
+ */
 export function resize(image: Rgba, width: number, height: number): Rgba {
-  const pre = new Float64Array(image.width * image.height * 4);
-  for (let i = 0; i < image.width * image.height; i += 1) {
-    const a = image.data[i * 4 + 3]! / 255;
-    pre[i * 4] = image.data[i * 4]! * a;
-    pre[i * 4 + 1] = image.data[i * 4 + 1]! * a;
-    pre[i * 4 + 2] = image.data[i * 4 + 2]! * a;
-    pre[i * 4 + 3] = image.data[i * 4 + 3]!;
+  const { width: sw, height: sh, data: src } = image;
+  const xs = axisSpans(sw, width);
+  const rows = new Uint16Array(width * sh * 4);
+  for (let y = 0; y < sh; y += 1) {
+    const rowIn = y * sw * 4;
+    const rowOut = y * width * 4;
+    for (let d = 0; d < width; d += 1) {
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let a = 0;
+      for (let k = xs.offsets[d]!; k < xs.offsets[d + 1]!; k += 1) {
+        const i = rowIn + xs.index[k]! * 4;
+        const alpha = src[i + 3]! * xs.weight[k]!;
+        r += src[i]! * alpha;
+        g += src[i + 1]! * alpha;
+        b += src[i + 2]! * alpha;
+        a += alpha;
+      }
+      const o = rowOut + d * 4;
+      rows[o] = roundDiv(r, sw);
+      rows[o + 1] = roundDiv(g, sw);
+      rows[o + 2] = roundDiv(b, sw);
+      rows[o + 3] = roundDiv(a * 255, sw);
+    }
   }
-  const rows = resampleAxis(pre, image.width, width, image.height, true, image.width);
-  const both = resampleAxis(rows, image.height, height, width, false, width);
+  const ys = axisSpans(sh, height);
   const data = new Uint8Array(width * height * 4);
-  for (let i = 0; i < width * height; i += 1) {
-    const alpha = both[i * 4 + 3]!;
-    const a = alpha / 255;
-    for (let c = 0; c < 3; c += 1) data[i * 4 + c] = a > 0 ? clamp(both[i * 4 + c]! / a) : 0;
-    data[i * 4 + 3] = clamp(alpha);
+  for (let d = 0; d < height; d += 1) {
+    for (let x = 0; x < width; x += 1) {
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let a = 0;
+      for (let k = ys.offsets[d]!; k < ys.offsets[d + 1]!; k += 1) {
+        const i = (ys.index[k]! * width + x) * 4;
+        const w = ys.weight[k]!;
+        r += rows[i]! * w;
+        g += rows[i + 1]! * w;
+        b += rows[i + 2]! * w;
+        a += rows[i + 3]! * w;
+      }
+      const o = (d * width + x) * 4;
+      if (a > 0) {
+        // Un-premultiply: mean(c·a) / mean(a·255) · 255.
+        data[o] = Math.min(255, roundDiv(r * 255, a));
+        data[o + 1] = Math.min(255, roundDiv(g * 255, a));
+        data[o + 2] = Math.min(255, roundDiv(b * 255, a));
+      }
+      data[o + 3] = roundDiv(a, sh * 255);
+    }
   }
   return { width, height, data };
 }

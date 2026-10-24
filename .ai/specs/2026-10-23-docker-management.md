@@ -168,10 +168,13 @@ Nothing to configure. Reclaim is a click, never a timer. All new state is Docker
   (stripped before anything is kept) and remembers each stream's last whole line and the line still
   arriving. When the last subscriber leaves it is killed, and a returning reader's follower starts
   `--since` the earliest of those stamps — never the host's time, which a daemon in a VM or on
-  another machine need not agree with. Lines at or before what the killed one passed whole are
-  dropped, so nothing shows twice; a partial line comes back whole, and an over-long line being
-  dropped stays dropped. What the killed one held for a multi-line secret stays hidden and still
-  matches. Without a stamp (Docker's own errors) the resume falls back to the host time.
+  another machine need not agree with. Lines before the first one the killed follower held unshown
+  are dropped, so nothing shows twice; a partial line comes back whole, a line held as a possible
+  PEM start comes back too (shown if it was no secret), and an over-long line being dropped stays
+  dropped. The rest of a line whose head went out is kept and still matches. Without any stamp
+  (Docker's own errors) the resume runs the tail again and skips its lead where it matches the last
+  lines shown. A line Docker cut into 16 KiB records (each stamped with the line's first stamp) is
+  joined, its stamps cut out, before it is redacted.
 - **Used-by for images** comes from `docker container inspect` (`.Image`, the digest), matched
   against `image ls --no-trunc`, rather than `image inspect`: a tag can move while a container
   still runs the old image.

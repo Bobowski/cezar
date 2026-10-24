@@ -134,11 +134,12 @@ export function processSnapshot(now = Date.now()): Promise<ProcessRow[] | null> 
 /** A fresh read slower than this is killed: the history's check has given up on it by then, and
  *  a hung `ps` must not hold the one slot (spec 2026-10-24-code-page-terminal §9). */
 export const FRESH_SNAPSHOT_TIMEOUT_MS = 300;
-/** Killed reads that have not exited yet (a `ps` in D-state ignores SIGKILL); at this many, no `ps` is spawned. */
+/** Killed reads whose child has not closed yet (a `ps` in D-state ignores SIGKILL); at this many, no `ps` is spawned. */
 export const MAX_STUCK_SNAPSHOT_READS = 3;
 
-/** One process-table read; it must stop (kill its child) when `signal` aborts. */
-export type ProcessTableRead = (signal: AbortSignal) => Promise<ProcessRow[] | null>;
+/** One process-table read; it must stop (kill its child) when `signal` aborts, and call `exited`
+ *  once that child has closed — after a kill, possibly long after the read itself settled. */
+export type ProcessTableRead = (signal: AbortSignal, exited: () => void) => Promise<ProcessRow[] | null>;
 
 /**
  * Fresh snapshots, at most one `ps` at a time per host. A caller never gets a table read begun
@@ -148,37 +149,40 @@ export type ProcessTableRead = (signal: AbortSignal) => Promise<ProcessRow[] | n
 export function freshSnapshotReader(
   read: ProcessTableRead = readProcessTable,
   timeoutMs = FRESH_SNAPSHOT_TIMEOUT_MS,
+  maxStuck = MAX_STUCK_SNAPSHOT_READS,
 ): () => Promise<ProcessRow[] | null> {
   let running: Promise<ProcessRow[] | null> | undefined;
   let queued: Promise<ProcessRow[] | null> | undefined;
   let stuck = 0;
   const launch = (): Promise<ProcessRow[] | null> => {
     // Unknown is the safe answer: the history then keeps nothing.
-    if (stuck >= MAX_STUCK_SNAPSHOT_READS) return Promise.resolve(null);
+    if (stuck >= maxStuck) return Promise.resolve(null);
     const controller = new AbortController();
     const at = Date.now();
     let killed = false;
-    const settled = () => {
+    let closed = false;
+    // Stuck from the kill until the child closes: execFile answers an abort before the child exits.
+    const exited = () => {
+      if (closed) return;
+      closed = true;
       if (killed) stuck -= 1;
     };
     const current = new Promise<ProcessRow[] | null>((resolve) => {
       const timer = setTimeout(() => {
         killed = true;
-        stuck += 1;
+        if (!closed) stuck += 1;
         controller.abort();
         resolve(null);
       }, timeoutMs);
       timer.unref?.();
-      read(controller.signal).then(
+      read(controller.signal, exited).then(
         (rows) => {
           clearTimeout(timer);
-          settled();
           if (rows !== null && !killed) snapshot = { at, rows };
           resolve(rows);
         },
         () => {
           clearTimeout(timer);
-          settled();
           resolve(null);
         },
       );
@@ -212,13 +216,15 @@ export function resetProcessSnapshot(): void {
   inFlight = undefined;
 }
 
-function readProcessTable(signal?: AbortSignal): Promise<ProcessRow[] | null> {
+function readProcessTable(signal?: AbortSignal, exited?: () => void): Promise<ProcessRow[] | null> {
   return new Promise((resolve) => {
     // Windows has no `ps`, and a hardened container can hide the table; both land on `null`,
     // which says "unknown" rather than "nothing running".
     const options = { maxBuffer: 8 * 1024 * 1024, killSignal: 'SIGKILL' as const, ...(signal ? { signal } : {}) };
-    execFile('ps', ['-axo', 'pid=,ppid=,command='], options, (error, stdout) => {
+    const child = execFile('ps', ['-axo', 'pid=,ppid=,command='], options, (error, stdout) => {
       resolve(error ? null : parseProcessRows(stdout));
     });
+    // `close` follows a failed spawn too, so a missing `ps` is never counted stuck.
+    if (exited) child.once('close', exited);
   });
 }

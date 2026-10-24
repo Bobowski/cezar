@@ -1,4 +1,4 @@
-import { execFile, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { describe, expect, it } from 'vitest';
 
@@ -121,16 +121,64 @@ describe('freshSnapshotReader (spec 2026-10-24-code-page-terminal §9)', () => {
   });
 
   it('spawns no ps while three killed ones have not exited (D-state), and again once one does', async () => {
-    const stuck: Array<() => void> = [];
-    // A `ps` that ignores the kill: its read settles only when the process finally exits.
-    const reader = freshSnapshotReader(() => new Promise((resolve) => stuck.push(() => resolve(null))), 10);
+    const exits: Array<() => void> = [];
+    // As execFile does: the read settles on the abort, and the child exits (if ever) later.
+    const reader = freshSnapshotReader((signal, exited) => new Promise((resolve) => {
+      exits.push(() => exited?.());
+      signal.addEventListener('abort', () => resolve(null));
+    }), 10);
     for (let index = 0; index < MAX_STUCK_SNAPSHOT_READS; index += 1) expect(await reader()).toBeNull();
-    expect(stuck).toHaveLength(MAX_STUCK_SNAPSHOT_READS);
+    expect(exits).toHaveLength(MAX_STUCK_SNAPSHOT_READS);
     expect(await reader()).toBeNull();
-    expect(stuck).toHaveLength(MAX_STUCK_SNAPSHOT_READS);
-    stuck[0]!();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(exits).toHaveLength(MAX_STUCK_SNAPSHOT_READS);
+    exits[0]!();
     void reader();
-    expect(stuck).toHaveLength(MAX_STUCK_SNAPSHOT_READS + 1);
+    expect(exits).toHaveLength(MAX_STUCK_SNAPSHOT_READS + 1);
+  });
+
+  it('counts a killed real child as stuck until it closes, not until its callback fires', async () => {
+    // The child hands its stdout to a grandchild, so killing it leaves the pipe open: `close`
+    // waits for the grandchild, as it would for a `ps` the kernel has not let go of. Detached, or
+    // Windows kills it with the child's job object.
+    const script = [
+      "const g = require('child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'inherit'], detached: true, windowsHide: true });",
+      'process.stderr.write(String(g.pid));',
+      'setInterval(() => {}, 1000);',
+    ].join('');
+    const children: ChildProcess[] = [];
+    const grandchildren: number[] = [];
+    let ready: () => void = () => {};
+    const spawned = new Promise<void>((resolve) => { ready = resolve; });
+    const reader = freshSnapshotReader((signal, exited) => new Promise((resolve) => {
+      // `spawn`, not execFile: execFile destroys the pipes on abort. The read answers the abort at once either way.
+      const child = spawn(process.execPath, ['-e', script], { signal, stdio: ['ignore', 'pipe', 'pipe'] });
+      child.once('error', () => resolve(null));
+      child.stderr?.on('data', (chunk: Buffer) => {
+        grandchildren.push(Number(String(chunk).trim()));
+        ready();
+      });
+      child.once('close', () => exited?.());
+      children.push(child);
+    }), 3_000, 1);
+    try {
+      const first = reader();
+      await spawned;
+      expect(await first).toBeNull();
+      const child = children[0]!;
+      if (child.exitCode === null && child.signalCode === null) await once(child, 'exit');
+      // Dead, its callback fired, but its pipe is still open: no second ps.
+      expect(await reader()).toBeNull();
+      expect(children).toHaveLength(1);
+      const closed = once(child, 'close');
+      process.kill(grandchildren[0]!);
+      await closed;
+      void reader();
+      expect(children).toHaveLength(2);
+    } finally {
+      for (const child of children) child.kill();
+      for (const pid of grandchildren) {
+        try { process.kill(pid); } catch { /* already gone */ }
+      }
+    }
   });
 });

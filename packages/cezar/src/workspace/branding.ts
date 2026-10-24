@@ -182,11 +182,13 @@ export async function brandingFiles(env: NodeJS.ProcessEnv = process.env): Promi
   return Object.fromEntries(Object.entries(found).map(([asset, entry]) => [asset, entry!.file]));
 }
 
-export async function readBrandingAsset(asset: BrandingAsset, env: NodeJS.ProcessEnv = process.env): Promise<{ bytes: Buffer; type: string } | null> {
+/** The stored bytes, their type and `hash` — the `?v=` that addresses this version. */
+export async function readBrandingAsset(asset: BrandingAsset, env: NodeJS.ProcessEnv = process.env): Promise<{ bytes: Buffer; type: string; hash: string } | null> {
   const file = (await brandingFiles(env))[asset];
   if (!file) return null;
   try {
-    return { bytes: await readFile(join(brandingDir(env), file)), type: TYPES[file.slice(file.lastIndexOf('.') + 1) as Extension] };
+    const bytes = await readFile(join(brandingDir(env), file));
+    return { bytes, type: TYPES[file.slice(file.lastIndexOf('.') + 1) as Extension], hash: FILE_RE.exec(file)![2]! };
   } catch {
     return null;
   }

@@ -4118,15 +4118,16 @@ export function createApp(deps: ServerDeps) {
       return c.json(workspaceBrandingSchema.parse(brandingBody(await currentBranding())));
     })
     // Served like the project icon: typed from the stored name, `nosniff`, and under a CSP that
-    // leaves even a sanitised SVG inert as a document. The `?v=` hash pins the bytes.
-    .get('/workspace/branding/:kind', paramZodValidator(brandingAssetParamSchema), async (c) => {
+    // leaves even a sanitised SVG inert as a document. Only the current `?v=` hash pins the bytes;
+    // a bare or stale address names whatever is stored now, so it revalidates.
+    .get('/workspace/branding/:kind', paramZodValidator(brandingAssetParamSchema), queryZodValidator(z.object({ v: queryValue })), async (c) => {
       const stored = await readBrandingAsset(c.req.valid('param').kind);
       if (!stored) return c.json({ error: 'no such branding image' }, 404);
       return c.body(new Uint8Array(stored.bytes).buffer as ArrayBuffer, 200, {
         'content-type': stored.type,
         'x-content-type-options': 'nosniff',
         'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
-        'cache-control': 'public, max-age=31536000, immutable',
+        'cache-control': c.req.valid('query').v === stored.hash ? 'public, max-age=31536000, immutable' : 'no-cache',
       });
     })
     // `use`, not inline: see the ui-state cap below for why an inline `bodyLimit` drops the route type.

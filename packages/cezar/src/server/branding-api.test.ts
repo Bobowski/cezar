@@ -86,6 +86,12 @@ describe('the cockpit branding API', () => {
     expect(served.headers.get('content-type')).toBe('image/png');
     expect(served.headers.get('cache-control')).toContain('immutable');
     expect(served.headers.get('content-security-policy')).toContain('sandbox');
+    // Only the current hash is cacheable for a year: a bare or stale address revalidates.
+    for (const address of ['/api/v1/workspace/branding/app-icon', '/api/v1/workspace/branding/app-icon?v=000000000000']) {
+      const unpinned = await apiRequest(app, address);
+      expect(unpinned.status).toBe(200);
+      expect(unpinned.headers.get('cache-control'), address).toBe('no-cache');
+    }
 
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1" onload="x()"><rect width="1" height="1"/></svg>';
     const favicon = await branding(upload('favicon', Buffer.from(svg)));

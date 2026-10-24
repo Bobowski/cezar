@@ -408,6 +408,16 @@ describe('owning-run delivery never feeds a run its own reply, nor an unbounded 
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  it('parses no event file for a comment by another login, though a run on the item is live', async () => {
+    const { runs, owner, started, state, fire } = await setup({ deliver: undefined });
+    state.live = true;
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    const read = vi.spyOn(runs, 'readEvents');
+    await fire(comment(34, 'dave', new Date()));
+    expect(started).toHaveLength(1);
+    expect(read).not.toHaveBeenCalled();
+  });
+
   it('new-run: caps the runs one comment automation launches for one PR at maxRecords an hour, holding the rest', async () => {
     const { started, fire, lastLog, receiptOf } = await setup({ deliver: undefined });
     const later = new Date(Date.now() + 10 * 60_000);

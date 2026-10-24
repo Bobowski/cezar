@@ -267,16 +267,18 @@ export async function automationHold(input: {
   const times = (comment.parts?.map((part) => part.at) ?? [candidate.timestamp]).map((value) => Date.parse(value)).filter(Number.isFinite);
   const onItem = runsOnItem(input.runs, candidate);
   if (owner && !onItem.some((run) => run.id === owner.id)) onItem.push(owner);
-  const working = onItem.find((run) => {
-    // A run at rest has no open turn: its events are never read for it.
-    if (!input.isLive(run.id)) return false;
+  // A run at rest has no open turn: its events are never read for it.
+  const live = onItem.filter((run) => input.isLive(run.id));
+  if (!live.length) return undefined;
+  const login = await input.selfLogin();
+  // Someone else's comment is never held: decided before any event file is parsed.
+  if (login !== undefined && login.toLowerCase() !== comment.author.toLowerCase()) return undefined;
+  const working = live.find((run) => {
     const since = openTurnSince(run, input.activity(run.id), true);
     return since !== undefined && times.some((at) => at >= since - CLOCK_SKEW_MS);
   });
   if (!working) return undefined;
-  const login = await input.selfLogin();
   if (login === undefined) return { result: 'warning', reason: SELF_LOGIN_UNREADABLE };
-  if (login.toLowerCase() !== comment.author.toLowerCase()) return undefined;
   return {
     result: 'held',
     reason: `own-comment: by ${login}, the login cezar runs as, during run ${working.id}'s current turn — held until the turn ends, then sent unless a trace claims it as the run's own reply.`,

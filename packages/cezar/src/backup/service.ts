@@ -432,12 +432,16 @@ export class BackupService {
     return null;
   }
 
-  /** Start a restore in the background. `removeArchive`: the upload's temp file, gone afterwards. */
-  startRestore(input: { archive: string; identity: string; removeArchive?: boolean }): BackupJob {
-    const refusal = this.restoreRefusal();
+  /**
+   * Start a restore in the background. `removeArchive`: the upload's temp file, gone afterwards.
+   * `stillAllowed`: a gate the caller checked before a long upload, asked again now and once more
+   * before the first file is placed (the `/setup` restore: no owner may have appeared meanwhile).
+   */
+  startRestore(input: { archive: string; identity: string; removeArchive?: boolean; stillAllowed?: () => string | null }): BackupJob {
+    const refusal = this.restoreRefusal() ?? input.stillAllowed?.() ?? null;
     if (refusal) throw new BackupConflictError(refusal);
     const { job, log } = this.begin('restore');
-    void this.restoreInto(input.archive, input.identity, log, job).then(
+    void this.restoreInto(input.archive, input.identity, log, job, { stillAllowed: input.stillAllowed }).then(
       () => this.finish(job, log),
       (error: unknown) => this.finish(job, log, error),
     ).finally(() => {
@@ -468,7 +472,7 @@ export class BackupService {
     identity: string,
     log: (line: string) => void,
     job: BackupJob,
-    options: { restart?: boolean } = {},
+    options: { restart?: boolean; stillAllowed?: () => string | null } = {},
   ): Promise<BackupManifest> {
     const home = cezarHomeDir();
     const staging = join(home, `.restore-${job.id}`);
@@ -487,6 +491,8 @@ export class BackupService {
         `archive from ${manifest.host}, ${manifest.createdAt} (cezar ${manifest.cezarVersion}): ` +
           `${manifest.projects.length} project(s), ${manifest.sizes.files} files`,
       );
+      const refusal = options.stillAllowed?.();
+      if (refusal) throw new BackupConflictError(`nothing was restored: ${refusal}`);
       writers = this.writerHolds.map((hold) => hold());
       await applyStaged({ staging, manifest, cezarHome: home, locations: this.locations(), clone: this.options.clone, log });
       for (const hook of this.restoreHooks) hook();

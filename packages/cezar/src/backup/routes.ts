@@ -106,7 +106,7 @@ export async function spool(body: ReadableStream<Uint8Array> | null, length: num
 type Received = { ok: true; job: BackupJob } | { ok: false; status: 400 | 409 | 411 | 413; error: string };
 
 /** Decode the identity, spool the body, start the restore; the temp file goes with the job. */
-async function receive(c: Context, service: BackupService, encodedIdentity: string): Promise<Received> {
+async function receive(c: Context, service: BackupService, encodedIdentity: string, stillAllowed?: () => string | null): Promise<Received> {
   const identity = Buffer.from(encodedIdentity, 'base64').toString('utf8');
   if (identity.length === 0 || identity.length > BACKUP_IDENTITY_MAX) return { ok: false, status: 400, error: 'paste the age identity or the passphrase' };
   const length = declaredLength(c);
@@ -119,7 +119,7 @@ async function receive(c: Context, service: BackupService, encodedIdentity: stri
     return { ok: false, status: error instanceof UploadTooLargeError ? 413 : 400, error: text };
   }
   try {
-    return { ok: true, job: service.startRestore({ archive: path, identity, removeArchive: true }) };
+    return { ok: true, job: service.startRestore({ archive: path, identity, removeArchive: true, stillAllowed }) };
   } catch (error) {
     // A refusal (BackupConflictError) or a home that cannot be written: either way, nothing started.
     rmSync(path, { force: true });
@@ -238,7 +238,10 @@ export function setupRestoreRoutes(deps: { service: BackupService; auth: AuthSer
       },
       headerZodValidator(setupRestoreHeadersSchema),
       async (c) => {
-        const received = await receive(c, service, c.req.valid('header')[BACKUP_IDENTITY_HEADER]);
+        // The upload can take minutes: an owner set up meanwhile closes this path (409, not 404 —
+        // this caller held a valid code).
+        const noOwnerYet = () => (auth.setupRequired() ? null : 'an owner account was created while the archive uploaded — sign in and restore from Settings → Backup');
+        const received = await receive(c, service, c.req.valid('header')[BACKUP_IDENTITY_HEADER], noOwnerYet);
         if (!received.ok) return c.json({ error: received.error }, received.status);
         return c.json({ job: received.job.id }, 200);
       },

@@ -284,6 +284,27 @@ describe('a restore upload, before its body', () => {
     expect(direct.seen.pulls).toBe(0);
   });
 
+  it('refuses with 409 when an owner was set up while the archive uploaded, and starts nothing', async () => {
+    const issued = issueSetupCode();
+    if (!issued.ok) throw new Error('no code');
+    const meta = { address: '127.0.0.1', label: 't' };
+    // The owner appears mid-upload: the gates on the headers all passed before it did.
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        const begun = await auth.beginSetup({ code: issued.setup.code, username: 'owner', password: 'a long enough password' }, meta);
+        if (!begun.ok) throw new Error(begun.error);
+        const done = auth.completeSetup({ ticket: begun.ticket, code: hotp(base32Decode(begun.secret)!, totpStep(Date.now())) }, meta);
+        if (!done.ok) throw new Error(done.error);
+        controller.enqueue(new Uint8Array(64));
+        controller.close();
+      },
+    }, { highWaterMark: 0 });
+    const res = await post(app, SETUP_PATH, { ...identity, 'x-cezar-setup-code': issued.setup.code, 'content-length': '64' }, body);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/owner account was created/);
+    expect(readdirSync(join(dir, 'home')).filter((name) => name.startsWith('.restore'))).toEqual([]);
+  });
+
   it('refuses a Settings restore from an untrusted caller before its body', async () => {
     process.env.CEZ_REMOTE = '1';
     process.env.CEZ_AUTH = '0';

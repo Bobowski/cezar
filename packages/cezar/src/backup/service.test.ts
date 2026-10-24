@@ -381,6 +381,36 @@ describe('archive order', () => {
   });
 });
 
+describe('a restore whose gate closes while it runs', () => {
+  it('places nothing when the gate fails after the archive is unpacked', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cez-backup-gate-'));
+    const saved = process.env.CEZ_HOME;
+    process.env.CEZ_HOME = join(root, 'home');
+    try {
+      const service = new BackupService({ version: 't', projects: async () => [], locations: () => locationsUnder(join(root, 'agents')), hostname: 'box' });
+      service.setRecipient({ recipient: TEST_RECIPIENT });
+      writeFileSync(join(root, 'home', 'marker.json'), 'archived');
+      const created = await service.createBackup();
+      writeFileSync(join(root, 'home', 'marker.json'), 'current');
+      let asked = 0;
+      // Open when the upload finished, closed (an owner appeared) by the time files would land.
+      service.startRestore({ archive: created.path, identity: TEST_IDENTITY, stillAllowed: () => (asked++ === 0 ? null : 'an owner appeared') });
+      await waitForJob(service);
+      const job = service.status().job!;
+      expect(job.status).toBe('failed');
+      expect(job.log.join('\n')).toMatch(/nothing was restored: an owner appeared/);
+      expect(asked).toBe(2);
+      expect(readFileSync(join(root, 'home', 'marker.json'), 'utf8')).toBe('current');
+      // Refused up front too, before a job exists.
+      expect(() => service.startRestore({ archive: created.path, identity: TEST_IDENTITY, stillAllowed: () => 'closed' })).toThrow(BackupConflictError);
+    } finally {
+      if (saved === undefined) delete process.env.CEZ_HOME;
+      else process.env.CEZ_HOME = saved;
+      await removeTempDir(root);
+    }
+  }, 30_000);
+});
+
 describe('a restore while tasks run', () => {
   it('is refused until the workspace is idle, and holds admission from its first step', async () => {
     const root = mkdtempSync(join(tmpdir(), 'cez-backup-idle-'));

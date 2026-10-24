@@ -159,7 +159,10 @@ export class AutomationStore {
     if (!mutation) throw new Error('automation mutation conflict: a launch is in progress');
     try {
       this.loadDefinitions();
-      if (!this.definitions.delete(id)) return false;
+      const current = this.definitions.get(id);
+      if (!current || !this.definitions.delete(id)) return false;
+      // Nothing is left to release them: settled now, they age out with the other receipts.
+      this.skipHeldReceipts(id, current.revision, 'deleted: the automation was deleted.', { log: false });
       this.definitionsFile.tombstones = {
         ...this.definitionsFile.tombstones,
         [id]: this.now().toISOString(),
@@ -247,15 +250,16 @@ export class AutomationStore {
 
   /**
    * Settle every `held` receipt of `automationId` as `skipped` with `reason`, one log row each —
-   * a pause or a re-baseline (spec 2026-10-23-github-events §11). Returns how many.
+   * a pause, a delete (`log: false`) or a re-baseline (spec 2026-10-23-github-events §11).
+   * Returns how many.
    */
-  skipHeldReceipts(automationId: string, revision: number, reason: string): number {
+  skipHeldReceipts(automationId: string, revision: number, reason: string, options: { log?: boolean } = {}): number {
     let skipped = 0;
     for (const receipt of this.latestReceipts().values()) {
       if (receipt.automationId !== automationId || receipt.status !== 'held') continue;
       this.appendReceipt({ ...receipt, status: 'skipped', error: undefined, updatedAt: this.now().toISOString() });
       const candidate = receipt.candidate;
-      this.appendLog({
+      if (options.log !== false) this.appendLog({
         automationId, revision, result: 'skipped', reason, receiptId: receipt.receiptId,
         ...(candidate ? { event: candidate.event, githubNumber: candidate.number, githubTitle: candidate.title, githubUrl: candidate.url } : {}),
       });
@@ -299,9 +303,12 @@ export class AutomationStore {
 
   compact(): void {
     const cutoff = this.now().getTime() - RETENTION_MS;
-    const latest = [...this.latestReceipts().values()].filter(
-      (row) => Date.parse(row.updatedAt) >= cutoff || row.status === 'held' || (this.get(row.automationId)?.kind === 'tracker'),
-    );
+    this.loadDefinitions();
+    // A held receipt waits for its automation's next poll — only while that automation exists.
+    const latest = [...this.latestReceipts().values()].filter((row) => {
+      const definition = this.definitions.get(row.automationId);
+      return Date.parse(row.updatedAt) >= cutoff || (definition && (row.status === 'held' || definition.kind === 'tracker'));
+    });
     this.rewriteNdjson(RECEIPTS, latest);
     const logs = this.readNdjson(LOG, automationLogRecordSchema);
     this.rewriteNdjson(LOG, logs.slice(-10_000));

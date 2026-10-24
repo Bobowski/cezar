@@ -375,3 +375,16 @@ it('keeps a held receipt through compaction, and a comment receipt keeps its bod
   store.compact();
   expect(store.receipts().map((row) => row.status)).toEqual(['held']);
 });
+
+it('settles a deleted automation’s held receipts with it, and compaction then lets them go', async () => {
+  let now = new Date('2026-01-01T00:00:00.000Z');
+  const store = AutomationStore.open(await directory(), { now: () => now });
+  store.create(input, 'github');
+  const receipt = store.reserveReceipt({ automationId: 'github', revision: 1, eventId: 'event:1' })!;
+  store.appendReceipt({ ...receipt, status: 'held' });
+  store.delete('github');
+  expect(store.latestReceipts().get('github:event:1')?.status).toBe('skipped');
+  now = new Date('2026-09-19T00:00:00.000Z');
+  store.compact();
+  expect(store.receipts()).toEqual([]);
+});

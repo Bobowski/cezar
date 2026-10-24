@@ -352,6 +352,17 @@ describe.skipIf(!haveShell)('the container launcher', () => {
     expect(launch(0).stderr).toContain('docker compose exec -u node cezar cezar serve');
   });
 
+  it('finds the command past flags, so flags alone are serve as well', () => {
+    for (const args of [['--port', '4322'], ['-p', '4322', '--no-open'], ['--port=4322'], ['--repo', '/projects/x', 'serve'], ['--', 'update']]) {
+      const run = launch(0, ...args);
+      expect(run.status).toBe(1);
+      expect(run.stdout).toBe('');
+    }
+    expect(launch(0, '--port', '4322').stderr).toContain(`run 'cezar serve' as node`);
+    expect(launch(0, '--repo', '/projects/x', 'versions').stdout).toContain('versions');
+    expect(launch(0, '--help').stdout).toContain('--help');
+  });
+
   it('takes no env var as leave to run them as root', () => {
     const run = launchWith({ CEZ_ENTRYPOINT: '1', CEZ_SUPERVISED: '1' }, 0, 'serve');
     expect(run.status).toBe(1);

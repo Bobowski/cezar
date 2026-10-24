@@ -2,6 +2,7 @@ import {
   queryScope,
   type ChangesPayload, type CodeSearchResult, type CodeWatch, type RepoTree, type RunFileDeleteResponse, type RunFileRename,
   type RunFileWriteResponse, type TerminalCreateInput, type TerminalOutput, type TerminalSession, type TerminalState, type WorktreeEntry,
+  type DiscoveredCommandsResponse, type ProjectDetectedUrlsResponse, type TerminalHistoryResponse,
 } from '@open-mercato/cezar-api-client'
 
 import {
@@ -117,4 +118,18 @@ export async function resizeCodeTerminal(tree: CodeTree, sessionId: string, cols
 export async function stopCodeTerminal(tree: CodeTree, sessionId: string): Promise<void> {
   if (tree.kind === 'run') return stopRunTerminal(tree.runId, sessionId)
   await unwrap(await repo().terminal[':sessionId'].$delete({ param: { ...scope(), sessionId } }), '/repo/terminal')
+}
+
+// ---- the project terminals' strips and history (spec 2026-10-24-code-page-terminal §4) ---------
+
+export async function getProjectTerminalUrls(): Promise<ProjectDetectedUrlsResponse> {
+  return unwrap(await repo().terminal.urls.$get({ param: scope() }), '/repo/terminal/urls')
+}
+
+export async function getProjectTerminalCommands(): Promise<DiscoveredCommandsResponse> {
+  return unwrap(await repo().terminal.commands.$get({ param: scope() }), '/repo/terminal/commands')
+}
+
+export async function getProjectTerminalHistory(): Promise<TerminalHistoryResponse> {
+  return unwrap(await repo().terminal.history.$get({ param: scope() }), '/repo/terminal/history')
 }

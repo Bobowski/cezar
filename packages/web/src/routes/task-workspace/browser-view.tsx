@@ -13,6 +13,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { openDesignProxy, openPreviewGateway } from '@/api/client'
 import { useHealth } from '@/api/queries'
 import { CenteredState } from '@/components/centered-state'
+import { gatewayHref } from '@/components/terminal/gateway'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -202,9 +203,7 @@ export function BrowserView({
     openPreviewGateway({ target: parsed.origin, parentOrigin: window.location.origin })
       .then((opened) => {
         if (cancelled) return
-        const url = new URL(opened.origin + parsed.pathname + parsed.search + parsed.hash)
-        url.searchParams.set(opened.ticketParam, opened.ticket)
-        setGateway({ target, src: url.toString() })
+        setGateway({ target, src: gatewayHref(parsed.toString(), opened) })
       })
       .catch((error: unknown) => {
         if (cancelled) return

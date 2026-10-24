@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { settleLiveRuns, type BackupManifest } from '../backup/collect.ts';
-import { applyStaged } from '../backup/restore.ts';
+import { applyStaged, mergeRunIndex } from '../backup/restore.ts';
 import { branchFor, pruneOrphans, worktreePathFor } from '../git-worktree.ts';
 import type { AgentStateLocations } from '../paths.ts';
 import { consumeRestoreMarker, orphanPruneSuspended, resetRestoreGuardForTests, writeRestoreMarker } from '../restore-guard.ts';
@@ -157,7 +157,8 @@ describe('restoring over a live install keeps the tasks created after the backup
     const both = live.createRun({ title: 'here', workflow: 'quick-task', task: 'x', steps: [] });
     live.updateRun(both.id, { status: 'done' }); // a live copy would be settled, and never win
     live.flush();
-    const fromArchive = { ...live.getRun(both.id)!, title: 'newer in the archive', finishedAt: new Date(Date.now() + 60_000).toISOString() };
+    const later = new Date(Date.now() + 60_000).toISOString();
+    const fromArchive = { ...live.getRun(both.id)!, title: 'newer in the archive', finishedAt: later, updatedAt: later };
     const onlyArchived = { ...RESTORED[0]!, id: 'only-archived' };
     await apply(stage({ '.ai/cezar/runs.json': JSON.stringify([fromArchive, onlyArchived]) }));
     const reopened = RunStore.open(dataDir);
@@ -176,6 +177,30 @@ describe('restoring over a live install keeps the tasks created after the backup
       expect(reopened.getRun(id)?.error, id).toMatch(/^interrupted — /);
     }
     expect(reopened.getRun('was-running')?.steps[0]?.status).toBe('failed');
+  });
+
+  it('keeps an unpin made after the backup: a removed stamp does not make the local record older', async () => {
+    const dataDir = join(root, '.ai', 'cezar');
+    const live = RunStore.open(dataDir);
+    const task = live.createRun({ title: 'pinned at the backup', workflow: 'quick-task', task: 'p', steps: [] });
+    live.updateRun(task.id, { status: 'done' });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    live.setPinned(task.id, true); // the newest stamp the archive's copy carries
+    const archived = structuredClone(live.getRun(task.id)!);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    live.setPinned(task.id, false);
+    live.flush();
+
+    await apply(stage({ '.ai/cezar/runs.json': JSON.stringify([archived]) }));
+    expect(RunStore.open(dataDir).getRun(task.id)?.pinned).toBeUndefined();
+  });
+
+  it('falls back to the stamps a record carries when one side has no updatedAt', () => {
+    const base = { ...RESTORED[0]!, id: 'old' };
+    const archived = { ...base, title: 'archive', finishedAt: '2026-02-01T00:00:00.000Z' };
+    const here = { ...base, title: 'here', updatedAt: '2026-01-15T00:00:00.000Z' };
+    expect((mergeRunIndex([here], [archived]).merged[0] as { title: string }).title).toBe('archive');
+    expect((mergeRunIndex([{ ...here, finishedAt: '2026-03-01T00:00:00.000Z' }], [archived]).merged[0] as { title: string }).title).toBe('here');
   });
 
   it('keeps a task that was waiting at the backup and still is: the settled copy never wins', async () => {

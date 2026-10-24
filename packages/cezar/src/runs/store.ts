@@ -442,6 +442,9 @@ export const runRecordSchema = z.object({
    *  runs, on every run not yet opened, and on one `setUnread` put back to unread
    *  (#775) — the unread rule treats all three alike. */
   seenAt: z.string().optional(),
+  /** When this store last changed the record, strictly increasing per record (`touch`). What a
+   *  restore's merge compares (spec 2026-10-23-backup-restore §10); absent on older records. */
+  updatedAt: z.string().optional(),
   /** Highest `seq` handed out for this run, ephemeral frames included, so a restart resumes the
    *  counter without parsing the transcript. Absent on older records, which fall back to that parse. */
   lastSeq: z.number().int().nonnegative().optional(),
@@ -1878,6 +1881,9 @@ export class RunStore extends EventEmitter {
   }
 
   private touch(run: RunRecord): void {
+    // Monotonic even when the clock steps back or two writes share a millisecond.
+    const previous = run.updatedAt ? Date.parse(run.updatedAt) : Number.NaN;
+    run.updatedAt = new Date(Number.isFinite(previous) ? Math.max(Date.now(), previous + 1) : Date.now()).toISOString();
     this.scheduleSave();
     this.emit('run', run);
   }

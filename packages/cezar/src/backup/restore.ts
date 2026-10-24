@@ -297,8 +297,8 @@ const isRawRun = (row: unknown): row is RawRun =>
 
 const RECENCY_FIELDS = ['createdAt', 'startedAt', 'finishedAt', 'archivedAt', 'pinnedAt', 'seenAt', 'worktreeReclaimedAt'];
 
-/** A run record has no `updatedAt`: the latest instant it carries, its steps' included, stands in. */
-function recency(run: Record<string, unknown>): number {
+/** A record without `updatedAt` (older stores): the latest instant it carries, its steps' included. */
+function stampedRecency(run: Record<string, unknown>): number {
   let latest = -Infinity;
   const consider = (row: Record<string, unknown>) => {
     for (const field of RECENCY_FIELDS) {
@@ -309,6 +309,17 @@ function recency(run: Record<string, unknown>): number {
   consider(run);
   if (Array.isArray(run.steps)) for (const step of run.steps) if (step && typeof step === 'object') consider(step as Record<string, unknown>);
   return latest;
+}
+
+const updatedAt = (run: Record<string, unknown>): number =>
+  typeof run.updatedAt === 'string' ? Date.parse(run.updatedAt) : Number.NaN;
+
+/** Whether the archive's copy is newer: by the store's monotonic `updatedAt` when both carry one —
+ *  an unpin or unarchive removes a stamp, so the heuristic would read it as older (round 4). */
+function archiveIsNewer(theirs: Record<string, unknown>, here: Record<string, unknown>): boolean {
+  const [a, b] = [updatedAt(theirs), updatedAt(here)];
+  if (Number.isFinite(a) && Number.isFinite(b)) return a > b;
+  return stampedRecency(theirs) > stampedRecency(here);
 }
 
 /**
@@ -324,7 +335,7 @@ export function mergeRunIndex(here: unknown[], archived: unknown[]): { merged: u
     const theirs = fromArchive.get(row.id);
     if (!theirs) return row;
     fromArchive.delete(row.id);
-    if (settledByBackup(theirs) || recency(theirs) <= recency(row)) return row;
+    if (settledByBackup(theirs) || !archiveIsNewer(theirs, row)) return row;
     updated += 1;
     return theirs;
   });

@@ -111,16 +111,20 @@ function multiLine(value: string): MultiLine {
   return found;
 }
 
+/** `chunkEdges`: `text` is one piece of a stream (a Docker log read), its first and last lines possibly cut-off key lines. */
+export interface RedactOptions { chunkEdges?: boolean }
+
 /**
  * Every `[start, end)` of `text` a multi-line `value` covers: the whole value, each body line of it
- * standing as a line, and the piece of one that `text` starts or ends inside (a `--tail` begun mid-key).
+ * standing as a line, and — in a stream chunk — the piece of one it starts or ends inside (a `--tail` begun mid-key).
  */
-function multiLineSpans(text: string, value: string): Array<[number, number]> {
+function multiLineSpans(text: string, value: string, chunkEdges: boolean): Array<[number, number]> {
   const { whole, lines, body } = multiLine(value);
   const spans: Array<[number, number]> = [];
   for (const match of text.matchAll(whole)) spans.push([match.index, match.index + match[0].length]);
   if (!lines) return spans;
   for (const match of text.matchAll(lines)) spans.push([match.index, match.index + match[0].length]);
+  if (!chunkEdges) return spans;
   const firstEnd = text.search(/[\r\n]/);
   const first = firstEnd === -1 ? text : text.slice(0, firstEnd);
   if (first.length >= SECRET_LINE_MIN && body.some((line) => line.endsWith(first))) spans.push([0, first.length]);
@@ -143,11 +147,11 @@ function replaceSpans(text: string, spans: Array<[number, number]>): string {
 }
 
 /** Replace every known secret value / token shape in `text` with `[REDACTED]`. */
-export function redactSecrets(text: string, secretValues: readonly string[]): string {
+export function redactSecrets(text: string, secretValues: readonly string[], options: RedactOptions = {}): string {
   let out = text;
   for (const value of secretValues) {
     if (value.includes('\n')) {
-      out = replaceSpans(out, multiLineSpans(out, value));
+      out = replaceSpans(out, multiLineSpans(out, value, options.chunkEdges === true));
       continue;
     }
     if (!out.includes(value)) continue;
@@ -163,10 +167,11 @@ export function redactSecrets(text: string, secretValues: readonly string[]): st
  * `text.slice(from)`, redacted as part of the whole `text`: a secret starting before `from` is still
  * found, and what of it reaches past `from` goes out as `[REDACTED]`.
  */
-export function redactSecretsFrom(text: string, secretValues: readonly string[], from: number): string {
-  if (from <= 0) return redactSecrets(text, secretValues);
-  const reach = Math.max(from, ...secretSpans(text, secretValues).filter(([start]) => start < from).map(([, end]) => end));
-  return (reach > from ? REDACTED : '') + redactSecrets(text.slice(reach), secretValues);
+export function redactSecretsFrom(text: string, secretValues: readonly string[], from: number, options: RedactOptions = {}): string {
+  if (from <= 0) return redactSecrets(text, secretValues, options);
+  const spans = secretSpans(text, secretValues, options.chunkEdges === true);
+  const reach = Math.max(from, ...spans.filter(([start]) => start < from).map(([, end]) => end));
+  return (reach > from ? REDACTED : '') + redactSecrets(text.slice(reach), secretValues, options);
 }
 
 /** Longer than any token shape needs before it can match at all (`AIza` + 35). */
@@ -186,17 +191,17 @@ export function redactionSafeCut(text: string, secretValues: readonly string[], 
   let cut = Math.min(limit, text.length - redactionHold(secretValues));
   if (cut <= 0) return 0;
   // Latest first, so a span the moved cut now reaches is still seen; a token reaching it may still be growing.
-  const spans = secretSpans(text, secretValues).sort((a, b) => b[0] - a[0]);
+  const spans = secretSpans(text, secretValues, true).sort((a, b) => b[0] - a[0]);
   for (const [start, end] of spans) if (start < cut && end >= cut) cut = start;
   return cut;
 }
 
 /** Every `[start, end)` of `text` a secret value or token shape covers, unsorted. */
-function secretSpans(text: string, secretValues: readonly string[]): Array<[number, number]> {
+function secretSpans(text: string, secretValues: readonly string[], chunkEdges: boolean): Array<[number, number]> {
   const spans: Array<[number, number]> = [];
   for (const value of secretValues) {
     if (value === '') continue;
-    if (value.includes('\n')) spans.push(...multiLineSpans(text, value));
+    if (value.includes('\n')) spans.push(...multiLineSpans(text, value, chunkEdges));
     else for (let at = text.indexOf(value); at !== -1; at = text.indexOf(value, at + 1)) spans.push([at, at + value.length]);
   }
   for (const re of TOKEN_PATTERNS) for (const match of text.matchAll(re)) spans.push([match.index, match.index + match[0].length]);
@@ -207,7 +212,7 @@ function secretSpans(text: string, secretValues: readonly string[]): Array<[numb
 export function lineSafeCut(text: string, secretValues: readonly string[], cut: number): number {
   const multiLine = secretValues.filter((value) => value.includes('\n'));
   if (multiLine.length === 0) return cut;
-  for (const [start, end] of secretSpans(text, multiLine).sort((a, b) => b[0] - a[0])) if (start < cut && end > cut) cut = start;
+  for (const [start, end] of secretSpans(text, multiLine, true).sort((a, b) => b[0] - a[0])) if (start < cut && end > cut) cut = start;
   return cut;
 }
 

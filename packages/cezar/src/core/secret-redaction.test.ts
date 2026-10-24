@@ -168,16 +168,26 @@ describe('a multi-line secret seen only in part (a stream picked up mid-key)', (
     expect(redactSecrets(`x${body2}\n`, [pem])).toBe(`x${body2}\n`);
   });
 
-  it('redacts the rest of a body line a text starts inside, and the start of one it ends inside', () => {
-    expect(redactSecrets(`${body1.slice(20)}\n${body2}\nok\n`, [pem])).toBe(`${REDACTED}\n${REDACTED}\nok\n`);
-    expect(redactSecrets(`ok\n${body1.slice(0, 30)}`, [pem])).toBe(`ok\n${REDACTED}`);
+  it('redacts the rest of a body line a stream chunk starts inside, and the start of one it ends inside', () => {
+    const edges = { chunkEdges: true };
+    expect(redactSecrets(`${body1.slice(20)}\n${body2}\nok\n`, [pem], edges)).toBe(`${REDACTED}\n${REDACTED}\nok\n`);
+    expect(redactSecrets(`ok\n${body1.slice(0, 30)}`, [pem], edges)).toBe(`ok\n${REDACTED}`);
     // Under 16 chars a piece is too common to be the key's.
-    expect(redactSecrets(`${body1.slice(-10)}\nok\n`, [pem])).toBe(`${body1.slice(-10)}\nok\n`);
+    expect(redactSecrets(`${body1.slice(-10)}\nok\n`, [pem], edges)).toBe(`${body1.slice(-10)}\nok\n`);
+  });
+
+  it('leaves a text’s own edges alone unless it is a stream chunk: a stored text is whole', () => {
+    expect(redactSecrets(`${body1.slice(20)}\nok\n`, [pem])).toBe(`${body1.slice(20)}\nok\n`);
+    expect(redactSecrets(`ok\n${body1.slice(0, 30)}`, [pem])).toBe(`ok\n${body1.slice(0, 30)}`);
+    expect(redactSecretsFrom(`ok\n${body1.slice(0, 30)}`, [pem], 1)).toBe(`k\n${body1.slice(0, 30)}`);
+    expect(redactSecretsFrom(`ok\n${body1.slice(0, 30)}`, [pem], 1, { chunkEdges: true })).toBe(`k\n${REDACTED}`);
+    // A body line standing whole is still redacted either way.
+    expect(redactSecrets(`${body2}\n`, [pem])).toBe(`${REDACTED}\n`);
   });
 
   it('still redacts the whole value as one mark, and a stream never cuts inside a body line', () => {
     expect(redactSecrets(`a\n${pem}\nb`, [pem])).toBe(`a\n${REDACTED}\nb`);
-    expect(redactSecretsFrom(`${body1}\n${body2}\nok\n`, [pem], 5)).toBe(`${REDACTED}\n${REDACTED}\nok\n`);
+    expect(redactSecretsFrom(`${body1}\n${body2}\nok\n`, [pem], 5, { chunkEdges: true })).toBe(`${REDACTED}\n${REDACTED}\nok\n`);
   });
 });
 

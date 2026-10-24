@@ -199,7 +199,7 @@ export class DockerLogFollowers {
 
   /** `text` redacted as a whole but shown from `hidden` on: a secret reaching past it still goes. */
   private redact(text: string, values: readonly string[], hidden = 0): string {
-    return this.redacting() ? redactSecretsFrom(text, values, hidden) : text.slice(hidden);
+    return this.redacting() ? redactSecretsFrom(text, values, hidden, { chunkEdges: true }) : text.slice(hidden);
   }
 
   /** Redacted text, each line cut to `MAX_LINE` — after redaction, so the cut splits no secret. */

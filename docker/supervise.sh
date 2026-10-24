@@ -40,6 +40,15 @@ supervise_epoch() { # <ISO date> → seconds, or nothing
   if [ -n "$1" ]; then date -u -d "$1" +%s 2>/dev/null || true; fi
 }
 
+# The id an image install is linked under: `<version>+image.<sha8>`, named by the commit that
+# install was built from — its manifest's, else its root's source.json (a commit with no date).
+supervise_image_id() { # <image install dir> → id
+  sha=$(supervise_field "$1" .commit.sha)
+  if [ -z "$sha" ]; then sha=$(jq -r '.commit // empty' "$(dirname "$1")/source.json" 2>/dev/null || true); fi
+  sha=$(printf '%s' "$sha" | cut -c1-8)
+  printf '%s%s' "$(basename "$1")" "${sha:+.$sha}"
+}
+
 # How old an install is, for the boot choice: its commit date, else its registry publish date, else
 # when it was installed — the first that parses. A registry, local or link install has no commit,
 # and counting it as always newer would stop image rebuilds from ever deploying code.
@@ -85,17 +94,25 @@ supervise_boot() { # <home> <image dir>
   home=$1
   versions=$home/versions
   mkdir -p "$versions"
-  # A rebuilt image leaves the previous image's link pointing at an /opt that is gone.
+  # A rebuilt image leaves the previous image's link pointing at an /opt that is gone — or, rebuilt
+  # at the same version, at the same path now holding another build: a link named for a sha the
+  # install it points at no longer has would run the new build under the old one's name.
   for link in "$versions"/*+image*; do
-    if [ -L "$link" ] && [ ! -e "$link" ]; then rm -f "$link"; fi
+    if [ ! -L "$link" ]; then continue; fi
+    if [ ! -e "$link" ]; then
+      rm -f "$link"
+      continue
+    fi
+    target=$(readlink "$link")
+    case $target in /*) ;; *) target=$versions/$target ;; esac
+    if [ "$(basename "$link")" != "$(supervise_image_id "$target")" ]; then rm -f "$link"; fi
   done
   image_dir=$(ls -d "$2"/*+image 2>/dev/null | head -n 1)
   if [ -z "$image_dir" ]; then
     echo "cezar: the image carries no install under $2 — starting what versions/current points at" >&2
     return 0
   fi
-  image_sha=$(supervise_field "$image_dir" .commit.sha | cut -c1-8)
-  image_id=$(basename "$image_dir")${image_sha:+.$image_sha}
+  image_id=$(supervise_image_id "$image_dir")
   ln -sfn "$image_dir" "$versions/$image_id"
 
   current=$(supervise_link "$home" current)

@@ -239,6 +239,24 @@ describe.skipIf(!haveBootTools)('the container supervisor boot choice', () => {
     expect(readlinkSync(join(home, 'versions', '0.17.0+image.e5f6a7b8'))).toBe(join(image, '0.17.0+image'));
   });
 
+  it('a rebuild at the same version drops the old build\'s link and starts the new one', () => {
+    manifest(join(image, '0.17.0+image'), { sha: 'e5f6a7b8c9d0', at: '2026-10-20T00:00:00.000Z' });
+    boot();
+    expect(current()).toBe('0.17.0+image.e5f6a7b8');
+    // Rebuilt: the same /opt path now holds another commit's install.
+    manifest(join(image, '0.17.0+image'), { sha: 'f0e1d2c3b4a5', at: '2026-10-24T00:00:00.000Z' });
+    boot();
+    expect(existsSync(join(home, 'versions', '0.17.0+image.e5f6a7b8'))).toBe(false);
+    expect(current()).toBe('0.17.0+image.f0e1d2c3');
+  });
+
+  it('names the image link by source.json when the manifest carries no commit', () => {
+    manifest(join(image, '0.17.0+image'));
+    writeFileSync(join(image, 'source.json'), JSON.stringify({ commit: 'c0ffee00aabb', branch: 'brutus', remote: '', committedAt: '' }));
+    boot();
+    expect(current()).toBe('0.17.0+image.c0ffee00');
+  });
+
   it('keeps a current that is newer than the image, and says so', () => {
     manifest(join(image, '0.17.0+image'), { sha: 'e5f6a7b8c9d0', at: '2026-10-20T00:00:00.000Z' });
     manifest(join(home, 'versions', '0.17.0+a1b2c3d4'), { sha: 'a1b2c3d4', at: '2026-10-23T00:00:00.000Z' });

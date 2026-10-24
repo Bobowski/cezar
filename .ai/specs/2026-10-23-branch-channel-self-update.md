@@ -205,7 +205,7 @@ and exits. `cezar versions` lists `branch` builds with their commit.
 The runtime stage installs the tarball to `/opt/cezar/<version>+image/` with a manifest (source
 `image`, plus the commit of §4.4 when known) instead of `npm install -g`. On every boot the
 entrypoint links it into the volume — `/data/cezar/versions/<version>+image.<sha8> →
-/opt/cezar/…` — so `listInstalled` sees it and `detectInstallKind` answers `managed` for
+/opt/cezar/…`, `<sha8>` being the commit that install was built from; a link whose name no longer matches the install it points at (a rebuild at the same version) is removed — so `listInstalled` sees it and `detectInstallKind` answers `managed` for
 whatever `current` points at. A global `cezar` on PATH remains, as a launcher (`launcher.ts`'s
 POSIX script with `CEZ_HOME` baked), so `docker compose exec -u node cezar cezar auth setup` keeps
 working. As built, the launcher refuses `update`/`install`/`use`/`link`/`serve` as root (the entrypoint, `CEZ_ENTRYPOINT=1`, excepted) with a `-u node`

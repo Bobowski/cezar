@@ -132,7 +132,11 @@ gateway that `CEZ_PREVIEW_PORTS` already configures for the VPS image.
   as, on a hosted cockpit only — the tunnel line's login (tunnel spec §3.3).
 - **Tab**: with the popover closed, Tab opens it when there is something to offer and is the
   shell's otherwise; after `Esc`, Tab is the shell's until the line is submitted or abandoned.
-  `Ctrl+R` is always the popover's in a Code terminal.
+  `Esc` is taken only while the popover is open. Completion takes keys only at the shell's own
+  prompt: never on xterm's alternate screen (vim, less), and only while the last prompt check — the
+  terminal state's `busy`, asked at mount and 1.1 s after each Enter/Ctrl+C/D/Z, past the
+  server's one-second process-table reuse — found nothing running; until it answers, a REPL or a
+  program's prompt keeps Tab, Esc and `Ctrl+R`. Path completion needs a non-empty token.
 - **The gateway mapping asks once per RUNNING loopback origin**, which opens (or reuses) that
   app's gateway listener before a click — the only way to show `→ :85xx`. `Open in Browser` opens
   the loopback address in a Browser tab, which asks for its own fresh ticket as the Preview column

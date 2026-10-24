@@ -107,8 +107,13 @@ function TerminalTab({
       if (historyRefresh.current) clearTimeout(historyRefresh.current)
       historyRefresh.current = setTimeout(() => void queryClient.invalidateQueries({ queryKey: historyKey }), 800)
     },
+    // The process table's word on the shell (`busy`); `null`, a host that cannot say, is not a prompt.
+    atPrompt: async (sessionId) => {
+      const fresh = await queryClient.fetchQuery({ queryKey: key, queryFn: () => getCodeTerminal(tree), staleTime: 0 })
+      return fresh.sessions.find((session) => session.id === sessionId)?.busy === false
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [commands.data, history.data, paths, queryClient])
+  }), [commands.data, history.data, paths, queryClient, tree])
   // A picked command runs in a NEW terminal (task-workspace spec §6), never the one in view.
   const runCommand = (command: string) => {
     void createCodeTerminal(tree, {})

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { CompletionController, LineTracker, childrenOf, filterHistory, rankCompletions, type CompletionSources, type CompletionView } from './completion'
+import {
+  AUTO_DELAY_MS, CompletionController, LineTracker, PROMPT_RECHECK_MS, childrenOf, filterHistory, rankCompletions, type CompletionSources, type CompletionView,
+} from './completion'
 
 const sources: CompletionSources = {
   commands: ['npm run dev', 'npm run test', 'make test'],
@@ -23,10 +25,10 @@ describe('rankCompletions (spec 2026-10-24-code-page-terminal §3.3)', () => {
     expect(rankCompletions('cat s', sources).map((item) => item.line)).toEqual(['cat scripts/', 'cat src/'])
     expect(rankCompletions('cat src/', sources).map((item) => item.insert)).toEqual(['app.ts', 'lib/'])
     expect(rankCompletions('vim ./src/a', sources).map((item) => item.line)).toEqual(['vim ./src/app.ts'])
-    // A flag is no path, and an empty token lists the tree only when asked.
+    // A flag is no path, and an empty token is none either — not even when asked.
     expect(rankCompletions('ls -', sources)).toEqual([])
     expect(rankCompletions('ls ', sources)).toEqual([])
-    expect(rankCompletions('ls ', sources, { explicit: true }).map((item) => item.line)).toContain('ls src/')
+    expect(rankCompletions('ls ', sources, { explicit: true })).toEqual([])
   })
 
   it('never offers the line itself, and caps the list', () => {
@@ -121,6 +123,88 @@ describe('CompletionController', () => {
     expect(controller.current?.mode === 'complete' && controller.current.items.map((item) => item.line)).toEqual(['npm run dev', 'npm run dev -- --host'])
     controller.typed('\x1b[A')
     expect(controller.current).toBeNull()
+  })
+
+  describe('only at the shell\'s prompt', () => {
+    const gated = () => {
+      const timers = new Map<number, () => void>()
+      const answers: Array<(atPrompt: boolean) => void> = []
+      let alternate = false
+      const written: string[] = []
+      const controller = new CompletionController({
+        write: (data) => written.push(data),
+        sources: () => sources,
+        onView: () => {},
+        schedule: (run, ms) => {
+          timers.set(ms, run)
+          return () => timers.delete(ms)
+        },
+        alternateScreen: () => alternate,
+        promptCheck: () => new Promise<boolean>((resolve) => answers.push(resolve)),
+      })
+      const key = (name: string, mods: Partial<{ ctrlKey: boolean }> = {}) =>
+        controller.key({ key: name, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...mods })
+      const answer = async (atPrompt: boolean) => {
+        answers.shift()?.(atPrompt)
+        await Promise.resolve()
+      }
+      return { controller, key, answer, timers, written, setAlternate: (value: boolean) => { alternate = value } }
+    }
+
+    it('takes no key in a program the shell is running, until a check after Enter finds the prompt', async () => {
+      const { controller, key, answer, timers } = gated()
+      await answer(true)
+      controller.typed('python3\r')
+      // The REPL owns its keys: Tab, Ctrl+R and an auto popover are all its own.
+      controller.typed('pr')
+      expect(key('Tab')).toBe(true)
+      expect(key('r', { ctrlKey: true })).toBe(true)
+      timers.get(AUTO_DELAY_MS)?.()
+      expect(controller.current).toBeNull()
+      // The re-check waits past the server's one-second process-table reuse.
+      timers.get(PROMPT_RECHECK_MS)!()
+      await answer(false)
+      expect(key('Tab')).toBe(true)
+      controller.typed('exit()\r')
+      timers.get(PROMPT_RECHECK_MS)!()
+      await answer(true)
+      controller.typed('npm run ')
+      expect(key('Tab')).toBe(false)
+      expect(controller.current?.mode).toBe('complete')
+    })
+
+    it('is off before the first answer, and on Ctrl+C asks again', async () => {
+      const { controller, key, answer, timers } = gated()
+      controller.typed('npm run ')
+      expect(key('Tab')).toBe(true)
+      await answer(false)
+      controller.typed('\x03')
+      timers.get(PROMPT_RECHECK_MS)!()
+      await answer(true)
+      controller.typed('npm run ')
+      expect(key('Tab')).toBe(false)
+    })
+
+    it('takes no key on the alternate screen (vim, less, htop), whatever the process table said', async () => {
+      const { controller, key, answer, setAlternate } = gated()
+      await answer(true)
+      setAlternate(true)
+      controller.typed('npm run ')
+      expect(key('Tab')).toBe(true)
+      expect(key('r', { ctrlKey: true })).toBe(true)
+      expect(key('Escape')).toBe(true)
+      expect(controller.current).toBeNull()
+    })
+
+    it('consumes Esc only while the popover is open', async () => {
+      const { controller, key, answer } = gated()
+      await answer(true)
+      expect(key('Escape')).toBe(true)
+      controller.typed('npm run ')
+      expect(key('Tab')).toBe(false)
+      expect(key('Escape')).toBe(false)
+      expect(key('Escape')).toBe(true)
+    })
   })
 
   it('Ctrl+R picks a history line in place of the one typed, without running it', () => {

@@ -43,11 +43,12 @@ export function childrenOf(paths: readonly string[], dir: string): string[] {
 }
 
 /** The path completions of the last token of `line`. */
-function pathItems(line: string, paths: readonly string[], explicit: boolean): CompletionItem[] {
+function pathItems(line: string, paths: readonly string[]): CompletionItem[] {
   const token = /(\S*)$/.exec(line)?.[1] ?? ''
   // A flag is not a path; an absolute or home path is outside the checkout the tree describes.
   if (token.startsWith('-') || token.startsWith('/') || token.startsWith('~')) return []
-  if (token === '' && !explicit) return []
+  // An empty token would offer the whole root after every space.
+  if (token === '') return []
   const relative = token.startsWith('./') ? token.slice(2) : token
   const slash = relative.lastIndexOf('/')
   const dir = slash === -1 ? '' : relative.slice(0, slash + 1)
@@ -80,7 +81,7 @@ export function rankCompletions(line: string, sources: CompletionSources, { expl
       if (entry.startsWith(line)) offer({ line: entry, insert: entry.slice(line.length), source: 'history' })
     }
   }
-  for (const item of pathItems(line, sources.paths, explicit)) offer(item)
+  for (const item of pathItems(line, sources.paths)) offer(item)
   return out.slice(0, limit)
 }
 
@@ -152,6 +153,9 @@ export type CompletionView =
 
 /** The pause after typing before the popover shows by itself (§3.3). */
 export const AUTO_DELAY_MS = 300
+/** After an Enter (or Ctrl+C/D/Z) the prompt is asked about again this much later — past the
+ *  server's one-second process-table reuse, so the answer describes the shell AFTER the key. */
+export const PROMPT_RECHECK_MS = 1_100
 
 export interface KeyLike {
   key: string
@@ -165,6 +169,10 @@ export interface KeyLike {
  * The keys and the popover's state, apart from xterm so it can be tested without one. `typed` is
  * fed everything the user sends the pty; `key` sees each keydown first and answers whether xterm
  * should still handle it — `false` is a key the popover took, which the shell never sees.
+ *
+ * It takes keys only at the shell's own prompt: never on the alternate screen (vim, less), and
+ * only while the last prompt check — run at mount and again after each Enter — found the shell
+ * with nothing running. A REPL or a program's prompt keeps its Tab, Esc and Ctrl+R.
  */
 export class CompletionController {
   private readonly tracker = new LineTracker()
@@ -173,6 +181,10 @@ export class CompletionController {
    *  line is submitted or abandoned. */
   private dismissed = false
   private cancelAuto: (() => void) | null = null
+  private cancelRecheck: (() => void) | null = null
+  /** The last prompt check's answer; a check still running counts as no. */
+  private atPrompt: boolean
+  private checkSeq = 0
 
   constructor(
     private readonly options: {
@@ -182,17 +194,40 @@ export class CompletionController {
       /** A known line was submitted — the history has something new. */
       onSubmitted?: () => void
       schedule?: (run: () => void, ms: number) => () => void
+      /** The terminal shows the alternate screen — a full-screen program owns every key. */
+      alternateScreen?: () => boolean
+      /** Whether the shell sits at its prompt (has nothing running). Absent: always. */
+      promptCheck?: () => Promise<boolean>
     },
-  ) {}
+  ) {
+    this.atPrompt = options.promptCheck === undefined
+    this.checkPrompt()
+  }
 
   get current(): CompletionView {
     return this.view
+  }
+
+  /** Completion may take keys now. */
+  private get enabled(): boolean {
+    return this.atPrompt && !(this.options.alternateScreen?.() ?? false)
   }
 
   typed(data: string): void {
     const generation = this.tracker.generation
     if (this.tracker.feed(data)) this.options.onSubmitted?.()
     if (this.tracker.generation !== generation) this.dismissed = false
+    // A key that may start or end a program: off until the shell is asked again.
+    if (this.options.promptCheck && /[\r\n\x03\x04\x1a]/.test(data)) {
+      this.atPrompt = false
+      this.close()
+      this.cancelRecheck?.()
+      this.cancelRecheck = this.scheduler()(() => {
+        this.cancelRecheck = null
+        this.checkPrompt()
+      }, PROMPT_RECHECK_MS)
+      return
+    }
     if (this.view?.mode === 'complete') {
       this.refresh(false)
       return
@@ -202,6 +237,7 @@ export class CompletionController {
 
   key(event: KeyLike): boolean {
     const plain = !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
+    if (this.view === null && !this.enabled) return true
     if (event.key.toLowerCase() === 'r' && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
       this.openHistory()
       return false
@@ -269,6 +305,28 @@ export class CompletionController {
   dispose(): void {
     this.cancelAuto?.()
     this.cancelAuto = null
+    this.cancelRecheck?.()
+    this.cancelRecheck = null
+    // An answer still in flight lands on nothing.
+    this.checkSeq += 1
+  }
+
+  private checkPrompt(): void {
+    const check = this.options.promptCheck
+    if (!check) return
+    const seq = ++this.checkSeq
+    void check()
+      .catch(() => false)
+      .then((atPrompt) => {
+        if (seq === this.checkSeq) this.atPrompt = atPrompt
+      })
+  }
+
+  private scheduler(): (run: () => void, ms: number) => () => void {
+    return this.options.schedule ?? ((run, ms) => {
+      const timer = setTimeout(run, ms)
+      return () => clearTimeout(timer)
+    })
   }
 
   private send(data: string): void {
@@ -295,14 +353,10 @@ export class CompletionController {
     this.cancelAuto?.()
     this.cancelAuto = null
     const line = this.tracker.line
-    if (this.dismissed || this.view !== null || line === null || line.trim().length < AUTO_MIN_CHARS) return
-    const schedule = this.options.schedule ?? ((run: () => void, ms: number) => {
-      const timer = setTimeout(run, ms)
-      return () => clearTimeout(timer)
-    })
-    this.cancelAuto = schedule(() => {
+    if (!this.enabled || this.dismissed || this.view !== null || line === null || line.trim().length < AUTO_MIN_CHARS) return
+    this.cancelAuto = this.scheduler()(() => {
       this.cancelAuto = null
-      if (!this.dismissed && this.view === null) this.refresh(false)
+      if (this.enabled && !this.dismissed && this.view === null) this.refresh(false)
     }, AUTO_DELAY_MS)
   }
 

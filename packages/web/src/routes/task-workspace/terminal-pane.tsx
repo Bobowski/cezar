@@ -72,9 +72,12 @@ export interface TerminalIo {
  *  nothing more (a stopped service's kept output): it is read once and never polled. */
 export type TerminalPaneSession = Pick<TerminalSession, 'id' | 'exitCode'> & { topic: string | null }
 
-/** The Code terminal's completion (spec 2026-10-24-code-page-terminal §3.3): what to offer, and
- *  who to tell when a line was submitted. */
-export type TerminalCompletion = CompletionSources & { onSubmitted?: () => void }
+/** The Code terminal's completion (spec 2026-10-24-code-page-terminal §3.3): what to offer, who
+ *  to tell when a line was submitted, and whether a session's shell sits at its prompt. */
+export type TerminalCompletion = CompletionSources & {
+  onSubmitted?: () => void
+  atPrompt?: (sessionId: string) => Promise<boolean>
+}
 
 export function TerminalPane({
   runId,
@@ -208,6 +211,10 @@ export function TerminalPane({
               })
             },
             onSubmitted: () => completionRef.current?.onSubmitted?.(),
+            alternateScreen: () => term.buffer.active.type === 'alternate',
+            ...(completionRef.current.atPrompt
+              ? { promptCheck: () => completionRef.current?.atPrompt?.(session.id) ?? Promise.resolve(false) }
+              : {}),
           })
         : null
       controllerRef.current = controller

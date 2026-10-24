@@ -24,7 +24,7 @@ const webLinks = vi.fn()
 class FakeTerminal {
   cols = 80
   rows = 24
-  buffer = { active: { cursorX: 8, cursorY: 2 } }
+  buffer = { active: { cursorX: 8, cursorY: 2, type: 'normal' as 'normal' | 'alternate' } }
   keyHandler: KeyHandler = () => true
   dataHandler: (data: string) => void = () => {}
   onResize() {}
@@ -109,6 +109,38 @@ describe('TerminalPane — the Code terminal\'s completion and links', () => {
     expect(written.join('')).toBe('npm run dev')
     expect(written).not.toContain('\t')
     expect(screen.queryByRole('listbox', { name: 'Completions' })).toBeNull()
+  })
+
+  it('on the alternate screen, Tab is the program\'s', async () => {
+    const io = { read: vi.fn(async () => ({ data: '', cursor: 0, truncated: false, exitCode: null })), write: vi.fn(async () => {}), resize: vi.fn(async () => {}) }
+    render(
+      <TerminalPane runId="" io={io} session={SESSION} active completion={{ commands: ['npm run dev'], history: [], paths: [], atPrompt: async () => true }} />,
+    )
+    await waitFor(() => expect(term).not.toBeNull())
+    await act(async () => {})
+    // vim switched to the alternate screen; what it is typed is not a shell line.
+    term!.buffer.active.type = 'alternate'
+    act(() => {
+      for (const key of 'npm run ') term!.press(key, key)
+      term!.press('Tab', '\t')
+    })
+    expect(io.write).toHaveBeenCalledWith('\t')
+    expect(screen.queryByRole('listbox', { name: 'Completions' })).toBeNull()
+  })
+
+  it('while the shell runs a program, Tab is the program\'s', async () => {
+    const atPrompt = vi.fn(async (sessionId: string) => sessionId !== 's-1')
+    const io = { read: vi.fn(async () => ({ data: '', cursor: 0, truncated: false, exitCode: null })), write: vi.fn(async () => {}), resize: vi.fn(async () => {}) }
+    render(
+      <TerminalPane runId="" io={io} session={SESSION} active completion={{ commands: ['npm run dev'], history: [], paths: [], atPrompt }} />,
+    )
+    await waitFor(() => expect(atPrompt).toHaveBeenCalledWith('s-1'))
+    await act(async () => {})
+    act(() => {
+      for (const key of 'npm run ') term!.press(key, key)
+      term!.press('Tab', '\t')
+    })
+    expect(io.write).toHaveBeenCalledWith('\t')
   })
 
   it('without completion, Tab is the shell\'s and no list is drawn', async () => {

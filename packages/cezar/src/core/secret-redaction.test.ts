@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { collectSecretValues, redactDeep, redactSecrets, REDACTED } from './secret-redaction.ts';
+import { collectSecretValues, heldSecretStart, redactDeep, redactionSafeCut, redactSecrets, REDACTED } from './secret-redaction.ts';
 
 /**
  * #427: credentials must never be persisted to a run's NDJSON transcript.
@@ -117,6 +117,31 @@ describe('redactSecrets', () => {
     const out = redactSecrets('psql://app:S3cr3t-Pr0d-Passw0rd@db/prod', secrets);
     expect(out).not.toContain('S3cr3t-Pr0d-Passw0rd');
     expect(out).toContain(REDACTED);
+  });
+});
+
+describe('a multi-line secret, whatever the line ends', () => {
+  const pem = '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----';
+  const crlf = pem.replace(/\n/g, '\r\n');
+
+  it('is redacted from CRLF output when stored with LF, and the other way round, keeping the text’s own line ends', () => {
+    expect(redactSecrets(`key:\r\n${crlf}\r\nok\r\n`, [pem])).toBe(`key:\r\n${REDACTED}\r\nok\r\n`);
+    expect(redactSecrets(`key:\n${pem}\nok\n`, [crlf])).toBe(`key:\n${REDACTED}\nok\n`);
+  });
+
+  it('is held while a CRLF tail may still be its start — a read split between CR and LF included', () => {
+    const lines = crlf.split('\r\n');
+    const text = `boot\r\n${lines[0]}\r\n${lines[1]}\r\n`;
+    expect(heldSecretStart(text, [pem])).toBe('boot\r\n'.length);
+    expect(heldSecretStart(`boot\r\n${lines[0]}\r`, [pem])).toBe('boot\r\n'.length);
+    // Complete, it is not held: it can be redacted now.
+    expect(heldSecretStart(`boot\r\n${crlf}\r\n`, [pem])).toBe(`boot\r\n${crlf}\r\n`.length);
+    expect(heldSecretStart(`boot\r\n${lines[0]}\r\nnot it\r\n`, [pem])).toBe(`boot\r\n${lines[0]}\r\nnot it\r\n`.length);
+  });
+
+  it('is never cut across by a stream, CRLF or not', () => {
+    const text = `${'x'.repeat(10)}${crlf}${'y'.repeat(200)}`;
+    expect(redactionSafeCut(text, [pem], 30)).toBe(10);
   });
 });
 

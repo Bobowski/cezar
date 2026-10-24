@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DockerLogFollowers, type DockerSpawn } from './docker-logs.ts';
+import { REDACTED } from '../core/secret-redaction.ts';
 
 const ID = 'a'.repeat(64);
 
@@ -101,6 +102,16 @@ describe('docker logs followers (spec 2026-10-23-docker-management §3.4)', () =
     // A held prefix that turns out not to be the secret goes out as it was.
     spawned[0]!.data('out', '-----BEGIN PRIVATE KEY-----\nnot it\n');
     expect(followers.read(ID, 0).data).toBe('boot\n[REDACTED]\nok\n-----BEGIN PRIVATE KEY-----\nnot it\n');
+  });
+
+  it('redacts a PEM stored with LF that a tty container writes with CRLF, line by line', () => {
+    const pem = '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj\n-----END PRIVATE KEY-----';
+    const { followers, spawned } = harness([pem]);
+    followers.read(ID, 0);
+    spawned[0]!.data('out', 'key:\r\n');
+    for (const line of pem.split('\n')) spawned[0]!.data('out', `${line}\r\n`);
+    spawned[0]!.data('out', 'ok\r\n');
+    expect(followers.read(ID, 0).data).toBe(`key:\r\n${REDACTED}\r\nok\r\n`);
   });
 
   it('keeps a line under the cap whole and redacts a secret its read ended inside', () => {

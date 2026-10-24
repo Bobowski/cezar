@@ -179,6 +179,13 @@ Nothing to configure. Reclaim is a click, never a timer. All new state is Docker
   Reclaim's stack step always goes this way, since its dir is gone by definition.
 - **A dir is "gone" only when this host can judge it** (`dirState`: a WSL path seen from Windows is
   `unknown`), and Reclaim lists `gone` stacks only.
+- **A stack is judged by every container in it**, since a compose file with a top-level `name:` puts
+  containers from several dirs (the checkout and a worktree) under one project label. It is `gone`
+  only when every container's dir is, `exists` while any is, and an active task in any of its dirs
+  protects it; Reclaim takes it only when all of it is a gone task worktree. Down runs compose from
+  a live dir whose files are all there; by labels, it — and a Reclaim stack step — removes only the
+  containers whose own working dir is one of the gone ones, and leaves the networks and volumes when
+  any other container still carries the label.
 - **Step 4 is folded into step 3.** A gone stack's stopped containers carry its
   `com.docker.compose.project` label and go with that stack. Nothing is proposed on its image
   digest alone: an unrelated stopped `docker run postgres:16` is someone else's. The `container`

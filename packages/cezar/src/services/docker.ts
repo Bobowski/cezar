@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { basename } from 'node:path';
 import type { DockerConflict, DockerContainer, DockerPort, DockerStack } from '@open-mercato/cezar-contract';
-import { judgeDir } from './docker-manage.ts';
+import { judgeDir, worktreeRunOf } from './docker-manage.ts';
 
 /**
  * The machine's containers, read through the `docker` CLI (spec `2026-10-13-docker-view`).
@@ -114,28 +114,42 @@ export interface StackFacts {
 
 /** Stacks in a stable order: this project's first, then by name, loose containers last. */
 export function groupStacks(containers: ListedContainer[], projects: KnownProject[], currentId: string, facts: StackFacts = {}): DockerStack[] {
-  const stacks = new Map<string, DockerStack>();
-  // `mounts` and `configFiles` are the listing's own bookkeeping, not part of a container on the wire.
-  for (const { stack, dir, mounts: _mounts, configFiles: _configFiles, ...container } of containers) {
-    let entry = stacks.get(stack);
-    if (!entry) {
-      const owner = stack === '' ? null : projectOf(dir, projects);
-      const stackDir = stack === '' ? null : dir;
-      entry = {
-        name: stack, dir: stackDir,
-        project: owner ? { id: owner.id, name: owner.name || basename(owner.root) } : null,
-        mine: owner?.id === currentId, containers: [],
-        dirState: stack === '' ? 'unknown' : (facts.dirState ?? judgeDir)(stackDir),
-        task: owner && stackDir ? facts.task?.(stackDir, owner) ?? null : null,
-        volumes: stack === '' ? [] : facts.volumes?.get(stack) ?? [],
-      };
-      stacks.set(stack, entry);
+  const members = new Map<string, ListedContainer[]>();
+  for (const container of containers) members.set(container.stack, [...(members.get(container.stack) ?? []), container]);
+  const stacks: DockerStack[] = [];
+  for (const [name, list] of members) {
+    // `mounts` and `configFiles` are the listing's own bookkeeping, not part of a container on the wire.
+    const wire = list.map(({ stack: _stack, dir: _dir, mounts: _mounts, configFiles: _configFiles, ...container }) => container)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    if (name === '') {
+      stacks.push({ name, dir: null, project: null, mine: false, containers: wire, dirState: 'unknown', task: null, volumes: [] });
+      continue;
     }
-    entry.containers.push(container);
+    // A project name compose shares across dirs (`name:` up from a checkout and a worktree) is judged by all of them:
+    // gone only when every container's dir is, live while any is, and an active task anywhere in it protects it.
+    const dirs = [...new Set(list.map((container) => container.dir))];
+    const states = new Map(dirs.map((dir) => [dir, (facts.dirState ?? judgeDir)(dir)]));
+    const all = [...states.values()];
+    const dirState: DockerStack['dirState'] = all.includes('exists') ? 'exists' : all.every((state) => state === 'gone') ? 'gone' : 'unknown';
+    // Shown by a live dir, else by one that is no task worktree — so "a gone task worktree's" holds for all of it.
+    const dir = dirs.find((entry) => states.get(entry) === 'exists')
+      ?? dirs.find((entry) => entry !== null && worktreeRunOf(entry) === null) ?? dirs.find((entry) => entry !== null) ?? null;
+    const owner = projectOf(dir, projects);
+    const taskOf = (entry: string | null): DockerStack['task'] => {
+      const by = entry === null ? null : projectOf(entry, projects);
+      return by && entry !== null ? facts.task?.(entry, by) ?? null : null;
+    };
+    const tasks = dirs.map(taskOf);
+    stacks.push({
+      name, dir,
+      project: owner ? { id: owner.id, name: owner.name || basename(owner.root) } : null,
+      mine: owner?.id === currentId, containers: wire, dirState,
+      task: tasks.find((task) => task?.active === true) ?? taskOf(dir),
+      volumes: facts.volumes?.get(name) ?? [],
+    });
   }
   const rank = (stack: DockerStack): number => (stack.name === '' ? 2 : stack.mine ? 0 : 1);
-  for (const stack of stacks.values()) stack.containers.sort((a, b) => a.name.localeCompare(b.name));
-  return [...stacks.values()].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+  return stacks.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
 }
 
 export interface WantedPort { port: number; service: string; file: string }

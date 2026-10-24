@@ -7444,9 +7444,17 @@ export function createApp(deps: ServerDeps) {
     if (!list.ok) return list;
     return { ok: true as const, images: buildImages(parseImageList(list.stdout), managed), managed };
   };
-  const reclaimPlanOf = async (project: ProjectContext): Promise<DockerReclaimPlan> => {
+  /** The plan, and the dirs each stack's containers were started from — a stack step removes only those. */
+  const reclaimPlanOf = async (project: ProjectContext): Promise<{ plan: DockerReclaimPlan; stackDirs: Map<string, string[]> }> => {
     const inventory = await dockerInventory(project);
-    if (!inventory.ok) return { available: false, reason: inventory.reason, items: [], totalBytes: 0 };
+    const stackDirs = new Map<string, string[]>();
+    if (!inventory.ok) return { plan: { available: false, reason: inventory.reason, items: [], totalBytes: 0 }, stackDirs };
+    for (const container of inventory.containers) {
+      if (container.dir !== null) stackDirs.set(container.stack, [...new Set([...(stackDirs.get(container.stack) ?? []), container.dir])]);
+    }
+    return { plan: await reclaimItemsOf(inventory), stackDirs };
+  };
+  const reclaimItemsOf = async (inventory: { containers: ListedContainer[]; stacks: DockerStack[] }): Promise<DockerReclaimPlan> => {
     const [images, df, verbose] = await Promise.all([
       imagesOf(inventory.containers),
       docker(['system', 'df', '--format', 'json'], { timeoutMs: 30_000 }),
@@ -7567,15 +7575,17 @@ export function createApp(deps: ServerDeps) {
       const { name } = c.req.valid('param');
       const listed = await listContainers(docker);
       if (!listed.ok) return c.json({ error: listed.reason }, 409);
-      const member = listed.containers.find((entry) => entry.stack === name);
-      if (!member) return c.json({ error: 'no such stack' }, 404);
+      const members = listed.containers.filter((entry) => entry.stack === name);
+      if (members.length === 0) return c.json({ error: 'no such stack' }, 404);
       const volumes = c.req.valid('json').volumes === true;
-      // Compose only with the files it was started from (`-f a -f b`), every one still there: without
-      // them it searches the cwd and its parents for one. Else the stack's labels drive removal.
-      const files = judgeDir(member.dir) === 'exists' && member.configFiles.length > 0 && member.configFiles.every((file) => judgeDir(file) === 'exists') ? member.configFiles : null;
-      const result = files
-        ? await docker(['compose', '-p', name, ...files.flatMap((file) => ['-f', file]), 'down', ...(volumes ? ['--volumes'] : [])], { cwd: member.dir!, timeoutMs: 180_000 })
-        : await removeStackByLabel(docker, name, { volumes });
+      // Compose only from a dir still there, with the files it was started from (`-f a -f b`), every one
+      // still there: without them it searches the cwd and its parents for one. Else the labels drive removal.
+      const member = members.find((entry) => judgeDir(entry.dir) === 'exists' && entry.configFiles.length > 0 && entry.configFiles.every((file) => judgeDir(file) === 'exists'));
+      // A project name shared with a live dir: by labels, only the gone dirs' containers go.
+      const goneDirs = [...new Set(members.flatMap((entry) => (entry.dir !== null && judgeDir(entry.dir) === 'gone' ? [entry.dir] : [])))];
+      const result = member
+        ? await docker(['compose', '-p', name, ...member.configFiles.flatMap((file) => ['-f', file]), 'down', ...(volumes ? ['--volumes'] : [])], { cwd: member.dir!, timeoutMs: 180_000 })
+        : await removeStackByLabel(docker, name, { volumes, ...(goneDirs.length > 0 ? { dirs: goneDirs } : {}) });
       dockerChanged();
       if (!result.ok) return c.json({ error: result.reason }, 409);
       return c.json(dockerOk, 200);
@@ -7692,7 +7702,7 @@ export function createApp(deps: ServerDeps) {
     .post('/docker/reclaim/plan', async (c) => {
       c.header('Cache-Control', 'no-store');
       const refusal = dockerRefusal(c);
-      const plan: DockerReclaimPlan = refusal ? { available: false, reason: refusal, items: [], totalBytes: 0 } : await reclaimPlanOf(c.get('project'));
+      const plan: DockerReclaimPlan = refusal ? { available: false, reason: refusal, items: [], totalBytes: 0 } : (await reclaimPlanOf(c.get('project'))).plan;
       return c.json(plan, 200);
     })
     .post('/docker/reclaim', jsonZodValidator(dockerReclaimRequestSchema), async (c) => {
@@ -7700,7 +7710,7 @@ export function createApp(deps: ServerDeps) {
       if (refusal) return c.json({ error: refusal }, 409);
       // Re-planned now: a step runs only if the plan still holds it, so the "never" list is the
       // server's to keep, not the dialog's.
-      const plan = await reclaimPlanOf(c.get('project'));
+      const { plan, stackDirs } = await reclaimPlanOf(c.get('project'));
       if (!plan.available) return c.json({ error: plan.reason ?? 'Docker is unavailable' }, 409);
       const planned = new Map(plan.items.map((item) => [stepKey(item.step), item]));
       const order = ['stack', 'container', 'dangling-images', 'build-cache'];
@@ -7717,7 +7727,8 @@ export function createApp(deps: ServerDeps) {
           continue;
         }
         // A planned stack's dir is gone by definition: removed by its labels, never by a compose that searches for a file.
-        const ran = step.kind === 'stack' ? await removeStackByLabel(docker, step.name, { volumes: true })
+        // Only containers from the dirs the plan judged gone: one started elsewhere since is not this step's.
+        const ran = step.kind === 'stack' ? await removeStackByLabel(docker, step.name, { volumes: true, dirs: stackDirs.get(step.name) ?? [] })
           : await docker(step.kind === 'container' ? ['rm', step.id] : step.kind === 'dangling-images' ? ['image', 'prune', '-f'] : ['builder', 'prune', '-f'], { timeoutMs: 300_000 });
         if (!ran.ok) {
           result.log.push(`${item.label}: ${ran.reason}`);

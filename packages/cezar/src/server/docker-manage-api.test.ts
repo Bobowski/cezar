@@ -25,6 +25,7 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
   let calls: Array<{ args: string; cwd?: string }>;
   let liveRun: string;
   let extraImages: string;
+  let extraPs: string[][];
   let logText: string;
   let secrets: SecretStore;
   beforeEach(() => {
@@ -39,6 +40,7 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     mkdirSync(join(root, '.ai/cezar/worktrees', liveRun), { recursive: true });
     calls = [];
     extraImages = '';
+    extraPs = [];
     logText = `boot\nAPI_TOKEN=${'x'.repeat(4)}ghp_abcdefghijklmnopqrstuvwxyz123456\n`;
     secrets = new SecretStore(process.env, { keychain: async () => null });
   });
@@ -52,6 +54,7 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     [C('a'), 'mine-postgres-1', 'postgres:16', 'running', 'Up 2 hours', '', 'mine', 'postgres', root, 'mine_pg', [join(root, 'compose.yml'), join(root, 'compose.dev.yml')].join(',')],
     [C('b'), 'gone-postgres-1', 'postgres:16', 'running', 'Up 5 days', '', 'gone', 'postgres', join(root, '.ai/cezar/worktrees/removed'), 'gone_pg', join(root, '.ai/cezar/worktrees/removed/compose.yml')],
     [C('c'), 'live-postgres-1', 'postgres:16', 'running', 'Up 1 hour', '', 'live', 'postgres', join(root, '.ai/cezar/worktrees', liveRun), 'live_pg'],
+    ...extraPs,
   ].map((cells) => cells.join('\t')).join('\n');
   const volumes = ['mine', 'gone', 'live'].map((stack) => JSON.stringify({
     Driver: 'local', Labels: `com.docker.compose.project=${stack},com.docker.compose.volume=pg`, Name: `${stack}_pg`, Scope: 'local',
@@ -62,7 +65,8 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     // What a stack's compose labels name, the way `--filter label=…` reads them.
     const label = args.find((arg) => arg.startsWith('label=com.docker.compose.project='))?.split('=').pop();
     if (label !== undefined) {
-      if (args[0] === 'ps') return { ok: true, stdout: ps().split('\n').map((line) => line.split('\t')).filter((cells) => cells[6] === label).map((cells) => `${cells[0]}\n`).join('') };
+      const labelled = ps().split('\n').map((line) => line.split('\t')).filter((cells) => cells[6] === label);
+      if (args[0] === 'ps') return { ok: true, stdout: labelled.map((cells) => (args.includes('-q') ? `${cells[0]}\n` : `${cells[0]}\t${cells[8]}\n`)).join('') };
       if (command === 'network ls') return { ok: true, stdout: `${label}_default\n` };
       if (command === 'volume ls') return { ok: true, stdout: `${label}_pg\n` };
     }
@@ -204,6 +208,46 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     expect(result.log).toContain('skipped stack:live: no longer in the plan');
     expect(result.freedBytes).toBe(plan.items[2]!.bytes + 120_000_000 + 1_200_000_000);
     expect((await apiRequest(instance, '/api/v1/docker/reclaim', json('POST', { steps: [{ kind: 'stack', name: '--x' }] }))).status).toBe(400);
+  });
+
+  describe('a stack whose project name spans dirs (compose `name:` up from the checkout and a deleted worktree)', () => {
+    const removed = () => join(root, '.ai/cezar/worktrees/removed');
+    beforeEach(() => {
+      // The gone worktree's container is listed first: the stack must not be judged by it alone.
+      extraPs = [
+        [C('e'), 'shared-app-1', 'app', 'exited', 'Exited (0) 2 days ago', '', 'shared', 'app', removed(), '', join(removed(), 'compose.yml')],
+        [C('d'), 'shared-postgres-1', 'postgres:16', 'running', 'Up 2 hours', '', 'shared', 'postgres', root, 'shared_pg', join(root, 'compose.yml')],
+        [C('f'), 'held-app-1', 'app', 'exited', 'Exited (0) 2 days ago', '', 'held', 'app', removed(), ''],
+        [C('7'), 'held-postgres-1', 'postgres:16', 'running', 'Up 1 hour', '', 'held', 'postgres', join(root, '.ai/cezar/worktrees', liveRun), ''],
+      ];
+    });
+
+    it('is live while any of its containers’ dirs is there, and protected while any runs for a live task', async () => {
+      const { instance } = await app();
+      const state = dockerStateSchema.parse(await (await apiRequest(instance, '/api/v1/docker')).json());
+      const of = (name: string) => state.stacks.find((stack) => stack.name === name)!;
+      expect(of('shared')).toMatchObject({ dirState: 'exists', dir: root });
+      expect(of('held')).toMatchObject({ dirState: 'exists', task: { id: liveRun, active: true } });
+      const plan = dockerReclaimPlanSchema.parse(await (await apiRequest(instance, '/api/v1/docker/reclaim/plan', { method: 'POST' })).json());
+      expect(plan.items.map((item) => item.step)).not.toContainEqual({ kind: 'stack', name: 'shared' });
+      expect(plan.items.map((item) => item.step)).not.toContainEqual({ kind: 'stack', name: 'held' });
+    });
+
+    it('downs it with compose where its live dir and files are', async () => {
+      writeFileSync(join(root, 'compose.yml'), 'services: {}\n');
+      const { instance } = await app();
+      expect((await apiRequest(instance, '/api/v1/docker/stacks/shared/down', json('POST', {}))).status).toBe(200);
+      expect(calls.filter((call) => call.args.startsWith('compose -p'))).toEqual([
+        { args: `compose -p shared -f ${join(root, 'compose.yml')} down`, cwd: root },
+      ]);
+    });
+
+    it('by its labels, removes only the gone dir’s containers and leaves what they share with the live ones', async () => {
+      const { instance } = await app();
+      expect((await apiRequest(instance, '/api/v1/docker/stacks/shared/down', json('POST', { volumes: true }))).status).toBe(200);
+      expect(calls.some((call) => call.args.startsWith('compose'))).toBe(false);
+      expect(ran()).toEqual([`rm -f -v ${C('e')}`]);
+    });
   });
 
   it('streams a container’s logs by cursor, redacted, behind a cursor-only topic', async () => {

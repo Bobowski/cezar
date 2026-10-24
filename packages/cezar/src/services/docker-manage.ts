@@ -302,17 +302,23 @@ const ids = (stdout: string): string[] => stdout.split('\n').map((line) => line.
 /**
  * Tear a compose stack down by its `com.docker.compose.project` label alone — what `down` would
  * remove, with no compose file read. For a stack whose files are gone: compose with no `-f`
- * searches the cwd and its parents, and a file planted there could name anything.
+ * searches the cwd and its parents, and a file planted there could name anything. With `dirs`,
+ * only containers started from one of them go; if any other carries the label, the stack's
+ * networks and volumes are theirs too and stay.
  */
-export async function removeStackByLabel(exec: DockerExec, name: string, options: { volumes: boolean }): Promise<DockerResult> {
+export async function removeStackByLabel(exec: DockerExec, name: string, options: { volumes: boolean; dirs?: readonly string[] }): Promise<DockerResult> {
   const filter = ['--filter', `label=com.docker.compose.project=${name}`];
-  const containers = await exec(['ps', '-a', '-q', '--no-trunc', ...filter]);
+  const containers = await exec(['ps', '-a', '--no-trunc', ...filter, '--format', '{{.ID}}\t{{.Label "com.docker.compose.project.working_dir"}}']);
   if (!containers.ok) return containers;
-  if (ids(containers.stdout).length > 0) {
+  const rows = ids(containers.stdout).map((line) => line.split('\t')).filter(([id]) => /^[a-f0-9]{12,64}$/.test(id ?? ''));
+  const within = options.dirs ? new Set(options.dirs) : null;
+  const ours = rows.filter(([, dir]) => within === null || within.has(dir ?? '')).map(([id]) => id!);
+  if (ours.length > 0) {
     // `-v` takes the anonymous volumes along, as `down --volumes` does.
-    const removed = await exec(['rm', '-f', ...(options.volumes ? ['-v'] : []), ...ids(containers.stdout)], { timeoutMs: 180_000 });
+    const removed = await exec(['rm', '-f', ...(options.volumes ? ['-v'] : []), ...ours], { timeoutMs: 180_000 });
     if (!removed.ok) return removed;
   }
+  if (ours.length < rows.length) return { ok: true, stdout: '' };
   const networks = await exec(['network', 'ls', '-q', ...filter]);
   if (!networks.ok) return networks;
   if (ids(networks.stdout).length > 0) {

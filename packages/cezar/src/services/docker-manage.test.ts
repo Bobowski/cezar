@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { groupStacks, listContainers, type DockerExec } from './docker.ts';
 import {
   buildImages, buildVolumes, judgeDir, parseHumanSize, parseImageList, parseReclaimed, parseSystemDf, parseSystemDfVerbose,
-  parseVolumeList, planReclaim, readDisk, stepKey, volumesByStack, withImageIds, worktreeRunOf,
+  parseVolumeList, planReclaim, readDisk, removeStackByLabel, stepKey, volumesByStack, withImageIds, worktreeRunOf,
 } from './docker-manage.ts';
 
 // Captured from Docker 29 (`--format json`), ids replaced with readable ones.
@@ -193,5 +193,51 @@ describe('Reclaim planner (spec 2026-10-23-docker-management §3.6)', () => {
     const unjudged = stacks.map((stack) => (stack.name === 'ffp-4100' ? { ...stack, dirState: 'unknown' as const } : stack));
     const items = planReclaim({ stacks: unjudged, images, buildCacheBytes: 0, volumeSizes: new Map(), containerSizes: new Map() });
     expect(items.map((item) => stepKey(item.step))).toEqual(['dangling-images']);
+  });
+});
+
+describe('a compose project name that spans dirs (spec 2026-10-23-docker-management §9)', () => {
+  const GONE2 = `${ROOT}/.ai/cezar/worktrees/run-gone-2`;
+  const listed = (dirs: Array<string | null>) => dirs.map((dir, n) => ({
+    id: String(n).repeat(64), name: `shared-${n}`, image: 'app', running: false, status: '', ports: [], service: 'app',
+    stack: 'shared', dir, mounts: [], configFiles: [],
+  }));
+  const stackOf = (dirs: Array<string | null>) => groupStacks(listed(dirs), PROJECTS, 'ffp', facts)[0]!;
+
+  it('is gone only when every container’s dir is, and live when any is there', () => {
+    expect(stackOf([GONE, ROOT])).toMatchObject({ dirState: 'exists', dir: ROOT });
+    expect(stackOf([GONE, GONE2])).toMatchObject({ dirState: 'gone' });
+    expect(stackOf([GONE, null])).toMatchObject({ dirState: 'unknown' });
+    expect(stackOf([GONE, 'relative/dir'])).toMatchObject({ dirState: 'unknown' });
+  });
+
+  it('is protected while any of its containers runs for a live task', () => {
+    expect(stackOf([GONE, LIVE])).toMatchObject({ task: { id: 'run-live', active: true } });
+  });
+
+  it('is Reclaim’s only when all of it is a gone task worktree', () => {
+    const plan = (dirs: Array<string | null>) => planReclaim({ stacks: [stackOf(dirs)], images: [], buildCacheBytes: 0, volumeSizes: new Map(), containerSizes: new Map() });
+    expect(plan([GONE, GONE2]).map((item) => stepKey(item.step))).toEqual(['stack:shared']);
+    // A gone project checkout beside a gone worktree: not Reclaim's to judge.
+    const goneRoot = { ...facts, dirState: (dir: string | null) => (dir === null ? 'unknown' as const : 'gone' as const) };
+    const mixed = groupStacks(listed([GONE, '/srv/old-checkout']), PROJECTS, 'ffp', goneRoot);
+    expect(planReclaim({ stacks: mixed, images: [], buildCacheBytes: 0, volumeSizes: new Map(), containerSizes: new Map() })).toEqual([]);
+  });
+
+  it('removed by its labels within its gone dirs, leaves another dir’s containers and what they share', async () => {
+    const calls: string[] = [];
+    const labelled: DockerExec = async (args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'ps') return { ok: true, stdout: `${C('1')}\t${GONE}\n${C('2')}\t${ROOT}\n` };
+      if (args[0] === 'network' && args[1] === 'ls') return { ok: true, stdout: 'shared_default\n' };
+      if (args[0] === 'volume' && args[1] === 'ls') return { ok: true, stdout: 'shared_pg\n' };
+      return { ok: true, stdout: '' };
+    };
+    expect(await removeStackByLabel(labelled, 'shared', { volumes: true, dirs: [GONE] })).toEqual({ ok: true, stdout: '' });
+    expect(calls.filter((call) => !/^(ps|network ls|volume ls)/.test(call))).toEqual([`rm -f -v ${C('1')}`]);
+    calls.length = 0;
+    // Every container in the gone dirs: the stack's networks and volumes go with it.
+    await removeStackByLabel(labelled, 'shared', { volumes: true, dirs: [GONE, ROOT] });
+    expect(calls.filter((call) => !/^(ps|network ls|volume ls)/.test(call))).toEqual([`rm -f -v ${C('1')} ${C('2')}`, 'network rm shared_default', 'volume rm shared_pg']);
   });
 });

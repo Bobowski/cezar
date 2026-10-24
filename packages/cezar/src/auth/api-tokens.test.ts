@@ -42,6 +42,17 @@ describe('API token scopes, per route family', () => {
     expect(apiTokenAllows(['read'], 'DELETE', '/api/v1/runs/1')).toBe(false);
   });
 
+  it('the brand any signed-out page reads, any token reads; changing it is admin\'s', () => {
+    for (const path of ['/api/v1/workspace/branding', '/api/v1/workspace/branding/favicon-32']) {
+      expect(apiTokenAllows(['tasks'], 'GET', path), path).toBe(true);
+      expect(apiTokenAllows(['read'], 'GET', path), path).toBe(true);
+    }
+    for (const [method, path] of [['PUT', '/api/v1/workspace/branding'], ['PUT', '/api/v1/workspace/branding/favicon'], ['DELETE', '/api/v1/workspace/branding']] as const) {
+      expect(apiTokenAllows(['read', 'tasks', 'author'], method, path), `${method} ${path}`).toBe(false);
+      expect(apiTokenAllows(['admin'], method, path), `${method} ${path}`).toBe(true);
+    }
+  });
+
   it('read never covers a read that hands out a credential or raw config', () => {
     expect(apiTokenAllows(['read'], 'GET', '/api/v1/launch-key')).toBe(false);
     expect(apiTokenAllows(['read'], 'GET', '/api/v1/agent-config/claude-settings')).toBe(false);

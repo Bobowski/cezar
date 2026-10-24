@@ -42,6 +42,9 @@ import type {
   uiStateSchema,
   workspaceConfigResponseSchema,
   workspaceBrandingLogoResponseSchema,
+  workspaceBrandingSchema,
+  setWorkspaceBrandingInputSchema,
+  setBrandingImageInputSchema,
   attachmentInputSchema,
   deleteUploadResponseSchema,
   stagedUploadSchema,
@@ -108,6 +111,13 @@ describe('src/contract projects/workspace schemas match the routes exactly', () 
   type BrandingLogoUpload200 = InferResponseType<(typeof client.api.v1.workspace)['branding-logo']['$post'], 200>;
   type BrandingLogoUploadBody = InferRequestType<(typeof client.api.v1.workspace)['branding-logo']['$post']>['form'];
   type BrandingLogoDelete200 = InferResponseType<(typeof client.api.v1.workspace)['branding-logo']['$delete'], 200>;
+  type Branding200 = InferResponseType<typeof client.api.v1.workspace.branding.$get, 200>;
+  type SetBranding200 = InferResponseType<typeof client.api.v1.workspace.branding.$put, 200>;
+  type SetBrandingBody = InferRequestType<typeof client.api.v1.workspace.branding.$put>['json'];
+  type ResetBranding200 = InferResponseType<typeof client.api.v1.workspace.branding.$delete, 200>;
+  type UploadBranding200 = InferResponseType<(typeof client.api.v1.workspace.branding)[':kind']['$put'], 200>;
+  type UploadBrandingBody = InferRequestType<(typeof client.api.v1.workspace.branding)[':kind']['$put']>['json'];
+  type RemoveBranding200 = InferResponseType<(typeof client.api.v1.workspace.branding)[':kind']['$delete'], 200>;
   type StageUpload200 = InferResponseType<typeof client.api.v1.workspace.uploads.$post, 200>;
   type StageUploadBody = InferRequestType<typeof client.api.v1.workspace.uploads.$post>['json'];
   type DeleteUpload200 = InferResponseType<(typeof client.api.v1.workspace.uploads)[':uploadId']['$delete'], 200>;
@@ -222,6 +232,13 @@ describe('src/contract projects/workspace schemas match the routes exactly', () 
     Assert<Exact<z.infer<typeof workspaceConfigResponseSchema>, SetWorkspaceConfig200>>,
     Assert<Exact<z.infer<typeof workspaceBrandingLogoResponseSchema>, BrandingLogoUpload200>>,
     Assert<Exact<z.infer<typeof workspaceBrandingLogoResponseSchema>, BrandingLogoDelete200>>,
+    Assert<Exact<z.infer<typeof workspaceBrandingSchema>, Branding200>>,
+    Assert<Exact<z.infer<typeof workspaceBrandingSchema>, SetBranding200>>,
+    Assert<Exact<z.input<typeof setWorkspaceBrandingInputSchema>, SetBrandingBody>>,
+    Assert<Exact<z.infer<typeof workspaceBrandingSchema>, ResetBranding200>>,
+    Assert<Exact<z.infer<typeof workspaceBrandingSchema>, UploadBranding200>>,
+    Assert<Exact<z.input<typeof setBrandingImageInputSchema>, UploadBrandingBody>>,
+    Assert<Exact<z.infer<typeof workspaceBrandingSchema>, RemoveBranding200>>,
     Assert<Exact<z.infer<typeof stagedUploadSchema>, StageUpload200>>,
     Assert<Exact<z.input<typeof attachmentInputSchema>, StageUploadBody>>,
     Assert<Exact<z.infer<typeof deleteUploadResponseSchema>, DeleteUpload200>>,

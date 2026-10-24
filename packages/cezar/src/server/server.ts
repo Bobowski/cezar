@@ -35,6 +35,7 @@ import {
 import { DockerLogFollowers, dockerSpawn, type DockerSpawn } from '../services/docker-logs.ts';
 import { MIN_SECRET_LEN } from '../core/secret-redaction.ts';
 import { findIconCandidates, readProjectIcon, removeProjectIcons, saveProjectIcon } from '../workspace/project-icons.ts';
+import { brandingBody, brandingState, deriveBranding, readBrandingAsset, removeBranding, saveBranding, type BrandingState } from '../workspace/branding.ts';
 import { searchCheckout } from './code-search.ts';
 import { refreshRepoSync, watchRepoSync } from '../git-sync.ts';
 import { checkoutWatchSupported, watchCheckout } from './checkout-watch.ts';
@@ -112,6 +113,13 @@ import {
   type SelfUpdateStatus,
   workspaceBrandingLogoResponseSchema,
   githubListQuerySchema,
+  BRANDING_UPLOAD_MAX_BYTES,
+  brandingAssetParamSchema,
+  brandingKindParamSchema,
+  brandingRemovableKindParamSchema,
+  setBrandingImageInputSchema,
+  setWorkspaceBrandingInputSchema,
+  workspaceBrandingSchema,
 } from '@open-mercato/cezar-contract';
 // A contract VALUE, like `workspaceUiStateSchema` in workspace/migrations.ts — the request
 // schema this route validates with is the same one the client compiles against.
@@ -389,6 +397,9 @@ import {
   BUILD_HINT_HTML,
   assetContentType,
   isSafeAssetFilename,
+  MANIFEST_PATH,
+  renderManifest,
+  renderShellHtml,
   resolveGetRequest,
 } from './static-ui.ts';
 
@@ -1322,6 +1333,22 @@ function logoAssetUrl(): string | null {
   return null;
 }
 
+async function removeBrandingLogo(): Promise<void> {
+  await Promise.all([BRANDING_LOGO_FILE, ...BRANDING_LOGO_EXTENSIONS.map((ext) => `${BRANDING_LOGO_FILE}${ext}`)]
+    .map((filename) => unlink(join(cezarHomeDir(), filename)).catch(() => {})));
+}
+
+/** The brand as the shell, the manifest and `GET /workspace/branding` show it; cezar's own on any failure. */
+async function currentBranding(): Promise<BrandingState> {
+  try {
+    return await brandingState((await loadWorkspaceConfig()).branding, logoAssetUrl());
+  } catch {
+    return brandingState({}, null);
+  }
+}
+
+const BRANDING_WRITE_REFUSAL = 'branding can only be changed by a trusted operator — this hosted cockpit runs without sign-in (CEZ_AUTH=0)';
+
 /**
  * `rename` onto an existing file. POSIX replaces the destination atomically and two writers
  * never contend, so there this is `rename` and nothing else. Windows refuses the replacement
@@ -1985,7 +2012,7 @@ export function createApp(deps: ServerDeps) {
   };
 
   let hintLogged = false;
-  const serveShell = (c: Context): Response | undefined => {
+  const serveShell = async (c: Context): Promise<Response | undefined> => {
     const distIndex = join(distDir, 'index.html');
     // existsSync per request, like the reads below: `npm run build:web` in a
     // running cockpit takes effect on the next reload, no restart. That promise
@@ -2009,9 +2036,20 @@ export function createApp(deps: ServerDeps) {
         headers: { 'content-type': HTML_TYPE, 'cache-control': SHELL_CACHE_CONTROL },
       });
     }
-    return new Response(readFileSync(distIndex), {
+    // The brand is rendered in per request (spec 2026-10-24-cockpit-branding §3): a new favicon,
+    // title or accent is one reload away, with nothing rebuilt.
+    const html = renderShellHtml(readFileSync(distIndex, 'utf8'), await currentBranding(), requestOrigin(c));
+    return new Response(html, {
       headers: { 'content-type': HTML_TYPE, 'cache-control': SHELL_CACHE_CONTROL },
     });
+  };
+
+  /** The origin a browser used, for the one absolute URL the shell needs (`og:image`). */
+  const requestOrigin = (c: Context): string | null => {
+    const host = c.req.header('x-forwarded-host')?.split(',')[0]?.trim() || c.req.header('host');
+    if (!host || !/^[A-Za-z0-9.\-:[\]]+$/.test(host)) return null;
+    const proto = c.req.header('x-forwarded-proto')?.split(',')[0]?.trim().toLowerCase() === 'https' || new URL(c.req.url).protocol === 'https:' ? 'https' : 'http';
+    return `${proto}://${host}`;
   };
 
   // Hashed bundles/fonts of the built app. Vite fingerprints every name, so
@@ -2036,6 +2074,11 @@ export function createApp(deps: ServerDeps) {
   app.get('/icon.svg', staticFile('icon.svg', 'image/svg+xml'));
   // Compatibility alias for the pre-rename public URL (BACKWARD_COMPATIBILITY.md §2).
   app.get('/open-mercato.svg', staticFile('icon.svg', 'image/svg+xml'));
+  // The web manifest, rendered from branding like the shell's `<head>` (spec 2026-10-24-cockpit-
+  // branding §4). Public like the shell: a home screen asks for it before anyone signs in.
+  app.get(MANIFEST_PATH, async () => new Response(renderManifest(await currentBranding()), {
+    headers: { 'content-type': 'application/manifest+json; charset=utf-8', 'cache-control': SHELL_CACHE_CONTROL },
+  }));
 
   // ---- meta ----------------------------------------------------------------
   // CORS — deliberately for /api/health ONLY (spec 011): the bookmarklets
@@ -4018,6 +4061,7 @@ export function createApp(deps: ServerDeps) {
       return c.json({ error: 'Brand logo not found' }, 404);
     })
     .post('/workspace/branding-logo', multipartZodValidator(() => brandingLogoUploadSchema), async (c) => {
+      if (!trustedOperator(process.env, bindHost)) return c.json({ error: BRANDING_WRITE_REFUSAL }, 409);
       const { file } = c.req.valid('form');
       const bytes = Buffer.from(await file.arrayBuffer());
       await mkdir(cezarHomeDir(), { recursive: true, mode: 0o700 });
@@ -4033,9 +4077,79 @@ export function createApp(deps: ServerDeps) {
       return c.json(workspaceBrandingLogoResponseSchema.parse({ logoUrl: logoAssetUrl() }));
     })
     .delete('/workspace/branding-logo', async (c) => {
-      await Promise.all([BRANDING_LOGO_FILE, ...BRANDING_LOGO_EXTENSIONS.map((ext) => `${BRANDING_LOGO_FILE}${ext}`)]
-        .map((filename) => unlink(join(cezarHomeDir(), filename)).catch(() => {})));
+      if (!trustedOperator(process.env, bindHost)) return c.json({ error: BRANDING_WRITE_REFUSAL }, 409);
+      await removeBrandingLogo();
       return c.json(workspaceBrandingLogoResponseSchema.parse({ logoUrl: null }));
+    })
+
+    // ---- cockpit branding (spec 2026-10-24-cockpit-branding) ----
+    // Reads are public (`isPublicBrandingRequest`): the sign-in page shows the brand. Writes are
+    // the trusted operator's, like every other change to how this cockpit presents itself.
+    .get('/workspace/branding', async (c) => c.json(workspaceBrandingSchema.parse(brandingBody(await currentBranding()))))
+    .put('/workspace/branding', jsonZodValidator(setWorkspaceBrandingInputSchema), async (c) => {
+      if (!trustedOperator(process.env, bindHost)) return c.json({ error: BRANDING_WRITE_REFUSAL }, 409);
+      const { name, accent } = c.req.valid('json');
+      try {
+        await mergeWriteWorkspaceConfig((config) => {
+          if (name === null) delete config.branding.name;
+          else if (name !== undefined) config.branding.name = name;
+          if (accent === null) delete config.branding.accent;
+          else if (accent !== undefined) config.branding.accent = accent;
+        });
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+      }
+      return c.json(workspaceBrandingSchema.parse(brandingBody(await currentBranding())));
+    })
+    // Reset: cezar's own name, mark, icons and accent in one call.
+    .delete('/workspace/branding', async (c) => {
+      if (!trustedOperator(process.env, bindHost)) return c.json({ error: BRANDING_WRITE_REFUSAL }, 409);
+      try {
+        await mergeWriteWorkspaceConfig((config) => {
+          delete config.branding.name;
+          delete config.branding.accent;
+        });
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+      }
+      await Promise.all([removeBranding(['favicon', 'app-icon']), removeBrandingLogo()]);
+      return c.json(workspaceBrandingSchema.parse(brandingBody(await currentBranding())));
+    })
+    // Served like the project icon: typed from the stored name, `nosniff`, and under a CSP that
+    // leaves even a sanitised SVG inert as a document. The `?v=` hash pins the bytes.
+    .get('/workspace/branding/:kind', paramZodValidator(brandingAssetParamSchema), async (c) => {
+      const stored = await readBrandingAsset(c.req.valid('param').kind);
+      if (!stored) return c.json({ error: 'no such branding image' }, 404);
+      return c.body(new Uint8Array(stored.bytes).buffer as ArrayBuffer, 200, {
+        'content-type': stored.type,
+        'x-content-type-options': 'nosniff',
+        'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+        'cache-control': 'public, max-age=31536000, immutable',
+      });
+    })
+    // `use`, not inline: see the ui-state cap below for why an inline `bodyLimit` drops the route type.
+    .use('/workspace/branding/:kind', bodyLimit({ maxSize: BRANDING_UPLOAD_MAX_BYTES * 2 }))
+    .put('/workspace/branding/:kind', paramZodValidator(brandingKindParamSchema), jsonZodValidator(setBrandingImageInputSchema), async (c) => {
+      if (!trustedOperator(process.env, bindHost)) return c.json({ error: BRANDING_WRITE_REFUSAL }, 409);
+      const { kind } = c.req.valid('param');
+      const bytes = Buffer.from(c.req.valid('json').data, 'base64');
+      if (bytes.length === 0) return c.json({ error: 'the image is empty' }, 400);
+      if (bytes.length > BRANDING_UPLOAD_MAX_BYTES) return c.json({ error: 'an image is at most 2 MB' }, 400);
+      const derived = deriveBranding(kind, bytes);
+      if (!derived.ok) return c.json({ error: derived.error }, 400);
+      try {
+        await saveBranding(kind, derived.files);
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+      }
+      return c.json(workspaceBrandingSchema.parse(brandingBody(await currentBranding())));
+    })
+    .delete('/workspace/branding/:kind', paramZodValidator(brandingRemovableKindParamSchema), async (c) => {
+      if (!trustedOperator(process.env, bindHost)) return c.json({ error: BRANDING_WRITE_REFUSAL }, 409);
+      const { kind } = c.req.valid('param');
+      if (kind === 'logo') await removeBrandingLogo();
+      else await removeBranding([kind]);
+      return c.json(workspaceBrandingSchema.parse(brandingBody(await currentBranding())));
     })
 
     // Staged attachments (telemetry 7054e5f2): the composer uploads each file when it is attached
@@ -9497,7 +9611,7 @@ export function createApp(deps: ServerDeps) {
   // an unknown API path must never answer with HTML.
   // Without a web/dist build this serves the built-in build-hint page (dev-only
   // state — the published tarball ships web/dist), never a 404.
-  routed.get('*', (c) => serveShell(c) ?? c.notFound());
+  routed.get('*', async (c) => (await serveShell(c)) ?? c.notFound());
 
   return routed;
 }

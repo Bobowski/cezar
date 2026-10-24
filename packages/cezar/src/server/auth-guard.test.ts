@@ -13,7 +13,7 @@ import {
   authSetupCompleteResponseSchema,
   authVerifyResponseSchema,
 } from '@open-mercato/cezar-contract';
-import { isPublicAuthPath, upgradeIsAuthenticated } from '../auth/guard.ts';
+import { isPublicAuthPath, isPublicBrandingRequest, upgradeIsAuthenticated } from '../auth/guard.ts';
 import { ensureHostKey, readHostKey } from '../auth/host-key.ts';
 import { disableRunTokens, enableRunTokens, mintRunToken, runTokenAllows, verifyRunToken } from '../auth/run-tokens.ts';
 import { AuthService } from '../auth/service.ts';
@@ -102,7 +102,7 @@ describe('cockpit authentication', () => {
     expect(authEnforced({ CEZ_AUTH: 'yes' })).toBe(false); // strict, like every other flag
   });
 
-  it('answers 401 on EVERY registered /api route without a session — and only the auth entry points are public', async () => {
+  it('answers 401 on EVERY registered /api route without a session — and only the auth entry points and the brand are public', async () => {
     const routes = (app as unknown as { routes: Array<{ method: string; path: string }> }).routes
       .filter((route) => route.method !== 'ALL' && route.path.startsWith('/api/'));
     expect(routes.length).toBeGreaterThan(150); // the walk is not vacuous
@@ -117,6 +117,10 @@ describe('cockpit authentication', () => {
     expect([...open].sort()).toEqual([
       'GET /api/v1/auth/session',
       'GET /api/v1/auth/setup/restore',
+      // The sign-in page shows the brand (spec 2026-10-24-cockpit-branding §5) — reads only.
+      'GET /api/v1/workspace/branding',
+      'GET /api/v1/workspace/branding-logo',
+      'GET /api/v1/workspace/branding/:kind',
       'POST /api/v1/auth/login',
       'POST /api/v1/auth/login/verify',
       'POST /api/v1/auth/logout',
@@ -124,7 +128,16 @@ describe('cockpit authentication', () => {
       'POST /api/v1/auth/setup/complete',
       'POST /api/v1/auth/setup/restore',
     ]);
-    for (const entry of open) expect(isPublicAuthPath(entry.split(' ')[1]!)).toBe(true);
+    for (const entry of open) {
+      const [method, path] = entry.split(' ') as [string, string];
+      expect(isPublicAuthPath(path) || isPublicBrandingRequest(method, path.replace(':kind', 'favicon'))).toBe(true);
+    }
+    // …and no write to the brand is.
+    for (const method of ['PUT', 'DELETE', 'POST']) {
+      for (const path of ['/api/v1/workspace/branding', '/api/v1/workspace/branding/favicon', '/api/v1/workspace/branding-logo']) {
+        expect((await request(path, { method, headers: { 'content-type': 'application/json' }, body: '{}' })).status, `${method} ${path}`).toBe(401);
+      }
+    }
   }, 30_000);
 
   it('serves nothing outside /api but the static shell — a route added there is a route with no guard', () => {
@@ -138,6 +151,7 @@ describe('cockpit authentication', () => {
       'GET /*', // the SPA shell
       'GET /assets/:file',
       'GET /icon.svg',
+      'GET /manifest.webmanifest', // rendered from the public brand, like the shell's <head>
       'GET /open-mercato.svg',
     ]);
   });
@@ -168,7 +182,9 @@ describe('cockpit authentication', () => {
       for (const [name, route] of routes) {
         if (name === 'POST /api/v1/auth/logout') continue; // would end the session the walk rides on
         const anonymous = await send(route, {});
-        if (anonymous.status !== 401 && !isPublicAuthPath(route.path)) unguarded.push(`${anonymous.status} ${name}`);
+        if (anonymous.status !== 401 && !isPublicAuthPath(route.path) && !isPublicBrandingRequest(route.method, route.path.replace(':kind', 'x'))) {
+          unguarded.push(`${anonymous.status} ${name}`);
+        }
         const response = await send(route, { cookie });
         void response.body?.cancel().catch(() => undefined); // an SSE stream would otherwise stay open
         if (response.status === 401 || response.status === 403) refused.push(`${response.status} ${name}`);

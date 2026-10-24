@@ -54,7 +54,7 @@ full list; the default set is `tasks,workflows,skills,projects` (about thirty to
 Settings → Security → **API tokens** (owner only):
 
 - `POST /auth/tokens { name, scopes, expiresAt? }` → the token value, shown once
-  (`ceztok_<id>_<secret>`); stored hashed (argon2, the password store's hash) in the auth store.
+  (`ceztok_<id>_<secret>`); stored as a SHA-256 hash in the auth store (see As built: the secret is 256 random bits, so a slow hash buys nothing).
 - Scopes: `read` (allowlisted GETs), `runs.transcript` (`/runs/:id/events`, `/runs/:id/history`,
   `/runs/:id/history-context`, `/runs/:id/handoff`, `/todos` and the inbox on the live streams:
   tool output and agent-written notes can carry secrets, so `read` has only the run list and

@@ -50,12 +50,14 @@ export interface ListedContainer extends DockerContainer {
   dir: string | null;
   /** Volume names (and bind sources) it mounts — who uses a volume (spec 2026-10-23-docker-management §3.3). */
   mounts: string[];
+  /** The compose files it was started from (`project.config_files`), so `down` reads the same ones. */
+  configFiles: string[];
 }
 
 const PS_FORMAT = [
   '{{.ID}}', '{{.Names}}', '{{.Image}}', '{{.State}}', '{{.Status}}', '{{.Ports}}',
   '{{.Label "com.docker.compose.project"}}', '{{.Label "com.docker.compose.service"}}',
-  '{{.Label "com.docker.compose.project.working_dir"}}', '{{.Mounts}}',
+  '{{.Label "com.docker.compose.project.working_dir"}}', '{{.Mounts}}', '{{.Label "com.docker.compose.project.config_files"}}',
 ].join('\t');
 
 export async function listContainers(exec: DockerExec): Promise<{ ok: true; containers: ListedContainer[] } | { ok: false; reason: string }> {
@@ -63,12 +65,13 @@ export async function listContainers(exec: DockerExec): Promise<{ ok: true; cont
   if (!result.ok) return result;
   const containers: ListedContainer[] = [];
   for (const line of result.stdout.split('\n')) {
-    const [id, name, image, state, status, ports, stack, service, dir, mounts] = line.replace(/\r$/, '').split('\t');
+    const [id, name, image, state, status, ports, stack, service, dir, mounts, configFiles] = line.replace(/\r$/, '').split('\t');
     if (!id || !/^[a-f0-9]{12,64}$/.test(id)) continue;
     containers.push({
       id, name: name ?? '', image: image ?? '', running: state === 'running', status: status ?? '',
       ports: parseDockerPorts(ports ?? ''), service: service || null, stack: stack ?? '', dir: dir || null,
       mounts: (mounts ?? '').split(',').map((mount) => mount.trim()).filter(Boolean),
+      configFiles: (configFiles ?? '').split(',').map((file) => file.trim()).filter(Boolean),
     });
   }
   return { ok: true, containers };
@@ -112,8 +115,8 @@ export interface StackFacts {
 /** Stacks in a stable order: this project's first, then by name, loose containers last. */
 export function groupStacks(containers: ListedContainer[], projects: KnownProject[], currentId: string, facts: StackFacts = {}): DockerStack[] {
   const stacks = new Map<string, DockerStack>();
-  // `mounts` is the listing's own bookkeeping, not part of a container on the wire.
-  for (const { stack, dir, mounts: _mounts, ...container } of containers) {
+  // `mounts` and `configFiles` are the listing's own bookkeeping, not part of a container on the wire.
+  for (const { stack, dir, mounts: _mounts, configFiles: _configFiles, ...container } of containers) {
     let entry = stacks.get(stack);
     if (!entry) {
       const owner = stack === '' ? null : projectOf(dir, projects);

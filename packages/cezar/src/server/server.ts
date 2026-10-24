@@ -7523,8 +7523,13 @@ export function createApp(deps: ServerDeps) {
       const member = listed.containers.find((entry) => entry.stack === name);
       if (!member) return c.json({ error: 'no such stack' }, 404);
       // Run where the stack's compose file is, so compose reads it; else nowhere a stray compose.yml could be picked up.
-      const cwd = judgeDir(member.dir) === 'exists' ? member.dir! : tmpdir();
-      const result = await docker(['compose', '-p', name, 'down', ...(c.req.valid('json').volumes ? ['--volumes'] : [])], { cwd, timeoutMs: 180_000 });
+      const inDir = judgeDir(member.dir) === 'exists';
+      const cwd = inDir ? member.dir! : tmpdir();
+      // The files it was started with (`-f a -f b`), when every one is still there — a missing one fails compose outright.
+      const files = inDir && member.configFiles.length > 0 && member.configFiles.every((file) => judgeDir(file) === 'exists') ? member.configFiles : [];
+      const result = await docker([
+        'compose', '-p', name, ...files.flatMap((file) => ['-f', file]), 'down', ...(c.req.valid('json').volumes ? ['--volumes'] : []),
+      ], { cwd, timeoutMs: 180_000 });
       dockerChanged();
       if (!result.ok) return c.json({ error: result.reason }, 409);
       return c.json(dockerOk, 200);

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -44,8 +44,8 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
   });
 
   const ps = () => [
-    [C('a'), 'mine-postgres-1', 'postgres:16', 'running', 'Up 2 hours', '', 'mine', 'postgres', root, 'mine_pg'],
-    [C('b'), 'gone-postgres-1', 'postgres:16', 'running', 'Up 5 days', '', 'gone', 'postgres', join(root, '.ai/cezar/worktrees/removed'), 'gone_pg'],
+    [C('a'), 'mine-postgres-1', 'postgres:16', 'running', 'Up 2 hours', '', 'mine', 'postgres', root, 'mine_pg', [join(root, 'compose.yml'), join(root, 'compose.dev.yml')].join(',')],
+    [C('b'), 'gone-postgres-1', 'postgres:16', 'running', 'Up 5 days', '', 'gone', 'postgres', join(root, '.ai/cezar/worktrees/removed'), 'gone_pg', join(root, '.ai/cezar/worktrees/removed/compose.yml')],
     [C('c'), 'live-postgres-1', 'postgres:16', 'running', 'Up 1 hour', '', 'live', 'postgres', join(root, '.ai/cezar/worktrees', liveRun), 'live_pg'],
   ].map((cells) => cells.join('\t')).join('\n');
   const volumes = ['mine', 'gone', 'live'].map((stack) => JSON.stringify({
@@ -103,13 +103,19 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     }
   });
 
-  it('downs a stack where its compose file is, with its volumes when asked', async () => {
+  it('downs a stack where its compose file is, with the files it was started from and its volumes when asked', async () => {
+    writeFileSync(join(root, 'compose.yml'), 'services: {}\n');
+    writeFileSync(join(root, 'compose.dev.yml'), 'services: {}\n');
     const { instance } = await app();
     const down = await apiRequest(instance, '/api/v1/docker/stacks/mine/down', json('POST', { volumes: true }));
     expect(dockerOkSchema.parse(await down.json())).toEqual({ ok: true });
     expect(await (await apiRequest(instance, '/api/v1/docker/stacks/gone/down', json('POST', {}))).json()).toEqual({ ok: true });
     const downs = calls.filter((call) => call.args.startsWith('compose -p'));
-    expect(downs).toEqual([{ args: 'compose -p mine down --volumes', cwd: root }, { args: 'compose -p gone down', cwd: tmpdir() }]);
+    // `gone` named a file that no longer exists: compose would fail on it, so the labels alone drive `down`.
+    expect(downs).toEqual([
+      { args: `compose -p mine -f ${join(root, 'compose.yml')} -f ${join(root, 'compose.dev.yml')} down --volumes`, cwd: root },
+      { args: 'compose -p gone down', cwd: tmpdir() },
+    ]);
     expect((await apiRequest(instance, '/api/v1/docker/stacks/nope/down', json('POST', {}))).status).toBe(404);
     expect((await apiRequest(instance, '/api/v1/docker/stacks/mine/down', json('POST', { volumes: 'yes' }))).status).toBe(400);
   });

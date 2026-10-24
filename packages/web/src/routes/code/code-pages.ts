@@ -14,7 +14,10 @@ export interface CockpitLocation {
 
 const defaultPort = (protocol: string) => (protocol === 'https:' ? '443' : '80')
 const portOf = (url: { protocol: string; port: string }) => url.port || defaultPort(url.protocol)
-const LOOPBACK_NAME = /^(localhost|.+\.localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[::1\])$/i
+/** As `URL` normalises them: `127.1` → `127.0.0.1`, `[::ffff:127.0.0.1]` → `[::ffff:7f00:1]`. */
+const LOOPBACK_NAME = /^(localhost|.+\.localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[::1\]|\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\])$/i
+/** Whether two hostnames reach the same machine: equal, or both loopback under any name. */
+const sameHost = (a: string, b: string) => a.toLowerCase() === b.toLowerCase() || (LOOPBACK_NAME.test(a) && LOOPBACK_NAME.test(b))
 
 /**
  * The address a Code Browser tab may load for `url`, or why not (§3 Scope): a loopback address
@@ -31,7 +34,8 @@ export function appAddress(url: string, cockpit: CockpitLocation | null): { ok: 
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return { ok: false, reason: 'external' }
   if (parsed.hostname === '0.0.0.0') parsed.hostname = 'localhost'
-  const self = cockpit !== null && parsed.protocol === cockpit.protocol && parsed.hostname === cockpit.hostname && portOf(parsed) === portOf(cockpit)
+  // One listener per port: any loopback spelling of the cockpit's host, either scheme, is the cockpit.
+  const self = cockpit !== null && sameHost(parsed.hostname, cockpit.hostname) && portOf(parsed) === portOf(cockpit)
   if (self) return { ok: false, reason: 'cockpit' }
   if (isLoopbackPageAddress(parsed.toString())) return { ok: true, url: parsed.toString() }
   const hosted = cockpit !== null && !LOOPBACK_NAME.test(cockpit.hostname)

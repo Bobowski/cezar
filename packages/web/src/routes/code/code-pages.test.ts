@@ -23,6 +23,16 @@ describe('Code page addresses (spec 2026-10-24-code-page-browser-tabs §3 Scope)
     expect(appAddress('https://cez.example.com/', HOSTED)).toEqual({ ok: false, reason: 'cockpit' })
   })
 
+  it('knows the cockpit under every loopback name for its host, on its port', () => {
+    for (const url of ['http://localhost:4800/', 'http://[::1]:4800/', 'http://127.0.0.1:4800/', 'http://127.1:4800/', 'http://[::ffff:127.0.0.1]:4800/', 'http://0.0.0.0:4800/', 'http://shop.localhost:4800/']) {
+      expect(appAddress(url, LOCAL)).toEqual({ ok: false, reason: 'cockpit' })
+    }
+    expect(appAddress('http://127.0.0.1:4800/', { protocol: 'http:', hostname: 'localhost', port: '4800' })).toEqual({ ok: false, reason: 'cockpit' })
+    expect(appAddress('http://127.0.0.1:4800/', { protocol: 'http:', hostname: '[::1]', port: '4800' })).toEqual({ ok: false, reason: 'cockpit' })
+    // Another port on loopback is the app, not the cockpit.
+    expect(appAddress('http://localhost:4801/', LOCAL)).toEqual({ ok: true, url: 'http://localhost:4801/' })
+  })
+
   it('accepts a gateway address on a hosted cockpit only: its own scheme and host, another port', () => {
     expect(appAddress('https://cez.example.com:8502/admin', HOSTED)).toEqual({ ok: true, url: 'https://cez.example.com:8502/admin' })
     expect(appAddress('http://cez.example.com:8502/', HOSTED)).toEqual({ ok: false, reason: 'external' })

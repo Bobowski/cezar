@@ -54,7 +54,7 @@ export interface DraftFilters {
   allowAnyAuthor: boolean
   /** `deliver: 'owning-run'`: comments by cezar's own login while the task works, too. */
   allowSelfComments: boolean
-  /** `new-run`: comment, review and check events on closed or merged PRs, too. */
+  /** `new-run`: comment and review events on closed or merged PRs, too. */
   includeClosed: boolean
   lookbackDays: number
   maxRecords: number

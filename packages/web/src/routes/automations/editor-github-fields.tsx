@@ -125,7 +125,7 @@ export function EditorGithubFields({
                 onCheckedChange={(checked) => setFilter('includeClosed', checked === true)}
               />
               <Label htmlFor="filter-include-closed" className="text-[13px] font-normal">
-                Also for comments, reviews and checks on closed or merged pull requests
+                Also for comments and reviews on closed or merged pull requests
               </Label>
             </span>
           ) : null}

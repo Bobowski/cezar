@@ -235,8 +235,8 @@ export class GithubPoller {
         source.family,
         source.activity,
         options.since,
-        // A review event on a merged or closed PR asks for work nobody can act on any more.
-        source.reviews,
+        // A review on a closed PR is work nobody acts on, unless a new-run automation opts in (§5).
+        source.reviews && (definition.deliver === 'owning-run' || definition.filters.includeClosed !== true),
       );
       const closedSource = source.activity === 'closed';
       const search = async (page: number) => {

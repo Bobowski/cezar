@@ -390,6 +390,22 @@ describe('GithubPoller', () => {
     expect(queries.find((query) => query.includes('created:'))).not.toContain('is:open');
   });
 
+  it('searches closed PRs for the review events too when a new-run automation sets includeClosed', async () => {
+    const queriesFor = async (patch: Partial<GithubAutomationDefinition>) => {
+      const run = vi.fn(async (_executable: string, args: readonly string[]) =>
+        args.some((arg) => arg.includes('/timeline')) ? '[]' : JSON.stringify({ items: [] }));
+      await new GithubPoller({ run }).poll('acme', 'demo', {
+        ...definition,
+        events: ['pull_request.reviewed'],
+        filters: { ...definition.filters, includeClosed: true },
+        ...patch,
+      });
+      return run.mock.calls.map(([, args]) => args.find((arg) => arg.startsWith('q=')) ?? '').join(' ');
+    };
+    expect(await queriesFor({})).not.toContain('is:open');
+    expect(await queriesFor({ deliver: 'owning-run' })).toContain('is:open');
+  });
+
   it('reads the NEWEST timeline pages, since GitHub returns the oldest first', async () => {
     const pullRequest = { ...item, node_id: 'PR_one', number: 8, html_url: 'https://github.com/acme/demo/pull/8', pull_request: {} };
     const filler = (index: number) => ({ id: index, event: 'commented', created_at: '2026-07-01T00:00:00.000Z' });

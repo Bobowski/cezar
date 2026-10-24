@@ -49,7 +49,7 @@ A GitHub poll:
     "tags": ["v*"],                                  //   release.published: tag names, exact or * globs
     "includeOwnPushes": false,                       //   check_suite.completed: also react to CI on commits cezar itself pushed (the "fix my CI" case); otherwise cezar's own pushes and comments never trigger anything
     "allowSelfComments": false,                      //   comment events: deliver or launch at once a comment by the login cezar runs as, written during the current turn of a task on that PR or issue (otherwise it is held until that turn ends, then sent unless a trace claims it)
-    "includeClosed": false,                          //   new-run only: comment, review and check events on a closed or merged PR launch too (owning-run always skips them as pr-closed)
+    "includeClosed": false,                          //   new-run only: comment and review events on a closed or merged PR launch too (owning-run always skips them as pr-closed)
     "allowAnyAuthor": false,                         //   with deliver "owning-run": deliver comments from anyone; otherwise (unless authors is set) only the repository's owner, and members or collaborators with write access, can message a running task
     "lookbackDays": 7,                              //   1-90 (default 7): how far back one poll looks
     "maxRecords": 25                                 //   1-100 (default 25): the most candidates one poll considers

@@ -207,6 +207,35 @@ describe('a token’s view of a task', () => {
     }
   });
 
+  it('reduces every failure a read token sees to a one-line kind, without the output', async () => {
+    const run = store.createRun({ title: 'land it', workflow: 'quick-task', task: 'land it', steps: [] });
+    // What a failed required check leaves on the record: the command's whole output (landing.ts).
+    const printed = `npm test printed the token ${SECRET}`;
+    store.updateRun(run.id, {
+      status: 'failed',
+      error: `step "check" failed: ${printed}`,
+      steps: [
+        { id: 'task', name: 'Task', kind: 'agent', status: 'failed', iterations: 1, tokensUsed: 0, error: `agent said ${printed}` },
+        { id: 'check', name: 'Check', kind: 'check', status: 'failed', iterations: 1, tokensUsed: 0, error: `exit 1\n${printed}` },
+        { id: 'next', name: 'Next', kind: 'agent', status: 'pending', iterations: 0, tokensUsed: 0 },
+      ],
+      landing: { status: 'failed', at: '2026-10-24T00:00:00Z', stage: 'checks', error: `required check \`npm test\` failed:\n${printed}` },
+    });
+    const read = seedToken(['read']);
+    const one = (await (await request(`/api/v1/runs/${run.id}`, read)).json()) as Record<string, unknown>;
+    const [row] = (await (await request('/api/v1/runs', read)).json()) as Array<Record<string, unknown>>;
+    for (const [label, body] of [['GET /runs/:id', one], ['GET /runs', row!]] as const) {
+      expect(JSON.stringify(body), label).not.toContain(SECRET);
+      expect(body.error, label).toBe('failed');
+      expect(body.landing, label).toEqual({ status: 'failed', at: '2026-10-24T00:00:00Z', stage: 'checks', error: 'required check failed' });
+      expect((body.steps as Array<Record<string, unknown>>).map((step) => step.error), label).toEqual(['failed', 'check failed', undefined]);
+    }
+    // Guard: whoever sees transcripts keeps the output.
+    const full = (await (await request(`/api/v1/runs/${run.id}`, seedToken(['read', 'runs.transcript']))).json()) as Record<string, unknown>;
+    expect(JSON.stringify(full.landing)).toContain(SECRET);
+    expect(full.error).toContain(SECRET);
+  });
+
   it('projects the run events of both live streams for a read token', async () => {
     const id = seedRun();
     for (const path of ['/api/v1/events', '/api/v1/workspace/events']) {

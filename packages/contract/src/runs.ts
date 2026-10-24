@@ -420,9 +420,10 @@ export type RunRecord = z.infer<typeof runRecordSchema>;
  *
  * `projected: true` marks the view an API token without `runs.transcript` gets — here and in the
  * `run` events of `/events` and `/workspace/events` (spec 2026-10-24-cezar-mcp-server §4). It
- * carries none of what the agent wrote: no `titleSummary`, no `graphState.outputs`, no
- * `dispatch.report`, `dispatch.pendingReports` or `dispatch.pendingAsk`. Every other key is as
- * stored. Absent on the full record.
+ * carries none of what the agent wrote or a command printed: no `titleSummary`, no
+ * `graphState.outputs`, no `dispatch.report`, `dispatch.pendingReports` or `dispatch.pendingAsk`,
+ * and `error`, `steps[].error` and `landing.error` are one line naming the failure's kind
+ * (`required check failed`). Every other key is as stored. Absent on the full record.
  */
 export const apiRunSchema = runRecordSchema.extend({
   usage: processUsageSchema.optional(),

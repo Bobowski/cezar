@@ -67,8 +67,9 @@ Settings → Security → **API tokens** (owner only):
   `GET /runs`, `GET /runs/:id` and the `run` events of `/events` and `/workspace/events`, all
   through `redactRunForScope` (`auth/run-projection.ts`): `projected: true`, and none of what the
   agent wrote (`titleSummary`, `graphState.outputs`, `dispatch.report`/`pendingReports`/
-  `pendingAsk`). Status, timing, counters, branch and PR stay; the contract's `apiRunSchema`
-  names the marker.
+  `pendingAsk`); `error`, `steps[].error` and `landing.error`, which quote what a command
+  printed, become one line naming the kind (`required check failed`). Status, timing, counters,
+  branch and PR stay; the contract's `apiRunSchema` names the marker.
 - **A scope bounds the API surface, not the machine.** A token that can start or continue a run —
   `tasks`, and `author`, whose workflows and automations start them — can execute code as the OS
   user cezar runs as: agents run Bash, and a check step is a command. That user can read and write

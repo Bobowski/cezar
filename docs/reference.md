@@ -658,7 +658,7 @@ the API below.
   ceztok_…` too. Mint one in Settings → Security → API tokens, scoped `read`
   (the GETs that carry no secret — task status, not its transcript: a task
   record comes back `projected: true`, without the agent's summaries, reports
-  or title), `runs.transcript` (a task's thread, live events, handoff and the
+  or title, and a failure names its kind, not what the command printed), `runs.transcript` (a task's thread, live events, handoff and the
   todo inbox: tool output can hold secrets; `tasks` includes it), `tasks` (runs, messages, dispatch, tracker
   tickets), `author` (workflows, skills, automations, env files, the tracker
   connection) or `admin` (everything but sign-in). It is shown once.

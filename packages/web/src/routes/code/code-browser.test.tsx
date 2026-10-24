@@ -20,6 +20,8 @@ vi.mock('@/lib/project-router', () => ({ useNavigate: () => navigate }))
 vi.mock('@/api/project-scope-context', () => ({ useProjectScope: () => ({ projectId: null }) }))
 vi.mock('@/routes/task-workspace/source-roots', () => ({ useSourceRoots: () => [] }))
 vi.mock('@/components/ui/toaster', () => ({ toast: vi.fn() }))
+// The Browser tab's own page probe and Run app need a cockpit; a hosted one probes nothing.
+vi.mock('@/api/queries', () => ({ useHealth: () => ({ data: { capabilities: {} } }), queryKeys: {} }))
 
 /** A stand-in Browser column: what the host hands it is what is under test here. */
 const view = vi.hoisted(() => ({ props: null as null | Record<string, unknown> }))
@@ -56,7 +58,7 @@ const pick = (mark: string, selector: string): NewDesignPick => ({
 })
 
 const renderTab = (onStartTask = vi.fn(async () => {})) => {
-  render(<CodeBrowserTab state={{ tabs: [], active: 0 } as never} onChange={vi.fn()} run={null} onStartTask={onStartTask} />)
+  render(<CodeBrowserTab state={{ url: '' }} onChange={vi.fn()} run={null} onStartTask={onStartTask} tree={{ kind: 'main' }} suggestions={[]} onGateway={vi.fn()} />)
   return { onStartTask }
 }
 

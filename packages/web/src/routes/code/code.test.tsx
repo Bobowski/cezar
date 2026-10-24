@@ -65,7 +65,8 @@ function setup(options: {
     if (path === '/api/v1/repo/watch') return json({ topic: null })
     if (method === 'POST' && path === '/api/v1/preview/design-proxy') return json({ origin: 'http://127.0.0.1:47000' })
     if (method === 'POST' && path === '/api/v1/preview/gateway') return json({ origin: 'http://cockpit.test:47100', ticket: 't1', ticketParam: 'cez_ticket' })
-    if (method === 'GET' && path === '/api/v1/runs') return json(options.runs ?? [])
+    // Any project's list: a test that moves to another project still gets one back.
+    if (method === 'GET' && /^\/api\/v1(\/p\/[^/]+)?\/runs$/.test(path)) return json(options.runs ?? [])
     if (method === 'POST' && path === '/api/v1/runs') return json({ ...RUN, id: 'new-run', task: (JSON.parse(String(init.body)) as { task: string }).task }, 201)
     if (path === '/api/v1/workflows') return json({ workflows: [], issues: [] })
     if (method === 'GET' && path.startsWith('/api/v1/repo/files?path=')) return json(entry('src/app.ts', state.disk.content, state.disk.hash))

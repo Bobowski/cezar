@@ -182,7 +182,7 @@ describe('docker logs followers (spec 2026-10-23-docker-management §3.4)', () =
     expect(spawned).toHaveLength(1);
     followers.hold(ID);
     expect(spawned).toHaveLength(1);
-    spawned[0]!.data('out', 'one\n');
+    spawned[0]!.data('out', '2026-10-24T10:00:00.000000001Z one\n');
     followers.release(ID);
     expect(spawned[0]!.killed).toBe(false);
     followers.release(ID);
@@ -234,10 +234,44 @@ describe('docker logs followers (spec 2026-10-23-docker-management §3.4)', () =
       spawned[0]!.data('out', `boot\nDB: ${pw.slice(0, 16)}`);
       followers.release(ID);
       followers.hold(ID);
-      // No stamp to resume from (output without one): the host's time.
-      expect(spawned[1]?.args).toEqual(['logs', '--timestamps', '--since', '1970-01-01T00:00:01.000Z', '--follow', ID]);
-      spawned[1]!.data('out', 'next line\n');
+      // No stamp to resume from (output without one): the tail again, never the host clock.
+      expect(spawned[1]?.args).toEqual(['logs', '--timestamps', '--tail', '500', '--follow', ID]);
+      spawned[1]!.data('out', 'boot\nnext line\n');
       expect(followers.read(ID, 0).data).toBe('boot\nnext line\n');
+    });
+
+    it('resumes a follower released before any stamped line from its tail, skipping what it showed', () => {
+      const ts = (n: number) => `2026-10-24T10:00:0${n}.000000000Z`;
+      const { followers, spawned } = harness();
+      followers.hold(ID);
+      spawned[0]!.data('err', 'notice: one\n');
+      spawned[0]!.data('err', 'notice: two\n');
+      followers.release(ID);
+      followers.hold(ID);
+      expect(spawned[1]?.args).toEqual(['logs', '--timestamps', '--tail', '500', '--follow', ID]);
+      spawned[1]!.data('err', 'notice: one\nnot');
+      spawned[1]!.data('err', 'ice: two\nnotice: three\n');
+      spawned[1]!.data('out', `${ts(1)} ready\n`);
+      expect(followers.read(ID, 0).data).toBe('notice: one\nnotice: two\nnotice: three\nready\n');
+    });
+
+    it('shows a line like one it showed when the tail does not pick up there', () => {
+      for (const [again, shown] of [
+        ['a\nx\n', 'a\nb\na\nx\n'],
+        ['b\nc\n', 'a\nb\nc\n'],
+        ['a\nb\nb\n', 'a\nb\nb\n'],
+        ['a\n', 'a\nb\na\n'],
+      ] as const) {
+        const { followers, spawned } = harness();
+        followers.hold(ID);
+        spawned[0]!.data('out', 'a\nb\n');
+        followers.release(ID);
+        followers.hold(ID);
+        spawned[1]!.data('out', again);
+        const first = followers.read(ID, 0);
+        spawned[1]!.exit(null);
+        expect(first.data + followers.read(ID, first.cursor).data).toBe(shown);
+      }
     });
 
     it('drops a half-held PEM a release cut off, and the resumed follower sends it again whole', () => {

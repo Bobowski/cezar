@@ -68,11 +68,18 @@ interface Stamps {
   /** A resumed follower drops the lines stamped at or before this: the killed one had them. */
   after: bigint | null;
   dropping: boolean;
+  /** The open line's length and head so far: with its stamp, what a tail run again matches it by. */
+  size: number;
+  head: string;
 }
 
 function freshStamps(): Stamps {
-  return { held: '', atStart: true, mark: null, open: null, done: null, after: null, dropping: false };
+  return { held: '', atStart: true, mark: null, open: null, done: null, after: null, dropping: false, size: 0, head: '' };
 }
+
+/** A line end: its line's stamp, and its key — the stamp, length and head of what it ends. */
+interface End { stamp: bigint | null; key: string }
+const KEY_HEAD = 256;
 
 /** How much of `text`'s tail may be the start of `mark`. */
 function markStart(text: string, mark: string | null): number {
@@ -95,10 +102,16 @@ function formatStamp(ns: bigint): string {
  * `chunk` without its record stamps, each line's noted, the records of one long line joined; a line
  * at or before `after` is dropped.
  */
-function unstamp(stamps: Stamps, chunk: string, ends: Array<bigint | null>): string {
+function unstamp(stamps: Stamps, chunk: string, ends: End[]): string {
   let out = '';
   let rest = stamps.held + chunk;
   stamps.held = '';
+  const pass = (text: string) => {
+    if (stamps.dropping) return;
+    out += text;
+    stamps.size += text.length;
+    if (stamps.head.length < KEY_HEAD) stamps.head += text.slice(0, KEY_HEAD - stamps.head.length);
+  };
   while (rest !== '') {
     if (stamps.atStart) {
       const match = STAMP_RE.exec(rest);
@@ -118,22 +131,23 @@ function unstamp(stamps: Stamps, chunk: string, ends: Array<bigint | null>): str
     const line = newline === -1 ? rest : rest.slice(0, newline + 1);
     const record = stamps.mark === null ? -1 : line.indexOf(stamps.mark);
     if (record !== -1) {
-      if (!stamps.dropping) out += line.slice(0, record);
+      pass(line.slice(0, record));
       rest = rest.slice(record + stamps.mark!.length);
       continue;
     }
     if (newline === -1) {
       const keep = rest.length - markStart(rest, stamps.mark);
-      if (!stamps.dropping) out += rest.slice(0, keep);
+      pass(rest.slice(0, keep));
       stamps.held = rest.slice(keep);
       break;
     }
+    pass(line.slice(0, -1));
     if (!stamps.dropping) {
-      out += line;
-      ends.push(stamps.open);
+      out += '\n';
+      ends.push({ stamp: stamps.open, key: `${stamps.mark ?? ''}${stamps.size}:${stamps.head}` });
     }
     if (stamps.open !== null && (stamps.done === null || stamps.open > stamps.done)) stamps.done = stamps.open;
-    Object.assign(stamps, { atStart: true, mark: null, open: null, dropping: false });
+    Object.assign(stamps, { atStart: true, mark: null, open: null, dropping: false, size: 0, head: '' });
     rest = rest.slice(newline + 1);
   }
   return out;
@@ -152,16 +166,58 @@ interface Entry {
   dropped: Record<Stream, string>;
   /** How many leading chars of `pending` are that tail — held to match a secret, never let out. */
   hidden: Record<Stream, number>;
-  /** The stamp of each line end in `pending`, oldest first. */
-  ends: Record<Stream, Array<bigint | null>>;
+  /** Each line end in `pending`, oldest first. */
+  ends: Record<Stream, End[]>;
   /** `pending` starts inside a line whose head went out. */
   shown: Record<Stream, boolean>;
+  /** The keys of the last unstamped lines let out: with no stamp to resume from, the tail runs again past them. */
+  recent: Record<Stream, string[]>;
+  skip: Record<Stream, Skip | null>;
   holders: number;
   lastRead: number;
   bell: ReturnType<typeof setTimeout> | null;
   stamps: Record<Stream, Stamps>;
-  /** The `--since` a follower we killed is picked up from; `null` once Docker ended it. */
-  resumeFrom: string | null;
+  /** Where a follower we killed is picked up: `since` its stamp, else (`null`) its tail again; `null` once Docker ended it. */
+  resumeFrom: { since: string | null } | null;
+}
+
+/** A tail run again in place of a resume, still matching its lead against the lines `recent` let out. */
+interface Skip { recent: readonly string[]; alive: number[] | null; best: number; lines: string[]; ends: End[]; partial: string }
+
+function freshSkip(recent: readonly string[]): Skip | null {
+  return recent.length > 0 ? { recent: [...recent], alive: null, best: 0, lines: [], ends: [], partial: '' } : null;
+}
+
+function remember(recent: string[], key: string): void {
+  recent.push(key);
+  if (recent.length > TAIL_LINES) recent.shift();
+}
+
+/** What a skip lets through: the lines past the longest lead that ends where `recent` does. */
+function skipped(skip: Skip): { text: string; ends: End[] } {
+  return { text: skip.lines.slice(skip.best).join('') + skip.partial, ends: skip.ends.slice(skip.best) };
+}
+
+/** `null` while the lines of `text` may still be ones already shown; else what goes on. */
+function skipShown(skip: Skip, text: string, ends: End[]): { text: string; ends: End[] } | null {
+  let rest = skip.partial + text;
+  let i = 0;
+  for (let newline = rest.indexOf('\n'); newline !== -1; newline = rest.indexOf('\n')) {
+    const end = ends[i++]!;
+    skip.lines.push(rest.slice(0, newline + 1));
+    skip.ends.push(end);
+    rest = rest.slice(newline + 1);
+    const seen = skip.lines.length;
+    const alive = (skip.alive ?? skip.recent.map((_, j) => j)).filter((j) => skip.recent[j + seen - 1] === end.key);
+    if (alive.some((j) => j + seen === skip.recent.length)) skip.best = seen;
+    skip.alive = alive.filter((j) => j + seen < skip.recent.length);
+    if (skip.alive.length === 0) {
+      const through = skipped({ ...skip, partial: '' });
+      return { text: through.text + rest, ends: [...through.ends, ...ends.slice(i)] };
+    }
+  }
+  skip.partial = rest;
+  return rest.length > MAX_LINE ? skipped(skip) : null;
 }
 
 /** Forget every byte held for a follower — a line still arriving, a secret still being held. */
@@ -172,6 +228,8 @@ function clearHold(entry: Entry): void {
   entry.hidden = { out: 0, err: 0 };
   entry.ends = { out: [], err: [] };
   entry.shown = { out: false, err: false };
+  entry.recent = { out: [], err: [] };
+  entry.skip = { out: null, err: null };
   entry.stamps = { out: freshStamps(), err: freshStamps() };
 }
 
@@ -210,11 +268,13 @@ function hideHold(entry: Entry): bigint | null {
       hidden = held.length;
       need = stamps.open ?? stamps.done;
       stamps.after = need;
-      entry.ends[stream] = stamps.open !== null ? [stamps.open] : [];
+      entry.ends[stream] = stamps.open !== null ? [{ stamp: stamps.open, key: '' }] : [];
       entry.shown[stream] = true;
     } else {
-      const lines = [...ends, stamps.open];
+      const lines = [...ends.map((end) => end.stamp), stamps.open];
       const kept = entry.shown[stream] && ends.length > 0 ? 1 : 0;
+      // Its rest is kept, so a tail run again skips the line whole.
+      if (kept && ends[0]!.stamp === null) remember(entry.recent[stream], ends[0]!.key);
       const resend = lines.findIndex((stamp, i) => i >= kept && stamp !== null);
       if (resend === -1 && !kept) {
         held = pending;
@@ -229,7 +289,7 @@ function hideHold(entry: Entry): bigint | null {
       if (held === '') entry.shown[stream] = false;
     }
     if (need !== null && (since === null || need < since)) since = need;
-    Object.assign(stamps, { held: '', atStart: true, mark: null, open: null, dropping: false });
+    Object.assign(stamps, { held: '', atStart: true, mark: null, open: null, dropping: false, size: 0, head: '' });
     entry.pending[stream] = held;
     entry.hidden[stream] = hidden;
     entry.skipping[stream] = false;
@@ -319,18 +379,20 @@ export class DockerLogFollowers {
     return `${out}${this.redact(rest.slice(0, head), values, restHidden)}${CUT_MARK}\n`;
   }
 
-  /** `take`, keeping the stamps of the line ends still in `pending`. */
-  private feed(entry: Entry, stream: Stream, text: string, ends: Array<bigint | null>): string {
+  /** `take`, keeping the line ends still in `pending`, and the keys of the unstamped ones let out. */
+  private feed(entry: Entry, stream: Stream, text: string, ends: End[]): string {
     const all = [...entry.ends[stream], ...ends];
     const out = this.take(entry, stream, text);
-    entry.ends[stream] = all.slice(Math.max(0, all.length - lineEnds(entry.pending[stream])));
+    const gone = Math.max(0, all.length - lineEnds(entry.pending[stream]));
+    for (const end of all.slice(0, gone)) if (end.stamp === null) remember(entry.recent[stream], end.key);
+    entry.ends[stream] = all.slice(gone);
     return out;
   }
 
   private entry(id: string): Entry {
     let entry = this.entries.get(id);
     if (!entry) {
-      entry = { proc: null, following: false, text: '', start: 0, pending: { out: '', err: '' }, skipping: { out: false, err: false }, dropped: { out: '', err: '' }, hidden: { out: 0, err: 0 }, ends: { out: [], err: [] }, shown: { out: false, err: false }, holders: 0, lastRead: this.now(), bell: null, stamps: { out: freshStamps(), err: freshStamps() }, resumeFrom: null };
+      entry = { proc: null, following: false, text: '', start: 0, pending: { out: '', err: '' }, skipping: { out: false, err: false }, dropped: { out: '', err: '' }, hidden: { out: 0, err: 0 }, ends: { out: [], err: [] }, shown: { out: false, err: false }, recent: { out: [], err: [] }, skip: { out: null, err: null }, holders: 0, lastRead: this.now(), bell: null, stamps: { out: freshStamps(), err: freshStamps() }, resumeFrom: null };
       this.entries.set(id, entry);
       this.armSweep();
     }
@@ -355,26 +417,42 @@ export class DockerLogFollowers {
 
   /** Attach `docker logs`: the last `TAIL_LINES` for a fresh pane, or from where a release cut it off. */
   private start(id: string, entry: Entry, fresh: boolean): void {
-    const since = entry.resumeFrom;
-    if (fresh || since === null) {
+    const resume = fresh ? null : entry.resumeFrom;
+    if (!resume) {
       entry.text = '';
       entry.start = 0;
       clearHold(entry);
     }
     entry.resumeFrom = null;
     entry.following = true;
-    const from = !fresh && since !== null ? ['--since', since] : ['--tail', String(TAIL_LINES)];
+    // No stamp to resume from: the tail again, never the host clock, past the lines already shown.
+    if (resume && resume.since === null) entry.skip = { out: freshSkip(entry.recent.out), err: freshSkip(entry.recent.err) };
+    const from = resume?.since ? ['--since', resume.since] : ['--tail', String(TAIL_LINES)];
     // Stamped by the daemon, so a resume never leans on the host clock agreeing with it.
     const proc = this.spawnDocker(['logs', '--timestamps', ...from, '--follow', id], {
       data: (stream, chunk) => {
         if (entry.proc !== proc) return;
         // Whole lines only, so a secret split across two chunks is still one string when redacted.
-        const ends: Array<bigint | null> = [];
-        const text = unstamp(entry.stamps[stream], chunk, ends);
+        let ends: End[] = [];
+        let text = unstamp(entry.stamps[stream], chunk, ends);
+        const skip = entry.skip[stream];
+        if (skip) {
+          const through = skipShown(skip, text, ends);
+          if (!through) return;
+          entry.skip[stream] = null;
+          ({ text, ends } = through);
+        }
         this.append(id, entry, this.feed(entry, stream, text, ends));
       },
       exit: (reason) => {
         if (entry.proc !== proc) return;
+        for (const stream of ['out', 'err'] as const) {
+          const skip = entry.skip[stream];
+          if (!skip) continue;
+          entry.skip[stream] = null;
+          const through = skipped(skip);
+          this.append(id, entry, this.feed(entry, stream, through.text, through.ends));
+        }
         // A line start still waiting to show it carries no stamp, or a record stamp to show it is one, is text.
         for (const stream of ['out', 'err'] as const) {
           const stamps = entry.stamps[stream];
@@ -403,7 +481,7 @@ export class DockerLogFollowers {
     entry.following = false;
     // Cut off by us, not ended by Docker: a returning reader resumes from here, by the daemon's stamps.
     const since = hideHold(entry);
-    entry.resumeFrom = since === null ? new Date(this.now()).toISOString() : formatStamp(since);
+    entry.resumeFrom = { since: since === null ? null : formatStamp(since) };
     proc.kill();
   }
 

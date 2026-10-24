@@ -112,7 +112,8 @@ export function hookRoutes(deps: {
     const now = new Date().toISOString();
     // A ping proves the route; it has nothing for a poll to find.
     const woke = event !== 'ping' && throttle.take(project.dataDir);
-    if (woke) await deps.wake(project);
+    // Not awaited: waking may build a project context, and GitHub gives a delivery ten seconds.
+    if (woke) void Promise.resolve().then(() => deps.wake(project)).catch(() => undefined);
     try {
       writeWebhook(project.dataDir, {
         ...file,

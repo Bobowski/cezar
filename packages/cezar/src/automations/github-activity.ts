@@ -293,7 +293,7 @@ export async function pollActivity(input: {
   };
   const base = (item: Item, event: AutomationEvent, eventId: string, timestamp: string, tieBreaker: string): GithubCandidate => ({
     eventId, event, timestamp, tieBreaker, repo: full, nodeId: item.nodeId, number: item.number,
-    title: clean(item.title, 500), url: item.url, author: item.author, assignees: item.assignees, labels: item.labels,
+    title: clean(item.title, 500), url: item.url, author: clean(item.author, 200), assignees: item.assignees, labels: item.labels,
     ...(item.headSha ? { headSha: item.headSha } : {}),
     ...(item.headRef ? { branch: item.headRef } : {}),
   });
@@ -520,7 +520,7 @@ export async function pollActivity(input: {
           eventId: `${full}:push:${name}:${sha}`, event: 'push', timestamp: new Date().toISOString(),
           tieBreaker: `push:${name}:${sha}`, repo: full, nodeId: `refs/heads/${name}`,
           title: clean(`push to ${name}`, 500), url,
-          author: last?.author?.login ?? last?.commit.author?.name ?? 'unknown',
+          author: clean(last?.author?.login ?? last?.commit.author?.name ?? 'unknown', 200),
           assignees: [], labels: [], headSha: sha, branch: name, cursorless: true,
           push: {
             branch: name, before: previous ?? ZERO_SHA, after: sha,

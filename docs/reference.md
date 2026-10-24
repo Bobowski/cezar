@@ -657,8 +657,9 @@ the API below.
   ceztok_…` too. Mint one in Settings → Security → API tokens, scoped `read`
   (the GETs that carry no secret — task status, not its transcript),
   `runs.transcript` (a task's thread and live events: tool output can hold
-  secrets; `tasks` includes it), `tasks` (runs, messages, dispatch), `author` (workflows, skills,
-  automations, env files) or `admin` (everything but sign-in). It is shown once.
+  secrets; `tasks` includes it), `tasks` (runs, messages, dispatch, tracker
+  tickets), `author` (workflows, skills, automations, env files, the tracker
+  connection) or `admin` (everything but sign-in). It is shown once.
   **A scope bounds the API, not the machine:** `tasks` and `author` start runs, and a
   run executes code (agents run Bash, check steps are commands) as the user cezar runs
   as — treat either as owner-equivalent on that machine. `read` is the only scope that

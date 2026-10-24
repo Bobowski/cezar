@@ -57,9 +57,11 @@ Settings → Security → **API tokens** (owner only):
   (`ceztok_<id>_<secret>`); stored hashed (argon2, the password store's hash) in the auth store.
 - Scopes: `read` (allowlisted GETs), `runs.transcript` (`/runs/:id/events`, `/runs/:id/history`,
   `/runs/:id/history-context`: tool output can carry secrets, so `read` has only the run list and
-  summary; `tasks` implies it), `tasks` (runs, messages, dispatch), `author` (workflows, skills,
-  automations, env), `admin` (everything, including settings, self-update and terminals — a task
-  terminal is a shell on the host, so `tasks` and `author` never include it: `ADMIN_ROUTES`).
+  summary; `tasks` implies it), `tasks` (runs, messages, dispatch, ticket transitions and watches),
+  `author` (workflows, skills, automations, env, the tracker connection and project link),
+  `admin` (everything, including settings, self-update and terminals — an interactive shell on
+  the host, so `tasks` and `author` never include it). Per-route exceptions to a family's owner
+  live in `ROUTE_OWNERS`.
 - **A scope bounds the API surface, not the machine.** A token that can start or continue a run —
   `tasks`, and `author`, whose workflows and automations start them — can execute code as the OS
   user cezar runs as: agents run Bash, and a check step is a command. That user can read and write

@@ -85,11 +85,16 @@ export const FAMILY_SCOPES: Record<string, Exclude<ApiTokenScope, 'read' | 'runs
 };
 
 /**
- * Routes inside a non-admin family that are `admin`'s anyway: an interactive shell on the host.
- * Not a sandbox — a run `tasks` starts executes code as the cezar user too (spec
- * 2026-10-24-cezar-mcp-server §4); scopes bound the API surface, not the machine.
+ * Routes whose owner is not their family's, first match wins. A task terminal is an interactive
+ * shell on the host: `admin`'s. Not a sandbox — a run `tasks` starts executes code as the cezar
+ * user too (spec 2026-10-24-cezar-mcp-server §4); scopes bound the API surface, not the machine.
+ * A tracker connection (its credentials) and the project's tracker link are configuration:
+ * `author`'s, while `tasks` keeps ticket transitions and watches.
  */
-const ADMIN_ROUTES: readonly RegExp[] = [/^\/runs\/[^/]+\/terminal(\/|$)/];
+const ROUTE_OWNERS: ReadonlyArray<readonly [RegExp, Exclude<ApiTokenScope, 'read' | 'runs.transcript'>]> = [
+  [/^\/runs\/[^/]+\/terminal(\/|$)/, 'admin'],
+  [/^\/tracker\/(connection|association)(\/|$)/, 'author'],
+];
 
 /** Reads any token may make: what an agent needs to address anything at all. */
 const DISCOVERY_ROUTES: ReadonlySet<string> = new Set(['/projects', '/health', '/models']);
@@ -190,12 +195,13 @@ export function apiTokenAllows(scopes: readonly ApiTokenScope[], method: string,
   const family = routeFamily(pathname);
   if (family === null || family === 'auth') return false;
   if (scopes.includes('admin')) return true;
-  const owner = ADMIN_ROUTES.some((pattern) => pattern.test(routePath(pathname)!)) ? 'admin' : FAMILY_SCOPES[family] ?? 'admin';
+  const path = routePath(pathname)!;
+  const owner = ROUTE_OWNERS.find(([pattern]) => pattern.test(path))?.[1] ?? FAMILY_SCOPES[family] ?? 'admin';
   if (owner !== 'admin' && scopes.includes(owner)) return true;
   // The MCP endpoint is a transport: each tool call is re-checked against its own route.
   if (family === 'mcp') return scopes.length > 0;
   if (!READS.has(method.toUpperCase())) return false;
-  const template = getRouteTemplateOf(routePath(pathname)!);
+  const template = getRouteTemplateOf(path);
   if (template === null) return false;
   if (DISCOVERY_ROUTES.has(template)) return true;
   if (scopes.includes('runs.transcript') && TRANSCRIPT_ROUTES.has(template)) return true;

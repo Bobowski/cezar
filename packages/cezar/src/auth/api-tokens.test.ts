@@ -115,6 +115,24 @@ describe('API token scopes, per route family', () => {
     expect(apiTokenAllows(['tasks'], 'POST', '/api/v1/runs/1/terminals-are-not-a-prefix')).toBe(true);
   });
 
+  it('a tracker connection and project link are author’s; tasks keeps tickets and watches', () => {
+    for (const [method, path] of [
+      ['PUT', '/api/v1/tracker/connection'],
+      ['DELETE', '/api/v1/tracker/connection'],
+      ['POST', '/api/v1/p/x/tracker/connection/copy'],
+      ['GET', '/api/v1/tracker/connection'],
+      ['PUT', '/api/v1/tracker/association'],
+      ['DELETE', '/api/v1/tracker/association'],
+    ] as const) {
+      expect(apiTokenAllows(['tasks'], method, path), `${method} ${path}`).toBe(false);
+      expect(apiTokenAllows(['author'], method, path), `${method} ${path}`).toBe(true);
+      expect(apiTokenAllows(['admin'], method, path), `${method} ${path}`).toBe(true);
+    }
+    expect(apiTokenAllows(['tasks'], 'POST', '/api/v1/tracker/T-1/transition')).toBe(true);
+    expect(apiTokenAllows(['tasks'], 'POST', '/api/v1/tracker/watch')).toBe(true);
+    expect(apiTokenAllows(['read'], 'GET', '/api/v1/tracker/association')).toBe(true);
+  });
+
   it('author writes workflows, skills, automations and env files', () => {
     for (const path of ['/api/v1/workflows', '/api/v1/skills/refresh', '/api/v1/automations', '/api/v1/env-files/render']) {
       expect(apiTokenAllows(['author'], 'POST', path), path).toBe(true);

@@ -9014,6 +9014,17 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
   const authIsEnforced = () => authEnforced(process.env, deps.bindHost);
   // One instance for the routes and the scheduler's nightly item.
   const backup = deps.backup ?? new BackupService({ version: deps.version, runs: deps.semaphore });
+  // Every open run store stops writing before a restore places files — a store opened meanwhile
+  // too — so no flush, the restart's included, merges stale records over the restored index.
+  backup.onPlacing(() => {
+    const stores = new Set([deps.store, ...sharedContexts.ids().flatMap((id) => sharedContexts.peek(id)?.store ?? [])]);
+    const releases = [...stores].map((store) => store.holdIndex());
+    const unsubscribe = sharedContexts.onStoreCreated((store) => releases.push(store.holdIndex()));
+    return () => {
+      unsubscribe();
+      for (const release of releases) release();
+    };
+  });
   if (authIsEnforced()) {
     // Boot-time, like dispatch: a token is composed into a run's environment when it starts.
     enableRunTokens();

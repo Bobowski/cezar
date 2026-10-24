@@ -959,6 +959,8 @@ export class RunStore extends EventEmitter {
   /** Ids this process removed on purpose — see `forget`, which is the only thing that writes it. */
   private forgotten = new Set<string>();
   private saveTimer: NodeJS.Timeout | null = null;
+  /** `holdIndex` callers still holding: a restore placed a runs.json this process must not write. */
+  private indexHolds = 0;
   // Preserve failed-load evidence even after a later save rewrites the index. A workspace
   // summary must not call an owner that silently dropped records a complete empty project.
   private indexReadHealth: { state: 'complete' | 'unavailable'; omittedRuns: number; reason?: string } = { state: 'complete', omittedRuns: 0 };
@@ -1778,6 +1780,26 @@ export class RunStore extends EventEmitter {
     this.saveNow(options.throwOnError, options.pretty ?? false);
   }
 
+  /**
+   * Stop writing `runs.json` — the pending debounced save included — until the returned release.
+   * A restore places the archive's index under a live store; every flush after that, the restart's
+   * shutdown flush above all, would merge this process's stale records over it (spec
+   * 2026-10-23-backup-restore §10). The restarted process reads the restored file.
+   */
+  holdIndex(): () => void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    this.indexHolds += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.indexHolds -= 1;
+    };
+  }
+
   // ---- internals -----------------------------------------------------------
 
   private seqs = new Map<string, number>();
@@ -1904,7 +1926,7 @@ export class RunStore extends EventEmitter {
 
   /** Debounced so token-usage updates don't rewrite the index per event. */
   private scheduleSave(): void {
-    if (this.saveTimer) return;
+    if (this.saveTimer || this.indexHolds > 0) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
       this.saveNow();
@@ -1913,6 +1935,7 @@ export class RunStore extends EventEmitter {
   }
 
   private saveNow(throwOnError = false, pretty = false): void {
+    if (this.indexHolds > 0) return;
     const indexPath = join(this.dataDir, 'runs.json');
     const tmpPath = `${indexPath}.tmp`;
     try {

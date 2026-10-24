@@ -115,6 +115,7 @@ describe('BackupService', () => {
     const cloned: string[] = [];
     let restarted = 0;
     let reloaded = 0;
+    const writerHolds: Array<{ authPlaced: boolean; released: boolean }> = [];
     const fresh = new BackupService({
       version: '0.17.0',
       projects: async () => [],
@@ -130,6 +131,14 @@ describe('BackupService', () => {
       afterRestore: () => {
         reloaded += 1;
       },
+      // The run stores' saves: stopped before the first file lands, kept through the restart.
+      holdWriters: () => {
+        const hold = { authPlaced: existsSync(join(root, 'fresh-home', 'auth.json')), released: false };
+        writerHolds.push(hold);
+        return () => {
+          hold.released = true;
+        };
+      },
     });
     // A wrong key fails before anything is put in place.
     await expect(fresh.restore({ archive, identity: 'not the key' })).rejects.toThrow(/does not open the archive/);
@@ -141,6 +150,7 @@ describe('BackupService', () => {
     await new Promise((resolve) => setTimeout(resolve, 800));
     expect(restarted).toBe(1);
     expect(reloaded).toBe(1);
+    expect(writerHolds).toEqual([{ authPlaced: false, released: false }]);
 
     const config = await loadWorkspaceConfig();
     expect(config.projects.map((entry) => entry.id)).toEqual(['fancy']);

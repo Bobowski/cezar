@@ -47,6 +47,9 @@ export interface BackupServiceOptions {
   restart?: () => void;
   /** In-memory caches over files a restore just replaced (the auth sessions). */
   afterRestore?: () => void;
+  /** Stops a writer whose in-memory copy the restore replaces (the run stores' saves) until the
+   *  returned release; taken once the archive is verified, before a file is placed. */
+  holdWriters?: () => () => void;
   projects?: () => Promise<Array<{ id: string; root: string }>>;
   locations?: () => AgentStateLocations;
   fetch?: typeof fetch;
@@ -77,9 +80,16 @@ function message(error: unknown): string {
 export class BackupService {
   private job: BackupJob | null = null;
   private readonly restoreHooks: Array<() => void> = [];
+  private readonly writerHolds: Array<() => () => void> = [];
 
   constructor(private readonly options: BackupServiceOptions) {
     if (options.afterRestore) this.restoreHooks.push(options.afterRestore);
+    if (options.holdWriters) this.writerHolds.push(options.holdWriters);
+  }
+
+  /** Another writer to stop before a restore places files — the server adds its run stores. */
+  onPlacing(hold: () => () => void): void {
+    this.writerHolds.push(hold);
   }
 
   /** Another in-memory cache to drop after a restore — the app adds its auth service's. */
@@ -463,8 +473,13 @@ export class BackupService {
     const home = cezarHomeDir();
     const staging = join(home, `.restore-${job.id}`);
     // Held from the first step, not just around the copy: nothing starts while the archive is read.
-    let release: (() => void) | undefined = this.options.runs?.holdAdmission?.();
+    const release = this.options.runs?.holdAdmission?.();
     if (release) log('holding new runs until the restore is in place');
+    let writers: Array<() => void> = [];
+    const releaseWriters = () => {
+      for (const done of writers) done();
+      writers = [];
+    };
     try {
       log('decrypting and unpacking the archive');
       const manifest = await stageArchive(archive, identity, staging);
@@ -472,22 +487,26 @@ export class BackupService {
         `archive from ${manifest.host}, ${manifest.createdAt} (cezar ${manifest.cezarVersion}): ` +
           `${manifest.projects.length} project(s), ${manifest.sizes.files} files`,
       );
+      writers = this.writerHolds.map((hold) => hold());
       await applyStaged({ staging, manifest, cezarHome: home, locations: this.locations(), clone: this.options.clone, log });
       for (const hook of this.restoreHooks) hook();
-      const restart = options.restart !== false ? this.options.restart : undefined;
-      if (restart) {
+      if (options.restart === false) {
+        release?.();
+        releaseWriters();
+      } else if (this.options.restart) {
+        // Both holds stay until the process goes: its shutdown flush must not win over the
+        // restored runs.json, and a run started now could not be recorded.
         job.status = 'restarting';
         log('restarting…');
         // Let the poll that observes `restarting` get its answer before the listener goes.
-        setTimeout(restart, 750).unref?.();
+        setTimeout(this.options.restart, 750).unref?.();
       } else {
-        release?.();
-        release = undefined;
-        if (options.restart !== false) log('restored — restart cezar to load everything it brought back');
+        log('restored — restart cezar to load everything it brought back; new runs wait until then');
       }
       return manifest;
     } catch (error) {
       release?.();
+      releaseWriters();
       throw error;
     } finally {
       await rm(staging, { recursive: true, force: true }).catch(() => {});

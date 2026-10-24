@@ -1,6 +1,6 @@
 # Design Mode, third cut — a visible queue, a new task from collected notes, source locations, and the gateway
 
-> Status: proposed (2026-10-24), not built. Branch: `brutus`.
+> Status: implemented on brutus (2026-10-25).
 > Builds on: `2026-10-09-design-mode.md` (§6 limits, §7a the live note flow, §8 the prompt
 > queue), `2026-10-10-preview-gateway.md`, `2026-10-11-code-page.md` (`CodeBrowserTab`: with no
 > task chosen, each note starts a task of its own), `2026-10-12-cockpit-authentication.md`.

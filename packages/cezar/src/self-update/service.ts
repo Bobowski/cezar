@@ -407,8 +407,8 @@ export class SelfUpdateService {
 
   /** Forward-only for a branch build (spec §3.6): committed no earlier than the running build.
    *  Ancestry is reported on the status, never enforced here. */
-  private async branchForwardRefusal(target: string, installedAt: string | null, suffix: string): Promise<string | null> {
-    const targetAt = installedAt ?? (await this.source.commit(target.split('+').pop() ?? ''))?.at ?? null;
+  private async branchForwardRefusal(target: string, committedAt: string | null, suffix: string): Promise<string | null> {
+    const targetAt = committedAt ?? (await this.source.commit(target.split('+').pop() ?? ''))?.at ?? null;
     if (!targetAt) return `a hosted cockpit can only update forward — cezar cannot date ${target}'s commit; ${suffix}`;
     const runningAt = this.runningCommit()?.at;
     if (runningAt) {
@@ -416,11 +416,17 @@ export class SelfUpdateService {
         ? null
         : `a hosted cockpit can only update forward — ${target} was committed before the running build; ${suffix}`;
     }
-    // The running build carries no commit (a registry release, an image of unknown age): its
-    // version is all there is to compare, so at least never step back a release.
-    return compareVersions(target.split('+')[0] ?? target, this.deps.version) >= 0
-      ? null
-      : `a hosted cockpit can only update forward — ${target} is older than the running ${this.deps.version}; ${suffix}`;
+    // No running commit (a registry release, an image built without CEZ_SOURCE_*): never step back
+    // a release, and never take a commit older than the running install (an image's: its build time).
+    if (compareVersions(target.split('+')[0] ?? target, this.deps.version) < 0) {
+      return `a hosted cockpit can only update forward — ${target} is older than the running ${this.deps.version}; ${suffix}`;
+    }
+    const runningInstalledAt = this.runningId ? readManifest(this.runningId, this.env)?.installedAt : undefined;
+    const installedMs = runningInstalledAt ? Date.parse(runningInstalledAt) : Number.NaN;
+    if (Number.isFinite(installedMs) && Date.parse(targetAt) < installedMs) {
+      return `a hosted cockpit can only update forward — ${target} was committed before the running ${this.deps.version} was installed (${runningInstalledAt}), and that build carries no commit to compare with; ${suffix}`;
+    }
+    return null;
   }
 
   capability(): { canSelfUpdate: boolean; reason?: string } {

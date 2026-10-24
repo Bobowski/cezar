@@ -285,6 +285,19 @@ describe('forward-only on a hosted cockpit, by committer date', () => {
     expect(await svc.forwardOnlyRefusal(`0.17.0+${c3.slice(0, 8)}`)).toBeNull();
     expect(await svc.forwardOnlyRefusal('0.17.0+deadbeef')).toMatch(/cannot date/);
   });
+
+  it('unknown running commit on hosted refuses an older commit, allows a newer', async () => {
+    const older = commit('feat: before the install', '2026-10-20T10:00:00Z', { 'packages/cezar/package.json': pkg() });
+    const newer = commit('feat: after the install', '2026-10-22T10:00:00Z');
+    // A registry release of the same version, installed between the two commits: no commit to date it by.
+    fakeInstall('0.17.0', { version: '0.17.0', source: 'registry', installedAt: '2026-10-21T10:00:00.000Z' });
+    activate('0.17.0', env);
+    await followBranch();
+    const svc = service();
+    await svc.status({ refresh: true });
+    expect(await svc.forwardOnlyRefusal(`0.17.0+${older.slice(0, 8)}`)).toMatch(/committed before the running 0\.17\.0 was installed/);
+    expect(await svc.forwardOnlyRefusal(`0.17.0+${newer.slice(0, 8)}`)).toBeNull();
+  });
 });
 
 describe('cezar update on the branch channel', () => {

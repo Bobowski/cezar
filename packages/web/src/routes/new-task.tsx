@@ -115,6 +115,7 @@ import {
 } from './new-task-form'
 import { Button } from '@/components/ui/button'
 import { parseNewTaskParams } from './new-task-params'
+import { consumeProjectDesignDrafts, takePendingDesignStart } from './code/project-design-drafts'
 import { trackMessageSent } from '@/lib/telemetry'
 
 /**
@@ -147,6 +148,8 @@ export function NewTaskRoute() {
   // (legacy's `history.replaceState` — the launch key must not survive in history or survive
   // a reload to re-trigger), so live search params would vanish under us.
   const [deepLink] = useState(() => parseNewTaskParams(search))
+  // The Code page's collected notes this composer's text was built from (third cut §3.2).
+  const [designNotes] = useState(() => (deepLink.design ? takePendingDesignStart(draftProjectId) : []))
 
   const health = useHealth()
   const workflows = useWorkflows()
@@ -543,6 +546,9 @@ export function NewTaskRoute() {
       }),
     )
     trackMessageSent('new_task')
+    // The notes the text was built from now belong to this task (third cut §3.2). A failed write
+    // only leaves them collected, where the user can discard them.
+    if (designNotes.length > 0) void consumeProjectDesignDrafts(draftProjectId, designNotes).catch(() => {})
     // Remember what was actually run so the next visit preselects it (legacy
     // `saveLastTaskSource`) and float it to the top of the picker next time
     // (recency sort) — fire-and-forget: a failed write only costs the convenience.

@@ -30,15 +30,6 @@ export const automationEventSchema = z.enum([
   'release.published',
 ]);
 
-/** Events whose item is an open pull request — the ones `checkout: 'pr-head'` and
- *  `deliver: 'owning-run'` mean something for. `check_suite.completed` is polled for open PR
- *  heads only, so it belongs here although its name does not say so. */
-export const PR_HEAD_EVENTS: ReadonlySet<string> = new Set([
-  'pull_request.opened', 'pull_request.reviewed', 'pull_request.review_requested',
-  'pull_request.rereview_requested', 'pull_request.synchronize', 'pull_request.commented',
-  'pull_request.review_commented', 'check_suite.completed',
-]);
-
 const boundedString = z.string().trim().min(1).max(200);
 const stringList = z.array(boundedString).max(100).optional();
 

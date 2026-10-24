@@ -26,6 +26,7 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
   let liveRun: string;
   let extraImages: string;
   let extraPs: string[][];
+  let inspectFails: boolean;
   let logText: string;
   let secrets: SecretStore;
   beforeEach(() => {
@@ -41,6 +42,7 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     calls = [];
     extraImages = '';
     extraPs = [];
+    inspectFails = false;
     logText = `boot\nAPI_TOKEN=${'x'.repeat(4)}ghp_abcdefghijklmnopqrstuvwxyz123456\n`;
     secrets = new SecretStore(process.env, { keychain: async () => null });
   });
@@ -71,6 +73,7 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
       if (command === 'volume ls') return { ok: true, stdout: `${label}_pg\n` };
     }
     if (args[0] === 'ps') return { ok: true, stdout: ps() };
+    if (command === 'container inspect' && inspectFails) return { ok: false, reason: 'No such container' };
     if (command === 'container inspect') return { ok: true, stdout: [C('a'), C('b'), C('c')].map((id) => `${id}\tsha256:${I('1a')}`).join('\n') };
     if (command === 'image ls') return { ok: true, stdout: fixture('image-ls.ndjson') + extraImages };
     if (command === 'volume ls') return { ok: true, stdout: volumes };
@@ -180,6 +183,19 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
     expect((await apiRequest(instance, '/api/v1/docker/volumes/live_pg?force=1', json('DELETE', { users: [C('a')] }))).status).toBe(409);
     expect(ran()).toEqual([]);
     expect((await apiRequest(instance, '/api/v1/docker/volumes/live_pg?force=1', json('DELETE', { users: ['nope'] }))).status).toBe(400);
+  });
+
+  it('refuses a plain image removal when it cannot tell which containers use the image', async () => {
+    // A container removed between the listing and the inspect fails the whole inspect: users unknown, not none.
+    inspectFails = true;
+    const { instance } = await app();
+    const refused = await apiRequest(instance, `/api/v1/docker/images/${I('2b')}`, { method: 'DELETE' });
+    expect(refused.status).toBe(409);
+    expect((await refused.json() as { error: string }).error).toMatch(/use it/);
+    expect(ran()).toEqual([]);
+    // Force says so: the image goes, and no container is acted on unconfirmed.
+    expect((await apiRequest(instance, `/api/v1/docker/images/${I('2b')}?force=1`, json('DELETE', { users: [] }))).status).toBe(200);
+    expect(ran()).toEqual([`image rm -f ${I('2b')}`]);
   });
 
   it('removes an image by its exact id or a unique prefix, and refuses an ambiguous one', async () => {

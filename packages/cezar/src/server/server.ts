@@ -7442,7 +7442,9 @@ export function createApp(deps: ServerDeps) {
   const imagesOf = async (containers: ListedContainer[]) => {
     const [list, managed] = await Promise.all([docker(['image', 'ls', '--no-trunc', '--format', 'json']), withImageIds(docker, containers)]);
     if (!list.ok) return list;
-    return { ok: true as const, images: buildImages(parseImageList(list.stdout), managed), managed };
+    // A failed (or partial) inspect leaves users unknown, which is not "no users".
+    const usersKnown = managed.every((container) => container.imageId !== null);
+    return { ok: true as const, images: buildImages(parseImageList(list.stdout), managed), managed, usersKnown };
   };
   /** The plan, and the dirs each stack's containers were started from — a stack step removes only those. */
   const reclaimPlanOf = async (project: ProjectContext): Promise<{ plan: DockerReclaimPlan; stackDirs: Map<string, string[]> }> => {
@@ -7642,6 +7644,11 @@ export function createApp(deps: ServerDeps) {
       // Always `-f` (spec §2, Docker Desktop style): every tag goes, and stopped users do not block.
       // A running user does even then, so `?force=1` — the confirm said so — stops it first.
       const force = c.req.valid('query').force === '1';
+      if (!images.usersKnown) {
+        // Unknown users could be stopped ones `-f` would untag it from: only force goes on, and acts on no container.
+        if (!force) return c.json({ error: 'could not tell which containers use it; removing it anyway needs force' }, 409);
+        return dockerRemove(c, ['image', 'rm', '-f', image.id]);
+      }
       if (force && !confirmedUsers(c.req.valid('json').users, image.usedBy)) return c.json({ error: usersChanged }, 409);
       const running = image.usedBy.filter((user) => user.running);
       if (running.length > 0) {

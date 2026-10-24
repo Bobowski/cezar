@@ -203,13 +203,24 @@ describe.skipIf(!haveBootTools)('the container supervisor boot choice', () => {
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  function manifest(path: string, commit?: { sha: string; at: string }): void {
+  function manifest(path: string, commit?: { sha: string; at: string }, fields: Record<string, string> = {}): void {
     mkdirSync(join(path, ENTRY, '..'), { recursive: true });
     writeFileSync(join(path, ENTRY), '');
     writeFileSync(
       join(path, '.cezar-install.json'),
-      JSON.stringify({ version: '0.17.0', source: 'image', installedAt: '2026-10-23T00:00:00.000Z', ...(commit ? { commit: { ...commit, subject: '', branch: 'brutus' } } : {}) }),
+      JSON.stringify({
+        version: '0.17.0',
+        source: 'image',
+        installedAt: '2026-10-23T00:00:00.000Z',
+        ...(commit ? { commit: { ...commit, subject: '', branch: 'brutus' } } : {}),
+        ...fields,
+      }),
     );
+  }
+  /** A registry install as `current`: no commit, so it is dated by its publish date or install. */
+  function registryCurrent(fields: Record<string, string>): void {
+    manifest(join(home, 'versions', '0.16.0'), undefined, { version: '0.16.0', source: 'registry', ...fields });
+    symlinkSync('0.16.0', join(home, 'versions', 'current'));
   }
 
   function boot(): string {
@@ -260,6 +271,36 @@ describe.skipIf(!haveBootTools)('the container supervisor boot choice', () => {
     symlinkSync('0.17.0+a1b2c3d4', join(home, 'versions', 'current'));
     expect(boot()).toContain('built without its commit');
     expect(current()).toBe('0.17.0+a1b2c3d4');
+  });
+
+  it('activates an image committed after a registry current was installed, and logs both dates', () => {
+    manifest(join(image, '0.17.0+image'), { sha: 'e5f6a7b8c9d0', at: '2026-10-24T00:00:00.000Z' });
+    registryCurrent({ installedAt: '2026-10-20T00:00:00.000Z' });
+    const out = boot();
+    expect(current()).toBe('0.17.0+image.e5f6a7b8');
+    expect(out).toContain('committed 2026-10-24T00:00:00.000Z');
+    expect(out).toContain('installed 2026-10-20T00:00:00.000Z');
+  });
+
+  it('dates a registry current by its publish date before its install time', () => {
+    manifest(join(image, '0.17.0+image'), { sha: 'e5f6a7b8c9d0', at: '2026-10-24T00:00:00.000Z' });
+    registryCurrent({ publishedAt: '2026-10-22T00:00:00.000Z', installedAt: '2026-10-25T00:00:00.000Z' });
+    expect(boot()).toContain('published 2026-10-22T00:00:00.000Z');
+    expect(current()).toBe('0.17.0+image.e5f6a7b8');
+  });
+
+  it('keeps a registry current published after the image commit', () => {
+    manifest(join(image, '0.17.0+image'), { sha: 'e5f6a7b8c9d0', at: '2026-10-24T00:00:00.000Z' });
+    registryCurrent({ publishedAt: '2026-10-25T00:00:00.000Z', installedAt: '2026-10-25T00:00:00.000Z' });
+    expect(boot()).toContain('newer than the image');
+    expect(current()).toBe('0.16.0');
+  });
+
+  it('keeps a registry current when the image carries no commit date either', () => {
+    manifest(join(image, '0.17.0+image'));
+    registryCurrent({ installedAt: '2026-10-20T00:00:00.000Z' });
+    expect(boot()).toContain('built without its commit');
+    expect(current()).toBe('0.16.0');
   });
 });
 

@@ -100,9 +100,11 @@ services stay up, and boot recovery resumes the agents.
 - **Some commits also need a rebuild.** When the pending commits change `docker/` (the
   Dockerfile, compose files, the Caddyfile, the entrypoint), the dialog says so; the code update
   still applies, and the rebuild is the same command as above, over ssh.
-- **After a rebuild the newer commit wins.** The entrypoint compares the image's commit with the
-  build the cockpit installed and starts the newer one, and logs which (`docker compose logs cezar`).
-  An image built without the four variables is of unknown age, so what the cockpit installed stays.
+- **After a rebuild the newer build wins.** The entrypoint compares the image's commit date with
+  the date of what runs now — its commit date, or for a release with no commit its registry
+  publish date, else when it was installed — starts the newer one, and logs both dates
+  (`docker compose logs cezar`). An image built without the four variables is of unknown age, so
+  what runs now stays.
 - **Which branch.** The dialog's **Branch** channel shows it and, for a signed-in operator, changes
   it (`CEZ_UPDATE_BRANCH=<remote>#<branch>` sets it from the environment). A public repository
   needs no credentials; a private one uses the container's `gh` login or `/data/ssh`.

@@ -77,6 +77,8 @@ const manifestSchema = z
     version: z.string(),
     source: z.enum(['registry', 'local', 'link', 'branch', 'image']),
     installedAt: z.string(),
+    /** `registry` only: the release's publish date, when the registry gave one (docker/supervise.sh). */
+    publishedAt: z.string().optional().catch(undefined),
     /** `link` only: the linked package root (`<worktree>/packages/cezar`) and its branch. */
     checkout: z.string().optional(),
     branch: z.string().optional(),

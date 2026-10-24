@@ -552,7 +552,8 @@ export class SelfUpdateService {
         }
         // A linked checkout goes through discovery too: it may need a rebuild before it runs.
         const linked = !installed || installed.source === 'link' ? await this.linkDiscovered(target, log) : null;
-        const id = linked ?? installed?.id ?? (await installFromRegistry(target, { onLog: log, env: this.env })).id;
+        const publishedAt = this.registry.current()?.versions.find((entry) => entry.version === target)?.publishedAt ?? null;
+        const id = linked ?? installed?.id ?? (await installFromRegistry(target, { onLog: log, env: this.env, publishedAt })).id;
         if (installed && !linked) log(`${id} is already installed`);
         this.switchTo(id, job, log);
       } catch (error) {

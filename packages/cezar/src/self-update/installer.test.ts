@@ -52,6 +52,11 @@ describe('installing into the managed layout', () => {
     expect(listInstalled(env).map((entry) => entry.id)).toEqual(['0.12.1']);
   });
 
+  it('records the registry publish date it was given, for the container boot choice', async () => {
+    await installFromRegistry('0.12.1', { env, runNpm: npmThatInstalls(), publishedAt: '2026-10-01T00:00:00.000Z' });
+    expect(readManifest('0.12.1', env)).toMatchObject({ source: 'registry', publishedAt: '2026-10-01T00:00:00.000Z' });
+  });
+
   it('leaves nothing behind when npm fails', async () => {
     await expect(
       installFromRegistry('0.12.1', {

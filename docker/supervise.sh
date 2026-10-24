@@ -40,6 +40,25 @@ supervise_epoch() { # <ISO date> → seconds, or nothing
   if [ -n "$1" ]; then date -u -d "$1" +%s 2>/dev/null || true; fi
 }
 
+# How old an install is, for the boot choice: its commit date, else its registry publish date, else
+# when it was installed — the first that parses. A registry, local or link install has no commit,
+# and counting it as always newer would stop image rebuilds from ever deploying code.
+supervise_install_date() { # <install dir> → "<epoch> <committed|published|installed> <ISO date>", or nothing
+  for field in .commit.at .publishedAt .installedAt; do
+    at=$(supervise_field "$1" "$field")
+    s=$(supervise_epoch "$at")
+    if [ -n "$s" ]; then
+      case $field in
+        .commit.at) how=committed ;;
+        .publishedAt) how=published ;;
+        *) how=installed ;;
+      esac
+      printf '%s %s %s\n' "$s" "$how" "$at"
+      return 0
+    fi
+  done
+}
+
 # What `activate` in layout.ts does: `previous` first, then `current`.
 supervise_activate() { # <home> <id>
   before=$(supervise_link "$1" current)
@@ -90,7 +109,6 @@ supervise_boot() { # <home> <image dir>
     return 0
   fi
   image_at=$(supervise_field "$image_dir" .commit.at)
-  current_at=$(supervise_field "$versions/$current" .commit.at)
   current_source=$(supervise_field "$versions/$current" .source)
   if [ -z "$image_at" ]; then
     echo "cezar: starting $current — the image ($image_id) was built without its commit (docs/docker.md § Updating), so current stays"
@@ -101,17 +119,19 @@ supervise_boot() { # <home> <image dir>
     echo "cezar: starting $current — the image's ($image_id) commit date '$image_at' does not parse, so its age is unknown and current stays" >&2
     return 0
   fi
-  current_s=$(supervise_epoch "$current_at")
-  if [ -z "$current_s" ]; then
-    echo "cezar: starting $current (${current_source:-unknown}) — it carries no commit date to compare with the image's $image_id, so it stays"
+  dated=$(supervise_install_date "$versions/$current")
+  if [ -z "$dated" ]; then
+    echo "cezar: starting $current (${current_source:-unknown}) — it carries no date that parses to compare with the image's $image_id (committed $image_at), so it stays"
     return 0
   fi
+  current_s=${dated%% *}
+  current_when=${dated#* }
   if [ "$current_s" -ge "$image_s" ]; then
-    echo "cezar: starting $current (${current_source:-unknown}, $current_at) — newer than the image's $image_id"
+    echo "cezar: starting $current (${current_source:-unknown}, $current_when) — newer than the image's $image_id (committed $image_at)"
     return 0
   fi
   supervise_activate "$home" "$image_id"
-  echo "cezar: starting $image_id ($image_at) — the image is newer than $current"
+  echo "cezar: starting $image_id (committed $image_at) — the image is newer than $current (${current_source:-unknown}, $current_when)"
 }
 
 supervise_loop() { # <home> <args for cezar>...

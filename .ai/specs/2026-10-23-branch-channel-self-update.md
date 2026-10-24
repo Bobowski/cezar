@@ -216,9 +216,12 @@ hint: run as root they would create a root-owned `/data/cezar/source` or `versio
 The entrypoint, before starting the server:
 
 - no `current` → activate the image's install;
-- `current` exists → compare its manifest's `commit.at` with the image's: the newer one is
-  activated, and the choice is logged (`cezar: starting 0.17.0+a1b2c3d4 (branch, 2026-10-23)
-  — newer than the image's 0.17.0+image.e5f6…`);
+- `current` exists → compare its manifest's date with the image's `commit.at`: the newer one is
+  activated, and the choice is logged with both dates (`cezar: starting 0.17.0+a1b2c3d4 (branch,
+  committed 2026-10-23…) — newer than the image's 0.17.0+image.e5f6… (committed 2026-10-20…)`).
+  As built, `current` is dated by `commit.at`, else (a registry, local or link install) by the
+  registry `publishedAt` its manifest records, else by `installedAt` — counting a commitless
+  install as always newer would stop image rebuilds from deploying code;
 - the image carries no commit (built without §4.4's args) → `current` stays; logged too.
   As built, an image commit date that does not parse counts the same: unknown age, `current` stays.
 

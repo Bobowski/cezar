@@ -214,7 +214,8 @@ const inside = (base: string, path: string): boolean => {
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
 };
 
-/** Where a project's files may go: the registry's root for it, or under the projects directory. */
+/** Where a project's files may go: the registry's root for it, or under the projects directory —
+ *  both as this machine had them BEFORE the restore, never as the archive's own config says. */
 export interface RootPolicy {
   registry: Array<{ id: string; root: string }>;
   projectsDir: string | null;
@@ -289,7 +290,8 @@ export interface ApplyInput {
   cezarHome: string;
   locations: AgentStateLocations;
   clone?: CloneProject;
-  /** Absent: the workspace registry the data half just put in place, and its projects dir. */
+  /** Absent: this machine's registry and projects dir, read before the data half is placed — on
+   *  a fresh `/setup` that is no project and `CEZ_PROJECTS_DIR` (or its default). */
   rootPolicy?: RootPolicy;
   log: (line: string) => void;
 }
@@ -297,6 +299,8 @@ export interface ApplyInput {
 /** Put a staged archive in place: cezar's state, then the logins (a clone may need `gh`'s), then projects. */
 export async function applyStaged(input: ApplyInput): Promise<void> {
   const { staging, manifest, log } = input;
+  // Read before anything lands: the archive's config.json must not vouch for its own roots.
+  const policy = input.rootPolicy ?? (await rootPolicyOf(input.cezarHome));
   const data = await placeTree(join(staging, 'data'), input.cezarHome, { skipTop: isSkippedDataEntry, warn: log });
   log(`restored cezar state (${data} files)`);
 
@@ -321,7 +325,6 @@ export async function applyStaged(input: ApplyInput): Promise<void> {
   log(`restored agent logins (${agents} files)`);
 
   const clone = input.clone ?? cloneWithGit;
-  const policy = input.rootPolicy ?? (await rootPolicyOf(input.cezarHome));
   for (const project of manifest.projects) {
     const from = join(staging, 'projects', project.id);
     const resolved = resolveProjectRoot(project, policy);

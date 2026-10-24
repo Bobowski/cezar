@@ -165,9 +165,11 @@ Code: `packages/cezar/src/backup/` (`tar.ts`, `codec.ts`, `collect.ts`, `s3.ts`,
   verifies the manifest, then overlays: a file in the archive replaces the one on
   disk, nothing else is deleted — a directory where the archive has a file, and a link or file
   where it has a directory, are kept and named in the job log, never removed or written through.
-  A project's files go back only to the root the restored registry records for that id, or under
-  the projects directory (`projectsDir` / `CEZ_PROJECTS_DIR`), never to whatever absolute path
-  the manifest names, and each one passes `projectFileQualifies` again (review 2026-10-24).
+  A project's files go back only to the root this machine's registry records for that id, or under
+  its projects directory (`projectsDir` / `CEZ_PROJECTS_DIR`) — both read BEFORE the archive's
+  `config.json` is placed, so a fresh `/setup` vouches only for the projects directory — never to
+  whatever absolute path the manifest names, and each one passes `projectFileQualifies` again
+  (review 2026-10-24, round 2).
   The restart re-execs the running entry (the managed `current`
   only for a managed install). The CLI restore never restarts anything.
 - **Nightly** is a built-in item on the workspace automations timer (`builtins` on

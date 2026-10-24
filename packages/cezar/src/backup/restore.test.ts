@@ -40,16 +40,20 @@ describe('applying a crafted archive', () => {
     const manifest = await stageArchive(archive, TEST_IDENTITY, staging);
     await applyStaged({ staging, manifest, cezarHome: home, locations, log: (line) => log.push(line) });
   };
+  const registryJson = (projects: Array<{ id: string; root: string }>, projectsDir: string) =>
+    JSON.stringify({ projectsDir, projects: projects.map((p) => ({ ...p, addedAt: '2026-10-24T00:00:00Z' })) });
+  /** This machine's registry, as it stands before the restore. */
   const registry = (projects: Array<{ id: string; root: string }>, projectsDir = join(dir, 'projects-dir')) =>
-    file('data/config.json', JSON.stringify({ projectsDir, projects: projects.map((p) => ({ ...p, addedAt: '2026-10-24T00:00:00Z' })) }));
+    writeFileSync(join(home, 'config.json'), registryJson(projects, projectsDir));
 
   it('writes a project only at a root the registry or the projects directory vouches for', async () => {
     const app = join(dir, 'code', 'app');
     const outside = join(dir, 'outside');
     const listed = join(dir, 'projects-dir', 'listed');
     for (const root of [app, outside, listed]) mkdirSync(root, { recursive: true });
+    registry([{ id: 'app', root: app }]);
     await restore(
-      [registry([{ id: 'app', root: app }]), file('projects/app/.env', 'A=1'), file('projects/evil/.env', 'E=1'), file('projects/listed/.env', 'L=1')],
+      [file('projects/app/.env', 'A=1'), file('projects/evil/.env', 'E=1'), file('projects/listed/.env', 'L=1')],
       [
         { id: 'app', root: app, remote: null, branch: null },
         { id: 'evil', root: outside, remote: null, branch: null },
@@ -62,12 +66,33 @@ describe('applying a crafted archive', () => {
     expect(log.join('\n')).toMatch(/skipped evil: .*neither/);
   });
 
+  it('never lets the archive\'s own config vouch for the roots it restores to', async () => {
+    const outside = join(dir, 'outside');
+    const planted = join(dir, 'anywhere', 'planted');
+    for (const root of [outside, planted]) mkdirSync(root, { recursive: true });
+    registry([]);
+    await restore(
+      // The archive registers `evil` and widens the projects dir to cover `planted`.
+      [file('data/config.json', registryJson([{ id: 'evil', root: outside }], join(dir, 'anywhere'))), file('projects/evil/.env', 'E=1'), file('projects/planted/.env', 'P=1')],
+      [
+        { id: 'evil', root: outside, remote: null, branch: null },
+        { id: 'planted', root: planted, remote: null, branch: null },
+      ],
+    );
+    expect(existsSync(join(outside, '.env'))).toBe(false);
+    expect(existsSync(join(planted, '.env'))).toBe(false);
+    expect(log.join('\n')).toMatch(/skipped evil: .*neither/);
+    expect(log.join('\n')).toMatch(/skipped planted: .*neither/);
+    // The archive's config itself is still restored — it just vouches for nothing this time.
+    expect(readFileSync(join(home, 'config.json'), 'utf8')).toContain('evil');
+  });
+
   it('puts back only allowlisted project files, whatever else the archive carries', async () => {
     const app = join(dir, 'code', 'app');
     mkdirSync(app, { recursive: true });
+    registry([{ id: 'app', root: app }]);
     await restore(
       [
-        registry([{ id: 'app', root: app }]),
         file('projects/app/.env', 'A=1'),
         file('projects/app/src/index.ts', 'evil()'),
         file('projects/app/node_modules/pkg/.env', 'N=1'),
@@ -97,8 +122,9 @@ describe('applying a crafted archive', () => {
     mkdirSync(app, { recursive: true });
     mkdirSync(elsewhere);
     symlinkSync(elsewhere, join(app, '.ai'), 'junction');
+    registry([{ id: 'app', root: app }]);
     await restore(
-      [registry([{ id: 'app', root: app }]), file('projects/app/.ai/cezar/runs.json', '{}')],
+      [file('projects/app/.ai/cezar/runs.json', '{}')],
       [{ id: 'app', root: app, remote: null, branch: null }],
     );
     expect(existsSync(join(elsewhere, 'cezar', 'runs.json'))).toBe(false);

@@ -46,16 +46,22 @@ async function waitForJob(service: BackupService): Promise<void> {
 describe('BackupService', () => {
   let root: string;
   let saved: string | undefined;
+  let savedProjectsDir: string | undefined;
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'cez-backup-service-'));
     saved = process.env.CEZ_HOME;
+    savedProjectsDir = process.env.CEZ_PROJECTS_DIR;
     process.env.CEZ_HOME = join(root, 'home');
+    // What vouches for a project root on a fresh home: the projects directory, never the archive.
+    process.env.CEZ_PROJECTS_DIR = join(root, 'projects');
   });
 
   afterEach(async () => {
     if (saved === undefined) delete process.env.CEZ_HOME;
     else process.env.CEZ_HOME = saved;
+    if (savedProjectsDir === undefined) delete process.env.CEZ_PROJECTS_DIR;
+    else process.env.CEZ_PROJECTS_DIR = savedProjectsDir;
     await removeTempDir(root);
   });
 
@@ -182,7 +188,7 @@ describe('BackupService', () => {
     const project = join(root, 'projects', 'app');
     git(root, 'clone', '-q', upstream, project);
     writeFileSync(join(project, '.env'), 'KEY=1\n');
-    // The registry is what vouches for the root on the way back (a restore never trusts the manifest alone).
+    // On the fresh home the projects directory vouches for the root (a restore never trusts the manifest alone).
     await mergeWriteWorkspaceConfig((config) => {
       config.projects.push({ id: 'app', root: project, addedAt: new Date().toISOString() } as (typeof config.projects)[number]);
     });

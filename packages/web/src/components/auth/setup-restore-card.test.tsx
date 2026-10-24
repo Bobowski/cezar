@@ -11,7 +11,7 @@ describe('the setup restore card', () => {
   })
 
   it('needs the setup code, sends it with the archive, follows the job and hands over to sign-in', async () => {
-    const posted: FormData[] = []
+    const posted: RequestInit[] = []
     let polls = 0
     const json = (payload: unknown, status = 200) =>
       new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } })
@@ -20,7 +20,7 @@ describe('the setup restore card', () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input)
         if (url === '/api/v1/auth/setup/restore' && init?.method === 'POST') {
-          posted.push(init.body as FormData)
+          posted.push(init)
           return json({ job: 'job-id-0123456789abcdef' })
         }
         if (url.startsWith('/api/v1/auth/setup/restore?job=')) {
@@ -44,8 +44,11 @@ describe('the setup restore card', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Restore' }))
 
     await waitFor(() => expect(posted).toHaveLength(1))
-    expect(posted[0]!.get('code')).toBe('the-code')
-    expect(posted[0]!.get('identity')).toBe('AGE-SECRET-KEY-1X')
+    // The archive is the body itself; the code and the identity ride headers, read before it.
+    const headers = new Headers(posted[0]!.headers)
+    expect(headers.get('x-cezar-setup-code')).toBe('the-code')
+    expect(atob(headers.get('x-cezar-backup-identity')!)).toBe('AGE-SECRET-KEY-1X')
+    expect(posted[0]!.body).toBeInstanceOf(File)
     expect(await screen.findByText('restored cezar state (12 files)')).toBeTruthy()
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1), { timeout: 5_000 })
   })

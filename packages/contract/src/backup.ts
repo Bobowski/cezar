@@ -2,8 +2,8 @@ import { z } from 'zod';
 
 /**
  * Backup and restore (`/api/v1/workspace/backup`, spec `.ai/specs/2026-10-23-backup-restore.md`).
- * Workspace-level and single-mount. The archive's own file field travels as multipart and is
- * validated server-side (a `File` is not a type this Node-free package can name).
+ * Workspace-level and single-mount. A restore upload is the archive's raw bytes as the body
+ * (streamed to disk server-side, never parsed in memory); what it needs beside them rides headers.
  */
 
 /** `cezar-backup-<host>-<yyyymmddThhmmZ>[-n].tar.zst.age` — `.tar.gz.age` on a Node without zstd. */
@@ -126,6 +126,28 @@ export const backupArchiveParamsSchema = z.object({ name: backupArchiveNameSchem
 
 /** The text half of a restore upload: an `AGE-SECRET-KEY-1…` identity or the passphrase. */
 export const BACKUP_IDENTITY_MAX = 8192;
+
+/** An upload's archive is at most this big; a larger one restores with the CLI. */
+export const BACKUP_UPLOAD_MAX_BYTES = 1024 * 1024 * 1024;
+
+/** The identity, base64 of its UTF-8 (a passphrase may be anything a header cannot carry). */
+export const BACKUP_IDENTITY_HEADER = 'x-cezar-backup-identity';
+/** `/setup`'s one-time code, read before a byte of the body. */
+export const SETUP_CODE_HEADER = 'x-cezar-setup-code';
+
+const base64Identity = z
+  .string()
+  .min(1, 'paste the age identity or the passphrase')
+  .max(Math.ceil(BACKUP_IDENTITY_MAX / 3) * 4, 'the identity is too long')
+  .regex(/^[A-Za-z0-9+/_-]+={0,2}$/, 'the identity header is not base64');
+
+/** `POST /api/v1/workspace/backup/restore`: the archive as the body, the identity as a header. */
+export const backupRestoreHeadersSchema = z.object({ [BACKUP_IDENTITY_HEADER]: base64Identity });
+export type BackupRestoreHeaders = z.infer<typeof backupRestoreHeadersSchema>;
+
+/** `POST /api/v1/auth/setup/restore`: the same, plus the setup code. */
+export const setupRestoreHeadersSchema = backupRestoreHeadersSchema.extend({ [SETUP_CODE_HEADER]: z.string().min(1).max(256) });
+export type SetupRestoreHeaders = z.infer<typeof setupRestoreHeadersSchema>;
 
 /** `POST /api/v1/auth/setup/restore` answers the job's id: knowing it is what lets the page,
  *  which has no session yet, follow the job (`GET /api/v1/auth/setup/restore?job=…`). */

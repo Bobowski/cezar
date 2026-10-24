@@ -1,11 +1,13 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Hono } from 'hono';
+import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { backupJobSchema, backupStatusSchema, setupRestoreResponseSchema, type BackupStatus } from '@open-mercato/cezar-contract';
 import { AuthService } from '../auth/service.ts';
 import { issueSetupCode } from '../auth/store.ts';
+import { base32Decode, hotp, totpStep } from '../auth/totp.ts';
+import { setupRestoreRoutes } from '../backup/routes.ts';
 import { TEST_IDENTITY, TEST_RECIPIENT } from '../backup/age-vector.testkit.ts';
 import { BackupService } from '../backup/service.ts';
 import type { AgentStateLocations } from '../paths.ts';
@@ -122,18 +124,20 @@ describe('the backup API', () => {
     expect((await apiRequest(app, '/api/v1/workspace/backup/archives/cezar-backup-box-20200101T0000Z.tar.zst.age')).status).toBe(404);
 
     writeFileSync(join(dir, 'home', 'marker.json'), '{"before":false}');
-    const form = new FormData();
-    form.set('archive', new File([bytes], archive!.name));
-    form.set('identity', TEST_IDENTITY);
-    const restored = await apiRequest(app, '/api/v1/workspace/backup/restore', { method: 'POST', body: form });
+    const restored = await apiRequest(app, '/api/v1/workspace/backup/restore', {
+      method: 'POST',
+      headers: { 'x-cezar-backup-identity': Buffer.from(TEST_IDENTITY).toString('base64'), 'content-length': String(bytes.length) },
+      body: bytes,
+    });
     expect(restored.status).toBe(200);
     const done = await settle();
     expect(done, done.log.join('\n')).toMatchObject({ kind: 'restore', status: 'done' });
     expect(readFileSync(join(dir, 'home', 'marker.json'), 'utf8')).toBe('{"before":true}');
 
-    const missing = new FormData();
-    missing.set('identity', TEST_IDENTITY);
-    expect((await apiRequest(app, '/api/v1/workspace/backup/restore', { method: 'POST', body: missing })).status).toBe(400);
+    // No identity header: refused, and nothing was spooled.
+    const missing = await apiRequest(app, '/api/v1/workspace/backup/restore', { method: 'POST', headers: { 'content-length': String(bytes.length) }, body: bytes });
+    expect(missing.status).toBe(400);
+    expect(readdirSync(join(dir, 'home')).filter((name) => name.startsWith('.restore-upload'))).toEqual([]);
   }, 30_000);
 
   it('is refused on a hosted cockpit that does not enforce sign-in', async () => {
@@ -150,13 +154,16 @@ describe('the backup API', () => {
       const job = await settle();
       return readFileSync(join(dir, 'home', 'backups', job.archive!));
     })();
-    const upload = (code: string) => {
-      const form = new FormData();
-      form.set('archive', new File([bytes], 'a.age'));
-      form.set('identity', TEST_IDENTITY);
-      form.set('code', code);
-      return apiRequest(app, '/api/v1/auth/setup/restore', { method: 'POST', body: form });
-    };
+    const upload = (code: string) =>
+      apiRequest(app, '/api/v1/auth/setup/restore', {
+        method: 'POST',
+        headers: {
+          'x-cezar-backup-identity': Buffer.from(TEST_IDENTITY).toString('base64'),
+          'x-cezar-setup-code': code,
+          'content-length': String(bytes.length),
+        },
+        body: bytes,
+      });
     // A local cockpit has no setup page; Settings → Backup is the way in.
     expect((await upload('anything')).status).toBe(409);
 
@@ -177,4 +184,112 @@ describe('the backup API', () => {
     expect(polled, polled.log.join('\n')).toMatchObject({ kind: 'restore', status: 'done' });
     expect((await apiRequest(app, `/api/v1/auth/setup/restore?job=${'x'.repeat(22)}`)).status).toBe(404);
   }, 30_000);
+});
+
+/** The upload gates run on headers alone (review of 2026-10-24): nothing is read before they pass. */
+describe('a restore upload, before its body', () => {
+  let dir: string;
+  let app: Hono;
+  let auth: AuthService;
+  let store: RunStore;
+  const saved = { home: process.env.CEZ_HOME, remote: process.env.CEZ_REMOTE, auth: process.env.CEZ_AUTH };
+  const SETUP_PATH = '/api/v1/auth/setup/restore';
+
+  /** A body that counts every read; `highWaterMark: 0` so nothing is pulled until someone reads. */
+  const watchedBody = (bytes = 64) => {
+    const seen = { pulls: 0 };
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        seen.pulls += 1;
+        controller.enqueue(new Uint8Array(bytes));
+        controller.close();
+      },
+    }, { highWaterMark: 0 });
+    return { body, seen };
+  };
+  const post = (target: Hono, path: string, headers: Record<string, string>, body: ReadableStream<Uint8Array>) =>
+    apiRequest(target, path, { method: 'POST', headers, body, duplex: 'half' } as RequestInit);
+  const identity = { 'x-cezar-backup-identity': Buffer.from(TEST_IDENTITY).toString('base64') };
+
+  beforeEach(() => {
+    delete process.env.CEZ_REMOTE;
+    process.env.CEZ_AUTH = '1';
+    dir = mkdtempSync(join(tmpdir(), 'cez-backup-gate-'));
+    process.env.CEZ_HOME = join(dir, 'home');
+    const repoRoot = join(dir, 'repo');
+    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
+    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    auth = new AuthService({ scrypt: { N: 2 ** 10, r: 8, p: 1 } });
+    const backup = new BackupService({ version: 't', projects: async () => [], hostname: 'box' });
+    app = createApp({ repoRoot, store, manager: {} as RunManager, version: 't', backup, auth });
+  });
+
+  afterEach(async () => {
+    store.flush();
+    for (const [key, value] of [['CEZ_HOME', saved.home], ['CEZ_REMOTE', saved.remote], ['CEZ_AUTH', saved.auth]] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await removeTempDir(dir);
+  });
+
+  it('answers 401 for a missing or wrong setup code without reading a byte', async () => {
+    const issued = issueSetupCode();
+    if (!issued.ok) throw new Error('no code');
+    for (const code of [undefined, 'guessed']) {
+      const { body, seen } = watchedBody();
+      const res = await post(app, SETUP_PATH, { ...identity, 'content-length': '64', ...(code ? { 'x-cezar-setup-code': code } : {}) }, body);
+      expect(res.status).toBe(401);
+      expect(seen.pulls).toBe(0);
+    }
+  });
+
+  it('answers 413 for an oversized Content-Length, and 411 for none, without reading a byte', async () => {
+    const issued = issueSetupCode();
+    if (!issued.ok) throw new Error('no code');
+    const code = { 'x-cezar-setup-code': issued.setup.code };
+    const big = watchedBody();
+    const res = await post(app, SETUP_PATH, { ...identity, ...code, 'content-length': String(2 * 1024 ** 3) }, big.body);
+    expect(res.status).toBe(413);
+    expect(big.seen.pulls).toBe(0);
+    const none = watchedBody();
+    expect((await post(app, SETUP_PATH, { ...identity, ...code }, none.body)).status).toBe(411);
+    expect(none.seen.pulls).toBe(0);
+  });
+
+  it('stops a body that runs past its Content-Length while streaming, and leaves no upload behind', async () => {
+    const issued = issueSetupCode();
+    if (!issued.ok) throw new Error('no code');
+    const { body } = watchedBody(4096);
+    const res = await post(app, SETUP_PATH, { ...identity, 'x-cezar-setup-code': issued.setup.code, 'content-length': '100' }, body);
+    expect(res.status).toBe(413);
+    expect(readdirSync(join(dir, 'home')).filter((name) => name.startsWith('.restore-upload'))).toEqual([]);
+  });
+
+  it('is not public once an owner exists: 401 from the guard, 404 from the route itself', async () => {
+    const issued = issueSetupCode();
+    if (!issued.ok) throw new Error('no code');
+    const begun = await auth.beginSetup({ code: issued.setup.code, username: 'owner', password: 'a long enough password' }, { address: '127.0.0.1', label: 't' });
+    if (!begun.ok) throw new Error(begun.error);
+    const done = auth.completeSetup({ ticket: begun.ticket, code: hotp(base32Decode(begun.secret)!, totpStep(Date.now())) }, { address: '127.0.0.1', label: 't' });
+    if (!done.ok) throw new Error(done.error);
+    const guarded = watchedBody();
+    expect((await post(app, SETUP_PATH, { ...identity, 'x-cezar-setup-code': issued.setup.code, 'content-length': '64' }, guarded.body)).status).toBe(401);
+    expect(guarded.seen.pulls).toBe(0);
+
+    // A signed-in caller passes the guard; the route still refuses before the body.
+    const routes = new Hono().route('/api/v1', setupRestoreRoutes({ service: new BackupService({ version: 't' }), auth, enforced: () => true }));
+    const direct = watchedBody();
+    expect((await post(routes, SETUP_PATH, { ...identity, 'x-cezar-setup-code': issued.setup.code, 'content-length': '64' }, direct.body)).status).toBe(404);
+    expect(direct.seen.pulls).toBe(0);
+  });
+
+  it('refuses a Settings restore from an untrusted caller before its body', async () => {
+    process.env.CEZ_REMOTE = '1';
+    process.env.CEZ_AUTH = '0';
+    const { body, seen } = watchedBody();
+    const res = await post(app, '/api/v1/workspace/backup/restore', { ...identity, 'content-length': '64', host: 'agents.example.dev', 'x-forwarded-proto': 'https' }, body);
+    expect(res.status).toBe(409);
+    expect(seen.pulls).toBe(0);
+  });
 });

@@ -34,6 +34,14 @@ export function isPublicAuthPath(pathname: string): boolean {
   return PUBLIC_PATHS.has(pathname);
 }
 
+/** Public only while no owner can sign in: a restore upload is a setup action, not a sign-in one. */
+const SETUP_ONLY = new Set([`POST ${API}/auth/setup/restore`]);
+
+function publicNow(method: string, pathname: string, service: AuthService): boolean {
+  if (!isPublicAuthPath(pathname)) return false;
+  return !SETUP_ONLY.has(`${method.toUpperCase()} ${pathname}`) || service.setupRequired();
+}
+
 function cookieValue(header: string | undefined, name: string): string | undefined {
   for (const pair of (header ?? '').split(';')) {
     const trimmed = pair.trim();
@@ -94,7 +102,7 @@ export function createAuthGuard(options: AuthGuardOptions): MiddlewareHandler<Au
       return next();
     }
     c.set('principal', undefined);
-    return isPublicAuthPath(c.req.path) ? next() : unauthorized(c);
+    return publicNow(c.req.method, c.req.path, options.service) ? next() : unauthorized(c);
   };
 }
 

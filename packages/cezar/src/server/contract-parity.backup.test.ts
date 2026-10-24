@@ -1,9 +1,10 @@
 import type { InferRequestType, InferResponseType } from 'hono/client';
 import { hc } from 'hono/client';
 import { expect, it } from 'vitest';
-import type { z } from 'zod';
+
 import type {
   BackupError,
+  BackupRestoreHeaders,
   BackupJob,
   BackupSchedule,
   BackupStatus,
@@ -11,9 +12,9 @@ import type {
   CreateBackupBody,
   SetBackupRecipientBody,
   SetBackupTargetBody,
+  SetupRestoreHeaders,
   SetupRestoreResponse,
 } from '@open-mercato/cezar-contract';
-import type { backupRestoreUploadSchema, setupRestoreUploadSchema } from '../backup/routes.ts';
 import type { AppType } from './app-type.ts';
 
 const client = hc<AppType>('http://127.0.0.1');
@@ -37,9 +38,9 @@ type Checks = [
   Assert<Mutual<BackupError, InferResponseType<typeof backup.$get, 409>>>,
   Assert<Mutual<BackupError, InferResponseType<typeof backup.archives[':name']['$get'], 404>>>,
   Assert<Mutual<BackupStatus, InferResponseType<typeof backup.restore.$post, 200>>>,
-  Assert<Mutual<z.input<typeof backupRestoreUploadSchema>, InferRequestType<typeof backup.restore.$post>['form']>>,
+  Assert<Mutual<BackupRestoreHeaders, InferRequestType<typeof backup.restore.$post>['header']>>,
   Assert<Mutual<SetupRestoreResponse, InferResponseType<typeof setupRestore.$post, 200>>>,
-  Assert<Mutual<z.input<typeof setupRestoreUploadSchema>, InferRequestType<typeof setupRestore.$post>['form']>>,
+  Assert<Mutual<SetupRestoreHeaders, InferRequestType<typeof setupRestore.$post>['header']>>,
   Assert<Mutual<BackupJob, InferResponseType<typeof setupRestore.$get, 200>>>,
   Assert<Mutual<{ job: string }, InferRequestType<typeof setupRestore.$get>['query']>>,
 ];

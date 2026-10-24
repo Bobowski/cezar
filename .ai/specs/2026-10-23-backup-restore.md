@@ -89,7 +89,7 @@ POST   /workspace/backup/target/test
 PUT    /workspace/backup/schedule            { nightly: boolean, keep: number }
 POST   /workspace/backup                     → starts the job
 GET    /workspace/backup/archives/:name      → the file (download)
-POST   /workspace/backup/restore             multipart: archive + identity  (also mounted for /setup with the setup code)
+POST   /workspace/backup/restore             raw archive body + x-cezar-backup-identity  (also mounted for /setup with x-cezar-setup-code)
 ```
 
 Zod in `packages/contract/src/backup.ts`; archive names validated against the pattern above.
@@ -173,8 +173,11 @@ Code: `packages/cezar/src/backup/` (`tar.ts`, `codec.ts`, `collect.ts`, `s3.ts`,
   HTTPS or loopback, no owner yet) answers `{ job }`; the page follows it with
   `GET /api/v1/auth/setup/restore?job=` — the unguessable id is the only handle — and moves to
   sign-in once the restarted cockpit answers.
-- **Uploads** ride their own 1 GiB body limit; the multipart reader holds the archive in memory
-  before it is spooled to `CEZ_HOME`, so a VPS with little RAM restores a large archive with the
-  CLI instead.
+- **Uploads** are the archive as the raw body (not multipart), the identity in the
+  `x-cezar-backup-identity` header (base64) and, for `/setup`, the code in `x-cezar-setup-code`.
+  Every gate — trust or enforced sign-in, HTTPS, no owner yet, `Content-Length` present and at
+  most 1 GiB, the setup code and its throttle — answers from headers before a byte is read; the
+  body then streams to `CEZ_HOME/.restore-upload-*`, cut off past its declared length. The guard
+  serves `POST /auth/setup/restore` anonymously only while no owner exists (review 2026-10-24).
 - **Not done:** a passphrase prompt that hides input in the CLI (it reads a line or stdin); listing
   remote archives in the cockpit; restoring onto a machine whose project roots differ.

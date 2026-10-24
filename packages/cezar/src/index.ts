@@ -399,8 +399,6 @@ async function serveCommand(
       });
     },
   });
-  // A read-only home keeps the env seed for this process; nothing else depends on the write.
-  await selfUpdate.persistImageSeed().catch(() => false);
   void selfUpdate.updateAvailable().then((latest) => {
     if (!latest) return;
     update.latest = latest;

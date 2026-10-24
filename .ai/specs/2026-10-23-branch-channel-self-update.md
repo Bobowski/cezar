@@ -71,6 +71,15 @@ value saved from the dialog wins); in the container, the image's own source (§4
 are optional with `.catch`, like every workspace-config field. `remote` must parse as an
 `https://` or `ssh://`/`git@` git URL; `branch` passes `isSafeGitRef`.
 
+As built: precedence is resolved at READ time, and no seed is ever written. A save through the
+dialog or `cezar update --channel` also writes `updateChannelSource: "user"`, and only a marked
+save outranks the seeds: user save > `CEZ_UPDATE_*` > image source > an unmarked saved value. An
+unmarked `stable`/`nightly`/`development` still counts as the user's (releases before the marker
+saved only those, through the same dialog); an unmarked `branch` is an earlier build's boot seed
+and ranks last, so a later `CEZ_UPDATE_CHANNEL=stable`, a new `CEZ_UPDATE_BRANCH` or an image
+rebuilt from another branch is followed. A bare channel save keeps following the seeded branch;
+only a save that names a branch pins it.
+
 ### 3.2 The source clone
 
 `<CEZ_HOME>/source` — `/data/cezar/source` in the container, `~/.cezar/source` elsewhere. A
@@ -224,7 +233,9 @@ Rejected: un-ignoring `.git/HEAD` and refs — packed refs make it unreliable fo
 First boot with no `updateChannel` saved and `/opt/cezar/source.json` present: the entrypoint
 exports `CEZ_UPDATE_CHANNEL=branch` and `CEZ_UPDATE_BRANCH=<remote>#<branch>` from it, which the
 service treats as the seed it already knows. A saved channel always wins, so an operator who
-switched to `stable` is not switched back by a rebuild.
+switched to `stable` is not switched back by a rebuild. Nothing is written into the config
+(§3.1 as built); the `cezar` launcher repeats the same export, so `docker compose exec -u node
+cezar cezar update` follows the same branch.
 
 ### 4.6 Tools under `/data`
 
@@ -289,8 +300,8 @@ applies — it is the same tarball the new image would carry.
 
 Unit (vitest, `packages/cezar/src/self-update/`):
 
-- channel resolution: config > `CEZ_UPDATE_BRANCH` > container seed; an invalid remote or ref is
-  dropped with the config's usual `.catch`;
+- channel resolution: user-saved config > `CEZ_UPDATE_*` > container seed > an unmarked save; an
+  invalid remote or ref is dropped with the config's usual `.catch`;
 - `branch` status from a fixture clone: `behind`, `fastForward` false after a force-push,
   `touchesImage` from a commit that edits `docker/Dockerfile`;
 - forward-only by committer date — refused older, allowed newer, ancestry only reported;

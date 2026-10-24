@@ -113,6 +113,7 @@ const followBranch = () =>
   mergeWriteWorkspaceConfig((config) => {
     config.updateChannel = 'branch';
     config.updateBranch = { ...BRANCH };
+    config.updateChannelSource = 'user';
   });
 
 beforeEach(() => {
@@ -156,14 +157,12 @@ describe('which branch the channel follows', () => {
     // An invalid seed is dropped, never half-used.
     expect(await svc({ CEZ_UPDATE_BRANCH: 'file:///tmp/x#main' }).updateBranch()).toEqual({ remote: 'https://example.invalid/image.git', branch: 'image-branch' });
     expect(await svc({ CEZ_UPDATE_BRANCH: `${REMOTE}#env-branch` }).updateBranch()).toEqual({ remote: REMOTE, branch: 'env-branch' });
-    await mergeWriteWorkspaceConfig((config) => {
-      config.updateBranch = { remote: REMOTE, branch: 'saved' };
-    });
+    await svc({}).setChannel('branch', { remote: REMOTE, branch: 'saved' });
     expect(await svc({ CEZ_UPDATE_BRANCH: `${REMOTE}#env-branch` }).updateBranch()).toEqual({ remote: REMOTE, branch: 'saved' });
   });
 
   it('takes the branch channel from CEZ_UPDATE_CHANNEL, and a saved channel over it', async () => {
-    const svc = new SelfUpdateService({ pkgName: 'x', version: '0.17.0', entry: '/x', restart: () => {}, env: { ...env, CEZ_UPDATE_CHANNEL: 'branch' } });
+    const svc = new SelfUpdateService({ pkgName: 'x', version: '0.17.0', entry: '/x', restart: () => {}, env: { ...env, CEZ_UPDATE_CHANNEL: 'branch' }, imageSourceFile: join(root, 'none.json') });
     expect(await svc.channel()).toBe('branch');
     await mergeWriteWorkspaceConfig((config) => {
       config.updateChannel = 'stable';
@@ -171,17 +170,79 @@ describe('which branch the channel follows', () => {
     expect(await svc.channel()).toBe('stable');
   });
 
-  it('saves the container seed on boot so every process follows it, and only in the container', async () => {
-    const seeded = { ...env, CEZ_UPDATE_CHANNEL: 'branch', CEZ_UPDATE_BRANCH: `${REMOTE}#brutus` };
-    const outside = new SelfUpdateService({ pkgName: 'x', version: '0.17.0', entry: '/x', restart: () => {}, env: seeded, imageSourceFile: join(root, 'none.json') });
-    expect(await outside.persistImageSeed()).toBe(false);
-    const imageSource = join(root, 'source.json');
-    writeFileSync(imageSource, JSON.stringify({ commit: 'abc', branch: 'brutus', remote: REMOTE, committedAt: '' }));
-    const inside = new SelfUpdateService({ pkgName: 'x', version: '0.17.0', entry: '/x', restart: () => {}, env: seeded, imageSourceFile: imageSource });
-    expect(await inside.persistImageSeed()).toBe(true);
-    // `docker compose exec … cezar update` runs without the entrypoint's exports.
-    expect(await service().channel()).toBe('branch');
-    expect(await service().updateBranch()).toEqual(BRANCH);
+  // Spec §3.1: the user's save > CEZ_UPDATE_* > the image seed > an unmarked (seeded) save.
+  describe('precedence, resolved at read time', () => {
+    const IMAGE = { remote: 'https://example.invalid/image.git', branch: 'image-branch' };
+    let imageSource: string;
+    beforeEach(() => {
+      imageSource = join(root, 'source.json');
+      writeFileSync(imageSource, JSON.stringify({ commit: 'abc', committedAt: '', ...IMAGE }));
+    });
+    const svc = (extra: NodeJS.ProcessEnv = {}, file = imageSource) =>
+      new SelfUpdateService({ pkgName: 'x', version: '0.17.0', entry: '/x', restart: () => {}, env: { ...env, ...extra }, imageSourceFile: file });
+    /** What the pre-fix boot seed wrote: indistinguishable from a save, so it must not count as one. */
+    const legacySeed = (branch: { remote: string; branch: string }) =>
+      mergeWriteWorkspaceConfig((config) => {
+        config.updateChannel = 'branch';
+        config.updateBranch = { ...branch };
+      });
+
+    it.each([
+      // [case, CEZ_UPDATE_CHANNEL, CEZ_UPDATE_BRANCH, image source present, expected channel, expected branch]
+      ['the image alone', undefined, undefined, true, 'branch', 'image-branch'],
+      ['env channel over the image', 'stable', undefined, true, 'stable', 'image-branch'],
+      ['env branch over the image', undefined, `${REMOTE}#env-branch`, true, 'branch', 'env-branch'],
+      ['no seed at all', undefined, undefined, false, 'stable', null],
+    ] as const)('%s', async (_name, channel, branch, image, wantChannel, wantBranch) => {
+      const extra: NodeJS.ProcessEnv = {};
+      if (channel) extra.CEZ_UPDATE_CHANNEL = channel;
+      else delete env.CEZ_UPDATE_CHANNEL;
+      if (branch) extra.CEZ_UPDATE_BRANCH = branch;
+      else delete env.CEZ_UPDATE_BRANCH;
+      const service = svc(extra, image ? imageSource : join(root, 'none.json'));
+      expect(await service.channel()).toBe(wantChannel);
+      expect((await service.updateBranch())?.branch ?? null).toBe(wantBranch);
+    });
+
+    it('writes nothing at boot: a seed lives only as long as its env or image does', async () => {
+      expect(await svc().channel()).toBe('branch');
+      expect(existsSync(join(home, 'config.json'))).toBe(false);
+    });
+
+    it('an unmarked saved branch channel (an older boot seed) yields to a later env or image', async () => {
+      await legacySeed({ remote: REMOTE, branch: 'old-seed' });
+      expect(await svc({ CEZ_UPDATE_CHANNEL: 'stable' }).channel()).toBe('stable');
+      expect((await svc({ CEZ_UPDATE_BRANCH: `${REMOTE}#new-env` }).updateBranch())?.branch).toBe('new-env');
+      // An image rebuilt from another branch is followed.
+      expect((await svc().updateBranch())?.branch).toBe('image-branch');
+      // With no seed left it is still the only signal, so it is kept.
+      const bare = svc({}, join(root, 'none.json'));
+      expect(await bare.channel()).toBe('branch');
+      expect((await bare.updateBranch())?.branch).toBe('old-seed');
+    });
+
+    it('a channel and branch the user saved outrank env and the image', async () => {
+      await svc().setChannel('branch', { remote: REMOTE, branch: 'mine' });
+      const overridden = svc({ CEZ_UPDATE_CHANNEL: 'stable', CEZ_UPDATE_BRANCH: `${REMOTE}#env-branch` });
+      expect(await overridden.channel()).toBe('branch');
+      expect((await overridden.updateBranch())?.branch).toBe('mine');
+      await svc().setChannel('nightly');
+      expect(await svc({ CEZ_UPDATE_CHANNEL: 'branch' }).channel()).toBe('nightly');
+    });
+
+    it('a bare channel save keeps following the seed, and drops a stale seeded branch', async () => {
+      await legacySeed({ remote: REMOTE, branch: 'old-seed' });
+      await svc().setChannel('branch');
+      expect(await svc({ CEZ_UPDATE_CHANNEL: 'stable' }).channel()).toBe('branch');
+      expect((await svc().updateBranch())?.branch).toBe('image-branch');
+    });
+
+    it('a stable/nightly/development save from before the marker still outranks env', async () => {
+      await mergeWriteWorkspaceConfig((config) => {
+        config.updateChannel = 'nightly';
+      });
+      expect(await svc({ CEZ_UPDATE_CHANNEL: 'branch' }).channel()).toBe('nightly');
+    });
   });
 
   it('refuses the branch channel when there is no branch to follow', async () => {

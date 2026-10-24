@@ -19,7 +19,7 @@ import type {
   UpdateCommit,
 } from '@open-mercato/cezar-contract';
 
-import { loadWorkspaceConfig, mergeWriteWorkspaceConfig, seedUpdateBranchChannel } from '../workspace/config.ts';
+import { loadWorkspaceConfig, mergeWriteWorkspaceConfig } from '../workspace/config.ts';
 import type { WorkspaceSemaphore } from '../workspace/semaphore.ts';
 import { installFromLocal, installFromRegistry, runNpm } from './installer.ts';
 import { buildCheckout, discoverCheckouts } from './checkouts.ts';
@@ -29,7 +29,6 @@ import {
   IMAGE_SOURCE_FILE,
   imageSourceBranch,
   parseUpdateBranch,
-  readImageSource,
   selfUpdateCheckEnabled,
   type GitRunner,
 } from './branch.ts';
@@ -141,37 +140,51 @@ export class SelfUpdateService {
     return this.deps.version;
   }
 
-  /** The configured channel: workspace config wins, then `CEZ_UPDATE_CHANNEL`, then stable. */
+  /**
+   * The channel, resolved at read time (spec §3.1): one the user saved, then `CEZ_UPDATE_CHANNEL`,
+   * then the container image's source, then stable. A saved value counts as the user's when it is
+   * marked so, or is not `branch` — releases before the marker only ever saved those through
+   * `setChannel`; an unmarked `branch` (an older build's boot seed) ranks below every seed.
+   */
   async channel(): Promise<UpdateChannel> {
     const config = await loadWorkspaceConfig();
-    if (config.updateChannel) return config.updateChannel;
+    const saved = config.updateChannel;
+    if (saved && (config.updateChannelSource === 'user' || saved !== 'branch')) return saved;
     const seed = this.env.CEZ_UPDATE_CHANNEL;
-    return seed === 'nightly' || seed === 'development' || seed === 'branch' ? seed : 'stable';
+    if (seed === 'stable' || seed === 'nightly' || seed === 'development' || seed === 'branch') return seed;
+    if (this.imageBranch()) return 'branch';
+    return saved ?? 'stable';
   }
 
-  /** The branch the `branch` channel follows: workspace config, then `CEZ_UPDATE_BRANCH`, then
-   *  the container image's own source. Null when none of them names a valid one. */
+  /** The branch the `branch` channel follows: one the user saved, then `CEZ_UPDATE_BRANCH`, then
+   *  the container image's own source, then an unmarked saved one. Null when none is valid. */
   async updateBranch(): Promise<UpdateBranch | null> {
     const config = await loadWorkspaceConfig();
-    if (config.updateBranch) return { remote: config.updateBranch.remote, branch: config.updateBranch.branch };
-    return parseUpdateBranch(this.env.CEZ_UPDATE_BRANCH) ?? imageSourceBranch(this.deps.imageSourceFile ?? IMAGE_SOURCE_FILE);
+    const saved = config.updateBranch ? { remote: config.updateBranch.remote, branch: config.updateBranch.branch } : null;
+    if (saved && config.updateChannelSource === 'user') return saved;
+    return this.seedBranch() ?? saved;
   }
 
-  /** In the container, save the boot's branch seed (spec §4.5): the entrypoint exports it to the
-   *  server only, so `docker compose exec … cezar update` would otherwise follow stable. */
-  async persistImageSeed(): Promise<boolean> {
-    if (!readImageSource(this.deps.imageSourceFile ?? IMAGE_SOURCE_FILE)) return false;
-    if ((await this.channel()) !== 'branch') return false;
-    const branch = await this.updateBranch();
-    return branch ? seedUpdateBranchChannel(branch) : false;
+  private imageBranch(): UpdateBranch | null {
+    return imageSourceBranch(this.deps.imageSourceFile ?? IMAGE_SOURCE_FILE);
   }
 
+  private seedBranch(): UpdateBranch | null {
+    return parseUpdateBranch(this.env.CEZ_UPDATE_BRANCH) ?? this.imageBranch();
+  }
+
+  /** A user's choice (the dialog, `cezar update --channel`): marked, so it outranks every seed. A
+   *  bare channel keeps following the seeded branch; only a given branch is pinned. */
   async setChannel(channel: UpdateChannel, branch?: UpdateBranch): Promise<void> {
     if (channel === 'branch' && !branch && !(await this.updateBranch())) {
       throw new Error('the branch channel needs a branch to follow — give a remote and a branch, or set CEZ_UPDATE_BRANCH=<remote>#<branch>');
     }
+    const seeded = this.seedBranch();
     await mergeWriteWorkspaceConfig((config) => {
+      // An unmarked branch was never vouched for by the user: drop it unless it is the only one.
+      if (config.updateChannelSource !== 'user' && config.updateBranch && (seeded || channel !== 'branch')) delete config.updateBranch;
       config.updateChannel = channel;
+      config.updateChannelSource = 'user';
       if (branch) config.updateBranch = { remote: branch.remote, branch: branch.branch };
     });
     this.branchCache = null;

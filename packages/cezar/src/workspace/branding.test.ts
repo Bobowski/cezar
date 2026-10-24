@@ -294,18 +294,22 @@ describe('content-addressed storage', () => {
 
 describe('the accent colour', () => {
   it('derives a fill, ink and ring per theme that meet the contrast rules', () => {
-    for (const color of ['#a8f372', '#ffff00', '#000080', '#7c3aed', '#101010']) {
+    for (const color of ['#a8f372', '#ffff00', '#000080', '#7c3aed', '#101010', '#777777', '#ffffff']) {
       const tokens = deriveAccentTokens(color)!;
       const rgb = (hex: string) => parseHexColor(hex)!;
       expect(contrastRatio(rgb(tokens.dark.primary), rgb('#131316')), `${color} dark fill`).toBeGreaterThanOrEqual(3);
       expect(contrastRatio(rgb(tokens.dark.primaryStrong), rgb('#131316')), `${color} dark ink`).toBeGreaterThanOrEqual(4.5);
       expect(contrastRatio(rgb(tokens.light.primaryStrong), rgb('#ffffff')), `${color} light ink`).toBeGreaterThanOrEqual(4.5);
       expect(contrastRatio(rgb(tokens.light.ring), rgb('#ffffff')), `${color} light ring`).toBeGreaterThanOrEqual(3);
-      expect(tokens.light.primary).toBe(color);
       for (const theme of ['dark', 'light'] as const) {
-        expect(contrastRatio(rgb(tokens[theme].primaryForeground), rgb(tokens[theme].primary)), `${color} ${theme} text on fill`).toBeGreaterThanOrEqual(3);
+        expect(contrastRatio(rgb(tokens[theme].primaryForeground), rgb(tokens[theme].primary)), `${color} ${theme} text on fill`).toBeGreaterThanOrEqual(4.5);
       }
+      // A light fill keeps the colour unless it would vanish into the white surface.
+      if (color === '#ffffff') expect(contrastRatio(rgb(tokens.light.primary), rgb('#ffffff')), 'white light fill').toBeGreaterThanOrEqual(3);
+      else expect(tokens.light.primary).toBe(color);
     }
+    // Mid-grey reaches 4.5:1 with neither near-black nor white; pure black does.
+    expect(deriveAccentTokens('#777777')!.light.primaryForeground).toBe('#000000');
     expect(deriveAccentTokens('lime')).toBeNull();
     expect(deriveAccentTokens('#abc')).toBeNull();
   });

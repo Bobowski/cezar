@@ -109,7 +109,9 @@ Where the build settled a question the sections above left open, or deliberately
   `[data-brand-accent]` rules reading `--brand-{dark,light}-*` custom properties the server stamps
   on `<html>` (`renderShellHtml`) and the cockpit updates live (`lib/brand-accent.ts`). Dark fill
   and ring reach 3:1 against `#131316`, ink 4.5:1; light ink 4.5:1 and ring 3:1 against white;
-  text on a fill is near-black or white, whichever reads better. It also sets `theme-color`.
+  text on a fill reaches 4.5:1 — near-black or white, whichever reads better, else pure black or
+  white (one always does). A near-white accent (under 1.25:1 against white, barely any hue) is no
+  light fill on its own, so the light fill darkens to 3:1 like the ring. It also sets `theme-color`.
 - **Public reads.** `GET /workspace/branding`, `/workspace/branding/:kind` and the old
   `/workspace/branding-logo` pass the sign-in guard (`isPublicBrandingRequest`); any API token
   may read them, but none of them is a `read`-scope route (the name is operator text). Every

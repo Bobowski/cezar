@@ -4,12 +4,12 @@ import type { BrandingAccentTokens } from '@open-mercato/cezar-contract';
  * The operator's accent colour turned into the cockpit's `--primary` family, once per theme
  * (spec 2026-10-24-cockpit-branding §3). The dataviz contrast rules: a fill or ring must reach
  * 3:1 against the theme's surface, ink (accent-coloured text) 4.5:1, and the text ON a fill
- * whichever of near-black or white reads better on it.
+ * 4.5:1 — near-black or white, whichever reads better, else pure black or white.
  */
 
 /** The surfaces in `packages/web/src/styles/index.css` (`--background`, dark and `.light`). */
 const SURFACE = { dark: '#131316', light: '#ffffff' } as const;
-const ON_FILL = { dark: '#10190a', light: '#ffffff' } as const;
+const ON_FILL = '#10190a';
 
 type Rgb = readonly [number, number, number];
 
@@ -49,22 +49,33 @@ function reach(color: Rgb, surface: Rgb, target: Rgb, minimum: number): Rgb {
 const WHITE: Rgb = [255, 255, 255];
 const BLACK: Rgb = [0, 0, 0];
 
+const better = (fill: Rgb, a: Rgb, b: Rgb): Rgb => (contrastRatio(fill, a) >= contrastRatio(fill, b) ? a : b);
+
+/** The text colour on `fill`: cezar's near-black or white when one reaches 4.5:1, else pure black
+ *  or white — one of which always does (≥ 4.58:1 at worst). */
+function onFill(fill: Rgb): string {
+  const preferred = better(fill, parseHexColor(ON_FILL)!, WHITE);
+  return hex(contrastRatio(fill, preferred) >= 4.5 ? preferred : better(fill, BLACK, WHITE));
+}
+
+/** Pale and greyish: as a fill on a white surface it would not show at all. */
+const nearWhite = (color: Rgb, surface: Rgb): boolean =>
+  contrastRatio(color, surface) < 1.25 && Math.max(...color) - Math.min(...color) < 64;
+
 /** The four tokens per theme, or null for a value that is not `#rrggbb`. */
 export function deriveAccentTokens(value: string): BrandingAccentTokens | null {
   const color = parseHexColor(value);
   if (!color) return null;
   const dark = parseHexColor(SURFACE.dark)!;
   const light = parseHexColor(SURFACE.light)!;
-  const onFill = (fill: Rgb) => {
-    const ink = parseHexColor(ON_FILL.dark)!;
-    return contrastRatio(fill, ink) >= contrastRatio(fill, WHITE) ? ON_FILL.dark : ON_FILL.light;
-  };
   const darkFill = reach(color, dark, WHITE, 3);
   // Light keeps the colour itself as the fill — a button carries its own text colour — and
-  // darkens only where the accent is drawn ON the white surface: the ring and the ink.
+  // darkens only where the accent is drawn ON the white surface (the ring and the ink), or where
+  // a near-white fill would vanish into it.
+  const lightFill = nearWhite(color, light) ? reach(color, light, BLACK, 3) : color;
   return {
     dark: { primary: hex(darkFill), primaryForeground: onFill(darkFill), primaryStrong: hex(reach(color, dark, WHITE, 4.5)), ring: hex(darkFill) },
-    light: { primary: hex(color), primaryForeground: onFill(color), primaryStrong: hex(reach(color, light, BLACK, 4.5)), ring: hex(reach(color, light, BLACK, 3)) },
+    light: { primary: hex(lightFill), primaryForeground: onFill(lightFill), primaryStrong: hex(reach(color, light, BLACK, 4.5)), ring: hex(reach(color, light, BLACK, 3)) },
   };
 }
 

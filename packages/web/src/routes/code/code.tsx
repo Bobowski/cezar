@@ -693,7 +693,14 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
                 <>
                   <ResizableHandle aria-label="Resize panel" />
                   <ResizablePanel id="code-panel" order={2} defaultSize={layout.panelSize} minSize={10} className="min-h-0">
-                    <CodePanelView tree={tree} panel={layout.panel} onPanel={togglePanel} initialTerminal={initialTerminal} />
+                    <CodePanelView
+                      tree={tree}
+                      panel={layout.panel}
+                      onPanel={togglePanel}
+                      initialTerminal={initialTerminal}
+                      paths={paths}
+                      onOpenBrowser={(url) => openBrowserTab(url)}
+                    />
                   </ResizablePanel>
                 </>
               ) : null}

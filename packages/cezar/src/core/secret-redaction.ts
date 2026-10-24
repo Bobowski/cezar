@@ -101,13 +101,18 @@ export function redactSecrets(text: string, secretValues: readonly string[]): st
 /** Longer than any token shape needs before it can match at all (`AIza` + 35). */
 const TOKEN_HOLD = 64;
 
+/** How much of a stream's tail may still be the start of a secret value or token shape. */
+export function redactionHold(secretValues: readonly string[]): number {
+  return Math.max(TOKEN_HOLD, ...secretValues.map((value) => value.length));
+}
+
 /**
  * Where a stream redacted piece by piece may cut `text` without splitting a secret value or token
- * shape: at most `text.length - hold`, before any match reaching that point. The tail is held back,
- * since a secret starting there may still be arriving.
+ * shape: at most `text.length - hold` (and `limit`), before any match reaching that point. The tail
+ * is held back, since a secret starting there may still be arriving.
  */
-export function redactionSafeCut(text: string, secretValues: readonly string[]): number {
-  let cut = text.length - Math.max(TOKEN_HOLD, ...secretValues.map((value) => value.length));
+export function redactionSafeCut(text: string, secretValues: readonly string[], limit = Infinity): number {
+  let cut = Math.min(limit, text.length - redactionHold(secretValues));
   if (cut <= 0) return 0;
   const spans: Array<[number, number]> = [];
   for (const value of secretValues) {

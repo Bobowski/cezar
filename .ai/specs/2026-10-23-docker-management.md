@@ -198,9 +198,10 @@ Nothing to configure. Reclaim is a click, never a timer. All new state is Docker
   run's registered values), logs are redacted with the stored secrets of the workspace and of every
   registered project — a container belongs to no one project. Each scope is re-read at most every
   10 s; a failed read is never cached as "no secrets", the next read retries it.
-- **An over-long log line (8 KiB, no newline) goes out cut where no secret is split**
-  (`redactionSafeCut`): the tail that could still hold a secret's start is held back, redacted with
-  what follows. A held tail past 32 KiB (a token shape that never ends) goes out redacted whole.
+- **A log line is redacted whole, then cut at 32 KiB.** Each line is held until its newline and
+  redacted as one string. A line still arriving past 32 KiB goes out only up to a head that splits
+  no secret (`redactionSafeCut`), marked `… [line cut at 32 KiB]`, and the rest of it is dropped up
+  to its newline — never flushed, since a secret its last read ended inside would go out half-redacted.
 - **`force` acts on what the confirm named.** The image and volume `DELETE`s take
   `{users: [containerId]}` — the users the dialog listed. With `?force=1`, a current set of users
   that differs (one started from the image since, one stopped mounting the volume) is a 409 and

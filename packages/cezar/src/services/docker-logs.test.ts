@@ -3,7 +3,7 @@ import { DockerLogFollowers, type DockerSpawn } from './docker-logs.ts';
 
 const ID = 'a'.repeat(64);
 
-function harness() {
+function harness(secrets: readonly string[] = ['hunter2-super-secret-value']) {
   const spawned: Array<{ args: string[]; killed: boolean; data: (stream: 'out' | 'err', chunk: string) => void; exit: (reason: string | null) => void }> = [];
   const spawn: DockerSpawn = (args, on) => {
     const proc = { args, killed: false, ...on };
@@ -14,7 +14,7 @@ function harness() {
   const bells: number[] = [];
   const forgotten: string[] = [];
   const followers = new DockerLogFollowers(spawn, (_id, cursor) => bells.push(cursor), (id) => forgotten.push(id), {
-    idleMs: 15_000, now: () => now, secrets: () => ['hunter2-super-secret-value'],
+    idleMs: 15_000, now: () => now, secrets: () => secrets,
   });
   return { followers, spawned, bells, forgotten, advance: (ms: number) => { now += ms; } };
 }
@@ -50,11 +50,52 @@ describe('docker logs followers (spec 2026-10-23-docker-management §3.4)', () =
     expect(data.endsWith('pw=[REDACTED] tok=[REDACTED] ' + 'y'.repeat(9000) + ' end\n')).toBe(true);
   });
 
-  it('still flushes a line that never ends, so memory stays bounded', () => {
+  it('cuts a line that never ends at 32 KiB and drops the rest of it, so memory stays bounded', () => {
     const { followers, spawned } = harness();
     followers.read(ID, 0);
     spawned[0]!.data('out', 'z'.repeat(20_000));
-    expect(followers.read(ID, 0).data.length).toBeGreaterThan(19_000);
+    expect(followers.read(ID, 0).data).toBe('');
+    spawned[0]!.data('out', 'z'.repeat(20_000));
+    spawned[0]!.data('out', 'z'.repeat(50_000));
+    spawned[0]!.data('out', 'zz\nnext\n');
+    expect(followers.read(ID, 0).data).toBe(`${'z'.repeat(32 * 1024)} … [line cut at 32 KiB]\nnext\n`);
+  });
+
+  it('never lets a secret out of a pipe read past 32 KiB that ends mid-secret', () => {
+    const { followers, spawned } = harness();
+    followers.read(ID, 0);
+    // A 40 KB read with no newline, ending inside a stored secret; the secret's rest comes next.
+    spawned[0]!.data('out', `${'x'.repeat(40_000 - 14)}pw=hunter2-sup`);
+    spawned[0]!.data('out', 'er-secret-value tail\nnext\n');
+    const data = followers.read(ID, 0).data;
+    expect(data).not.toContain('hunter2');
+    expect(data).not.toContain('er-secret-value');
+    expect(data).toBe(`${'x'.repeat(32 * 1024)} … [line cut at 32 KiB]\nnext\n`);
+  });
+
+  it('never lets a secret out of a single 64 KB read, whole line or not', () => {
+    const { followers, spawned } = harness();
+    followers.read(ID, 0);
+    spawned[0]!.data('out', `${'x'.repeat(64 * 1024 - 11)}hunter2-sup`);
+    spawned[0]!.data('out', 'er-secret-value\n');
+    // A whole 64 KB line in one read is redacted first, then cut: a secret across the cut is gone.
+    spawned[0]!.data('out', `${'y'.repeat(32 * 1024 - 5)}hunter2-super-secret-value${'y'.repeat(32 * 1024)}\n`);
+    const data = followers.read(ID, 0).data;
+    expect(data).not.toContain('hunter2');
+    expect(data).not.toContain('er-secret-value');
+    expect(data.split('\n')).toEqual([
+      `${'x'.repeat(32 * 1024)} … [line cut at 32 KiB]`,
+      `${'y'.repeat(32 * 1024 - 5)}[REDA … [line cut at 32 KiB]`,
+      '',
+    ]);
+  });
+
+  it('keeps a line under the cap whole and redacts a secret its read ended inside', () => {
+    const { followers, spawned } = harness();
+    followers.read(ID, 0);
+    spawned[0]!.data('out', `${'x'.repeat(20_000)}pw=hunter2-sup`);
+    spawned[0]!.data('out', 'er-secret-value tail\n');
+    expect(followers.read(ID, 0).data).toBe(`${'x'.repeat(20_000)}pw=[REDACTED] tail\n`);
   });
 
   it('is demand-driven: the last topic release kills the process, a returning reader resumes', () => {

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { collectSecretValues, redactionSafeCut, redactSecrets } from '../core/secret-redaction.ts';
+import { collectSecretValues, redactionHold, redactionSafeCut, redactSecrets } from '../core/secret-redaction.ts';
 
 /**
  * `docker logs --tail 500 --follow <id>`, one process per container while someone looks (spec
@@ -39,10 +39,13 @@ export const dockerSpawn: DockerSpawn = (args, on) => {
 export const TAIL_LINES = 500;
 /** Kept per container; older output is dropped and a reader behind it is told so. */
 const MAX_CHARS = 512 * 1024;
-/** A line longer than this is redacted and kept without waiting for its newline, cut where no secret is split. */
-const MAX_PENDING = 8 * 1024;
-/** Past this a held tail (a token shape that never ends) goes out anyway, redacted whole. */
-const MAX_HELD = 4 * MAX_PENDING;
+/**
+ * A line is held whole until its newline and redacted whole; past this it is cut, after redaction —
+ * a line still arriving goes out up to a head that splits no secret, and the rest of it is dropped.
+ */
+const MAX_LINE = 32 * 1024;
+const CUT_MARK = ' … [line cut at 32 KiB]';
+type Stream = 'out' | 'err';
 const BELL_MS = 200;
 
 interface Entry {
@@ -51,7 +54,9 @@ interface Entry {
   text: string;
   /** Cursor of `text[0]`. */
   start: number;
-  pending: { out: string; err: string };
+  pending: Record<Stream, string>;
+  /** The rest of a cut line is being dropped, up to its newline. */
+  skipping: Record<Stream, boolean>;
   holders: number;
   lastRead: number;
   bell: ReturnType<typeof setTimeout> | null;
@@ -82,23 +87,48 @@ export class DockerLogFollowers {
     return this.options.secrets?.() ?? collectSecretValues();
   }
 
-  private redact(text: string): string {
-    if (process.env.CEZ_REDACT_SECRETS === '0') return text;
-    return redactSecrets(text, this.secretValues());
+  private redacting(): boolean {
+    return process.env.CEZ_REDACT_SECRETS !== '0';
   }
 
-  /** How much of `pending` goes out now: whole lines, plus an over-long line's head that splits no secret. */
-  private cutOf(pending: string): number {
-    const lines = pending.lastIndexOf('\n') + 1;
-    if (pending.length - lines <= MAX_PENDING) return lines;
-    if (process.env.CEZ_REDACT_SECRETS === '0' || pending.length > MAX_HELD) return pending.length;
-    return Math.max(lines, redactionSafeCut(pending, this.secretValues()));
+  private redact(text: string, values: readonly string[]): string {
+    return this.redacting() ? redactSecrets(text, values) : text;
+  }
+
+  /** Redacted text, each line cut to `MAX_LINE` — after redaction, so the cut splits no secret. */
+  private capped(text: string, values: readonly string[]): string {
+    return this.redact(text, values).split('\n').map((line) => (line.length > MAX_LINE ? line.slice(0, MAX_LINE) + CUT_MARK : line)).join('\n');
+  }
+
+  /** What a read lets out: whole lines, redacted whole; of a line past the cap, its head and a mark. */
+  private take(entry: Entry, stream: Stream, chunk: string): string {
+    let text = chunk;
+    if (entry.skipping[stream]) {
+      const newline = text.indexOf('\n');
+      if (newline === -1) return '';
+      entry.skipping[stream] = false;
+      text = text.slice(newline + 1);
+    }
+    const values = this.redacting() ? this.secretValues() : [];
+    const pending = entry.pending[stream] + text;
+    const cut = pending.lastIndexOf('\n') + 1;
+    const out = this.capped(pending.slice(0, cut), values);
+    const rest = pending.slice(cut);
+    if (rest.length <= MAX_LINE + redactionHold(values)) {
+      entry.pending[stream] = rest;
+      return out;
+    }
+    // Never a flush of the held line: a secret its last read ended inside would go out half-redacted.
+    const head = this.redacting() ? redactionSafeCut(rest, values, MAX_LINE) : MAX_LINE;
+    entry.pending[stream] = '';
+    entry.skipping[stream] = true;
+    return `${out}${this.redact(rest.slice(0, head), values)}${CUT_MARK}\n`;
   }
 
   private entry(id: string): Entry {
     let entry = this.entries.get(id);
     if (!entry) {
-      entry = { proc: null, following: false, text: '', start: 0, pending: { out: '', err: '' }, holders: 0, lastRead: this.now(), bell: null, resumeFrom: null };
+      entry = { proc: null, following: false, text: '', start: 0, pending: { out: '', err: '' }, skipping: { out: false, err: false }, holders: 0, lastRead: this.now(), bell: null, resumeFrom: null };
       this.entries.set(id, entry);
       this.armSweep();
     }
@@ -135,16 +165,15 @@ export class DockerLogFollowers {
       data: (stream, chunk) => {
         if (entry.proc !== proc) return;
         // Whole lines only, so a secret split across two chunks is still one string when redacted.
-        const pending = entry.pending[stream] + chunk;
-        const cut = this.cutOf(pending);
-        entry.pending[stream] = pending.slice(cut);
-        this.append(id, entry, this.redact(pending.slice(0, cut)));
+        this.append(id, entry, this.take(entry, stream, chunk));
       },
       exit: (reason) => {
         if (entry.proc !== proc) return;
-        const rest = entry.pending.out + entry.pending.err;
+        const values = this.redacting() ? this.secretValues() : [];
+        const rest = (['out', 'err'] as const).map((stream) => (entry.skipping[stream] ? '' : this.capped(entry.pending[stream], values))).join('');
         entry.pending = { out: '', err: '' };
-        this.append(id, entry, this.redact(rest) + (reason ? `\n[${reason}]\n` : ''));
+        entry.skipping = { out: false, err: false };
+        this.append(id, entry, rest + (reason ? `\n[${reason}]\n` : ''));
         entry.proc = null;
         entry.following = false;
         this.onCursor(id, entry.start + entry.text.length);

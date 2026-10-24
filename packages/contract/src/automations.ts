@@ -105,8 +105,9 @@ export const automationFiltersSchema = z.object({
    *  the OWNER's, or a MEMBER's or COLLABORATOR's with write access, reach a running task (spec
    *  2026-10-23-github-events §7, §11). */
   allowAnyAuthor: z.boolean().optional(),
-  /** `deliver: 'owning-run'`: deliver a comment by the login cezar runs as even when it was
-   *  written while the owning run was at work — otherwise taken for the run's own reply (§11). */
+  /** A comment by the login cezar runs as, written during the open turn of a run on that PR or
+   *  issue, goes out at once — into the owning run (`deliver: 'owning-run'`) or as a new run
+   *  (`new-run`). Without it, it is held until that turn ends, as possibly the run's own reply (§11). */
   allowSelfComments: z.boolean().optional(),
   status: z.string().optional(),
   lookbackDays: z.number(),

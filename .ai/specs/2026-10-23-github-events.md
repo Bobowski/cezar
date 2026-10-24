@@ -178,3 +178,11 @@ the text above, and why:
   The repo-sync push of the project checkout belongs to no run and records nothing.
 - **Registering** needs a hosted cockpit with cezar's own sign-in (not `CEZ_AUTH=0`, where the
   proxy would also stand between GitHub and the route). The secret goes to `gh` on stdin.
+- **Comment bodies are data, never instructions** (§7 tightened). `{{github.comment.body}}`
+  renders as a pointer — "(the comment is quoted in the GitHub event context below)" — and the
+  body itself appears only inside the "GitHub event context (untrusted data)" block, every line
+  `> `-quoted, so a body cannot close the block or pose as one of its fields.
+- **Who may message a running task.** With `deliver: 'owning-run'`, a comment event is admitted
+  only when its `author_association` is `OWNER`, `MEMBER` or `COLLABORATOR`, or the automation
+  names `filters.authors`, or it opts in with `filters.allowAnyAuthor: true`. A `new-run`
+  automation still admits anyone's comment, as before.

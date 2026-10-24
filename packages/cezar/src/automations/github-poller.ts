@@ -88,7 +88,8 @@ export interface GithubCandidate {
    *  carries nor gates it, and its durable receipt is what dedups it. */
   cursorless?: boolean;
   /** The comment events. `body` never reaches a receipt (`store.reserveReceipt`). */
-  comment?: { id: number; kind: 'issue' | 'review'; author: string; url: string; body?: string };
+  /** `association`: GitHub's `author_association` (OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, …). */
+  comment?: { id: number; kind: 'issue' | 'review'; author: string; url: string; body?: string; association?: string };
   check?: { id: number; name: string; conclusion: string; url: string; failingJobs: string[] };
   push?: { branch: string; before: string; after: string; subjects: string[] };
   release?: { tag: string; name: string; prerelease: boolean };

@@ -93,6 +93,18 @@ export function EditorGithubFields({
             </SelectContent>
           </Select>
           {deliver === 'owning-run' ? <span>· a new task only when no task owns it</span> : null}
+          {deliver === 'owning-run' && comments ? (
+            <span className="flex items-center gap-2">
+              <Checkbox
+                id="filter-any-author"
+                checked={filters.allowAnyAuthor}
+                onCheckedChange={(checked) => setFilter('allowAnyAuthor', checked === true)}
+              />
+              <Label htmlFor="filter-any-author" className="text-[13px] font-normal">
+                Comments from anyone (otherwise only collaborators, or the authors filter)
+              </Label>
+            </span>
+          ) : null}
         </div>
       ) : null}
       <Collapsible open={open} onOpenChange={setOpen}>

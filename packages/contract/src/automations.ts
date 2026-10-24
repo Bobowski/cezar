@@ -101,6 +101,9 @@ export const automationFiltersSchema = z.object({
   /** Admit `check_suite.completed` on a sha cezar itself pushed — the "fix my CI" case, and the
    *  one place a loop is possible (spec 2026-10-23-github-events §6). */
   includeOwnPushes: z.boolean().optional(),
+  /** `deliver: 'owning-run'`: deliver comments from anyone. Without it (and without `authors`)
+   *  only OWNER/MEMBER/COLLABORATOR comments reach a running task (spec 2026-10-23-github-events §7). */
+  allowAnyAuthor: z.boolean().optional(),
   status: z.string().optional(),
   lookbackDays: z.number(),
   maxRecords: z.number(),

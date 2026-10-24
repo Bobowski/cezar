@@ -39,6 +39,9 @@ const MAX_BODY = 4_000;
  *  diffed against what was last seen instead of being new. Newest first, then dropped. */
 export const HEADS_CAP = 1_000;
 const FAILING = new Set(['failure', 'timed_out', 'action_required', 'startup_failure']);
+/** Who may speak into an existing run by default (`deliver: 'owning-run'`): people with write
+ *  access, as GitHub's `author_association` names them. */
+const TRUSTED_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
 export type GhRun = (args: readonly string[]) => Promise<string>;
 
@@ -87,6 +90,7 @@ const commentSchema = z.object({
   html_url: z.string(),
   body: z.string().nullable().optional(),
   user: login,
+  author_association: z.string().optional(),
   created_at: z.string(),
   updated_at: z.string(),
   issue_url: z.string().optional(),
@@ -236,6 +240,10 @@ export function matchesActivityFilters(candidate: GithubCandidate, definition: G
     && !filters.branches.some((pattern) => globMatches(pattern, candidate.branch!))) return false;
   if (candidate.comment && filters.mentions?.length
     && !filters.mentions.some((who) => mentions(candidate.comment!.body ?? '', who))) return false;
+  // A comment delivered INTO a running task is a message to an agent holding a worktree and the
+  // user's credentials: by default only collaborators may send one (spec 2026-10-23-github-events §7).
+  if (candidate.comment && definition.deliver === 'owning-run' && !filters.authors?.length && filters.allowAnyAuthor !== true
+    && !TRUSTED_ASSOCIATIONS.has(candidate.comment.association ?? '')) return false;
   if (candidate.check && !conclusionMatches(candidate.check.conclusion, filters.conclusion)) return false;
   if (candidate.release) {
     if (filters.prerelease !== undefined && candidate.release.prerelease !== filters.prerelease) return false;
@@ -465,7 +473,10 @@ export async function pollActivity(input: {
       if (!item || (item.fork && !allowForks)) continue;
       const candidate: GithubCandidate = {
         ...base(item, event, `${full}:comment:${row.id}`, row.created_at, observation.tieBreaker),
-        comment: { id: row.id, kind: 'issue', author: row.user?.login ?? 'ghost', url: row.html_url, body: cleanBody(row.body) },
+        comment: {
+          id: row.id, kind: 'issue', author: row.user?.login ?? 'ghost', url: row.html_url, body: cleanBody(row.body),
+          ...(row.author_association ? { association: clean(row.author_association, 50) } : {}),
+        },
       };
       if (admit(candidate)) observation.candidate = candidate;
     }
@@ -488,7 +499,10 @@ export async function pollActivity(input: {
       if (!item || (item.fork && !allowForks)) continue;
       const candidate: GithubCandidate = {
         ...base(item, 'pull_request.review_commented', `${full}:review-comment:${row.id}`, row.created_at, observation.tieBreaker),
-        comment: { id: row.id, kind: 'review', author: row.user?.login ?? 'ghost', url: row.html_url, body: cleanBody(row.body) },
+        comment: {
+          id: row.id, kind: 'review', author: row.user?.login ?? 'ghost', url: row.html_url, body: cleanBody(row.body),
+          ...(row.author_association ? { association: clean(row.author_association, 50) } : {}),
+        },
       };
       if (admit(candidate)) observation.candidate = candidate;
     }

@@ -47,7 +47,7 @@ export function flagExpressible(definition: CliDefinition): boolean {
   const filters = definition.filters ?? {}
   const extra = (['assignees', 'allLabels', 'excludeLabels', 'changedLabels', 'mentions', 'branches', 'tags'] as const).some((key) => (filters[key]?.length ?? 0) > 0)
   if (extra) return false
-  if (filters.conclusion !== undefined || filters.prerelease !== undefined || filters.includeOwnPushes !== undefined) return false
+  if (filters.conclusion !== undefined || filters.prerelease !== undefined || filters.includeOwnPushes !== undefined || filters.allowAnyAuthor !== undefined) return false
   if (definition.deliver !== undefined) return false
   if (filters.lookbackDays !== undefined && filters.lookbackDays !== 7) return false
   if (filters.maxRecords !== undefined && filters.maxRecords !== 25) return false

@@ -111,6 +111,22 @@ describe('comment events', () => {
     expect(mentioned.candidates.map((candidate) => candidate.comment?.id)).toEqual([777]);
   });
 
+  it('delivers into the owning run only comments from collaborators, unless authors or allowAnyAuthor say otherwise', async () => {
+    const asIs = (association: string) => ({ ...prComment, author_association: association });
+    const poll = (association: string, filters: Partial<GithubAutomationDefinition['filters']> = {}, deliver?: 'owning-run') =>
+      new GithubPoller({ run: gh({ ...routes, 'repos/acme/demo/issues/comments': [asIs(association)] }) })
+        .poll('acme', 'demo', { ...definition(['pull_request.commented'], filters), ...(deliver ? { deliver } : {}) }, { since });
+    expect((await poll('NONE', {}, 'owning-run')).candidates).toEqual([]);
+    expect((await poll('CONTRIBUTOR', {}, 'owning-run')).candidates).toEqual([]);
+    for (const trusted of ['OWNER', 'MEMBER', 'COLLABORATOR']) {
+      expect((await poll(trusted, {}, 'owning-run')).candidates.map((candidate) => candidate.comment?.association)).toEqual([trusted]);
+    }
+    expect((await poll('NONE', { authors: ['dave'] }, 'owning-run')).candidates).toHaveLength(1);
+    expect((await poll('NONE', { allowAnyAuthor: true }, 'owning-run')).candidates).toHaveLength(1);
+    // A new run per comment is unchanged: anyone's comment, as before.
+    expect((await poll('NONE')).candidates).toHaveLength(1);
+  });
+
   it('drops a comment cezar posted itself (loop guard)', async () => {
     const result = await new GithubPoller({ run: gh(routes) }).poll('acme', 'demo', definition(['pull_request.commented']),
       { since, traces: { shas: new Set(), comments: new Set([777]) } });

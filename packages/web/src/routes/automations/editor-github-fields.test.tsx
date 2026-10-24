@@ -53,6 +53,8 @@ describe('EditorGithubFields', () => {
     expect(screen.getByLabelText(/Branches/)).not.toBeNull()
     expect(screen.getByLabelText('CI result')).not.toBeNull()
     expect(screen.getByLabelText(/Release tags/)).not.toBeNull()
+    // A new-run comment automation holds cezar's own-login comments too (spec §11), so it offers the switch.
+    expect(screen.getByLabelText(/my own account’s comments/)).not.toBeNull()
     fireEvent.click(screen.getByLabelText('Also react to CI on commits cezar pushed'))
     expect(screen.getByTestId('own-pushes').textContent).toBe('true')
   })

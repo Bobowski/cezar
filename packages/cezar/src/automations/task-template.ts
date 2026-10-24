@@ -2,7 +2,7 @@ import type { DispatchIntent, TrackerComments, TrackerFailure, TrackerItem, Trac
 import { renderTrackerContext, trackerReadScope, zonedParts } from '@open-mercato/cezar-contract';
 import { loadWorkflows } from '../workflows/load.ts';
 import { stepsIssue, type WorkflowDef } from '../workflows/types.ts';
-import type { RunStore } from '../runs/store.ts';
+import type { RunRecord, RunStore } from '../runs/store.ts';
 import { buildTrackerLink } from '../runs/tracker-links.ts';
 import type { TrackerDriver } from '../server/tracker/types.ts';
 import type { RunManager, StartRunInput } from '../workflows/run.ts';
@@ -11,7 +11,7 @@ import { normalizeCommentBody } from './github-activity.ts';
 import type { ScheduleOccurrence } from './schedule-runner.ts';
 import type { TrackerAutomationCandidate } from './tracker-poller.ts';
 import { resolvePrHead, type CommandRunner } from './pr-head.ts';
-import { deliverAutomationMessage, findOwningRun, githubSelfLogin, owningRunHold, type DeliveryMark } from './owning-run.ts';
+import { automationHold, deliverAutomationMessage, findOwningRun, githubSelfLogin, type DeliveryMark } from './owning-run.ts';
 import type { AutomationDefinition, GithubAutomationDefinition, ScheduleAutomationDefinition, TrackerAutomationDefinition } from './types.ts';
 
 const GITHUB_PLACEHOLDERS = new Set([
@@ -252,18 +252,20 @@ export async function launchAutomationRun(options: {
   admit?: () => void;
 }): Promise<AutomationLaunched> {
   const { definition, candidate } = options;
+  const runs = options.store.listRuns();
+  // Neither a run's own reply nor an unbounded stream: held, never a new run instead (§11).
+  const holdOf = (owner?: RunRecord) => automationHold({
+    definition, candidate, owner, runs,
+    readEvents: (runId) => options.store.readEvents(runId),
+    isLive: (runId) => options.manager.isActive?.(runId) ?? false,
+    selfLogin: options.selfLogin ?? (() => githubSelfLogin(options.root, candidate.repo, options.runCommand)),
+  });
   // spec 2026-10-23-github-events §5: a PR a cezar task owns gets the event as a message there.
   if (definition.deliver === 'owning-run' && candidate.number !== undefined
     && (candidate.event.startsWith('pull_request.') || candidate.event === 'check_suite.completed')) {
-    const owner = findOwningRun(options.store.listRuns(), candidate);
+    const owner = findOwningRun(runs, candidate);
     if (owner) {
-      // Neither its own reply nor an unbounded stream: held, never a new run instead (§11).
-      const hold = await owningRunHold({
-        definition, candidate, owner,
-        events: options.store.readEvents(owner.id),
-        live: options.manager.isActive?.(owner.id) ?? false,
-        selfLogin: options.selfLogin ?? (() => githubSelfLogin(options.root, candidate.repo, options.runCommand)),
-      });
+      const hold = await holdOf(owner);
       if (hold) throw new AutomationLaunchOutcome(hold.result, hold.reason);
       options.admit?.();
       const outcome = deliverAutomationMessage(options.manager, owner.id, renderAutomationTask(definition, candidate));
@@ -282,6 +284,11 @@ export async function launchAutomationRun(options: {
       const launched = await launchNewAutomationRun(options);
       return { ...launched, note };
     }
+  }
+  // A comment that would start a run is held the same way: its author's turn, the hourly cap.
+  if (candidate.comment) {
+    const hold = await holdOf();
+    if (hold) throw new AutomationLaunchOutcome(hold.result, hold.reason);
   }
   options.admit?.();
   return launchNewAutomationRun(options);

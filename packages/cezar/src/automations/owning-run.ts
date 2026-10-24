@@ -19,6 +19,31 @@ function pullOf(url: string | undefined): { repo: string; number: number } | und
   return match ? { repo: `${match[1]}/${match[2]}`.toLowerCase(), number: Number(match[3]) } : undefined;
 }
 
+/** `pullOf` for a pull request OR an issue URL (`…/issues/N`). */
+function itemOf(url: string | undefined): { repo: string; number: number } | undefined {
+  const match = url ? /\/([^/\s]+)\/([^/\s]+)\/(?:pull|issues)\/(\d+)(?:[/?#]|$)/.exec(url) : null;
+  return match ? { repo: `${match[1]}/${match[2]}`.toLowerCase(), number: Number(match[3]) } : undefined;
+}
+
+/**
+ * Every run on item `number` of `repo`, whatever its part — the one that made it, a reviewer, a
+ * `pr-head` verifier, a dispatched child, one an automation launched for it: any of them may
+ * have written a comment there in its turn. Wider than `findOwningRun` on purpose; what it feeds
+ * only ever defers.
+ */
+export function runsOnItem(runs: Iterable<RunRecord>, candidate: { repo: string; number?: number }): RunRecord[] {
+  const number = candidate.number;
+  if (number === undefined) return [];
+  const repo = candidate.repo.toLowerCase();
+  const same = (item: { repo: string; number: number } | undefined) => item?.repo === repo && item.number === number;
+  return [...runs].filter((run) => {
+    if (same(pullOf(run.pullRequestUrl)) || same(itemOf(run.automation?.githubUrl))) return true;
+    if (run.prHead && run.prHead.number === number && run.prHead.repo.toLowerCase() === repo) return true;
+    if (run.prRefs?.some((ref) => ref.number === number && (!ref.url || same(pullOf(ref.url))))) return true;
+    return run.prNumber === number || run.issueNumber === number;
+  });
+}
+
 /**
  * The run that owns pull request `number` of `repo`: the newest one that CREATED it (its
  * `pullRequestUrl`, or a `created` PR ref), else the newest that declared or was associated with
@@ -146,51 +171,68 @@ export function forgetGithubSelfLogins(): void {
 /** What a delivery note carries so the per-PR cap can count it back. */
 export type DeliveryMark = { automationId: string; repo: string; number: number };
 
-/** Why an event does not go into its owning run now: `held` is re-decided on every poll. */
-export type OwningRunHold = { result: 'held'; reason: string };
+/** Why an event does not go out now: `held` is re-decided on every poll. */
+export type AutomationHold = { result: 'held'; reason: string };
 
 /**
- * Why an event must NOT go into its owning run now, or `undefined` (spec 2026-10-23-github-events
- * §11). The traces decide first (the scheduler drops what they claim); this is the tie-breaker for
- * a comment no trace claimed. On a local cockpit the `gh` login IS the human, so a comment by it
- * is never dropped: one CREATED during the run's current, still-open turn may be the run's own
- * reply posted by a means no trace saw (curl, an alias, a tool cezar does not parse), and is
- * `held` until that turn ends — then delivered, unless a trace has claimed it meanwhile. One
- * written after the turn ended is the human's and goes at once. `allowSelfComments` turns the
- * hold off. An unknown login holds like ours: a loop costs more than a held comment.
+ * Why an event must NOT go out now, or `undefined` (spec 2026-10-23-github-events §11) — into its
+ * owning run (`owner`), or, for a comment, as a new run. The traces decide first (the scheduler
+ * drops what they claim); this is the tie-breaker for a comment no trace claimed. On a local
+ * cockpit the `gh` login IS the human, so a comment by it is never dropped: one CREATED during
+ * the still-open turn of a run on that PR or issue (`runsOnItem`) may be that run's own reply
+ * posted by a means no trace saw (curl, an alias, a tool cezar does not parse), and is `held`
+ * until the turn ends — then delivered, unless a trace has claimed it meanwhile. One written after
+ * the turn ended goes at once. `allowSelfComments` turns that hold off. An unknown login holds
+ * like ours: a loop costs more than a held comment. And an automation sends at most `maxRecords`
+ * events an hour into one PR's run — or, for comments, launches that many runs for one item;
+ * the rest are held until the window frees. Only what went out counts.
  */
-export async function owningRunHold(input: {
+export async function automationHold(input: {
   definition: GithubAutomationDefinition;
   candidate: GithubCandidate;
-  owner: RunRecord;
-  events: readonly RunEvent[];
-  live: boolean;
+  owner?: RunRecord;
+  runs: readonly RunRecord[];
+  readEvents: (runId: string) => readonly RunEvent[];
+  isLive: (runId: string) => boolean;
   selfLogin: () => Promise<string | undefined>;
   now?: number;
-}): Promise<OwningRunHold | undefined> {
-  const { definition, candidate, owner, events } = input;
+}): Promise<AutomationHold | undefined> {
+  const { definition, candidate, owner } = input;
   const now = input.now ?? Date.now();
-  const delivered = events.filter((event) => {
-    const mark = event.automationDelivery as Partial<DeliveryMark> | undefined;
-    return event.type === 'note' && mark?.automationId === definition.id && mark.number === candidate.number
-      && mark.repo?.toLowerCase() === candidate.repo.toLowerCase() && now - Date.parse(event.ts) < DELIVERY_CAP_WINDOW_MS;
-  }).length;
   const cap = definition.filters.maxRecords;
-  // Only deliveries count; an event over the cap is held, and goes in when the window frees.
-  if (delivered >= cap) return { result: 'held', reason: `delivery-cap: ${delivered} events of this automation already went into run ${owner.id} for #${candidate.number} in the last hour (cap ${cap}, the automation's maxRecords) — held until the window frees.` };
+  const recent = (at: string) => now - Date.parse(at) < DELIVERY_CAP_WINDOW_MS;
+  const item = { repo: candidate.repo.toLowerCase(), number: candidate.number };
+  if (owner) {
+    const delivered = input.readEvents(owner.id).filter((event) => {
+      const mark = event.automationDelivery as Partial<DeliveryMark> | undefined;
+      return event.type === 'note' && mark?.automationId === definition.id && mark.number === candidate.number
+        && mark.repo?.toLowerCase() === item.repo && recent(event.ts);
+    }).length;
+    if (delivered >= cap) return { result: 'held', reason: `delivery-cap: ${delivered} events of this automation already went into run ${owner.id} for #${candidate.number} in the last hour (cap ${cap}, the automation's maxRecords) — held until the window frees.` };
+  } else if (candidate.comment) {
+    const launches = new Set(input.runs.filter((run) => {
+      const about = itemOf(run.automation?.githubUrl);
+      return run.automation?.automationId === definition.id && about?.repo === item.repo && about.number === item.number && recent(run.createdAt);
+    }).map((run) => run.automation!.receiptId)).size;
+    if (launches >= cap) return { result: 'held', reason: `launch-cap: this automation already launched ${launches} runs for comments on #${candidate.number} in the last hour (cap ${cap}, the automation's maxRecords) — held until the window frees.` };
+  }
   const comment = candidate.comment;
   if (!comment || definition.filters.allowSelfComments === true) return undefined;
-  const since = openTurnSince(owner, events, input.live);
-  if (since === undefined) return undefined;
   // A collapsed review is decided per comment: any one of them written in the turn holds it.
-  const times = (comment.parts?.map((part) => part.at) ?? [candidate.timestamp]).map((value) => Date.parse(value));
-  if (!times.some((at) => Number.isFinite(at) && at >= since - CLOCK_SKEW_MS)) return undefined;
+  const times = (comment.parts?.map((part) => part.at) ?? [candidate.timestamp]).map((value) => Date.parse(value)).filter(Number.isFinite);
+  const onItem = runsOnItem(input.runs, candidate);
+  if (owner && !onItem.some((run) => run.id === owner.id)) onItem.push(owner);
+  const working = onItem.find((run) => {
+    const since = openTurnSince(run, input.readEvents(run.id), input.isLive(run.id));
+    return since !== undefined && times.some((at) => at >= since - CLOCK_SKEW_MS);
+  });
+  if (!working) return undefined;
   const login = await input.selfLogin();
   if (login !== undefined && login.toLowerCase() !== comment.author.toLowerCase()) return undefined;
   return {
     result: 'held',
     reason: login === undefined
-      ? `own-comment: written during run ${owner.id}'s current turn, and cezar's GitHub login could not be read to tell it from the run's own reply — held until the turn ends.`
-      : `own-comment: by ${login}, the login cezar runs as, during run ${owner.id}'s current turn — held until the turn ends, then delivered unless a trace claims it as the run's own reply.`,
+      ? `own-comment: written during run ${working.id}'s current turn, and cezar's GitHub login could not be read to tell it from the run's own reply — held until the turn ends.`
+      : `own-comment: by ${login}, the login cezar runs as, during run ${working.id}'s current turn — held until the turn ends, then sent unless a trace claims it as the run's own reply.`,
   };
 }

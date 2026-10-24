@@ -200,6 +200,11 @@ the text above, and why:
   delivers at most `filters.maxRecords` events into one PR's run per hour — the delivery notes
   on the run (`automationDelivery`) are what it counts, so only deliveries do. An event over the
   cap is held too, and delivered when the window frees, oldest (by GitHub's timestamp) first.
+  A `new-run` comment automation (and an `owning-run` one whose PR has no owner) is held the
+  same way: the turn that holds cezar's own-login comment is the open turn of ANY run on that PR
+  or issue (`runsOnItem` — its maker, a reviewer, a `pr-head` verifier, a dispatched child, a run
+  an automation launched for it), and the cap counts the runs the automation launched for that
+  item in the hour (`launch-cap: …`). The trace check runs for every candidate, as before.
 - **Traces** are also recorded for the task push route, the graph `git.push` node, an in-place
   landing, the `github.pr-comment` node and the agent's own `git push` and comment-posting tool calls.
   The repo-sync push of the project checkout belongs to no run and records nothing. An agent's

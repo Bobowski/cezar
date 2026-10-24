@@ -157,7 +157,7 @@ describe('owning-run delivery never feeds a run its own reply, nor an unbounded 
   const dirs: string[] = [];
   afterEach(async () => Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))));
 
-  const definition: GithubAutomationDefinition = {
+  const shared: GithubAutomationDefinition = {
     id: 'talk', revision: 1, name: 'Answer reviews', enabled: true, kind: 'github', events: ['pull_request.commented'], intervalSeconds: 300,
     deliver: 'owning-run', filters: { lookbackDays: 7, maxRecords: 2 },
     task: { prompt: 'Answer: {{github.comment.body}}', workflow: 'quick-task' },
@@ -169,7 +169,8 @@ describe('owning-run delivery never feeds a run its own reply, nor an unbounded 
     assignees: [], labels: [], comment: { id, kind: 'issue', author, url: `https://github.com/acme/demo/pull/8#issuecomment-${id}`, body: 'Done — pushed the fix.' },
   });
 
-  async function setup() {
+  async function setup(base: Partial<GithubAutomationDefinition> = {}) {
+    const definition = { ...shared, ...base };
     const root = await mkdtemp(join(tmpdir(), 'cezar-owning-self-')); dirs.push(root);
     const runs = RunStore.open(join(root, '.ai/cezar'));
     const automations = AutomationStore.open(join(root, '.ai/cezar'));
@@ -279,10 +280,50 @@ describe('owning-run delivery never feeds a run its own reply, nor an unbounded 
   });
 
   it('allowSelfComments delivers a comment of its own login, during a turn', async () => {
-    const { runs, owner, delivered, fire } = await setup();
+    const { runs, owner, delivered, state, fire } = await setup();
+    state.live = true;
     runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
-    await fire(comment(5, 'cezar-bot', new Date()), { filters: { ...definition.filters, allowSelfComments: true } });
+    await fire(comment(5, 'cezar-bot', new Date()), { filters: { ...shared.filters, allowSelfComments: true } });
     expect(delivered).toHaveLength(1);
+  });
+
+  it('new-run: holds cezar’s own-login comment during a live turn of a run on that PR, and launches once it ends', async () => {
+    const { runs, owner, started, state, fire, lastLog, receiptOf, release } = await setup({ deliver: undefined });
+    state.live = true;
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    await fire(comment(11, 'cezar-bot', new Date()));
+    expect(started).toEqual([]);
+    expect(lastLog()).toMatchObject({ result: 'held' });
+    await release();
+    expect(started).toEqual([]);
+    runs.appendEvent(owner.id, { type: 'turn.completed', turnId: 't1' });
+    await release();
+    expect(started).toHaveLength(1);
+    expect(receiptOf(11)).toMatchObject({ status: 'launched', runId: started[0] });
+    expect(lastLog()).toMatchObject({ result: 'launched' });
+  });
+
+  it('new-run: a pr-head verifier’s own turn holds its login’s comment too', async () => {
+    const { runs, started, state, fire, lastLog } = await setup({ deliver: undefined });
+    const verifier = runs.createRun({ title: 'verify', workflow: 'quick-task', task: 't', steps: [] });
+    runs.updateRun(verifier.id, { prHead: { number: 8, repo: 'acme/demo', headRepo: 'acme/demo', headRef: 'x', headSha: 'a', baseRef: 'main', ref: 'refs/cezar/pr/8' } });
+    state.live = true;
+    runs.appendEvent(verifier.id, { type: 'turn.started', turnId: 't1' });
+    await fire(comment(12, 'cezar-bot', new Date()));
+    expect(started).toEqual([]);
+    expect(lastLog()).toMatchObject({ result: 'held' });
+  });
+
+  it('new-run: caps the runs one comment automation launches for one PR at maxRecords an hour, holding the rest', async () => {
+    const { started, fire, lastLog, receiptOf } = await setup({ deliver: undefined });
+    const later = new Date(Date.now() + 10 * 60_000);
+    await fire(comment(13, 'dave', later));
+    await fire(comment(14, 'erin', later));
+    await fire(comment(15, 'frank', later));
+    expect(started).toHaveLength(2);
+    expect(lastLog()).toMatchObject({ result: 'held' });
+    expect(lastLog()?.reason).toContain('launch-cap');
+    expect(receiptOf(15)).toMatchObject({ status: 'held' });
   });
 
   it('caps deliveries into one PR’s run at the automation’s maxRecords an hour, holding the rest, and delivers them oldest first as the window frees', async () => {

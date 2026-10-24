@@ -105,7 +105,7 @@ export function EditorGithubFields({
               </Label>
             </span>
           ) : null}
-          {deliver === 'owning-run' && comments ? (
+          {comments ? (
             <span className="flex items-center gap-2">
               <Checkbox
                 id="filter-self-comments"

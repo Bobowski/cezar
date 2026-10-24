@@ -216,22 +216,30 @@ describe('owning-run delivery never feeds a run its own reply, nor an unbounded 
     expect(lastLog()).toMatchObject({ result: 'held' });
     expect(lastLog()?.reason).toContain('own-comment');
     expect(receiptOf(1)).toMatchObject({ status: 'held' });
-    // An unknown login, during the turn, is held too.
-    await fire(comment(2, 'someone', new Date()), {}, async () => undefined);
-    expect(lastLog()?.reason).toContain('could not be read');
-    // Still working: the next poll leaves both held, and says nothing new.
+    // Still working: the next poll leaves it held, and says nothing new.
     const before = lastLog()?.seq;
-    await release(async () => undefined);
+    await release();
     expect(delivered).toEqual([]);
     expect(lastLog()?.seq).toBe(before);
     expect(receiptOf(1)).toMatchObject({ status: 'held' });
-    // The turn ends with no trace claiming either: a human wrote them after all, and both go in, oldest first.
+    // The turn ends with no trace claiming it: a human wrote it after all, and it goes in.
     runs.appendEvent(owner.id, { type: 'turn.completed', turnId: 't1' });
     await release();
-    expect(delivered).toHaveLength(2);
+    expect(delivered).toHaveLength(1);
     expect(delivered[0]).toContain('Done — pushed the fix.');
     expect(receiptOf(1)).toMatchObject({ status: 'launched', delivered: true, runId: owner.id });
     expect(lastLog()).toMatchObject({ result: 'delivered', runId: owner.id });
+  });
+
+  it('with a gh login it cannot read, holds nothing — the traces alone decide — and says so in the log', async () => {
+    const { runs, owner, delivered, state, fire, lastLog, receiptOf } = await setup();
+    state.live = true;
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    await fire(comment(2, 'someone', new Date()), {}, async () => undefined);
+    expect(delivered).toHaveLength(1);
+    expect(receiptOf(2)).toMatchObject({ status: 'launched', delivered: true });
+    expect(lastLog()).toMatchObject({ result: 'delivered' });
+    expect(lastLog()?.reason).toContain('warning: cannot read the gh login; self-comment guard inactive');
   });
 
   it('drops a held comment a trace claims meanwhile — the run’s own reply — and never delivers it', async () => {

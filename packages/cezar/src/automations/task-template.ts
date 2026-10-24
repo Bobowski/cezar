@@ -266,7 +266,8 @@ export async function launchAutomationRun(options: {
     const owner = findOwningRun(runs, candidate);
     if (owner) {
       const hold = await holdOf(owner);
-      if (hold) throw new AutomationLaunchOutcome(hold.result, hold.reason);
+      if (hold?.result === 'held') throw new AutomationLaunchOutcome('held', hold.reason);
+      const warning = hold?.reason;
       options.admit?.();
       const outcome = deliverAutomationMessage(options.manager, owner.id, renderAutomationTask(definition, candidate));
       if (outcome.ok) {
@@ -278,20 +279,19 @@ export async function launchAutomationRun(options: {
           automationDelivery,
         });
         options.store.flush({ throwOnError: true });
-        return { runId: owner.id, delivered: true };
+        return { runId: owner.id, delivered: true, ...(warning ? { note: warning } : {}) };
       }
-      const note = `The owning run ${owner.id} could not take the message (${outcome.error}); a new run was launched instead.`;
+      const note = `The owning run ${owner.id} could not take the message (${outcome.error}); a new run was launched instead.${warning ? ` ${warning}` : ''}`;
       const launched = await launchNewAutomationRun(options);
       return { ...launched, note };
     }
   }
   // A comment that would start a run is held the same way: its author's turn, the hourly cap.
-  if (candidate.comment) {
-    const hold = await holdOf();
-    if (hold) throw new AutomationLaunchOutcome(hold.result, hold.reason);
-  }
+  const hold = candidate.comment ? await holdOf() : undefined;
+  if (hold?.result === 'held') throw new AutomationLaunchOutcome('held', hold.reason);
   options.admit?.();
-  return launchNewAutomationRun(options);
+  const launched = await launchNewAutomationRun(options);
+  return hold ? { ...launched, note: hold.reason } : launched;
 }
 
 /** What a GitHub automation's launch did: a new run, or a message into the run owning the PR. */

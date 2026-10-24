@@ -193,7 +193,8 @@ the text above, and why:
   row, never a new run instead — and every poll decides it again. Once the turn ends it is
   delivered, unless a trace has claimed it meanwhile (then `skipped`, `own-trace`). One written
   after the turn ended is delivered at once. There is no grace window after a turn. A login that
-  cannot be read holds like cezar's (a loop costs more than a held comment);
+  cannot be read holds nothing — only the traces decide — and the event's log row says
+  `warning: cannot read the gh login; self-comment guard inactive`, so the gap is visible;
   `filters.allowSelfComments: true` turns the hold off for a person who shares cezar's account.
   A held event's receipt keeps its body's fingerprint, never the body: after a restart it is
   delivered pointing at the comment's URL, as a retry is. And whatever the event, one automation

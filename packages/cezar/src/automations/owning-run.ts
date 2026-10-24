@@ -171,8 +171,12 @@ export function forgetGithubSelfLogins(): void {
 /** What a delivery note carries so the per-PR cap can count it back. */
 export type DeliveryMark = { automationId: string; repo: string; number: number };
 
-/** Why an event does not go out now: `held` is re-decided on every poll. */
-export type AutomationHold = { result: 'held'; reason: string };
+/** Why an event does not go out now (`held`, re-decided on every poll), or what the log row must
+ *  say about an event that does (`warning`). */
+export type AutomationHold = { result: 'held' | 'warning'; reason: string };
+
+/** The log row's word when `gh api user` cannot answer (#4 of the 2026-10-24 review). */
+export const SELF_LOGIN_UNREADABLE = 'warning: cannot read the gh login; self-comment guard inactive (only the traces decide).';
 
 /**
  * Why an event must NOT go out now, or `undefined` (spec 2026-10-23-github-events §11) — into its
@@ -182,8 +186,9 @@ export type AutomationHold = { result: 'held'; reason: string };
  * the still-open turn of a run on that PR or issue (`runsOnItem`) may be that run's own reply
  * posted by a means no trace saw (curl, an alias, a tool cezar does not parse), and is `held`
  * until the turn ends — then delivered, unless a trace has claimed it meanwhile. One written after
- * the turn ended goes at once. `allowSelfComments` turns that hold off. An unknown login holds
- * like ours: a loop costs more than a held comment. And an automation sends at most `maxRecords`
+ * the turn ended goes at once. `allowSelfComments` turns that hold off. A login that cannot be
+ * read holds nothing — only the traces decide then — and the event carries a `warning` for its
+ * log row, so the guard's absence is visible. And an automation sends at most `maxRecords`
  * events an hour into one PR's run — or, for comments, launches that many runs for one item;
  * the rest are held until the window frees. Only what went out counts.
  */
@@ -228,11 +233,10 @@ export async function automationHold(input: {
   });
   if (!working) return undefined;
   const login = await input.selfLogin();
-  if (login !== undefined && login.toLowerCase() !== comment.author.toLowerCase()) return undefined;
+  if (login === undefined) return { result: 'warning', reason: SELF_LOGIN_UNREADABLE };
+  if (login.toLowerCase() !== comment.author.toLowerCase()) return undefined;
   return {
     result: 'held',
-    reason: login === undefined
-      ? `own-comment: written during run ${working.id}'s current turn, and cezar's GitHub login could not be read to tell it from the run's own reply — held until the turn ends.`
-      : `own-comment: by ${login}, the login cezar runs as, during run ${working.id}'s current turn — held until the turn ends, then sent unless a trace claims it as the run's own reply.`,
+    reason: `own-comment: by ${login}, the login cezar runs as, during run ${working.id}'s current turn — held until the turn ends, then sent unless a trace claims it as the run's own reply.`,
   };
 }

@@ -347,7 +347,7 @@ export const routeContracts = {
   'GET /repo/watch': { summary: 'Whether files in the checkout changed since a stamp.', response: codeWatchSchema },
   // The Git page (spec 2026-10-24-git-view): every git mutation of the checkout is destructive.
   'GET /repo/graph': { summary: 'The commit graph of the checkout: commits with parents, and every branch with its task and fork point.', response: repoGraphSchema },
-  'GET /repo/index': { summary: 'The checkout\'s staged and unstaged changes, conflicts and the merge or rebase in progress.', response: repoIndexSchema },
+  'GET /repo/status': { summary: 'The checkout\'s staged and unstaged changes, conflicts and the merge or rebase in progress.', response: repoIndexSchema },
   'GET /repo/compare': { summary: 'What a branch brings in over the checked-out one, from their merge-base.', response: repoCompareSchema },
   'GET /repo/stash': { summary: 'The checkout\'s stashes.', response: repoStashListSchema },
   'GET /repo/remotes': { summary: 'The checkout\'s remotes, the PR target and the push default, and why.', response: repoRemotesSchema },

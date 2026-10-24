@@ -85,7 +85,7 @@ export const repoOperationSchema = z.object({
 });
 export type RepoOperation = z.infer<typeof repoOperationSchema>;
 
-/** `GET /repo/index` — the Changes tab with the index: staged (HEAD→index) and unstaged
+/** `GET /repo/status` — the Changes tab with the index: staged (HEAD→index) and unstaged
  *  (index→worktree, untracked included), the conflicted paths and the operation in progress. */
 export const repoIndexSchema = z.object({
   branch: z.string().nullable(),

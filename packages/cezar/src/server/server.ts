@@ -8732,7 +8732,8 @@ export function createApp(deps: ServerDeps) {
       if (!result.ok) return c.json({ error: result.error }, 409);
       return c.json(result.graph, 200);
     })
-    .get('/repo/index', async (c) => {
+    // Not `/repo/index`: the typed client spells a path's root `index`, so that name is taken.
+    .get('/repo/status', async (c) => {
       c.header('Cache-Control', 'no-store');
       const root = await checkoutRoot(c.get('project'));
       if (!root) return c.json({ error: 'not a git repository' }, 409);

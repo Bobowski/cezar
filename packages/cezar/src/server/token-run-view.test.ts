@@ -10,6 +10,7 @@ import { issueSetupCode, mutateAuthStore, sha256 } from '../auth/store.ts';
 import { base32Decode, hotp, totpStep } from '../auth/totp.ts';
 import { AutomationStore } from '../automations/store.ts';
 import { RunStore } from '../runs/store.ts';
+import type { SelfUpdateService } from '../self-update/service.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import { todosWatchActive } from '../todos.ts';
 import { registerProject } from '../workspace/projects.ts';
@@ -42,6 +43,14 @@ describe('a token’s view of a task', () => {
     detail: async () => ({ ...lifecycleSummary!, history: [lifecycleSummary!.operation] }),
     operation: async () => lifecycleSummary!.operation,
     onChange: () => () => undefined,
+  };
+
+  const selfUpdateStatus = {
+    version: '0.0.0-test', installKind: 'managed', entry: 'index.js', canSelfUpdate: true, channel: 'stable', restartMode: 'reexec',
+    latest: { stable: null, nightly: null }, updateAvailable: null, checkedAt: null, installed: [], available: [],
+    job: { status: 'failed', target: '9.9.9', startedAt: '2026-10-24T00:00:00Z', finishedAt: '2026-10-24T00:01:00Z',
+      log: ['npm http fetch GET 200 https://registry.example/MARKER-the-agent-printed-this'], error: 'npm ERR! MARKER-the-agent-printed-this' },
+    scheduled: null, activeRuns: 0,
   };
 
   const request = (path: string, headers: Record<string, string> = {}) => app.request(path, { headers: { ...HOSTED, ...headers } });
@@ -120,6 +129,7 @@ describe('a token’s view of a task', () => {
       bootProjectId: 'boot',
       auth: new AuthService({ scrypt: { N: 2 ** 10, r: 8, p: 1 } }),
       ssePingMs: TICK_MS,
+      selfUpdate: { status: async () => selfUpdateStatus } as unknown as SelfUpdateService,
     } as Parameters<typeof createApp>[0]) as unknown as Hono;
     await createOwner();
   });
@@ -415,6 +425,18 @@ describe('a token’s view of a task', () => {
       lifecycleSummary = undefined;
       await removeTempDir(worktreePath);
     }
+  });
+
+  it('GET /workspace/self-update leaves npm’s output and the failure text to admin', async () => {
+    const read = await request('/api/v1/workspace/self-update', seedToken(['read']));
+    expect(read.status).toBe(200);
+    const body = (await read.json()) as { job: Record<string, unknown> };
+    expect(JSON.stringify(body)).not.toContain(SECRET);
+    expect(body.job).toEqual({ status: 'failed', target: '9.9.9', startedAt: '2026-10-24T00:00:00Z', finishedAt: '2026-10-24T00:01:00Z', projected: true });
+    // Guard: admin keeps the log.
+    const admin = (await (await request('/api/v1/workspace/self-update', seedToken(['admin']))).json()) as { job: Record<string, unknown> };
+    expect(admin.job.error).toContain(SECRET);
+    expect(admin.job.log).toHaveLength(1);
   });
 
   it('projects the run events of both live streams for a read token', async () => {

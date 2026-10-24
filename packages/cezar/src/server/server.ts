@@ -98,6 +98,7 @@ import {
   runFileRenameSchema,
   runFileWriteSchema,
   type WorkspaceConfigResponse,
+  type SelfUpdateStatus,
   workspaceBrandingLogoResponseSchema,
   githubListQuerySchema,
 } from '@open-mercato/cezar-contract';
@@ -1467,6 +1468,14 @@ async function probeWritableDir(dir: string, create: boolean): Promise<string | 
     await unlink(probe).catch(() => {}); // best-effort if the round-trip half-succeeded
     return err instanceof Error ? err.message : String(err);
   }
+}
+
+/** A token without `admin` gets the update job's status, target and timing — npm's output and the
+ *  failure text are the admin's (spec 2026-10-24-cezar-mcp-server §4). */
+function selfUpdateFor(principal: ReturnType<typeof principalOf>, status: SelfUpdateStatus): SelfUpdateStatus {
+  if (!status.job || principal?.kind !== 'token' || principal.scopes.includes('admin')) return status;
+  const { status: state, target, startedAt, finishedAt } = status.job;
+  return { ...status, job: { status: state, target, startedAt, finishedAt, projected: true } };
 }
 
 // The return type is INFERRED on purpose: it is the chained app type built at the bottom of
@@ -3714,7 +3723,7 @@ export function createApp(deps: ServerDeps) {
     });
 
   const selfUpdateRoutes = new Hono()
-    .get('/workspace/self-update', async (c) => c.json(await selfUpdate.status()))
+    .get('/workspace/self-update', async (c) => c.json(selfUpdateFor(principalOf(c), await selfUpdate.status())))
 
     .post('/workspace/self-update/refresh', async (c) => c.json(await selfUpdate.status({ refresh: true })))
 

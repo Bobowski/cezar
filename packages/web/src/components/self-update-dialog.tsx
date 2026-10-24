@@ -510,13 +510,16 @@ function InstallHint({ data }: { data: SelfUpdateStatus }) {
  *  fresh one (no job on its status) answers, and reload into it. */
 function JobPanel({ data }: { data: SelfUpdateStatus }) {
   const job = data.job!
+  // The cockpit is the owner and gets the whole job; only a projected one (a token's) has no log.
+  const log = 'log' in job ? job.log : []
+  const error = 'error' in job ? job.error : undefined
   const queryClient = useQueryClient()
   const logRef = useRef<HTMLPreElement>(null)
   const [comeback, setComeback] = useState<'waiting' | 'back' | 'timeout'>('waiting')
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight })
-  }, [job.log.length])
+  }, [log.length])
 
   useEffect(() => {
     if (job.status !== 'restarting') return
@@ -572,9 +575,9 @@ function JobPanel({ data }: { data: SelfUpdateStatus }) {
         ref={logRef}
         className="max-h-40 min-w-0 overflow-y-auto rounded-lg bg-muted/60 px-3 py-2 font-mono text-[11px] leading-[1.5] break-all whitespace-pre-wrap text-muted-foreground"
       >
-        {job.log.join('\n')}
+        {log.join('\n')}
       </pre>
-      {job.error ? <p className="text-[13px] text-danger">{job.error}</p> : null}
+      {error ? <p className="text-[13px] text-danger">{error}</p> : null}
     </div>
   )
 }

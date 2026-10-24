@@ -169,6 +169,21 @@ describe('pull_request.synchronize', () => {
     expect(result.cursor).toBeUndefined();
   });
 
+  it('launches at most maxRecords per poll and holds the other moved heads for the next one', async () => {
+    const before = Object.fromEntries(Object.entries(heads).map(([number, head]) => [number, { ...head, sha: 'old' }]));
+    const poll = (activity: object) => new GithubPoller({ run: gh({ 'repos/acme/demo/pulls': pulls }) })
+      .poll('acme', 'demo', definition(['pull_request.synchronize'], { maxRecords: 1 }), { activity });
+    const first = await poll({ prHeads: before, etags: { pulls: 'W/"x"' } });
+    expect(first.candidates).toHaveLength(1);
+    expect(first.truncated).toBe(true);
+    expect(Object.values(first.activity!.prHeads!).filter((head) => head.sha === 'old')).toHaveLength(pulls.length - 1);
+    // A 304 would hand the held heads back with nothing to diff: the next poll reads in full.
+    expect(first.activity?.etags?.pulls).toBeUndefined();
+    const second = await poll(first.activity!);
+    expect(second.candidates).toHaveLength(1);
+    expect(second.candidates[0]!.number).not.toBe(first.candidates[0]!.number);
+  });
+
   it('narrows on the head branch glob', async () => {
     const before = Object.fromEntries(Object.entries(heads).map(([number, head]) => [number, { ...head, sha: 'old' }]));
     const result = await new GithubPoller({ run: gh({ 'repos/acme/demo/pulls': pulls }) }).poll('acme', 'demo',

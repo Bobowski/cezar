@@ -349,14 +349,30 @@ export async function pollActivity(input: {
       updatedAt, `${item.nodeId}:synchronize:${sha}`),
     cursorless: true,
   });
+  /** At most `maxRecords` `synchronize` launches per poll, like `push`: false = over budget, and
+   *  the caller keeps the old head so the next poll still sees the move. */
+  let synchronized = 0;
+  const takeSynchronize = (candidate: GithubCandidate): boolean => {
+    if (!admit(candidate)) return true;
+    if (synchronized >= maxRecords) {
+      truncated = true;
+      return false;
+    }
+    synchronized += 1;
+    cursorless.push(candidate);
+    return true;
+  };
   if (tracksPrHeads) {
     // Without stored heads a 304 would leave nothing to diff against, so no ETag is sent then.
     const read = await getConditional(run, `${api}/pulls`, ['state=open', 'sort=updated', 'direction=desc', `per_page=${PAGE}`],
       state.prHeads ? etagsIn.pulls : undefined);
     let heads: PrHeads;
+    /** What check suites are read for: the heads the list really has now. */
+    let suiteHeads: PrHeads;
     if (read.notModified) {
       heads = { ...(state.prHeads ?? {}) };
       windowed = new Set(Object.entries(heads).filter(([, head]) => !head.left).map(([number]) => number));
+      suiteHeads = heads;
       if (etagsIn.pulls) etags.pulls = etagsIn.pulls;
     } else {
       const pulls = parseEach(read.body, pullSchema);
@@ -364,6 +380,7 @@ export async function pollActivity(input: {
       if (read.etag) etags.pulls = read.etag;
       const fresh: PrHeads = Object.fromEntries(pulls.map((pull) => [String(pull.number), { sha: pull.head.sha, ref: pull.head.ref, updatedAt: pull.updated_at }]));
       windowed = new Set(Object.keys(fresh));
+      suiteHeads = fresh;
       heads = retainPrHeads(state.prHeads, fresh);
       for (const pull of pulls) items.set(pull.number, fromPull(pull));
       // First sight records the heads and fires nothing: a head is "changed" only against one seen
@@ -373,7 +390,10 @@ export async function pollActivity(input: {
           const previous = state.prHeads[String(pull.number)];
           if (!previous || previous.sha === pull.head.sha || ownSha(pull.head.sha)) continue;
           const candidate = synchronizeOf(fromPull(pull), pull.head.sha, pull.updated_at);
-          if (admit(candidate)) cursorless.push(candidate);
+          if (takeSynchronize(candidate)) continue;
+          heads[String(pull.number)] = { sha: previous.sha, ref: pull.head.ref, updatedAt: pull.updated_at };
+          // A 304 next time would hand back these held heads with nothing left to diff.
+          delete etags.pulls;
         }
       }
     }
@@ -381,7 +401,7 @@ export async function pollActivity(input: {
 
     if (events.has('check_suite.completed')) {
       const group: ActivityObservation[] = [];
-      const newest = Object.entries(heads)
+      const newest = Object.entries(suiteHeads)
         .filter(([number]) => windowed.has(number))
         .sort((a, b) => b[1].updatedAt.localeCompare(a[1].updatedAt))
         .slice(0, maxRecords);
@@ -494,9 +514,10 @@ export async function pollActivity(input: {
       const item = items.get(number);
       if (windowed.has(key) || !item?.headSha || !item.headRef || !item.updatedAt) continue;
       const previous = state.prHeads?.[key];
-      if (events.has('pull_request.synchronize') && previous && previous.sha !== item.headSha && item.open && !ownSha(item.headSha)) {
-        const candidate = synchronizeOf(item, item.headSha, item.updatedAt);
-        if (admit(candidate)) cursorless.push(candidate);
+      if (events.has('pull_request.synchronize') && previous && previous.sha !== item.headSha && item.open && !ownSha(item.headSha)
+        && !takeSynchronize(synchronizeOf(item, item.headSha, item.updatedAt))) {
+        next.prHeads[key] = { ...previous, left: true };
+        continue;
       }
       next.prHeads[key] = { sha: item.headSha, ref: item.headRef, updatedAt: item.updatedAt, left: true };
     }

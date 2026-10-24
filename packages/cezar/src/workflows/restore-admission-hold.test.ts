@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { RunStore } from '../runs/store.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import { WorkspaceSemaphore } from '../workspace/semaphore.ts';
-import { RunManager } from './run.ts';
+import { RESTORE_IN_PROGRESS_ERROR, RunManager } from './run.ts';
 import type { WorkflowDef } from './types.ts';
 
 /** A restore holds run admission until the process restarts (spec 2026-10-23-backup-restore §4). */
@@ -49,5 +49,38 @@ describe('the restore admission hold', () => {
     expect(semaphore.admissionHeld()).toBe(false);
     const s = store;
     await waitFor(() => s.getRun(run.id)?.status === 'done', 'the held run to finish');
+  }, 30_000);
+
+  it('refuses a Continue while held — resumes never pass through the queue — and queues a deferred one', async () => {
+    const savedDry = process.env.CEZ_DRY_RUN;
+    process.env.CEZ_DRY_RUN = '1';
+    try {
+      root = mkdtempSync(join(tmpdir(), 'cez-restore-hold-'));
+      const semaphore = new WorkspaceSemaphore({ initial: { maxParallel: 4 } });
+      store = RunStore.open(join(root, '.ai/cezar'));
+      manager = new RunManager(store, root, { semaphore });
+      const finished = (title: string) => {
+        const run = store!.createRun({ title, workflow: 'quick-task', task: title, steps: [] });
+        store!.addStep(run.id, { id: 'agent', name: 'Agent', kind: 'agent' });
+        store!.updateStep(run.id, 'agent', { sessionId: `session-${title}`, status: 'done' });
+        store!.updateRun(run.id, { status: 'done', finishedAt: new Date().toISOString() });
+        return run.id;
+      };
+      const continued = finished('continued');
+      const recovered = finished('recovered');
+      // Never released here: the queued continuation must not start once the dry-run env is gone.
+      semaphore.holdAdmission();
+      expect(manager.restoreInProgress()).toBe(true);
+      expect(manager.continueRun(continued, { text: 'more' })).toEqual({ ok: false, error: RESTORE_IN_PROGRESS_ERROR });
+      expect(store.getRun(continued)?.status).toBe('done');
+      // Restart recovery and auto-resume defer: they queue, and the held pump keeps them there.
+      expect(manager.continueRun(recovered, { text: 'more' }, true)).toEqual({ ok: true });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(store.getRun(recovered)?.status).toBe('queued');
+      expect(manager.sendMessage(continued, [{ type: 'text', text: 'hi' }])).toBe(false);
+    } finally {
+      if (savedDry === undefined) delete process.env.CEZ_DRY_RUN;
+      else process.env.CEZ_DRY_RUN = savedDry;
+    }
   }, 30_000);
 });

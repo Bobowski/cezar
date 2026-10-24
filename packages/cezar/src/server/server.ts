@@ -220,7 +220,7 @@ import {
   repoFileQuerySchema,
   type DeleteDraftResponse,
 } from '@open-mercato/cezar-contract';
-import { toPastedContent, type PastedContent, type RunManager } from '../workflows/run.ts';
+import { RESTORE_IN_PROGRESS_ERROR, toPastedContent, type PastedContent, type RunManager } from '../workflows/run.ts';
 import { checkoutGitStatus } from '../workflows/landing.ts';
 import { deleteUpload, readUpload, writeUpload } from '../uploads.ts';
 import { branchesCheckedOutElsewhere, removeWorktree, worktreeDiff, worktreeDiffStat, worktreeSizeBytes } from '../git-worktree.ts';
@@ -5149,6 +5149,8 @@ export function createApp(deps: ServerDeps) {
       const id = c.req.param('id');
       const run = store.getRun(id);
       if (!run) return c.json({ error: 'not found' }, 404);
+      // Nothing resumes, and no queued prompt changes, under a restore (`?.`: test managers are stubs).
+      if (manager.restoreInProgress?.()) return c.json({ error: RESTORE_IN_PROGRESS_ERROR }, 409);
       const parsed = { data: c.req.valid('json') };
       // Stacking onto a queued prompt mutates an existing task and invokes no provider.
       // Provider availability still gates live delivery after the record leaves `queued`, but

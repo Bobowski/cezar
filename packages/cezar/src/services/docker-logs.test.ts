@@ -104,6 +104,51 @@ describe('docker logs followers (spec 2026-10-23-docker-management §3.4)', () =
     expect(followers.read(ID, 0).data).toBe('boot\n[REDACTED]\nok\n-----BEGIN PRIVATE KEY-----\nnot it\n');
   });
 
+  describe('a multi-line secret starting in the dropped rest of an over-long line', () => {
+    const pem = '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nSECRETBODYLINE2abcdefghijklmnop\n-----END PRIVATE KEY-----';
+    const cut = `${'x'.repeat(32 * 1024)} … [line cut at 32 KiB]\n`;
+
+    it('is still held whole and redacted, its continuation lines never shown as ordinary lines', () => {
+      const { followers, spawned } = harness([pem]);
+      followers.read(ID, 0);
+      // The read boundary falls inside the PEM's first line, which ends the over-long line.
+      spawned[0]!.data('out', `${'x'.repeat(40 * 1024)}${pem.slice(0, 15)}`);
+      spawned[0]!.data('out', `${pem.slice(15)}\nok\n`);
+      expect(followers.read(ID, 0).data).toBe(`${cut}${REDACTED}\nok\n`);
+    });
+
+    it('is held across reads and CRLF line ends too', () => {
+      const { followers, spawned } = harness([pem]);
+      followers.read(ID, 0);
+      spawned[0]!.data('out', 'x'.repeat(40 * 1024));
+      spawned[0]!.data('out', 'x'.repeat(1024) + pem.split('\n')[0]!);
+      for (const line of pem.split('\n').slice(1)) {
+        spawned[0]!.data('out', '\r\n');
+        spawned[0]!.data('out', line);
+      }
+      spawned[0]!.data('out', '\r\nok\r\n');
+      const data = followers.read(ID, 0).data;
+      expect(data).not.toContain('MIIEvQ');
+      expect(data).not.toContain('SECRETBODY');
+      expect(data).toBe(`${cut}${REDACTED}\r\nok\r\n`);
+    });
+
+    it('never cuts at a line end inside a PEM whose last line has not ended yet', () => {
+      const { followers, spawned } = harness([pem]);
+      followers.read(ID, 0);
+      spawned[0]!.data('out', `boot\n${pem}`);
+      spawned[0]!.data('out', ' trailing\n');
+      expect(followers.read(ID, 0).data).toBe(`boot\n${REDACTED} trailing\n`);
+    });
+
+    it('lets the lines after a look-alike start out once they are not the secret, never the dropped part', () => {
+      const { followers, spawned } = harness([pem]);
+      followers.read(ID, 0);
+      spawned[0]!.data('out', `${'x'.repeat(40 * 1024)}-----BEGIN PRIVATE KEY-----\nnot it\nok\n`);
+      expect(followers.read(ID, 0).data).toBe(`${cut}not it\nok\n`);
+    });
+  });
+
   it('redacts a PEM stored with LF that a tty container writes with CRLF, line by line', () => {
     const pem = '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj\n-----END PRIVATE KEY-----';
     const { followers, spawned } = harness([pem]);

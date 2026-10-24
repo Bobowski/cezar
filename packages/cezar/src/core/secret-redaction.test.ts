@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { collectSecretValues, heldSecretStart, redactDeep, redactionSafeCut, redactSecrets, REDACTED } from './secret-redaction.ts';
+import {
+  collectSecretValues, heldSecretStart, lineSafeCut, redactDeep, redactionSafeCut, redactSecrets, redactSecretsFrom, REDACTED,
+} from './secret-redaction.ts';
 
 /**
  * #427: credentials must never be persisted to a run's NDJSON transcript.
@@ -142,6 +144,15 @@ describe('a multi-line secret, whatever the line ends', () => {
   it('is never cut across by a stream, CRLF or not', () => {
     const text = `${'x'.repeat(10)}${crlf}${'y'.repeat(200)}`;
     expect(redactionSafeCut(text, [pem], 30)).toBe(10);
+    // A line cut inside a complete one moves to its start; one outside it stays.
+    expect(lineSafeCut(`boot\n${pem}`, [pem], `boot\n${pem}`.lastIndexOf('\n') + 1)).toBe(5);
+    expect(lineSafeCut(`boot\n${pem}\nok`, [pem], `boot\n${pem}\n`.length)).toBe(`boot\n${pem}\n`.length);
+  });
+
+  it('is redacted from a hidden prefix on: what reaches past it goes out as one mark', () => {
+    expect(redactSecretsFrom(`${pem}\nok`, [pem], 10)).toBe(`${REDACTED}\nok`);
+    expect(redactSecretsFrom(`-----BEGIN PRIVATE KEY-----\nnot it\n`, [pem], 28)).toBe('not it\n');
+    expect(redactSecretsFrom(pem, [pem], 0)).toBe(REDACTED);
   });
 });
 

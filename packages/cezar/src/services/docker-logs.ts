@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { collectSecretValues, heldSecretStart, redactionHold, redactionSafeCut, redactSecrets } from '../core/secret-redaction.ts';
+import { collectSecretValues, heldSecretStart, lineSafeCut, redactionHold, redactionSafeCut, redactSecretsFrom } from '../core/secret-redaction.ts';
 
 /**
  * `docker logs --tail 500 --follow <id>`, one process per container while someone looks (spec
@@ -57,6 +57,10 @@ interface Entry {
   pending: Record<Stream, string>;
   /** The rest of a cut line is being dropped, up to its newline. */
   skipping: Record<Stream, boolean>;
+  /** The dropped line's tail, never shown: a multi-line secret starting in it is still held whole. */
+  dropped: Record<Stream, string>;
+  /** How many leading chars of `pending` are that tail — held to match a secret, never let out. */
+  hidden: Record<Stream, number>;
   holders: number;
   lastRead: number;
   bell: ReturnType<typeof setTimeout> | null;
@@ -68,6 +72,8 @@ interface Entry {
 function clearHold(entry: Entry): void {
   entry.pending = { out: '', err: '' };
   entry.skipping = { out: false, err: false };
+  entry.dropped = { out: '', err: '' };
+  entry.hidden = { out: 0, err: 0 };
 }
 
 export interface DockerLogsRead { data: string; cursor: number; truncated: boolean; following: boolean }
@@ -97,45 +103,62 @@ export class DockerLogFollowers {
     return process.env.CEZ_REDACT_SECRETS !== '0';
   }
 
-  private redact(text: string, values: readonly string[]): string {
-    return this.redacting() ? redactSecrets(text, values) : text;
+  /** `text` redacted as a whole but shown from `hidden` on: a secret reaching past it still goes. */
+  private redact(text: string, values: readonly string[], hidden = 0): string {
+    return this.redacting() ? redactSecretsFrom(text, values, hidden) : text.slice(hidden);
   }
 
   /** Redacted text, each line cut to `MAX_LINE` — after redaction, so the cut splits no secret. */
-  private capped(text: string, values: readonly string[]): string {
-    return this.redact(text, values).split('\n').map((line) => (line.length > MAX_LINE ? line.slice(0, MAX_LINE) + CUT_MARK : line)).join('\n');
+  private capped(text: string, values: readonly string[], hidden = 0): string {
+    return this.redact(text, values, hidden).split('\n').map((line) => (line.length > MAX_LINE ? line.slice(0, MAX_LINE) + CUT_MARK : line)).join('\n');
   }
 
   /** What a read lets out: whole lines, redacted whole; of a line past the cap, its head and a mark. */
   private take(entry: Entry, stream: Stream, chunk: string): string {
     let text = chunk;
+    const values = this.redacting() ? this.secretValues() : [];
     if (entry.skipping[stream]) {
       const newline = text.indexOf('\n');
-      if (newline === -1) return '';
+      const dropped = entry.dropped[stream] + (newline === -1 ? text : text.slice(0, newline + 1));
+      if (newline === -1) {
+        entry.dropped[stream] = dropped.slice(-redactionHold(values));
+        return '';
+      }
+      // The cut line ended: a secret whose first line ended it is held on, hidden, with what follows.
+      const held = heldSecretStart(dropped, values);
       entry.skipping[stream] = false;
+      entry.dropped[stream] = '';
+      entry.pending[stream] = dropped.slice(held);
+      entry.hidden[stream] = dropped.length - held;
       text = text.slice(newline + 1);
     }
-    const values = this.redacting() ? this.secretValues() : [];
     const pending = entry.pending[stream] + text;
-    // Not past a tail a multi-line secret (a PEM) may still be arriving in: it is redacted whole too.
-    const cut = Math.min(pending.lastIndexOf('\n') + 1, heldSecretStart(pending, values));
-    const out = this.capped(pending.slice(0, cut), values);
+    const hidden = entry.hidden[stream];
+    // Not past a tail a multi-line secret (a PEM) may still be arriving in, nor into one whose last
+    // line has not ended: it is redacted whole too.
+    const cut = lineSafeCut(pending, values, Math.min(pending.lastIndexOf('\n') + 1, heldSecretStart(pending, values)));
+    const out = this.capped(pending.slice(0, cut), values, hidden);
     const rest = pending.slice(cut);
+    const restHidden = Math.max(0, hidden - cut);
     if (rest.length <= MAX_LINE + redactionHold(values)) {
       entry.pending[stream] = rest;
+      entry.hidden[stream] = restHidden;
       return out;
     }
     // Never a flush of the held line: a secret its last read ended inside would go out half-redacted.
     const head = this.redacting() ? redactionSafeCut(rest, values, MAX_LINE) : MAX_LINE;
     entry.pending[stream] = '';
+    entry.hidden[stream] = 0;
     entry.skipping[stream] = true;
-    return `${out}${this.redact(rest.slice(0, head), values)}${CUT_MARK}\n`;
+    // From the head's tail on: a secret's first line may straddle the cut.
+    entry.dropped[stream] = rest.slice(-redactionHold(values));
+    return `${out}${this.redact(rest.slice(0, head), values, restHidden)}${CUT_MARK}\n`;
   }
 
   private entry(id: string): Entry {
     let entry = this.entries.get(id);
     if (!entry) {
-      entry = { proc: null, following: false, text: '', start: 0, pending: { out: '', err: '' }, skipping: { out: false, err: false }, holders: 0, lastRead: this.now(), bell: null, resumeFrom: null };
+      entry = { proc: null, following: false, text: '', start: 0, pending: { out: '', err: '' }, skipping: { out: false, err: false }, dropped: { out: '', err: '' }, hidden: { out: 0, err: 0 }, holders: 0, lastRead: this.now(), bell: null, resumeFrom: null };
       this.entries.set(id, entry);
       this.armSweep();
     }
@@ -181,7 +204,7 @@ export class DockerLogFollowers {
         // A partial last line goes out; a multi-line secret it may be the start of does not.
         const rest = (['out', 'err'] as const).map((stream) => {
           const pending = entry.pending[stream];
-          return entry.skipping[stream] ? '' : this.capped(pending.slice(0, heldSecretStart(pending, values)), values);
+          return entry.skipping[stream] ? '' : this.capped(pending.slice(0, heldSecretStart(pending, values)), values, entry.hidden[stream]);
         }).join('');
         clearHold(entry);
         this.append(id, entry, rest + (reason ? `\n[${reason}]\n` : ''));

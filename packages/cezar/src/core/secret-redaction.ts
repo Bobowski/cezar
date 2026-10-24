@@ -109,6 +109,16 @@ export function redactSecrets(text: string, secretValues: readonly string[]): st
   return out;
 }
 
+/**
+ * `text.slice(from)`, redacted as part of the whole `text`: a secret starting before `from` is still
+ * found, and what of it reaches past `from` goes out as `[REDACTED]`.
+ */
+export function redactSecretsFrom(text: string, secretValues: readonly string[], from: number): string {
+  if (from <= 0) return redactSecrets(text, secretValues);
+  const reach = Math.max(from, ...secretSpans(text, secretValues).filter(([start]) => start < from).map(([, end]) => end));
+  return (reach > from ? REDACTED : '') + redactSecrets(text.slice(reach), secretValues);
+}
+
 /** Longer than any token shape needs before it can match at all (`AIza` + 35). */
 const TOKEN_HOLD = 64;
 
@@ -142,6 +152,14 @@ function secretSpans(text: string, secretValues: readonly string[]): Array<[numb
   }
   for (const re of TOKEN_PATTERNS) for (const match of text.matchAll(re)) spans.push([match.index, match.index + match[0].length]);
   return spans;
+}
+
+/** `cut`, moved back to the start of any multi-line secret value it would split — a complete one included. */
+export function lineSafeCut(text: string, secretValues: readonly string[], cut: number): number {
+  const multiLine = secretValues.filter((value) => value.includes('\n'));
+  if (multiLine.length === 0) return cut;
+  for (const [start, end] of secretSpans(text, multiLine).sort((a, b) => b[0] - a[0])) if (start < cut && end > cut) cut = start;
+  return cut;
 }
 
 /**

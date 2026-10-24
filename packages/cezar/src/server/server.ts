@@ -56,6 +56,7 @@ import { ScheduleRunner } from '../automations/schedule-runner.ts';
 import { automationStats } from '../automations/stats.ts';
 import { automationTemplatesOf } from '../automations/templates.ts';
 import { AutomationLaunchOutcome, launchAutomationRun, launchScheduledRun, launchTrackerAutomationRun, rebaselineIdleAutomations, reconcileAutomationReceipts, validateAutomationPrompt } from '../automations/task-template.ts';
+import { recordLaunched, recordOutcome } from '../automations/event-poll-cycle.ts';
 import {
   automationEventSchema,
   automationFiltersSchema,
@@ -4783,21 +4784,27 @@ export function createApp(deps: ServerDeps) {
       }
       const reserved = store.reserveRetry(receipt.receiptId);
       if (!reserved) { mutation.release(); lease.release(); return c.json({ error: 'receipt is not retryable' }, 409); }
+      const retried = receipt.candidate;
+      const log = { event: retried.event, githubNumber: retried.number, githubTitle: retried.title, githubUrl: retried.url };
       try {
-        const launched = await launchAutomationRun({ root: project.root, manager: project.manager, store: project.store, definition, candidate: receipt.candidate, receiptId: receipt.receiptId, dispatchEnabled: capabilities().dispatch });
-        store.appendReceipt({ ...reserved, status: 'launched', runId: launched.runId, updatedAt: new Date().toISOString() });
+        const launched = await launchAutomationRun({ root: project.root, manager: project.manager, store: project.store, definition, candidate: retried, receiptId: receipt.receiptId, dispatchEnabled: capabilities().dispatch });
+        // The receipt and the log row a poll would write: `delivered-to` for a delivery (§5).
+        recordLaunched(store, definition, reserved, log, launched);
         emitAutomationChange(project, definition.id, definition.revision);
         return c.json({ receiptId: receipt.receiptId, runId: launched.runId }, 202);
       } catch (error) {
         // A `pr-head` retry whose PR has since closed (or turned out a fork) is handled, not
-        // broken: a terminal `skipped` receipt, so Retry stops being offered for it.
-        const skipped = error instanceof AutomationLaunchOutcome && error.result === 'skipped';
-        store.appendReceipt({
-          ...reserved,
-          status: skipped ? 'skipped' : 'launch-error',
-          ...(skipped ? {} : { error: (error instanceof Error ? error.message : String(error)).slice(0, 2_000) }),
-          updatedAt: new Date().toISOString(),
-        });
+        // broken: a terminal `skipped` receipt, so Retry stops being offered for it; a held one
+        // waits for the polls like any other.
+        if (error instanceof AutomationLaunchOutcome && error.result !== 'failed') recordOutcome(store, definition, reserved, log, error);
+        else {
+          store.appendReceipt({
+            ...reserved,
+            status: 'launch-error',
+            error: (error instanceof Error ? error.message : String(error)).slice(0, 2_000),
+            updatedAt: new Date().toISOString(),
+          });
+        }
         return c.json({ error: error instanceof Error ? error.message : String(error) }, 409);
       } finally {
         mutation.release();

@@ -242,6 +242,35 @@ describe('GitHub automation API', () => {
     scheduler.stop();
   });
 
+  it('records a Retry that delivers into the owning run as delivered, with its log row (spec 2026-10-23-github-events §5)', async () => {
+    const automationStore = AutomationStore.open(join(root, '.ai/cezar'));
+    const definition = automationStore.create({
+      name: 'Fix CI', enabled: true, kind: 'github', events: ['check_suite.completed'], intervalSeconds: 300, deliver: 'owning-run',
+      filters: { lookbackDays: 7, maxRecords: 25 }, task: { prompt: 'CI failed on {{github.url}}', workflow: 'quick-task' },
+    });
+    const owner = store.createRun({ title: 'made the PR', workflow: 'quick-task', task: 't', steps: [] });
+    store.updateRun(owner.id, { pullRequestUrl: 'https://github.com/acme/demo/pull/8', worktreePath: join(root, 'wt'), status: 'review' });
+    const continued: string[] = [];
+    const manager = {
+      enqueueMessage: () => null, hasLiveSession: () => false, deferMessage: () => false, isActive: () => false,
+      continueRun: (id: string) => { continued.push(id); return { ok: true }; },
+    } as unknown as RunManager;
+    const candidate = {
+      eventId: 'acme/demo:check_suite:1', event: 'check_suite.completed' as const, timestamp: new Date().toISOString(), tieBreaker: 'suite:1',
+      repo: 'acme/demo', nodeId: 'PR_8', number: 8, title: 'Feature', url: 'https://github.com/acme/demo/pull/8', author: 'alice',
+      assignees: [], labels: [], headSha: 'abc', check: { id: 1, name: 'CI', conclusion: 'failure', url: 'https://ci', failingJobs: ['test'] },
+    };
+    const receipt = automationStore.reserveReceipt({ automationId: definition.id, revision: definition.revision, eventId: candidate.eventId, candidate })!;
+    automationStore.appendReceipt({ ...receipt, status: 'launch-error', error: 'gh was offline' });
+    const response = await apiRequest(app({ automationStore, manager }), `/api/v1/automation-log/${receipt.receiptId}/retry`, { method: 'POST' });
+    expect(response.status).toBe(202);
+    expect(continued).toEqual([owner.id]);
+    expect(automationStore.latestReceipts().get(receipt.receiptKey)).toMatchObject({ status: 'launched', runId: owner.id, delivered: true });
+    expect(automationStore.logs({ automationId: definition.id })[0]).toMatchObject({
+      result: 'delivered', runId: owner.id, receiptId: receipt.receiptId, reason: `delivered-to: ${owner.id}`, event: 'check_suite.completed', githubNumber: 8,
+    });
+  });
+
   it('accepts preview as an automation-log result filter', async () => {
     const automationStore = AutomationStore.open(join(root, '.ai/cezar'));
     automationStore.appendLog({

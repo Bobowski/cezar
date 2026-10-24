@@ -36,7 +36,7 @@ vi.mock('@/routes/task-workspace/browser-view', () => ({
   },
 }))
 
-import { readDraft } from '@/routes/new-task-draft'
+import { readDraft, resetDraft, writeDraft } from '@/routes/new-task-draft'
 
 import { CodeBrowserTab } from './code-browser'
 import { resetProjectDesignDrafts, takePendingDesignStart } from './project-design-drafts'
@@ -63,6 +63,7 @@ const renderTab = (onStartTask = vi.fn(async () => {})) => {
 const pickElement = (element: NewDesignPick) => act(() => { (view.props!.onPickElement as (p: NewDesignPick) => boolean)(element) })
 
 beforeEach(() => {
+  resetDraft()
   resetProjectDesignDrafts()
   navigate.mockReset()
   api.getRepoDesignDrafts.mockReset().mockResolvedValue({ picks: [] })
@@ -103,6 +104,20 @@ describe('notes with no task chosen', () => {
     expect(text).toContain('source: src/a.tsx:3')
     // Starting the task there consumes exactly these.
     expect(takePendingDesignStart(null)).toEqual(['k-1', 'k-2'])
+  })
+
+  it('keeps what the /new composer already holds, adding the notes after it', async () => {
+    writeDraft({ ...readDraft(null), text: 'My own words, half typed' }, null)
+    api.getRepoDesignDrafts.mockResolvedValue({ picks: [{ ...pick('k-1', 'main > button.one'), note: 'bigger' }] })
+    renderTab()
+    fireEvent.click(await screen.findByRole('button', { name: 'Start task with 1 note' }))
+
+    const text = readDraft(null).text
+    expect(text.startsWith('My own words, half typed\n\n')).toBe(true)
+    expect(text).toContain('1. bigger')
+    // Clicking it again does not add the same notes twice.
+    fireEvent.click(screen.getByRole('button', { name: 'Start task with 1 note' }))
+    expect(readDraft(null).text).toBe(text)
   })
 
   it('starts one note alone from its menu, and numbers its frame', async () => {

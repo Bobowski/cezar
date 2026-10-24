@@ -93,7 +93,11 @@ function NewTaskBrowser({ state, onChange, onStartTask }: { state: CodeBrowser; 
       toast(error instanceof Error ? error.message : 'Too many notes for one task.', { tone: 'danger' })
       return
     }
-    writeDraft({ ...readDraft(projectId), text }, projectId)
+    // The composer may hold unsent work: the notes join it rather than replace it, and only once.
+    const current = readDraft(projectId)
+    const kept = current.text.trim()
+    const next = kept === '' ? text : kept.includes(text.trim()) ? current.text : `${kept}\n\n${text}`
+    writeDraft({ ...current, text: next }, projectId)
     setPendingDesignStart(projectId, drafts.map((draft) => draft.key))
     navigate('/new?design=1')
   }

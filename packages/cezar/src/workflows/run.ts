@@ -7580,7 +7580,7 @@ export class RunManager {
   }
 
   /** Land now and record the outcome on the run. A `nothing` never overwrites an earlier result. */
-  private async landNow(runId: string, policy: NonNullable<ActiveRun['autoLand']>): Promise<LandResult> {
+  private async landNow(runId: string, policy: NonNullable<ActiveRun['autoLand']>, honorIndex = false): Promise<LandResult> {
     const run = this.store.getRun(runId);
     this.store.appendEvent(runId, {
       type: 'note',
@@ -7604,6 +7604,7 @@ export class RunManager {
       checks: policy.checks,
       env,
       beforePush: (sha) => this.store.recordGithubTraces(runId, { shas: [sha] }),
+      honorIndex,
     });
     const at = new Date().toISOString();
     if (outcome.result === 'landed') {
@@ -7667,11 +7668,12 @@ export class RunManager {
     state: ActiveRun,
     stepId: string | undefined,
     close: () => void,
+    honorIndex = false,
   ): Promise<LandResult> | undefined {
     const policy = state.autoLand;
     if (!policy || state.cancelled) return undefined;
     if (policy.inFlight) return policy.inFlight;
-    policy.inFlight = this.landNow(runId, policy)
+    policy.inFlight = this.landNow(runId, policy, honorIndex)
       .catch((err: unknown): LandResult => ({ result: 'failed', stage: 'commit', error: err instanceof Error ? err.message : String(err) }))
       .then((outcome) => {
         policy.inFlight = undefined;
@@ -7725,10 +7727,11 @@ export class RunManager {
       this.clearIdleTimer(state);
       state.idleClosed = undefined;
       if (state.askPark === 'waiting') state.askPark = 'abandoned';
+      // The user's Commit: a partial index they staged on the Git page is what lands.
       const landing = this.landWithAgent(runId, state, state.currentStepId, () => {
         state.finishRequested = true;
         state.session?.end();
-      });
+      }, true);
       if (!landing) return { outcome: 'busy', message: 'the task is stopping — try again in a moment' };
       return landAnswer(await landing, base, true);
     }
@@ -7743,7 +7746,7 @@ export class RunManager {
     let outcome: LandResult;
     try {
       if (!(await hasUnlanded(this.repoRoot))) return { outcome: 'nothing', message: 'nothing to commit' };
-      outcome = await this.landNow(runId, policy);
+      outcome = await this.landNow(runId, policy, true);
     } finally {
       lease.release();
     }

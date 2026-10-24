@@ -29,6 +29,10 @@ export interface LandOptions {
   runCheck?: (command: string, cwd: string, env?: NodeJS.ProcessEnv) => Promise<{ ok: boolean; output: string }>;
   /** Called with the sha about to be pushed, BEFORE the push (spec 2026-10-23-github-events §6). */
   beforePush?: (sha: string) => void;
+  /** The user's own Commit: when they staged part of the change on the Git page, land the index
+   *  only and leave the rest in the tree (spec 2026-10-24-git-view §3.3). Never for an agent's
+   *  landing, which may have staged by accident. */
+  honorIndex?: boolean;
 }
 
 // cezar's own state never lands: committing `.ai/cezar/config.json` would track it, and a tracked
@@ -122,13 +126,13 @@ export async function landInPlace(root: string, options: LandOptions): Promise<L
     if (pending.ok && !pending.stdout.trim()) return { result: 'nothing' };
     const checked = await runChecks(root, options);
     if (checked) return checked;
-    const committed = await commitTask(root, options.describe, identity);
+    const committed = await commitTask(root, options.describe, identity, options.honorIndex);
     if (committed.result === 'failed') return { result: 'failed', stage: 'commit', error: committed.error };
     if (committed.result === 'nothing') return { result: 'nothing' };
     const files = options.since ? await changedFiles(root, `${options.since}..HEAD`) : [];
     return { result: 'landed', branch, sha: committed.sha, pushed: false, files };
   }
-  const committed = await commitTask(root, options.describe, identity);
+  const committed = await commitTask(root, options.describe, identity, options.honorIndex);
   if (committed.result === 'failed') return { result: 'failed', stage: 'commit', error: committed.error };
   // Nothing new against the last-fetched upstream: no network, nothing to land.
   if (committed.result === 'nothing' && (await count(root, `${upstream.ref}..HEAD`)) === 0) return { result: 'nothing' };
@@ -214,14 +218,19 @@ async function commitTask(
   root: string,
   describe: LandOptions['describe'],
   identity: string[],
+  honorIndex = false,
 ): Promise<{ result: 'committed'; sha: string } | { result: 'nothing' } | { result: 'failed'; error: string }> {
   const status = await git(root, ['status', '--porcelain', ...PATHSPEC]);
   if (!status.ok) return { result: 'failed', error: reason(status, 'git status failed') };
   if (!status.stdout.trim()) return { result: 'nothing' };
   const unresolved = await unresolvedConflicts(root, status.stdout);
   if (unresolved) return { result: 'failed', error: `refusing to commit: ${unresolved}` };
-  const add = await git(root, ['add', '-A', ...PATHSPEC]);
-  if (!add.ok) return { result: 'failed', error: reason(add, 'git add failed') };
+  // `diff --cached --quiet` exits 1 exactly when something is staged.
+  const staged = honorIndex && !(await git(root, ['diff', '--cached', '--quiet', ...PATHSPEC])).ok;
+  if (!staged) {
+    const add = await git(root, ['add', '-A', ...PATHSPEC]);
+    if (!add.ok) return { result: 'failed', error: reason(add, 'git add failed') };
+  }
   const nameStatus = await git(root, ['diff', '--cached', '--name-status']);
   const files = nameStatus.stdout
     .split('\n')

@@ -37,13 +37,27 @@ line=$(head -n 1 "$PLAN")
 tail -n +2 "$PLAN" >"$PLAN.next" && mv "$PLAN.next" "$PLAN"
 set -- $line
 echo $(( $(cat "$CLOCK") + $2 )) >"$CLOCK"
+# \`docker stop\` while this cezar runs: the supervisor must pass the TERM on.
+if [ "\${3:-}" = term-supervisor ]; then
+  trap 'exit 42' TERM
+  kill -TERM "$(cat "$SUP_PID")"
+  while :; do sleep 0.1; done
+fi
 if [ "\${3:-}" = flip ]; then
   ln -sfn "$(basename "$(readlink "$HOME_DIR/versions/current")")" "$HOME_DIR/versions/previous"
   ln -sfn "$4" "$HOME_DIR/versions/current"
 fi
 exit "$1"
 `);
-    script(join(bin, 'date'), `if [ "$1" = "+%s" ]; then cat "$CLOCK"; else exec "$REAL_DATE" "$@"; fi`);
+    // The `TERM_ON_DATE`th clock read signals the supervisor: a stop that lands between launches.
+    script(join(bin, 'date'), `
+if [ "$1" != "+%s" ]; then exec "$REAL_DATE" "$@"; fi
+n=$(( $(cat "$DATES") + 1 ))
+echo "$n" >"$DATES"
+if [ "$n" = "\${TERM_ON_DATE:-0}" ]; then kill -TERM "$(cat "$SUP_PID")"; fi
+cat "$CLOCK"
+`);
+    writeFileSync(join(dir, 'dates'), '0\n');
     writeFileSync(join(dir, 'clock'), '1000\n');
     writeFileSync(join(dir, 'calls'), '');
   });
@@ -62,10 +76,11 @@ exit "$1"
   }
 
   /** Run the loop over `plan`; returns its exit status and the installs it launched, in order. */
-  function supervise(plan: string[]): { code: number; launched: string[] } {
+  function supervise(plan: string[], extraEnv: NodeJS.ProcessEnv = {}): { code: number; launched: string[] } {
     writeFileSync(join(dir, 'plan'), `${plan.join('\n')}\n`);
     const harness = join(dir, 'harness.sh');
     script(harness, `
+echo $$ >"$SUP_PID"
 . "$SCRIPT"
 run_cezar() { exec node "$@"; }
 supervise_loop "$HOME_DIR" serve --port 4321
@@ -82,6 +97,9 @@ supervise_loop "$HOME_DIR" serve --port 4321
         CALLS: join(dir, 'calls'),
         CLOCK: join(dir, 'clock'),
         REAL_DATE: realDate,
+        DATES: join(dir, 'dates'),
+        SUP_PID: join(dir, 'supervisor.pid'),
+        ...extraEnv,
       },
     });
     const launched = readFileSync(join(dir, 'calls'), 'utf8')
@@ -120,6 +138,19 @@ supervise_loop "$HOME_DIR" serve --port 4321
     const run = supervise(['75 5 flip 0.17.0+bbbbbbbb', '1 2', '3 2']);
     expect(run.launched).toEqual(['0.17.0+aaaaaaaa', '0.17.0+bbbbbbbb', '0.17.0+aaaaaaaa']);
     expect(run.code).toBe(3);
+  });
+
+  it('forwards a TERM to the running cezar and exits with its status, launching nothing more', () => {
+    const run = supervise(['0 5 term-supervisor', '0 100']);
+    expect(run.launched).toEqual(['0.17.0+aaaaaaaa']);
+    expect(run.code).toBe(42);
+  });
+
+  it('a TERM between an update exit and the relaunch stops instead of relaunching', () => {
+    // Clock read 1 times the first launch, read 2 the relaunch after the 75.
+    const run = supervise(['75 5 flip 0.17.0+bbbbbbbb', '0 100'], { TERM_ON_DATE: '2' });
+    expect(run.launched).toEqual(['0.17.0+aaaaaaaa']);
+    expect(run.code).toBe(0);
   });
 
   it('never rolls back a version that was not just activated', () => {

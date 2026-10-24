@@ -104,8 +104,12 @@ supervise_loop() { # <home> <args for cezar>...
   while :; do
     id=$(supervise_link "$home" current)
     started=$(date +%s)
+    # A stop that landed while no cezar ran (between two launches) found nobody to pass it to.
+    if [ "$stopping" = 1 ]; then return 0; fi
     run_cezar "$(supervise_entry "$home" "${id:-current}")" "$@" &
     child=$!
+    # …and one between the spawn and `child=` reached the shell before it knew the pid.
+    if [ "$stopping" = 1 ]; then kill -TERM "$child" 2>/dev/null; fi
     code=0
     wait "$child" || code=$?
     # A trapped signal interrupts `wait`; wait again for cezar's own exit status.

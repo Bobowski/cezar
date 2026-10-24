@@ -625,20 +625,22 @@ describe('ProjectAutomationScheduler — activity events (spec 2026-10-23-github
 
   it('admits a cursorless candidate behind the cursor and persists the diff bases', async () => {
     const { store, definition } = await setup();
-    store.setState(definition.id, () => ({ revision: definition.revision, baselineAt: '2026-07-01T00:00:00.000Z', cursor: { timestamp: '2026-07-26T00:00:00.000Z' }, etags: { pulls: 'old' } }));
+    store.setState(definition.id, () => ({ revision: definition.revision, baselineAt: '2026-07-01T00:00:00.000Z', cursor: { timestamp: '2026-07-26T00:00:00.000Z' }, etags: { pulls: 'old' }, headsRepo: 'acme/old' }));
     const poll = vi.fn(async () => ({
       candidates: [syncCandidate], truncated: false, pages: 1,
-      activity: { etags: { pulls: 'new' }, prHeads: { 8: { sha: 'abc', ref: 'feature', updatedAt: '2026-07-20T00:00:00.000Z' } }, branchHeads: { main: 'def' } },
+      activity: { etags: { pulls: 'new' }, prHeads: { 8: { sha: 'abc', ref: 'feature', updatedAt: '2026-07-20T00:00:00.000Z' } }, branchHeads: { main: 'def' }, headsRepo: 'acme/demo' },
     }));
     const launch = vi.fn(async () => ({ runId: 'run' }));
     const traces = { shas: new Set(['own']), comments: new Set([1]) };
     const scheduler = new ProjectAutomationScheduler({ projectId: 'p', timeZone: 'UTC', store, github: { owner: 'acme', repo: 'demo', poller: { poll } as never }, launch, traces: () => traces });
     await scheduler.check({ ...definition, events: ['pull_request.synchronize'] });
     expect(launch).toHaveBeenCalledTimes(1);
-    expect((poll.mock.calls[0] as unknown[])[3]).toMatchObject({ activity: { etags: { pulls: 'old' } }, traces });
+    // The poll is handed the repository the stored heads belong to.
+    expect((poll.mock.calls[0] as unknown[])[3]).toMatchObject({ activity: { etags: { pulls: 'old' }, headsRepo: 'acme/old' }, traces });
     expect(store.state(definition.id)).toMatchObject({
-      etags: { pulls: 'new' }, prHeads: { 8: { sha: 'abc' } }, branchHeads: { main: 'def' },
+      etags: { pulls: 'new' }, prHeads: { 8: { sha: 'abc' } }, branchHeads: { main: 'def' }, headsRepo: 'acme/demo',
     });
+
   });
 
   it('never stores a comment body on the receipt', async () => {

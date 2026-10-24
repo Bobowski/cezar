@@ -237,6 +237,8 @@ export const automationRuntimeStateSchema = z.object({
   prHeads: z.record(z.string(), z.object({ sha: z.string(), ref: z.string(), updatedAt: z.string(), left: z.boolean().optional() })).optional(),
   /** Branch heads as the last poll saw them (`branch` → sha): what `push` diffs against. */
   branchHeads: z.record(z.string(), z.string()).optional(),
+  /** The `owner/name` those heads were read from; a poll of another repository re-baselines. */
+  headsRepo: z.string().optional(),
 });
 export type AutomationRuntimeState = z.infer<typeof automationRuntimeStateSchema>;
 

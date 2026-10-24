@@ -421,6 +421,26 @@ describe('heads outside the capped windows (spec 2026-10-23-github-events §3)',
     expect(suites.candidates).toEqual([]);
   });
 
+  it('re-baselines heads recorded for another repository instead of diffing across repos', async () => {
+    const movedPr = Object.fromEntries(pulls.map((pull) => [String(pull.number), { sha: 'old', ref: pull.head.ref, updatedAt: pull.updated_at }]));
+    const sync = await new GithubPoller({ run: gh({ 'repos/acme/demo/pulls': pulls }) }).poll('acme', 'demo', definition(['pull_request.synchronize']), {
+      activity: { prHeads: movedPr, headsRepo: 'acme/old-origin', etags: { pulls: 'W/"other"' } },
+    });
+    expect(sync.candidates).toEqual([]);
+    expect(sync.activity?.headsRepo).toBe('acme/demo');
+    expect(Object.values(sync.activity!.prHeads!).every((head) => head.sha !== 'old')).toBe(true);
+    // The same repository diffs as before (owner/name compared without case).
+    const same = await new GithubPoller({ run: gh({ 'repos/acme/demo/pulls': pulls }) }).poll('acme', 'demo', definition(['pull_request.synchronize']), {
+      activity: { prHeads: movedPr, headsRepo: 'Acme/Demo' },
+    });
+    expect(same.candidates.length).toBeGreaterThan(0);
+
+    const push = await new GithubPoller({ run: gh({ 'repos/acme/demo/branches/main': { name: 'main', commit: { sha: 'f'.repeat(40) } } }) })
+      .poll('acme', 'demo', definition(['push'], { branches: ['main'] }), { activity: { branchHeads: { main: 'e'.repeat(40), gone: 'd'.repeat(40) }, headsRepo: 'acme/old-origin' } });
+    expect(push.candidates).toEqual([]);
+    expect(push.activity?.branchHeads).toEqual({ main: 'f'.repeat(40) });
+  });
+
   it('baselines a branch with no previous head instead of firing, and keeps heads that left the listing', async () => {
     const branches = fixture<Array<{ name: string; commit: { sha: string } }>>('branches');
     const [first, ...rest] = branches;

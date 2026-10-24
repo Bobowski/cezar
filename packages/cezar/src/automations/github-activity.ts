@@ -319,8 +319,12 @@ export async function pollActivity(input: {
   /** Kept across polls by the poller, so a member is looked up once per ten minutes. */
   permissions?: WritePermissions;
 }): Promise<ActivityResult> {
-  const { owner, repo, definition, maxRecords, state, run } = input;
+  const { owner, repo, definition, maxRecords, run } = input;
   const full = `${owner}/${repo}`;
+  // Heads recorded for another repository (the origin changed) are no diff base: re-baseline,
+  // ETags included. State from before `headsRepo` existed is taken as this repository's.
+  const headsRepo = full.toLowerCase();
+  const state: GithubActivityState = !input.state.headsRepo || input.state.headsRepo.toLowerCase() === headsRepo ? input.state : {};
   const api = `repos/${owner}/${repo}`;
   const events = new Set(definition.events);
   const filters = definition.filters;
@@ -696,5 +700,6 @@ export async function pollActivity(input: {
   }
 
   next.etags = etags;
+  next.headsRepo = headsRepo;
   return { groups, cursorless, state: next, truncated };
 }

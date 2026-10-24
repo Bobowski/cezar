@@ -263,6 +263,8 @@ export const automationRuntimeStateSchema = z
     /** spec 2026-10-23-github-events §3: the diff bases of `pull_request.synchronize` and `push`. */
     prHeads: z.record(z.string(), z.object({ sha: z.string(), ref: z.string(), updatedAt: z.string(), left: z.boolean().optional() })).optional().catch(undefined),
     branchHeads: z.record(z.string(), z.string()).optional().catch(undefined),
+    /** The `owner/name` those heads were read from; another one re-baselines them. */
+    headsRepo: z.string().optional().catch(undefined),
   })
   .passthrough();
 

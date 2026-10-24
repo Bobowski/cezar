@@ -102,6 +102,8 @@ export interface GithubActivityState {
   /** `left`: the PR is no longer in the open-PR window this poll read (`HEADS_CAP`). */
   prHeads?: Record<string, { sha: string; ref: string; updatedAt: string; left?: boolean }>;
   branchHeads?: Record<string, string>;
+  /** `owner/name` (lower case) the heads and ETags were read from: another one re-baselines. */
+  headsRepo?: string;
 }
 
 export interface GithubPollResult {

@@ -163,7 +163,9 @@ the text above, and why:
   head is marked `left` and never read for check suites — so one sliding back is diffed against
   what was last seen. A branch with no previous head is a baseline, never a push (sliding in and
   being created look the same); its first move fires. A PR outside the window that a comment
-  names is read through `/pulls/:n`, and a moved head found that way fires `synchronize`. An edit
+  names is read through `/pulls/:n`, and a moved head found that way fires `synchronize`. The
+  heads remember the `owner/name` they were read from (`headsRepo`): a poll of another
+  repository — the project's origin changed — re-baselines them, ETags included. An edit
   that changes the events or `branches` clears the heads, as enabling does.
 - **ETags** cover `/pulls`, `/releases` and each head's `/check-suites`. A page whose rows a poll
   did not evaluate forgets its ETag, so a `304` never hides rows the cursor has not passed.

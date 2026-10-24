@@ -99,7 +99,7 @@ export class ProjectAutomationScheduler {
         const since = state.cursor?.timestamp ?? state.baselineAt;
         const overlapSince = since ? new Date(Date.parse(since) - CURSOR_OVERLAP_MS).toISOString() : undefined;
         const traces = await this.handle.traces?.();
-        const activity = { etags: state.etags, prHeads: state.prHeads, branchHeads: state.branchHeads };
+        const activity = { etags: state.etags, prHeads: state.prHeads, branchHeads: state.branchHeads, headsRepo: state.headsRepo };
         // A widening re-poll reads every conditional page in full: the first drain's 304 answers
         // came from ETags whose results this cycle has not persisted yet.
         const drain = (maxRecords?: number) => githubRequests.run(() => github.poller.poll(github.owner, github.repo, definition, {
@@ -148,6 +148,7 @@ export class ProjectAutomationScheduler {
           ...(result.activity?.etags ? { etags: result.activity.etags } : {}),
           ...(result.activity?.prHeads ? { prHeads: result.activity.prHeads } : {}),
           ...(result.activity?.branchHeads ? { branchHeads: result.activity.branchHeads } : {}),
+          ...(result.activity?.headsRepo ? { headsRepo: result.activity.headsRepo } : {}),
           lastSuccessAt: new Date().toISOString(),
           nextCheckAt: new Date(Date.now() + (wokenMeanwhile ? 0 : definition.intervalSeconds * 1000)).toISOString(),
           consecutiveFailures: 0,

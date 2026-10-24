@@ -205,10 +205,11 @@ describe('docker management API (spec 2026-10-23-docker-management)', () => {
   });
 
   it('redacts from logs what a run registered and what is stored for the project, as the run log does', async () => {
-    await secrets.set({ kind: 'workspace' }, 'SHOP_DB_PASSWORD', 'stored-value-0123456789', ['checks']);
+    const { id, instance } = await app();
+    // A project secret, not a workspace one: the project scope is the branch this pins.
+    await secrets.set({ kind: 'project', projectId: id, root }, 'SHOP_DB_PASSWORD', 'stored-value-0123456789', ['checks']);
     store.registerRunSecrets(liveRun, ['run-registered-0123456789']);
     logText = 'pw=stored-value-0123456789 tok=run-registered-0123456789\n';
-    const { instance } = await app();
     const first = dockerLogsSchema.parse(await (await apiRequest(instance, `/api/v1/docker/containers/${C('c')}/logs`)).json());
     await new Promise((resolve) => setTimeout(resolve, 0));
     const next = dockerLogsSchema.parse(await (await apiRequest(instance, `/api/v1/docker/containers/${C('c')}/logs?cursor=${first.cursor}`)).json());

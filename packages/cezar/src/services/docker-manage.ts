@@ -201,7 +201,6 @@ export function volumesByStack(rows: VolumeRow[]): Map<string, string[]> {
 
 export interface ReclaimInput {
   stacks: DockerStack[];
-  containers: ManagedContainer[];
   images: DockerImage[];
   buildCacheBytes: number;
   volumeSizes: Map<string, number>;
@@ -212,7 +211,8 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /**
  * What Reclaim may free (spec §3.6), line by line: dangling images, build cache, task-worktree stacks whose
- * compose working dir is gone, and stopped standalone containers of those stacks' images.
+ * compose working dir is gone (their stopped containers go with them). A stopped container is never
+ * proposed on its image alone: a `docker run` of the same image is someone else's.
  * Never a volume of a stack whose dir exists, an image in use, or anything of an active task.
  */
 export function planReclaim(input: ReclaimInput): DockerReclaimItem[] {
@@ -239,17 +239,6 @@ export function planReclaim(input: ReclaimInput): DockerReclaimItem[] {
     });
   }
 
-  const goneNames = new Set(gone.map((stack) => stack.name));
-  const goneImages = new Set(input.containers.filter((c) => goneNames.has(c.stack) && c.imageId !== null).map((c) => c.imageId!));
-  for (const container of input.containers) {
-    // Standalone only: a container of a stack whose dir exists (or cannot be judged) is that stack's.
-    if (container.running || container.stack !== '' || container.imageId === null || !goneImages.has(container.imageId)) continue;
-    items.push({
-      step: { kind: 'container', id: container.id },
-      label: `Stopped container ${container.name}`, detail: container.image,
-      bytes: input.containerSizes.get(container.id) ?? 0,
-    });
-  }
   return items;
 }
 

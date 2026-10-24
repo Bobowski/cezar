@@ -171,8 +171,11 @@ Nothing to configure. Reclaim is a click, never a timer. All new state is Docker
   those get Remove (`rm -f` of each container) instead of Down. Down runs in the stack's dir when
   it exists (compose reads its file), else in the temp dir so no stray `compose.yml` is picked up.
 - **A dir is "gone" only when this host can judge it** (`dirState`: a WSL path seen from Windows is
-  `unknown`), and Reclaim lists `gone` stacks only. Step 4 lists stopped *standalone* containers of
-  those stacks' images; a stopped container of a stack whose dir exists stays that stack's.
+  `unknown`), and Reclaim lists `gone` stacks only.
+- **Step 4 is folded into step 3.** A gone stack's stopped containers carry its
+  `com.docker.compose.project` label and go with that stack. Nothing is proposed on its image
+  digest alone: an unrelated stopped `docker run postgres:16` is someone else's. The `container`
+  step kind stays in the contract and is never planned.
 - **Reclaim re-plans on apply** and runs only the steps the fresh plan still holds; a step that
   dropped out is logged as skipped.
 - The page is `/p/:projectId/docker` (the Docker tab moved there), sub-view in `?tab=`.

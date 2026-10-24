@@ -150,16 +150,16 @@ describe('docker management parsers (spec 2026-10-23-docker-management, Docker 2
 
 describe('Reclaim planner (spec 2026-10-23-docker-management §3.6)', () => {
   const plan = async () => {
-    const { stacks, managed, images } = await inventory();
+    const { stacks, images } = await inventory();
     const sizes = parseSystemDfVerbose(SYSTEM_DF_V);
     return planReclaim({
-      stacks, containers: managed, images, buildCacheBytes: 1_200_000_000, volumeSizes: sizes.volumes, containerSizes: sizes.containers,
+      stacks, images, buildCacheBytes: 1_200_000_000, volumeSizes: sizes.volumes, containerSizes: sizes.containers,
     });
   };
 
-  it('lists dangling images, build cache, a stack whose dir is gone, and stopped containers of its images', async () => {
+  it('lists dangling images, build cache and a stack whose dir is gone', async () => {
     const items = await plan();
-    expect(items.map((item) => stepKey(item.step))).toEqual(['dangling-images', 'build-cache', 'stack:ffp-4100', `container:${C('e')}`]);
+    expect(items.map((item) => stepKey(item.step))).toEqual(['dangling-images', 'build-cache', 'stack:ffp-4100']);
     // Only the dangling image no container uses: 3c, not 4d.
     expect(items[0]).toMatchObject({ label: '1 dangling image', bytes: 120_000_000 });
     expect(items[2]?.detail).toBe('3 containers · volumes ffp-4100_minio, ffp-4100_pg');
@@ -174,18 +174,24 @@ describe('Reclaim planner (spec 2026-10-23-docker-management §3.6)', () => {
     expect(keys).not.toContain(`container:${C('c')}`);
   });
 
+  it('never proposes an unlabeled stopped container because it runs a gone stack’s image', async () => {
+    // `ffp-oneoff` is a plain `docker run` of the gone stack's app image: nothing ties it to that stack.
+    const keys = (await plan()).map((item) => stepKey(item.step));
+    expect(keys.filter((key) => key.startsWith('container:'))).toEqual([]);
+  });
+
   it('a gone non-task stack is not listed: Reclaim frees task worktrees only', async () => {
-    const { stacks, managed, images } = await inventory();
+    const { stacks, images } = await inventory();
     // `ffp` runs from the project root, not a task worktree: its dir being gone is not Reclaim's call.
     const goneRoot = stacks.map((stack) => (stack.name === 'ffp' ? { ...stack, dirState: 'gone' as const } : stack));
-    const items = planReclaim({ stacks: goneRoot, containers: managed, images, buildCacheBytes: 0, volumeSizes: new Map(), containerSizes: new Map() });
-    expect(items.map((item) => stepKey(item.step))).toEqual(['dangling-images', 'stack:ffp-4100', `container:${C('e')}`]);
+    const items = planReclaim({ stacks: goneRoot, images, buildCacheBytes: 0, volumeSizes: new Map(), containerSizes: new Map() });
+    expect(items.map((item) => stepKey(item.step))).toEqual(['dangling-images', 'stack:ffp-4100']);
   });
 
   it('lists nothing about a stack whose dir cannot be judged from here', async () => {
-    const { stacks, managed, images } = await inventory();
+    const { stacks, images } = await inventory();
     const unjudged = stacks.map((stack) => (stack.name === 'ffp-4100' ? { ...stack, dirState: 'unknown' as const } : stack));
-    const items = planReclaim({ stacks: unjudged, containers: managed, images, buildCacheBytes: 0, volumeSizes: new Map(), containerSizes: new Map() });
+    const items = planReclaim({ stacks: unjudged, images, buildCacheBytes: 0, volumeSizes: new Map(), containerSizes: new Map() });
     expect(items.map((item) => stepKey(item.step))).toEqual(['dangling-images']);
   });
 });

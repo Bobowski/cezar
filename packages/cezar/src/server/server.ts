@@ -7449,7 +7449,7 @@ export function createApp(deps: ServerDeps) {
     if (!images.ok) return { available: false, reason: images.reason, items: [], totalBytes: 0 };
     const sizes = verbose.ok ? parseSystemDfVerbose(verbose.stdout) : { volumes: new Map<string, number>(), containers: new Map<string, number>() };
     const items = planReclaim({
-      stacks: inventory.stacks, containers: images.managed, images: images.images,
+      stacks: inventory.stacks, images: images.images,
       buildCacheBytes: df.ok ? parseSystemDf(df.stdout).find((entry) => entry.kind === 'build-cache')?.reclaimableBytes ?? 0 : 0,
       volumeSizes: sizes.volumes, containerSizes: sizes.containers,
     });

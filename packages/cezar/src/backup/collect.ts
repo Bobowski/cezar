@@ -173,6 +173,26 @@ export function hostArchivePattern(host: string): RegExp {
   return new RegExp(`^cezar-backup-${escaped}-(\\d{8}T\\d{4}Z)(?:-(\\d{1,3}))?\\.tar\\.(?:zst|gz)\\.age$`);
 }
 
+const ARCHIVE_TAIL = /-(\d{8}T\d{4}Z)(?:-(\d{1,3}))?\.tar\.(?:zst|gz)\.age$/;
+
+/**
+ * Newest first: by the name's timestamp, then by its `-N` suffix as a number (`-10` is newer than
+ * `-2`, and both newer than none). A name sorted as text gets that backwards (review 2026-10-24).
+ */
+export function newestArchiveFirst(a: string, b: string): number {
+  const at = ARCHIVE_TAIL.exec(a);
+  const bt = ARCHIVE_TAIL.exec(b);
+  if (at && bt) {
+    if (at[1] !== bt[1]) return at[1]! < bt[1]! ? 1 : -1;
+    const an = Number(at[2] ?? 1);
+    const bn = Number(bt[2] ?? 1);
+    if (an !== bn) return bn - an;
+  } else if (at || bt) {
+    return at ? -1 : 1;
+  }
+  return a < b ? 1 : a > b ? -1 : 0;
+}
+
 /** `20261023T0412Z`. */
 export function archiveStamp(date: Date): string {
   return date.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z').replace(/(T\d{4})\d{2}Z$/, '$1Z');

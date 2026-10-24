@@ -17,7 +17,7 @@ import {
 import { agentStateLocations, backupsDir, cezarHomeDir, type AgentStateLocations } from '../paths.ts';
 import { listProjects } from '../workspace/projects.ts';
 import { availableCompression, compressor, encrypted, type EncryptTo } from './codec.ts';
-import { archiveHost, archiveStamp, collectBackup, hostArchivePattern, type BackupManifest } from './collect.ts';
+import { archiveHost, archiveStamp, collectBackup, hostArchivePattern, newestArchiveFirst, type BackupManifest } from './collect.ts';
 import { applyStaged, stageArchive, type CloneProject } from './restore.ts';
 import { S3Client, type S3Target } from './s3.ts';
 import { mutateBackupState, readBackupState, readBackupTarget, writeBackupTarget } from './state.ts';
@@ -139,7 +139,8 @@ export class BackupService {
           return [];
         }
       })
-      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : a.name < b.name ? 1 : -1));
+      // The name's own timestamp decides, not the mtime: a copied-in archive keeps its place.
+      .sort((a, b) => newestArchiveFirst(a.name, b.name));
   }
 
   /** The nightly run's next instant, or null when it is off or cannot run. */
@@ -401,7 +402,7 @@ export class BackupService {
     const ours = hostArchivePattern(host);
     const objects = (await client.list(client.keyFor(`cezar-backup-${host}-`)))
       .filter((object) => ours.test(object.key.split('/').pop() ?? ''))
-      .sort((a, b) => (a.key < b.key ? 1 : -1));
+      .sort((a, b) => newestArchiveFirst(a.key, b.key));
     const stale = objects.slice(keep);
     for (const object of stale) await client.delete(object.key);
     if (stale.length > 0) log(`removed ${stale.length} older remote archive(s)`);

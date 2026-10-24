@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -309,5 +309,47 @@ describe('remote retention', () => {
     const theirs = [name('web-2', '20261020T0300Z'), name('web-2', '20261021T0300Z')];
     const ours = [name('web', '20261022T0300Z'), name('web', '20261023T0300Z')];
     expect(await pruned([...theirs, ...ours], 'web', 1)).toEqual([...theirs, ours[1]!].sort());
+  });
+});
+
+describe('archive order', () => {
+  const name = (stamp: string, n?: number) => `cezar-backup-web-${stamp}${n ? `-${n}` : ''}.tar.zst.age`;
+
+  it('is by time, then by the -N suffix as a number, so retention keeps the newest', async () => {
+    const fake = fakeS3('bk');
+    await new Promise<void>((resolve) => fake.server.listen(0, '127.0.0.1', resolve));
+    try {
+      const { port } = fake.server.address() as AddressInfo;
+      for (const key of [name('20261023T0200Z'), name('20261023T0300Z'), name('20261023T0300Z', 2), name('20261023T0300Z', 10)]) {
+        fake.objects.set(`c/${key}`, Buffer.from('x'));
+      }
+      const client = new S3Client({ endpoint: `http://127.0.0.1:${port}`, bucket: 'bk', prefix: 'c', region: 'us-east-1', accessKeyId: 'key', secretAccessKey: 'secret' });
+      await new BackupService({ version: 't' }).pruneRemote(client, 'web', 2, () => {});
+      expect([...fake.objects.keys()].sort()).toEqual([`c/${name('20261023T0300Z', 10)}`, `c/${name('20261023T0300Z', 2)}`]);
+    } finally {
+      await new Promise<void>((resolve) => fake.server.close(() => resolve()));
+    }
+  });
+
+  it('lists local archives the same way, whatever their mtimes say', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cez-backup-order-'));
+    const saved = process.env.CEZ_HOME;
+    process.env.CEZ_HOME = root;
+    try {
+      const dir = join(root, 'backups');
+      mkdirSync(dir);
+      const same = new Date('2026-10-23T03:00:00Z');
+      for (const file of [name('20261023T0300Z'), name('20261023T0300Z', 10), name('20261023T0300Z', 2), name('20261022T0300Z')]) {
+        writeFileSync(join(dir, file), 'x');
+        utimesSync(join(dir, file), same, same);
+      }
+      expect(new BackupService({ version: 't' }).listArchives().map((archive) => archive.name)).toEqual([
+        name('20261023T0300Z', 10), name('20261023T0300Z', 2), name('20261023T0300Z'), name('20261022T0300Z'),
+      ]);
+    } finally {
+      if (saved === undefined) delete process.env.CEZ_HOME;
+      else process.env.CEZ_HOME = saved;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

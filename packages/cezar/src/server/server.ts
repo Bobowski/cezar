@@ -4050,14 +4050,16 @@ export function createApp(deps: ServerDeps) {
 
     .use('/workspace/branding-logo', bodyLimit({ maxSize: BRANDING_LOGO_MAX_BYTES + 64 * 1024 }))
 
-    .get('/workspace/branding-logo', async (c) => {
+    // Same rule as `/workspace/branding/:kind`: only the current `?v=` hash is cacheable for a year.
+    .get('/workspace/branding-logo', queryZodValidator(z.object({ v: queryValue })), async (c) => {
       for (const filename of [BRANDING_LOGO_FILE, ...BRANDING_LOGO_EXTENSIONS.map((ext) => `${BRANDING_LOGO_FILE}${ext}`)]) {
         try {
           const bytes = await readFile(join(cezarHomeDir(), filename));
           const imageType = brandingLogoType(bytes);
           if (!imageType) continue;
           const [mime] = imageType;
-          return c.body(new Uint8Array(bytes), 200, { 'content-type': mime, 'cache-control': 'public, max-age=31536000, immutable', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
+          const pinned = c.req.valid('query').v === createHash('sha256').update(bytes).digest('hex').slice(0, 12);
+          return c.body(new Uint8Array(bytes), 200, { 'content-type': mime, 'cache-control': pinned ? 'public, max-age=31536000, immutable' : 'no-cache', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
         } catch { /* check the next supported image */ }
       }
       return c.json({ error: 'Brand logo not found' }, 404);

@@ -152,6 +152,10 @@ describe('the workspace settings API (step 2.7)', () => {
     const served = await apiRequest(app, logoUrl);
     expect(served.headers.get('content-type')).toBe('image/png');
     expect([...new Uint8Array(await served.arrayBuffer())]).toEqual([...png]);
+    expect(served.headers.get('cache-control')).toContain('immutable');
+    for (const address of ['/api/v1/workspace/branding-logo', '/api/v1/workspace/branding-logo?v=000000000000']) {
+      expect((await apiRequest(app, address)).headers.get('cache-control'), address).toBe('no-cache');
+    }
     expect((await apiRequest(app, '/api/v1/workspace/branding-logo', { method: 'DELETE' })).status).toBe(200);
     expect(existsSync(join(home, 'branding-logo'))).toBe(false);
   });

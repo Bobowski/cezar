@@ -2,7 +2,7 @@ import { execFile, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { describe, expect, it } from 'vitest';
 
-import { foregroundCommand, freshSnapshotReader, hasForeground, parseProcessRows, tidyCommand } from './foreground.ts';
+import { MAX_STUCK_SNAPSHOT_READS, foregroundCommand, freshSnapshotReader, hasForeground, parseProcessRows, tidyCommand } from './foreground.ts';
 
 /** A `ps -axo pid=,ppid=,command=` sample: a shell (900) running `npm run dev`, which has its
  *  own child, plus an unrelated process to prove the walk does not wander. */
@@ -118,5 +118,19 @@ describe('freshSnapshotReader (spec 2026-10-24-code-page-terminal §9)', () => {
     void reader();
     expect(children).toHaveLength(2);
     children[1]!.kill();
+  });
+
+  it('spawns no ps while three killed ones have not exited (D-state), and again once one does', async () => {
+    const stuck: Array<() => void> = [];
+    // A `ps` that ignores the kill: its read settles only when the process finally exits.
+    const reader = freshSnapshotReader(() => new Promise((resolve) => stuck.push(() => resolve(null))), 10);
+    for (let index = 0; index < MAX_STUCK_SNAPSHOT_READS; index += 1) expect(await reader()).toBeNull();
+    expect(stuck).toHaveLength(MAX_STUCK_SNAPSHOT_READS);
+    expect(await reader()).toBeNull();
+    expect(stuck).toHaveLength(MAX_STUCK_SNAPSHOT_READS);
+    stuck[0]!();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    void reader();
+    expect(stuck).toHaveLength(MAX_STUCK_SNAPSHOT_READS + 1);
   });
 });

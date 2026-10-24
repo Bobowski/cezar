@@ -134,6 +134,8 @@ export function processSnapshot(now = Date.now()): Promise<ProcessRow[] | null> 
 /** A fresh read slower than this is killed: the history's check has given up on it by then, and
  *  a hung `ps` must not hold the one slot (spec 2026-10-24-code-page-terminal §9). */
 export const FRESH_SNAPSHOT_TIMEOUT_MS = 300;
+/** Killed reads that have not exited yet (a `ps` in D-state ignores SIGKILL); at this many, no `ps` is spawned. */
+export const MAX_STUCK_SNAPSHOT_READS = 3;
 
 /** One process-table read; it must stop (kill its child) when `signal` aborts. */
 export type ProcessTableRead = (signal: AbortSignal) => Promise<ProcessRow[] | null>;
@@ -149,11 +151,20 @@ export function freshSnapshotReader(
 ): () => Promise<ProcessRow[] | null> {
   let running: Promise<ProcessRow[] | null> | undefined;
   let queued: Promise<ProcessRow[] | null> | undefined;
+  let stuck = 0;
   const launch = (): Promise<ProcessRow[] | null> => {
+    // Unknown is the safe answer: the history then keeps nothing.
+    if (stuck >= MAX_STUCK_SNAPSHOT_READS) return Promise.resolve(null);
     const controller = new AbortController();
     const at = Date.now();
+    let killed = false;
+    const settled = () => {
+      if (killed) stuck -= 1;
+    };
     const current = new Promise<ProcessRow[] | null>((resolve) => {
       const timer = setTimeout(() => {
+        killed = true;
+        stuck += 1;
         controller.abort();
         resolve(null);
       }, timeoutMs);
@@ -161,11 +172,13 @@ export function freshSnapshotReader(
       read(controller.signal).then(
         (rows) => {
           clearTimeout(timer);
-          if (rows !== null) snapshot = { at, rows };
+          settled();
+          if (rows !== null && !killed) snapshot = { at, rows };
           resolve(rows);
         },
         () => {
           clearTimeout(timer);
+          settled();
           resolve(null);
         },
       );

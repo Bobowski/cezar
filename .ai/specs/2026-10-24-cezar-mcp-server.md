@@ -183,6 +183,16 @@ are client-side conveniences documented in `.env.example`.
   files (`/runs/:id/files`) through the repository index, as `/repo/files` does for everyone;
   any token may read `projects`, `health` and `models` and reach the `/mcp` transport. The
   family map is `FAMILY_SCOPES` in `auth/api-tokens.ts`; an unmapped family is `admin`'s.
+  `read` carries no configured command and nothing the user typed or pasted outside a task's own
+  text: pinned services and the start command are `author`'s to read (`READ_OWNERS`), and
+  automations, their log, dry-runs and templates are `author`'s family; drafts, a task's images,
+  both `ui-state` bags and the self-update development picker are no longer `read`'s. The
+  automation log, `/worktrees` and the worktree-lifecycle views mask a dispatched child's title;
+  the lifecycle views drop rendered commands and execution reasons and name a failure's stage;
+  `/workspace/self-update` gives a non-`admin` token the job's status, target and timing
+  (`projected: true`), not npm's log or the error. `api-tokens.test.ts` pins every free-text
+  field each `read` route's contract response names, with where its words come from
+  (projected, repository, forge or a degrade reason); a new one fails until it is decided.
 - **Origin guard**: only a token that VERIFIES skips it; an unverified Bearer is checked like
   any request and then refused by the auth guard.
 - **The CLI**: `CEZ_SERVER`/`CEZ_TOKEN` are ignored inside a task and never forwarded into an

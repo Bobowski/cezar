@@ -1704,14 +1704,32 @@ export function createApp(deps: ServerDeps) {
   const terminalSessions = deps.terminalSessions ?? new TerminalSessions(undefined, detectedUrls);
   deps.onDispose?.(() => terminalSessions.closeAll());
   const terminalHistory = deps.terminalHistory ?? new TerminalHistory();
-  /** Feed what a person typed into the project's history BEFORE the shell sees it (spec
-   *  2026-10-24-code-page-terminal §3.3). A task's own credential typing is not the user's history. */
-  const recordTyped = async (c: Context, project: ProjectContext, sessionId: string, data: string) => {
-    if (principalOf(c)?.kind === 'run') return;
-    await terminalHistory.typed(project.dataDir, sessionId, data, async () => {
-      terminalSessions.observe(await (deps.freshProcesses ?? freshProcessSnapshot)());
-      return terminalSessions.get(sessionId)?.busy === false;
+  /**
+   * Keystrokes into a terminal, fed to the project's history BEFORE the shell sees them (spec
+   * 2026-10-24-code-page-terminal §3.3), so the prompt check sees the shell as the line found it.
+   * That check awaits a process table, so writes are chained per session: a keystroke that
+   * arrives meanwhile must not overtake the Enter before it. A task's own credential's typing is
+   * not the user's history.
+   */
+  const typingQueues = new Map<string, Promise<unknown>>();
+  const typeInto = (c: Context, project: ProjectContext, sessionId: string, data: string): Promise<boolean> => {
+    const record = principalOf(c)?.kind !== 'run';
+    const previous = typingQueues.get(sessionId) ?? Promise.resolve();
+    const next = previous.then(async () => {
+      if (record) {
+        await terminalHistory.typed(project.dataDir, sessionId, data, async () => {
+          terminalSessions.observe(await (deps.freshProcesses ?? freshProcessSnapshot)());
+          return terminalSessions.get(sessionId)?.busy === false;
+        });
+      }
+      return terminalSessions.write(sessionId, data);
     });
+    const settled = next.catch(() => false);
+    typingQueues.set(sessionId, settled);
+    void settled.then(() => {
+      if (typingQueues.get(sessionId) === settled) typingQueues.delete(sessionId);
+    });
+    return settled;
   };
   /** The account cezar runs as — a tunnel line's login (tunnel spec §3.3). A container with no
    *  passwd entry for its uid has none to say. */
@@ -7162,10 +7180,9 @@ export function createApp(deps: ServerDeps) {
         if (!session) return c.json({ error: 'terminal session not found' }, 404);
         const refusal = terminalPolicyRefusal(capabilities());
         if (refusal) return c.json({ error: refusal }, 409);
-        await recordTyped(c, c.get('project'), session.id, c.req.valid('json').data);
         // A write to a shell that has already exited is not an error: the client may not have
         // learned about the exit yet, and the exit code is in every output read anyway.
-        return c.json({ delivered: terminalSessions.write(session.id, c.req.valid('json').data) });
+        return c.json({ delivered: await typeInto(c, c.get('project'), session.id, c.req.valid('json').data) });
       },
     )
     .post(
@@ -9145,8 +9162,7 @@ export function createApp(deps: ServerDeps) {
       if (!session) return c.json({ error: 'terminal session not found' }, 404);
       const refusal = terminalPolicyRefusal(capabilities());
       if (refusal) return c.json({ error: refusal }, 409);
-      await recordTyped(c, c.get('project'), session.id, c.req.valid('json').data);
-      return c.json({ delivered: terminalSessions.write(session.id, c.req.valid('json').data) }, 200);
+      return c.json({ delivered: await typeInto(c, c.get('project'), session.id, c.req.valid('json').data) }, 200);
     })
     .post('/repo/terminal/:sessionId/resize', jsonZodValidator(terminalResizeSchema), async (c) => {
       const session = projectTerminalFor(c.get('project'), c.req.param('sessionId'));

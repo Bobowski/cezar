@@ -25,6 +25,8 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
   let history: TerminalHistory;
   /** The process table the history's prompt check reads: the fake shell (pid 4242) with or without a child. */
   let shellBusy = false;
+  /** How long that table takes to read. */
+  let psDelayMs = 0;
   let spawned: ReturnType<typeof fakeServiceBinding>['spawned'];
   const put = (rel: string, text: string) => {
     mkdirSync(dirname(join(root, rel)), { recursive: true });
@@ -50,6 +52,7 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
     const fake = fakeServiceBinding();
     spawned = fake.spawned;
     shellBusy = false;
+    psDelayMs = 0;
     detected = new DetectedUrls();
     history = new TerminalHistory();
     sessions = new TerminalSessions(fake.binding, detected, () => null);
@@ -68,7 +71,10 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
       instance: createApp({
         repoRoot: root, store, manager: {} as RunManager, version: 'test', bootProjectId: project.id, terminalSessions: sessions,
         detectedUrls: detected, terminalHistory: history,
-        freshProcesses: async () => [{ pid: 4242, ppid: 1, command: 'bash' }, ...(shellBusy ? [{ pid: 5000, ppid: 4242, command: 'sudo apt update' }] : [])],
+        freshProcesses: async () => {
+          await new Promise((resolve) => setTimeout(resolve, psDelayMs));
+          return [{ pid: 4242, ppid: 1, command: 'bash' }, ...(shellBusy ? [{ pid: 5000, ppid: 4242, command: 'sudo apt update' }] : [])];
+        },
       }),
     };
   };
@@ -256,6 +262,15 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
       expect(read.lines).toEqual(['npm run dev', 'sudo apt update']);
       // The keystrokes still reached the shell, every one of them.
       expect(spawned[0]?.written).toEqual(['sudo apt update\r', 'hunter2\r', 'npm run dev\r']);
+    });
+
+    it('never lets a keystroke overtake the Enter whose prompt check is still running', async () => {
+      const { instance } = await app();
+      const session = terminalSessionSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal', send('POST', {}))).json());
+      const type = (data: string) => apiRequest(instance, `/api/v1/repo/terminal/${session.id}/input`, send('POST', { data }));
+      psDelayMs = 50;
+      await Promise.all([type('ls\r'), type('c'), type('d')]);
+      expect(spawned[0]?.written).toEqual(['ls\r', 'c', 'd']);
     });
 
     it('refuses the history where the terminal is off', async () => {

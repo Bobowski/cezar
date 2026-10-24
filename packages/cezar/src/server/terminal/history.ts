@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { TERMINAL_HISTORY_CAP } from '@open-mercato/cezar-contract';
 import { z } from 'zod';
 
+import { SECRET_NAME_RE } from '../../core/secret-redaction.ts';
 import { atomicWriteJson } from '../../workspace/config.ts';
 
 /**
@@ -17,9 +18,13 @@ import { atomicWriteJson } from '../../workspace/config.ts';
  * `sudo` or `ssh` password prompt among them — so neither is kept.
  *
  * "At its prompt" is a process-table read started on the line's first word and never awaited
- * by any keystroke (one shared `ps` per host, `freshSnapshotReader`): the shell has no child then, or only the line's own command (one chunk can
- * carry a whole line, and the shell forks it while `ps` starts). An answer later than
- * `PROMPT_CHECK_TIMEOUT_MS` keeps nothing.
+ * by any keystroke (one shared `ps` per host, `freshSnapshotReader`): the shell has no child
+ * then, or only the line's own command (one chunk can carry a whole line, and the shell forks it
+ * while `ps` starts). An answer later than `PROMPT_CHECK_TIMEOUT_MS` keeps nothing.
+ *
+ * A secret-named assignment (`export GITHUB_TOKEN=…`) is stored with its value as `***`. What the
+ * shell itself reads is kept as bash's own history keeps it: a heredoc body, and the answer to a
+ * `read -s` run by a sourced script or a function (no child shows, no line says `read -s`).
  */
 
 export const HISTORY_CAP = TERMINAL_HISTORY_CAP;
@@ -122,7 +127,18 @@ export function foldHistory(lines: readonly string[], added: readonly string[], 
 export function historyLine(raw: string): string | null {
   if (raw.startsWith(' ')) return null;
   const line = raw.trim();
-  return line === '' ? null : line;
+  return line === '' ? null : redactAssignments(line);
+}
+
+/** Short names the shared credential heuristic leaves out: `DB_PASS`, `KEY`, `SMTP_PWD`. */
+const SECRET_NAME_PART = /(^|_)(PASS|PWD|KEY|PIN)(_|$)/i;
+/** `NAME=value` at a word start; the value quoted (closed or not) or up to the next separator. */
+const ASSIGNMENT = /(^|[\s;&|(`])([A-Za-z_][A-Za-z0-9_]*)=("(?:[^"\\]|\\.)*"?|'[^']*'?|[^\s;&|)`]+)/g;
+
+/** `line` with the value of every secret-named assignment replaced by `***`. */
+export function redactAssignments(line: string): string {
+  return line.replace(ASSIGNMENT, (whole, lead: string, name: string) =>
+    SECRET_NAME_RE.test(name) || SECRET_NAME_PART.test(name) ? `${lead}${name}=***` : whole);
 }
 
 export async function readTerminalHistory(dataDir: string): Promise<string[]> {

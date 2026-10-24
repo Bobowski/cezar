@@ -129,7 +129,11 @@ gateway that `CEZ_PREVIEW_PORTS` already configures for the VPS image.
   begun 500 ms or more later confirms the prompt (a line typed ahead may beat the fork). Echo-off
   input is invisible from the keystrokes, so those rules are the whole account of it; a recalled
   (arrow-key) `read -s` or `exec` line is unknown text and sets no rule. A line led by a space is not kept
-  (bash's `ignorespace`). Both the checkout's terminals and the project's task terminals feed it;
+  (bash's `ignorespace`). A `NAME=value` (or `export NAME=value`) whose name looks like a
+  credential — the transcript redactor's `SECRET_NAME_RE`, plus `PASS`/`PWD`/`KEY`/`PIN` as a
+  name part — is stored as `NAME=***`. What the shell itself reads is kept as bash's own history
+  keeps it: a heredoc body, and the answer to a `read -s` run by a sourced script or a function
+  (no child shows and no typed line says `read -s`). Both the checkout's terminals and the project's task terminals feed it;
   a task's own credential never does.
 - **`/repo/terminal/urls` adds `sshUser`** (`projectDetectedUrlsSchema`), the account cezar runs
   as, on a hosted cockpit only — the tunnel line's login (tunnel spec §3.3).

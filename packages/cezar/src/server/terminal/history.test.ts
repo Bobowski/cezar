@@ -48,6 +48,16 @@ describe('history folding', () => {
     expect(historyLine(' export TOKEN=secret')).toBeNull();
     expect(historyLine('npm test  ')).toBe('npm test');
   });
+
+  it('stores a secret-named assignment with its value as ***', () => {
+    expect(historyLine('export GITHUB_TOKEN=ghp_abc123')).toBe('export GITHUB_TOKEN=***');
+    expect(historyLine('DB_PASS="a b c" npm run migrate')).toBe('DB_PASS=*** npm run migrate');
+    expect(historyLine("FOO=1 OPENAI_API_KEY='sk-x' make && SECRET=y ./run")).toBe('FOO=1 OPENAI_API_KEY=*** make && SECRET=*** ./run');
+    expect(historyLine('export KEY=abc PASSWORD=hunter2')).toBe('export KEY=*** PASSWORD=***');
+    // Ordinary names, and a secret-looking word that is not an assignment, stay as typed.
+    expect(historyLine('PORT=3000 NODE_ENV=dev npm run dev')).toBe('PORT=3000 NODE_ENV=dev npm run dev');
+    expect(historyLine('grep -r TOKEN src')).toBe('grep -r TOKEN src');
+  });
 });
 
 describe('TerminalHistory', () => {
@@ -108,6 +118,14 @@ describe('TerminalHistory', () => {
     await history.flushed();
     expect(await readTerminalHistory(dataDir)).toEqual(['make build', 'ssh host']);
     expect(readFileSync(join(dataDir, 'terminal-history.json'), 'utf8')).not.toContain('passw0rd');
+  });
+
+  it('never writes the value of a secret-named assignment to the file', async () => {
+    const history = new TerminalHistory();
+    history.typed(dataDir, 's1', 'export STRIPE_SECRET_KEY=sk_live_abc\r', async () => []);
+    await history.flushed();
+    expect(await readTerminalHistory(dataDir)).toEqual(['export STRIPE_SECRET_KEY=***']);
+    expect(readFileSync(join(dataDir, 'terminal-history.json'), 'utf8')).not.toContain('sk_live_abc');
   });
 
   it('checks no line begun after an Enter or Ctrl+C in the same chunk, even one that ends an earlier line', async () => {

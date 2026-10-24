@@ -108,6 +108,16 @@ describe('GitHub automation API', () => {
     const renamed = await apiRequest(server, `/api/v1/automations/${created.id}`, json({ ...pushes, name: 'Renamed', expectedRevision: created.revision }, 'PUT'));
     expect(renamed.status).toBe(200);
     expect(automationStore.state(created.id)).toMatchObject(heads);
+    // So does adding an event that tracks no heads (a comment event).
+    const commented = await apiRequest(server, `/api/v1/automations/${created.id}`, json({
+      ...pushes, events: [...pushes.events, 'issue.commented'], expectedRevision: created.revision + 1,
+    }, 'PUT'));
+    expect(commented.status).toBe(200);
+    expect(automationStore.state(created.id)).toMatchObject(heads);
+    // And removing it again.
+    await apiRequest(server, `/api/v1/automations/${created.id}`, json({ ...pushes, expectedRevision: created.revision + 2 }, 'PUT'));
+    expect(automationStore.state(created.id)).toMatchObject(heads);
+    created.revision += 2;
     const baselineAt = automationStore.state(created.id)?.baselineAt;
 
     // Widening `main` to `release/*` must not turn every existing release branch into a push.

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import { globMatches, httpStatusOf, mentions } from './github-activity.ts';
+import { activityHeadsChanged, globMatches, httpStatusOf, mentions } from './github-activity.ts';
 import { GithubPoller } from './github-poller.ts';
 import type { GithubAutomationDefinition } from './types.ts';
 
@@ -51,6 +51,16 @@ describe('activity helpers', () => {
     expect(httpStatusOf('HTTP/2.0 304 Not Modified\r\n\r\n')).toBe(304);
     expect(httpStatusOf('HTTP/1.1 200 OK\nETag: x\n\n[]')).toBe(200);
     expect(httpStatusOf('[]')).toBe(0);
+  });
+
+  it('re-baselines on an edit only when it changes which heads are tracked', () => {
+    const at = (events: string[], branches?: string[]) => ({ events, ...(branches ? { filters: { branches } } : {}) });
+    expect(activityHeadsChanged(at(['push']), at(['push', 'issue.commented']))).toBe(false);
+    expect(activityHeadsChanged(at(['push', 'release.published']), at(['push']))).toBe(false);
+    expect(activityHeadsChanged(at(['pull_request.synchronize', 'push']), at(['push', 'pull_request.synchronize']))).toBe(false);
+    expect(activityHeadsChanged(at(['issue.commented']), at(['issue.commented', 'push']))).toBe(true);
+    expect(activityHeadsChanged(at(['push', 'check_suite.completed']), at(['push']))).toBe(true);
+    expect(activityHeadsChanged(at(['push'], ['main']), at(['push'], ['main', 'release/*']))).toBe(true);
   });
 
   it('matches globs and whole @mentions', () => {

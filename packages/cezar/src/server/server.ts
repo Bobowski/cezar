@@ -4579,7 +4579,7 @@ export function createApp(deps: ServerDeps) {
               }));
               automationStore.appendLog({
                 automationId: definition.id, revision: definition.revision, result: 'baseline',
-                reason: 'The events or branches changed: the next check records pull request and branch heads without launching anything.',
+                reason: 'The tracked events (push, synchronize, check suites) or branches changed: the next check records pull request and branch heads without launching anything.',
               });
             } else if (trackerSourceChanged) {
               // A paused definition still needs a compatible read-only preview. Clear source-bound

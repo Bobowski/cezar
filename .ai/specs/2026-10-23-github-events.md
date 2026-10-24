@@ -166,7 +166,8 @@ the text above, and why:
   names is read through `/pulls/:n`, and a moved head found that way fires `synchronize`. The
   heads remember the `owner/name` they were read from (`headsRepo`): a poll of another
   repository — the project's origin changed — re-baselines them, ETags included. An edit
-  that changes the events or `branches` clears the heads, as enabling does.
+  that adds or removes `push`, `pull_request.synchronize` or `check_suite.completed`, or changes
+  `branches`, clears the heads, as enabling does; any other edit of the events keeps them.
 - **ETags** cover `/pulls`, `/releases` and each head's `/check-suites`. A page whose rows a poll
   did not evaluate forgets its ETag, so a `304` never hides rows the cursor has not passed.
 - **`wakeNow`** is "every enabled, not backed-off GitHub poll of the project is due now", then the

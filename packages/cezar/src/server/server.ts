@@ -10,6 +10,9 @@ import {
   envFileQuerySchema, renderEnvFileSchema, rerenderEnvFilesSchema, setEnvFileSchema, type EnvFilesList,
   codeSearchQuerySchema, codeWatchQuerySchema, repoFilePathQuerySchema, type CodeWatch,
   repoSyncQuerySchema, type RepoPullResponse, type RepoSync,
+  repoBranchDeleteQuerySchema, repoBranchParamSchema, repoBranchPushSchema, repoBranchRenameSchema, repoCommitSchema,
+  repoCommitShaParamSchema, repoCompareQuerySchema, repoGraphQuerySchema, repoIndexChangeSchema, repoRemoteParamSchema,
+  repoStashParamSchema, repoStashPushSchema,
   PROJECT_ICON_MAX_BYTES, setProjectIconSchema, type ProjectIconCandidates,
   dockerContainerParamsSchema, dockerStackParamsSchema, type DockerState,
   DOCKER_COMPOSE_FILES_MISSING, dockerForceBodySchema, dockerForceQuerySchema, dockerImageParamsSchema, dockerLogsQuerySchema, dockerReclaimRequestSchema, dockerStackDownSchema,
@@ -325,6 +328,11 @@ import { createProjectInputSchema } from '@open-mercato/cezar-contract';
 import { createProject, listGithubOwners, type CommandRunner } from './create-project.ts';
 import { ProjectContextError, ProjectContexts, type ProjectContext } from './project-context.ts';
 import { fetchRepo, pullRepo, pushRepo, repoSyncStatus, syncRepo, type SyncActionResult } from './repo-sync.ts';
+import {
+  abortOperation, checkoutBranch, cherryPick, commitIndex, compareWithCurrent, continueOperation, deleteBranch,
+  discardPaths, fetchRemote, listRemotes, listStashes, mergeBranch, pushBranch, rebaseOnto, renameBranch, repoGraph,
+  repoIndex, stagePaths, stashPop, stashPush, unstagePaths, type GitOk, type GraphTask,
+} from './repo-git.ts';
 import { reviewGateEnabled } from '../runs/review-gate.ts';
 import { readUiState, uiStatePath } from '../ui-state.ts';
 import { agentHomePaths, cezarHomeDir, expandTilde, isAbsolutePath } from '../paths.ts';
@@ -8369,6 +8377,16 @@ export function createApp(deps: ServerDeps) {
     overrideRules: z.boolean().optional().default(false),
   }).strict();
 
+  /** A running checkout topic's "ring now", so a Git-page mutation refreshes every open view
+   *  (spec 2026-10-24-git-view §4). Present only while the topic has subscribers. */
+  const topicRingers = new Map<string, () => void>();
+  const ringable = (topic: string, ring: () => void, stop: () => void): (() => void) => {
+    topicRingers.set(topic, ring);
+    return () => {
+      if (topicRingers.get(topic) === ring) topicRingers.delete(topic);
+      stop();
+    };
+  };
   const repoSyncTopics = new Set<string>();
   /** Register (once) the bell for one project's upstream. It fetches only while someone listens,
    *  and carries a bare counter: branch names stay on the HTTP read. */
@@ -8380,10 +8398,17 @@ export function createApp(deps: ServerDeps) {
       let version = 0;
       deps.socketHub.registerTopic(topic, {
         snapshot: async () => ({ version }),
-        start: (publish) => watchRepoSync(root, () => publish({ version: (version += 1) })),
+        start: (publish) => {
+          const ring = () => publish({ version: (version += 1) });
+          return ringable(topic, ring, watchRepoSync(root, ring));
+        },
       });
     }
     return topic;
+  };
+  /** Ring the project's `repo-sync` and main-checkout watch topics after a Git-page mutation. */
+  const ringRepoViews = (projectId: string): void => {
+    for (const topic of [`repo-sync:${projectId}`, `code:${projectId}:main`]) topicRingers.get(topic)?.();
   };
   // Task branches are never a base: hide the named ones (no `cez/` prefix) by record. An in-place
   // run's branch is the user's own checkout, so it stays listed.
@@ -8410,6 +8435,53 @@ export function createApp(deps: ServerDeps) {
     const result = await action(info.root);
     if (!result.ok) return { error: result.error };
     return { message: result.message, sync: await repoSyncAnswer(project, info.root) };
+  };
+
+  // ---- the Git page (spec 2026-10-24-git-view) ----
+  /** An in-place task's agent works in the checkout: nothing may move HEAD or the files under it. */
+  const inPlaceTaskBusy = (project: ProjectContext): boolean =>
+    project.store.listRuns().some((r) => r.worktree === false && (r.status === 'running' || r.status === 'waiting'));
+  /** Branch → the run that owns it, for the graph's labels. An in-place run's checkout branch is
+   *  the user's own unless the run created it. */
+  const graphTasks = (store: ProjectContext['store'], projected: boolean): Map<string, GraphTask> => {
+    const tasks = new Map<string, GraphTask>();
+    for (const r of store.listRuns()) {
+      if (!r.branch || (r.worktree === false && !r.inPlaceBranch)) continue;
+      tasks.set(r.branch, { runId: r.id, title: visibleTaskTitle(r, r.title ?? r.id, projected), status: r.status });
+    }
+    return tasks;
+  };
+  const checkoutRoot = async (project: ProjectContext): Promise<string | null> =>
+    (await getRepoInfo(project.root, { allowUnborn: true }))?.root ?? null;
+  /**
+   * One Git-page mutation on the main checkout: refused for a task's own token, and — when it
+   * moves HEAD or the working files — while an in-place task works there. Success rings the
+   * checkout's topics so every open view refreshes.
+   */
+  const mutateCheckout = async <R extends { ok: true }>(
+    project: ProjectContext,
+    principal: ReturnType<typeof principalOf>,
+    work: (root: string) => Promise<R | { ok: false; error: string }>,
+    options: { movesTree?: boolean } = {},
+  ): Promise<{ error: string } | { value: Omit<R, 'ok'> }> => {
+    if (principal?.kind === 'run') return { error: 'a task may not change the main checkout' };
+    const root = await checkoutRoot(project);
+    if (!root) return { error: 'not a git repository' };
+    if (options.movesTree && inPlaceTaskBusy(project)) {
+      return { error: 'an in-place task is running in this checkout — wait for it to finish' };
+    }
+    const result = await work(root);
+    if (result.ok !== true) return { error: (result as { error: string }).error };
+    ringRepoViews(project.id);
+    const { ok: _ok, ...value } = result as R;
+    return { value };
+  };
+  /** A mutation of the index, answered with the fresh index. */
+  const thenIndex = (step: (root: string) => Promise<GitOk>) => async (root: string) => {
+    const done = await step(root);
+    if (!done.ok) return done;
+    const fresh = await repoIndex(root);
+    return fresh.ok ? { ok: true as const, ...fresh.index } : fresh;
   };
 
   // ---- chained family: repo / git (project-scoped) ----
@@ -8639,6 +8711,148 @@ export function createApp(deps: ServerDeps) {
       if (principalOf(c)?.kind === 'run') return c.json({ error: 'a task may not sync the main checkout' }, 409);
       const r = await runRepoSyncAction(c.get('project'), syncRepo);
       return 'error' in r ? c.json({ error: r.error }, 409) : c.json({ message: r.message, sync: r.sync });
+    })
+
+    // The Git page (spec 2026-10-24-git-view §4): the graph, the index, branch and history
+    // actions, stash and remotes. Every failure is git's own words as a 409.
+    .get('/repo/graph', queryZodValidator(repoGraphQuerySchema), async (c) => {
+      c.header('Cache-Control', 'no-store');
+      const project = c.get('project');
+      const root = await checkoutRoot(project);
+      if (!root) return c.json({ error: 'not a git repository' }, 409);
+      const query = c.req.valid('query');
+      const config = await loadConfig(project.root);
+      const result = await repoGraph(root, {
+        ...(query.limit !== undefined ? { limit: query.limit } : {}),
+        skip: query.after ? Number(query.after) : 0,
+        filter: query.filter ?? 'all',
+        ...(config.baseBranch ? { baseBranch: config.baseBranch } : {}),
+        tasks: graphTasks(project.store, projectsRuns(runViewScopes(principalOf(c)))),
+      });
+      if (!result.ok) return c.json({ error: result.error }, 409);
+      return c.json(result.graph, 200);
+    })
+    .get('/repo/index', async (c) => {
+      c.header('Cache-Control', 'no-store');
+      const root = await checkoutRoot(c.get('project'));
+      if (!root) return c.json({ error: 'not a git repository' }, 409);
+      const result = await repoIndex(root);
+      if (!result.ok) return c.json({ error: result.error }, 409);
+      return c.json(result.index, 200);
+    })
+    .get('/repo/compare', queryZodValidator(repoCompareQuerySchema), async (c) => {
+      const root = await checkoutRoot(c.get('project'));
+      if (!root) return c.json({ error: 'not a git repository' }, 409);
+      const result = await compareWithCurrent(root, c.req.valid('query').ref);
+      if (!result.ok) return c.json({ error: result.error }, 409);
+      return c.json(result.compare, 200);
+    })
+    .get('/repo/stash', async (c) => {
+      const root = await checkoutRoot(c.get('project'));
+      if (!root) return c.json({ error: 'not a git repository' }, 409);
+      const result = await listStashes(root);
+      if (!result.ok) return c.json({ error: result.error }, 409);
+      return c.json({ stashes: result.stashes }, 200);
+    })
+    .get('/repo/remotes', async (c) => {
+      const root = await checkoutRoot(c.get('project'));
+      if (!root) return c.json({ error: 'not a git repository' }, 409);
+      const result = await listRemotes(root);
+      if (!result.ok) return c.json({ error: result.error }, 409);
+      return c.json(result.remotes, 200);
+    })
+    .post('/repo/branch/:name/checkout', paramZodValidator(repoBranchParamSchema), async (c) => {
+      const { name } = c.req.valid('param');
+      const r = await mutateCheckout(c.get('project'), principalOf(c), (root) => checkoutBranch(root, name), { movesTree: true });
+      return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
+    })
+    .post('/repo/branch/:name/merge', paramZodValidator(repoBranchParamSchema), async (c) => {
+      const { name } = c.req.valid('param');
+      const r = await mutateCheckout(c.get('project'), principalOf(c), (root) => mergeBranch(root, name), { movesTree: true });
+      return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
+    })
+    .post('/repo/branch/:name/rebase', paramZodValidator(repoBranchParamSchema), async (c) => {
+      const { name } = c.req.valid('param');
+      const r = await mutateCheckout(c.get('project'), principalOf(c), (root) => rebaseOnto(root, name), { movesTree: true });
+      return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
+    })
+    .post(
+      '/repo/branch/:name/delete',
+      paramZodValidator(repoBranchParamSchema),
+      queryZodValidator(repoBranchDeleteQuerySchema),
+      async (c) => {
+        const { name } = c.req.valid('param');
+        const query = c.req.valid('query');
+        const r = await mutateCheckout(c.get('project'), principalOf(c), (root) =>
+          deleteBranch(root, name, { remote: query.remote === '1', force: query.force === '1' }),
+        );
+        return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
+      },
+    )
+    .post('/repo/branch/:name/rename', paramZodValidator(repoBranchParamSchema), jsonZodValidator(repoBranchRenameSchema), async (c) => {
+      const { name } = c.req.valid('param');
+      const project = c.get('project');
+      // The run record names its branch and never recomputes it (AGENTS.md § Git / worktree logic).
+      if (name.startsWith('cez/') || graphTasks(project.store, false).has(name)) {
+        return c.json({ error: `${name} belongs to a task — renaming it would orphan the task's branch` }, 409);
+      }
+      const r = await mutateCheckout(project, principalOf(c), (root) => renameBranch(root, name, c.req.valid('json').to));
+      return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
+    })
+    .post('/repo/branch/:name/push', paramZodValidator(repoBranchParamSchema), jsonZodValidator(repoBranchPushSchema), async (c) => {
+      const { name } = c.req.valid('param');
+      const r = await mutateCheckout(c.get('project'), principalOf(c), (root) => pushBranch(root, name, c.req.valid('json').remote));
+      return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
+    })
+    .post('/repo/commit/:sha/cherry-pick', paramZodValidator(repoCommitShaParamSchema), async (c) => {
+      const { sha } = c.req.valid('param');
+      const r = await mutateCheckout(c.get('project'), principalOf(c), (root) => cherryPick(root, sha), { movesTree: true });
+      return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
+    })
+    .post('/repo/merge/abort', async (c) => {
+      const r = await mutateCheckout(c.get('project'), principalOf(c), abortOperation, { movesTree: true });
+      return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
+    })
+    .post('/repo/merge/continue', async (c) => {
+      const r = await mutateCheckout(c.get('project'), principalOf(c), continueOperation, { movesTree: true });
+      return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
+    })
+    .post('/repo/stage', jsonZodValidator(repoIndexChangeSchema), async (c) => {
+      const change = c.req.valid('json');
+      const r = await mutateCheckout(c.get('project'), principalOf(c), thenIndex((root) => stagePaths(root, change)));
+      return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
+    })
+    .post('/repo/unstage', jsonZodValidator(repoIndexChangeSchema), async (c) => {
+      const change = c.req.valid('json');
+      const r = await mutateCheckout(c.get('project'), principalOf(c), thenIndex((root) => unstagePaths(root, change)));
+      return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
+    })
+    .post('/repo/discard', jsonZodValidator(repoIndexChangeSchema), async (c) => {
+      const change = c.req.valid('json');
+      const r = await mutateCheckout(c.get('project'), principalOf(c), thenIndex((root) => discardPaths(root, change)), { movesTree: true });
+      return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
+    })
+    .post('/repo/commit', jsonZodValidator(repoCommitSchema), async (c) => {
+      const input = c.req.valid('json');
+      const r = await mutateCheckout(c.get('project'), principalOf(c), (root) =>
+        commitIndex(root, { message: input.message, ...(input.amend ? { amend: true } : {}) }),
+      );
+      return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
+    })
+    .post('/repo/stash', jsonZodValidator(repoStashPushSchema, { absent: {} }), async (c) => {
+      const input = c.req.valid('json');
+      const r = await mutateCheckout(c.get('project'), principalOf(c), (root) => stashPush(root, input), { movesTree: true });
+      return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
+    })
+    .post('/repo/stash/:n/pop', paramZodValidator(repoStashParamSchema), async (c) => {
+      const { n } = c.req.valid('param');
+      const r = await mutateCheckout(c.get('project'), principalOf(c), (root) => stashPop(root, n), { movesTree: true });
+      return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
+    })
+    .post('/repo/remotes/:name/fetch', paramZodValidator(repoRemoteParamSchema), async (c) => {
+      const { name } = c.req.valid('param');
+      const r = await mutateCheckout(c.get('project'), principalOf(c), (root) => fetchRemote(root, name));
+      return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
     });
 
   // An explicit "auto" default becomes `''` on the wire (#906): the empty id IS
@@ -8967,7 +9181,10 @@ export function createApp(deps: ServerDeps) {
       let version = 0;
       deps.socketHub.registerTopic(topic, {
         snapshot: async () => ({ version }),
-        start: (publish) => watchCheckout(root, () => publish({ version: (version += 1) })),
+        start: (publish) => {
+          const ring = () => publish({ version: (version += 1) });
+          return ringable(topic, ring, watchCheckout(root, ring));
+        },
       });
     }
     return topic;

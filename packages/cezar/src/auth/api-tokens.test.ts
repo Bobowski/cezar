@@ -292,6 +292,8 @@ const READ_FREE_TEXT: Record<string, { from: FreeTextOrigin; fields: string[]; a
   '/repo': { from: 'repository', fields: ['log', 'log[].subject', 'checkedOutElsewhere.*'] },
   '/repo/search': { from: 'repository', fields: ['matches[].text'] },
   '/repo/sync': { from: 'repository', fields: ['incoming[].subject'] },
+  // A dispatched child's title is replaced for a projected principal (`visibleTaskTitle`).
+  '/repo/graph': { from: 'repository', fields: ['commits[].subject'], also: { from: 'projected', fields: ['refs[].task', 'refs[].task.title'] } },
   '/runs/:id/commits': { from: 'repository', fields: ['commits[].subject'] },
   '/runs/:id/search': { from: 'repository', fields: ['matches[].text'] },
   '/skills': { from: 'repository', fields: ['[].description', '[].body'] },

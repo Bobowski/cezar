@@ -143,8 +143,12 @@ export async function repoSyncStatus(root: string, hide: ReadonlySet<string> = n
 
 export type SyncActionResult = { ok: true; message: string } | { ok: false; error: string };
 
-/** One mutation per checkout at a time: a double-clicked Sync must not race its own pull. */
+/** One mutation per checkout at a time: a double-clicked Sync must not race its own pull, nor a
+ *  Git-page action (`repo-git.ts`) a sync. */
 const inFlight = new Map<string, Promise<unknown>>();
+export function serializeCheckout<T>(root: string, work: () => Promise<T>): Promise<T> {
+  return serialized(root, work);
+}
 function serialized<T>(root: string, work: () => Promise<T>): Promise<T> {
   const prev = inFlight.get(root) ?? Promise.resolve();
   const next = prev.then(work, work);

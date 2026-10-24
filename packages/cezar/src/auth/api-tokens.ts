@@ -132,7 +132,7 @@ export const READ_ROUTES: ReadonlySet<string> = new Set([
   '/workflows', '/workflows/nodes', '/skills', '/skills/importable',
   '/projects/:projectId/icon',
   '/repo', '/repo/changes', '/repo/commit/:sha', '/repo/diff', '/repo/files', '/repo/search', '/repo/sync',
-  '/repo/tree', '/repo/watch',
+  '/repo/tree', '/repo/watch', '/repo/graph',
   '/worktrees', '/worktree-lifecycle', '/worktree-lifecycle/:worktreeId', '/worktree-lifecycle/operations/:operationId',
   '/github', '/github/checks', '/github/comments/:kind/:number', '/github/prs/:number/changes',
   '/github/prs/:number/merge-state', '/github/ref-status', '/github/search',

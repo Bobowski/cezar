@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { commentFingerprint, commentIdsIn, githubTracesOf, isOwnTrace, isPushCommand, mergeTraces, POSTED_COMMENTS_CAP, PUSHED_SHAS_CAP, toolTraces } from './github-traces.ts';
+import { commentFingerprint, commentIdsIn, githubTracesOf, isOwnTrace, isPushCommand, mergeTraces, POSTED_BODIES_CAP, POSTED_COMMENTS_CAP, PUSHED_SHAS_CAP, toolTraces } from './github-traces.ts';
 import { RunStore } from './store.ts';
 
 const sha = (n: number) => n.toString(16).padStart(40, '0');
@@ -72,5 +72,29 @@ describe('RunStore.recordGithubTraces', () => {
     store.flush({ throwOnError: true });
     const reopened = RunStore.open(dir);
     expect(reopened.getRun(run.id)).toMatchObject({ pushedShas: [sha(7)], postedComments: [42] });
+  });
+
+  it('keeps the body of a comment being posted on the record for 24 hours, across a restart', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cezar-traces-')); dirs.push(dir);
+    const store = RunStore.open(dir);
+    const run = store.createRun({ title: 't', workflow: 'quick-task', task: 't', steps: [] });
+    const now = Date.parse('2026-10-24T10:00:00.000Z');
+    store.notePostingComment(run.id, 'Fixed in the latest push.', now);
+    store.flush({ throwOnError: true });
+    const reopened = RunStore.open(dir);
+    const own = { event: 'pull_request.commented', comment: { id: 9, body: 'Fixed in  the latest push.\r\n' } };
+    expect(isOwnTrace(own, reopened.githubTraces(now + 60 * 60_000))).toBe(true);
+    expect(isOwnTrace(own, reopened.githubTraces(now + 23 * 60 * 60_000))).toBe(true);
+    // Past the day, the same words are a human's.
+    expect(isOwnTrace(own, reopened.githubTraces(now + 25 * 60 * 60_000))).toBe(false);
+  });
+
+  it('bounds the kept bodies and drops expired ones when it adds', () => {
+    const now = Date.parse('2026-10-24T10:00:00.000Z');
+    const old = { hash: 'a'.repeat(64), at: new Date(now - 25 * 60 * 60_000).toISOString() };
+    const patch = mergeTraces({ postedCommentBodies: [old] }, { bodies: ['b'.repeat(64)] }, now);
+    expect(patch?.postedCommentBodies).toEqual([{ hash: 'b'.repeat(64), at: new Date(now).toISOString() }]);
+    const many = mergeTraces({}, { bodies: Array.from({ length: POSTED_BODIES_CAP + 3 }, (_, n) => n.toString(16).padStart(64, '0')) }, now);
+    expect(many?.postedCommentBodies).toHaveLength(POSTED_BODIES_CAP);
   });
 });

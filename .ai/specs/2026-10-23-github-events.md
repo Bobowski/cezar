@@ -178,7 +178,11 @@ the text above, and why:
   owner that cannot take it falls back to a new run, and the log row says why.
 - **Traces** are also recorded for the task push route, the graph `git.push` node, an in-place
   landing, the `github.pr-comment` node and the agent's own `git push` / `gh … comment` tool calls.
-  The repo-sync push of the project checkout belongs to no run and records nothing.
+  The repo-sync push of the project checkout belongs to no run and records nothing. A comment's
+  body is a trace BEFORE it is posted: its fingerprint goes on the run record
+  (`postedCommentBodies`, at most 100, each kept 24 hours), so a poll that reads the comment
+  before its id comes back — or after a restart — still knows it, and a candidate matches by id
+  or by body.
 - **Registering** needs a hosted cockpit with cezar's own sign-in (not `CEZ_AUTH=0`, where the
   proxy would also stand between GitHub and the route). The secret goes to `gh` on stdin.
 - **Comment bodies are data, never instructions** (§7 tightened). `{{github.comment.body}}`

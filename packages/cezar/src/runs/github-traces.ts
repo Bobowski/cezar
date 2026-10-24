@@ -9,12 +9,27 @@ import { createHash } from 'node:crypto';
  */
 export const PUSHED_SHAS_CAP = 50;
 export const POSTED_COMMENTS_CAP = 100;
+/** Bodies of comments cezar posted or was posting (`commentFingerprint`), kept a day: far longer
+ *  than any poll or retry, short enough to never shadow a human who later writes the same words. */
+export const POSTED_BODIES_CAP = 100;
+export const POSTED_BODY_TTL_MS = 24 * 60 * 60_000;
+
+export type PostedCommentBody = { hash: string; at: string };
+
+/** The fields a run record carries for its traces. */
+export interface RunTraceFields {
+  pushedShas?: string[];
+  postedComments?: number[];
+  postedCommentBodies?: PostedCommentBody[];
+}
+
+const liveBody = (entry: PostedCommentBody, now: number) => now - Date.parse(entry.at) < POSTED_BODY_TTL_MS;
 
 export interface GithubTraces {
   shas: ReadonlySet<string>;
   comments: ReadonlySet<number>;
-  /** Fingerprints of comment bodies cezar is posting right now (`commentFingerprint`): the id is
-   *  known only once GitHub answers, and a poll in flight may read the comment before that. */
+  /** Fingerprints of comment bodies cezar posted or is posting (`commentFingerprint`): the id is
+   *  known only once GitHub answers, and a failed call may never report it at all. */
   bodies?: ReadonlySet<string>;
 }
 
@@ -87,12 +102,14 @@ export function toolTraces(item: { input?: unknown; output?: string; status?: st
   return { pushed: PUSH_RE.test(command), comments: posts ? commentIdsIn(item.output ?? '') : [] };
 }
 
-/** The record fields after adding `add`, deduplicated and capped; `undefined` when nothing changed. */
+/** The record fields after adding `add`, deduplicated and capped; `undefined` when nothing changed.
+ *  `bodies` are fingerprints; adding one refreshes it and drops the expired ones. */
 export function mergeTraces(
-  run: { pushedShas?: string[]; postedComments?: number[] },
-  add: { shas?: readonly string[]; comments?: readonly number[] },
-): { pushedShas?: string[]; postedComments?: number[] } | undefined {
-  const patch: { pushedShas?: string[]; postedComments?: number[] } = {};
+  run: RunTraceFields,
+  add: { shas?: readonly string[]; comments?: readonly number[]; bodies?: readonly string[] },
+  now = Date.now(),
+): RunTraceFields | undefined {
+  const patch: RunTraceFields = {};
   const shas = (add.shas ?? []).map((sha) => sha.trim().toLowerCase()).filter((sha) => /^[0-9a-f]{40,64}$/.test(sha));
   const current = run.pushedShas ?? [];
   const freshShas = shas.filter((sha, index) => !current.includes(sha) && shas.indexOf(sha) === index);
@@ -101,21 +118,26 @@ export function mergeTraces(
   const posted = run.postedComments ?? [];
   const freshIds = ids.filter((id, index) => !posted.includes(id) && ids.indexOf(id) === index);
   if (freshIds.length) patch.postedComments = [...posted, ...freshIds].slice(-POSTED_COMMENTS_CAP);
-  return patch.pushedShas || patch.postedComments ? patch : undefined;
+  const hashes = [...new Set((add.bodies ?? []).filter((hash) => /^[0-9a-f]{64}$/.test(hash)))];
+  if (hashes.length) {
+    const at = new Date(now).toISOString();
+    const kept = (run.postedCommentBodies ?? []).filter((entry) => liveBody(entry, now) && !hashes.includes(entry.hash));
+    patch.postedCommentBodies = [...kept, ...hashes.map((hash) => ({ hash, at }))].slice(-POSTED_BODIES_CAP);
+  }
+  return patch.pushedShas || patch.postedComments || patch.postedCommentBodies ? patch : undefined;
 }
 
 /** Every trace across a project's runs — what one poll compares candidates against. */
-export function githubTracesOf(
-  runs: Iterable<{ pushedShas?: string[]; postedComments?: number[] }>,
-  bodies?: ReadonlySet<string>,
-): GithubTraces {
+export function githubTracesOf(runs: Iterable<RunTraceFields>, now = Date.now()): GithubTraces {
   const shas = new Set<string>();
   const comments = new Set<number>();
+  const bodies = new Set<string>();
   for (const run of runs) {
     for (const sha of run.pushedShas ?? []) shas.add(sha);
     for (const id of run.postedComments ?? []) comments.add(id);
+    for (const entry of run.postedCommentBodies ?? []) if (liveBody(entry, now)) bodies.add(entry.hash);
   }
-  return bodies?.size ? { shas, comments, bodies } : { shas, comments };
+  return bodies.size ? { shas, comments, bodies } : { shas, comments };
 }
 
 /** `HEAD` of a checkout, or undefined — never throws (a trace is best-effort). */

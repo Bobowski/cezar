@@ -697,13 +697,14 @@ describe('ProjectAutomationScheduler — own traces are re-read when a candidate
     const { store, definition } = await setup();
     const runsDir = await mkdtemp(join(tmpdir(), 'cezar-traces-runs-')); dirs.push(runsDir);
     const runs = RunStore.open(runsDir);
+    const poster = runs.createRun({ title: 't', workflow: 'quick-task', task: 't', steps: [] });
     const comment = {
       ...reviewCandidate, eventId: 'acme/demo:comment:9', event: 'pull_request.commented' as const,
       timestamp: '2026-07-26T02:00:00.000Z', tieBreaker: 'comment:9',
       comment: { id: 9, kind: 'issue' as const, author: 'cezar-bot', url: 'https://github.com/acme/demo/pull/8#issuecomment-9', body: 'Fixed in  the latest push.\r\n' },
     };
     const poll = vi.fn(async () => {
-      runs.notePostingComment('Fixed in the latest push.');
+      runs.notePostingComment(poster.id, 'Fixed in the latest push.');
       return { candidates: [comment], truncated: false, pages: 1 };
     });
     const launch = vi.fn(async () => ({ runId: 'run' }));

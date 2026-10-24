@@ -6062,7 +6062,7 @@ export class RunManager {
           return 'failed';
         }
         const body = render(node.body);
-        this.store.notePostingComment(body);
+        this.store.notePostingComment(runId, body);
         const res = await commentOnPr(this.repoRoot, number, body);
         if (!res.ok) {
           note(`PR comment failed — ${res.error}`, 'danger');
@@ -6176,7 +6176,7 @@ export class RunManager {
           return 'failed';
         }
         const body = render(node.body);
-        this.store.notePostingComment(body);
+        this.store.notePostingComment(runId, body);
         const res = await commentOnIssue(this.repoRoot, issue, body);
         if (!res.ok) {
           note(`issue comment failed — ${res.error}`, 'danger');

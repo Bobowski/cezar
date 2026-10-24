@@ -25,7 +25,7 @@ import { track } from '../telemetry.ts';
 import { reportAgentError } from './agent-error-telemetry.ts';
 // Pure, dependency-free reference helpers — the same sanity bound the marker parser applies.
 import { MAX_REF } from './task-refs.ts';
-import { commentFingerprint, githubTracesOf, mergeTraces, POSTED_COMMENTS_CAP, PUSHED_SHAS_CAP, type GithubTraces } from './github-traces.ts';
+import { commentFingerprint, githubTracesOf, mergeTraces, POSTED_BODIES_CAP, POSTED_COMMENTS_CAP, PUSHED_SHAS_CAP, type GithubTraces } from './github-traces.ts';
 // Type-only module (zod + nothing else), so this cannot cycle back into the store.
 import { workflowDefSchema } from '../workflows/types.ts';
 // A contract VALUE, like `workspaceUiStateSchema` in `workspace/migrations.ts`: the persisted
@@ -330,6 +330,8 @@ export const runRecordSchema = z.object({
    *  comment ids it posted, which automations never treat as triggers. Capped (`github-traces.ts`). */
   pushedShas: z.array(z.string()).max(PUSHED_SHAS_CAP).optional().catch(undefined),
   postedComments: z.array(z.number()).max(POSTED_COMMENTS_CAP).optional().catch(undefined),
+  /** Fingerprints of bodies it posted or was posting, each kept 24 h (`POSTED_BODY_TTL_MS`). */
+  postedCommentBodies: z.array(z.object({ hash: z.string(), at: z.string() })).max(POSTED_BODIES_CAP).optional().catch(undefined),
   /**
    * Exact deadline at which a run stopped by a provider USAGE LIMIT resumes itself
    * (spec 2026-08-03-auto-resume-after-usage-limit) — the reset instant the provider named plus a
@@ -951,10 +953,6 @@ export function reconcileLoadedRun(run: RunRecord, opts?: { keepLive?: boolean }
   return run;
 }
 
-/** How long a posted body stays a trace — far longer than any poll, short enough to never
- *  shadow a human who later writes the same words. */
-const POSTING_COMMENT_TTL_MS = 10 * 60_000;
-
 /**
  * File-backed run store: `runs.json` index (atomic tmp+rename writes, the
  * pattern from @cezar/core's IssueStore) plus one append-only NDJSON event
@@ -967,9 +965,6 @@ export class RunStore extends EventEmitter {
   private sessionBackends = new Map<string, string>();
   /** Ids this process removed on purpose — see `forget`, which is the only thing that writes it. */
   private forgotten = new Set<string>();
-  /** Bodies of comments being posted now (fingerprint → expiry): in memory, since the window
-   *  between posting and learning the comment's id is seconds (spec 2026-10-23-github-events §6). */
-  private postingComments = new Map<string, number>();
   private saveTimer: NodeJS.Timeout | null = null;
   // Preserve failed-load evidence even after a later save rewrites the index. A workspace
   // summary must not call an owner that silently dropped records a complete empty project.
@@ -1660,25 +1655,22 @@ export class RunStore extends EventEmitter {
   }
 
   /** Remember shas this run pushed and comments it posted (spec 2026-10-23-github-events §6). */
-  recordGithubTraces(runId: string, add: { shas?: readonly string[]; comments?: readonly number[] }): void {
+  recordGithubTraces(runId: string, add: { shas?: readonly string[]; comments?: readonly number[]; bodies?: readonly string[] }, now = Date.now()): void {
     const run = this.runs.get(runId);
     if (!run) return;
-    const patch = mergeTraces(run, add);
+    const patch = mergeTraces(run, add, now);
     if (patch) this.updateRun(runId, patch);
   }
 
-  /** A comment cezar is ABOUT to post: its body is a trace before GitHub returns the id. */
-  notePostingComment(body: string, now = Date.now()): void {
-    for (const [key, expires] of this.postingComments) if (expires <= now) this.postingComments.delete(key);
-    if (this.postingComments.size >= POSTED_COMMENTS_CAP) this.postingComments.delete(this.postingComments.keys().next().value!);
-    this.postingComments.set(commentFingerprint(body), now + POSTING_COMMENT_TTL_MS);
+  /** A comment this run is ABOUT to post: its body is a trace before GitHub returns the id, and
+   *  stays one on the record — across a restart — whether or not the id ever comes back. */
+  notePostingComment(runId: string, body: string, now = Date.now()): void {
+    this.recordGithubTraces(runId, { bodies: [commentFingerprint(body)] }, now);
   }
 
-  /** Every trace across this project's runs, plus the comments being posted right now. */
+  /** Every trace across this project's runs. */
   githubTraces(now = Date.now()): GithubTraces {
-    const bodies = new Set<string>();
-    for (const [key, expires] of this.postingComments) if (expires > now) bodies.add(key);
-    return githubTracesOf(this.listRuns(), bodies);
+    return githubTracesOf(this.listRuns(), now);
   }
 
   /** Record an authoritative PR association and recompute the compatibility scalar projection. */

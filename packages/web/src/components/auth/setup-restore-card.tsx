@@ -37,7 +37,8 @@ export function SetupRestoreCard({ setupCode, onDone }: { setupCode: string; onD
             setBusy(false)
             return
           }
-          if (last.status !== 'running') break
+          // `restarting`: keep asking until the job is gone — that is the fresh process answering.
+          if (last.status === 'done') break
         } catch (cause) {
           // The process that ran the job is gone: it restarted into the restored state.
           if (cause instanceof ApiError && cause.status === 404 && last) break

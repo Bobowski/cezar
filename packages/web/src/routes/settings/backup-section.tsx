@@ -10,6 +10,7 @@ import {
 } from '@open-mercato/cezar-api-client'
 import {
   backupArchiveUrl,
+  getBackupStatus,
   useBackupStatus,
   useRestoreBackupHere,
   useSetBackupRecipient,
@@ -18,7 +19,7 @@ import {
   useStartBackup,
   useTestBackupTarget,
 } from '@/api/backup'
-import { getHealth } from '@/api/client'
+import { ApiError } from '@/api/client'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -399,18 +400,18 @@ function NightlyGroup({ status }: { status: BackupStatus }) {
   )
 }
 
-/** After a restore restarts the process: wait for a fresh one, then reload into it. */
+/** After a restore restarts the process: wait for a FRESH one (no job in memory), then reload into
+ *  it. A 401 means the restored sessions do not include this one — the reload shows sign-in. */
 async function waitForRestart(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 1_500))
-  for (let attempt = 0; attempt < 120; attempt++) {
+  for (let attempt = 0; attempt < 180; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 1_000))
     try {
-      await getHealth()
-      window.location.reload()
-      return
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 1_000))
+      if ((await getBackupStatus()).job === null) break
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) break
     }
   }
+  window.location.reload()
 }
 
 export function RestoreForm({

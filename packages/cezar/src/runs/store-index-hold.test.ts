@@ -38,7 +38,17 @@ describe('RunStore.holdIndex — a restored runs.json survives the restart flush
     rmSync(dataDir, { recursive: true, force: true });
   });
 
-  it('drops the pending debounced save and every flush while held; the next open reads the restored file', () => {
+  it('writes the pending debounced save before it holds, so the restore merges it instead of losing it', () => {
+    const store = RunStore.open(dataDir);
+    const pending = store.createRun({ title: 'not saved yet', workflow: 'quick-task', task: 'p', steps: [] });
+    expect(existsSync(join(dataDir, 'runs.json'))).toBe(false); // still inside the debounce
+    const release = store.holdIndex();
+    expect(RunStore.open(dataDir).listRuns().map((run) => run.id)).toEqual([pending.id]);
+    vi.advanceTimersByTime(5_000);
+    release();
+  });
+
+  it('skips every save and flush while held; the next open reads the restored file', () => {
     const store = RunStore.open(dataDir);
     const mine = store.createRun({ title: 'local', workflow: 'quick-task', task: 'local', steps: [] });
     const release = store.holdIndex();

@@ -1783,16 +1783,13 @@ export class RunStore extends EventEmitter {
   }
 
   /**
-   * Stop writing `runs.json` — the pending debounced save included — until the returned release.
-   * A restore places the archive's index under a live store; every flush after that, the restart's
-   * shutdown flush above all, would merge this process's stale records over it (spec
-   * 2026-10-23-backup-restore §10). The restarted process reads the restored file.
+   * Stop writing `runs.json` until the returned release. A restore merges the archive's index into
+   * the file under a live store; every flush after that, the restart's shutdown flush above all,
+   * would merge this process's stale records over it (spec 2026-10-23-backup-restore §10). A pending
+   * debounced save goes out first, so the merge sees it rather than losing it (review round 4).
    */
   holdIndex(): () => void {
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer);
-      this.saveTimer = null;
-    }
+    if (this.saveTimer) this.flush();
     this.indexHolds += 1;
     let released = false;
     return () => {

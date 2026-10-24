@@ -365,7 +365,7 @@ describe('the Git page routes, hosted', () => {
     base = mkdtempSync(join(tmpdir(), 'cez-git-hosted-'));
     repo = join(base, 'repo');
     g(base, 'init', '-q', '-b', 'main', repo);
-    for (const [key, value] of [['user.email', 't@cezar.local'], ['user.name', 't'], ['commit.gpgsign', 'false']]) g(repo, 'config', key!, value!);
+    for (const [key, value] of [['user.email', 't@cezar.local'], ['user.name', 't'], ['commit.gpgsign', 'false'], ['core.autocrlf', 'false']]) g(repo, 'config', key!, value!);
     writeFileSync(join(repo, '.gitignore'), '.ai/\n');
     g(repo, 'add', '-A');
     g(repo, 'commit', '-q', '-m', 'first');

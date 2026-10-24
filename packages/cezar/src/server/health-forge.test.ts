@@ -168,7 +168,7 @@ describe('GET /api/v1/health — forge + capabilities', () => {
     expect(body.capabilities).toEqual({
       localHandoff: false,
       terminal: false,
-      preview: false, designMode: false, fileEdit: false,
+      preview: false, designMode: true, fileEdit: false,
       followups: false,
       singleProject: false,
       automations: true,
@@ -199,7 +199,7 @@ describe('GET /api/v1/health — forge + capabilities', () => {
     expect(body.capabilities).toEqual({
       localHandoff: false,
       terminal: false,
-      preview: false, designMode: false, fileEdit: false,
+      preview: false, designMode: true, fileEdit: false,
       followups: false,
       singleProject: false,
       automations: true,

@@ -223,14 +223,12 @@ function previewEnabled(env: NodeJS.ProcessEnv, bindHost?: string): boolean {
 }
 
 /**
- * Whether the Browser column may offer Design Mode (spec `2026-10-09-design-mode`).
- *
- * Only where a task's app can be previewed at all, and for the same reason: the picker proxy
- * listens on loopback, which a hosted cockpit's viewer cannot reach. `CEZ_DESIGN_MODE=0` is the
- * off switch. There is deliberately no `=1` for hosted mode — nothing it could turn on would work.
+ * Whether the Browser column may offer Design Mode (spec `2026-10-09-design-mode`), local or
+ * hosted: a hosted cockpit picks through the preview gateway instead of the loopback mirror (spec
+ * `2026-10-24-design-mode-third-cut` §3.4). `CEZ_DESIGN_MODE=0` is the off switch everywhere.
  */
-function designModeEnabled(env: NodeJS.ProcessEnv, bindHost?: string): boolean {
-  return env.CEZ_DESIGN_MODE !== '0' && previewEnabled(env, bindHost);
+function designModeEnabled(env: NodeJS.ProcessEnv): boolean {
+  return env.CEZ_DESIGN_MODE !== '0';
 }
 
 function terminalEnabled(env: NodeJS.ProcessEnv, bindHost?: string): boolean {
@@ -296,7 +294,7 @@ export function resolveCapabilities(env: NodeJS.ProcessEnv = process.env, bindHo
     localHandoff: env.CEZ_REMOTE !== '1' && isLoopbackHost(bindHost),
     terminal: terminalEnabled(env, bindHost),
     preview: previewEnabled(env, bindHost),
-    designMode: designModeEnabled(env, bindHost),
+    designMode: designModeEnabled(env),
     fileEdit: fileEditEnabled(env, bindHost),
     // Deliberately not re-derived here: RunManager enforces the same predicate,
     // and two spellings of "is the inbox on" would eventually disagree.

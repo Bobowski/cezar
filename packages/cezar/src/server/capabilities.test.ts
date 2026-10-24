@@ -185,9 +185,12 @@ describe('resolveCapabilities — designMode (spec 2026-10-09-design-mode)', () 
     expect(resolveCapabilities({ CEZ_DESIGN_MODE: '0' }, undefined).designMode).toBe(false);
   });
 
-  it('is off on a hosted cockpit, even with CEZ_DESIGN_MODE=1 — a loopback mirror reaches nobody', () => {
-    expect(resolveCapabilities({ CEZ_REMOTE: '1', CEZ_DESIGN_MODE: '1' }, undefined).designMode).toBe(false);
-    expect(resolveCapabilities({ CEZ_DESIGN_MODE: '1' }, '0.0.0.0').designMode).toBe(false);
+  // Third cut §3.4: a hosted cockpit picks through the preview gateway, so the refusal is gone.
+  it('is on for a hosted cockpit too, and CEZ_DESIGN_MODE=0 still turns it off there', () => {
+    expect(resolveCapabilities({ CEZ_REMOTE: '1' }, undefined).designMode).toBe(true);
+    expect(resolveCapabilities({}, '0.0.0.0').designMode).toBe(true);
+    expect(resolveCapabilities({ CEZ_REMOTE: '1', CEZ_DESIGN_MODE: '0' }, undefined).designMode).toBe(false);
+    expect(resolveCapabilities({ CEZ_DESIGN_MODE: '0' }, '0.0.0.0').designMode).toBe(false);
   });
 });
 
@@ -212,7 +215,7 @@ describe('resolveCapabilities — followups (#471)', () => {
       localHandoff: false,
       // A hosted cockpit enforces sign-in by default, so its operator is trusted with both.
       terminal: true,
-      preview: false, designMode: false, fileEdit: true,
+      preview: false, designMode: true, fileEdit: true,
       followups: true,
       singleProject: false,
       automations: true,
@@ -410,7 +413,8 @@ describe('trustedOperator vs localHandoff — the two questions hosted mode used
     // Machine properties do not move: nothing to open an editor on, nothing honest to frame.
     expect(hosted.localHandoff).toBe(false);
     expect(hosted.preview).toBe(false);
-    expect(hosted.designMode).toBe(false);
+    // Design Mode is not a local-machine property any more: it rides the gateway (third cut §3.4).
+    expect(hosted.designMode).toBe(true);
   });
 
   it('is false only for a hosted cockpit that handed auth to its proxy', () => {

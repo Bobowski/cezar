@@ -40,6 +40,9 @@ export type DesignProxyResponse = z.infer<typeof designProxyResponseSchema>;
 export const previewGatewayRequestSchema = z.object({
   target: z.string().min(1).max(2048),
   parentOrigin: z.string().min(1).max(512),
+  /** A slot of its own that re-serves the app with Design Mode's picker injected and its
+   *  frame-busting headers stripped (spec `2026-10-24-design-mode-third-cut` §3.4). */
+  designMode: z.boolean().optional(),
 });
 export type PreviewGatewayRequest = z.infer<typeof previewGatewayRequestSchema>;
 

@@ -118,6 +118,7 @@ does not hold, the change is one line in `designModeEnabled`.
   description is what locates the element in source; an image can follow if use shows a need.
 - **Local `http://` only.** No `https://` loopback (certificate trust) and no external sites.
 - **No hosted mode.** The hosted-preview gap of workspace spec §7 is unchanged by this.
+  (Lifted 2026-10-24: a hosted cockpit picks through the preview gateway — third cut §3.4.)
 - **`localStorage` is per-origin.** The mirror keeps the hostname the user typed, so cookies carry
   over (they are not port-scoped), but origin-scoped storage does not: an app that keeps its
   session in `localStorage` shows up logged out in Design Mode.

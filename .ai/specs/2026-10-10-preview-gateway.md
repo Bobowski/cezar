@@ -105,7 +105,7 @@ Details that are load-bearing:
 | A capability on `/health`? | No. | The Browser column asks the route and shows its 409. One fewer shape for every client and fixture to carry, and the answer cannot drift from the route's. |
 | Who may open a preview | Anyone the front admits to the cockpit. | That user can already start a task, which runs arbitrary commands on the host. A preview of a loopback port grants less. |
 | Does the installer wire it? | Not yet. | It is interactive, verified step by step, and cannot be tested here. The wiring is documented; the gateway works behind any front that forwards the pool. |
-| Design Mode through the gateway | No. | It needs the picker injected and a `postMessage` channel to a non-loopback cockpit; a separate piece of work. |
+| Design Mode through the gateway | No — superseded 2026-10-24: yes, as a `designMode` slot (`2026-10-24-design-mode-third-cut.md` §3.4). | It needs the picker injected and a `postMessage` channel to a non-loopback cockpit; a separate piece of work. |
 
 ## 7. Known limits
 

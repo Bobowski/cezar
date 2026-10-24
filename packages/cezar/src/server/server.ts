@@ -3751,6 +3751,10 @@ export function createApp(deps: ServerDeps) {
       if (!capabilities().designMode) {
         return c.json({ error: 'Design Mode is not available on this cockpit' }, 409);
       }
+      // A loopback mirror reaches nobody from a hosted cockpit: there the gateway is the way in.
+      if (!capabilities().preview) {
+        return c.json({ error: 'on a hosted cockpit Design Mode runs through the preview gateway' }, 409);
+      }
       const host = c.req.header('host');
       const opened = await designProxies.open({
         ...c.req.valid('json'),
@@ -3766,6 +3770,10 @@ export function createApp(deps: ServerDeps) {
     // server itself answers on are passed as forbidden — a preview of the cockpit would be its API
     // behind a ticket instead of behind the front's login.
     .post('/preview/gateway', jsonZodValidator(previewGatewayRequestSchema), async (c) => {
+      // Design Mode as a mode of a gateway slot (spec 2026-10-24-design-mode-third-cut §3.4).
+      if (c.req.valid('json').designMode === true && !capabilities().designMode) {
+        return c.json({ error: 'Design Mode is not available on this cockpit' }, 409);
+      }
       const opened = await previewGateways.open({
         ...c.req.valid('json'),
         forbiddenPorts: ownPorts(c.req.header('host')),

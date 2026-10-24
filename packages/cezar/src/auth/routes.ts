@@ -76,8 +76,9 @@ function failure(c: Context, result: AuthFailure) {
   return c.json({ error: result.error }, result.status);
 }
 
-export function authRoutes(deps: { service: AuthService; enforced: () => boolean }) {
+export function authRoutes(deps: { service: AuthService; enforced: () => boolean; trusted?: () => boolean }) {
   const { service, enforced } = deps;
+  const trusted = deps.trusted ?? (() => false);
   const notEnabled = (c: Context) => c.json({ error: 'authentication is not enabled on this cockpit' }, 409);
 
   return new Hono<AuthEnv>()
@@ -166,14 +167,16 @@ export function authRoutes(deps: { service: AuthService; enforced: () => boolean
       if (id === principal.sessionId) clearSession(c);
       return c.json({ ok: true as const });
     })
-    // API tokens (spec 2026-10-24-cezar-mcp-server §4): the signed-in owner's alone. The guard
-    // already refuses every token on `/auth/*`, so a token can never mint or revoke another.
+    // API tokens (spec 2026-10-24-cezar-mcp-server §4): minted by the signed-in owner alone;
+    // listed and revoked by them or by this machine's trusted operator (a local cockpit, also
+    // without sign-in — tokens verify there too). The guard refuses every token on `/auth/*`.
     .get('/auth/tokens', (c) => {
-      if (!enforced()) return notEnabled(c);
       const principal = c.get('principal');
-      if (principal?.kind !== 'user') return c.json({ error: 'only a signed-in user has API tokens' }, 403);
       c.header('cache-control', 'no-store');
-      return c.json({ tokens: service.listApiTokens(principal.user.id) });
+      if (principal?.kind === 'user') return c.json({ tokens: service.listApiTokens(principal.user.id) });
+      if (principal?.kind === 'host' && trusted()) return c.json({ tokens: service.listApiTokens(undefined) });
+      if (!enforced()) return notEnabled(c);
+      return c.json({ error: 'only a signed-in user has API tokens' }, 403);
     })
     .post('/auth/tokens', jsonZodValidator(createApiTokenBodySchema), (c) => {
       if (!enforced()) return notEnabled(c);
@@ -185,10 +188,13 @@ export function authRoutes(deps: { service: AuthService; enforced: () => boolean
       return c.json({ token: result.token, value: result.value }, 201);
     })
     .delete('/auth/tokens/:id', paramZodValidator(z.object({ id: z.string().regex(/^[0-9a-f]{12}$/) })), (c) => {
-      if (!enforced()) return notEnabled(c);
       const principal = c.get('principal');
-      if (principal?.kind !== 'user') return c.json({ error: 'only a signed-in user has API tokens' }, 403);
-      if (!service.revokeApiToken(principal.user.id, c.req.valid('param').id)) return c.json({ error: 'unknown token' }, 404);
+      const operator = principal?.kind === 'host' && trusted();
+      if (principal?.kind !== 'user' && !operator) {
+        return enforced() ? c.json({ error: 'only a signed-in user has API tokens' }, 403) : notEnabled(c);
+      }
+      const owner = principal?.kind === 'user' ? principal.user.id : undefined;
+      if (!service.revokeApiToken(owner, c.req.valid('param').id)) return c.json({ error: 'unknown token' }, 404);
       return c.json({ ok: true as const });
     });
 }

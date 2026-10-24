@@ -8940,7 +8940,7 @@ export function createApp(deps: ServerDeps) {
   // project-scoped spelling, which would be a second surface to protect with no consumer.
   const workspaceV1 = new Hono()
     .route('/', healthRoutes)
-    .route('/', authRoutes({ service: auth, enforced: authIsEnforced }))
+    .route('/', authRoutes({ service: auth, enforced: authIsEnforced, trusted: () => trustedOperator(process.env, bindHost) }))
     .route('/', modelsRoutes)
     .route('/', providersRoutes)
     .route('/', projectsRoutes)

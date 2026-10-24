@@ -434,8 +434,12 @@ export class AuthService {
       }));
   }
 
-  /** Sign every OTHER device out. Answers how many sessions that was. */
+  /**
+   * Sign every OTHER device out, and revoke every API token (a token is a device too, spec
+   * 2026-10-24-cezar-mcp-server §4). Answers how many sessions that was.
+   */
   revokeOtherSessions(userId: string, currentId: string): number {
+    this.revokeAllApiTokens(userId);
     const sessions = this.sessionMap();
     // The epoch is the one thing a sibling cockpit sharing auth.json sees (§5.5): bumping it kills
     // this user's sessions in EVERY process, the way a reset does; this one is re-stamped.
@@ -572,9 +576,10 @@ export class AuthService {
     };
   }
 
-  listApiTokens(userId: string): ApiToken[] {
+  /** This user's tokens; every user's for the trusted operator (`userId` undefined). */
+  listApiTokens(userId: string | undefined): ApiToken[] {
     return this.store().tokens
-      .filter((token) => token.userId === userId)
+      .filter((token) => userId === undefined || token.userId === userId)
       .sort((a, b) => b.createdAt - a.createdAt)
       .map((token) => this.publicToken(token));
   }
@@ -606,18 +611,38 @@ export class AuthService {
     return { ok: true, token: this.publicToken(row), value };
   }
 
-  /** False when the id is not one of this user's tokens — the route answers 404. */
-  revokeApiToken(userId: string, tokenId: string): boolean {
+  /**
+   * False when the id is not one of this user's tokens — the route answers 404. `userId`
+   * undefined is the trusted operator, who may revoke any token.
+   */
+  revokeApiToken(userId: string | undefined, tokenId: string): boolean {
     const removed = this.mutate((store) => {
       const before = store.tokens.length;
-      store.tokens = store.tokens.filter((token) => !(token.id === tokenId && token.userId === userId));
+      store.tokens = store.tokens.filter((token) => !(token.id === tokenId && (userId === undefined || token.userId === userId)));
       return store.tokens.length !== before;
     });
     if (removed) {
       this.tokenTouch.delete(tokenId);
-      appendAudit({ event: 'token-revoked', user: userId, detail: tokenId }, this.now());
+      appendAudit({ event: 'token-revoked', ...(userId !== undefined ? { user: userId } : {}), detail: tokenId }, this.now());
     }
     return removed;
+  }
+
+  /** Every token this user holds, gone: a password change and "sign out everywhere else". */
+  revokeAllApiTokens(userId: string): number {
+    let revoked: string[] = [];
+    try {
+      revoked = this.mutate((store) => {
+        const gone = store.tokens.filter((token) => token.userId === userId).map((token) => token.id);
+        store.tokens = store.tokens.filter((token) => token.userId !== userId);
+        return gone;
+      });
+    } catch (error) {
+      console.warn(`[cez] could not revoke API tokens (${(error as Error).message})`);
+    }
+    for (const id of revoked) this.tokenTouch.delete(id);
+    if (revoked.length > 0) appendAudit({ event: 'tokens-revoked', user: userId, detail: String(revoked.length) }, this.now());
+    return revoked.length;
   }
 
   /**

@@ -188,6 +188,24 @@ describe('API tokens', () => {
     expect(errors.join(' ')).toContain('unknown workflow'); // …and this one served its own machine
   });
 
+  it('a local cockpit without sign-in lists and revokes tokens; a hosted one without sign-in does not', async () => {
+    const created = await mint(['read']);
+    const loopback = { host: '127.0.0.1:4321' };
+    process.env.CEZ_AUTH = '0';
+    const hosted = await request('/api/v1/auth/tokens');
+    expect(hosted.status).not.toBe(200);
+    expect((await request(`/api/v1/auth/tokens/${created.token.id}`, { method: 'DELETE' })).status).not.toBe(200);
+    delete process.env.CEZ_REMOTE;
+    delete process.env.CEZ_AUTH;
+    const listed = await app.request('/api/v1/auth/tokens', { headers: loopback });
+    expect(listed.status).toBe(200);
+    expect(apiTokensResponseSchema.strict().parse(await listed.json()).tokens.map((token) => token.id)).toEqual([created.token.id]);
+    expect((await app.request(`/api/v1/auth/tokens/${created.token.id}`, { method: 'DELETE', headers: loopback })).status).toBe(200);
+    expect(apiTokensResponseSchema.parse(await (await app.request('/api/v1/auth/tokens', { headers: loopback })).json()).tokens).toEqual([]);
+    // Minting still needs the signed-in owner and an authenticator code.
+    expect((await app.request('/api/v1/auth/tokens', { method: 'POST', headers: { ...loopback, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'x', scopes: ['read'], code: '000000' }) })).status).toBe(409);
+  });
+
   it('an unknown or malformed token is a 401, never a pass', async () => {
     expect((await request('/api/v1/runs', { headers: bearer('ceztok_0123456789ab_aaaaaaaaaaaaaaaaaaaaaaaaaaaa') })).status).toBe(401);
     expect((await request('/api/v1/runs', { headers: bearer('ceztok_garbage') })).status).toBe(401);

@@ -120,8 +120,10 @@ are client-side conveniences documented in `.env.example`.
 - **Tokens are SHA-256-hashed**, like session tokens, not scrypt: the secret is 256 random bits,
   and a slow hash on every API request would cost ~128 MB and hundreds of milliseconds per call.
   Minting asks for a fresh authenticator code, like every other credential change; tokens are
-  managed by the signed-in owner only (`409` on a cockpit without sign-in), and `cezar auth
-  reset` revokes the user's tokens.
+  minted by the signed-in owner only (`409` on a cockpit without sign-in); a local cockpit's
+  trusted operator lists and revokes them with or without sign-in, since they verify there too;
+  and `cezar auth reset`, a password change and "sign out everywhere else" (`revoke-others`)
+  revoke the user's tokens.
 - **Scopes**: `read` is an ALLOWLIST of GET routes known to carry no secret (`READ_ROUTES`): no
   credential, config, secret name, env file, shell, service log or lifecycle output — those need
   the family's scope or `admin`, and a GET nobody listed is not `read`'s. Any token reads a task's

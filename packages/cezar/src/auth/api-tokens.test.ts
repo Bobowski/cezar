@@ -185,6 +185,31 @@ describe('API tokens in the auth store', () => {
     expect(service.verifyApiToken(created.value)).toBeNull();
   });
 
+  it('dies with "sign out everywhere else" and with a password change', async () => {
+    const mint = (name: string) => {
+      const created = service.createApiToken(userId, { name, scopes: ['read'], code: code() }, META);
+      if (!created.ok) throw new Error(created.error);
+      now += 31_000;
+      return created.value;
+    };
+    const first = mint('a');
+    service.revokeOtherSessions(userId, 'this-session');
+    expect(service.verifyApiToken(first)).toBeNull();
+    const second = mint('b');
+    const changed = await service.changePassword(userId, 'this-session', { currentPassword: 'a long enough password', code: code(), newPassword: 'another long password' }, META);
+    expect(changed.ok).toBe(true);
+    expect(service.verifyApiToken(second)).toBeNull();
+    expect(service.listApiTokens(userId)).toEqual([]);
+  });
+
+  it('the trusted operator lists and revokes every user\'s tokens', () => {
+    const created = service.createApiToken(userId, { name: 'ci', scopes: ['read'], code: code() }, META);
+    if (!created.ok) throw new Error(created.error);
+    expect(service.listApiTokens(undefined).map((token) => token.id)).toEqual([created.token.id]);
+    expect(service.revokeApiToken(undefined, created.token.id)).toBe(true);
+    expect(service.verifyApiToken(created.value)).toBeNull();
+  });
+
   it('dies with an account reset, and one bad row on disk never revokes the rest', () => {
     const created = service.createApiToken(userId, { name: 'ci', scopes: ['read'], code: code() }, META);
     if (!created.ok) throw new Error(created.error);

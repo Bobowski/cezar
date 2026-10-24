@@ -12,6 +12,9 @@ import {
   repoSyncQuerySchema, type RepoPullResponse, type RepoSync,
   PROJECT_ICON_MAX_BYTES, setProjectIconSchema, type ProjectIconCandidates,
   dockerContainerParamsSchema, dockerStackParamsSchema, type DockerState,
+  dockerForceQuerySchema, dockerImageParamsSchema, dockerLogsQuerySchema, dockerReclaimRequestSchema, dockerStackDownSchema,
+  dockerVolumeParamsSchema, type DockerDisk, type DockerImages, type DockerLogs, type DockerReclaimPlan, type DockerReclaimResult, type DockerStack,
+  type DockerVolumes,
   githubReposQuerySchema, type GithubReposResponse,
   serviceLogsQuerySchema, serviceParamsSchema, servicePatchSchema, servicePinInputSchema, type ServiceLogs, type ServicesState,
   e2eSetupInputSchema, type E2eStatus, taskActionSurfaceSchema,
@@ -23,8 +26,13 @@ import { discoverServiceCandidates } from '../services/discover.ts';
 import { listGithubRepos, originSlug, type GhApiRunner } from './github-repos.ts';
 import {
   composeWantedPorts, containersSignature, dockerExec, groupStacks, listContainers, portConflicts,
-  type DockerExec, type ListedContainer,
+  type DockerExec, type KnownProject, type ListedContainer,
 } from '../services/docker.ts';
+import {
+  buildImages, buildVolumes, judgeDir, parseImageList, parseReclaimed, parseSystemDf, parseSystemDfVerbose, parseVolumeList,
+  planReclaim, readDisk, stepKey, volumesByStack, withImageIds, worktreeRunOf, type StatFs,
+} from '../services/docker-manage.ts';
+import { DockerLogFollowers, dockerSpawn, type DockerSpawn } from '../services/docker-logs.ts';
 import { findIconCandidates, readProjectIcon, removeProjectIcons, saveProjectIcon } from '../workspace/project-icons.ts';
 import { searchCheckout } from './code-search.ts';
 import { refreshRepoSync, watchRepoSync } from '../git-sync.ts';
@@ -68,8 +76,8 @@ import {
 } from '../automations/types.ts';
 import { trackerTriggerSchema, trackerAutomationOptionsSchema, trackerAutomationOptionsQuerySchema, automationScheduleSchema, localTimeZone, nextOccurrence } from '@open-mercato/cezar-contract';
 import type { IncomingMessage } from 'node:http';
-import { access, constants as fsConstants, mkdir, readFile, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { access, constants as fsConstants, mkdir, readFile, realpath, rename, stat, statfs, unlink, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Hono, type Context } from 'hono';
@@ -426,6 +434,10 @@ export interface ServerDeps {
   ghApiRunner?: GhApiRunner;
   /** How the Docker view reaches the `docker` CLI. Tests inject a scripted one. */
   dockerExec?: DockerExec;
+  /** How `docker logs --follow` is started (spec 2026-10-23-docker-management §3.4). Tests inject a fake. */
+  dockerSpawn?: DockerSpawn;
+  /** How the daemon's data root is measured. Tests inject a fixed answer. */
+  dockerStatfs?: StatFs;
   /** How `POST /api/projects/create` and `GET /api/projects/github-owners`
    *  run `git`/`gh` (spec 2026-09-29-create-new-project). Defaults to real
    *  commands (or the `CEZ_DRY_RUN=1` fake); injected by tests. */
@@ -7357,16 +7369,35 @@ export function createApp(deps: ServerDeps) {
     const policy = terminalPolicyRefusal(capabilities());
     return policy ? policy.replace('the terminal is', 'the Docker view is') : null;
   };
+  /** The cezar task whose worktree a stack runs from (spec 2026-10-23-docker-management §3.1). */
+  const stackTask = (current: ProjectContext) => (dir: string, owner: KnownProject): DockerStack['task'] => {
+    const runId = worktreeRunOf(dir);
+    if (!runId) return null;
+    // A project whose context was never built has no run executing in this process.
+    const run = (owner.id === current.id ? current : contexts.peek(owner.id))?.store.getRun(runId);
+    if (!run) return null;
+    const title = run.title.trim() || run.task.split('\n')[0]!.trim().slice(0, 80) || run.id.slice(0, 8);
+    return { id: run.id, title, status: run.status, active: run.status === 'running' || run.status === 'queued' };
+  };
+  /** Containers, their stacks (with dir state, task and volumes) and the volume list, read once. */
+  const dockerInventory = async (project: ProjectContext) => {
+    const listed = await listContainers(docker);
+    if (!listed.ok) return listed;
+    const volumeList = await docker(['volume', 'ls', '--format', 'json']);
+    const volumeRows = volumeList.ok ? parseVolumeList(volumeList.stdout) : [];
+    const registry = (await loadWorkspaceConfig()).projects;
+    const known = registry.some((entry) => entry.id === project.id) ? registry : [...registry, { id: project.id, root: project.root, name: '' }];
+    const stacks = groupStacks(listed.containers, known, project.id, { task: stackTask(project), volumes: volumesByStack(volumeRows) });
+    return { ok: true as const, containers: listed.containers, stacks, volumeRows };
+  };
   const dockerState = async (project: ProjectContext, c: Context): Promise<DockerState> => {
     const off = (reason: string): DockerState => ({ available: false, reason, stacks: [], conflicts: [], topic: DOCKER_TOPIC });
     registerDockerTopic();
     const refusal = dockerRefusal(c);
     if (refusal) return off(refusal);
-    const listed = await listContainers(docker);
-    if (!listed.ok) return off(listed.reason);
-    const registry = (await loadWorkspaceConfig()).projects;
-    const known = registry.some((entry) => entry.id === project.id) ? registry : [...registry, { id: project.id, root: project.root, name: '' }];
-    const stacks = groupStacks(listed.containers, known, project.id);
+    const inventory = await dockerInventory(project);
+    if (!inventory.ok) return off(inventory.reason);
+    const { stacks } = inventory;
     const composeFiles = (await discoverServiceCandidates(project.root)).filter((candidate) => /^docker compose -f \S+ up$/.test(candidate.command));
     const wanted = (await Promise.all(composeFiles.map((candidate) =>
       composeWantedPorts(docker, project.root, candidate.cwd, candidate.command.split(' ')[3]!)))).flat();
@@ -7384,6 +7415,83 @@ export function createApp(deps: ServerDeps) {
     if (!result.ok) return c.json({ error: result.reason }, 409);
     return c.body(null, 204);
   };
+
+  // Spec 2026-10-23-docker-management: images, volumes, teardown, logs, disk and Reclaim. Reads
+  // follow the view's policy; every removal is also a trusted-operator action (§5). Nothing is
+  // refused for being in use — the cockpit's confirm names what is, and `?force=1` says so.
+  const dockerRemovalRefusal = (c: Context): string | null =>
+    dockerRefusal(c) ?? (trustedOperator(process.env, bindHost) ? null : 'removing Docker objects needs this cockpit\'s own sign-in');
+  const dockerStatfs: StatFs = deps.dockerStatfs ?? (async (path) => {
+    const stats = await statfs(path);
+    return { bsize: Number(stats.bsize), blocks: Number(stats.blocks), bavail: Number(stats.bavail) };
+  });
+  const dockerOk = { ok: true } as const;
+  const dockerRemove = async (c: Context, args: string[], timeoutMs = 60_000) => {
+    const result = await docker(args, { timeoutMs });
+    dockerChanged();
+    if (!result.ok) return c.json({ error: result.reason }, 409);
+    return c.json(dockerOk, 200);
+  };
+  const imagesOf = async (containers: ListedContainer[]) => {
+    const [list, managed] = await Promise.all([docker(['image', 'ls', '--no-trunc', '--format', 'json']), withImageIds(docker, containers)]);
+    if (!list.ok) return list;
+    return { ok: true as const, images: buildImages(parseImageList(list.stdout), managed), managed };
+  };
+  const reclaimPlanOf = async (project: ProjectContext): Promise<DockerReclaimPlan> => {
+    const inventory = await dockerInventory(project);
+    if (!inventory.ok) return { available: false, reason: inventory.reason, items: [], totalBytes: 0 };
+    const [images, df, verbose] = await Promise.all([
+      imagesOf(inventory.containers),
+      docker(['system', 'df', '--format', 'json'], { timeoutMs: 30_000 }),
+      docker(['system', 'df', '-v', '--format', 'json'], { timeoutMs: 60_000 }),
+    ]);
+    if (!images.ok) return { available: false, reason: images.reason, items: [], totalBytes: 0 };
+    const sizes = verbose.ok ? parseSystemDfVerbose(verbose.stdout) : { volumes: new Map<string, number>(), containers: new Map<string, number>() };
+    const items = planReclaim({
+      stacks: inventory.stacks, containers: images.managed, images: images.images,
+      buildCacheBytes: df.ok ? parseSystemDf(df.stdout).find((entry) => entry.kind === 'build-cache')?.reclaimableBytes ?? 0 : 0,
+      volumeSizes: sizes.volumes, containerSizes: sizes.containers,
+    });
+    return { available: true, reason: null, items, totalBytes: items.reduce((sum, item) => sum + item.bytes, 0) };
+  };
+
+  // Logs: one `docker logs --follow` per container while a topic subscriber or a recent read wants
+  // it. The topic carries a cursor only — log content is read over authenticated HTTP.
+  const dockerLogsTopic = (id: string) => `docker-logs:${id}`;
+  const dockerLogTopics = new Map<string, { remove: () => void; publish: Set<(payload: { cursor: number }) => void> }>();
+  const dockerLogs = new DockerLogFollowers(
+    deps.dockerSpawn ?? dockerSpawn,
+    (id, cursor) => { for (const publish of dockerLogTopics.get(id)?.publish ?? []) publish({ cursor }); },
+    (id) => { dockerLogTopics.get(id)?.remove(); dockerLogTopics.delete(id); },
+  );
+  deps.onDispose?.(() => dockerLogs.close());
+  const registerDockerLogsTopic = (id: string): void => {
+    if (dockerLogTopics.has(id) || !deps.socketHub) return;
+    const publish = new Set<(payload: { cursor: number }) => void>();
+    const remove = deps.socketHub.registerTopic(dockerLogsTopic(id), {
+      snapshot: async () => ({ cursor: dockerLogs.cursorOf(id) }),
+      start: (send) => {
+        publish.add(send);
+        dockerLogs.hold(id);
+        return () => {
+          publish.delete(send);
+          dockerLogs.release(id);
+        };
+      },
+    });
+    dockerLogTopics.set(id, { remove, publish });
+  };
+  // A bell-driven reader asks several times a second; the listing that proves the id is real is not re-read for each.
+  const dockerLogIds = new Map<string, number>();
+  const containerListed = async (id: string): Promise<{ ok: true; listed: boolean } | { ok: false; reason: string }> => {
+    if ((dockerLogIds.get(id) ?? 0) > Date.now()) return { ok: true, listed: true };
+    const listed = await listContainers(docker);
+    if (!listed.ok) return listed;
+    const found = listed.containers.some((entry) => entry.id === id);
+    if (found) dockerLogIds.set(id, Date.now() + 10_000);
+    return { ok: true, listed: found };
+  };
+
   const dockerRoutes = new Hono<ProjectApiEnv>()
     .get('/docker', async (c) => {
       c.header('Cache-Control', 'no-store');
@@ -7404,6 +7512,136 @@ export function createApp(deps: ServerDeps) {
     .post('/docker/containers/:id/stop', paramZodValidator(dockerContainerParamsSchema), async (c) => {
       const { id } = c.req.valid('param');
       return dockerAct(c, (all) => all.some((entry) => entry.id === id), ['stop', id]);
+    })
+    .post('/docker/stacks/:name/down', paramZodValidator(dockerStackParamsSchema), jsonZodValidator(dockerStackDownSchema), async (c) => {
+      const refusal = dockerRemovalRefusal(c);
+      if (refusal) return c.json({ error: refusal }, 409);
+      const { name } = c.req.valid('param');
+      const listed = await listContainers(docker);
+      if (!listed.ok) return c.json({ error: listed.reason }, 409);
+      const member = listed.containers.find((entry) => entry.stack === name);
+      if (!member) return c.json({ error: 'no such stack' }, 404);
+      // Run where the stack's compose file is, so compose reads it; else nowhere a stray compose.yml could be picked up.
+      const cwd = judgeDir(member.dir) === 'exists' ? member.dir! : tmpdir();
+      const result = await docker(['compose', '-p', name, 'down', ...(c.req.valid('json').volumes ? ['--volumes'] : [])], { cwd, timeoutMs: 180_000 });
+      dockerChanged();
+      if (!result.ok) return c.json({ error: result.reason }, 409);
+      return c.json(dockerOk, 200);
+    })
+    .delete('/docker/containers/:id', paramZodValidator(dockerContainerParamsSchema), queryZodValidator(dockerForceQuerySchema), async (c) => {
+      const refusal = dockerRemovalRefusal(c);
+      if (refusal) return c.json({ error: refusal }, 409);
+      const { id } = c.req.valid('param');
+      const listed = await listContainers(docker);
+      if (!listed.ok) return c.json({ error: listed.reason }, 409);
+      if (!listed.containers.some((entry) => entry.id === id)) return c.json({ error: 'no such container' }, 404);
+      return dockerRemove(c, ['rm', ...(c.req.valid('query').force === '1' ? ['-f'] : []), id]);
+    })
+    .get('/docker/containers/:id/logs', paramZodValidator(dockerContainerParamsSchema), queryZodValidator(dockerLogsQuerySchema), async (c) => {
+      const refusal = dockerRefusal(c);
+      if (refusal) return c.json({ error: refusal }, 409);
+      const { id } = c.req.valid('param');
+      const known = await containerListed(id);
+      if (!known.ok) return c.json({ error: known.reason }, 409);
+      if (!known.listed) return c.json({ error: 'no such container' }, 404);
+      registerDockerLogsTopic(id);
+      const logs: DockerLogs = { ...dockerLogs.read(id, c.req.valid('query').cursor ?? 0), topic: dockerLogsTopic(id) };
+      c.header('Cache-Control', 'no-store');
+      return c.json(logs, 200);
+    })
+    .get('/docker/images', async (c) => {
+      c.header('Cache-Control', 'no-store');
+      const off = (reason: string): DockerImages => ({ available: false, reason, images: [] });
+      const refusal = dockerRefusal(c);
+      if (refusal) return c.json(off(refusal), 200);
+      const listed = await listContainers(docker);
+      if (!listed.ok) return c.json(off(listed.reason), 200);
+      const images = await imagesOf(listed.containers);
+      if (!images.ok) return c.json(off(images.reason), 200);
+      const state: DockerImages = { available: true, reason: null, images: images.images };
+      return c.json(state, 200);
+    })
+    .delete('/docker/images/:id', paramZodValidator(dockerImageParamsSchema), queryZodValidator(dockerForceQuerySchema), async (c) => {
+      const refusal = dockerRemovalRefusal(c);
+      if (refusal) return c.json({ error: refusal }, 409);
+      const { id } = c.req.valid('param');
+      const list = await docker(['image', 'ls', '--no-trunc', '--format', 'json']);
+      if (!list.ok) return c.json({ error: list.reason }, 409);
+      const image = parseImageList(list.stdout).find((entry) => entry.id.startsWith(id));
+      if (!image) return c.json({ error: 'no such image' }, 404);
+      return dockerRemove(c, ['image', 'rm', ...(c.req.valid('query').force === '1' ? ['-f'] : []), image.id]);
+    })
+    .get('/docker/volumes', async (c) => {
+      c.header('Cache-Control', 'no-store');
+      const off = (reason: string): DockerVolumes => ({ available: false, reason, volumes: [] });
+      const refusal = dockerRefusal(c);
+      if (refusal) return c.json(off(refusal), 200);
+      const project = c.get('project');
+      const inventory = await dockerInventory(project);
+      if (!inventory.ok) return c.json(off(inventory.reason), 200);
+      const verbose = await docker(['system', 'df', '-v', '--format', 'json'], { timeoutMs: 60_000 });
+      const sizes = verbose.ok ? parseSystemDfVerbose(verbose.stdout).volumes : new Map<string, number>();
+      const state: DockerVolumes = { available: true, reason: null, volumes: buildVolumes(inventory.volumeRows, sizes, inventory.containers, inventory.stacks) };
+      return c.json(state, 200);
+    })
+    .delete('/docker/volumes/:name', paramZodValidator(dockerVolumeParamsSchema), queryZodValidator(dockerForceQuerySchema), async (c) => {
+      const refusal = dockerRemovalRefusal(c);
+      if (refusal) return c.json({ error: refusal }, 409);
+      const { name } = c.req.valid('param');
+      const list = await docker(['volume', 'ls', '--format', 'json']);
+      if (!list.ok) return c.json({ error: list.reason }, 409);
+      if (!parseVolumeList(list.stdout).some((entry) => entry.name === name)) return c.json({ error: 'no such volume' }, 404);
+      return dockerRemove(c, ['volume', 'rm', ...(c.req.valid('query').force === '1' ? ['-f'] : []), name]);
+    })
+    .get('/docker/disk', async (c) => {
+      c.header('Cache-Control', 'no-store');
+      const refusal = dockerRefusal(c);
+      const disk: DockerDisk = refusal
+        ? { available: false, reason: refusal, entries: [], totalBytes: 0, reclaimableBytes: 0, dataRoot: null, warning: false }
+        : await readDisk(docker, dockerStatfs);
+      return c.json(disk, 200);
+    })
+    .post('/docker/reclaim/plan', async (c) => {
+      c.header('Cache-Control', 'no-store');
+      const refusal = dockerRefusal(c);
+      const plan: DockerReclaimPlan = refusal ? { available: false, reason: refusal, items: [], totalBytes: 0 } : await reclaimPlanOf(c.get('project'));
+      return c.json(plan, 200);
+    })
+    .post('/docker/reclaim', jsonZodValidator(dockerReclaimRequestSchema), async (c) => {
+      const refusal = dockerRemovalRefusal(c);
+      if (refusal) return c.json({ error: refusal }, 409);
+      // Re-planned now: a step runs only if the plan still holds it, so the "never" list is the
+      // server's to keep, not the dialog's.
+      const plan = await reclaimPlanOf(c.get('project'));
+      if (!plan.available) return c.json({ error: plan.reason ?? 'Docker is unavailable' }, 409);
+      const planned = new Map(plan.items.map((item) => [stepKey(item.step), item]));
+      const order = ['stack', 'container', 'dangling-images', 'build-cache'];
+      const steps = [...c.req.valid('json').steps].sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
+      const result: DockerReclaimResult = { freedBytes: 0, log: [] };
+      const seen = new Set<string>();
+      for (const step of steps) {
+        const key = stepKey(step);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const item = planned.get(key);
+        if (!item) {
+          result.log.push(`skipped ${key}: no longer in the plan`);
+          continue;
+        }
+        const args = step.kind === 'stack' ? ['compose', '-p', step.name, 'down', '--volumes']
+          : step.kind === 'container' ? ['rm', step.id]
+            : step.kind === 'dangling-images' ? ['image', 'prune', '-f'] : ['builder', 'prune', '-f'];
+        const ran = await docker(args, { cwd: tmpdir(), timeoutMs: 300_000 });
+        if (!ran.ok) {
+          result.log.push(`${item.label}: ${ran.reason}`);
+          continue;
+        }
+        const freed = step.kind === 'dangling-images' || step.kind === 'build-cache' ? parseReclaimed(ran.stdout) || item.bytes : item.bytes;
+        result.freedBytes += freed;
+        result.log.push(`${item.label}: done`);
+      }
+      dockerChanged();
+      return c.json(result, 200);
     });
 
   // ---- chained family: one-click e2e setup ----------------------------------

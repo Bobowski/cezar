@@ -34,12 +34,24 @@ export function readProjectDesignDrafts(dataDir: string): DesignDraftPick[] {
   return out;
 }
 
+/** `.\src\a.tsx` →`src/a.tsx`: the contract refused what climbs out; this fixes the spelling. */
+function normalisedSource(source: DesignDraftPick['source']): DesignDraftPick['source'] {
+  if (!source) return undefined;
+  const file = source.file.split(/[\\/]/).filter((segment) => segment !== '' && segment !== '.').join('/');
+  if (file === '') return undefined;
+  return source.line === undefined ? { file } : { file, line: source.line };
+}
+
 /** Replace them. An empty list deletes the surface. */
 export function writeProjectDesignDrafts(
   dataDir: string,
   picks: readonly DesignDraftPick[],
 ): { ok: true } | { ok: false; error: string } {
-  const text = picks.length === 0 ? '' : JSON.stringify(picks.map(({ note, ...pick }) => ({ pick, text: note })));
+  const stored = picks.map(({ note, source, ...pick }) => {
+    const clean = normalisedSource(source);
+    return { pick: clean ? { ...pick, source: clean } : pick, text: note };
+  });
+  const text = stored.length === 0 ? '' : JSON.stringify(stored);
   if (text.length > DRAFT_TEXT_MAX) return { ok: false, error: 'too many notes to keep — start a task with some of them first' };
   const result = writeRunDraftSurface(dataDir, PROJECT_DRAFTS_ID, SURFACE, { text, images: [] });
   return result.ok ? { ok: true } : { ok: false, error: result.error };

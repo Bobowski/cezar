@@ -66,6 +66,11 @@ export const DESIGN_DRAFTS_MAX = 12;
 
 const px = z.number().int().min(-1_000_000).max(1_000_000);
 
+/** Relative and staying inside its root: no leading separator, no drive or scheme prefix
+ *  (`C:`, `file:`, `webpack:`), no `..` segment in either separator. */
+const isRelativeInside = (file: string): boolean =>
+  !/^[\\/]/.test(file) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(file) && !file.split(/[\\/]/).includes('..');
+
 /**
  * One element picked in Design Mode, as the cockpit keeps it (spec `2026-10-09-design-mode` §3,
  * `2026-10-24-design-mode-third-cut` §3.3). Every field is bounded: it was described by a page
@@ -84,7 +89,7 @@ export const designPickSchema = z.object({
   components: z.array(z.string().max(80)).max(6),
   source: z
     .object({
-      file: z.string().min(1).max(300).refine((file) => !/^([A-Za-z]:)?[\\/]/.test(file), 'source must be relative'),
+      file: z.string().min(1).max(300).refine(isRelativeInside, 'source must be relative, inside the worktree'),
       line: z.number().int().positive().optional(),
     })
     .optional(),

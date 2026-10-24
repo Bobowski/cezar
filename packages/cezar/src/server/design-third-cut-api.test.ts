@@ -131,6 +131,24 @@ describe('Design Mode, third cut — the API', () => {
       }
       expect((await send('/api/v1/repo/design-drafts', 'PUT', { picks: Array.from({ length: 13 }, (_, n) => ({ ...pick, mark: `m-${n}` })) })).status).toBe(400);
     });
+
+    it('refuses a source that climbs out of the worktree or names a scheme', async () => {
+      for (const file of ['../../x', 'src/../../x', 'src\\..\\x', '..', 'file:///abs/a.tsx', 'C:x.tsx', 'webpack://app/src/a.tsx']) {
+        expect((await send('/api/v1/repo/design-drafts', 'PUT', { picks: [{ ...pick, source: { file } }] })).status, file).toBe(400);
+      }
+      // A name that merely starts with dots is a file like any other.
+      expect((await send('/api/v1/repo/design-drafts', 'PUT', { picks: [{ ...pick, source: { file: 'src/..a.tsx' } }] })).status).toBe(200);
+    });
+
+    it('keeps a source normalised: forward slashes, no `.` or empty segments', async () => {
+      const picks = [
+        { ...pick, source: { file: '.\\src\\a.tsx', line: 1 } },
+        { ...pick, mark: 'abc123-2', source: { file: './src//b.tsx' } },
+      ];
+      expect((await send('/api/v1/repo/design-drafts', 'PUT', { picks })).status).toBe(200);
+      const body = (await (await send('/api/v1/repo/design-drafts', 'GET')).json()) as { picks: Array<{ source?: unknown }> };
+      expect(body.picks.map((each) => each.source)).toEqual([{ file: 'src/a.tsx', line: 1 }, { file: 'src/b.tsx' }]);
+    });
   });
 
   describe('Design Mode on a hosted cockpit', () => {

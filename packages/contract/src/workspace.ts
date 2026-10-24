@@ -135,6 +135,68 @@ export type SetWorkspaceConfigInput = z.infer<typeof setWorkspaceConfigInputSche
 export const workspaceBrandingLogoResponseSchema = z.object({ logoUrl: z.string().nullable() });
 export type WorkspaceBrandingLogoResponse = z.infer<typeof workspaceBrandingLogoResponseSchema>;
 
+// ---- cockpit branding (spec 2026-10-24-cockpit-branding) ------------------------------------
+
+/** What an operator uploads. `logo` keeps its own upload route (`POST /workspace/branding-logo`). */
+export const brandingUploadKindSchema = z.enum(['favicon', 'app-icon']);
+export type BrandingUploadKind = z.infer<typeof brandingUploadKindSchema>;
+/** What `DELETE /workspace/branding/:kind` removes. */
+export const brandingRemovableKindSchema = z.enum(['favicon', 'app-icon', 'logo']);
+export type BrandingRemovableKind = z.infer<typeof brandingRemovableKindSchema>;
+/** Every file `GET /workspace/branding/:kind` serves: the uploads and the sizes derived from them. */
+export const BRANDING_ASSETS = [
+  'favicon', 'favicon-16', 'favicon-32', 'favicon-48',
+  'app-icon', 'app-icon-192', 'app-icon-maskable', 'apple-touch-icon',
+] as const;
+export const brandingAssetSchema = z.enum(BRANDING_ASSETS);
+export type BrandingAsset = z.infer<typeof brandingAssetSchema>;
+export const brandingKindParamSchema = z.object({ kind: brandingUploadKindSchema });
+export const brandingRemovableKindParamSchema = z.object({ kind: brandingRemovableKindSchema });
+export const brandingAssetParamSchema = z.object({ kind: brandingAssetSchema });
+
+export const BRANDING_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
+/** `#rrggbb`, lowercase on the way in so one colour has one spelling. */
+export const brandingAccentSchema = z.string().trim().regex(/^#[0-9a-fA-F]{6}$/, 'an accent is a #rrggbb colour').transform((v) => v.toLowerCase());
+
+const accentThemeTokensSchema = z.object({
+  primary: z.string(),
+  primaryForeground: z.string(),
+  primaryStrong: z.string(),
+  ring: z.string(),
+});
+/** The accent as the cockpit's `--primary` family, derived per theme by the server. */
+export const brandingAccentTokensSchema = z.object({ light: accentThemeTokensSchema, dark: accentThemeTokensSchema });
+export type BrandingAccentTokens = z.infer<typeof brandingAccentTokensSchema>;
+
+/**
+ * `GET /api/v1/workspace/branding` — public, like the sign-in page that shows it. Every URL is
+ * content-addressed (`?v=<hash>`); `null` means cezar's own. `custom` is true when anything differs
+ * from cezar's defaults, which is what Reset puts back.
+ */
+export const workspaceBrandingSchema = z.object({
+  name: z.string(),
+  logoUrl: z.string().nullable(),
+  faviconUrl: z.string().nullable(),
+  appIconUrl: z.string().nullable(),
+  accent: z.string().nullable(),
+  accentTokens: brandingAccentTokensSchema.nullable(),
+  custom: z.boolean(),
+});
+export type WorkspaceBranding = z.infer<typeof workspaceBrandingSchema>;
+
+/** `PUT /api/v1/workspace/branding` — partial; `null` clears back to cezar's own. */
+export const setWorkspaceBrandingInputSchema = z.object({
+  name: z.string().trim().min(1).max(80).nullable().optional(),
+  accent: brandingAccentSchema.nullable().optional(),
+}).strict();
+export type SetWorkspaceBrandingInput = z.infer<typeof setWorkspaceBrandingInputSchema>;
+
+/** `PUT /api/v1/workspace/branding/:kind` — the image, base64 (the project icon's body shape). */
+export const setBrandingImageInputSchema = z.object({
+  data: z.string().min(1).max(Math.ceil((BRANDING_UPLOAD_MAX_BYTES * 4) / 3) + 4),
+}).strict();
+export type SetBrandingImageInput = z.infer<typeof setBrandingImageInputSchema>;
+
 // ---- GUI prefs — the two open bags ----------------------------------------------------------
 
 /** Settings → Appearance: accent + density + reading width. ONE shape for both ui-state files. */

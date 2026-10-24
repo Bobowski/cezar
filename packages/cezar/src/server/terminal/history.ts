@@ -174,26 +174,48 @@ const ECHOED = new RegExp(String.raw`(^|[\s(])(echo|printf)((?:\s+-[A-Za-z]+)*)\
 /** Clients whose `-p` glues the password on (`mysql -phunter2`); `-p` alone makes them ask. */
 const GLUED_PASSWORD = new Set(['mysql', 'mysqldump', 'mysqladmin', 'mysqlimport', 'mysqlshow', 'mysqlcheck', 'mariadb', 'mariadb-dump', 'sshpass']);
 const GLUED_PASSWORD_FLAG = new RegExp(String.raw`(\s)-p(?=[^\s])${WORD}`, 'g');
+/** `-p hunter2`, `-a hunter2`: a password for any command but those `NO_SHORT_SECRET` names. */
+const SPACED_SHORT_SECRET = new RegExp(String.raw`(\s)(-[pa])(\s+)(?![-<>|&;])${WORD}`, 'g');
+/** A port, a pid or a mapping (`5433`, `8080:80`, `53/udp`): what `-p` means far more often. */
+const PORT_SHAPE = /^\d[\d.:-]*(?:\/(?:tcp|udp))?$/;
+/** A glued value that reads as the rest of a single-dash flag: `-print`, `-parallel=4`, `-pthread`. */
+const FLAG_TAIL = /^[a-z][a-z-]*(?:=.*)?$/;
 
 /** Registry clients whose `login -p` takes the password; `-p` is a port or a publish elsewhere. */
 const LOGIN_PASSWORD = new Set(['docker', 'podman', 'nerdctl', 'buildah', 'skopeo', 'helm', 'oras']);
-
-/** The short flag whose next word is this command's password, if it has one. */
-function spacedPasswordFlag(command: string, words: readonly string[]): string | null {
-  if (GLUED_PASSWORD.has(command)) return '-p';
-  if (command === 'redis-cli') return '-a';
-  return LOGIN_PASSWORD.has(command) && words.includes('login') ? '-p' : null;
-}
+/** Commands whose `-p`/`-a` is a parents, all, append, pid, port or prompt flag — never a password. */
+const NO_SHORT_SECRET = new Set([
+  'mkdir', 'cp', 'mv', 'ls', 'ln', 'install', 'rsync', 'tar', 'unzip', 'ps', 'kill', 'pkill', 'pgrep', 'lsof', 'ssh', 'nc',
+  'grep', 'rg', 'git', 'tee', 'touch', 'df', 'du', 'sort', 'uname', 'read', 'xargs', 'node', 'npx', 'perl', 'patch', 'ping',
+  'nmap', 'pytest', 'cargo', 'kubectl', 'docker-compose',
+]);
+/** Verbs whose first positional argument is the secret, or names it: `vault login s.abc`. */
+const SECRET_VERBS: readonly (readonly string[])[] = [['vault', 'login'], ['vault', 'auth'], ['wrangler', 'secret', 'put']];
+/** Wrappers that run their next word as the command. */
+const COMMAND_PREFIX = new Set(['sudo', 'exec', 'npx', 'bunx']);
 
 function redactClientPassword(segment: string): string {
-  const words = segment.trim().split(/\s+/).filter((word) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
-  const head = words[0] === 'sudo' || words[0] === 'exec' ? words[1] : words[0];
-  if (!head) return segment;
-  const command = baseName(head);
-  const out = GLUED_PASSWORD.has(command) ? segment.replace(GLUED_PASSWORD_FLAG, '$1-p***') : segment;
-  const flag = spacedPasswordFlag(command, words);
-  if (flag === null) return out;
-  return out.replace(new RegExp(String.raw`(\s)(${flag})(\s+)(?![-<>|&;])${WORD}`, 'g'), '$1$2$3***');
+  const tokens = [...segment.matchAll(new RegExp(WORD, 'g'))]
+    .map((match) => ({ text: match[0], start: match.index }))
+    .filter((token) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(token.text));
+  let at = 0;
+  while (COMMAND_PREFIX.has(tokens[at]?.text ?? '') && tokens[at + 1] && !tokens[at + 1]!.text.startsWith('-')) at += 1;
+  if (!tokens[at]) return segment;
+  const command = baseName(tokens[at]!.text);
+  const words = tokens.map((token) => token.text);
+  let out = segment;
+  const verb = SECRET_VERBS.find((parts) => parts.every((part, index) => (index === 0 ? command : words[at + index]) === part));
+  const positional = verb && tokens.slice(at + verb.length).find((token) => !token.text.startsWith('-'));
+  if (positional) out = `${out.slice(0, positional.start)}***${out.slice(positional.start + positional.text.length)}`;
+  if (GLUED_PASSWORD.has(command)) out = out.replace(GLUED_PASSWORD_FLAG, '$1-p***');
+  const generic = LOGIN_PASSWORD.has(command) ? words.includes('login') : !NO_SHORT_SECRET.has(command);
+  if (!generic) return out;
+  out = out.replace(GLUED_PASSWORD_FLAG, (whole: string, lead: string) => {
+    const value = whole.slice(lead.length + 2);
+    return value === '***' || PORT_SHAPE.test(value) || FLAG_TAIL.test(value) ? whole : `${lead}-p***`;
+  });
+  return out.replace(SPACED_SHORT_SECRET, (whole: string, lead: string, flag: string, gap: string) =>
+    (PORT_SHAPE.test(whole.slice(lead.length + flag.length + gap.length)) ? whole : `${lead}${flag}${gap}***`));
 }
 
 /** Short names the shared credential heuristic leaves out: `DB_PASS`, `KEY`, `SMTP_PWD`. */

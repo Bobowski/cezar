@@ -107,6 +107,27 @@ describe('history folding', () => {
     expect(historyLine('redis-cli -h cache ping')).toBe('redis-cli -h cache ping');
   });
 
+  it('stores no password a short or long flag carries for a command no list names', () => {
+    expect(historyLine('pg_isready -p hunter2 -h db')).toBe('pg_isready -p *** -h db');
+    expect(historyLine('mongosh -u app -p "a b" db')).toBe('mongosh -u app -p *** db');
+    expect(historyLine('mycli -phunter2 shop')).toBe('mycli -p*** shop');
+    expect(historyLine('memtier -a hunter2 -s cache')).toBe('memtier -a *** -s cache');
+    expect(historyLine('az login --service-principal -u app -p s3cret --tenant t')).toBe('az login --service-principal -u app -p *** --tenant t');
+    expect(historyLine('pgcli --password hunter2 db && tool --token=abc x')).toBe('pgcli --password *** db && tool --token=*** x');
+    expect(historyLine('httpie -u admin:hunter2 x.io')).toBe('httpie -u admin:*** x.io');
+    // The positional a secret-taking verb reads.
+    expect(historyLine('vault login s.abcdef123')).toBe('vault login ***');
+    expect(historyLine('vault login -method=github')).toBe('vault login -method=github');
+    expect(historyLine('npx wrangler secret put STRIPE_KEY')).toBe('npx wrangler secret put ***');
+    // A port, a pid, a single-dash long flag or a known non-secret `-p`/`-a` stays as typed.
+    expect(historyLine('ssh -p 2222 me@host')).toBe('ssh -p 2222 me@host');
+    expect(historyLine('serve -p 8080 dist')).toBe('serve -p 8080 dist');
+    expect(historyLine('find . -path ./node_modules -prune -print')).toBe('find . -path ./node_modules -prune -print');
+    expect(historyLine('go test -parallel=4 -p 2 ./...')).toBe('go test -parallel=4 -p 2 ./...');
+    expect(historyLine('cp -a src dst && ls -a build && tee -a log.txt')).toBe('cp -a src dst && ls -a build && tee -a log.txt');
+    expect(historyLine('read -p "Name: " NAME')).toBe('read -p "Name: " NAME');
+  });
+
   it('stores no password curl\'s -u carries, glued or spaced', () => {
     expect(historyLine('curl -uadmin:hunter2 http://x')).toBe('curl -uadmin:*** http://x');
     expect(historyLine('curl -u admin:hunter2 http://x')).toBe('curl -u admin:*** http://x');

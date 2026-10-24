@@ -143,6 +143,9 @@ export interface CodeLayout {
   /** The task every open agent tab shows, by the id in its tab path; `null` is the new-task form. */
   agents: Record<string, string | null>
   wrap: boolean
+  /** Browser tabs the server is known to hold (its list, read or answered to a save, named them).
+   *  An open page not in it is PENDING: the server's list cannot close it (§3 Persistence). */
+  onServer?: string[]
 }
 
 export const DEFAULT_LAYOUT: CodeLayout = {
@@ -305,18 +308,20 @@ export function withPages(raw: unknown, tree: string, pages: CodePage[]): CodePa
 /**
  * Fold the server's pages into the layout this browser remembered. The server is the newer word
  * (another device may have opened, moved or closed pages): a tab it knows takes its address, a
- * tab with an address it does not know was closed elsewhere and closes, and a page only it knows
- * opens in its group — a new group to the right when this layout has fewer. A blank tab is never
- * on the server and stays. `saved === undefined` (never saved) leaves the layout alone.
+ * tab it once held and lists no more was closed elsewhere and closes, and a page only it knows
+ * opens in its group — a new group to the right when this layout has fewer. A tab it never held
+ * (opened here, not saved yet) is pending and stays, as does a blank one. `saved === undefined`
+ * (never saved) leaves the layout alone.
  */
 export function restorePages(layout: CodeLayout, saved: readonly CodePage[] | undefined): CodeLayout {
   if (saved === undefined) return layout
   const byId = new Map(saved.map((page) => [page.id, page]))
-  let next: CodeLayout = { ...layout, browsers: { ...layout.browsers } }
+  const held = new Set(layout.onServer ?? [])
+  let next: CodeLayout = { ...layout, browsers: { ...layout.browsers }, onServer: saved.map((page) => page.id) }
   for (const tab of browserTabs(layout)) {
     const page = byId.get(tab.id)
     if (page) next.browsers[tab.id] = { url: page.url }
-    else if (tab.url !== '') next = updateGroups(next, (group) => closeTab(group, browserTab(tab.id)))
+    else if (tab.url !== '' && held.has(tab.id)) next = updateGroups(next, (group) => closeTab(group, browserTab(tab.id)))
   }
   const open = new Set(browserTabs(next).map((tab) => tab.id))
   for (const page of saved) {
@@ -327,6 +332,18 @@ export function restorePages(layout: CodeLayout, saved: readonly CodePage[] | un
       : openToSide({ ...next, browsers, focused: next.groups.length - 1 }, browserTab(page.id))
   }
   return pruneTools({ ...next, focused: Math.min(layout.focused, next.groups.length - 1) })
+}
+
+/** A save round-trip answered with the server's list for this checkout: those pages are held. */
+export function markSaved(layout: CodeLayout, saved: readonly CodePage[]): CodeLayout {
+  const onServer = saved.map((page) => page.id)
+  return JSON.stringify(onServer) === JSON.stringify(layout.onServer ?? []) ? layout : { ...layout, onServer }
+}
+
+/** Open pages with an address the server is not known to hold yet. */
+export function pendingPages(layout: CodeLayout): string[] {
+  const held = new Set(layout.onServer ?? [])
+  return browserTabs(layout).filter((tab) => keepableAddress(tab.url) && !held.has(tab.id)).map((tab) => tab.id)
 }
 
 /**
@@ -411,6 +428,7 @@ export function loadLayout(storage: Storage | null, projectId: string, tree: str
       browsers: reviveBrowsers(raw.browsers, open),
       agents,
       wrap: raw.wrap === true,
+      ...(Array.isArray(raw.onServer) ? { onServer: raw.onServer.filter((id): id is string => typeof id === 'string' && open.has(id)) } : {}),
     }
   } catch {
     return DEFAULT_LAYOUT

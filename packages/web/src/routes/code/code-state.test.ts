@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   agentTab, browserTab, bufferFrom, closeOthers, closeTab, DEFAULT_LAYOUT, diffTab, EMPTY_TABS, focusedGroup, isDiffTab, isDirty, isFileTab, keepTab,
   languageOf, lineMarksFromPatch, loadDraft, loadLayout, MAX_GROUPS, openAgent, openBrowserTab, openPaths, openTab, openToSide,
-  browserTabs, focusBrowserTab, pagesOf, pruneTools, reconcile, resolveConflict, restorePages, retargetTab, saveDraft, saveLayout,
+  browserTabs, focusBrowserTab, markSaved, pagesOf, pendingPages, pruneTools, reconcile, resolveConflict, restorePages, retargetTab, saveDraft, saveLayout,
   savedPagesFor, stepTab, tabFile, tabLabel, updateGroup, updateGroups, withPages, type Buffer, type CodeLayout, type Storage,
 } from './code-state'
 
@@ -258,15 +258,35 @@ describe('Browser tabs as pages (spec 2026-10-24-code-page-browser-tabs)', () =>
   })
 
   it('restores the server\'s pages: its addresses win, a page closed elsewhere closes, a new one opens in its group', () => {
-    const local = openBrowserTab(openBrowserTab(openBrowserTab(one('a.ts'), A, { id: 'b1' }), B, { id: 'b2' }), '', { id: 'b3' })
+    const local = { ...openBrowserTab(openBrowserTab(openBrowserTab(one('a.ts'), A, { id: 'b1' }), B, { id: 'b2' }), '', { id: 'b3' }), onServer: ['b1', 'b2'] }
     expect(restorePages(local, undefined)).toBe(local)
     const restored = restorePages(local, [{ id: 'b1', url: B, group: 0 }, { id: 'b9', url: A, group: 1 }])
     expect(shape(restored)).toEqual([['a.ts', 'browser:b1', 'browser:b3'], ['browser:b9']])
     expect(restored.browsers).toEqual({ b1: { url: B }, b3: { url: '' }, b9: { url: A } })
+    expect(restored.onServer).toEqual(['b1', 'b9'])
     // A fresh device: nothing local, two pages side by side.
     const fresh = restorePages(DEFAULT_LAYOUT, [{ id: 'b1', url: A, group: 0 }, { id: 'b2', url: B, group: 1 }])
     expect(shape(fresh)).toEqual([['browser:b1'], ['browser:b2']])
     expect(fresh.focused).toBe(0)
+  })
+
+  it('keeps a page opened here and not saved yet: only a save round-trip lets the server\'s list drop it', () => {
+    // b2 was opened here and never reached the server (a reload before the save, a failed PUT).
+    const local = { ...openBrowserTab(openBrowserTab(one('a.ts'), A, { id: 'b1' }), B, { id: 'b2' }), onServer: ['b1'] }
+    const restored = restorePages(local, [{ id: 'b1', url: A, group: 0 }])
+    expect(shape(restored)).toEqual([['a.ts', 'browser:b1', 'browser:b2']])
+    expect(pendingPages(restored)).toEqual(['b2'])
+    // The save that carried it came back listing it: from now on the server's word is final.
+    const saved = markSaved(restored, [{ id: 'b1', url: A, group: 0 }, { id: 'b2', url: B, group: 0 }])
+    expect(pendingPages(saved)).toEqual([])
+    expect(shape(restorePages(saved, [{ id: 'b1', url: A, group: 0 }]))).toEqual([['a.ts', 'browser:b1']])
+    // A layout from before the field: nothing is known to be on the server, so nothing closes.
+    const old = openBrowserTab(one('a.ts'), A, { id: 'b1' })
+    expect(shape(restorePages(old, []))).toEqual([['a.ts', 'browser:b1']])
+    // Survives a reload of the layout.
+    const storage = memory()
+    saveLayout(storage, 'p', 'main', saved)
+    expect(loadLayout(storage, 'p', 'main').onServer).toEqual(['b1', 'b2'])
   })
 
   it('keeps the server\'s list per checkout, this one first, salvaging bad entries', () => {

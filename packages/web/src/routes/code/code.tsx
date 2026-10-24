@@ -50,7 +50,7 @@ import { CodePanelView } from './code-panel'
 import { ExplorerView, ScmView, SearchView, type ExplorerTarget } from './code-sidebar'
 import {
   agentId, browserId, browserTabs, bufferFrom, closeOthers, closeTab, diffTab, focusBrowserTab, focusedGroup, isAgentTab, isBrowserTab, isDiffTab,
-  isDirty, isFileTab, isToolTab, keepTab, languageOf, lineMarksFromPatch, loadDraft, loadLayout, MIN_GROUP_SIZE, newTabId, openAgent, openBrowserTab,
+  isDirty, isFileTab, isToolTab, keepTab, languageOf, lineMarksFromPatch, loadDraft, loadLayout, markSaved, MIN_GROUP_SIZE, newTabId, openAgent, openBrowserTab,
   openPaths, openTab, openToSide, pagesOf, pruneTools, reconcile, resolveConflict, restorePages, retargetTab, saveDraft, saveLayout, savedPagesFor,
   stepTab, tabFile, tabLabel, updateGroup, updateGroups, withPages, type Buffer, type CodeBrowser,
   type CodeLayout, type CodePanel, type CodeSidebar, type TabsState,
@@ -189,7 +189,11 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
       const codePages = withPages(cached?.codePages, key, JSON.parse(pagesJson) as CodePage[])
       queryClient.setQueryData<UiState>(queryKeys.uiState, (prev) => ({ ...prev, codePages }))
       // Layout is state: a failed write costs another device the latest pages, nothing more.
-      putUiState({ codePages }).then((merged) => queryClient.setQueryData(queryKeys.uiState, merged), () => {})
+      putUiState({ codePages }).then((merged) => {
+        queryClient.setQueryData(queryKeys.uiState, merged)
+        // Only a page the server's answer names is held; until then its list cannot close it.
+        setLayout((state) => markSaved(state, savedPagesFor(merged.codePages, key) ?? []))
+      }, () => {})
     }, 400)
     return () => clearTimeout(timer)
   }, [key, pagesJson, pagesRestored, queryClient])

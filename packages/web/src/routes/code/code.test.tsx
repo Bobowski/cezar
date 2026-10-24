@@ -488,6 +488,22 @@ describe('Browser tabs as pages (spec 2026-10-24-code-page-browser-tabs)', () =>
     }))
   })
 
+  it('merges the server\'s pages: one opened here and not saved yet stays and is written, one closed elsewhere closes', async () => {
+    window.localStorage.setItem(`cez:code:layout:${queryScope()}:main`, JSON.stringify({
+      groups: [{ tabs: [{ path: 'browser:b1', preview: false }, { path: 'browser:b2', preview: false }, { path: 'browser:b5', preview: false }], active: 'browser:b1' }],
+      focused: 0,
+      browsers: { b1: { url: 'http://localhost:3000/admin' }, b2: { url: 'http://localhost:4000/' }, b5: { url: 'http://localhost:5000/x' } },
+      onServer: ['b1', 'b2'],
+    }))
+    const { sent } = setup({ at: '/code', uiState: { codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }] }] } })
+    await waitFor(() => expect(tabsOf(0)).toEqual(['localhost:3000/admin', 'localhost:5000/x']))
+    await waitFor(() => expect(sent.find((request) => request.method === 'PUT' && request.path === '/api/v1/ui-state')?.body).toEqual({
+      codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/admin', group: 0 }, { id: 'b5', url: 'http://localhost:5000/x', group: 0 }] }],
+    }))
+    // The round-trip answered: b5 is now known to be on the server.
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(`cez:code:layout:${queryScope()}:main`) ?? '{}').onServer).toEqual(['b1', 'b5']))
+  })
+
   it('lists the open pages and the detected addresses in the palette', async () => {
     const services = {
       available: true, reason: null, candidates: [], lastRunning: [], topic: 'services',

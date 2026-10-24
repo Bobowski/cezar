@@ -10,8 +10,10 @@
 >   `contract/src/workspace-layouts.ts`) — per project on the server, per checkout like the rest
 >   of the layout, no new route. The localStorage layout keeps `{ url }` per Browser tab (the old
 >   `{ tabs, active }` still parses). On load the server's list wins: its addresses replace local
->   ones, a page it does not list closes, a page only it lists opens in its group (a new group to
->   the right on a fresh device). Nothing is written back before that read has answered.
+>   ones, a page it once held (named in a read or a save's answer — the layout's `onServer`) and
+>   lists no more closes, a page opened here and not saved yet stays pending and is written, a
+>   page only it lists opens in its group (a new group to the right on a fresh device). Nothing is
+>   written back before that read has answered.
 > - **Only loopback addresses are persisted** (server-enforced): a gateway address is this
 >   session's port; its loopback twin is what is kept, and gets a fresh ticket on restore.
 > - **The scope rule is new**, not the task Preview's (the Preview column accepts any http(s)

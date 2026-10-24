@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { HISTORY_CAP, TerminalHistory, TypedLine, foldHistory, historyLine, readTerminalHistory } from './history.ts';
+import { HISTORY_CAP, PROMPT_CHECK_TIMEOUT_MS, TerminalHistory, TypedLine, foldHistory, historyLine, readTerminalHistory } from './history.ts';
 
 describe('TypedLine (spec 2026-10-24-code-page-terminal §3.3)', () => {
   it('submits plain typing, with backspace applied, one keystroke at a time', () => {
@@ -59,20 +59,42 @@ describe('TerminalHistory', () => {
 
   it('writes what was typed at the prompt and nothing a busy shell was reading', async () => {
     const history = new TerminalHistory();
-    await history.typed(dataDir, 's1', 'sudo apt update\r', async () => true);
+    history.typed(dataDir, 's1', 'sudo apt update\r', async () => []);
     // `sudo` is running now: its password prompt reads the next line.
-    await history.typed(dataDir, 's1', 'hunter2\r', async () => false);
+    history.typed(dataDir, 's1', 'hunter2\r', async () => ['sudo apt update']);
     await history.flushed();
     expect(await readTerminalHistory(dataDir)).toEqual(['sudo apt update']);
     expect(readFileSync(join(dataDir, 'terminal-history.json'), 'utf8')).not.toContain('hunter2');
   });
 
-  it('never asks whether the shell is idle when nothing certain was submitted', async () => {
+  it('asks once per line, on its first keystroke', async () => {
     const history = new TerminalHistory();
     let asked = 0;
-    await history.typed(dataDir, 's1', 'np', async () => { asked += 1; return true; });
-    await history.typed(dataDir, 's1', '\x1b[A\r', async () => { asked += 1; return true; });
-    expect(asked).toBe(0);
+    const children = async () => { asked += 1; return []; };
+    for (const key of ['n', 'p', 'm', '\r']) history.typed(dataDir, 's1', key, children);
+    history.typed(dataDir, 's1', '\x1b[A\r', children);
+    await history.flushed();
+    expect(asked).toBe(2);
+    expect(await readTerminalHistory(dataDir)).toEqual(['npm']);
+  });
+
+  it('reads the line\'s own command, forked while the table was read, as the prompt', async () => {
+    const history = new TerminalHistory();
+    history.typed(dataDir, 's1', 'npm run dev\r', async () => ['node /usr/local/bin/npm run dev']);
+    history.typed(dataDir, 's1', 'ls | wc -l\r', async () => ['ls', '/usr/bin/wc -l']);
+    history.typed(dataDir, 's1', 'make\r', async () => ['vim notes.md']);
+    await history.flushed();
+    expect(await readTerminalHistory(dataDir)).toEqual(['ls | wc -l', 'npm run dev']);
+  });
+
+  it('keeps nothing whose check timed out or could not read the table', async () => {
+    const history = new TerminalHistory();
+    history.typed(dataDir, 's1', 'ls\r', () => new Promise(() => {}));
+    history.typed(dataDir, 's1', 'pwd\r', async () => null);
+    const started = Date.now();
+    await history.flushed();
+    expect(Date.now() - started).toBeLessThan(PROMPT_CHECK_TIMEOUT_MS + 500);
+    expect(await readTerminalHistory(dataDir)).toEqual([]);
   });
 
   it('reads a damaged file as what it can salvage, and a missing one as empty', async () => {

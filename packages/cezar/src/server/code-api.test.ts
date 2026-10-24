@@ -71,9 +71,11 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
       instance: createApp({
         repoRoot: root, store, manager: {} as RunManager, version: 'test', bootProjectId: project.id, terminalSessions: sessions,
         detectedUrls: detected, terminalHistory: history,
+        // The table as it stood when the check began; the answer arrives `psDelayMs` later.
         freshProcesses: async () => {
+          const busy = shellBusy;
           await new Promise((resolve) => setTimeout(resolve, psDelayMs));
-          return [{ pid: 4242, ppid: 1, command: 'bash' }, ...(shellBusy ? [{ pid: 5000, ppid: 4242, command: 'sudo apt update' }] : [])];
+          return [{ pid: 4242, ppid: 1, command: 'bash' }, ...(busy ? [{ pid: 5000, ppid: 4242, command: 'sudo apt update' }] : [])];
         },
       }),
     };
@@ -271,6 +273,23 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
       psDelayMs = 50;
       await Promise.all([type('ls\r'), type('c'), type('d')]);
       expect(spawned[0]?.written).toEqual(['ls\r', 'c', 'd']);
+    });
+
+    it('writes a keystroke at once, and keeps nothing whose prompt check outlived its timeout', async () => {
+      const { instance } = await app();
+      const session = terminalSessionSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal', send('POST', {}))).json());
+      const type = (data: string) => apiRequest(instance, `/api/v1/repo/terminal/${session.id}/input`, send('POST', { data }));
+      psDelayMs = 1_000;
+      const typing = type('ls\r');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      // The process table is still being read; the shell has the line anyway.
+      expect(spawned[0]?.written).toEqual(['ls\r']);
+      await typing;
+      const started = Date.now();
+      await history.flushed();
+      expect(Date.now() - started).toBeLessThan(900);
+      const read = terminalHistorySchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal/history')).json());
+      expect(read.lines).toEqual([]);
     });
 
     it('refuses the history where the terminal is off', async () => {

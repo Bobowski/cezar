@@ -113,12 +113,14 @@ gateway that `CEZ_PREVIEW_PORTS` already configures for the VPS image.
 
 - **History comes off the input routes**, `server/terminal/history.ts`: a line is kept only when
   its text is certain (typing, backspace, paste — an arrow, a Tab or a Ctrl chord makes it
-  unknown) and the shell had no foreground child when it was submitted, read from a FRESH process
-  table. That is what keeps a password a running `sudo`/`ssh` reads out of the file; a host with no
-  readable process table (Windows) therefore keeps no history. A line led by a space is not kept
+  unknown) and the shell sat at its prompt when the line BEGAN: a FRESH process table, read when
+  its first keystroke arrives, shows the shell with no child or only the line's own command (one
+  chunk can carry a whole line, and the shell forks it while `ps` starts). That is what keeps a
+  password a running `sudo`/`ssh` reads out of the file; a host with no readable process table
+  (Windows) therefore keeps no history. The check never holds a keystroke: it runs beside the
+  write, and an answer later than 300 ms keeps nothing. A line led by a space is not kept
   (bash's `ignorespace`). Both the checkout's terminals and the project's task terminals feed it;
-  a task's own credential never does. Input is chained per session so a keystroke cannot overtake
-  the Enter whose check is running.
+  a task's own credential never does.
 - **`/repo/terminal/urls` adds `sshUser`** (`projectDetectedUrlsSchema`), the account cezar runs
   as, on a hosted cockpit only — the tunnel line's login (tunnel spec §3.3).
 - **Tab**: with the popover closed, Tab opens it when there is something to offer and is the

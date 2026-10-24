@@ -243,6 +243,14 @@ export class TerminalSessions {
     return this.entries.get(id)?.info ?? null;
   }
 
+  /** The commands of a live session's shell's direct children in `rows` — the history's prompt
+   *  check (spec 2026-10-24-code-page-terminal §5). Null for an unknown or exited session. */
+  childCommands(id: string, rows: readonly ProcessRow[]): string[] | null {
+    const entry = this.entries.get(id);
+    if (!entry || entry.info.exitCode !== null) return null;
+    return rows.filter((row) => row.ppid === entry.pty.pid).map((row) => row.command);
+  }
+
   /**
    * Fold one `ps` snapshot into every live session's label and busy flag.
    *

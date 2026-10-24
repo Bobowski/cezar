@@ -12,9 +12,14 @@ import { atomicWriteJson } from '../../workspace/config.ts';
  *
  * Read off the keystrokes the input routes already carry — the shell's own history file is per
  * shell, per user and shared across projects. A line counts only when its text is certain (plain
- * typing, backspace, a paste) and the shell sat at its prompt when it was submitted: an arrow key,
+ * typing, backspace, a paste) and the shell sat at its prompt when it was begun: an arrow key,
  * a Tab or a Ctrl chord leaves the line unknown, and a busy shell is a program reading input — a
  * `sudo` or `ssh` password prompt among them — so neither is kept.
+ *
+ * "At its prompt" is a process-table read started on the line's FIRST keystroke and never awaited
+ * by any keystroke: the shell has no child then, or only the line's own command (one chunk can
+ * carry a whole line, and the shell forks it while `ps` starts). An answer later than
+ * `PROMPT_CHECK_TIMEOUT_MS` keeps nothing.
  */
 
 export const HISTORY_CAP = TERMINAL_HISTORY_CAP;
@@ -30,24 +35,38 @@ const fileSchema = z.object({
 // eslint-disable-next-line no-control-regex
 const PASTE_MARKERS = /\x1b\[20[01]~/g;
 
+/** What one chunk of keystrokes did to the line, in order: a line began, or one was submitted
+ *  (`text` null when only the shell knows what it said). */
+export type LineEvent = { kind: 'begin' } | { kind: 'submit'; text: string | null };
+
 /** One session's line as it is being typed. */
 export class TypedLine {
   private text = '';
   private known = true;
+  private started = false;
 
   /** Feed keystrokes; returns every line SUBMITTED in them whose text is certain. */
   feed(data: string): string[] {
-    const submitted: string[] = [];
+    return this.events(data).flatMap((event) => (event.kind === 'submit' && event.text !== null && event.text !== '' ? [event.text] : []));
+  }
+
+  events(data: string): LineEvent[] {
+    const out: LineEvent[] = [];
     const input = data.replace(PASTE_MARKERS, '');
     for (let index = 0; index < input.length; index += 1) {
       const char = input[index]!;
+      if (!this.started) {
+        this.started = true;
+        out.push({ kind: 'begin' });
+      }
       if (char === '\r' || char === '\n') {
-        if (this.known && this.text !== '') submitted.push(this.text);
+        out.push({ kind: 'submit', text: this.known ? this.text : null });
         this.reset();
       } else if (char === '\x7f' || char === '\b') {
         this.text = [...this.text].slice(0, -1).join('');
-      } else if (char === '\x03' || char === '\x15') {
-        // Ctrl+C abandons the line; Ctrl+U kills it (the cursor is at its end while it is known).
+      } else if (char === '\x03' || char === '\x15' || char === '\x1a') {
+        // Ctrl+C abandons the line (or a program), Ctrl+U kills it, Ctrl+Z suspends a program:
+        // what follows is a new line, owed a prompt check of its own.
         this.reset();
       } else if (char === '\x1b') {
         this.known = false;
@@ -60,12 +79,13 @@ export class TypedLine {
         if (this.text.length > MAX_LINE) this.known = false;
       }
     }
-    return submitted;
+    return out;
   }
 
   private reset(): void {
     this.text = '';
     this.known = true;
+    this.started = false;
   }
 }
 
@@ -119,37 +139,99 @@ export async function readTerminalHistory(dataDir: string): Promise<string[]> {
   return foldHistory([], [...new Set(lines)].reverse());
 }
 
+/** A prompt check slower than this keeps nothing: the keystroke never waited for it, and a late
+ *  answer may describe a shell that has moved on. */
+export const PROMPT_CHECK_TIMEOUT_MS = 300;
+
+/** The commands of the shell's direct children right now, or null when the table is unreadable. */
+export type ShellChildren = () => Promise<readonly string[] | null>;
+
+/** The first word of each command in `line`: `a | b && FOO=1 c` → `a`, `b`, `c`. */
+function lineCommands(line: string): string[] {
+  return line.split(/\|\|?|&&?|;/).flatMap((segment) => {
+    const words = segment.trim().split(/\s+/).filter((word) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
+    return words[0] ? [words[0]] : [];
+  });
+}
+
+const baseName = (word: string): string => word.slice(word.lastIndexOf('/') + 1);
+
 /**
- * Every project's history, fed by the input routes. Writes are serialized per data directory and
- * never awaited by a keystroke; a failed write (a read-only checkout) loses that line, nothing more.
+ * Whether a shell with these children was at its prompt for `line`: none, or each one the line's
+ * own command — `ps` reads `node /usr/bin/npm run dev` for `npm run dev`, so either of its first
+ * two words may be the name.
+ */
+export function atPromptFor(children: readonly string[], line: string): boolean {
+  const own = new Set(lineCommands(line).map(baseName));
+  return children.every((child) => child.trim().split(/\s+/).slice(0, 2).some((word) => own.has(baseName(word))));
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(null);
+      },
+    );
+  });
+}
+
+interface SessionState {
+  line: TypedLine;
+  /** The prompt check of the line being typed, begun with its first keystroke. */
+  check: Promise<readonly string[] | null> | null;
+  /** Decisions, in submission order, so lines land in the file in the order they were typed. */
+  decided: Promise<void>;
+}
+
+/**
+ * Every project's history, fed by the input routes. Nothing here is awaited by a keystroke: the
+ * check runs beside the write, and writes are serialized per data directory; a failed write (a
+ * read-only checkout) loses that line, nothing more.
  */
 export class TerminalHistory {
-  private readonly lines = new Map<string, TypedLine>();
+  private readonly sessions = new Map<string, SessionState>();
   private readonly writes = new Map<string, Promise<void>>();
 
   /**
-   * Keystrokes typed into one session of a project. Resolves once it is decided whether a
-   * submitted line is kept — call it BEFORE the keystrokes reach the shell, so `atPrompt` sees the
-   * shell as it was when the line was submitted rather than running the command it started.
+   * Keystrokes typed into one session of a project. Call it as they are written to the shell: a
+   * line's check starts here, with its first keystroke, so it sees the shell as the line found it.
    */
-  async typed(dataDir: string, sessionId: string, data: string, atPrompt: () => Promise<boolean>): Promise<void> {
-    let line = this.lines.get(sessionId);
-    if (!line) {
-      line = new TypedLine();
-      this.lines.set(sessionId, line);
+  typed(dataDir: string, sessionId: string, data: string, children: ShellChildren): void {
+    let state = this.sessions.get(sessionId);
+    if (!state) {
+      state = { line: new TypedLine(), check: null, decided: Promise.resolve() };
+      this.sessions.set(sessionId, state);
     }
-    const kept = line.feed(data).map(historyLine).filter((entry): entry is string => entry !== null);
-    if (kept.length === 0) return;
-    if (!(await atPrompt().catch(() => false))) return;
-    this.append(dataDir, kept);
+    for (const event of state.line.events(data)) {
+      if (event.kind === 'begin') {
+        state.check = withTimeout(children(), PROMPT_CHECK_TIMEOUT_MS);
+        continue;
+      }
+      const check = state.check;
+      state.check = null;
+      const entry = event.text === null ? null : historyLine(event.text);
+      if (entry === null || check === null) continue;
+      state.decided = state.decided.then(async () => {
+        const found = await check;
+        if (found !== null && atPromptFor(found, entry)) this.append(dataDir, [entry]);
+      });
+    }
   }
 
   forget(sessionId: string): void {
-    this.lines.delete(sessionId);
+    this.sessions.delete(sessionId);
   }
 
-  /** Settles once every write queued so far has. A test seam, and the server's shutdown. */
+  /** Settles once every line typed so far is decided and written. A test seam, and the server's shutdown. */
   async flushed(): Promise<void> {
+    await Promise.all([...this.sessions.values()].map((state) => state.decided));
     await Promise.all(this.writes.values());
   }
 

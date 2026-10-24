@@ -1,6 +1,6 @@
 # Self-update from a git branch — the `branch` channel, and a container that updates itself
 
-> Status: proposed (2026-10-23), not built. Branch: `brutus`.
+> Status: implemented on brutus (2026-10-24); proposed 2026-10-23.
 > Builds on: `2026-09-25-self-update-and-desktop.md` (the managed layout, channels, restart),
 > `2026-10-10-cezar-in-a-container.md` (the image, `/data`, the entrypoint),
 > `2026-10-19-repo-git-sync.md` (the bounded background fetch this copies),
@@ -86,7 +86,9 @@ only a save that names a branch pins it.
 normal clone, `--single-branch`, created on first use, re-cloned when `remote` changes. Full
 history, not shallow: the forward-only check (§3.6) wants ancestry, and the "what changed"
 list (§3.4) wants `git diff --name-only`. `node_modules` is kept between builds; a build starts
-with `git fetch`, `git checkout --detach <sha>`, `git reset --hard` — never `clean -x`.
+with `git fetch`, `git checkout --detach <sha>`, `git reset --hard`, then
+`git clean -fdx -e node_modules`: an earlier build's output (`dist/`, the web bundle) never
+leaks into the next one, while every `node_modules` stays.
 
 It is state: delete it and the next check clones again.
 
@@ -134,7 +136,7 @@ regex). The job, logged line by line into `job.log` like an npm install:
 1. `git fetch`, `git checkout --detach <sha>`, `git reset --hard` in the source clone.
 2. `buildCheckout` (checkouts.ts): `npm install` when the lockfile changed, `build:server`,
    `build:web`. Under `nice -n 10` where `nice` exists (never on Windows); one job per process
-   (`SelfUpdateBusyError` as today).
+   (`SelfUpdateBusyError` as today), and one build in the clone across processes (below).
 3. `npm pack -w @open-mercato/cezar` and `installSpec` into `versions/<version>+<sha8>` with a
    `branch` manifest — the `installFromLocal` path with the id and manifest it needs.
 4. `activate`, then restart — immediately, or **when idle** (`scheduleWhenIdle`, the existing
@@ -143,7 +145,19 @@ regex). The job, logged line by line into `job.log` like an npm install:
 
 A failed build leaves `current` untouched and the clone on the attempted sha; the next attempt
 resets it. Retention: after a successful activate, `branch` installs beyond the three newest
-are removed (`removeInstalled`; never the active one). Registry installs are not pruned.
+are removed (`removeInstalled`; never `current`, `previous`, the pruning process's own install,
+or the one `serve` recorded at boot in `versions/.running`). Registry installs are not pruned.
+
+As built, the server's job and a CLI `cezar update` share the clone, so steps 1–3 run under a
+cross-process lock, `<CEZ_HOME>/source.lock` (`branch.ts`): pid, time, the process's start
+time (Linux `/proc/<pid>/stat`) and a per-process token, written whole — to a temp file
+hard-linked into place, so it is never seen half-written. A lock is held while its pid runs
+and is the process that wrote it: the same token for this process, the same start time for
+another. A holder that cannot be verified that way (no `/proc`) counts as stale after two
+hours; a file that does not parse yet counts as held for 10 s. A stale lock is taken over by an
+atomic rename, so of two processes only one wins. While another process holds it, an apply
+fails with "another cezar is building in the updater's clone" and the clone's remote is never
+swapped under that build.
 
 ### 3.6 Forward-only on a hosted cockpit
 
@@ -162,6 +176,10 @@ running commit is its ancestor ("does not descend from the running build"). Rule
 every BUILD, local or hosted: the clone is never built from a commit its branch does not reach.
 A local cockpit keeps the full picker for anything that IS on the branch. After a force-push a
 hosted cockpit therefore needs the host (`cezar use <id>`, or `cezar update` there) to move on.
+The other direction too: from a running branch build, a REGISTRY target must have been
+published after the running build's commit (its install time when it records none) — semver
+and the running version's own publish date would let it step back to a release older than the
+code it runs.
 
 ### 3.7 The dialog
 
@@ -297,8 +315,8 @@ applies — it is the same tarball the new image would carry.
   `CEZ_SELF_UPDATE_CHECK=0` turns it off. AGENTS.md § Zero config gets the matching
   owner-approved line; `.env.example` and `docs/reference.md` document the variable.
 - Nothing applies itself. Nothing restarts without a click (or the idle poll after one).
-- New state only: `source/`, `versions/*+<sha8>`, `previous`, `versions/.fresh`, `rollback.json`, `/data/bin`,
-  `/data/npm`. Delete any of it and the next run recreates what it needs.
+- New state only: `source/`, `source.lock`, `versions/*+<sha8>`, `previous`, `versions/.fresh`,
+  `versions/.running`, `rollback.json`, `/data/bin`, `/data/npm`. Delete any of it and the next run recreates what it needs.
 - `CEZ_UPDATE_BRANCH` joins `.env.example` beside `CEZ_UPDATE_CHANNEL`.
 
 ## 7. Not done here

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { freshSnapshotReader } from './foreground.ts';
-import { HISTORY_CAP, PROMPT_CHECK_CAP_MS, TerminalHistory, TypedLine, foldHistory, historyLine, readTerminalHistory } from './history.ts';
+import { HISTORY_CAP, PROMPT_CHECK_CAP_MS, TerminalHistory, TypedLine, foldHistory, historyLine, readTerminalHistory, redactHistoryLine } from './history.ts';
 
 describe('TypedLine (spec 2026-10-24-code-page-terminal §3.3)', () => {
   it('submits plain typing, with backspace applied, one keystroke at a time', () => {
@@ -198,6 +198,25 @@ describe('history folding', () => {
     expect(historyLine('kubectl create secret generic s --from-literal=api-key=abc --from-literal=user=app'))
       .toBe('kubectl create secret generic s --from-literal=api-key=*** --from-literal=user=app');
     expect(historyLine('kubectl create secret generic s --from-literal sshKey="a b"')).toBe('kubectl create secret generic s --from-literal sshKey=***');
+  });
+
+  it('redacts idempotently: a stored line, redacted again on read, is unchanged', () => {
+    const pat = 'ghp_' + 'a'.repeat(36);
+    const lines = [
+      'export GITHUB_TOKEN=ghp_abc123', 'DB_PASS="a b c" npm run migrate', 'TOKEN=$(cat ~/t) && make', 'SECRET=a"b c"d ./x',
+      `curl -H "Authorization: Bearer ${pat}" https://api.github.com/user`, `gh auth login --with-token <<< ${pat}`,
+      'echo hunter2 | sudo -S apt update', 'psql --password=hunter2 --token hunter3 -h db', 'mysql -u root -phunter2 shop',
+      'curl -uadmin:hunter2 http://x', 'git clone https://x-access-token:tok3n@github.com/o/r.git',
+      "wget 'https://maps.x.com/api?q=a&key=AIzaabc'", 'kubectl create secret generic db --from-literal=password=hunter2',
+      'pg_isready -p hunter2 -h db', 'mycli -phunter2 shop', 'vault login s.abcdef123', 'npx wrangler secret put STRIPE_KEY',
+      'npm config set //reg.io/:_authToken=abc123', 'curl -d "user=me&password=x&next=/" https://x',
+      'git commit -m "rotate API_KEY=old and TOKEN=x" && git push', 'docker run -e "API_KEY=a b" img',
+      '0123456789abcdef0123456789abcdef', 'deploy s3cret-value-from-env',
+    ];
+    for (const line of lines) {
+      const once = historyLine(line, ['s3cret-value-from-env'])!;
+      expect(redactHistoryLine(once, ['s3cret-value-from-env']), line).toBe(once);
+    }
   });
 });
 

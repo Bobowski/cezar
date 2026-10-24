@@ -26,11 +26,13 @@ import type { CodePanel } from './code-state'
  * scrolling while the other is looked at. Search lives in the sidebar (`code-sidebar.tsx`).
  */
 export function CodePanelView({
-  tree, panel, onPanel,
+  tree, panel, onPanel, initialTerminal = null,
 }: {
   tree: CodeTree
   panel: CodePanel
   onPanel: (panel: CodePanel | null) => void
+  /** The session to show first — one Docker's Exec opened (spec 2026-10-23-docker-management §3.5). */
+  initialTerminal?: string | null
 }) {
   const [seen, setSeen] = useState<ReadonlySet<CodePanel>>(new Set([panel]))
   useEffect(() => setSeen((current) => (current.has(panel) ? current : new Set([...current, panel]))), [panel])
@@ -53,7 +55,7 @@ export function CodePanelView({
       <div className="relative min-h-0 flex-1">
         {tabs.map((tab) => (seen.has(tab) ? (
           <TabsContent key={tab} value={tab} forceMount className="absolute inset-0 data-[state=inactive]:invisible data-[state=inactive]:pointer-events-none">
-            {tab === 'terminal' ? <TerminalTab tree={tree} active={shown === 'terminal'} /> : <ServicesTab active={shown === 'services'} />}
+            {tab === 'terminal' ? <TerminalTab tree={tree} active={shown === 'terminal'} initial={initialTerminal} /> : <ServicesTab active={shown === 'services'} />}
           </TabsContent>
         ) : null))}
       </div>
@@ -61,12 +63,13 @@ export function CodePanelView({
   )
 }
 
-function TerminalTab({ tree, active }: { tree: CodeTree; active: boolean }) {
+function TerminalTab({ tree, active, initial }: { tree: CodeTree; active: boolean; initial: string | null }) {
   const queryClient = useQueryClient()
   const key = ['code', 'terminal', queryScope(), treeKey(tree)] as const
   const state = useQuery({ queryKey: key, queryFn: () => getCodeTerminal(tree) })
-  const [current, setCurrent] = useState<string | null>(null)
-  const opened = useRef(false)
+  const [current, setCurrent] = useState<string | null>(initial)
+  // A session handed in from outside is already open: no empty-panel shell on top of it.
+  const opened = useRef(initial !== null)
   const open = useMutation({
     mutationFn: () => createCodeTerminal(tree, {}),
     onSuccess: async (session) => { setCurrent(session.id); await queryClient.invalidateQueries({ queryKey: key }) },

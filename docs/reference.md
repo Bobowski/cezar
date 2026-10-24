@@ -472,7 +472,7 @@ Useful environment variables:
 | `CEZ_DRY_RUN=1` | Use the bundled mock instead of the real `claude` CLI — the entire cockpit works offline, for demos and development. |
 | `CEZ_TELEMETRY=0` | Block usage telemetry even after you opted in. Telemetry is opt-in — nothing is sent until you answer yes in the cockpit, Settings → Privacy or `cezar telemetry enable` ([docs/telemetry.md](telemetry.md)). `DO_NOT_TRACK=1` works too. `CEZ_TELEMETRY=1` only lifts the CI / test-runner / `CEZ_DRY_RUN=1` block; it never grants consent. |
 | `CEZ_INSTANCE_ID` | Internal server-install identity set automatically in generated systemd/launchd services; normally leave unset. It is surfaced additively by `/api/v1/health` for install verification. |
-| `CEZ_EXTERNAL_PROXY` | Written as `1` by `server-install --external-proxy`. Every connection is then the operator's proxy's, so this machine's host key (`~/.cezar/auth-host.key`) opens nothing — an L4 proxy adds no header that would tell its callers from a local shell. Off (the default), the host key needs a loopback socket and no `X-Forwarded-*`/`Forwarded`/`X-Real-IP`/`Origin` header. |
+| `CEZ_EXTERNAL_PROXY` | Written as `1` by `server-install --external-proxy`. Every connection is then the operator's proxy's, so this machine's host key (`~/.cezar/auth-host.key`) opens nothing — an L4 proxy adds no header that would tell its callers from a local shell. Off (the default), the host key needs a loopback socket and no `X-Forwarded-*`/`Forwarded`/`X-Real-IP`/`Origin` header — so set it yourself behind a hand-written proxy that adds none, such as a bare nginx `proxy_pass` (which also sends a loopback `Host`). `server-install`'s own nginx site sends them and needs none. |
 | `CEZ_AGENT_MODELS_LOCKED=1` | Globally lock each runner to the model configured in its native Claude/Codex/OpenCode settings while keeping runner selection available. Exact `1` also delegates authentication and provider enablement to those native agents, so Cezar skips its credential probes and provider-disable preferences. Existing Cezar presets are preserved but ignored, and an environment change requires a restart. The config-file equivalent is `"modelsLocked": true` in global `~/.cezar/config.json` or one repository's `.ai/cezar/config.json`; config-file locks do not disable provider checks. |
 | `CEZ_APPROVAL_GATE=1` | Select Claude's `acceptEdits` mode. Cezar has no cockpit permission response channel; by default, unapproved tools are denied without interrupting the run. |
 | *(no flag)* — task preview | The task workspace's Browser column can show a task's OWN app only on a LOCAL cockpit (spec `.ai/specs/2026-10-07-task-workspace.md` §7, §9 Milestone 3), reported as `capabilities.preview`. There, `http://localhost:<port>` really is the task's app and sits on its own origin. On a hosted cockpit a loopback address resolves on the VIEWER's machine instead of the host the task runs on, so the Browser tile is offered disabled, with the reason — routing it properly needs the preview proxy §7 describes, which is not built. The Browser column itself still loads any address you type, on either kind of cockpit. |
@@ -667,7 +667,10 @@ the API below.
   as — treat either as owner-equivalent on that machine. `read` is the only scope that
   executes nothing; use it for anything you share. Only `admin` opens a terminal, and
   this machine's host key (`~/.cezar/auth-host.key`) opens nothing except from a
-  loopback shell — never through a proxy, a browser or another machine.
+  loopback shell — never through a proxy, a browser or another machine. It tells a
+  proxy by the headers it adds, so a proxy you wrote that adds none (a bare nginx
+  `proxy_pass`, which also sends a loopback `Host`) must run cezar with
+  `CEZ_EXTERNAL_PROXY=1`; `server-install`'s own nginx site sends them.
 
 ### cezar as an MCP server
 

@@ -229,6 +229,23 @@ describe('nginxVhost', () => {
     expect(v).toContain('proxy_set_header Host $http_host;');
     expect(v).not.toContain('proxy_set_header Host $host;');
   });
+
+  // Why the installer's own front needs no CEZ_EXTERNAL_PROXY (spec 2026-10-24-cezar-mcp-server
+  // §5): a bare `proxy_pass` sends a loopback Host and no forwarding header, which the host-key
+  // guard cannot tell from a shell. Every proxied location here inherits the server's headers —
+  // a `proxy_set_header` inside a location would drop that inheritance.
+  it('sends the public Host and X-Forwarded-For on every proxied location, so the host key opens nothing through it', () => {
+    for (const htpasswd of ['/etc/cezar/htpasswd', null]) {
+      const v = nginxVhost(4321, 'cezar.example.com', htpasswd);
+      const server = v.slice(v.indexOf('server {'));
+      const head = server.slice(0, server.indexOf('location '));
+      expect(head, String(htpasswd)).toContain('proxy_set_header Host $http_host;');
+      expect(head, String(htpasswd)).toContain('proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;');
+      const locations = server.split(/\n\s*location /).slice(1);
+      expect(locations.length, String(htpasswd)).toBeGreaterThan(0);
+      for (const location of locations) expect(location, String(htpasswd)).not.toContain('proxy_set_header');
+    }
+  });
 });
 
 /**

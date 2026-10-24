@@ -65,7 +65,8 @@ const isProxyOrPageHeader = (name: string): boolean =>
  * cockpit — a loopback SOCKET, loopback Host, and no proxy or page header. Code a token runs can
  * read the key file, so off the box the key must open nothing (spec 2026-10-24-cezar-mcp-server
  * §5). An unknown socket is not a shell, and nor is anything behind `--external-proxy`
- * (`CEZ_EXTERNAL_PROXY=1`): an L4 proxy adds no header to tell its callers from one.
+ * (`CEZ_EXTERNAL_PROXY=1`): an L4 proxy adds no header to tell its callers from one — nor does a
+ * hand-written nginx with a bare `proxy_pass` (loopback Host, no X-Forwarded-*), which must set it too.
  */
 export function hostKeyRequestIsLocal(
   request: { host: string | undefined; headerNames: Iterable<string>; remoteAddress: string | undefined },

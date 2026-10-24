@@ -103,7 +103,12 @@ process list; `CEZ_SERVER` for the address), so
   session keeps working. Behind `--external-proxy` the unit sets `CEZ_EXTERNAL_PROXY=1` and the
   host key opens nothing at all: an L4 proxy (TCP passthrough) adds no header to tell its callers
   from a local shell, and a proxy that wants host-key use would have to speak PROXY protocol,
-  which cezar does not. The installer's owner probe therefore goes to the loopback upstream, not
+  which cezar does not. The same holds for a hand-written L7 proxy that adds no header: a bare
+  nginx `proxy_pass http://127.0.0.1:<port>` sends a loopback `Host` (`$proxy_host`) and no
+  `X-Forwarded-*`, exactly what a local shell sends, so such a setup must set
+  `CEZ_EXTERNAL_PROXY=1` itself. `server-install` does not write it for its own nginx site: that
+  site sends `Host $http_host` and `X-Forwarded-For` on every location (pinned by a test), and
+  setting it there would take the host key from every shell on the box. The installer's owner probe therefore goes to the loopback upstream, not
   through nginx, and there is none behind an external proxy. What the probe through the domain
   still proves is identity: the anonymous `GET /auth/session` carries `instanceId`
   (`CEZ_INSTANCE_ID`), and the install fails unless the domain's vhost names this install.

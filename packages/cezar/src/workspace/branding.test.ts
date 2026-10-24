@@ -72,6 +72,24 @@ describe('the favicon SVG sanitiser', () => {
     expect(sanitizeSvg('<svg xmlns="http://www.w3.org/1999/xhtml"><path d="M0 0"/></svg>').ok).toBe(false);
   });
 
+  it('keeps a style attribute only when it can load nothing', () => {
+    const styled = (style: string) => sanitizeSvg(`<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" style="${style}"/></svg>`);
+    expect(styled('fill:#f00;opacity:.5')).toMatchObject({ ok: true, svg: expect.stringContaining('style="fill:#f00;opacity:.5"') });
+    for (const style of [
+      'fill:url(#g)',
+      "fill:red;background:image-set('https://evil.test/a.png' 1x)",
+      "background:-webkit-image-set('//evil.test/a.png' 1x)",
+      "background:src('https://evil.test/a.png')",
+      'width:expression(alert(1))',
+      "@import 'https://evil.test/x.css'",
+      'FILL:URL ( #g )',
+    ]) {
+      const result = styled(style);
+      expect(result, style).toMatchObject({ ok: true });
+      if (result.ok) expect(result.svg, style).not.toContain('style=');
+    }
+  });
+
   it('refuses an SVG nested deeper than 256 elements instead of overflowing the stack', () => {
     const nest = (depth: number) => `<svg xmlns="http://www.w3.org/2000/svg">${'<g>'.repeat(depth)}<rect width="1" height="1"/>${'</g>'.repeat(depth)}</svg>`;
     expect(sanitizeSvg(nest(100_000))).toMatchObject({ ok: false, error: expect.stringContaining('nested') });

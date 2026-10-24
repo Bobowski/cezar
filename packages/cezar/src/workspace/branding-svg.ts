@@ -34,6 +34,8 @@ function referencesOutside(value: string): boolean {
   return /url\s*\((?!\s*['"]?#)/.test(lowered);
 }
 
+const STYLE_FETCHES = /url\s*\(|image-set\s*\(|src\s*\(|expression\s*\(|@import/i;
+
 function keepAttribute(attr: { name: string; namespaceURI: string | null; value: string; localName: string | null }): boolean {
   const name = attr.name.toLowerCase();
   const local = (attr.localName ?? attr.name).toLowerCase();
@@ -43,6 +45,8 @@ function keepAttribute(attr: { name: string; namespaceURI: string | null; value:
   // Only the SVG attributes themselves (no namespace), `xlink:href` and `xml:space`.
   if (attr.namespaceURI !== null && attr.namespaceURI !== XLINK_NS && name !== 'xml:space') return false;
   if (local === 'href') return /^#[\w.:-]+$/.test(attr.value.trim());
+  // Inline CSS gets no function that can fetch — not even `url(#id)`, which a presentation attribute carries.
+  if (name === 'style' && STYLE_FETCHES.test(attr.value)) return false;
   if (referencesOutside(attr.value)) return false;
   return true;
 }

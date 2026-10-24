@@ -89,7 +89,8 @@ Where the build settled a question the sections above left open, or deliberately
   2048² or interlaced is refused unopened, and IDAT inflates under the byte budget the header
   allows before pngjs sees it; bytes after IEND are dropped), `branding-svg.ts` (`@xmldom/xmldom`:
   parse, keep allowlisted SVG elements, drop `on*`, foreign namespaces, every `href` that is
-  not `#id` and every `url()` that is not `url(#id)`; a DOCTYPE is refused), `branding-accent.ts`.
+  not `#id`, every `url()` that is not `url(#id)` and any `style` naming `url(`, `image-set(`,
+  `src(`, `expression(` or `@import`; a DOCTYPE, or nesting past 256 elements, is refused), `branding-accent.ts`.
   Both libraries are pure JS, dependency-free and pinned; CODE_REVIEW.md's budget names them.
 - **Uploads are JSON** `{ data: base64 }`, the project icon's body, so the contract carries the
   request and the MCP catalog can call it (`workspace_branding_upload`). `DELETE /workspace/branding`

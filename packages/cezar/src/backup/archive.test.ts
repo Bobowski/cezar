@@ -13,6 +13,7 @@ import { npmFallbackCache } from '../self-update/installer.ts';
 import { safeArchivePath } from './restore.ts';
 import { readTar, tarStream, type TarEntry, type TarSource } from './tar.ts';
 import { TEST_IDENTITY, TEST_RECIPIENT } from './age-vector.testkit.ts';
+import { CLI_X25519, LIBRARY_SCRYPT, LIBRARY_X25519, REFERENCE_PASSPHRASE, REFERENCE_PLAINTEXT } from './age-reference.testkit.ts';
 
 async function collectBytes(stream: AsyncIterable<Buffer | Uint8Array>): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -250,5 +251,18 @@ describe('what CEZ_HOME contributes', () => {
     expect(isSkippedDataEntry(basename(npmFallbackCache({ CEZ_HOME: '/data/home' })))).toBe(true);
     for (const name of ['npm-cache', 'cache', 'versions', 'bin', 'backups', '.restore-upload-x.age']) expect(isSkippedDataEntry(name), name).toBe(true);
     for (const name of ['config.json', 'auth.json', 'agent-accounts.json']) expect(isSkippedDataEntry(name), name).toBe(false);
+  });
+});
+
+describe('age reference ciphertexts', () => {
+  it('still opens what this library and the reference CLI wrote on 2026-10-24', async () => {
+    for (const sealed of [LIBRARY_X25519, CLI_X25519]) {
+      const opened = await collectBytes(await decrypted(Readable.from([sealed]), TEST_IDENTITY));
+      expect(opened.toString('utf8')).toBe(REFERENCE_PLAINTEXT);
+    }
+    const opened = await collectBytes(await decrypted(Readable.from([LIBRARY_SCRYPT]), REFERENCE_PASSPHRASE));
+    expect(opened.toString('utf8')).toBe(REFERENCE_PLAINTEXT);
+    await expect(decrypted(Readable.from([LIBRARY_SCRYPT]), 'not the passphrase')).rejects.toBeInstanceOf(WrongIdentityError);
+    await expect(decrypted(Readable.from([CLI_X25519]), await generateX25519Identity())).rejects.toBeInstanceOf(WrongIdentityError);
   });
 });

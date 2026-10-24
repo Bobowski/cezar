@@ -173,3 +173,35 @@ describe('staging an archive that lies about itself', () => {
     await expect(stage(tar)).rejects.toThrow(/extended header/);
   });
 });
+
+describe('staging a crafted tar', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cez-restore-tar-'));
+  });
+  afterEach(() => removeTempDir(dir));
+
+  const header = async () => (await tarBytes(withManifest([], [file('data/real.json', '{}')], { files: 3 }))).subarray(0, -1024);
+  const stage = async (...entries: Buffer[]) => {
+    const archive = join(dir, 'a.age');
+    await sealTar(Buffer.concat([await header(), ...entries, Buffer.alloc(1024)]), archive);
+    const staging = join(dir, 'staging');
+    return { staging, manifest: await stageArchive(archive, TEST_IDENTITY, staging) };
+  };
+
+  it('never makes a symlink or a hard link, whatever they point at', async () => {
+    const { staging } = await stage(rawEntry('data/link', '2', Buffer.alloc(0), '/etc/passwd'), rawEntry('data/hard', '1', Buffer.alloc(0), 'data/real.json'));
+    expect(readFileSync(join(staging, 'data', 'real.json'), 'utf8')).toBe('{}');
+    expect(existsSync(join(staging, 'data', 'link'))).toBe(false);
+    expect(existsSync(join(staging, 'data', 'hard'))).toBe(false);
+  });
+
+  it('refuses an absolute or climbing name, in the header or in a PAX path', async () => {
+    for (const name of ['/etc/cron.d/evil', '../evil', 'data/../../evil', 'C:/evil']) {
+      await expect(stage(rawEntry(name, '0', Buffer.from('x'))), name).rejects.toThrow(/outside its own layout/);
+    }
+    const pax = Buffer.from('27 path=../../outside/evil\n');
+    await expect(stage(rawEntry('PaxHeader/x', 'x', pax), rawEntry('data/benign', '0', Buffer.from('x')))).rejects.toThrow(/outside its own layout/);
+    expect(existsSync(join(dir, 'outside'))).toBe(false);
+  });
+});

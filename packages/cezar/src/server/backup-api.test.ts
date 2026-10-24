@@ -328,3 +328,71 @@ describe('a Settings restore while tasks run', () => {
     }
   });
 });
+
+describe('the /setup restore after it brought an owner back', () => {
+  it('is refused: the restored owner closes the setup path, before any body', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cez-backup-closed-'));
+    const saved = { home: process.env.CEZ_HOME, remote: process.env.CEZ_REMOTE, auth: process.env.CEZ_AUTH };
+    delete process.env.CEZ_REMOTE;
+    process.env.CEZ_AUTH = '1';
+    const META = { address: '127.0.0.1', label: 't' };
+    const repoRoot = join(dir, 'repo');
+    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
+    const store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    try {
+      // ---- the old machine: an owner, then a backup of it ----------------------------
+      process.env.CEZ_HOME = join(dir, 'old-home');
+      const first = issueSetupCode();
+      if (!first.ok) throw new Error('no code');
+      const oldAuth = new AuthService({ scrypt: { N: 2 ** 10, r: 8, p: 1 } });
+      const begun = await oldAuth.beginSetup({ code: first.setup.code, username: 'owner', password: 'a long enough password' }, META);
+      if (!begun.ok) throw new Error(begun.error);
+      const done = oldAuth.completeSetup({ ticket: begun.ticket, code: hotp(base32Decode(begun.secret)!, totpStep(Date.now())) }, META);
+      if (!done.ok) throw new Error(done.error);
+      const old = new BackupService({ version: 't', projects: async () => [], hostname: 'box', locations: () => ({
+        claude: join(dir, 'a', 'claude'), claudeState: null, codex: join(dir, 'a', 'codex'), gh: join(dir, 'a', 'gh'), ssh: join(dir, 'a', 'ssh'), gitconfig: join(dir, 'a', 'gitconfig'),
+      }) });
+      old.setRecipient({ recipient: TEST_RECIPIENT });
+      const bytes = readFileSync((await old.createBackup()).path);
+
+      // ---- a fresh cockpit: restore it from /setup -----------------------------------
+      process.env.CEZ_HOME = join(dir, 'new-home');
+      const auth = new AuthService({ scrypt: { N: 2 ** 10, r: 8, p: 1 } });
+      const backup = new BackupService({ version: 't', projects: async () => [], hostname: 'box', locations: () => ({
+        claude: join(dir, 'b', 'claude'), claudeState: null, codex: join(dir, 'b', 'codex'), gh: join(dir, 'b', 'gh'), ssh: join(dir, 'b', 'ssh'), gitconfig: join(dir, 'b', 'gitconfig'),
+      }) });
+      const app = createApp({ repoRoot, store, manager: {} as RunManager, version: 't', backup, auth });
+      const code = issueSetupCode();
+      if (!code.ok) throw new Error('no code');
+      const headers = {
+        'x-cezar-backup-identity': Buffer.from(TEST_IDENTITY).toString('base64'),
+        'x-cezar-setup-code': code.setup.code,
+        'content-length': String(bytes.length),
+      };
+      const accepted = await apiRequest(app, '/api/v1/auth/setup/restore', { method: 'POST', headers, body: bytes });
+      expect(accepted.status).toBe(200);
+      const { job } = setupRestoreResponseSchema.parse(await accepted.json());
+      let polled = backupJobSchema.parse(await (await apiRequest(app, `/api/v1/auth/setup/restore?job=${job}`)).json());
+      for (let i = 0; i < 400 && polled.status === 'running'; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        polled = backupJobSchema.parse(await (await apiRequest(app, `/api/v1/auth/setup/restore?job=${job}`)).json());
+      }
+      expect(polled, polled.log.join('\n')).toMatchObject({ status: 'done' });
+      expect(auth.setupRequired()).toBe(false);
+
+      // The same code, again: the owner it restored is signed-in-only territory now.
+      let pulls = 0;
+      const body = new ReadableStream<Uint8Array>({ pull(controller) { pulls += 1; controller.enqueue(bytes); controller.close(); } }, { highWaterMark: 0 });
+      const again = await apiRequest(app, '/api/v1/auth/setup/restore', { method: 'POST', headers, body, duplex: 'half' } as RequestInit);
+      expect(again.status).toBe(401);
+      expect(pulls).toBe(0);
+    } finally {
+      store.flush();
+      for (const [key, value] of [['CEZ_HOME', saved.home], ['CEZ_REMOTE', saved.remote], ['CEZ_AUTH', saved.auth]] as const) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      await removeTempDir(dir);
+    }
+  }, 30_000);
+});

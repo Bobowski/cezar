@@ -99,11 +99,59 @@ describe('Continue posted while a settled continuation is still unwinding (telem
     expect(manager!.continueRun(runId, { text: 'third' })).toEqual({ ok: false, error: 'run is still active' });
     expect(gate.specs).toHaveLength(1);
 
+    // Durable before it answered ok (a restart in this window must not lose it)…
+    expect(store.getRun(runId)?.pendingContinue).toEqual({ text: 'second' });
+
     gate.release!();
     await expect.poll(() => stepStatus(runId, 'continue-2'), { timeout: 15_000 }).toBe('done');
     expect(gate.specs).toHaveLength(2);
     expect(gate.specs[1]?.userPrompt).toContain('second');
     expect(store.getRun(runId)?.steps.some((s) => s.id === 'continue-3')).toBe(false);
+    // …and spent once the drop handed it to the ordinary Continue path.
+    expect(store.getRun(runId)?.pendingContinue).toBeUndefined();
+  });
+
+  it('a Continue accepted during teardown survives a restart inside that window', async () => {
+    const runId = await terminalWorktreeRun();
+    expect(manager!.continueRun(runId, { text: 'first' })).toEqual({ ok: true });
+    await unwinding();
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+    expect(manager!.continueRun(runId, {
+      text: 'after the restart',
+      runner: 'claude',
+      images: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: png } }],
+    })).toEqual({ ok: true });
+    const pending = store.getRun(runId)?.pendingContinue;
+    expect(pending?.images).toHaveLength(1);
+
+    // The process dies before the turn-end autosave lets go: only the disk survives.
+    store.flush();
+    const old = manager!;
+    manager = undefined;
+    old.dispose();
+    store = RunStore.open(join(repoRoot, '.ai/cezar'), { keepLive: true });
+    expect(store.getRun(runId)?.pendingContinue).toEqual(pending);
+    manager = new RunManager(store, repoRoot);
+    await manager.recover();
+
+    await expect.poll(() => stepStatus(runId, 'continue-2'), { timeout: 15_000 }).toBe('done');
+    expect(gate.specs.at(-1)?.userPrompt).toContain('after the restart');
+    const opening = store.readEvents(runId).find((e) => e.type === 'user-message' && e.stepId === 'continue-2');
+    expect(opening?.images).toEqual(pending?.images);
+    expect(store.getRun(runId)?.pendingContinue).toBeUndefined();
+    expect(store.getRun(runId)?.steps.some((s) => s.id === 'continue-3')).toBe(false);
+  });
+
+  it('a recovered pending Continue on a run that is no longer continuable is dropped, not started', async () => {
+    const runId = await terminalWorktreeRun();
+    store.updateRun(runId, { status: 'queued', pendingContinue: { text: 'stale' } });
+    store.flush();
+    manager!.dispose();
+    manager = new RunManager(store, repoRoot);
+    // `queued` without a work item is revived as a fresh run; the stale Continue must not stack on it.
+    await manager.recover();
+    expect(store.getRun(runId)?.pendingContinue).toBeUndefined();
+    expect(store.getRun(runId)?.steps.some((s) => s.id.startsWith('continue-'))).toBe(false);
   });
 
   it('a Continue sent back during teardown supersedes a Finish accept from the same window', async () => {

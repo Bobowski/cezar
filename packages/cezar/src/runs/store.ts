@@ -336,6 +336,22 @@ export const runRecordSchema = z.object({
    *  kind that holds its account; `transient` = a vendor/network blip being retried (spec
    *  2026-10-24-agent-cli-error-cooperation), which holds nothing. */
   autoResumeReason: z.enum(['transient']).optional().catch(undefined),
+  /**
+   * A Continue the engine accepted while the settled run was still tearing down (`continueOnDrop`,
+   * telemetry 77117b95), mirrored here so a restart inside that window starts it instead of losing
+   * it. Images are already persisted attachments (URLs). Cleared when the engine hands it to the
+   * ordinary Continue path — at the drop, or by `recover()`. Additive and optional.
+   */
+  pendingContinue: z
+    .object({
+      text: z.string().optional(),
+      images: z.array(z.string()).optional(),
+      runner: storedRunnerSchema.optional(),
+      model: z.string().optional(),
+      agentProfile: z.string().optional(),
+    })
+    .optional()
+    .catch(undefined),
   createdAt: z.string(),
   startedAt: z.string().optional(),
   finishedAt: z.string().optional(),

@@ -4,6 +4,7 @@ import { saveUsageWindows } from '../workspace/usage-windows.ts';
 import { probeCodexIdentity, probeCodexUsageWindows } from '../core/codex-usage-probe.ts';
 import type { TrackerAssociation } from '@open-mercato/cezar-contract';
 import { TrackerAgentBindingError } from '../server/tracker/agent-credentials.ts';
+import { providersRequiredByWorkflow, recordedProfileFor } from '../server/provider-action-gate.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -484,6 +485,13 @@ const REPOSITORY_ROOT_LOCK_DISABLED_NOTE =
 
 const CONTINUABLE_STATUSES: readonly string[] = ['done', 'failed', 'cancelled', 'review'];
 
+/** `providerActionError`'s shape (server/provider-action-gate.ts): why a launch on `required`
+ *  cannot start, or null. */
+export type ProviderGate = (
+  required: readonly RunnerId[],
+  scope: { repoRoot?: string; profileFor?: (provider: RunnerId) => string | undefined },
+) => Promise<string | null>;
+
 interface ContinueRunOptions {
   text?: string;
   images?: PastedContent[];
@@ -492,6 +500,9 @@ interface ContinueRunOptions {
   /** Agent account for the reopened session (spec 2026-07-29-agent-profiles). Omitted = the
    *  account the run is already on. */
   agentProfile?: string;
+  /** Engine-internal: attachments already persisted (URLs) — a Continue made durable while the
+   *  run tore down (`RunRecord.pendingContinue`). Never re-persisted. */
+  persistedImageUrls?: string[];
 }
 
 interface ActiveRun {
@@ -1183,6 +1194,8 @@ interface PendingContinuation {
   /** Attachments the user pasted into the follow-up composer — images to view, files (#950) to
    *  be given the path of. Persisted when the continuation actually opens, not here. */
   images: PastedContent[];
+  /** Attachments persisted before the continuation was queued (`ContinueRunOptions.persistedImageUrls`). */
+  persistedImageUrls?: string[];
 }
 
 /** What re-reading a message's persisted attachments yields: viewable blocks for the images, and
@@ -1337,6 +1350,9 @@ export class RunManager {
   /** See the constructor option of the same name. */
   private readonly resolveTrackerEnv: ((root: string, expected: TrackerAssociation | undefined) => Promise<Record<string, string>>) | undefined;
 
+  /** See the constructor option of the same name. */
+  private readonly providerGate: ProviderGate | undefined;
+
   constructor(
     private readonly store: RunStore,
     private readonly repoRoot: string,
@@ -1355,12 +1371,20 @@ export class RunManager {
       /** How long a fork waits for the namer's branch (spec 2026-10-11-branch-naming-instructions).
        *  Tests shorten it; the default is the slow-model budget. */
       branchNameWaitMs?: number;
+      /**
+       * The pre-launch provider gate the HTTP routes apply (`providerActionError`), asked again
+       * before every engine spawn — dequeue, restart recovery, auto-resume (spec
+       * 2026-10-24-agent-cli-error-cooperation item 3, bca23063). Absent (headless `cezar run`,
+       * tests) = no gate.
+       */
+      providerGate?: ProviderGate;
     } = {},
   ) {
     this.dataDir = join(repoRoot, '.ai/cezar');
     this.branchNameWaitMs = options.branchNameWaitMs ?? BRANCH_NAME_WAIT_MS;
     this.projectId = options.projectId;
     this.resolveTrackerEnv = options.resolveTrackerEnv;
+    this.providerGate = options.providerGate;
     this.secrets = options.secrets ?? new SecretStore();
     this.semaphore = options.semaphore ?? new WorkspaceSemaphore();
     this.offSemaphore = this.semaphore.register({
@@ -2139,6 +2163,28 @@ export class RunManager {
       0,
       'left running by a settled task (found at startup)',
     );
+    // A Continue accepted while a settled run tore down, then lost with the process before the
+    // drop started it (`continueOnDrop`). Queued like the other recovered work, so caps apply —
+    // and judged BEFORE the sweep below, which can move a live record onto a continuable status.
+    for (const run of this.store.listRuns()) {
+      const pending = run.pendingContinue;
+      if (!pending) continue;
+      this.store.updateRun(run.id, { pendingContinue: undefined });
+      if (!CONTINUABLE_STATUSES.includes(run.status)) continue;
+      const resumed = this.continueRun(run.id, {
+        ...(pending.text !== undefined ? { text: pending.text } : {}),
+        ...(pending.images?.length ? { persistedImageUrls: pending.images } : {}),
+        ...(pending.runner !== undefined ? { runner: pending.runner } : {}),
+        ...(pending.model !== undefined ? { model: pending.model } : {}),
+        ...(pending.agentProfile !== undefined ? { agentProfile: pending.agentProfile } : {}),
+      }, true);
+      this.store.appendEvent(run.id, {
+        type: 'lifecycle',
+        message: resumed.ok
+          ? 'cezar restarted — starting the Continue sent while the task was finishing'
+          : `cezar restarted — the Continue sent while the task was finishing could not start (${resumed.error ?? 'unknown'})`,
+      });
+    }
     for (const run of live) {
       if (this.lifecycle.isBlocked(run.id)) {
         this.store.updateRun(run.id, {status: 'waiting', error: 'Worktree scripts need an explicit recovery action'});
@@ -2342,6 +2388,8 @@ export class RunManager {
     // promise reaches finally; never let stale cleanup release the newer owner's slot.
     if (expectedState !== undefined && state !== expectedState) return;
     const queuedContinue = state && !state.cancelled ? state.continueOnDrop : undefined;
+    // Handed to `continueRun` below, or dropped by a cancel — either way the durable copy is spent.
+    if (state?.continueOnDrop) this.store.updateRun(runId, { pendingContinue: undefined });
     // A Continue taken in the same teardown window sends the review back, so it supersedes an accept.
     const acceptReview = !queuedContinue && state?.acceptReviewOnDrop && !state.cancelled && this.store.getRun(runId)?.status === 'review';
     // An in-place run's accept lands its changes (spec 2026-10-20-trunk-based-projects) — once
@@ -3193,6 +3241,37 @@ export class RunManager {
     }
   }
 
+  /** The injected provider gate's refusal, or null. A gate that throws lets the launch through:
+   *  a broken probe must not wedge the queue, and the runtime auth latch still sees a rejection. */
+  private async providerRefusal(
+    required: readonly RunnerId[],
+    profileFor: (provider: RunnerId) => string | undefined,
+  ): Promise<string | null> {
+    if (!this.providerGate || required.length === 0) return null;
+    try {
+      return await this.providerGate(required, { repoRoot: this.repoRoot, profileFor });
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Fail a run the provider gate refused before anything spawned — what the HTTP route's 409 is
+   * for a run that already exists. Failed, not held: the message names the fix, Continue/Retry
+   * re-asks the gate, and the text is neither a usage limit nor transient, so `dropActive` arms
+   * no automatic resume and nothing loops.
+   */
+  private failBeforeSpawn(runId: string, state: ActiveRun, error: string): void {
+    this.store.updateRun(runId, {
+      status: 'failed',
+      error,
+      finishedAt: new Date().toISOString(),
+      currentStepId: undefined,
+    });
+    this.store.appendEvent(runId, { type: 'lifecycle', message: `run not started — ${error}` });
+    this.dropActive(runId, state);
+  }
+
   /**
    * Hand a run that has not spawned anything back to the queue, when the account it would run on
    * went into a usage-limit hold (spec 2026-08-03-auto-resume-after-usage-limit).
@@ -3768,7 +3847,7 @@ export class RunManager {
       : continuation.prompt;
     const persisted = this.readPersistedAttachments(
       runId,
-      stack.flatMap((message) => message.images ?? []),
+      [...(continuation.persistedImageUrls ?? []), ...stack.flatMap((message) => message.images ?? [])],
       'queued',
     );
     return {
@@ -4241,7 +4320,23 @@ export class RunManager {
       if (opts.model && modelConflictsWithRunner(opts.model, runner)) {
         return { ok: false, error: `model '${opts.model}' is not a ${runner} model` };
       }
-      unwinding.continueOnDrop = { opts, deferForCapacity };
+      // Durable before answering ok: a restart before the drop must not lose it (`recover()`).
+      const { images, ...rest } = opts;
+      const persistedImageUrls = [
+        ...(rest.persistedImageUrls ?? []),
+        ...this.persistPastedAttachments(runId, images ?? []).map((saved) => saved.url),
+      ];
+      const durable: ContinueRunOptions = { ...rest, persistedImageUrls };
+      this.store.updateRun(runId, {
+        pendingContinue: {
+          ...(durable.text !== undefined ? { text: durable.text } : {}),
+          ...(persistedImageUrls.length ? { images: persistedImageUrls } : {}),
+          ...(durable.runner !== undefined ? { runner: durable.runner } : {}),
+          ...(durable.model !== undefined ? { model: durable.model } : {}),
+          ...(durable.agentProfile !== undefined ? { agentProfile: durable.agentProfile } : {}),
+        },
+      });
+      unwinding.continueOnDrop = { opts: durable, deferForCapacity };
       return { ok: true };
     }
     if (!run) return { ok: false, error: 'not found' };
@@ -4345,6 +4440,7 @@ export class RunManager {
         backend: targetRunner,
         prompt,
         images,
+        ...(opts.persistedImageUrls?.length ? { persistedImageUrls: opts.persistedImageUrls } : {}),
       });
       this.queue.push(runId);
       this.store.updateRun(runId, {
@@ -4356,6 +4452,9 @@ export class RunManager {
       return { ok: true };
     }
     const ownerToken = Symbol('run-owner');
+    const persisted = opts.persistedImageUrls?.length
+      ? this.readPersistedAttachments(runId, opts.persistedImageUrls, 'queued')
+      : undefined;
     // Same window as a dequeued continuation: live (and cancellable) before `runContinuation`
     // registers it in `active`.
     this.starting.add(runId);
@@ -4366,8 +4465,8 @@ export class RunManager {
       targetRunner,
       prompt,
       images,
-      undefined,
-      undefined,
+      persisted?.blocks,
+      persisted?.attachments,
       ownerToken,
     ).catch(
       (err: unknown) => {
@@ -4473,6 +4572,20 @@ export class RunManager {
     this.checkArtifactSnapshots.set(runId, state.autosaveExcludedPaths);
     this.active.set(runId, state);
     this.starting.delete(runId);
+    // Restart recovery and auto-resume reach here without the HTTP gate (bca23063).
+    const refusal = await this.providerRefusal(
+      [backend],
+      (provider) => (record ? recordedProfileFor({ ...record, runner: backend }, provider) : undefined),
+    );
+    if (state.cancelled) {
+      this.dropActive(runId, state);
+      return;
+    }
+    if (refusal) {
+      this.store.updateStep(runId, stepId, { status: 'failed', finishedAt: new Date().toISOString() });
+      this.failBeforeSpawn(runId, state, refusal);
+      return;
+    }
     if (record?.worktreePath && state.cwd !== this.repoRoot) state.releaseWorktree = await this.lifecycle.acquireAgentLease(runId);
     state.readOnly = record?.readOnly === true && state.cwd === this.repoRoot;
     if (state.cwd === this.repoRoot) {
@@ -5049,6 +5162,20 @@ export class RunManager {
     // happened yet here, so the run goes back to the queue untouched (spec
     // 2026-08-03-auto-resume-after-usage-limit).
     if (this.requeueWhileHeld(runId, workflow, input, taskBackend)) return;
+    // The HTTP routes' provider gate, for runs the queue and `recover()` start too (bca23063).
+    const queuedRecord = this.store.getRun(runId);
+    const refusal = await this.providerRefusal(
+      providersRequiredByWorkflow(workflow, taskBackend),
+      (provider) => (queuedRecord ? recordedProfileFor({ ...queuedRecord, runner: taskBackend }, provider) : undefined),
+    );
+    if (state.cancelled) {
+      this.dropActive(runId, state);
+      return;
+    }
+    if (refusal) {
+      this.failBeforeSpawn(runId, state, refusal);
+      return;
+    }
     // The project's default workspace (spec 2026-10-20-trunk-based-projects), for every caller
     // that left it open — the composer, automations, the CLI. Never for variants, dispatch or a PR head.
     const defaultable = this.store.getRun(runId);

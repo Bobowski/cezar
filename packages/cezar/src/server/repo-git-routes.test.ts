@@ -136,10 +136,6 @@ describe('the Git page routes', () => {
   });
 
   it('a Git-page action refuses while a landing holds the checkout, so the push lands main’s own commit', async () => {
-    // The landing's pathspec names .ai/cezar, which `git add` refuses when .gitignore ignores .ai/.
-    writeFileSync(join(repo, '.gitignore'), 'node_modules/\n');
-    g(repo, 'commit', '-q', '-am', 'stop ignoring .ai');
-    g(repo, 'push', '-q');
     g(repo, 'branch', 'other');
     writeFileSync(join(repo, 'a.txt'), 'landed\n');
     let checking!: () => void;

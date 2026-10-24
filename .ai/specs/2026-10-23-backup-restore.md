@@ -178,6 +178,10 @@ Code: `packages/cezar/src/backup/` (`tar.ts`, `codec.ts`, `collect.ts`, `s3.ts`,
   `serve` consumes it before any store opens, and for that whole process `pruneOrphans`, the
   lifecycle's orphan cleanup and the layouts backstop list what they would remove instead of
   removing it.
+  **No archived run is live:** the archive's copy of a `queued`/`running`/`waiting` record is
+  written `failed` with `interrupted — captured by backup <name> while it was <status>` (the
+  live record is untouched), and a restore settles any live row an older archive still carries,
+  so boot recovery on the restored host never re-queues or resumes one.
   The restart re-execs the running entry (the managed `current`
   only for a managed install). The CLI restore never restarts anything.
 - **Nightly** is a built-in item on the workspace automations timer (`builtins` on

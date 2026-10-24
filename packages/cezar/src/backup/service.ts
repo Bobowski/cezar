@@ -358,6 +358,7 @@ export class BackupService {
       compression,
       host,
       now,
+      archiveName: name,
       log,
     });
     const path = join(dir, name);

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { lstat, readdir } from 'node:fs/promises';
+import { lstat, readdir, readFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -162,6 +162,52 @@ async function fileSource(path: string, name: string): Promise<TarSource | null>
   }
 }
 
+const LIVE_STATUSES = new Set(['queued', 'running', 'waiting']);
+
+/**
+ * Run rows as an archive may carry them: none still live. No process travels with a backup, and
+ * boot recovery on the restored host would re-queue or resume a live-looking row (review
+ * 2026-10-24, round 3) — so it is `failed` with an `interrupted — ` note, as a cold read shows it.
+ */
+export function settleLiveRuns(rows: unknown[], capturedBy: string, now: Date = new Date()): unknown[] {
+  return rows.map((row) => {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+    const was = (row as { status?: unknown }).status;
+    if (typeof was !== 'string' || !LIVE_STATUSES.has(was)) return row;
+    const run = structuredClone(row) as Record<string, unknown>;
+    const askParked = was === 'waiting' && run.askParked === true;
+    run.status = 'failed';
+    run.error = `interrupted — captured by ${capturedBy} while it was ${was}`;
+    if (typeof run.finishedAt !== 'string') run.finishedAt = now.toISOString();
+    // Still the user's question to answer, as `reconcileLoadedRun` keeps it.
+    if (askParked) run.awaitingAnswerSince = run.finishedAt;
+    for (const key of ['activity', 'monitoringWakeAt', 'monitoringWakeCapReached', 'askParked']) delete run[key];
+    if (Array.isArray(run.steps)) {
+      run.steps = run.steps.map((step: unknown) =>
+        step && typeof step === 'object' && ['running', 'waiting'].includes(String((step as { status?: unknown }).status))
+          ? { ...(step as object), status: 'failed' }
+          : step,
+      );
+    }
+    return run;
+  });
+}
+
+/** A project's run index for the archive: live rows settled, the live file untouched. */
+async function runIndexSource(path: string, name: string, capturedBy: string, now: Date): Promise<TarSource | null> {
+  const source = await fileSource(path, name);
+  if (!source) return null;
+  let rows: unknown;
+  try {
+    rows = JSON.parse(await readFile(path, 'utf8'));
+  } catch {
+    return source; // unreadable here too: carried as it is, and the restore keeps it aside
+  }
+  if (!Array.isArray(rows)) return source;
+  const bytes = Buffer.from(JSON.stringify(settleLiveRuns(rows, capturedBy, now)), 'utf8');
+  return { name, type: 'file', mode: source.mode, mtime: source.mtime, size: bytes.length, bytes };
+}
+
 /** `cezar-backup-<host>-…`: the machine's name as the archive pattern allows it. */
 export function archiveHost(name: string = hostname()): string {
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/, '');
@@ -207,6 +253,8 @@ export interface CollectInput {
   compression: 'zstd' | 'gzip';
   host: string;
   now: Date;
+  /** Named in the note on a run the archive captured while it was live. */
+  archiveName?: string;
   log?: (line: string) => void;
 }
 
@@ -248,7 +296,11 @@ export async function collectBackup(input: CollectInput): Promise<{ manifest: Ba
     projects.push({ name: `projects/${project.id}`, type: 'dir', mode: 0o700, mtime: input.now, size: 0 });
     let count = 0;
     for (const rel of files) {
-      const source = await fileSource(join(project.root, ...rel.split('/')), `projects/${project.id}/${rel}`);
+      const at = join(project.root, ...rel.split('/'));
+      const name = `projects/${project.id}/${rel}`;
+      const source = rel === '.ai/cezar/runs.json'
+        ? await runIndexSource(at, name, `backup ${input.archiveName ?? `from ${input.host}`}`, input.now)
+        : await fileSource(at, name);
       if (!source) continue;
       projects.push(source);
       projectBytes += source.size;

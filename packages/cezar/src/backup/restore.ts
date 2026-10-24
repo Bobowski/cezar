@@ -8,7 +8,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { expandTilde, isAbsolutePath, type AgentStateLocations } from '../paths.ts';
 import { loadWorkspaceConfig } from '../workspace/config.ts';
 import { decompressed, decrypted } from './codec.ts';
-import { agentEntries, backupManifestSchema, isSkippedDataEntry, projectFileQualifies, type BackupManifest } from './collect.ts';
+import { agentEntries, backupManifestSchema, isSkippedDataEntry, projectFileQualifies, settleLiveRuns, type BackupManifest } from './collect.ts';
 import { readTar } from './tar.ts';
 
 /**
@@ -357,7 +357,7 @@ async function writeAtomically(dest: string, body: string): Promise<void> {
  * 2026-10-23 §10): the index merges (`mergeRunIndex`), and an event file goes in only where this
  * machine has none or a shorter one — an append-only log is never truncated. Files placed.
  */
-async function mergeRunHistory(from: string, root: string, log: (line: string) => void): Promise<number> {
+async function mergeRunHistory(from: string, root: string, manifest: BackupManifest, log: (line: string) => void): Promise<number> {
   let placed = 0;
   const destIndex = join(root, ...RUN_INDEX.split('/'));
   const archived = readJsonFile(join(from, ...RUN_INDEX.split('/')));
@@ -375,7 +375,11 @@ async function mergeRunHistory(from: string, root: string, log: (line: string) =
         log(`moved an unreadable ${destIndex} aside to runs.json.before-restore`);
         here = [];
       }
-      const { merged, added, updated } = mergeRunIndex(here as unknown[], archived);
+      // An archive from before live rows were settled at backup time is settled now — stamped at
+      // the archive's own instant, so a settled copy never outdates what this machine did since.
+      const createdAt = new Date(manifest.createdAt);
+      const settled = settleLiveRuns(archived, `the backup from ${manifest.host}`, Number.isFinite(createdAt.getTime()) ? createdAt : new Date(0));
+      const { merged, added, updated } = mergeRunIndex(here as unknown[], settled);
       try {
         mkdirSync(dirname(destIndex), { recursive: true, mode: 0o700 });
         await writeAtomically(destIndex, JSON.stringify(merged));
@@ -468,7 +472,7 @@ export async function applyStaged(input: ApplyInput): Promise<void> {
     }
     // Run history merges in (it never replaces what this machine has), then the allowlist
     // again: an archive is input, not an authority on what a project may hold.
-    const history = existsSync(from) ? await mergeRunHistory(from, root, log) : 0;
+    const history = existsSync(from) ? await mergeRunHistory(from, root, manifest, log) : 0;
     const files = existsSync(from)
       ? await placeTree(from, root, { accept: (rel) => projectFileQualifies(rel) && !isRunHistory(rel), warn: log })
       : 0;

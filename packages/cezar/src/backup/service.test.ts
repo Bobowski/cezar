@@ -8,6 +8,7 @@ import { AuthService } from '../auth/service.ts';
 import { issueSetupCode } from '../auth/store.ts';
 import { base32Decode, hotp, totpStep } from '../auth/totp.ts';
 import type { AgentStateLocations } from '../paths.ts';
+import { RunStore } from '../runs/store.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import { loadWorkspaceConfig, mergeWriteWorkspaceConfig } from '../workspace/config.ts';
 import { TEST_IDENTITY, TEST_RECIPIENT } from './age-vector.testkit.ts';
@@ -218,6 +219,39 @@ describe('BackupService', () => {
     expect(cloned).toEqual([{ remote: upstream, at: project }]);
     expect(readFileSync(join(project, 'README.md'), 'utf8')).toBe('# app');
     expect(readFileSync(join(project, '.env'), 'utf8')).toBe('KEY=1\n');
+  }, 30_000);
+
+  it('archives a running or queued task as interrupted, and leaves the live record as it is', async () => {
+    const project = join(root, 'projects', 'busy');
+    mkdirSync(project, { recursive: true });
+    git(project, 'init', '-q');
+    writeFileSync(join(project, '.gitignore'), '.ai/cezar/\n');
+    git(project, 'add', '.');
+    git(project, 'commit', '-q', '-m', 'init');
+    const dataDir = join(project, '.ai', 'cezar');
+    const live = RunStore.open(dataDir, { keepLive: true });
+    const running = live.createRun({ title: 'running', workflow: 'quick-task', task: 'r', steps: [] });
+    live.updateRun(running.id, { status: 'running', startedAt: new Date().toISOString() });
+    const queued = live.createRun({ title: 'queued', workflow: 'quick-task', task: 'q', steps: [] });
+    live.flush();
+    const liveIndex = readFileSync(join(dataDir, 'runs.json'), 'utf8');
+
+    const agents = locationsUnder(join(root, 'agents'));
+    const service = new BackupService({ version: 't', projects: async () => [{ id: 'busy', root: project }], locations: () => agents, hostname: 'box' });
+    service.setRecipient({ recipient: TEST_RECIPIENT });
+    const created = await service.createBackup();
+    expect(readFileSync(join(dataDir, 'runs.json'), 'utf8')).toBe(liveIndex);
+
+    // Restored where the history is gone: the archive's copy is all there is.
+    rmSync(dataDir, { recursive: true, force: true });
+    process.env.CEZ_HOME = join(root, 'fresh-home');
+    await new BackupService({ version: 't', projects: async () => [], locations: () => locationsUnder(join(root, 'fresh-agents')) })
+      .restore({ archive: created.path, identity: TEST_IDENTITY });
+    const restored = RunStore.open(dataDir, { keepLive: true });
+    for (const id of [running.id, queued.id]) {
+      expect(restored.getRun(id)?.status).toBe('failed');
+      expect(restored.getRun(id)?.error).toBe(`interrupted — captured by backup ${created.name} while it was ${id === running.id ? 'running' : 'queued'}`);
+    }
   }, 30_000);
 
   it('keeps the five newest local archives', async () => {

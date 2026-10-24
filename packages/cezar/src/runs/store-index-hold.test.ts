@@ -153,6 +153,19 @@ describe('restoring over a live install keeps the tasks created after the backup
     expect(reopened.getRun('only-archived')?.title).toBe('from the backup');
   });
 
+  it('never revives an archived live record: it comes back terminal, whatever wrote the archive', async () => {
+    const running = { ...RESTORED[0]!, id: 'was-running', status: 'running', steps: [{ id: 'agent', name: 'Agent', kind: 'agent', status: 'running', iterations: 1, tokensUsed: 0 }] };
+    const queued = { ...RESTORED[0]!, id: 'was-queued', status: 'queued' };
+    await apply(stage({ '.ai/cezar/runs.json': JSON.stringify([running, queued]) }));
+    // keepLive, as `serve` opens it: a live-looking row here would be re-queued or resumed.
+    const reopened = RunStore.open(join(root, '.ai', 'cezar'), { keepLive: true });
+    for (const id of ['was-running', 'was-queued']) {
+      expect(reopened.getRun(id)?.status, id).toBe('failed');
+      expect(reopened.getRun(id)?.error, id).toMatch(/^interrupted — /);
+    }
+    expect(reopened.getRun('was-running')?.steps[0]?.status).toBe('failed');
+  });
+
   it('prunes nothing on the first boot after a restore, says what it kept, and prunes on the next', async () => {
     const stray = 'stray-run-with-no-record';
     git(root, 'worktree', 'add', '-q', '-b', branchFor(stray), worktreePathFor(root, stray), 'main');

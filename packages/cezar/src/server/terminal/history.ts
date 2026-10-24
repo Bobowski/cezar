@@ -137,11 +137,11 @@ export function redactHistoryLine(line: string, secrets: readonly string[] = [])
   return redactSecrets(out, secrets);
 }
 
-/** A line that is one 60+ character hex or base64 word — a token pasted at the prompt, no command.
+/** A line that is one 32+ character hex or base64 word — a token pasted at the prompt, no command.
  *  Base64 must mix digits and both cases, so a long hyphenated script name is not one. */
 function loneBlob(line: string): boolean {
   const word = line.trim();
-  if (word.length < 60 || /\s/.test(word)) return false;
+  if (word.length < 32 || /\s/.test(word)) return false;
   if (/^[0-9a-f]+$/i.test(word)) return true;
   return /^[A-Za-z0-9+/_-]+={0,2}$/.test(word) && /\d/.test(word) && /[a-z]/.test(word) && /[A-Z]/.test(word);
 }

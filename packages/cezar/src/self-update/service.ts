@@ -547,25 +547,31 @@ export class SelfUpdateService {
   private async buildBranch(target: string, log: (line: string) => void): Promise<string> {
     const branch = await this.updateBranch();
     if (!branch) throw new Error('the branch channel has no branch to follow');
-    log(`fetching ${branch.branch} from ${branch.remote}`);
-    await this.fetchBranch(branch);
-    if (this.check.error) log(`fetch failed (${this.check.error}) — building from the clone as it is`);
-    const short = target.split('+').pop() ?? '';
-    const commit = await this.source.commit(short);
-    if (!commit) throw new Error(`commit ${short} is not on ${branch.branch}`);
-    const id = await this.source.installIdAt(commit.sha);
-    if (id !== target) throw new Error(`${target} does not name commit ${short} (it builds as ${id ?? 'nothing cezar can install'})`);
-    log(`checking out ${commit.sha.slice(0, 8)} — ${commit.subject}`);
-    await this.source.checkout(commit.sha);
-    const npm: typeof runNpm = (args, cwd, onLog) => (this.deps.runNpm ?? runNpm)(args, cwd, onLog, { nice: true });
-    await (this.deps.buildCheckout ?? buildCheckout)({ worktree: this.source.dir, packageRoot: join(this.source.dir, 'packages', 'cezar') }, log, npm);
-    const result = await installFromLocal(join(this.source.dir, 'packages', 'cezar'), {
-      onLog: log,
-      env: this.env,
-      runNpm: npm,
-      branchCommit: { ...commit, branch: branch.branch },
-    });
-    return result.id;
+    // One build in the clone at a time, across processes: the server's job and `cezar update`.
+    const release = this.source.lock(branch);
+    try {
+      log(`fetching ${branch.branch} from ${branch.remote}`);
+      await this.fetchBranch(branch);
+      if (this.check.error) log(`fetch failed (${this.check.error}) — building from the clone as it is`);
+      const short = target.split('+').pop() ?? '';
+      const commit = await this.source.commit(short);
+      if (!commit) throw new Error(`commit ${short} is not on ${branch.branch}`);
+      const id = await this.source.installIdAt(commit.sha);
+      if (id !== target) throw new Error(`${target} does not name commit ${short} (it builds as ${id ?? 'nothing cezar can install'})`);
+      log(`checking out ${commit.sha.slice(0, 8)} — ${commit.subject}`);
+      await this.source.checkout(commit.sha);
+      const npm: typeof runNpm = (args, cwd, onLog) => (this.deps.runNpm ?? runNpm)(args, cwd, onLog, { nice: true });
+      await (this.deps.buildCheckout ?? buildCheckout)({ worktree: this.source.dir, packageRoot: join(this.source.dir, 'packages', 'cezar') }, log, npm);
+      const result = await installFromLocal(join(this.source.dir, 'packages', 'cezar'), {
+        onLog: log,
+        env: this.env,
+        runNpm: npm,
+        branchCommit: { ...commit, branch: branch.branch },
+      });
+      return result.id;
+    } finally {
+      release();
+    }
   }
 
   /** Keep the newest `BRANCH_BUILDS_KEPT` branch builds; never the active one or `previous`. */

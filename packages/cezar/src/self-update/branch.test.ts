@@ -398,6 +398,38 @@ describe('applying a branch build', () => {
     expect(readdirSync(join(home, 'versions'))).not.toContain('0.17.0+11111111');
   });
 
+  it('never builds, or swaps the remote, while another process builds in the clone', async () => {
+    const { running, target } = await prepared();
+    const { calls, deps } = stubs();
+    const svc = service({ ...deps });
+    await svc.status({ refresh: true });
+    // A live process that is not this one: `cezar update` in another terminal.
+    writeFileSync(join(home, 'source.lock'), `${process.ppid}\n${Date.now()}\n`);
+    svc.apply(target);
+    await vi.waitFor(async () => expect((await svc.status()).job?.status).toBe('failed'), { timeout: 15_000 });
+    expect((await svc.status()).job?.error).toMatch(/another cezar \(pid \d+\) is building/);
+    expect(calls).toEqual([]);
+    expect(activeId(env)).toBe(running);
+
+    await mergeWriteWorkspaceConfig((config) => {
+      config.updateBranch = { remote: 'https://example.invalid/someone-else/cezar.git', branch: 'brutus' };
+    });
+    const status = await svc.status({ refresh: true });
+    expect(status.branch?.error).toMatch(/a build is running in the updater's clone/);
+    expect(git(join(home, 'source'), ['config', '--get', 'remote.origin.url'])).toBe(REMOTE);
+  });
+
+  it('takes over a lock its dead holder left behind', async () => {
+    const { target } = await prepared();
+    const { deps } = stubs();
+    const restart = vi.fn();
+    writeFileSync(join(home, 'source.lock'), `999999\n${Date.now()}\n`);
+    service({ ...deps, restart }).apply(target);
+    await vi.waitFor(() => expect(restart).toHaveBeenCalled(), { timeout: 15_000 });
+    expect(activeId(env)).toBe(target);
+    expect(existsSync(join(home, 'source.lock'))).toBe(false);
+  });
+
   it('builds at once but switches only when the workspace is idle', async () => {
     const { target } = await prepared();
     const { calls, deps } = stubs();

@@ -7,7 +7,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 
@@ -27,6 +27,71 @@ export const IMAGE_SOURCE_FILE = '/opt/cezar/source.json';
 
 export function sourceDir(env: NodeJS.ProcessEnv = process.env): string {
   return join(cezarHomeDir(env), 'source');
+}
+
+/** Held for a build in the clone, across processes (the server's job and a CLI `cezar update`). */
+export function sourceLockPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(cezarHomeDir(env), 'source.lock');
+}
+/** A build that has held the lock this long is a pid that was reused, not a build. */
+const SOURCE_LOCK_STALE_MS = 2 * 60 * 60_000;
+
+export class BranchBusyError extends Error {
+  constructor(pid: number) {
+    super(`another cezar (pid ${pid}) is building in the updater's clone — try again once it finishes`);
+  }
+}
+
+/** The pid of a live process holding the source lock, or null when it is free or stale. */
+export function sourceLockHolder(env: NodeJS.ProcessEnv = process.env): number | null {
+  const path = sourceLockPath(env);
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
+  const [pidText, atText] = text.trim().split(/\s+/);
+  const pid = Number(pidText);
+  const at = Number(atText);
+  let since = Number.isFinite(at) ? at : 0;
+  if (!since) {
+    try {
+      since = statSync(path).mtimeMs;
+    } catch {
+      return null;
+    }
+  }
+  if (!Number.isSafeInteger(pid) || pid <= 0 || Date.now() - since > SOURCE_LOCK_STALE_MS) return null;
+  try {
+    process.kill(pid, 0);
+    return pid;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM' ? pid : null;
+  }
+}
+
+/** Take the source lock (the skills updater's pattern: `wx`, pid + time, stale when dead). */
+function acquireSourceLock(env: NodeJS.ProcessEnv): () => void {
+  const path = sourceLockPath(env);
+  mkdirSync(cezarHomeDir(env), { recursive: true });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(path, 'wx', 0o600);
+      try {
+        writeSync(fd, `${process.pid}\n${Date.now()}\n`);
+      } finally {
+        closeSync(fd);
+      }
+      return () => rmSync(path, { force: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const holder = sourceLockHolder(env);
+      if (holder !== null) throw new BranchBusyError(holder);
+      rmSync(path, { force: true });
+    }
+  }
+  throw new BranchBusyError(0);
 }
 
 /** The default-on background fetch; `CEZ_SELF_UPDATE_CHECK=0` turns it off (Check still works). */
@@ -102,6 +167,8 @@ const versionSchema = z.object({ name: z.string(), version: z.string().min(1) })
 /** The followed branch's clone. Every method answers; a git failure is a null or a false. */
 export class BranchSource {
   readonly dir: string;
+  /** The remote this process's own build follows, while it holds the source lock. */
+  private building: string | null = null;
 
   constructor(
     private readonly env: NodeJS.ProcessEnv = process.env,
@@ -118,12 +185,26 @@ export class BranchSource {
     return `refs/remotes/origin/${branch}`;
   }
 
-  /** The clone exists and its `origin` is `target.remote` — re-created when the remote changed. */
+  /** Hold the source lock for one build of `target`; throws `BranchBusyError` when another
+   *  process holds it. Returns the release. */
+  lock(target: UpdateBranch): () => void {
+    const release = acquireSourceLock(this.env);
+    this.building = target.remote;
+    return () => {
+      this.building = null;
+      release();
+    };
+  }
+
+  /** The clone exists and its `origin` is `target.remote` — re-created when the remote changed,
+   *  but never under a build (this process's, for another remote, or any other process's). */
   async ensure(target: UpdateBranch): Promise<{ ok: true } | { ok: false; error: string }> {
     if (existsSync(join(this.dir, '.git'))) {
       // The configured value, not `remote get-url`: that one applies `insteadOf` rewrites.
       const url = await this.run(['config', '--get', 'remote.origin.url']);
       if (url.ok && url.stdout.trim() === target.remote) return this.setFetchSpec(target);
+      const busy = this.building !== null ? this.building !== target.remote : sourceLockHolder(this.env) !== null;
+      if (busy) return { ok: false, error: 'a build is running in the updater\'s clone — the new remote is fetched once it finishes' };
       rmSync(this.dir, { recursive: true, force: true });
     }
     mkdirSync(this.dir, { recursive: true });

@@ -84,6 +84,12 @@ export const FAMILY_SCOPES: Record<string, Exclude<ApiTokenScope, 'read'>> = {
   'workspace/ui-state': 'admin',
 };
 
+/**
+ * Routes inside a non-admin family that are `admin`'s anyway: a task terminal is a shell on the
+ * host (it can read the host key), so `tasks` and `author` never include shell access.
+ */
+const ADMIN_ROUTES: readonly RegExp[] = [/^\/runs\/[^/]+\/terminal(\/|$)/];
+
 /** Reads any token may make: what an agent needs to address anything at all. */
 const DISCOVERY_ROUTES: ReadonlySet<string> = new Set(['/projects', '/health', '/models']);
 
@@ -178,7 +184,7 @@ export function apiTokenAllows(scopes: readonly ApiTokenScope[], method: string,
   const family = routeFamily(pathname);
   if (family === null || family === 'auth') return false;
   if (scopes.includes('admin')) return true;
-  const owner = FAMILY_SCOPES[family] ?? 'admin';
+  const owner = ADMIN_ROUTES.some((pattern) => pattern.test(routePath(pathname)!)) ? 'admin' : FAMILY_SCOPES[family] ?? 'admin';
   if (owner !== 'admin' && scopes.includes(owner)) return true;
   // The MCP endpoint is a transport: each tool call is re-checked against its own route.
   if (family === 'mcp') return scopes.length > 0;

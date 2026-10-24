@@ -56,7 +56,8 @@ Settings → Security → **API tokens** (owner only):
 - `POST /auth/tokens { name, scopes, expiresAt? }` → the token value, shown once
   (`ceztok_<id>_<secret>`); stored hashed (argon2, the password store's hash) in the auth store.
 - Scopes: `read` (allowlisted GETs), `tasks` (runs, messages, dispatch), `author` (workflows, skills,
-  automations, env), `admin` (everything, including settings and self-update).
+  automations, env), `admin` (everything, including settings, self-update and terminals — a task
+  terminal is a shell on the host, so `tasks` and `author` never include it: `ADMIN_ROUTES`).
 - `GET /auth/tokens`, `DELETE /auth/tokens/:id`; last-used time shown.
 - A Bearer token satisfies the auth guard like a session cookie, with its scope checked per
   route family; the request-origin guard (#426) is skipped for Bearer requests, because they

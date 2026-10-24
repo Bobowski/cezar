@@ -86,6 +86,20 @@ describe('API token scopes, per route family', () => {
     expect(apiTokenAllows(['tasks'], 'GET', '/api/v1/config')).toBe(false);
   });
 
+  it('a task terminal is admin’s: tasks and author never get a shell on the host', () => {
+    for (const [method, path] of [
+      ['POST', '/api/v1/runs/1/terminal'],
+      ['GET', '/api/v1/runs/1/terminal'],
+      ['POST', '/api/v1/p/x/runs/1/terminal/s1/input'],
+      ['GET', '/api/v1/runs/1/terminal/s1/output'],
+      ['DELETE', '/api/v1/runs/1/terminal/s1'],
+    ] as const) {
+      expect(apiTokenAllows(['read', 'tasks', 'author'], method, path), `${method} ${path}`).toBe(false);
+      expect(apiTokenAllows(['admin'], method, path), `${method} ${path}`).toBe(true);
+    }
+    expect(apiTokenAllows(['tasks'], 'POST', '/api/v1/runs/1/terminals-are-not-a-prefix')).toBe(true);
+  });
+
   it('author writes workflows, skills, automations and env files', () => {
     for (const path of ['/api/v1/workflows', '/api/v1/skills/refresh', '/api/v1/automations', '/api/v1/env-files/render']) {
       expect(apiTokenAllows(['author'], 'POST', path), path).toBe(true);

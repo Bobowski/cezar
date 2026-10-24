@@ -656,7 +656,8 @@ the API below.
 - **API tokens.** A hosted cockpit with sign-in answers `Authorization: Bearer
   ceztok_…` too. Mint one in Settings → Security → API tokens, scoped `read`
   (the GETs that carry no secret), `tasks` (runs, messages, dispatch), `author` (workflows, skills,
-  automations, env files) or `admin` (everything but sign-in). It is shown once.
+  automations, env files) or `admin` (everything but sign-in). Only `admin` opens a
+  terminal — `tasks` and `author` never include shell access. It is shown once.
 
 ### cezar as an MCP server
 

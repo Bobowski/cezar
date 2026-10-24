@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { mergeWriteWorkspaceConfig } from '../workspace/config.ts';
-import { parseUpdateBranch } from './branch.ts';
+import { parseUpdateBranch, processStartTicks, sourceLockHolder } from './branch.ts';
 import { runSelfUpdateCommand } from './cli.ts';
 import { activate, activeId, listInstalled, previousId, readManifest, versionEntry, writeManifest } from './layout.ts';
 import { RegistryCache } from './registry.ts';
@@ -505,6 +505,35 @@ describe('applying a branch build', () => {
     await vi.waitFor(() => expect(restart).toHaveBeenCalled(), { timeout: 15_000 });
     expect(activeId(env)).toBe(target);
     expect(existsSync(join(home, 'source.lock'))).toBe(false);
+  });
+
+  it('takes over a lock naming its own pid that an earlier process left (a container restart)', async () => {
+    const { target } = await prepared();
+    const { deps } = stubs();
+    const restart = vi.fn();
+    writeFileSync(join(home, 'source.lock'), `${process.pid}\n${Date.now()}\n`);
+    service({ ...deps, restart }).apply(target);
+    await vi.waitFor(() => expect(restart).toHaveBeenCalled(), { timeout: 15_000 });
+    expect(activeId(env)).toBe(target);
+  });
+
+  it('counts its own lock as held, and only its own', () => {
+    const release = service().source.lock(BRANCH);
+    expect(sourceLockHolder(env)).toBe(process.pid);
+    release();
+    expect(sourceLockHolder(env)).toBeNull();
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, 'source.lock'), `${process.pid}\n${Date.now()}\n\nsomeone-else\n`);
+    expect(sourceLockHolder(env)).toBeNull();
+  });
+
+  it.runIf(process.platform === 'linux')('treats a live pid that started at another time as a recycled pid', () => {
+    mkdirSync(home, { recursive: true });
+    const start = processStartTicks(process.ppid);
+    writeFileSync(join(home, 'source.lock'), `${process.ppid}\n${Date.now()}\n${start}\nx\n`);
+    expect(sourceLockHolder(env)).toBe(process.ppid);
+    writeFileSync(join(home, 'source.lock'), `${process.ppid}\n${Date.now()}\n${Number(start) + 1}\nx\n`);
+    expect(sourceLockHolder(env)).toBeNull();
   });
 
   it('builds at once but switches only when the workspace is idle', async () => {

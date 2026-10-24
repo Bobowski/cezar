@@ -7,6 +7,7 @@
  */
 
 import { execFile } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -42,7 +43,24 @@ export class BranchBusyError extends Error {
   }
 }
 
-/** The pid of a live process holding the source lock, or null when it is free or stale. */
+/** This process, told apart from an earlier one that had the same pid (a container restart
+ *  recycles pids from 1): written into the lock beside the pid. */
+const LOCK_TOKEN = randomBytes(8).toString('hex');
+
+/** A process's start time in clock ticks since boot (Linux `/proc/<pid>/stat` field 22), or
+ *  null where /proc cannot say — then the pid alone has to do. */
+export function processStartTicks(pid: number | 'self'): string | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    // `comm` (field 2) may hold spaces and parentheses; the fields after its last `)` are fixed.
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] || null;
+  } catch {
+    return null;
+  }
+}
+
+/** The pid of a live process holding the source lock, or null when it is free or stale. A lock
+ *  is live only while its pid runs AND is the same process that wrote it (spec 2026-10-23 §3.5). */
 export function sourceLockHolder(env: NodeJS.ProcessEnv = process.env): number | null {
   const path = sourceLockPath(env);
   let text: string;
@@ -51,7 +69,7 @@ export function sourceLockHolder(env: NodeJS.ProcessEnv = process.env): number |
   } catch {
     return null;
   }
-  const [pidText, atText] = text.trim().split(/\s+/);
+  const [pidText, atText, startText, token] = text.trim().split(/\r?\n/).map((line) => line.trim());
   const pid = Number(pidText);
   const at = Number(atText);
   let since = Number.isFinite(at) ? at : 0;
@@ -63,12 +81,15 @@ export function sourceLockHolder(env: NodeJS.ProcessEnv = process.env): number |
     }
   }
   if (!Number.isSafeInteger(pid) || pid <= 0 || Date.now() - since > SOURCE_LOCK_STALE_MS) return null;
+  // Our own pid: held by this very process, or left by an earlier one the pid was recycled from.
+  if (pid === process.pid) return token === LOCK_TOKEN ? pid : null;
   try {
     process.kill(pid, 0);
-    return pid;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM' ? pid : null;
+    if ((error as NodeJS.ErrnoException).code !== 'EPERM') return null;
   }
+  const start = startText ? processStartTicks(pid) : null;
+  return start !== null && start !== startText ? null : pid;
 }
 
 /** Take the source lock (the skills updater's pattern: `wx`, pid + time, stale when dead). */
@@ -79,7 +100,7 @@ function acquireSourceLock(env: NodeJS.ProcessEnv): () => void {
     try {
       const fd = openSync(path, 'wx', 0o600);
       try {
-        writeSync(fd, `${process.pid}\n${Date.now()}\n`);
+        writeSync(fd, `${process.pid}\n${Date.now()}\n${processStartTicks('self') ?? ''}\n${LOCK_TOKEN}\n`);
       } finally {
         closeSync(fd);
       }

@@ -54,6 +54,11 @@ describe('the cockpit branding API', () => {
     expect(answer.status).toBe(200);
     return workspaceBrandingSchema.parse(await answer.json());
   };
+  const logoForm = () => {
+    const form = new FormData();
+    form.set('file', new File([square(26)], 'logo.png', { type: 'image/png' }));
+    return form;
+  };
   const upload = (kind: string, bytes: Buffer) => json('PUT', `/api/v1/workspace/branding/${kind}`, { data: bytes.toString('base64') });
 
   it('answers cezar\'s own brand with no state at all', async () => {
@@ -119,9 +124,7 @@ describe('the cockpit branding API', () => {
     await branding(json('PUT', '/api/v1/workspace/branding', { name: 'Agents', accent: '#123456' }));
     await branding(upload('app-icon', square(512)));
     await branding(upload('favicon', square(48)));
-    const form = new FormData();
-    form.set('file', new File([square(26)], 'logo.png', { type: 'image/png' }));
-    expect((await apiRequest(app, '/api/v1/workspace/branding-logo', { method: 'POST', body: form })).status).toBe(200);
+    expect((await apiRequest(app, '/api/v1/workspace/branding-logo', { method: 'POST', body: logoForm() })).status).toBe(200);
 
     const withoutIcon = await branding(json('DELETE', '/api/v1/workspace/branding/app-icon'));
     expect(withoutIcon.appIconUrl).toBeNull();
@@ -146,6 +149,9 @@ describe('the cockpit branding API', () => {
       // The settings route's older spelling of the same name.
       json('PUT', '/api/v1/workspace/config', { branding: { name: 'Hijacked' } }),
       json('PUT', '/api/v1/workspace/config', { branding: { name: null } }),
+      // The older logo routes too (BACKWARD_COMPATIBILITY.md §2 records the change).
+      apiRequest(app, '/api/v1/workspace/branding-logo', { method: 'POST', body: logoForm() }),
+      apiRequest(app, '/api/v1/workspace/branding-logo', { method: 'DELETE' }),
     ]) {
       expect((await response).status).toBe(409);
     }

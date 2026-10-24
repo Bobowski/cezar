@@ -35,6 +35,15 @@ describe('a token’s view of a task', () => {
     home: process.env.CEZ_HOME, remote: process.env.CEZ_REMOTE, auth: process.env.CEZ_AUTH, followups: process.env.CEZ_FOLLOWUPS,
   };
 
+  /** What the stub lifecycle coordinator answers; a test fills it in. */
+  let lifecycleSummary: Record<string, unknown> | undefined;
+  const lifecycleStub = {
+    list: async () => ({ worktrees: lifecycleSummary ? [lifecycleSummary] : [] }),
+    detail: async () => ({ ...lifecycleSummary!, history: [lifecycleSummary!.operation] }),
+    operation: async () => lifecycleSummary!.operation,
+    onChange: () => () => undefined,
+  };
+
   const request = (path: string, headers: Record<string, string> = {}) => app.request(path, { headers: { ...HOSTED, ...headers } });
 
   async function createOwner(): Promise<void> {
@@ -106,7 +115,7 @@ describe('a token’s view of a task', () => {
     app = createApp({
       repoRoot,
       store,
-      manager: { isActive: () => false } as unknown as RunManager,
+      manager: { isActive: () => false, lifecycle: lifecycleStub } as unknown as RunManager,
       version: '0.0.0-test',
       bootProjectId: 'boot',
       auth: new AuthService({ scrypt: { N: 2 ** 10, r: 8, p: 1 } }),
@@ -365,6 +374,47 @@ describe('a token’s view of a task', () => {
     // Guard: whoever sees transcripts keeps the parent's words.
     const full = await get(seedToken(['author', 'runs.transcript']));
     expect(full.runs[root.id]!.children[0]!.title).toBe(`child ${SECRET}`);
+  });
+
+  it('the worktree views carry no dispatched child’s title, rendered command or script failure text for a read token', async () => {
+    const root = store.createRun({ title: 'the user’s own task', workflow: 'quick-task', task: 'the user’s own task', steps: [] });
+    const child = store.createRun({ title: `child ${SECRET}`, workflow: '(planned)', task: `objective ${SECRET}`, steps: [] });
+    const worktreePath = mkdtempSync(join(tmpdir(), 'cez-runview-wt-'));
+    store.updateRun(child.id, { dispatch: { rootRunId: root.id, parentRunId: root.id }, worktreePath });
+    store.flush();
+    const id = '11111111-1111-4111-8111-111111111111';
+    const at = '2026-10-24T00:00:00Z';
+    const operation = {
+      id, worktreeId: id, generation: 1, phase: 'setup', intent: 'create', state: 'needs_attention', revision: 1,
+      createdAt: at, updatedAt: at, failureStage: 'command', error: `setup failed: ${SECRET}`,
+      history: [{ id, operationId: id, entryId: id, fingerprint: 'f', ordinal: 0, label: 'install', commandPreview: `npm ci --token ${SECRET}`,
+        attempt: 1, state: 'failed', startedAt: at, reason: `spawn said ${SECRET}` }],
+      entries: [{ entryId: id, label: 'install', commandPreview: `npm ci --token ${SECRET}`, state: 'failed', attempt: 1 }],
+      allowedActions: ['retry'],
+    };
+    lifecycleSummary = {
+      worktreeId: id, runId: child.id, task: { id: child.id, title: `child ${SECRET}` }, worktreePath, generation: 1,
+      onDisk: true, prepared: false, needsAttention: true, autoCleanupSuppressed: false, operation,
+    };
+    try {
+      const read = seedToken(['read']);
+      for (const path of ['/api/v1/worktrees', '/api/v1/worktree-lifecycle', `/api/v1/worktree-lifecycle/${id}`, `/api/v1/worktree-lifecycle/operations/${id}`]) {
+        const response = await request(path, read);
+        expect(response.status, path).toBe(200);
+        const body = JSON.stringify(await response.json());
+        expect(body, path).not.toContain(SECRET);
+        if (!path.includes('/operations/')) expect(body, path).toContain(`dispatched task ${child.id}`);
+      }
+      const listed = (await (await request('/api/v1/worktree-lifecycle', read)).json()) as { worktrees: Array<{ operation: Record<string, unknown> }> };
+      expect(listed.worktrees[0]!.operation).toMatchObject({ state: 'needs_attention', failureStage: 'command', error: 'lifecycle failed at command' });
+      // Guard: whoever sees transcripts keeps the command and what it said.
+      const full = JSON.stringify(await (await request('/api/v1/worktree-lifecycle', seedToken(['admin']))).json());
+      expect(full).toContain(`npm ci --token ${SECRET}`);
+      expect(full).toContain(`spawn said ${SECRET}`);
+    } finally {
+      lifecycleSummary = undefined;
+      await removeTempDir(worktreePath);
+    }
   });
 
   it('projects the run events of both live streams for a read token', async () => {

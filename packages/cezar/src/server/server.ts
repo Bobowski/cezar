@@ -6411,10 +6411,11 @@ export function createApp(deps: ServerDeps) {
       // apply — inherited from the workspace default when this repo sets none.
       const keep = await resolveWorktreeRetention(repoRoot);
       const runs = store.listRuns().filter((r) => r.worktreePath && existsSync(r.worktreePath));
+      const projected = projectsRuns(runViewScopes(principalOf(c)));
       const worktrees = await Promise.all(
         runs.map(async (r) => ({
           runId: r.id,
-          title: r.title ?? r.id,
+          title: visibleTaskTitle(r, r.title ?? r.id, projected),
           status: r.status,
           branch: r.branch ?? null,
           // POSIX `du` — degrades to null (Windows / du missing / error); never blocks.

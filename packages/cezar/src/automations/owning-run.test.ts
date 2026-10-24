@@ -21,12 +21,23 @@ describe('findOwningRun (spec 2026-10-23-github-events §5)', () => {
 
   it('picks the newest run that created, references or is about the PR', () => {
     const runs = [
-      run({ id: 'old-creator', pullRequestUrl: 'https://github.com/acme/demo/pull/8', createdAt: '2026-10-01T00:00:00.000Z' }),
+      run({ id: 'old-about', prNumber: 8, createdAt: '2026-10-01T00:00:00.000Z' }),
       run({ id: 'newer-about', prNumber: 8, createdAt: '2026-10-02T00:00:00.000Z' }),
       run({ id: 'unrelated', prNumber: 9, createdAt: '2026-10-03T00:00:00.000Z' }),
     ];
     expect(findOwningRun(runs, pr)?.id).toBe('newer-about');
     expect(findOwningRun([runs[0]!, run({ id: 'ref', prRefs: [{ number: 8, origin: 'marker', at: '2026-10-05T00:00:00.000Z' }], createdAt: '2026-10-05T00:00:00.000Z' })], pr)?.id).toBe('ref');
+  });
+
+  it('prefers the run that created the PR over a newer one merely referencing it; a dispatched child never owns', () => {
+    const creator = run({ id: 'creator', pullRequestUrl: 'https://github.com/acme/demo/pull/8', createdAt: '2026-10-01T00:00:00.000Z' });
+    const refCreator = run({ id: 'ref-creator', prRefs: [{ number: 8, url: 'https://github.com/acme/demo/pull/8', origin: 'created', at: '2026-10-01T00:00:00.000Z' }], createdAt: '2026-10-01T00:00:00.000Z' });
+    const reviewer = run({ id: 'reviewer', prNumber: 8, prRefs: [{ number: 8, origin: 'marker', at: '2026-10-04T00:00:00.000Z' }], createdAt: '2026-10-04T00:00:00.000Z' });
+    const child = run({ id: 'child', prNumber: 8, createdAt: '2026-10-05T00:00:00.000Z', dispatch: { rootRunId: 'reviewer', parentRunId: 'reviewer' } } as Partial<RunRecord>);
+    expect(findOwningRun([creator, reviewer, child], pr)?.id).toBe('creator');
+    expect(findOwningRun([refCreator, reviewer], pr)?.id).toBe('ref-creator');
+    expect(findOwningRun([reviewer, child], pr)?.id).toBe('reviewer');
+    expect(findOwningRun([child], pr)).toBeUndefined();
   });
 
   it('ignores another repository, pr-head verifiers and runs whose worktree is gone', () => {

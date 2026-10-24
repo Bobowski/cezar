@@ -18,11 +18,12 @@ function pullOf(url: string | undefined): { repo: string; number: number } | und
 }
 
 /**
- * The newest run that made or works on pull request `number` of `repo`: its created PR, a PR it
- * declared or was associated with (`prRefs`), or the PR/issue number it is about (`prNumber` —
- * numbers are one sequence per repository, so a number names one item). A reference whose URL
- * names another repository does not count. Never a `pr-head` verifier (it tested the PR; it cannot
- * change it) and never a run whose worktree is gone — the code it would fix is not there.
+ * The run that owns pull request `number` of `repo`: the newest one that CREATED it (its
+ * `pullRequestUrl`, or a `created` PR ref), else the newest that declared or was associated with
+ * it (`prRefs`) or is about it (`prNumber` — numbers are one sequence per repository, so a number
+ * names one item). A reference whose URL names another repository does not count. Never a
+ * dispatched child (its parent owns the work), never a `pr-head` verifier (it tested the PR; it
+ * cannot change it) and never a run whose worktree is gone — the code it would fix is not there.
  */
 export function findOwningRun(runs: Iterable<RunRecord>, candidate: { repo: string; number?: number }): RunRecord | undefined {
   const number = candidate.number;
@@ -33,18 +34,26 @@ export function findOwningRun(runs: Iterable<RunRecord>, candidate: { repo: stri
     return !pull || pull.repo === repo;
   };
   const owns = (run: RunRecord): boolean => {
-    if (run.prHead) return false;
+    if (run.prHead || run.dispatch?.parentRunId) return false;
     if (run.worktree !== false && !run.worktreePath) return false;
     const created = pullOf(run.pullRequestUrl);
     if (created) return created.repo === repo && created.number === number;
     if (run.prRefs?.some((ref) => ref.number === number && sameRepo(ref.url))) return true;
     return run.prNumber === number;
   };
+  const created = (run: RunRecord): boolean => {
+    const made = pullOf(run.pullRequestUrl);
+    if (made) return made.repo === repo && made.number === number;
+    return run.prRefs?.some((ref) => ref.origin === 'created' && ref.number === number && sameRepo(ref.url)) ?? false;
+  };
+  let creator: RunRecord | undefined;
   let newest: RunRecord | undefined;
   for (const run of runs) {
-    if (owns(run) && (!newest || run.createdAt > newest.createdAt)) newest = run;
+    if (!owns(run)) continue;
+    if (created(run) && (!creator || run.createdAt > creator.createdAt)) creator = run;
+    if (!newest || run.createdAt > newest.createdAt) newest = run;
   }
-  return newest;
+  return creator ?? newest;
 }
 
 export type DeliveryOutcome =

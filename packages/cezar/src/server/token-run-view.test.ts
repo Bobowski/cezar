@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Hono } from 'hono';
@@ -11,6 +11,7 @@ import { base32Decode, hotp, totpStep } from '../auth/totp.ts';
 import { AutomationStore } from '../automations/store.ts';
 import { RunStore } from '../runs/store.ts';
 import type { SelfUpdateService } from '../self-update/service.ts';
+import type { DockerExec } from '../services/docker.ts';
 import { AGENT_WRITTEN, agentWrittenRunPatch } from '../test-fixtures/agent-written-run.testkit.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import { todosWatchActive } from '../todos.ts';
@@ -35,6 +36,7 @@ describe('a token’s view of a task', () => {
   let app: Hono;
   const saved = {
     home: process.env.CEZ_HOME, remote: process.env.CEZ_REMOTE, auth: process.env.CEZ_AUTH, followups: process.env.CEZ_FOLLOWUPS,
+    terminal: process.env.CEZ_TERMINAL,
   };
 
   /** What the stub lifecycle coordinator answers; a test fills it in. */
@@ -57,6 +59,11 @@ describe('a token’s view of a task', () => {
       log: ['npm http fetch GET 200 https://registry.example/MARKER-the-agent-printed-this'], error: 'npm ERR! MARKER-the-agent-printed-this' },
     scheduled: null, activeRuns: 0,
   };
+
+  /** What the stub `docker ps` lists, one row of cells per container; a test fills it in. */
+  let dockerPs: string[][] = [];
+  const dockerStub: DockerExec = async (args) =>
+    ({ ok: true, stdout: args[0] === 'ps' ? dockerPs.map((cells) => cells.join('\t')).join('\n') : '' });
 
   const request = (path: string, headers: Record<string, string> = {}) => app.request(path, { headers: { ...HOSTED, ...headers } });
 
@@ -135,6 +142,7 @@ describe('a token’s view of a task', () => {
       auth: new AuthService({ scrypt: { N: 2 ** 10, r: 8, p: 1 } }),
       ssePingMs: TICK_MS,
       selfUpdate: { status: async () => selfUpdateStatus } as unknown as SelfUpdateService,
+      dockerExec: dockerStub,
     } as Parameters<typeof createApp>[0]) as unknown as Hono;
     await createOwner();
   });
@@ -144,6 +152,7 @@ describe('a token’s view of a task', () => {
     await removeTempDir(home, repoRoot);
     for (const [key, value] of [
       ['CEZ_HOME', saved.home], ['CEZ_REMOTE', saved.remote], ['CEZ_AUTH', saved.auth], ['CEZ_FOLLOWUPS', saved.followups],
+      ['CEZ_TERMINAL', saved.terminal],
     ] as const) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -455,6 +464,47 @@ describe('a token’s view of a task', () => {
     } finally {
       lifecycleSummary = undefined;
       await removeTempDir(worktreePath);
+    }
+  });
+
+  it('GET /docker names a dispatched child by id in this project’s stacks and in another project’s', async () => {
+    process.env.CEZ_TERMINAL = '1';
+    const parent = store.createRun({ title: 'the user’s own task', workflow: 'quick-task', task: 'the user’s own task', steps: [] });
+    const here = store.createRun({ title: `here ${SECRET}`, workflow: '(planned)', task: `objective ${SECRET}`, steps: [] });
+    store.updateRun(here.id, { dispatch: { rootRunId: parent.id, parentRunId: parent.id } });
+    store.flush();
+    const otherRoot = realpathSync(mkdtempSync(join(tmpdir(), 'cez-runview-other-')));
+    try {
+      const otherStore = RunStore.open(join(otherRoot, '.ai/cezar'));
+      const otherParent = otherStore.createRun({ title: 'their task', workflow: 'quick-task', task: 'their task', steps: [] });
+      const there = otherStore.createRun({ title: `there ${SECRET}`, workflow: '(planned)', task: `objective ${SECRET}`, steps: [] });
+      otherStore.updateRun(there.id, { dispatch: { rootRunId: otherParent.id, parentRunId: otherParent.id } });
+      otherStore.flush();
+      const other = await registerProject(otherRoot);
+      const row = (id: string, stack: string, dir: string) => [id, `${stack}-db-1`, 'postgres:16', 'running', 'Up 1 hour', '', stack, 'db', dir];
+      dockerPs = [
+        row('a'.repeat(12), 'here', join(repoRoot, '.ai/cezar/worktrees', here.id)),
+        row('b'.repeat(12), 'there', join(otherRoot, '.ai/cezar/worktrees', there.id)),
+        row('c'.repeat(12), 'theirs', join(otherRoot, '.ai/cezar/worktrees', otherParent.id)),
+      ];
+      const read = seedToken(['read']);
+      // The other project's context is built by its first request; an unbuilt one names no task at all.
+      expect((await request(`/api/v1/p/${other.id}/runs`, read)).status).toBe(200);
+      const get = async (headers: Record<string, string>) => {
+        const response = await request('/api/v1/docker', headers);
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as { stacks: Array<{ name: string; task: { id: string; title: string } | null }> };
+        return { raw: JSON.stringify(body), titles: Object.fromEntries(body.stacks.map((stack) => [stack.name, stack.task?.title ?? null])) };
+      };
+      const projected = await get(read);
+      expect(projected.raw).not.toContain(SECRET);
+      expect(projected.titles).toEqual({ here: `dispatched task ${here.id}`, there: `dispatched task ${there.id}`, theirs: 'their task' });
+      // Guard: whoever sees transcripts keeps the parent agent's words, in both projects.
+      const full = await get(seedToken(['read', 'runs.transcript']));
+      expect(full.titles).toEqual({ here: `here ${SECRET}`, there: `there ${SECRET}`, theirs: 'their task' });
+    } finally {
+      dockerPs = [];
+      await removeTempDir(otherRoot);
     }
   });
 

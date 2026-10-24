@@ -7545,25 +7545,26 @@ export function createApp(deps: ServerDeps) {
     const policy = terminalPolicyRefusal(capabilities());
     return policy ? policy.replace('the terminal is', 'the Docker view is') : null;
   };
-  /** The cezar task whose worktree a stack runs from (spec 2026-10-23-docker-management §3.1). */
-  const stackTask = (current: ProjectContext) => (dir: string, owner: KnownProject): DockerStack['task'] => {
+  /** The cezar task whose worktree a stack runs from (spec 2026-10-23-docker-management §3.1), in any project;
+   *  `projected` masks a dispatched child's title, its parent agent's words. */
+  const stackTask = (current: ProjectContext, projected: boolean) => (dir: string, owner: KnownProject): DockerStack['task'] => {
     const runId = worktreeRunOf(dir);
     if (!runId) return null;
     // A project whose context was never built has no run executing in this process.
     const run = (owner.id === current.id ? current : contexts.peek(owner.id))?.store.getRun(runId);
     if (!run) return null;
     const title = run.title.trim() || run.task.split('\n')[0]!.trim().slice(0, 80) || run.id.slice(0, 8);
-    return { id: run.id, title, status: run.status, active: run.status === 'running' || run.status === 'queued' };
+    return { id: run.id, title: visibleTaskTitle(run, title, projected), status: run.status, active: run.status === 'running' || run.status === 'queued' };
   };
   /** Containers, their stacks (with dir state, task and volumes) and the volume list, read once. */
-  const dockerInventory = async (project: ProjectContext) => {
+  const dockerInventory = async (project: ProjectContext, projected = false) => {
     const listed = await listContainers(docker);
     if (!listed.ok) return listed;
     const volumeList = await docker(['volume', 'ls', '--format', 'json']);
     const volumeRows = volumeList.ok ? parseVolumeList(volumeList.stdout) : [];
     const registry = (await loadWorkspaceConfig()).projects;
     const known = registry.some((entry) => entry.id === project.id) ? registry : [...registry, { id: project.id, root: project.root, name: '' }];
-    const stacks = groupStacks(listed.containers, known, project.id, { task: stackTask(project), volumes: volumesByStack(volumeRows) });
+    const stacks = groupStacks(listed.containers, known, project.id, { task: stackTask(project, projected), volumes: volumesByStack(volumeRows) });
     return { ok: true as const, containers: listed.containers, stacks, volumeRows };
   };
   const dockerState = async (project: ProjectContext, c: Context): Promise<DockerState> => {
@@ -7571,7 +7572,7 @@ export function createApp(deps: ServerDeps) {
     registerDockerTopic();
     const refusal = dockerRefusal(c);
     if (refusal) return off(refusal);
-    const inventory = await dockerInventory(project);
+    const inventory = await dockerInventory(project, projectsRuns(runViewScopes(principalOf(c))));
     if (!inventory.ok) return off(inventory.reason);
     const { stacks } = inventory;
     const composeFiles = (await discoverServiceCandidates(project.root)).filter((candidate) => /^docker compose -f \S+ up$/.test(candidate.command));
@@ -7729,13 +7730,7 @@ export function createApp(deps: ServerDeps) {
     .get('/docker', async (c) => {
       c.header('Cache-Control', 'no-store');
       const project = c.get('project');
-      const state = await dockerState(project, c);
-      if (!projectsRuns(runViewScopes(principalOf(c)))) return c.json(state, 200);
-      // A stack's task may be a dispatched child, whose title is its parent agent's words.
-      const stacks = state.stacks.map((stack) => (stack.task
-        ? { ...stack, task: { ...stack.task, title: visibleTaskTitle(project.store.getRun(stack.task.id) ?? stack.task, stack.task.title, true) } }
-        : stack));
-      return c.json({ ...state, stacks }, 200);
+      return c.json(await dockerState(project, c), 200);
     })
     .post('/docker/stacks/:name/start', paramZodValidator(dockerStackParamsSchema), async (c) => {
       const { name } = c.req.valid('param');

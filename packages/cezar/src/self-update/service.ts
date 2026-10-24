@@ -416,6 +416,15 @@ export class SelfUpdateService {
     const doc = this.registry.current() ?? (await this.registry.get());
     const publishedAt = (version: string) => doc?.versions.find((entry) => entry.version === version)?.publishedAt ?? null;
     const targetAt = publishedAt(target);
+    const builtFrom = this.runningBuildDate();
+    if (builtFrom) {
+      // A branch build is newer than its version's release: only a release published after the
+      // running commit (or, with none recorded, its install) is forward in time.
+      if (!targetAt) return `a hosted cockpit can only update forward — the registry gave no publish date for ${target} to check against the running build; ${suffix}`;
+      return Date.parse(targetAt) > Date.parse(builtFrom)
+        ? null
+        : `a hosted cockpit can only update forward — ${target} was published before the running build (${builtFrom}); ${suffix}`;
+    }
     const runningAt = publishedAt(running);
     if (targetAt && runningAt) {
       return targetAt >= runningAt
@@ -448,6 +457,16 @@ export class SelfUpdateService {
       return `a hosted cockpit can only update forward — ${target} does not descend from the running build (${runningSha.slice(0, 8)}); ${suffix}`;
     }
     return null;
+  }
+
+  /** When the running install is a branch or image build: its commit date, else its install
+   *  time. Null for a registry, local or linked install (their publish date dates them). */
+  private runningBuildDate(): string | null {
+    const manifest = this.runningId ? readManifest(this.runningId, this.env) : null;
+    if (!manifest) return null;
+    if (manifest.commit?.at && Number.isFinite(Date.parse(manifest.commit.at))) return manifest.commit.at;
+    if (manifest.source !== 'branch' && manifest.source !== 'image') return null;
+    return Number.isFinite(Date.parse(manifest.installedAt)) ? manifest.installedAt : null;
   }
 
   private branchDateRefusal(target: string, targetAt: string, suffix: string): string | null {

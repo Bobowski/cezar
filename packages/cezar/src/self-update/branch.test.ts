@@ -394,6 +394,30 @@ describe('forward-only on a hosted cockpit, by committer date', () => {
     expect(await svc.forwardOnlyRefusal(`0.17.0+${older.slice(0, 8)}`)).toMatch(/committed before the running build/);
   });
 
+  it('from a branch build, takes a registry release only when it was published after the running commit (or install)', async () => {
+    const registry = (async () =>
+      new Response(
+        JSON.stringify({
+          'dist-tags': { latest: '0.18.1' },
+          versions: { '0.17.0': {}, '0.18.0': {}, '0.18.1': {} },
+          time: { '0.17.0': '2026-09-01T00:00:00.000Z', '0.18.0': '2026-10-10T00:00:00.000Z', '0.18.1': '2026-10-22T00:00:00.000Z' },
+        }),
+      )) as unknown as typeof fetch;
+    const c1 = commit('feat: running', '2026-10-21T10:00:00Z', { 'packages/cezar/package.json': pkg() });
+    runningBuild(c1, '2026-10-21T10:00:00.000Z');
+    const svc = service({ registry: new RegistryCache('@open-mercato/cezar', registry) });
+    // 0.18.0 outranks 0.17.0 and was published after it, but before the commit this build runs.
+    expect(await svc.forwardOnlyRefusal('0.18.0')).toMatch(/published before the running build/);
+    expect(await svc.forwardOnlyRefusal('0.18.1')).toBeNull();
+    expect(await svc.forwardOnlyRefusal('0.19.0')).toMatch(/no publish date/);
+
+    // No commit recorded on the running build: its install time dates it.
+    fakeInstall('0.17.0+0badc0de', { version: '0.17.0', source: 'branch', installedAt: '2026-10-23T00:00:00.000Z' });
+    activate('0.17.0+0badc0de', env);
+    const undated = service({ registry: new RegistryCache('@open-mercato/cezar', registry) });
+    expect(await undated.forwardOnlyRefusal('0.18.1')).toMatch(/published before the running build/);
+  });
+
   it('never builds a commit the branch tip does not reach, even on a local cockpit', async () => {
     const c1 = commit('feat: one', '2026-10-21T10:00:00Z', { 'packages/cezar/package.json': pkg() });
     const dropped = commit('feat: force-pushed away', '2026-10-22T10:00:00Z');

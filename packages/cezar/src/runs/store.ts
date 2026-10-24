@@ -25,6 +25,7 @@ import { track } from '../telemetry.ts';
 import { reportAgentError } from './agent-error-telemetry.ts';
 // Pure, dependency-free reference helpers — the same sanity bound the marker parser applies.
 import { MAX_REF } from './task-refs.ts';
+import { mergeTraces, POSTED_COMMENTS_CAP, PUSHED_SHAS_CAP } from './github-traces.ts';
 // Type-only module (zod + nothing else), so this cannot cycle back into the store.
 import { workflowDefSchema } from '../workflows/types.ts';
 // A contract VALUE, like `workspaceUiStateSchema` in `workspace/migrations.ts`: the persisted
@@ -325,6 +326,10 @@ export const runRecordSchema = z.object({
   /** The PR head came from a fork the automation admitted (`allowForkHeads`): untrusted code, so
    *  its check steps never receive any secrets. */
   untrustedHead: z.boolean().optional().catch(undefined),
+  /** cezar's own traces on GitHub (spec 2026-10-23-github-events §6): shas this run pushed and
+   *  comment ids it posted, which automations never treat as triggers. Capped (`github-traces.ts`). */
+  pushedShas: z.array(z.string()).max(PUSHED_SHAS_CAP).optional().catch(undefined),
+  postedComments: z.array(z.number()).max(POSTED_COMMENTS_CAP).optional().catch(undefined),
   /**
    * Exact deadline at which a run stopped by a provider USAGE LIMIT resumes itself
    * (spec 2026-08-03-auto-resume-after-usage-limit) — the reset instant the provider named plus a
@@ -1645,6 +1650,14 @@ export class RunStore extends EventEmitter {
     }
     this.touch(run);
     return run;
+  }
+
+  /** Remember shas this run pushed and comments it posted (spec 2026-10-23-github-events §6). */
+  recordGithubTraces(runId: string, add: { shas?: readonly string[]; comments?: readonly number[] }): void {
+    const run = this.runs.get(runId);
+    if (!run) return;
+    const patch = mergeTraces(run, add);
+    if (patch) this.updateRun(runId, patch);
   }
 
   /** Record an authoritative PR association and recompute the compatibility scalar projection. */

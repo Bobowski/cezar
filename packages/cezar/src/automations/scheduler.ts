@@ -1,4 +1,5 @@
 import { runEventPollCycle, launchEventCandidate } from './event-poll-cycle.ts';
+import type { GithubTraces } from '../runs/github-traces.ts';
 import type { AutomationCoordinator } from './coordinator.ts';
 import { POLL_RECORD_CEILING } from './github-poller.ts';
 import type { GithubCandidate, GithubPoller, GithubPollResult } from './github-poller.ts';
@@ -43,7 +44,7 @@ export interface ProjectAutomationHandle {
   launch?: AutomationLauncher;
   /** cezar's own traces on GitHub — the shas its runs pushed and the comments they posted (spec
    *  2026-10-23-github-events §6). Read per poll; absent = nothing is recognised as our own. */
-  traces?: () => { shas: ReadonlySet<string>; comments: ReadonlySet<number> };
+  traces?: () => GithubTraces | Promise<GithubTraces>;
   launchSchedule?: ScheduleLauncher;
   launchTracker?: TrackerAutomationLauncher;
   onChange?: (automationId: string, revision: number) => void;
@@ -91,7 +92,7 @@ export class ProjectAutomationScheduler {
         polledState = state;
         const since = state.cursor?.timestamp ?? state.baselineAt;
         const overlapSince = since ? new Date(Date.parse(since) - CURSOR_OVERLAP_MS).toISOString() : undefined;
-        const traces = this.handle.traces?.();
+        const traces = await this.handle.traces?.();
         const activity = { etags: state.etags, prHeads: state.prHeads, branchHeads: state.branchHeads };
         // A widening re-poll reads every conditional page in full: the first drain's 304 answers
         // came from ETags whose results this cycle has not persisted yet.

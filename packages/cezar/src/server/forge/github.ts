@@ -2965,11 +2965,15 @@ export async function commentOnPr(
   repoRoot: string,
   number: number,
   body: string,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<{ ok: true; commentId?: number } | { ok: false; error: string }> {
   if (process.env.CEZ_DRY_RUN === '1') return { ok: true };
   const res = await execTool(['pr', 'comment', String(number), '--body', body], repoRoot, 'gh', 60_000);
   if (res.notFound) return { ok: false, error: 'gh is not installed' };
-  if (res.ok) return { ok: true };
+  // `gh pr comment` prints the new comment's URL; its id is cezar's own trace (spec 2026-10-23 §6).
+  if (res.ok) {
+    const id = Number(/#issuecomment-(\d+)/.exec(res.stdout)?.[1]);
+    return Number.isSafeInteger(id) && id > 0 ? { ok: true, commentId: id } : { ok: true };
+  }
   return { ok: false, error: (res.stderr || res.stdout).trim().split('\n')[0] || 'gh pr comment failed' };
 }
 

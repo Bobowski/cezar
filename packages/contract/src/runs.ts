@@ -297,6 +297,10 @@ export const runRecordSchema = z.object({
     .optional(),
   /** The PR head came from a fork: its check steps run without the project's or workspace's secrets. */
   untrustedHead: z.boolean().optional(),
+  /** Shas this run pushed and comment ids it posted — cezar's own traces, which automations never
+   *  treat as triggers (spec 2026-10-23-github-events §6). */
+  pushedShas: z.array(z.string()).max(50).optional(),
+  postedComments: z.array(z.number()).max(100).optional(),
   createdAt: z.string(),
   startedAt: z.string().optional(),
   finishedAt: z.string().optional(),

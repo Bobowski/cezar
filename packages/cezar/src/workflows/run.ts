@@ -79,6 +79,7 @@ import { isLifecycleConfigTracked } from '../worktree-lifecycle/config.ts';
 import { generateCommitMessage } from './commit-message.ts';
 import { hasUnlanded, landInPlace, landingPromptPart, READ_ONLY_PROMPT, READ_ONLY_TOOLS, type LandResult } from './landing.ts';
 import { deleteRunLayouts } from '../runs/layouts.ts';
+import { headShaOf, toolTraces } from '../runs/github-traces.ts';
 import {
   autosaveCommit,
   branchFor,
@@ -6039,6 +6040,7 @@ export class RunManager {
           note(`draft PR failed — ${outcome.error}`, 'danger');
           return 'failed';
         }
+        if (run.worktreePath) await this.recordPushedHead(runId, run.worktreePath);
         this.store.updateRun(runId, { pullRequestUrl: outcome.url });
         const number = /\/pull\/(\d+)/.exec(outcome.url)?.[1];
         if (number) this.store.recordPrRef(runId, { number: Number(number), url: outcome.url, origin: 'created' });
@@ -6057,6 +6059,7 @@ export class RunManager {
           note(`PR comment failed — ${res.error}`, 'danger');
           return 'failed';
         }
+        if (res.commentId !== undefined) this.store.recordGithubTraces(runId, { comments: [res.commentId] });
         note(`commented on PR #${number}`);
         return 'done';
       }
@@ -6113,6 +6116,7 @@ export class RunManager {
           note(`push failed — ${res.error}`, 'danger');
           return 'failed';
         }
+        await this.recordPushedHead(runId, state.cwd);
         note(`pushed ${run.branch}`);
         return 'done';
       }
@@ -7109,6 +7113,7 @@ export class RunManager {
       state.skillMissingReported = true;
       track('skill_missing_in_session', { label: state.sessionBackend ?? 'unknown' });
     }
+    if (event.type === 'item.completed' && event.item.kind === 'tool') this.recordToolTraces(runId, state.cwd, event.item);
     sink.handle(event);
     // Work observed ends the rest, whoever started the turn: a parked Claude session wakes itself
     // when its background work finishes, and a queued prompt must not land mid-turn (§8). Only
@@ -7125,6 +7130,20 @@ export class RunManager {
     this.store.updateRun(runId, { status: 'waiting', activity: undefined });
     if (state.currentStepId) this.store.updateStep(runId, state.currentStepId, { status: 'waiting' });
     this.releaseSlot();
+  }
+
+  /** The agent's own `git push` and `gh … comment` calls, remembered so automations never take
+   *  them for someone else's (spec 2026-10-23-github-events §6). Best-effort, never blocks. */
+  private recordToolTraces(runId: string, cwd: string, item: { input?: unknown; output?: string; status?: string }): void {
+    const traces = toolTraces(item);
+    if (traces.comments.length) this.store.recordGithubTraces(runId, { comments: traces.comments });
+    if (traces.pushed) void this.recordPushedHead(runId, cwd);
+  }
+
+  /** The checkout's `HEAD` after a push this run made. */
+  private async recordPushedHead(runId: string, dir: string): Promise<void> {
+    const sha = await headShaOf(dir);
+    if (sha && this.store.getRun(runId)) this.store.recordGithubTraces(runId, { shas: [sha] });
   }
 
   /** Persist the invocation checkpoint before launching a runner. A throw or
@@ -7527,6 +7546,7 @@ export class RunManager {
       this.store.updateRun(runId, {
         landing: { status: 'landed', at, branch: outcome.branch, sha: outcome.sha, pushed: outcome.pushed, files: outcome.files },
       });
+      if (outcome.pushed) this.store.recordGithubTraces(runId, { shas: [outcome.sha] });
       this.store.appendEvent(runId, {
         type: 'note',
         message: `landed ${outcome.sha.slice(0, 8)} on ${outcome.branch}${outcome.pushed ? ' and pushed' : ' (no upstream — committed locally)'}: ${outcome.files.length} file${outcome.files.length === 1 ? '' : 's'}`,

@@ -163,9 +163,30 @@ async function rootPolicyOf(cezarHome: string): Promise<RootPolicy> {
 
 export type CloneProject = (remote: string, root: string, branch: string | null) => Promise<void>;
 
+const HOST = '[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?';
+const REMOTE_GRAMMAR = [
+  new RegExp(`^https://(?:[^\\s/@:]+(?::[^\\s/@]*)?@)?${HOST}(?::\\d{1,5})?/[^\\s]+$`),
+  new RegExp(`^ssh://(?:[A-Za-z0-9._~-]+@)?${HOST}(?::\\d{1,5})?/[^\\s]+$`),
+  // scp-like `git@github.com:owner/repo.git`; the user part keeps `C:\…` from passing for one.
+  new RegExp(`^[A-Za-z0-9._~-]+@${HOST}:(?![/-])[^\\s]+$`),
+];
+
+/** A manifest's remote is input: https or ssh only, nothing git could read as an option or a transport. */
+export function validCloneRemote(remote: string): boolean {
+  return !remote.startsWith('-') && REMOTE_GRAMMAR.some((pattern) => pattern.test(remote));
+}
+
+const validBranch = (branch: string): boolean => /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,255}$/.test(branch);
+
+/** No prompt can block a restore: no terminal, no ssh password or host-key question. */
+function nonInteractiveEnv(): NodeJS.ProcessEnv {
+  const ssh = process.env.GIT_SSH_COMMAND?.trim();
+  return { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_SSH_COMMAND: ssh ? `${ssh} -o BatchMode=yes` : 'ssh -o BatchMode=yes' };
+}
+
 function run(cwd: string, args: string[], timeout: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd, timeout, encoding: 'utf8' }, (error, _stdout, stderr) => {
+    execFile('git', args, { cwd, timeout, encoding: 'utf8', env: nonInteractiveEnv() }, (error, _stdout, stderr) => {
       if (!error) return resolve();
       // The remote URL may carry a token; git's stderr names it. Keep the last line, minus URLs.
       const last = String(stderr ?? '').trim().split('\n').pop()?.replace(/\S+:\/\/\S+/g, '<remote>') ?? '';
@@ -175,9 +196,11 @@ function run(cwd: string, args: string[], timeout: number): Promise<void> {
 }
 
 export const cloneWithGit: CloneProject = async (remote, root, branch) => {
+  if (!validCloneRemote(remote)) throw new Error('the recorded remote is not an https:// or ssh remote');
+  if (branch !== null && !validBranch(branch)) throw new Error('the recorded branch is not a branch name');
   mkdirSync(dirname(root), { recursive: true });
-  await run(dirname(root), ['clone', '--quiet', remote, root], 30 * 60_000);
-  if (branch) await run(root, ['checkout', '--quiet', branch], 60_000).catch(() => {});
+  await run(dirname(root), ['clone', '--quiet', '--', remote, root], 30 * 60_000);
+  if (branch) await run(root, ['checkout', '--quiet', branch, '--'], 60_000).catch(() => {});
 };
 
 export interface ApplyInput {

@@ -185,8 +185,19 @@ describe('BackupService', () => {
 
     rmSync(project, { recursive: true, force: true });
     process.env.CEZ_HOME = join(root, 'fresh-home');
-    const fresh = new BackupService({ version: 't', projects: async () => [], locations: () => locationsUnder(join(root, 'fresh-agents')) });
+    // A local stand-in for the network: the real cloneWithGit takes https:// and ssh remotes only.
+    const cloned: Array<{ remote: string; at: string }> = [];
+    const fresh = new BackupService({
+      version: 't',
+      projects: async () => [],
+      locations: () => locationsUnder(join(root, 'fresh-agents')),
+      clone: async (remote, at) => {
+        cloned.push({ remote, at });
+        git(root, 'clone', '-q', remote, at);
+      },
+    });
     await fresh.restore({ archive: created.path, identity: TEST_IDENTITY });
+    expect(cloned).toEqual([{ remote: upstream, at: project }]);
     expect(readFileSync(join(project, 'README.md'), 'utf8')).toBe('# app');
     expect(readFileSync(join(project, '.env'), 'utf8')).toBe('KEY=1\n');
   }, 30_000);

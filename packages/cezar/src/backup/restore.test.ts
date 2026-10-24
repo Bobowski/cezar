@@ -6,7 +6,7 @@ import type { AgentStateLocations } from '../paths.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import { TEST_IDENTITY } from './age-vector.testkit.ts';
 import { file, sealArchive, withManifest } from './craft-archive.testkit.ts';
-import { applyStaged, stageArchive } from './restore.ts';
+import { applyStaged, cloneWithGit, stageArchive, validCloneRemote } from './restore.ts';
 
 /** What a restore may touch (review 2026-10-24): the archive is input, not an authority. */
 describe('applying a crafted archive', () => {
@@ -102,5 +102,40 @@ describe('applying a crafted archive', () => {
     );
     expect(existsSync(join(elsewhere, 'cezar', 'runs.json'))).toBe(false);
     expect(log.join('\n')).toMatch(/kept .*\.ai: /);
+  });
+});
+
+describe('cloning a project back', () => {
+  it('accepts only an https or ssh remote that cannot pass for an option', () => {
+    for (const ok of [
+      'https://github.com/open-mercato/cezar.git',
+      'https://x-access-token:abc@github.com/o/r.git',
+      'ssh://git@github.com:22/o/r.git',
+      'git@github.com:open-mercato/cezar.git',
+    ]) expect(validCloneRemote(ok), ok).toBe(true);
+    for (const bad of [
+      '--upload-pack=touch /tmp/pwned',
+      '-u x',
+      'ext::sh -c evil',
+      'file:///etc',
+      '/srv/git/repo',
+      'C:\repos\app',
+      'http://example.com/o/r.git',
+      'https://-oProxyCommand=evil/x',
+      'git@github.com:-evil',
+      'https://github.com/o/r.git\nmore',
+    ]) expect(validCloneRemote(bad), bad).toBe(false);
+  });
+
+  it('refuses a bad remote or branch before git runs', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cez-restore-clone-'));
+    try {
+      const at = join(dir, 'app');
+      await expect(cloneWithGit('--upload-pack=evil', at, null)).rejects.toThrow(/https:\/\/ or ssh/);
+      await expect(cloneWithGit('https://github.com/o/r.git', at, '--orphan=x')).rejects.toThrow(/branch/);
+      expect(existsSync(at)).toBe(false);
+    } finally {
+      await removeTempDir(dir);
+    }
   });
 });

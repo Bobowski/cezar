@@ -430,6 +430,7 @@ describe('cockpit authentication', () => {
       'server/preview/design-proxy.ts': { listeners: 1, upgrades: 1 }, // loopback-only; unreachable from a hosted cockpit
       'index.ts': { listeners: 1, upgrades: 0 }, // a free-port probe: listens, never accepts a request
       'server-install/state.ts': { listeners: 1, upgrades: 0 }, // the same probe, for the installer
+      'mcp/server.ts': { listeners: 1, upgrades: 0 }, // the MCP SDK's protocol `Server`, no socket: served by /api/v1/mcp behind the guard
     };
     const LISTENER = /\b(?:createServer|createSecureServer|serve)\(|\bnew\s+(?:[\w.]+\.)?(?:WebSocketServer|Server)\(/g;
     const UPGRADE = /\.(?:on|once|addListener|prependListener)\(\s*['"`]upgrade['"`]/g;

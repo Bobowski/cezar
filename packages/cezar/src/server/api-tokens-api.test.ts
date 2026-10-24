@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import type { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -151,6 +152,32 @@ describe('API tokens', () => {
     expect((await app.request('/api/v1/runs', { headers: { ...foreign, ...bearer('ceztok_0123456789ab_aaaaaaaaaaaaaaaaaaaaaaaaaaaa') } })).status).toBe(403);
     expect((await app.request('/api/v1/runs', { headers: { ...foreign, ...bearer(created.value) } })).status).toBe(200);
     expect((await app.request('/api/v1/runs/read-all', { method: 'POST', headers: { host: '127.0.0.1:4321', ...bearer(created.value) } })).status).toBe(403);
+  });
+
+  it('over MCP, a scope is enforced on the route each tool calls — not by the tools the client saw', async () => {
+    const read = await mint(['read']);
+    const fetchApp = (async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const headers = new Headers(request.headers);
+      for (const [name, value] of Object.entries(HOSTED)) headers.set(name, value);
+      return app.request(request.url, { method: request.method, headers, body: request.body, duplex: 'half' } as RequestInit);
+    }) as typeof fetch;
+    expect((await fetchApp(`https://${HOST}/api/v1/mcp`, { method: 'POST', body: '{}' })).status).toBe(401);
+    const client = new Client({ name: 'scoped', version: '1.0.0' });
+    await client.connect(new StreamableHTTPClientTransport(new URL(`https://${HOST}/api/v1/mcp?tools=all`), {
+      fetch: fetchApp,
+      requestInit: { headers: bearer(read.value) },
+    }));
+    try {
+      const names = (await client.listTools()).tools.map((tool) => tool.name);
+      expect(names).toContain('runs_read_all'); // shown…
+      const refused = await client.callTool({ name: 'runs_read_all', arguments: {} });
+      expect(refused.isError).toBe(true); // …and still refused by the guard
+      expect(JSON.stringify(refused.content)).toContain('403');
+      expect((await client.callTool({ name: 'runs_list', arguments: {} })).isError).toBeFalsy();
+    } finally {
+      await client.close();
+    }
   });
 
   it('every route family the app serves has a scope owner — a new family is a decision', () => {

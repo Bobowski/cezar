@@ -314,6 +314,8 @@ import { agentHomePaths, cezarHomeDir, expandTilde, isAbsolutePath } from '../pa
 import { authEnforced, fileEditRefusal, isLoopbackHostHeader, normalizeHostname, resolveCapabilities, trustedOperator } from './capabilities.ts';
 import { bearerOf, createAuthGuard, principalOf, upgradeIsAuthenticated, upgradeSessionId } from '../auth/guard.ts';
 import { isApiToken } from '../auth/api-tokens.ts';
+import { buildCatalog, type Catalog } from '../mcp/catalog.ts';
+import { mcpRoutes } from '../mcp/http.ts';
 import { ensureHostKey } from '../auth/host-key.ts';
 import { authRoutes } from '../auth/routes.ts';
 import { enableRunTokens } from '../auth/run-tokens.ts';
@@ -8942,7 +8944,10 @@ export function createApp(deps: ServerDeps) {
     .route('/', runsIndexRoutes)
     .route('/', dashboardRoutes(dashboard, () => ({ tokens: capabilities().tokenUsageMetrics, cost: capabilities().costMetrics }), () => capabilities().automations))
     .route('/', workspaceEventsRoutes)
-    .route('/', telemetryRoutes);
+    .route('/', telemetryRoutes)
+    // The catalog is read off the assembled app on first use: every route is registered by then.
+    .route('/', mcpRoutes({ catalog: () => (mcpCatalog ??= buildCatalog(app.routes).catalog), dispatch: async (request) => app.fetch(request), version }));
+  let mcpCatalog: Catalog | undefined;
 
   // ---- mount ---------------------------------------------------------------
   // Scoped first, then the unscoped alias bound to the boot project. The paths are disjoint (no

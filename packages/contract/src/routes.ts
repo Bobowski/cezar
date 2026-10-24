@@ -180,8 +180,8 @@ export interface RouteContract {
   summary: string;
   /** The 2xx JSON body. Absent where none is in the contract yet; the tool then answers JSON text. */
   response?: z.ZodType;
-  /** Not a tool, and why: a byte or event stream, a cockpit-only beacon, or sign-in itself. */
-  notTool?: 'stream' | 'binary' | 'browser' | 'auth';
+  /** Not a tool, and why: a byte or event stream, a cockpit-only beacon, sign-in, or MCP itself. */
+  notTool?: 'stream' | 'binary' | 'browser' | 'auth' | 'transport';
   /** The tool's name, where the one derived from the path reads badly. */
   tool?: string;
   /** The tool set, where it is not the family's own (see `mcp/catalog.ts`). */
@@ -195,7 +195,7 @@ const list = <T extends z.ZodType>(item: T) => z.array(item);
 export const routeContracts = {
   // ---- runs (tasks) ----------------------------------------------------------
   'GET /runs': { summary: 'List the project\'s tasks with status, cost and branch.', response: list(apiRunSchema), set: 'tasks' },
-  'POST /runs': { summary: 'Start a task: a prompt run through a workflow (quick-task by default) in its own worktree.', response: createRunResponseSchema, set: 'tasks' },
+  'POST /runs': { summary: 'Start a task: the prompt (task) run through a workflow in its own worktree. Pass workflow (quick-task when nothing else fits) or inline steps.', response: createRunResponseSchema, set: 'tasks' },
   'GET /runs/:id': { summary: 'One task: status, steps, usage, branch and PR.', response: apiRunSchema, set: 'tasks' },
   'PATCH /runs/:id': { summary: 'Rename a task or change its editable fields.', response: runRecordSchema, set: 'tasks' },
   'DELETE /runs/:id': { summary: 'Delete a task and its record.', response: deleteRunResponseSchema },
@@ -268,11 +268,11 @@ export const routeContracts = {
 
   // ---- workflows, skills ------------------------------------------------------
   'GET /workflows': { summary: 'The project\'s workflows, built-in and its own, with load issues.', response: workflowsResponseSchema },
-  'POST /workflows': { summary: 'Create or replace a workflow from YAML.', response: saveWorkflowResponseSchema, tool: 'workflows_put' },
+  'POST /workflows': { summary: 'Save a workflow (its steps, or the skills shorthand) as .ai/cezar/workflows/<name>.yaml; overwrite replaces one.', response: saveWorkflowResponseSchema, tool: 'workflows_put' },
   'DELETE /workflows/:name': { summary: 'Delete a workflow (a built-in comes back).', response: deleteWorkflowResponseSchema },
   'POST /workflows/graph': { summary: 'Save a workflow from its graph form.', response: saveWorkflowResponseSchema },
   'GET /workflows/nodes': { summary: 'The node kinds a workflow graph can use.', response: workflowNodeCatalogResponseSchema },
-  'POST /workflows/parse': { summary: 'Parse workflow YAML without saving it.', response: parsedWorkflowSchema },
+  'POST /workflows/parse': { summary: 'Parse workflow YAML into steps without saving it.', response: parsedWorkflowSchema },
   'POST /workflows/validate': { summary: 'Validate a workflow graph without saving it.', response: validateWorkflowGraphResponseSchema },
   'POST /plan': { summary: 'Draft a plan for a task prompt without starting it.', response: planResponseSchema },
   'GET /skills': { summary: 'The skills the project\'s agents can use.', response: list(skillSchema) },
@@ -281,7 +281,7 @@ export const routeContracts = {
 
   // ---- projects ---------------------------------------------------------------
   'GET /projects': { summary: 'Every project this cockpit serves, with status and branch.', response: projectsResponseSchema },
-  'POST /projects': { summary: 'Register a folder as a project.', response: registerProjectResponseSchema },
+  'POST /projects': { summary: 'Register a folder as a project.', response: registerProjectResponseSchema, tool: 'projects_register' },
   'DELETE /projects/:projectId': { summary: 'Forget a project (nothing on disk is touched).', response: removeProjectResponseSchema },
   'PATCH /projects/:projectId': { summary: 'Change a project\'s settings (name, concurrency).', response: updateProjectResponseSchema },
   'GET /projects/:projectId/icon': { summary: 'A project\'s icon.', notTool: 'binary' },
@@ -295,7 +295,7 @@ export const routeContracts = {
   'GET /fs/browse': { summary: 'Browse folders on this machine, to pick a project.', response: fsBrowseResponseSchema },
 
   // ---- repo (the project checkout) --------------------------------------------
-  'GET /repo': { summary: 'The project checkout: branch, remotes, status.', response: repoResponseSchema },
+  'GET /repo': { summary: 'The project checkout: branch, remotes, status.', response: repoResponseSchema, tool: 'repo_get' },
   'POST /repo/branch': { summary: 'Create or switch a branch in the checkout.', response: repoBranchResponseSchema },
   'GET /repo/changes': { summary: 'Uncommitted changes in the checkout.', response: changesPayloadSchema },
   'GET /repo/commit/:sha': { summary: 'One commit in the checkout, with its diff.' },
@@ -310,7 +310,7 @@ export const routeContracts = {
   'POST /repo/push': { summary: 'Push the checkout\'s branch.', response: repoSyncActionResponseSchema },
   'GET /repo/search': { summary: 'Search the code in the checkout.', response: codeSearchResultSchema },
   'GET /repo/sync': { summary: 'How the checkout stands against its upstream.', response: repoSyncSchema },
-  'POST /repo/sync': { summary: 'Fast-forward a clean checkout to its upstream.', response: repoSyncActionResponseSchema },
+  'POST /repo/sync': { summary: 'Fast-forward a clean checkout to its upstream.', response: repoSyncActionResponseSchema, tool: 'repo_fast_forward' },
   'GET /repo/terminal': { summary: 'The terminal sessions open in the checkout.', response: terminalStateSchema },
   'POST /repo/terminal': { summary: 'Open a terminal session in the checkout.', response: terminalSessionSchema },
   'DELETE /repo/terminal/:sessionId': { summary: 'Close a checkout terminal session.' },
@@ -371,7 +371,7 @@ export const routeContracts = {
   'GET /tracker/search': { summary: 'Search tracker tickets.', response: trackerItemsResponseSchema },
   'POST /tracker/watch': { summary: 'Start watching tracker tickets for changes.', response: trackerWatchHandleSchema },
   'GET /tracker/watch/:watchId': { summary: 'What changed on a tracker watch.', response: trackerWatchSnapshotSchema },
-  'POST /tracker/watch/:watchId': { summary: 'Refresh a tracker watch now.', response: trackerWatchSnapshotSchema },
+  'POST /tracker/watch/:watchId': { summary: 'Refresh a tracker watch now.', response: trackerWatchSnapshotSchema, tool: 'tracker_watch_refresh' },
 
   // ---- services, docker, e2e, start app, preview -----------------------------------
   'GET /services': { summary: 'The project\'s pinned services (dev servers, workers) and their state.', response: servicesStateSchema },
@@ -393,9 +393,9 @@ export const routeContracts = {
   'POST /docker/containers/:id/stop': { summary: 'Stop a container.' },
   'POST /docker/stacks/:name/start': { summary: 'Start a compose stack.' },
   'POST /docker/stacks/:name/stop': { summary: 'Stop a compose stack.' },
-  'GET /e2e': { summary: 'Whether the project has an end-to-end test setup.', response: e2eStatusSchema },
+  'GET /e2e': { summary: 'Whether the project has an end-to-end test setup.', response: e2eStatusSchema, tool: 'e2e_status' },
   'POST /e2e/setup': { summary: 'Scaffold an end-to-end test setup.', response: e2eSetupResponseSchema },
-  'GET /start-app': { summary: 'The command that starts the project\'s app.', response: startAppStateSchema },
+  'GET /start-app': { summary: 'The command that starts the project\'s app.', response: startAppStateSchema, tool: 'start_app_get' },
   'PUT /start-app': { summary: 'Set the command that starts the project\'s app.', response: startAppStateSchema },
   'POST /preview/design-proxy': { summary: 'Open the Design Mode proxy for a previewed dev server.', response: designProxyResponseSchema, notTool: 'browser' },
   'POST /preview/gateway': { summary: 'Open the preview gateway for a dev server.', response: previewGatewayResponseSchema, notTool: 'browser' },
@@ -416,15 +416,15 @@ export const routeContracts = {
   'DELETE /workspace/secrets/:name': { summary: 'Delete a workspace secret.' },
 
   // ---- settings ------------------------------------------------------------------------
-  'GET /config': { summary: 'The project\'s cezar settings (.ai/cezar/config.json) with defaults.', response: configResponseSchema },
+  'GET /config': { summary: 'The project\'s cezar settings (.ai/cezar/config.json) with defaults.', response: configResponseSchema, tool: 'config_get' },
   'PUT /config': { summary: 'Change the project\'s cezar settings.', response: setConfigResponseSchema },
   'GET /agent-config': { summary: 'The coding agents\' own config files for this project, by agent.', response: agentConfigListingSchema },
   'GET /agent-config/:id': { summary: 'One agent config file\'s content.', response: agentConfigFileContentSchema },
   'PUT /agent-config/:id': { summary: 'Write an agent config file.', response: agentConfigFileContentSchema },
   'GET /ui-state': { summary: 'The cockpit\'s saved per-project UI state.', notTool: 'browser' },
   'PUT /ui-state': { summary: 'Save the cockpit\'s per-project UI state.', notTool: 'browser' },
-  'GET /launch-key': { summary: 'The key a bookmarklet uses to launch tasks here.', response: launchKeyResponseSchema },
-  'POST /open-in': { summary: 'Open the project in a local app (editor, terminal).', response: openProjectInResponseSchema },
+  'GET /launch-key': { summary: 'The key a bookmarklet uses to launch tasks here.', response: launchKeyResponseSchema, tool: 'launch_key_get' },
+  'POST /open-in': { summary: 'Open the project in a local app (editor, terminal).', response: openProjectInResponseSchema, tool: 'open_in' },
   'GET /open-targets': { summary: 'The local apps a project or task can be opened in.', response: openTargetsResponseSchema },
   'GET /models': { summary: 'The models each agent backend offers.', response: runnerModelCatalogResponseSchema },
   'GET /providers/status': { summary: 'Which agent backends are installed and signed in.', response: providerStatusResponseSchema },
@@ -432,8 +432,8 @@ export const routeContracts = {
   'POST /providers/:provider/retry': { summary: 'Re-check an agent backend\'s sign-in.', response: providerStatusResponseSchema },
   'POST /providers/:provider/update': { summary: 'Update an agent backend\'s CLI.', response: providerUpdateResponseSchema },
   'POST /providers/connect': { summary: 'Start signing an agent backend in.', response: providerConnectResponseSchema },
-  'GET /health': { summary: 'Whether the cockpit is up, and its version and capabilities.', response: healthResponseSchema },
-  'GET /star-count': { summary: 'cezar\'s own GitHub star count.', response: starCountSchema },
+  'GET /health': { summary: 'Whether the cockpit is up, and its version and capabilities.', response: healthResponseSchema, tool: 'health_get' },
+  'GET /star-count': { summary: 'cezar\'s own GitHub star count.', response: starCountSchema, tool: 'star_count_get' },
   'GET /telemetry/consent': { summary: 'The telemetry consent answer.', response: telemetryConsentSchema },
   'PUT /telemetry/consent': { summary: 'Answer the telemetry consent question.', response: telemetryConsentSchema, notTool: 'browser' },
   'POST /telemetry/error': { summary: 'The cockpit\'s error beacon.', notTool: 'browser' },
@@ -479,6 +479,11 @@ export const routeContracts = {
   'PUT /workspace/ui-state': { summary: 'Save the cockpit\'s workspace UI state.', notTool: 'browser' },
   'POST /workspace/uploads': { summary: 'Stage an attachment for a task prompt.', response: stagedUploadSchema },
   'DELETE /workspace/uploads/:uploadId': { summary: 'Drop a staged attachment.', response: deleteUploadResponseSchema },
+
+  // ---- MCP itself (spec 2026-10-24-cezar-mcp-server §3) -----------------------------------
+  'POST /mcp': { summary: 'The MCP endpoint (Streamable HTTP).', notTool: 'transport' },
+  'GET /mcp': { summary: 'The MCP endpoint (Streamable HTTP).', notTool: 'transport' },
+  'DELETE /mcp': { summary: 'The MCP endpoint (Streamable HTTP).', notTool: 'transport' },
 
   // ---- auth (sign-in is never a tool; tokens never reach it) ------------------------------
   'POST /auth/login': { summary: 'Sign in: password step.', notTool: 'auth' },

@@ -356,6 +356,8 @@ interface SessionState {
 export class TerminalHistory {
   private readonly sessions = new Map<string, SessionState>();
   private readonly writes = new Map<string, Promise<void>>();
+  /** Lines still being decided, kept apart from `sessions`: a session that exits leaves them owed. */
+  private readonly deciding = new Set<Promise<void>>();
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -408,6 +410,9 @@ export class TerminalHistory {
         const values = await secrets().catch(() => [] as readonly string[]);
         this.append(dataDir, [redactHistoryLine(entry, values)], values);
       });
+      const decided = state.decided;
+      this.deciding.add(decided);
+      void decided.catch(() => {}).finally(() => this.deciding.delete(decided));
     }
   }
 
@@ -415,9 +420,10 @@ export class TerminalHistory {
     this.sessions.delete(sessionId);
   }
 
-  /** Settles once every line typed so far is decided and written. A test seam, and the server's shutdown. */
+  /** Settles once every line typed so far is decided and written — a forgotten session's too. A
+   *  test seam, and the server's shutdown. */
   async flushed(): Promise<void> {
-    await Promise.all([...this.sessions.values()].map((state) => state.decided));
+    await Promise.allSettled([...this.deciding]);
     await Promise.all(this.writes.values());
   }
 

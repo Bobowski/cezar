@@ -274,6 +274,15 @@ describe('TerminalHistory', () => {
     expect(await readTerminalHistory(dataDir)).toEqual([]);
   });
 
+  it('waits for a line still being checked when its session has already exited', async () => {
+    const history = new TerminalHistory();
+    history.typed(dataDir, 's1', 'make deploy\r', () => new Promise((resolve) => setTimeout(() => resolve([]), 100)));
+    // The shell exits (`exit` typed, or the tab closed) before the check answers.
+    history.forget('s1');
+    await history.flushed();
+    expect(await readTerminalHistory(dataDir)).toEqual(['make deploy']);
+  });
+
   it('scrubs a stored line of the host\'s and the project\'s secret values before writing it', async () => {
     const history = new TerminalHistory();
     const secrets = async () => ['project-stored-secret-1'];

@@ -15,6 +15,20 @@ export const ACTIVITY_EVENTS: ReadonlySet<AutomationEvent> = new Set<AutomationE
   'issue.commented', 'check_suite.completed', 'push', 'release.published',
 ]);
 
+/**
+ * Whether an edit changes WHICH heads the diff sources track: the events (a source that stopped
+ * running left its heads to go stale) or the branch patterns (a widened pattern would see every
+ * existing branch it now matches as a push). Such an edit re-baselines the heads, as enabling does.
+ */
+export function activityHeadsChanged(
+  before: { events?: readonly string[]; filters?: { branches?: readonly string[] } },
+  after: { events?: readonly string[]; filters?: { branches?: readonly string[] } },
+): boolean {
+  const events = (definition: typeof before) => JSON.stringify([...(definition.events ?? [])].sort());
+  const branches = (definition: typeof before) => JSON.stringify(definition.filters?.branches ?? []);
+  return events(before) !== events(after) || branches(before) !== branches(after);
+}
+
 const PAGE = 100;
 const RELEASE_PAGE = 30;
 const BRANCH_PAGES = 3;

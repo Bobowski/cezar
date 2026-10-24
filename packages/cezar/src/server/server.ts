@@ -66,6 +66,7 @@ import {
   isScheduleAutomation,
   type AutomationDefinition,
 } from '../automations/types.ts';
+import { activityHeadsChanged } from '../automations/github-activity.ts';
 import { trackerTriggerSchema, trackerAutomationOptionsSchema, trackerAutomationOptionsQuerySchema, automationScheduleSchema, localTimeZone, nextOccurrence } from '@open-mercato/cezar-contract';
 import type { IncomingMessage } from 'node:http';
 import { access, constants as fsConstants, mkdir, readFile, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises';
@@ -4571,7 +4572,16 @@ export function createApp(deps: ServerDeps) {
           definition => {
             // Publish the new baseline and definition under the same mutation lease.
             if (kind === 'tracker' && definition.enabled && (!current.enabled || trackerSourceChanged)) armAutomation(automationStore, definition);
-            else if (trackerSourceChanged) {
+            else if (kind === 'github' && automationStore.state(definition.id) && activityHeadsChanged(current, definition)) {
+              // spec 2026-10-23-github-events §3: the next poll records the heads without firing.
+              automationStore.setState(definition.id, (state) => ({
+                ...state, revision: definition.revision, prHeads: undefined, branchHeads: undefined, etags: undefined,
+              }));
+              automationStore.appendLog({
+                automationId: definition.id, revision: definition.revision, result: 'baseline',
+                reason: 'The events or branches changed: the next check records pull request and branch heads without launching anything.',
+              });
+            } else if (trackerSourceChanged) {
               // A paused definition still needs a compatible read-only preview. Clear source-bound
               // progress without arming a timer; Enable will establish its own current-time baseline.
               automationStore.setState(definition.id, state => ({

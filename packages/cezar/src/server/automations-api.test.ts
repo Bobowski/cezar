@@ -91,6 +91,43 @@ describe('GitHub automation API', () => {
     expect(schedule.status).toBe(400);
   });
 
+  it('re-baselines the diff heads when an edit changes the events or branches, and only then (spec 2026-10-23-github-events §3)', async () => {
+    const automationStore = AutomationStore.open(join(root, '.ai/cezar'));
+    const server = app({ automationStore });
+    const pushes = { ...input, enabled: true, events: ['push', 'pull_request.synchronize'], filters: { lookbackDays: 7, maxRecords: 25, branches: ['main'] } };
+    const posted = ((await (await apiRequest(server, '/api/v1/automations', json(pushes))).json()) as any).automation;
+    const created = ((await (await apiRequest(server, `/api/v1/automations/${posted.id}/enable`, { method: 'POST' })).json()) as any).automation;
+    const heads = {
+      branchHeads: { main: 'a'.repeat(40) },
+      prHeads: { 8: { sha: 'b'.repeat(40), ref: 'feature', updatedAt: '2026-10-01T00:00:00.000Z' } },
+      etags: { pulls: 'W/"1"' },
+    };
+    automationStore.setState(created.id, (state) => ({ ...state, ...heads }));
+
+    // A rename or a prompt edit keeps the heads: whatever moved since the last poll still fires.
+    const renamed = await apiRequest(server, `/api/v1/automations/${created.id}`, json({ ...pushes, name: 'Renamed', expectedRevision: created.revision }, 'PUT'));
+    expect(renamed.status).toBe(200);
+    expect(automationStore.state(created.id)).toMatchObject(heads);
+    const baselineAt = automationStore.state(created.id)?.baselineAt;
+
+    // Widening `main` to `release/*` must not turn every existing release branch into a push.
+    const widened = await apiRequest(server, `/api/v1/automations/${created.id}`, json({
+      ...pushes, filters: { ...pushes.filters, branches: ['main', 'release/*'] }, expectedRevision: created.revision + 1,
+    }, 'PUT'));
+    expect(widened.status).toBe(200);
+    const state = automationStore.state(created.id)!;
+    expect(state).toMatchObject({ revision: created.revision + 2, baselineAt });
+    expect(state.branchHeads).toBeUndefined();
+    expect(state.prHeads).toBeUndefined();
+    expect(state.etags).toBeUndefined();
+    expect(automationStore.logs({ automationId: created.id, limit: 1 })[0]).toMatchObject({ result: 'baseline' });
+
+    // So does an edit of the event list.
+    automationStore.setState(created.id, (current) => ({ ...current, ...heads }));
+    await apiRequest(server, `/api/v1/automations/${created.id}`, json({ ...pushes, events: ['push'], expectedRevision: created.revision + 2 }, 'PUT'));
+    expect(automationStore.state(created.id)?.branchHeads).toBeUndefined();
+  });
+
   it('enforces optimistic concurrency and establishes a baseline on enable', async () => {
     const created = ((await (await apiRequest(app(), '/api/v1/automations', json(input))).json()) as any).automation;
     const stale = await apiRequest(

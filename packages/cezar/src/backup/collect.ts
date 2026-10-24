@@ -167,6 +167,12 @@ export function archiveHost(name: string = hostname()): string {
   return slug || 'cezar';
 }
 
+/** Exactly one host's archive names — `web` does not match `web-2`'s (review 2026-10-24). */
+export function hostArchivePattern(host: string): RegExp {
+  const escaped = host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^cezar-backup-${escaped}-(\\d{8}T\\d{4}Z)(?:-(\\d{1,3}))?\\.tar\\.(?:zst|gz)\\.age$`);
+}
+
 /** `20261023T0412Z`. */
 export function archiveStamp(date: Date): string {
   return date.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z').replace(/(T\d{4})\d{2}Z$/, '$1Z');

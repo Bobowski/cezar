@@ -17,7 +17,7 @@ import {
 import { agentStateLocations, backupsDir, cezarHomeDir, type AgentStateLocations } from '../paths.ts';
 import { listProjects } from '../workspace/projects.ts';
 import { availableCompression, compressor, encrypted, type EncryptTo } from './codec.ts';
-import { archiveHost, archiveStamp, collectBackup, type BackupManifest } from './collect.ts';
+import { archiveHost, archiveStamp, collectBackup, hostArchivePattern, type BackupManifest } from './collect.ts';
 import { applyStaged, stageArchive, type CloneProject } from './restore.ts';
 import { S3Client, type S3Target } from './s3.ts';
 import { mutateBackupState, readBackupState, readBackupTarget, writeBackupTarget } from './state.ts';
@@ -398,9 +398,9 @@ export class BackupService {
 
   /** Keep the newest `keep` of THIS host's archives under the prefix; names sort by time. */
   async pruneRemote(client: S3Client, host: string, keep: number, log: (line: string) => void): Promise<void> {
-    const ours = `cezar-backup-${host}-`;
-    const objects = (await client.list(client.keyFor(ours)))
-      .filter((object) => BACKUP_ARCHIVE_NAME_RE.test(object.key.split('/').pop() ?? ''))
+    const ours = hostArchivePattern(host);
+    const objects = (await client.list(client.keyFor(`cezar-backup-${host}-`)))
+      .filter((object) => ours.test(object.key.split('/').pop() ?? ''))
       .sort((a, b) => (a.key < b.key ? 1 : -1));
     const stale = objects.slice(keep);
     for (const object of stale) await client.delete(object.key);

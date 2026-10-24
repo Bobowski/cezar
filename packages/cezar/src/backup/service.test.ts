@@ -12,6 +12,7 @@ import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import { loadWorkspaceConfig, mergeWriteWorkspaceConfig } from '../workspace/config.ts';
 import { TEST_IDENTITY, TEST_RECIPIENT } from './age-vector.testkit.ts';
 import { fakeS3 } from './s3-fake.testkit.ts';
+import { S3Client } from './s3.ts';
 import { BackupConflictError, BackupService, NIGHTLY_KEY } from './service.ts';
 import { readBackupState } from './state.ts';
 
@@ -284,5 +285,29 @@ describe('BackupService', () => {
     expect(() => service.startBackup()).toThrow(/already running/);
     await waitForJob(service);
     expect(service.status().job?.status).toBe('done');
+  });
+});
+
+describe('remote retention', () => {
+  const name = (host: string, stamp: string, n?: number) => `c/cezar-backup-${host}-${stamp}${n ? `-${n}` : ''}.tar.zst.age`;
+
+  async function pruned(keys: string[], host: string, keep: number): Promise<string[]> {
+    const fake = fakeS3('bk');
+    await new Promise<void>((resolve) => fake.server.listen(0, '127.0.0.1', resolve));
+    try {
+      const { port } = fake.server.address() as AddressInfo;
+      for (const key of keys) fake.objects.set(key, Buffer.from('x'));
+      const client = new S3Client({ endpoint: `http://127.0.0.1:${port}`, bucket: 'bk', prefix: 'c', region: 'us-east-1', accessKeyId: 'key', secretAccessKey: 'secret' });
+      await new BackupService({ version: 't' }).pruneRemote(client, host, keep, () => {});
+      return [...fake.objects.keys()].sort();
+    } finally {
+      await new Promise<void>((resolve) => fake.server.close(() => resolve()));
+    }
+  }
+
+  it('counts only this host: `web` never prunes `web-2`', async () => {
+    const theirs = [name('web-2', '20261020T0300Z'), name('web-2', '20261021T0300Z')];
+    const ours = [name('web', '20261022T0300Z'), name('web', '20261023T0300Z')];
+    expect(await pruned([...theirs, ...ours], 'web', 1)).toEqual([...theirs, ours[1]!].sort());
   });
 });

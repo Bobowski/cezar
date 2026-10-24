@@ -736,11 +736,17 @@ export class SelfUpdateService {
     if (!view) return { id: null, branch: null };
     const { tipId, ...branch } = view;
     if (view.behind === 0 || !tipId) return { id: null, branch };
-    const id = findInstalled(tipId, this.env)?.id ?? (await this.buildBranch(tipId, onLog));
+    return { id: await this.installBranchBuild(tipId, onLog), branch };
+  }
+
+  /** A `<version>+<sha8>` built from the followed branch whatever the channel, as `apply` builds
+   *  it (npm would drop the suffix), then activated — never restarted. */
+  async installBranchBuild(target: string, onLog: (line: string) => void): Promise<string> {
+    const id = findInstalled(target, this.env)?.id ?? (await this.buildBranch(target, onLog));
     activate(id, this.env);
     clearRollback(this.env);
     this.pruneBranchBuilds(onLog);
-    return { id, branch };
+    return id;
   }
 }
 

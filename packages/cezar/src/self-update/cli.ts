@@ -9,7 +9,7 @@ import { resolve } from 'node:path';
 import { redactRemote } from '@open-mercato/cezar-contract';
 
 import { branchOf, cezarPackageRoot, discoverCheckouts } from './checkouts.ts';
-import { activate, activeId, findInstalled, linkCheckout, listInstalled, listLinks, removeInstalled } from './layout.ts';
+import { activate, activeId, findInstalled, isBranchInstallId, linkCheckout, listInstalled, listLinks, removeInstalled } from './layout.ts';
 import { ensurePathHook, isOnPath, writeLaunchers } from './launcher.ts';
 import { installFromRegistry } from './installer.ts';
 import { distTagFor, RegistryCache } from './registry.ts';
@@ -98,6 +98,8 @@ async function updateCommand(opts: SelfUpdateCliOptions): Promise<number> {
     }
   }
   const channel = await service.channel();
+  // A `+<sha8>` is a branch build whatever the channel, as the dialog's apply has it.
+  if (opts.version && isBranchInstallId(opts.version)) return branchBuildCommand(service, opts.version);
   if (channel === 'branch' && !opts.version) return branchUpdateCommand(service);
   if (channel === 'development' && !opts.version) {
     // Development follows no dist-tag: there is no "newest" to update to.
@@ -196,6 +198,20 @@ async function branchUpdateCommand(service: SelfUpdateService): Promise<number> 
 
 function commitLine(commit: { sha: string; subject: string; at: string }): string {
   return `${commit.sha.slice(0, 8)} ${commit.at.slice(0, 10)} ${commit.subject}`;
+}
+
+/** `cezar update --version <version>+<sha8>`: that commit of the followed branch, built here. */
+async function branchBuildCommand(service: SelfUpdateService, target: string): Promise<number> {
+  console.log(`\n  cezar update — branch build ${target}`);
+  try {
+    const id = await service.installBranchBuild(target, (line) => console.log(`  · ${line}`));
+    const dir = writeLaunchers();
+    console.log(`\n  ✓ ${id} is now current — restart cezar to run it (${isOnPath(dir) ? 'cezar' : `${dir}/cezar`})\n`);
+    return 0;
+  } catch (error) {
+    console.error(`\n  ✗ update failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
 }
 
 async function versionsCommand(): Promise<number> {

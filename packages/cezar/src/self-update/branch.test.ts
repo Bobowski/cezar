@@ -497,6 +497,31 @@ describe('cezar update on the branch channel', () => {
     vi.restoreAllMocks();
   });
 
+  it('update --version <version>+<sha8> builds that commit off the branch channel too, never from npm', async () => {
+    const c1 = commit('feat: one', '2026-10-21T10:00:00Z', { 'packages/cezar/package.json': pkg() });
+    const c2 = commit('fix: two', '2026-10-23T10:00:00Z');
+    runningBuild(c1, '2026-10-21T10:00:00.000Z');
+    await mergeWriteWorkspaceConfig((config) => {
+      config.updateChannel = 'stable';
+      config.updateChannelSource = 'user';
+    });
+    env.CEZ_UPDATE_BRANCH = `${REMOTE}#brutus`;
+    const target = `0.17.0+${c2.slice(0, 8)}`;
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const errors: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((line?: unknown) => void errors.push(String(line ?? '')));
+    const { calls, deps } = stubs();
+    const restart = vi.fn();
+    const svc = service({ ...deps, restart });
+    expect(await runSelfUpdateCommand('update', [], { service: svc, modifyPath: false, version: target })).toBe(0);
+    expect(errors).toEqual([]);
+    expect(calls).toEqual([`build@${c2.slice(0, 8)}`, 'pack', 'install']);
+    expect(activeId(env)).toBe(target);
+    expect(readManifest(target, env)).toMatchObject({ source: 'branch', commit: { sha: c2 } });
+    expect(restart).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+  });
+
   it('marks an activate as fresh only when it switches, and never lists the marker as an install', () => {
     const c1 = commit('feat: one', '2026-10-21T10:00:00Z');
     const running = runningBuild(c1, '2026-10-21T10:00:00.000Z');

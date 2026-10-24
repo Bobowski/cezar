@@ -327,7 +327,16 @@ import { checkoutRepo, type CloneRunner } from './checkout.ts';
 import { createProjectInputSchema } from '@open-mercato/cezar-contract';
 import { createProject, listGithubOwners, type CommandRunner } from './create-project.ts';
 import { ProjectContextError, ProjectContexts, type ProjectContext } from './project-context.ts';
-import { fetchRepo, landingInProgress, pullRepo, pushRepo, repoSyncStatus, syncRepo, type SyncActionResult } from './repo-sync.ts';
+import {
+  fetchRepo,
+  landingInProgress,
+  pullRepo,
+  pushRepo,
+  repoSyncStatus,
+  serializeCheckout,
+  syncRepo,
+  type SyncActionResult,
+} from './repo-sync.ts';
 import {
   abortOperation, checkoutBranch, cherryPick, commitIndex, compareWithCurrent, continueOperation, deleteBranch,
   discardPaths, fetchRemote, listRemotes, listStashes, mergeBranch, pushBranch, rebaseOnto, renameBranch, repoGraph,
@@ -8683,7 +8692,7 @@ export function createApp(deps: ServerDeps) {
       const info = await getRepoInfo(repoRoot);
       if (!info) return c.json({ error: 'not a git repository' }, 409);
       const parsed = { data: c.req.valid('json') };
-      const result = await createOrSwitchBranch(info.root, parsed.data.name, parsed.data.from);
+      const result = await serializeCheckout(info.root, () => createOrSwitchBranch(info.root, parsed.data.name, parsed.data.from));
       if (!result.ok) return c.json({ error: result.error }, 409);
       return c.json({ branch: result.branch, created: result.created });
     })

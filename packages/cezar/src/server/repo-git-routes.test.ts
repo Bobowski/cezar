@@ -10,6 +10,7 @@ import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import { landInPlace } from '../workflows/landing.ts';
 import type { RunManager } from '../workflows/run.ts';
 import { apiRequest } from './loopback-request.testkit.ts';
+import { serializeCheckout } from './repo-sync.ts';
 import { createApp } from './server.ts';
 
 function g(dir: string, ...args: string[]): string {
@@ -151,6 +152,24 @@ describe('the Git page routes', () => {
     expect(g(repo, 'log', '-1', '--format=%s', 'origin/main').trim()).toBe('the landing');
     // Once the landing is done the same action goes through.
     expect((await apiRequest(app, '/api/v1/repo/branch/other/checkout', { method: 'POST' })).status).toBe(200);
+  });
+
+  it('POST /repo/branch waits its turn on the checkout queue', async () => {
+    let release!: () => void;
+    const held = serializeCheckout(repo, () => new Promise<void>((resolve) => (release = resolve)));
+    let settled = false;
+    const created = apiRequest(app, '/api/v1/repo/branch', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'queued-branch' }),
+      headers: { 'content-type': 'application/json' },
+    }).finally(() => (settled = true));
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(settled).toBe(false);
+    expect(g(repo, 'branch', '--list', 'queued-branch').trim()).toBe('');
+    release();
+    await held;
+    expect((await created).status).toBe(200);
+    expect(g(repo, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('queued-branch');
   });
 
   it('fetch, pull, push and sync answer 409 during a landing instead of queueing behind it', async () => {

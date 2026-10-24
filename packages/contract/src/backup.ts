@@ -91,18 +91,12 @@ export const setBackupRecipientBodySchema = z.union([
 ]);
 export type SetBackupRecipientBody = z.infer<typeof setBackupRecipientBodySchema>;
 
+/** `http(s)://host[:port][/path]` — no credentials in the authority (this package has no `URL`). */
 const httpUrl = z
   .string()
   .trim()
   .max(512)
-  .refine((value) => {
-    try {
-      const url = new URL(value);
-      return (url.protocol === 'https:' || url.protocol === 'http:') && url.username === '' && url.password === '';
-    } catch {
-      return false;
-    }
-  }, 'an http(s):// endpoint, without credentials in it');
+  .regex(/^https?:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?(?:\/[^\s@?#]*)?$/, 'an http(s):// endpoint, without credentials in it');
 
 export const setBackupTargetBodySchema = z
   .object({

@@ -18,6 +18,7 @@ import {
   TicketIcon,
   FileKeyIcon,
   PanelLeftIcon,
+  ArchiveRestoreIcon,
 } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 
@@ -26,6 +27,7 @@ import { AccountsSection } from './accounts-section'
 import { AgentConfigSection } from './agent-config-section'
 import { AgentsSection } from './agents-section'
 import { AppearanceSection } from './appearance'
+import { BackupSection } from './backup-section'
 import { InstructionsSection } from './instructions-section'
 import { KeyboardSection } from './keyboard-section'
 import { BookmarkletsSection } from './bookmarklets-section'
@@ -81,6 +83,7 @@ export type SettingsSectionId =
   | 'workspace-secrets'
   | 'security'
   | 'privacy'
+  | 'backup'
 
 /** Which settings area a section belongs to — and therefore which store it writes. */
 export type SettingsScope = 'project' | 'global'
@@ -243,6 +246,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description: 'Your password, recovery codes and signed-in devices.',
     icon: ShieldCheckIcon,
     component: SecuritySection,
+    scope: 'global',
+  },
+  {
+    id: 'backup',
+    title: 'Backup',
+    description: 'Encrypted backups of this cockpit — download, a remote bucket, nightly, and restore.',
+    icon: ArchiveRestoreIcon,
+    component: BackupSection,
     scope: 'global',
   },
   {

@@ -11,7 +11,7 @@ import { normalizeCommentBody } from './github-activity.ts';
 import type { ScheduleOccurrence } from './schedule-runner.ts';
 import type { TrackerAutomationCandidate } from './tracker-poller.ts';
 import { resolvePrHead, type CommandRunner } from './pr-head.ts';
-import { deliverAutomationMessage, findOwningRun, githubSelfLogin, owningRunRefusal, type DeliveryMark } from './owning-run.ts';
+import { deliverAutomationMessage, findOwningRun, githubSelfLogin, owningRunHold, type DeliveryMark } from './owning-run.ts';
 import type { AutomationDefinition, GithubAutomationDefinition, ScheduleAutomationDefinition, TrackerAutomationDefinition } from './types.ts';
 
 const GITHUB_PLACEHOLDERS = new Set([
@@ -248,22 +248,24 @@ export async function launchAutomationRun(options: {
   runCommand?: CommandRunner;
   /** Test seam: the login cezar's `gh` runs as (`githubSelfLogin`). */
   selfLogin?: () => Promise<string | undefined>;
+  /** Called once the holds pass, before anything is delivered or started (`releaseHeldEvents`). */
+  admit?: () => void;
 }): Promise<AutomationLaunched> {
   const { definition, candidate } = options;
   // spec 2026-10-23-github-events §5: a PR a cezar task owns gets the event as a message there.
-  let note: string | undefined;
   if (definition.deliver === 'owning-run' && candidate.number !== undefined
     && (candidate.event.startsWith('pull_request.') || candidate.event === 'check_suite.completed')) {
     const owner = findOwningRun(options.store.listRuns(), candidate);
     if (owner) {
       // Neither its own reply nor an unbounded stream: held, never a new run instead (§11).
-      const refusal = await owningRunRefusal({
+      const hold = await owningRunHold({
         definition, candidate, owner,
         events: options.store.readEvents(owner.id),
         live: options.manager.isActive?.(owner.id) ?? false,
         selfLogin: options.selfLogin ?? (() => githubSelfLogin(options.root, candidate.repo, options.runCommand)),
       });
-      if (refusal) throw new AutomationLaunchOutcome('skipped', refusal);
+      if (hold) throw new AutomationLaunchOutcome(hold.result, hold.reason);
+      options.admit?.();
       const outcome = deliverAutomationMessage(options.manager, owner.id, renderAutomationTask(definition, candidate));
       if (outcome.ok) {
         const how = outcome.how === 'continued' ? 'continuing this task' : outcome.how === 'live' ? 'delivered' : 'queued behind the current turn';
@@ -276,11 +278,13 @@ export async function launchAutomationRun(options: {
         options.store.flush({ throwOnError: true });
         return { runId: owner.id, delivered: true };
       }
-      note = `The owning run ${owner.id} could not take the message (${outcome.error}); a new run was launched instead.`;
+      const note = `The owning run ${owner.id} could not take the message (${outcome.error}); a new run was launched instead.`;
+      const launched = await launchNewAutomationRun(options);
+      return { ...launched, note };
     }
   }
-  const launched = await launchNewAutomationRun(options);
-  return note ? { ...launched, note } : launched;
+  options.admit?.();
+  return launchNewAutomationRun(options);
 }
 
 /** What a GitHub automation's launch did: a new run, or a message into the run owning the PR. */
@@ -331,13 +335,14 @@ async function launchNewAutomationRun(options: Parameters<typeof launchAutomatio
 }
 
 /**
- * A launch that ended without a run, on purpose (`skipped`) or because the pull request's head
- * could not be reached (`failed`). `launchEventCandidate` turns it into a receipt and a log row
- * rather than a poll-cycle error, so one closed PR never backs off the whole automation.
+ * A launch that ended without a run, on purpose (`skipped`), because the pull request's head
+ * could not be reached (`failed`), or for now (`held`, decided again on the next poll).
+ * `launchEventCandidate` turns it into a receipt and a log row rather than a poll-cycle error,
+ * so one closed PR never backs off the whole automation.
  */
 export class AutomationLaunchOutcome extends Error {
   constructor(
-    readonly result: 'skipped' | 'failed',
+    readonly result: 'skipped' | 'failed' | 'held',
     readonly reason: string,
   ) {
     super(reason);

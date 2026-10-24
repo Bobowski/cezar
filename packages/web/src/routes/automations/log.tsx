@@ -156,7 +156,7 @@ export function AutomationLog({ automationId, automation, timeZone, onBack }: {
 /** Every result the log can hold, in the contract's order — the filter's menu. */
 const RESULTS: readonly AutomationLogResult[] = [
   'launched', 'no-match', 'duplicate', 'rate-limited', 'error', 'baseline', 'preview',
-  'manual', 'catch-up', 'skipped', 'failed', 'delivered',
+  'manual', 'catch-up', 'skipped', 'failed', 'delivered', 'held',
 ]
 
 /** The bounded polls a GitHub automation can watch — the editor's list, so the two never drift. */

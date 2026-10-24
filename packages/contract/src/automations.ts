@@ -264,6 +264,8 @@ export const automationLogResultSchema = z.enum([
   'failed',
   // spec 2026-10-23-github-events §5: the prompt went into the run that owns the PR.
   'delivered',
+  // §11: deferred, not dropped — re-evaluated on every poll (the run's own turn, the hourly cap).
+  'held',
 ]);
 export type AutomationLogResult = z.infer<typeof automationLogResultSchema>;
 

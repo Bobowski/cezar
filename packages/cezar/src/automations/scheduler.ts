@@ -1,4 +1,4 @@
-import { runEventPollCycle, launchEventCandidate } from './event-poll-cycle.ts';
+import { runEventPollCycle, launchEventCandidate, releaseHeldEvents } from './event-poll-cycle.ts';
 import { isOwnTrace, type GithubTraces } from '../runs/github-traces.ts';
 import type { AutomationCoordinator } from './coordinator.ts';
 import { POLL_RECORD_CEILING } from './github-poller.ts';
@@ -26,6 +26,8 @@ export type AutomationLauncher = (
   definition: GithubAutomationDefinition,
   candidate: GithubCandidate,
   receiptId: string,
+  /** `admit`: called once the holds pass, before anything starts (a held event's release). */
+  options?: { admit?: () => void },
 ) => Promise<AutomationLaunchResult>;
 export type TrackerAutomationLauncher = (
   definition: TrackerAutomationDefinition,
@@ -135,6 +137,7 @@ export class ProjectAutomationScheduler {
       eligible: (candidate, state) => candidate.cursorless === true || !state.cursor
         || Date.parse(candidate.timestamp) >= Date.parse(state.cursor.timestamp) - CURSOR_OVERLAP_MS,
       launch: (candidate: GithubCandidate) => this.launch(definition, candidate),
+      releaseHeld: () => this.releaseHeld(definition),
       persist: (result, current) => {
         const cursor = laterCursor(current.cursor, result.cursor);
         // A webhook wake that arrived while this poll ran stays due — a minute on, the shortest
@@ -187,6 +190,22 @@ export class ProjectAutomationScheduler {
       receipt: { eventId: candidate.eventId, candidate },
       log: { event: candidate.event, githubNumber: candidate.number, githubTitle: candidate.title, githubUrl: candidate.url },
       launch: receiptId => this.handle.launch!(definition, candidate, receiptId),
+    });
+  }
+
+  /** Held events (spec 2026-10-23-github-events §11) are decided again on every execute poll. */
+  private async releaseHeld(definition: GithubAutomationDefinition): Promise<void> {
+    const launch = this.handle.launch;
+    if (!launch) return;
+    await releaseHeldEvents<GithubCandidate>({
+      store: this.handle.store, definition,
+      candidateOf: (receipt) => receipt.candidate as GithubCandidate | undefined,
+      log: (candidate) => ({ event: candidate.event, githubNumber: candidate.number, githubTitle: candidate.title, githubUrl: candidate.url }),
+      own: async (candidate) => {
+        const traces = await this.handle.traces?.();
+        return !!traces && isOwnTrace(candidate, traces, definition.filters.includeOwnPushes);
+      },
+      launch: (receiptId, candidate, admit) => launch(definition, candidate, receiptId, { admit }),
     });
   }
 

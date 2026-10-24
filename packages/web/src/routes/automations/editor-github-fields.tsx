@@ -113,7 +113,7 @@ export function EditorGithubFields({
                 onCheckedChange={(checked) => setFilter('allowSelfComments', checked === true)}
               />
               <Label htmlFor="filter-self-comments" className="text-[13px] font-normal">
-                Also my own account’s comments while the task works (otherwise taken for its own reply)
+                Deliver my own account’s comments at once, even during the task’s turn (otherwise held until the turn ends)
               </Label>
             </span>
           ) : null}

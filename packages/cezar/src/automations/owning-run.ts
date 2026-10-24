@@ -79,39 +79,27 @@ export function deliverAutomationMessage(manager: RunManager, runId: string, tex
   return continued.ok ? { ok: true, how: 'continued' } : { ok: false, error: continued.error ?? 'the run could not be continued' };
 }
 
-/** After a turn ends, how long a comment by cezar's own login still counts as that turn's. */
-export const SELF_COMMENT_GRACE_MS = 2 * 60_000;
 /** The window the per-PR delivery cap counts over; the cap is the automation's `maxRecords`. */
 export const DELIVERY_CAP_WINDOW_MS = 60 * 60_000;
+/** GitHub's clock against this machine's: a comment this close before a turn began counts as in it. */
+const CLOCK_SKEW_MS = 60_000;
 
-/** The spans the run's agent was at work: each `turn.started` to the turn's end (`turn.completed`
- *  or `session.ended`), the last one open while the run is live, else to its last event. */
-export function activeSpans(run: Pick<RunRecord, 'startedAt' | 'createdAt' | 'finishedAt'>, events: readonly RunEvent[], live: boolean, now: number): Array<[number, number]> {
-  const spans: Array<[number, number]> = [];
+/** When the run's current turn began, while it is working: the last `turn.started` with no
+ *  `turn.completed`/`session.ended` after it, on a live run. A live run whose backend never says
+ *  `turn.*` is working since it started. `undefined` when the run is at rest. */
+export function openTurnSince(run: Pick<RunRecord, 'startedAt' | 'createdAt'>, events: readonly RunEvent[], live: boolean): number | undefined {
+  if (!live) return undefined;
   let start: number | undefined;
-  let last = 0;
+  let sawTurn = false;
   for (const event of events) {
     const at = Date.parse(event.ts);
     if (!Number.isFinite(at)) continue;
-    if (event.type === 'turn.started') start ??= at;
-    else if ((event.type === 'turn.completed' || event.type === 'session.ended') && start !== undefined) {
-      spans.push([start, at]);
-      start = undefined;
-    }
-    if (start !== undefined) last = at;
+    if (event.type === 'turn.started') {
+      sawTurn = true;
+      start ??= at;
+    } else if (event.type === 'turn.completed' || event.type === 'session.ended') start = undefined;
   }
-  if (start !== undefined) spans.push([start, live ? now : last]);
-  // A log with no turn at all (a backend that never said): the whole life of the run.
-  if (!spans.length && (live || run.startedAt)) {
-    const from = Date.parse(run.startedAt ?? run.createdAt);
-    spans.push([from, live ? now : Date.parse(run.finishedAt ?? '') || from]);
-  }
-  return spans;
-}
-
-/** Whether `at` falls while the run was at work, or within `SELF_COMMENT_GRACE_MS` after a turn. */
-export function duringActiveSpan(spans: ReadonlyArray<[number, number]>, at: number): boolean {
-  return spans.some(([from, to]) => at >= from && at <= to + SELF_COMMENT_GRACE_MS);
+  return sawTurn ? start : Date.parse(run.startedAt ?? run.createdAt);
 }
 
 const loginCache = new Map<string, { login?: string; at: number }>();
@@ -158,15 +146,20 @@ export function forgetGithubSelfLogins(): void {
 /** What a delivery note carries so the per-PR cap can count it back. */
 export type DeliveryMark = { automationId: string; repo: string; number: number };
 
+/** Why an event does not go into its owning run now: `held` is re-decided on every poll. */
+export type OwningRunHold = { result: 'held' | 'skipped'; reason: string };
+
 /**
- * Why an event must NOT go into its owning run, or `undefined` (spec 2026-10-23-github-events §11):
- * a comment by the login cezar runs as, written while that run was at work — its own reply, posted
- * by a means no trace saw (curl, an alias, a tool cezar does not parse) — unless the automation
- * sets `allowSelfComments`; or the automation already delivered `maxRecords` events on this PR
- * within the hour. Independent of traces: it holds whatever posted the comment. An unknown login
- * counts as ours: a loop costs more than a held comment, which the log row names.
+ * Why an event must NOT go into its owning run now, or `undefined` (spec 2026-10-23-github-events
+ * §11). The traces decide first (the scheduler drops what they claim); this is the tie-breaker for
+ * a comment no trace claimed. On a local cockpit the `gh` login IS the human, so a comment by it
+ * is never dropped: one CREATED during the run's current, still-open turn may be the run's own
+ * reply posted by a means no trace saw (curl, an alias, a tool cezar does not parse), and is
+ * `held` until that turn ends — then delivered, unless a trace has claimed it meanwhile. One
+ * written after the turn ended is the human's and goes at once. `allowSelfComments` turns the
+ * hold off. An unknown login holds like ours: a loop costs more than a held comment.
  */
-export async function owningRunRefusal(input: {
+export async function owningRunHold(input: {
   definition: GithubAutomationDefinition;
   candidate: GithubCandidate;
   owner: RunRecord;
@@ -174,7 +167,7 @@ export async function owningRunRefusal(input: {
   live: boolean;
   selfLogin: () => Promise<string | undefined>;
   now?: number;
-}): Promise<string | undefined> {
+}): Promise<OwningRunHold | undefined> {
   const { definition, candidate, owner, events } = input;
   const now = input.now ?? Date.now();
   const delivered = events.filter((event) => {
@@ -183,16 +176,20 @@ export async function owningRunRefusal(input: {
       && mark.repo?.toLowerCase() === candidate.repo.toLowerCase() && now - Date.parse(event.ts) < DELIVERY_CAP_WINDOW_MS;
   }).length;
   const cap = definition.filters.maxRecords;
-  if (delivered >= cap) return `delivery-cap: ${delivered} events of this automation already went into run ${owner.id} for #${candidate.number} in the last hour (cap ${cap}, the automation's maxRecords).`;
+  if (delivered >= cap) return { result: 'skipped', reason: `delivery-cap: ${delivered} events of this automation already went into run ${owner.id} for #${candidate.number} in the last hour (cap ${cap}, the automation's maxRecords).` };
   const comment = candidate.comment;
   if (!comment || definition.filters.allowSelfComments === true) return undefined;
-  // A collapsed review is decided per comment: any one of them inside the window holds it.
-  const spans = activeSpans(owner, events, input.live, now);
+  const since = openTurnSince(owner, events, input.live);
+  if (since === undefined) return undefined;
+  // A collapsed review is decided per comment: any one of them written in the turn holds it.
   const times = (comment.parts?.map((part) => part.at) ?? [candidate.timestamp]).map((value) => Date.parse(value));
-  if (!times.some((at) => Number.isFinite(at) && duringActiveSpan(spans, at))) return undefined;
+  if (!times.some((at) => Number.isFinite(at) && at >= since - CLOCK_SKEW_MS)) return undefined;
   const login = await input.selfLogin();
   if (login !== undefined && login.toLowerCase() !== comment.author.toLowerCase()) return undefined;
-  return login === undefined
-    ? `own-comment: written while run ${owner.id} was at work, and cezar's GitHub login could not be read to tell it from the run's own reply (set allowSelfComments to deliver such comments).`
-    : `own-comment: by ${login}, the login cezar runs as, while run ${owner.id} was at work — the run's own reply (set allowSelfComments to deliver such comments).`;
+  return {
+    result: 'held',
+    reason: login === undefined
+      ? `own-comment: written during run ${owner.id}'s current turn, and cezar's GitHub login could not be read to tell it from the run's own reply — held until the turn ends.`
+      : `own-comment: by ${login}, the login cezar runs as, during run ${owner.id}'s current turn — held until the turn ends, then delivered unless a trace claims it as the run's own reply.`,
+  };
 }

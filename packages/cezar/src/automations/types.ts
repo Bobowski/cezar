@@ -286,7 +286,9 @@ export const automationReceiptSchema = z
     // `skipped` (spec 2026-10-06-agentic-e2e-checks Phase 3): the event was handled and
     // deliberately launched nothing — a closed PR, an unadmitted fork head. Terminal, not
     // retryable; the receipt is what stops the next poll re-firing for the same event.
-    status: z.enum(['reserved', 'launched', 'launch-error', 'skipped']),
+    // `held` (spec 2026-10-23-github-events §11): deferred, never dropped — every poll of the
+    // automation decides it again (`releaseHeldEvents`).
+    status: z.enum(['reserved', 'launched', 'launch-error', 'skipped', 'held']),
     runId: z.string().optional(),
     observedAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
@@ -357,6 +359,8 @@ export const automationLogResultSchema = z.enum([
   'failed',
   // spec 2026-10-23-github-events §5
   'delivered',
+  // §11: deferred, re-evaluated on every poll
+  'held',
 ]);
 
 export const automationLogRecordSchema = z

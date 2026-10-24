@@ -43,8 +43,12 @@ const bodyKey = (entry: CommentBodyTrace) => entry.number === undefined ? entry.
 
 /** Whether `body`, on item `number`, is one cezar posted or is posting. */
 export function isOwnCommentBody(traces: GithubTraces, body: string, number?: number): boolean {
+  return isOwnCommentHash(traces, commentFingerprint(body), number);
+}
+
+/** `isOwnCommentBody` for a body known only by its `commentFingerprint` (a held receipt's). */
+export function isOwnCommentHash(traces: GithubTraces, hash: string, number?: number): boolean {
   if (!traces.bodies?.size) return false;
-  const hash = commentFingerprint(body);
   return traces.bodies.has(hash) || (number !== undefined && traces.bodies.has(bodyKey({ hash, number })));
 }
 
@@ -62,13 +66,20 @@ export function commentFingerprint(body: string): string {
 /** Whether `candidate` came from cezar's own push or comment — asked when the poll reads it AND
  *  again when it is decided, since a trace can land while a long poll is in flight. */
 export function isOwnTrace(
-  candidate: { event: string; number?: number; headSha?: string; comment?: { id: number; body?: string } },
+  candidate: {
+    event: string; number?: number; headSha?: string;
+    comment?: { id: number; body?: string; fingerprint?: string; parts?: ReadonlyArray<{ id: number; hash: string }> };
+  },
   traces: GithubTraces,
   includeOwnPushes = false,
 ): boolean {
-  if (candidate.comment) {
-    return traces.comments.has(candidate.comment.id)
-      || (candidate.comment.body !== undefined && isOwnCommentBody(traces, candidate.comment.body, candidate.number));
+  const comment = candidate.comment;
+  if (comment) {
+    // A collapsed review is cezar's only when every comment in it is.
+    if (comment.parts?.length) return comment.parts.every((part) => traces.comments.has(part.id) || isOwnCommentHash(traces, part.hash, candidate.number));
+    if (traces.comments.has(comment.id)) return true;
+    if (comment.body !== undefined) return isOwnCommentBody(traces, comment.body, candidate.number);
+    return comment.fingerprint !== undefined && isOwnCommentHash(traces, comment.fingerprint, candidate.number);
   }
   const sha = candidate.headSha?.toLowerCase();
   if (!sha || !traces.shas.has(sha)) return false;

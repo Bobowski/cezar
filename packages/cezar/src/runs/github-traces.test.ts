@@ -118,6 +118,12 @@ describe('github traces (spec 2026-10-23-github-events §6)', () => {
     expect(isOwnTrace({ event: 'pull_request.commented', headSha: sha(1), comment: { id: 6, body: 'a human' } }, traces)).toBe(false);
     expect(isOwnTrace({ event: 'pull_request.commented', comment: { id: 5 } }, traces)).toBe(true);
     expect(isOwnTrace({ event: 'issue.commented', comment: { id: 7, body: 'posting  now' } }, traces)).toBe(true);
+    // A held receipt keeps the body's fingerprint only; a collapsed review is ours only when every comment is.
+    expect(isOwnTrace({ event: 'issue.commented', comment: { id: 7, fingerprint: commentFingerprint('posting now') } }, traces)).toBe(true);
+    expect(isOwnTrace({ event: 'issue.commented', comment: { id: 7, fingerprint: commentFingerprint('a human') } }, traces)).toBe(false);
+    const parts = (...hashes: string[]) => hashes.map((hash, index) => ({ id: 100 + index, hash }));
+    expect(isOwnTrace({ event: 'pull_request.review_commented', comment: { id: 101, parts: [{ id: 5, hash: 'x' }, ...parts(commentFingerprint('posting now'))] } }, traces)).toBe(true);
+    expect(isOwnTrace({ event: 'pull_request.review_commented', comment: { id: 101, parts: [{ id: 5, hash: 'x' }, ...parts(commentFingerprint('a human'))] } }, traces)).toBe(false);
   });
 
   it('deduplicates and caps, newest last', () => {

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RunStore, type RunRecord } from '../runs/store.ts';
 import type { RunManager } from '../workflows/run.ts';
-import { launchEventCandidate } from './event-poll-cycle.ts';
+import { launchEventCandidate, releaseHeldEvents } from './event-poll-cycle.ts';
 import type { GithubCandidate } from './github-poller.ts';
 import { deliverAutomationMessage, findOwningRun, forgetGithubSelfLogins, githubSelfLogin } from './owning-run.ts';
 import { AutomationStore } from './store.ts';
@@ -175,8 +175,9 @@ describe('owning-run delivery never feeds a run its own reply, nor an unbounded 
     const automations = AutomationStore.open(join(root, '.ai/cezar'));
     const delivered: string[] = [];
     const started: string[] = [];
+    const state = { live: false };
     const manager = {
-      enqueueMessage: () => null, hasLiveSession: () => false, deferMessage: () => false, isActive: () => false,
+      enqueueMessage: () => null, hasLiveSession: () => false, deferMessage: () => false, isActive: () => state.live,
       continueRun: (_id: string, opts: { text?: string }) => { delivered.push(opts.text ?? ''); return { ok: true }; },
       startRun: () => { const created = runs.createRun({ title: 'stranger', workflow: 'quick-task', task: 't', steps: [] }); started.push(created.id); return created; },
     } as unknown as RunManager;
@@ -189,24 +190,70 @@ describe('owning-run delivery never feeds a run its own reply, nor an unbounded 
         launch: (receiptId) => launchAutomationRun({ root, manager, store: runs, definition: { ...definition, ...over }, candidate, receiptId, selfLogin }),
       });
     const lastLog = () => automations.logs({ automationId: definition.id })[0];
-    return { runs, automations, owner, delivered, started, fire, lastLog };
+    const receiptOf = (id: number) => automations.latestReceipts().get(`${definition.id}:acme/demo:comment:${id}`);
+    /** The next poll's pass over the held events, with the traces it would read then. */
+    const release = (selfLogin = async () => 'cezar-bot' as string | undefined, own: (candidate: GithubCandidate) => boolean = () => false) =>
+      releaseHeldEvents<GithubCandidate>({
+        store: automations, definition,
+        candidateOf: (receipt) => receipt.candidate as GithubCandidate | undefined,
+        log: (candidate) => ({ event: candidate.event, githubNumber: candidate.number }),
+        own: async (candidate) => own(candidate),
+        launch: (receiptId, candidate, admit) => launchAutomationRun({ root, manager, store: runs, definition, candidate, receiptId, selfLogin, admit }),
+      });
+    return { runs, automations, owner, delivered, started, state, fire, lastLog, receiptOf, release };
   }
 
-  it('holds a comment by cezar’s own login written while the run was at work — however it was posted (an MCP tool, curl)', async () => {
-    const { runs, owner, delivered, started, fire, lastLog } = await setup();
+  it('holds a comment by cezar’s own login written during the run’s live turn, and delivers it once the turn ends', async () => {
+    const { runs, owner, delivered, started, state, fire, lastLog, receiptOf, release } = await setup();
     // The agent answered through a GitHub MCP tool cezar never parsed: no trace exists.
+    state.live = true;
     runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
     runs.appendEvent(owner.id, { type: 'item.completed', item: { kind: 'tool', id: 'x', name: 'mcp__gh_custom__reply', input: { text: 'Done' }, status: 'completed' } });
-    runs.appendEvent(owner.id, { type: 'turn.completed', turnId: 't1' });
     await fire(comment(1, 'Cezar-Bot', new Date()));
     expect(delivered).toEqual([]);
     expect(started).toEqual([]);
-    expect(lastLog()).toMatchObject({ result: 'skipped' });
+    expect(lastLog()).toMatchObject({ result: 'held' });
     expect(lastLog()?.reason).toContain('own-comment');
-    // An unknown login, inside the window, is held too.
+    expect(receiptOf(1)).toMatchObject({ status: 'held' });
+    // An unknown login, during the turn, is held too.
     await fire(comment(2, 'someone', new Date()), {}, async () => undefined);
-    expect(delivered).toEqual([]);
     expect(lastLog()?.reason).toContain('could not be read');
+    // Still working: the next poll leaves both held, and says nothing new.
+    const before = lastLog()?.seq;
+    await release(async () => undefined);
+    expect(delivered).toEqual([]);
+    expect(lastLog()?.seq).toBe(before);
+    expect(receiptOf(1)).toMatchObject({ status: 'held' });
+    // The turn ends with no trace claiming either: a human wrote them after all, and both go in, oldest first.
+    runs.appendEvent(owner.id, { type: 'turn.completed', turnId: 't1' });
+    await release();
+    expect(delivered).toHaveLength(2);
+    expect(delivered[0]).toContain('Done — pushed the fix.');
+    expect(receiptOf(1)).toMatchObject({ status: 'launched', delivered: true, runId: owner.id });
+    expect(lastLog()).toMatchObject({ result: 'delivered', runId: owner.id });
+  });
+
+  it('drops a held comment a trace claims meanwhile — the run’s own reply — and never delivers it', async () => {
+    const { runs, owner, delivered, state, fire, lastLog, receiptOf, release } = await setup();
+    state.live = true;
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    await fire(comment(3, 'cezar-bot', new Date()));
+    expect(receiptOf(3)).toMatchObject({ status: 'held' });
+    runs.appendEvent(owner.id, { type: 'turn.completed', turnId: 't1' });
+    await release(undefined, (candidate) => candidate.comment?.id === 3);
+    expect(delivered).toEqual([]);
+    expect(receiptOf(3)).toMatchObject({ status: 'skipped' });
+    expect(lastLog()?.reason).toContain('own-trace');
+  });
+
+  it('delivers at once a comment by cezar’s login written after the turn ended, though the run is still live', async () => {
+    const { runs, owner, delivered, state, fire, lastLog } = await setup();
+    state.live = true;
+    runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
+    runs.appendEvent(owner.id, { type: 'turn.completed', turnId: 't1' });
+    await fire(comment(4, 'cezar-bot', new Date(Date.now() + 5_000)));
+    expect(delivered).toHaveLength(1);
+    expect(lastLog()).toMatchObject({ result: 'delivered' });
   });
 
   it('delivers the same login’s comment written well after the run’s last turn, someone else’s at any time, and any with allowSelfComments', async () => {
@@ -218,16 +265,17 @@ describe('owning-run delivery never feeds a run its own reply, nor an unbounded 
     expect(delivered).toHaveLength(2);
   });
 
-  it('decides a collapsed review per comment: one of its comments inside the turn holds the batch', async () => {
-    const { runs, owner, delivered, fire, lastLog } = await setup();
+  it('decides a collapsed review per comment: one of its comments written in the turn holds the batch', async () => {
+    const { runs, owner, delivered, state, fire, lastLog } = await setup();
+    state.live = true;
     runs.appendEvent(owner.id, { type: 'turn.started', turnId: 't1' });
-    runs.appendEvent(owner.id, { type: 'turn.completed', turnId: 't1' });
-    const later = new Date(Date.now() + 10 * 60_000);
-    const batch = comment(9, 'cezar-bot', later);
-    batch.comment!.parts = [{ id: 8, at: new Date().toISOString(), hash: 'a'.repeat(64) }, { id: 9, at: later.toISOString(), hash: 'b'.repeat(64) }];
+    // The batch's own timestamp is an older comment's (edited since); another was written in the turn.
+    const earlier = new Date(Date.now() - 60 * 60_000);
+    const batch = comment(9, 'cezar-bot', earlier);
+    batch.comment!.parts = [{ id: 9, at: earlier.toISOString(), hash: 'b'.repeat(64) }, { id: 10, at: new Date(Date.now() + 1_000).toISOString(), hash: 'a'.repeat(64) }];
     await fire(batch);
     expect(delivered).toEqual([]);
-    expect(lastLog()?.reason).toContain('own-comment');
+    expect(lastLog()).toMatchObject({ result: 'held' });
   });
 
   it('allowSelfComments delivers a comment of its own login, during a turn', async () => {

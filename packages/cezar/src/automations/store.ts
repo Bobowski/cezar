@@ -11,6 +11,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import lockfile from 'proper-lockfile';
 import { renameSyncWithRetry } from '../fs-rename.ts';
+import { commentFingerprint } from '../runs/github-traces.ts';
 import { collectSecretValues, redactDeep } from '../core/secret-redaction.ts';
 import { join } from 'node:path';
 import {
@@ -223,9 +224,11 @@ export class AutomationStore {
     if (this.latestReceipts().has(receiptKey)) return undefined;
     const now = this.now().toISOString();
     // A comment's body is GitHub content, which receipts never hold (spec 2026-07-25 § logs);
-    // a retry renders without it and the prompt points at the comment's URL instead.
-    const candidate = input.candidate?.comment?.body !== undefined
-      ? { ...input.candidate, comment: { ...input.candidate.comment, body: undefined } }
+    // a retry renders without it and the prompt points at the comment's URL instead. Its
+    // fingerprint stays, so a held event still meets a trace that names only the body.
+    const body = input.candidate?.comment?.body;
+    const candidate = input.candidate?.comment && body !== undefined
+      ? { ...input.candidate, comment: { ...input.candidate.comment, body: undefined, ...(input.candidate.comment.parts ? {} : { fingerprint: commentFingerprint(body) }) } }
       : input.candidate;
     const receipt = automationReceiptSchema.parse({
       ...input,
@@ -276,7 +279,7 @@ export class AutomationStore {
   compact(): void {
     const cutoff = this.now().getTime() - RETENTION_MS;
     const latest = [...this.latestReceipts().values()].filter(
-      (row) => Date.parse(row.updatedAt) >= cutoff || (this.get(row.automationId)?.kind === 'tracker'),
+      (row) => Date.parse(row.updatedAt) >= cutoff || row.status === 'held' || (this.get(row.automationId)?.kind === 'tracker'),
     );
     this.rewriteNdjson(RECEIPTS, latest);
     const logs = this.readNdjson(LOG, automationLogRecordSchema);

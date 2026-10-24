@@ -183,16 +183,22 @@ the text above, and why:
   `pr-head` verifier or a run whose worktree is gone. A delivery takes the ladder a person's
   message takes (queued run → prompt queue of a live session → buffered start → Continue); an
   owner that cannot take it falls back to a new run, and the log row says why.
-- **The owning-run guard** holds whatever a trace missed. A delivery is refused — `skipped`,
-  never a new run instead — when the comment's author is the login cezar's `gh` runs as
-  (`gh api user`, cached ten minutes per host and `gh` config mtime, so `gh auth switch` is seen at
-  once) and it was CREATED while the owning run was at
-  work: inside a turn (`turn.started` to `turn.completed`/`session.ended` in its event log, the
-  open one up to now while the run is live) or within two minutes after one. A login that
-  cannot be read counts as cezar's (a loop costs more than a held comment); `filters.allowSelfComments:
-  true` turns the check off for a person who shares cezar's account. And whatever the event,
-  one automation delivers at most `filters.maxRecords` events into one PR's run per hour — the
-  delivery notes on the run (`automationDelivery`) are what it counts.
+- **The owning-run guard** never loses a human's comment. On a local cockpit the `gh` login IS
+  the human, so the traces decide first (by id or body fingerprint) and the login is only the
+  tie-breaker for a comment no trace claimed. A comment whose author is the login cezar's `gh`
+  runs as (`gh api user`, cached ten minutes per host and `gh` config mtime, so `gh auth switch`
+  is seen at once), CREATED during the owning run's current turn while it is still open (the
+  last `turn.started` with no `turn.completed`/`session.ended` after it, on a live run), may be
+  the run's own reply posted by a means no trace saw: it is **held** — a `held` receipt and log
+  row, never a new run instead — and every poll decides it again. Once the turn ends it is
+  delivered, unless a trace has claimed it meanwhile (then `skipped`, `own-trace`). One written
+  after the turn ended is delivered at once. There is no grace window after a turn. A login that
+  cannot be read holds like cezar's (a loop costs more than a held comment);
+  `filters.allowSelfComments: true` turns the hold off for a person who shares cezar's account.
+  A held event's receipt keeps its body's fingerprint, never the body: after a restart it is
+  delivered pointing at the comment's URL, as a retry is. And whatever the event, one automation
+  delivers at most `filters.maxRecords` events into one PR's run per hour — the delivery notes
+  on the run (`automationDelivery`) are what it counts.
 - **Traces** are also recorded for the task push route, the graph `git.push` node, an in-place
   landing, the `github.pr-comment` node and the agent's own `git push` and comment-posting tool calls.
   The repo-sync push of the project checkout belongs to no run and records nothing. An agent's

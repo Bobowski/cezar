@@ -356,3 +356,22 @@ it('keeps old tracker receipts while the definition can resume history, then exp
   store.compact();
   expect(store.receipts()).toEqual([]);
 });
+
+it('keeps a held receipt through compaction, and a comment receipt keeps its body’s fingerprint, never the body', async () => {
+  let now = new Date('2026-01-01T00:00:00.000Z');
+  const store = AutomationStore.open(await directory(), { now: () => now });
+  store.create(input, 'github');
+  const candidate = {
+    eventId: 'acme/demo:comment:1', event: 'pull_request.commented' as const, timestamp: '2026-01-01T00:00:00.000Z', tieBreaker: 'comment:1',
+    repo: 'acme/demo', nodeId: 'PR_8', number: 8, title: 'Feature', url: 'https://github.com/acme/demo/pull/8', author: 'alice', assignees: [], labels: [],
+    comment: { id: 1, kind: 'issue' as const, author: 'bob', url: 'https://github.com/acme/demo/pull/8#issuecomment-1', body: 'secret words' },
+  };
+  const receipt = store.reserveReceipt({ automationId: 'github', revision: 1, eventId: candidate.eventId, candidate })!;
+  expect(receipt.candidate?.comment?.body).toBeUndefined();
+  expect(JSON.stringify(store.receipts())).not.toContain('secret words');
+  expect(receipt.candidate?.comment?.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+  store.appendReceipt({ ...receipt, status: 'held' });
+  now = new Date('2026-09-19T00:00:00.000Z');
+  store.compact();
+  expect(store.receipts().map((row) => row.status)).toEqual(['held']);
+});

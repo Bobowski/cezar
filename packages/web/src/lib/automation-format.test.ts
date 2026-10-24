@@ -44,6 +44,7 @@ describe('automation-format', () => {
     expect(statusLabel('done')).toBe('done')
     expect(resultTone('catch-up')).toBe('success')
     expect(resultTone('skipped')).toBe('neutral')
+    expect(resultTone('held')).toBe('pending')
     expect(resultTone('failed')).toBe('danger')
   })
 

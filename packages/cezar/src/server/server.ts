@@ -4691,7 +4691,7 @@ export function createApp(deps: ServerDeps) {
             github: { owner: remote.owner, repo: remote.repo, poller: new GithubPoller({ host: remote.host }) },
             traces: () => project.store.githubTraces(),
             launch: parsed.data.mode === 'execute'
-              ? (definition, candidate, receiptId) => launchAutomationRun({ root: project.root, manager: project.manager, store: project.store, definition, candidate, receiptId, dispatchEnabled: capabilities().dispatch })
+              ? (definition, candidate, receiptId, launchOptions) => launchAutomationRun({ root: project.root, manager: project.manager, store: project.store, definition, candidate, receiptId, dispatchEnabled: capabilities().dispatch, admit: launchOptions?.admit })
               : undefined,
             onChange: (automationId, revision) => emitAutomationChange(project, automationId, revision),
           });
@@ -9143,9 +9143,9 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
         onChange: (automationId, revision) =>
           workspaceEvents.emit('automation-change', { project: projectId, automationId, revision }),
         traces: async () => (await contextOf()).store.githubTraces(),
-        launch: async (definition, candidate, receiptId) => {
+        launch: async (definition, candidate, receiptId, launchOptions) => {
           const context = await contextOf();
-          return launchAutomationRun({ root: context.root, manager: context.manager, store: context.store, definition, candidate, receiptId, dispatchEnabled });
+          return launchAutomationRun({ root: context.root, manager: context.manager, store: context.store, definition, candidate, receiptId, dispatchEnabled, admit: launchOptions?.admit });
         },
         launchSchedule: async (definition, occurrence, receiptId) => {
           const context = await contextOf();

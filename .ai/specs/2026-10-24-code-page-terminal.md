@@ -144,8 +144,10 @@ gateway that `CEZ_PREVIEW_PORTS` already configures for the VPS image.
   `Esc` is taken only while the popover is open. Completion takes keys only at the shell's own
   prompt: never on xterm's alternate screen (vim, less), and only while the last prompt check — the
   terminal state's `busy`, asked at mount and 1.1 s after each Enter/Ctrl+C/D/Z, past the
-  server's one-second process-table reuse — found nothing running; until it answers, a REPL or a
-  program's prompt keeps Tab, Esc and `Ctrl+R`. Path completion needs a non-empty token, and lists
+  server's one-second process-table reuse, then every 1.1 s while busy for up to 10 s — found
+  nothing running; until it answers, a REPL or a program's prompt keeps Tab, Esc and `Ctrl+R`.
+  A host that cannot say (`busy: null`, Windows) counts as at its prompt for completion; it still
+  keeps no history. Path completion needs a non-empty token, and lists
   from the shell's own directory: the session's `workdir` (relative to where it opened, read from
   Linux's `/proc/<pid>/cwd` with the busy check). A shell that left the checkout gets no paths; a
   host with no `/proc` (macOS, Windows) cannot say, and the checkout root stands in.

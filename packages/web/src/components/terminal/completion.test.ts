@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
-  AUTO_DELAY_MS, CompletionController, LineTracker, PROMPT_RECHECK_MS, childrenOf, filterHistory, rankCompletions, type CompletionSources, type CompletionView,
-  type PromptState,
+  AUTO_DELAY_MS, CompletionController, LineTracker, PROMPT_RECHECK_LIMIT_MS, PROMPT_RECHECK_MS, childrenOf, filterHistory, promptStateOf, rankCompletions,
+  type CompletionSources, type CompletionView, type PromptState,
 } from './completion'
 
 const sources: CompletionSources = {
@@ -137,6 +137,13 @@ describe('CompletionController', () => {
     expect(controller.current).toBeNull()
   })
 
+  it('reads a host that cannot say whether the shell is busy (Windows) as a prompt, and an unknown session as none', () => {
+    expect(promptStateOf({ busy: null, workdir: 'src/' })).toEqual({ atPrompt: true, dir: 'src/' })
+    expect(promptStateOf({ busy: false })).toMatchObject({ atPrompt: true })
+    expect(promptStateOf({ busy: true })).toMatchObject({ atPrompt: false })
+    expect(promptStateOf(undefined)).toMatchObject({ atPrompt: false })
+  })
+
   describe('only at the shell\'s prompt', () => {
     const gated = () => {
       const timers = new Map<number, () => void>()
@@ -183,6 +190,41 @@ describe('CompletionController', () => {
       controller.typed('npm run ')
       expect(key('Tab')).toBe(false)
       expect(controller.current?.mode).toBe('complete')
+    })
+
+    it('keeps asking while a command runs, and takes keys again once it has ended on its own', async () => {
+      const { controller, key, answer, timers } = gated()
+      const fire = () => {
+        const run = timers.get(PROMPT_RECHECK_MS)
+        timers.delete(PROMPT_RECHECK_MS)
+        run?.()
+      }
+      await answer(true)
+      controller.typed('npm install\r')
+      fire()
+      await answer(false)
+      controller.typed('npm run ')
+      expect(key('Tab')).toBe(true)
+      // `npm install` finished by itself: no key was pressed, yet the next check finds the prompt.
+      fire()
+      await answer(true)
+      expect(key('Tab')).toBe(false)
+      expect(controller.current?.mode).toBe('complete')
+    })
+
+    it('stops asking a shell that stays busy after ten seconds', async () => {
+      const { controller, answer, timers } = gated()
+      await answer(true)
+      controller.typed('npm run dev\r')
+      let checks = 0
+      for (let run = timers.get(PROMPT_RECHECK_MS); run; run = timers.get(PROMPT_RECHECK_MS)) {
+        timers.delete(PROMPT_RECHECK_MS)
+        run()
+        checks += 1
+        await answer(false)
+      }
+      expect(checks).toBe(Math.floor(PROMPT_RECHECK_LIMIT_MS / PROMPT_RECHECK_MS))
+      expect(checks * PROMPT_RECHECK_MS).toBeLessThanOrEqual(PROMPT_RECHECK_LIMIT_MS)
     })
 
     it('is off before the first answer, and on Ctrl+C asks again', async () => {

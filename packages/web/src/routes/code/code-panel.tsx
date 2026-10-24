@@ -10,6 +10,7 @@ import {
 } from '@/api/code'
 import { queryKeys } from '@/api/queries'
 import { useServices } from '@/api/services'
+import { promptStateOf } from '@/components/terminal/completion'
 import { DetectedUrlsStrip } from '@/components/terminal/detected-urls-strip'
 import { DiscoveredCommandsStrip } from '@/components/terminal/discovered-commands'
 import { terminalCommands, type TerminalScope } from '@/components/terminal/scope'
@@ -114,12 +115,11 @@ function TerminalTab({
       if (historyRefresh.current) clearTimeout(historyRefresh.current)
       historyRefresh.current = setTimeout(() => void queryClient.invalidateQueries({ queryKey: historyKey }), 800)
     },
-    // The process table's word on the shell (`busy`); `null`, a host that cannot say, is not a
-    // prompt. `workdir` is where it is now, relative to where it opened — the tree's root.
+    // The process table's word on the shell (`busy`, `promptStateOf`). `workdir` is where it
+    // is now, relative to where it opened — the tree's root.
     atPrompt: async (sessionId) => {
       const fresh = await queryClient.fetchQuery({ queryKey: key, queryFn: () => getCodeTerminal(tree), staleTime: 0 })
-      const session = fresh.sessions.find((entry) => entry.id === sessionId)
-      return { atPrompt: session?.busy === false, dir: session?.workdir }
+      return promptStateOf(fresh.sessions.find((entry) => entry.id === sessionId))
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [commands.data, history.data, paths, queryClient, tree])

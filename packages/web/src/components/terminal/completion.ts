@@ -177,11 +177,21 @@ export const AUTO_DELAY_MS = 300
 /** After an Enter (or Ctrl+C/D/Z) the prompt is asked about again this much later — past the
  *  server's one-second process-table reuse, so the answer describes the shell AFTER the key. */
 export const PROMPT_RECHECK_MS = 1_100
+/** While the shell is still busy, it is asked again every `PROMPT_RECHECK_MS` for this long, so a
+ *  command that ends on its own gives completion back. */
+export const PROMPT_RECHECK_LIMIT_MS = 10_000
 
 /** A prompt check's answer: whether the shell sits at its prompt, and where (`pathItems`). */
 export interface PromptState {
   atPrompt: boolean
   dir?: string | null
+}
+
+/** A terminal session's process-table word as a prompt check's answer. `busy: null` is a host
+ *  that cannot read its table (Windows): completion treats it as a prompt there — the server
+ *  still keeps no history for it. An unknown session is not one. */
+export function promptStateOf(session: { busy: boolean | null; workdir?: string | null } | undefined): PromptState {
+  return { atPrompt: session !== undefined && session.busy !== true, dir: session?.workdir }
 }
 
 export interface KeyLike {
@@ -198,8 +208,9 @@ export interface KeyLike {
  * should still handle it — `false` is a key the popover took, which the shell never sees.
  *
  * It takes keys only at the shell's own prompt: never on the alternate screen (vim, less), and
- * only while the last prompt check — run at mount and again after each Enter — found the shell
- * with nothing running. A REPL or a program's prompt keeps its Tab, Esc and Ctrl+R.
+ * only while the last prompt check — run at mount and again after each Enter, then every
+ * `PROMPT_RECHECK_MS` while busy for up to `PROMPT_RECHECK_LIMIT_MS` — found the shell with
+ * nothing running. A REPL or a program's prompt keeps its Tab, Esc and Ctrl+R.
  */
 export class CompletionController {
   private readonly tracker = new LineTracker()
@@ -214,6 +225,8 @@ export class CompletionController {
   /** Where the shell is, from the same check; unknown until one says. */
   private dir: string | null | undefined = undefined
   private checkSeq = 0
+  /** Checks still owed while the shell answers busy. */
+  private rechecksLeft = 0
 
   constructor(
     private readonly options: {
@@ -231,6 +244,7 @@ export class CompletionController {
     },
   ) {
     this.atPrompt = options.promptCheck === undefined
+    this.rechecksLeft = Math.floor(PROMPT_RECHECK_LIMIT_MS / PROMPT_RECHECK_MS)
     this.checkPrompt()
   }
 
@@ -252,10 +266,10 @@ export class CompletionController {
       this.atPrompt = false
       this.close()
       this.cancelRecheck?.()
-      this.cancelRecheck = this.scheduler()(() => {
-        this.cancelRecheck = null
-        this.checkPrompt()
-      }, PROMPT_RECHECK_MS)
+      // An answer still in flight describes the shell before this key.
+      this.checkSeq += 1
+      this.rechecksLeft = Math.floor(PROMPT_RECHECK_LIMIT_MS / PROMPT_RECHECK_MS) - 1
+      this.scheduleRecheck()
       return
     }
     if (this.view?.mode === 'complete') {
@@ -351,7 +365,18 @@ export class CompletionController {
         if (seq !== this.checkSeq) return
         this.atPrompt = state.atPrompt
         this.dir = state.dir
+        if (!state.atPrompt && this.rechecksLeft > 0 && this.cancelRecheck === null) {
+          this.rechecksLeft -= 1
+          this.scheduleRecheck()
+        }
       })
+  }
+
+  private scheduleRecheck(): void {
+    this.cancelRecheck = this.scheduler()(() => {
+      this.cancelRecheck = null
+      this.checkPrompt()
+    }, PROMPT_RECHECK_MS)
   }
 
   private scheduler(): (run: () => void, ms: number) => () => void {

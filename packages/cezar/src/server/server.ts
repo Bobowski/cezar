@@ -597,11 +597,13 @@ const automationEditableSchema = z
     enabled: z.boolean().optional(),
     /** Omitted on create = `github`; omitted on update = the stored kind (spec 2026-09-14). */
     kind: z.enum(['github', 'schedule', 'tracker']).optional(),
-    events: z.array(automationEventSchema).min(1).max(7).optional(),
+    events: z.array(automationEventSchema).min(1).max(automationEventSchema.options.length).optional(),
     intervalSeconds: z.number().int().min(60).max(86_400).optional(),
     filters: automationFiltersSchema.optional(),
     trackerTrigger: trackerTriggerSchema.optional(),
     schedule: automationScheduleSchema.optional(),
+    /** spec 2026-10-23-github-events §5; the storage schema refuses it off the github kind. */
+    deliver: z.enum(['new-run', 'owning-run']).optional(),
     task: automationTaskSchema,
   })
   .strict();
@@ -656,6 +658,7 @@ function editableAutomation(definition: AutomationDefinition) {
     filters: definition.filters,
     trackerTrigger: definition.trackerTrigger,
     schedule: definition.schedule,
+    deliver: definition.deliver,
     task: definition.task,
   };
 }

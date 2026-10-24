@@ -72,6 +72,25 @@ describe('GitHub automation API', () => {
     expect(((await response.json()) as any).automation).toMatchObject({ enabled: false, revision: 1 });
   });
 
+  it('takes the activity events, their filters and owning-run delivery, and keeps them through enable (spec 2026-10-23-github-events)', async () => {
+    const activity = {
+      ...input,
+      events: ['pull_request.synchronize', 'pull_request.commented', 'pull_request.review_commented', 'issue.commented', 'check_suite.completed', 'push', 'release.published', 'pull_request.opened'],
+      deliver: 'owning-run',
+      filters: { lookbackDays: 7, maxRecords: 25, mentions: ['cezar'], branches: ['main'], conclusion: 'failure', includeOwnPushes: true, prerelease: false, tags: ['v*'] },
+      task: { prompt: 'CI on {{github.branch}}: {{github.check.failedJobs}} {{github.comment.body}}' },
+    };
+    const response = await apiRequest(app(), '/api/v1/automations', json(activity));
+    expect(response.status).toBe(201);
+    const created = ((await response.json()) as any).automation;
+    expect(created).toMatchObject({ deliver: 'owning-run', filters: activity.filters, events: activity.events });
+    await apiRequest(app(), `/api/v1/automations/${created.id}/enable`, { method: 'POST' });
+    const detail = ((await (await apiRequest(app(), `/api/v1/automations/${created.id}`)).json()) as any).automation;
+    expect(detail).toMatchObject({ enabled: true, deliver: 'owning-run' });
+    const schedule = await apiRequest(app(), '/api/v1/automations', json({ name: 's', kind: 'schedule', schedule: { type: 'daily', hour: 1, minute: 0 }, deliver: 'owning-run', task: { prompt: 'x' } }));
+    expect(schedule.status).toBe(400);
+  });
+
   it('enforces optimistic concurrency and establishes a baseline on enable', async () => {
     const created = ((await (await apiRequest(app(), '/api/v1/automations', json(input))).json()) as any).automation;
     const stale = await apiRequest(

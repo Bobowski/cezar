@@ -1,4 +1,4 @@
-import type { ApiTokenScope } from '@open-mercato/cezar-contract';
+import type { ApiTokenScope, ProjectedWorkflowDef } from '@open-mercato/cezar-contract';
 import { failureLine } from '../runs/failure-kind.ts';
 import type { RunRecord, StepState } from '../runs/store.ts';
 import { scopesSeeTranscript } from './api-tokens.ts';
@@ -51,21 +51,35 @@ function projectStep(step: StepState, child: boolean): StepState {
   return { ...named, error: step.kind === 'check' ? 'check failed' : failureLine(step.error) };
 }
 
-export function redactRunForScope<T extends RunRecord>(
-  run: T,
-  scopes: readonly ApiTokenScope[] | undefined,
-): T & { projected?: true } {
+/** The workflow a projected principal may see: what runs in what order, not what it runs. */
+export function projectWorkflowDef(def: NonNullable<RunRecord['workflowDef']>): ProjectedWorkflowDef {
+  return {
+    name: def.name,
+    source: def.source,
+    steps: def.steps.map((step) => ({ id: step.id, ...(step.name !== undefined ? { name: step.name } : {}), kind: step.command ? 'check' : 'agent' })),
+    projected: true,
+  };
+}
+
+/** A run record as a principal may see it; the projected `workflowDef` is the contract's other variant. */
+export type ScopedRun<T extends RunRecord> = Omit<T, 'workflowDef'> & {
+  workflowDef?: T['workflowDef'] | ProjectedWorkflowDef;
+  projected?: true;
+};
+
+export function redactRunForScope<T extends RunRecord>(run: T, scopes: readonly ApiTokenScope[] | undefined): ScopedRun<T> {
   if (!projectsRuns(scopes)) return run;
-  const { titleSummary: _summary, graphState, dispatch, ...rest } = run;
+  // The system prompt (an automation's included), check commands, secret names and queued prompts
+  // are the author's words or a command line, not status.
+  const { titleSummary: _summary, graphState, dispatch, systemPrompt: _system, queuedMessages: _queued, promptQueue: _queue, workflowDef, ...rest } = run;
   const child = Boolean(dispatch?.parentRunId);
   const projected: Record<string, unknown> = { ...rest, steps: run.steps.map((step) => projectStep(step, child)), projected: true };
   if (child) {
-    // Everything here came from the parent agent's order: its title, objective, step name and messages.
+    // Everything here came from the parent agent's order: its title, objective and step name.
     projected.title = dispatchedTaskTitle(run.id);
     projected.task = dispatchedTaskTitle(run.id);
-    delete projected.workflowDef;
-    delete projected.queuedMessages;
-    delete projected.promptQueue;
+  } else if (workflowDef) {
+    projected.workflowDef = projectWorkflowDef(workflowDef);
   }
   if (run.error !== undefined) projected.error = failureLine(run.error);
   if (run.landing?.error !== undefined) projected.landing = { ...run.landing, error: landingFailureLine(run.landing.stage) };
@@ -77,5 +91,5 @@ export function redactRunForScope<T extends RunRecord>(
     const { report: _report, pendingReports: _pending, pendingAsk: _ask, ...tree } = dispatch;
     projected.dispatch = tree;
   }
-  return projected as T & { projected: true };
+  return projected as ScopedRun<T>;
 }

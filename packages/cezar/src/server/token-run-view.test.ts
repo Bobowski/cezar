@@ -366,6 +366,46 @@ describe('a token’s view of a task', () => {
     expect(((await full.json()) as Record<string, unknown>).title).toBe(`child ${SECRET}`);
   });
 
+  it('an automation-launched task’s system prompt, workflow commands and queued prompts are not a read token’s', async () => {
+    const now = new Date().toISOString();
+    const NAME = 'DEPLOY_TOKEN_MARKER';
+    const run = store.createRun({
+      title: 'nightly deploy check', workflow: 'deploy', task: 'nightly deploy check',
+      steps: [{ id: 'task', name: 'Task', kind: 'agent' }, { id: 'verify', name: 'Verify', kind: 'check' }],
+    });
+    store.updateRun(run.id, {
+      systemPrompt: `Use the key ${SECRET} for staging`,
+      automationTrigger: { automationId: 'nightly', automationRevision: 1, receiptId: 'r1', trigger: 'schedule', occurrenceAt: now },
+      workflowDef: {
+        name: 'deploy', description: 'deploy and verify', source: 'file', path: '.ai/cezar/workflows/deploy.yaml',
+        steps: [
+          { id: 'task', name: 'Task', prompt: `deploy with ${SECRET}` },
+          { id: 'verify', name: 'Verify', command: `curl -H "x-key: ${SECRET}" https://staging`, secrets: [NAME] },
+        ],
+      },
+      queuedMessages: [{ id: 'q1', text: `also ${SECRET}`, createdAt: now }],
+      promptQueue: [{ id: 'q2', text: `then ${SECRET}`, createdAt: now }],
+    });
+    store.flush();
+    const one = (await (await request(`/api/v1/runs/${run.id}`, seedToken(['read']))).json()) as Record<string, unknown>;
+    const body = JSON.stringify(one);
+    expect(body).not.toContain(SECRET);
+    expect(body).not.toContain(NAME);
+    expect(one).not.toHaveProperty('systemPrompt');
+    expect(one).not.toHaveProperty('queuedMessages');
+    expect(one).not.toHaveProperty('promptQueue');
+    expect(one.workflowDef).toEqual({
+      name: 'deploy', source: 'file', projected: true,
+      steps: [{ id: 'task', name: 'Task', kind: 'agent' }, { id: 'verify', name: 'Verify', kind: 'check' }],
+    });
+    expect(one.automationTrigger).toMatchObject({ automationId: 'nightly', trigger: 'schedule' });
+    // Guard: whoever sees transcripts keeps the prompt, the commands and the queue.
+    const full = (await (await request(`/api/v1/runs/${run.id}`, seedToken(['read', 'runs.transcript']))).json()) as Record<string, unknown>;
+    expect(full.systemPrompt).toContain(SECRET);
+    expect(JSON.stringify(full.workflowDef)).toContain(NAME);
+    expect(full.promptQueue).toHaveLength(1);
+  });
+
   it('GET /automation-log names a dispatched child by id, not by its parent agent’s words', async () => {
     const root = store.createRun({ title: 'nightly sweep', workflow: 'quick-task', task: 'nightly sweep', steps: [] });
     const child = store.createRun({ title: `child ${SECRET}`, workflow: '(planned)', task: `objective ${SECRET}`, steps: [] });

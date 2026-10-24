@@ -4,7 +4,7 @@ import { runnerSchema } from './health.ts';
 import { referenceStatusSchema } from './github.ts';
 // The chain shapes belong to the workflows family; the run record embeds one, so this file
 // consumes them rather than redeclaring. One-way on purpose — see the header of `./workflows.ts`.
-import { workflowDefSchema, workflowStepDefSchema } from './workflows.ts';
+import { projectedWorkflowDefSchema, workflowDefSchema, workflowStepDefSchema } from './workflows.ts';
 // Same one-way direction: the dispatch family owns the `dispatch` object's shape, the run record embeds
 // one. `src/runs/store.ts` imports the SAME value for its persistence twin, so the two halves of
 // `contract-parity.runs.test.ts` cannot drift apart by construction.
@@ -425,10 +425,12 @@ export type RunRecord = z.infer<typeof runRecordSchema>;
  * and `error`, `steps[].error` and `landing.error` are one line naming the failure's kind
  * (`required check failed`). A dispatched child (`dispatch.parentRunId`) is its parent AGENT's
  * order, so its `title` and `task` read `dispatched task <id>`, its steps are named by their ids,
- * and it has no `workflowDef`, `queuedMessages` or `promptQueue`. Every other key is as stored.
- * Absent on the full record.
+ * and it has no `workflowDef`. No projected record has `systemPrompt`, `queuedMessages` or
+ * `promptQueue`, and its `workflowDef` is the projected one: step ids, names and kinds. Every
+ * other key is as stored. Absent on the full record.
  */
 export const apiRunSchema = runRecordSchema.extend({
+  workflowDef: z.union([workflowDefSchema, projectedWorkflowDefSchema]).optional(),
   usage: processUsageSchema.optional(),
   projected: z.literal(true).optional(),
 });

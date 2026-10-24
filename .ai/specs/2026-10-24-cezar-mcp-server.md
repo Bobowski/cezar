@@ -71,9 +71,11 @@ Settings → Security → **API tokens** (owner only):
   `pendingAsk`); `error`, `steps[].error` and `landing.error`, which quote what a command
   printed, become one line naming the kind (`required check failed`). A dispatched child's
   `title` and `task` are its parent AGENT's order, not the user's words: they read
-  `dispatched task <id>`, its steps are named by id, and its `workflowDef`, `queuedMessages` and
-  `promptQueue` are dropped. Status, timing, counters, branch and PR stay; the contract's
-  `apiRunSchema` names the marker. The slim task rows of `/workspace/runs-index` and the
+  `dispatched task <id>`, its steps are named by id, and its `workflowDef` is dropped. No
+  projected record carries `systemPrompt` (an automation's included), `queuedMessages` or
+  `promptQueue`, and any other `workflowDef` is reduced to step ids, names and kinds
+  (`projectedWorkflowDefSchema`: no prompt, check command, secret name or graph). Status, timing,
+  counters, branch and PR stay; the contract's `apiRunSchema` names the marker. The slim task rows of `/workspace/runs-index` and the
   dashboard (`projectTaskRow`) drop `titleSummary` and mask a child's title the same way, and the
   dashboard's failure insights name a failure's kind instead of quoting it.
 - **A scope bounds the API surface, not the machine.** A token that can start or continue a run —
@@ -187,6 +189,8 @@ are client-side conveniences documented in `.env.example`.
   text: pinned services and the start command are `author`'s to read (`READ_OWNERS`), and
   automations, their log, dry-runs and templates are `author`'s family; drafts, a task's images,
   both `ui-state` bags and the self-update development picker are no longer `read`'s. The
+  projected task record has no system prompt or queued prompts, and its `workflowDef` keeps only
+  step ids, names and kinds. The
   automation log, `/worktrees` and the worktree-lifecycle views mask a dispatched child's title;
   the lifecycle views drop rendered commands and execution reasons and name a failure's stage;
   `/workspace/self-update` gives a non-`admin` token the job's status, target and timing

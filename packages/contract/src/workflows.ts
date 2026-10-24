@@ -187,6 +187,16 @@ export const workflowDefSchema = z.object({
 });
 export type WorkflowDef = z.infer<typeof workflowDefSchema>;
 
+/** A task's `workflowDef` as a token without `runs.transcript` sees it (spec
+ *  2026-10-24-cezar-mcp-server §4): step ids, names and kinds — no prompt, command, secret or graph. */
+export const projectedWorkflowDefSchema = z.object({
+  name: z.string(),
+  source: z.enum(['built-in', 'file']),
+  steps: z.array(z.object({ id: z.string(), name: z.string().optional(), kind: z.enum(['agent', 'check']) })),
+  projected: z.literal(true),
+});
+export type ProjectedWorkflowDef = z.infer<typeof projectedWorkflowDefSchema>;
+
 /** A workflow file that failed to load. Reported, never fatal — the catalog still answers. */
 export const workflowLoadIssueSchema = z.object({
   path: z.string(),

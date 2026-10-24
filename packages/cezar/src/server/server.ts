@@ -340,7 +340,7 @@ import {
 import {
   abortOperation, checkoutBranch, cherryPick, commitIndex, compareWithCurrent, continueOperation, deleteBranch,
   discardPaths, fetchRemote, listRemotes, listStashes, mergeBranch, pushBranch, rebaseOnto, renameBranch, repoGraph,
-  repoIndex, stagePaths, stashPop, stashPush, unstagePaths, type GitOk, type GraphTask,
+  repoIndex, stagePaths, stashPop, stashPush, trimPaths, unstagePaths, type GitOk, type GraphTask,
 } from './repo-git.ts';
 import { reviewGateEnabled } from '../runs/review-gate.ts';
 import { readUiState, uiStatePath } from '../ui-state.ts';
@@ -8489,7 +8489,11 @@ export function createApp(deps: ServerDeps) {
     // Nothing awaits between this and `work` joining the checkout's queue (`serializeLanding`).
     if (landingInProgress(root)) return { error: LANDING_BUSY };
     const result = await work(root);
-    if (result.ok !== true) return { error: (result as { error: string }).error };
+    if (result.ok !== true) {
+      // git's own words can name host paths (a worktree's location); hosted, keep only the last segment.
+      const error = (result as { error: string }).error;
+      return { error: capabilities().localHandoff ? error : trimPaths(error) };
+    }
     ringRepoViews(project.id);
     const { ok: _ok, ...value } = result as R;
     return { value };
@@ -8802,8 +8806,14 @@ export function createApp(deps: ServerDeps) {
       async (c) => {
         const { name } = c.req.valid('param');
         const query = c.req.valid('query');
-        const r = await mutateCheckout(c.get('project'), principalOf(c), (root) =>
-          deleteBranch(root, name, { remote: query.remote === '1', force: query.force === '1' }),
+        const project = c.get('project');
+        const tasks = graphTasks(project.store, projectsRuns(runViewScopes(principalOf(c))));
+        const ownedBy = (branch: string): string | null => {
+          const task = tasks.get(branch);
+          return task ? `the task “${task.title}” (${task.runId.slice(0, 8)})` : null;
+        };
+        const r = await mutateCheckout(project, principalOf(c), (root) =>
+          deleteBranch(root, name, { remote: query.remote === '1', force: query.force === '1', ownedBy }),
         );
         return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
       },

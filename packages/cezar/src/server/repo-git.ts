@@ -652,6 +652,13 @@ export function rebaseOnto(root: string, name: string): Promise<Action> {
 export interface DeleteBranchOptions {
   remote?: boolean;
   force?: boolean;
+  /** The task that owns a branch, named in the refusal; null for the user's own. */
+  ownedBy?: (branch: string) => string | null;
+}
+
+/** Absolute paths in git's words → their last segment, so a hosted cockpit shows no host layout. */
+export function trimPaths(text: string): string {
+  return text.replace(/(?<![^\s'"`(])(?:[A-Za-z]:)?[\\/](?:[^\s'"`\\/]+[\\/])*([^\s'"`\\/]*)/g, (_path, last: string) => last || '/');
 }
 
 /** Delete a local branch (`-d`, or `-D` with `force`), and with `remote` the branch on its
@@ -662,6 +669,9 @@ export function deleteBranch(root: string, name: string, options: DeleteBranchOp
     if (invalid) return { ok: false, error: invalid };
     const found = await lookupBranch(root, name);
     if (!found) return { ok: false, error: `no branch named ${name}` };
+    // As for rename: the run record names its branch and never recomputes it.
+    const owner = options.ownedBy?.(found.branch) ?? null;
+    if (owner) return { ok: false, error: `${name} belongs to ${owner} — deleting it would orphan the task's branch` };
     let target: { remote: string; branch: string } | null = null;
     if (found.kind === 'remote') {
       if (!options.remote) return { ok: false, error: `${name} is on ${found.remote} — confirm deleting it there` };

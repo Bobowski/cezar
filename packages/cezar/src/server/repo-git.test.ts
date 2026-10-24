@@ -28,6 +28,7 @@ import {
   stashPop,
   stashPush,
   stripCredentials,
+  trimPaths,
   unstagePaths,
 } from './repo-git.ts';
 
@@ -485,5 +486,16 @@ describe('extractHunk', () => {
     expect(extractHunk(patch, '@@ -1,2 +1,2 @@')).toContain('-a\n+b\n c\n');
     expect(extractHunk(patch, '@@ -5 +5 @@')).toBeNull();
     expect(extractHunk(patch, 'nonsense')).toBeNull();
+  });
+});
+
+describe('trimPaths', () => {
+  it('keeps the last segment of an absolute path and leaves refs and relative paths alone', () => {
+    expect(trimPaths("error: cannot delete branch 'x' used by worktree at '/srv/repo/.ai/cezar/worktrees/abc'")).toBe(
+      "error: cannot delete branch 'x' used by worktree at 'abc'",
+    );
+    expect(trimPaths("fatal: 'F:/CEZAR/repo/wt' is busy")).toBe("fatal: 'wt' is busy");
+    expect(trimPaths('C:\\Users\\me\\repo failed')).toBe('repo failed');
+    expect(trimPaths('refs/heads/feat/x and origin/main, src/a.ts')).toBe('refs/heads/feat/x and origin/main, src/a.ts');
   });
 });

@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { RepoGitActionResponse, RepoGraph, RepoIndex, RepoRemotes } from '@open-mercato/cezar-contract';
+import { authSetupBeginResponseSchema, type RepoGitActionResponse, type RepoGraph, type RepoIndex, type RepoRemotes } from '@open-mercato/cezar-contract';
+import { AuthService } from '../auth/service.ts';
+import { issueSetupCode } from '../auth/store.ts';
+import { base32Decode, hotp, totpStep } from '../auth/totp.ts';
 import { RunStore } from '../runs/store.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import { landInPlace } from '../workflows/landing.ts';
@@ -68,6 +71,22 @@ describe('the Git page routes', () => {
       expect(graph.commits.map((c) => c.subject)).toContain('task commit');
     }
     expect((await apiRequest(app, '/api/v1/repo/graph?filter=nope')).status).toBe(400);
+  });
+
+  it('delete refuses a branch a task owns, locally or on its remote, naming the task', async () => {
+    g(repo, 'branch', 'feat/owned');
+    g(repo, 'push', '-q', 'origin', 'feat/owned');
+    const run = store.createRun({ title: 'Owned thing', task: 'Do it', workflow: 'quick-task', steps: [] });
+    store.updateRun(run.id, { branch: 'feat/owned' });
+    for (const [name, query] of [['feat/owned', ''], ['origin/feat/owned', '?remote=1'], ['feat/owned', '?remote=1&force=1']] as const) {
+      const res = await apiRequest(app, `/api/v1/repo/branch/${encodeURIComponent(name)}/delete${query}`, { method: 'POST' });
+      expect(res.status, name).toBe(409);
+      const { error } = (await res.json()) as { error: string };
+      expect(error).toContain('Owned thing');
+      expect(error).toContain(run.id.slice(0, 8));
+    }
+    expect(g(repo, 'branch', '--list', 'feat/owned').trim()).toBe('feat/owned');
+    expect(g(repo, 'ls-remote', '--heads', 'origin', 'feat/owned').trim()).not.toBe('');
   });
 
   it('a branch name with a slash reaches the action through an encoded path segment', async () => {
@@ -258,5 +277,73 @@ describe('the Git page routes', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as RepoRemotes;
     expect(body).toMatchObject({ prTarget: 'origin', pushDefault: 'origin', reasons: { prTarget: 'origin', pushDefault: 'origin' } });
+  });
+});
+
+/** A hosted cockpit's signed-in owner: git's refusals reach the browser without host paths. */
+describe('the Git page routes, hosted', () => {
+  const HOSTED = { host: 'agents.example.dev', 'x-forwarded-proto': 'https' };
+  const saved = { remote: process.env.CEZ_REMOTE, auth: process.env.CEZ_AUTH };
+  let base: string;
+  let repo: string;
+  let store: RunStore;
+  let app: Hono;
+  let cookie: string;
+  let clock = Date.now();
+
+  const request = (path: string, init: RequestInit & { headers?: Record<string, string> } = {}) =>
+    app.request(path, { ...init, headers: { ...HOSTED, ...init.headers } });
+  const json = (path: string, body: unknown) =>
+    request(path, { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json' } });
+
+  beforeEach(async () => {
+    process.env.CEZ_REMOTE = '1';
+    delete process.env.CEZ_AUTH;
+    base = mkdtempSync(join(tmpdir(), 'cez-git-hosted-'));
+    repo = join(base, 'repo');
+    g(base, 'init', '-q', '-b', 'main', repo);
+    for (const [key, value] of [['user.email', 't@cezar.local'], ['user.name', 't'], ['commit.gpgsign', 'false']]) g(repo, 'config', key!, value!);
+    writeFileSync(join(repo, '.gitignore'), '.ai/\n');
+    g(repo, 'add', '-A');
+    g(repo, 'commit', '-q', '-m', 'first');
+    store = RunStore.open(join(repo, '.ai/cezar'));
+    app = createApp({
+      repoRoot: repo,
+      store,
+      manager: { isActive: () => false } as unknown as RunManager,
+      version: '0.0.0-test',
+      auth: new AuthService({ scrypt: { N: 2 ** 10, r: 8, p: 1 }, now: () => clock }),
+    }) as unknown as Hono;
+    const issued = issueSetupCode();
+    if (!issued.ok) throw new Error('setup refused');
+    const begin = await json('/api/v1/auth/setup/begin', { code: issued.setup.code, username: 'owner', password: 'a long enough password' });
+    const begun = authSetupBeginResponseSchema.parse(await begin.json());
+    const complete = await json('/api/v1/auth/setup/complete', {
+      ticket: begun.ticket,
+      code: hotp(base32Decode(begun.secret)!, totpStep((clock += 30_000))),
+    });
+    expect(complete.status).toBe(200);
+    cookie = complete.headers.get('set-cookie')!.split(';')[0]!;
+  });
+
+  afterEach(() => {
+    store.flush();
+    for (const [key, value] of [['CEZ_REMOTE', saved.remote], ['CEZ_AUTH', saved.auth]] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    removeTempDir(base);
+  });
+
+  it('delete passes git’s refusal on with the worktree’s absolute path trimmed', async () => {
+    const elsewhere = join(base, 'elsewhere-wt');
+    g(repo, 'worktree', 'add', '-q', '-b', 'busy', elsewhere);
+    const res = await request('/api/v1/repo/branch/busy/delete', { method: 'POST', headers: { cookie } });
+    expect(res.status).toBe(409);
+    const { error } = (await res.json()) as { error: string };
+    expect(error).toContain('elsewhere-wt');
+    expect(error).not.toContain(base.replace(/\\/g, '/'));
+    expect(error).not.toContain(base);
+    expect(g(repo, 'branch', '--list', 'busy').trim()).toBe('+ busy');
   });
 });

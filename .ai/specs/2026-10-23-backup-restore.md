@@ -132,6 +132,8 @@ Zod in `packages/contract/src/backup.ts`; archive names validated against the pa
 - VPS: Backup now → download → `age -d` on the laptop lists the expected entries; set an R2
   target → Test → nightly on → next morning one object; fresh container with empty volumes →
   `/setup` → Restore → sign in with the old owner, fancy-fence-panels listed with its `.env`.
+  Restore an archive over 32 MB through Caddy: `docker/Caddyfile` gives the two restore routes
+  `max_size 1GiB` and keeps 32 MB elsewhere (no test reads docker files, so this is a manual check).
 
 ## 10. As built (2026-10-24)
 

@@ -150,6 +150,15 @@ describe('derived sizes', () => {
     bomb.writeUInt32BE(100_000, 16);
     bomb.writeUInt32BE(100_000, 20);
     expect(decodePng(bomb)).toMatchObject({ ok: false, error: expect.stringContaining('2048') });
+    // Interlaced, the IHDR size never bounded the inflate: a 16 × 16 header over 256 MiB of zeros.
+    const interlaced = pngBomb({ interlace: true, inflatedMiB: 256 });
+    expect(interlaced.length).toBeLessThan(512 * 1024);
+    const before = process.memoryUsage().arrayBuffers;
+    expect(decodePng(interlaced)).toMatchObject({ ok: false, error: expect.stringContaining('interlaced') });
+    expect(process.memoryUsage().arrayBuffers - before).toBeLessThan(32 * 1024 * 1024);
+    // The same bomb deriving a favicon or an app icon is refused the same way.
+    expect(deriveFavicon(interlaced)).toMatchObject({ ok: false, error: expect.stringContaining('interlaced') });
+    expect(deriveAppIcon(interlaced)).toMatchObject({ ok: false, error: expect.stringContaining('interlaced') });
   });
 
   it('inflates within the header\'s byte budget, and refuses more than 2048² pixels', () => {

@@ -570,9 +570,11 @@ describe('held events through the poll cycle (spec 2026-10-23-github-events §11
     const owner = runs.createRun({ title: 'made the PR', workflow: 'quick-task', task: 't', steps: [] });
     runs.updateRun(owner.id, { pullRequestUrl: 'https://github.com/acme/demo/pull/8', worktreePath: join(root, 'wt'), status: 'review', startedAt: new Date().toISOString() });
     const polls: GithubCandidate[][] = [];
+    /** PRs the next polls read as closed. */
+    const closed: number[] = [];
     const scheduler = new ProjectAutomationScheduler({
       projectId: 'p', timeZone: 'UTC', store: automations,
-      github: { owner: 'acme', repo: 'demo', poller: { poll: async () => ({ candidates: polls.shift() ?? [], truncated: false, pages: 1 }) } as never },
+      github: { owner: 'acme', repo: 'demo', poller: { poll: async () => ({ candidates: polls.shift() ?? [], truncated: false, pages: 1, ...(closed.length ? { closedPrs: [...closed] } : {}) }) } as never },
       traces: () => runs.githubTraces(),
       launch: (def, candidate, receiptId, options) => launchAutomationRun({ root, manager, store: runs, definition: def, candidate, receiptId, selfLogin: async () => 'cezar-bot', admit: options?.admit }),
     });
@@ -586,7 +588,7 @@ describe('held events through the poll cycle (spec 2026-10-23-github-events §11
     };
     const skippedReason = (id: number) => automations.logs({ automationId: 'talk' })
       .find((row) => row.result === 'skipped' && row.receiptId === receiptOf(id)?.receiptId)?.reason;
-    return { runs, automations, owner, delivered, state, poll, receiptOf, results, edit, skippedReason };
+    return { runs, automations, owner, delivered, state, poll, receiptOf, results, edit, skippedReason, closed };
   }
 
   /** A comment of cezar's own login held during a live turn; `between` runs; the turn ends; a poll. */
@@ -691,6 +693,20 @@ describe('held events through the poll cycle (spec 2026-10-23-github-events §11
     expect(delivered[0]).toContain('> Comment 1.');
     expect(receiptOf(1)).toMatchObject({ status: 'launched', delivered: true, runId: owner.id });
     expect(results()).toEqual(['held', 'delivered']);
+  });
+
+  it('skips (pr-closed) a held comment whose PR a later poll read as closed, owning-run and new-run alike', async () => {
+    const env = await setup();
+    await heldThenTurnEnds(env, 30, () => { env.closed.push(8); });
+    expect(env.delivered).toEqual([]);
+    expect(env.receiptOf(30)).toMatchObject({ status: 'skipped' });
+    expect(env.skippedReason(30)).toMatch(/^pr-closed:/);
+
+    const fresh = await setup();
+    fresh.edit({ deliver: undefined });
+    await heldThenTurnEnds(fresh, 31, () => { fresh.closed.push(8); });
+    expect(fresh.receiptOf(31)).toMatchObject({ status: 'skipped' });
+    expect(fresh.skippedReason(31)).toMatch(/^pr-closed:/);
   });
 
   it('skips a held comment once a trace on the run claims it — the run’s own reply, posted after all', async () => {

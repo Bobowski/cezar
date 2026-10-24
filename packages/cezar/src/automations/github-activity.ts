@@ -90,6 +90,8 @@ export interface ActivityResult {
   cursorless: GithubCandidate[];
   state: GithubActivityState;
   truncated: boolean;
+  /** PRs this poll read as closed or merged; a held event re-checks against them. */
+  closedPrs: number[];
 }
 
 const login = z.object({ login: z.string() }).nullable().optional();
@@ -723,5 +725,6 @@ export async function pollActivity(input: {
 
   next.etags = etags;
   next.headsRepo = headsRepo;
-  return { groups, cursorless, state: next, truncated };
+  const closedPrs = [...items].flatMap(([number, item]) => item?.open === false ? [number] : []);
+  return { groups, cursorless, state: next, truncated, closedPrs };
 }

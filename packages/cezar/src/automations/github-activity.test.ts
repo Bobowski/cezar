@@ -169,7 +169,10 @@ describe('comment events', () => {
     const poll = (over: Partial<GithubAutomationDefinition> = {}) => new GithubPoller({ run: gh(closed) })
       .poll('acme', 'demo', { ...definition(['pull_request.commented']), ...over }, { since });
     const of777 = (result: Awaited<ReturnType<typeof poll>>) => result.candidates.find((candidate) => candidate.comment?.id === 777);
-    expect(of777(await poll())).toBeUndefined();
+    const filtered = await poll();
+    expect(of777(filtered)).toBeUndefined();
+    // Handed back, so a comment held while the PR was open is re-checked on release.
+    expect(filtered.closedPrs).toEqual([own.number]);
     expect(of777(await poll({ filters: { lookbackDays: 7, maxRecords: 25, includeClosed: true } }))).toMatchObject({ prClosed: true });
     expect(of777(await poll({ deliver: 'owning-run', filters: { lookbackDays: 7, maxRecords: 25, allowAnyAuthor: true } }))).toMatchObject({ prClosed: true });
     // An open PR's comment carries no mark.

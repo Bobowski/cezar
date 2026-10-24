@@ -95,7 +95,8 @@ behaviour). With `owning-run`:
 4. A comment, review or check event on a PR that is closed or merged continues no task: it is
    `skipped` (`pr-closed: …`) — a "thanks" on a merged PR must not wake the archived work. A
    `new-run` automation admits the comment and review events only with `filters.includeClosed: true`;
-   check suites are read for open PRs' heads only, so a closed PR yields none.
+   check suites are read for open PRs' heads only, so a closed PR yields none. An event held
+   while its PR was open (§11) is re-checked at release against the PRs that poll read as closed.
 
 Nothing else changes for issue events or for `new-run` automations.
 

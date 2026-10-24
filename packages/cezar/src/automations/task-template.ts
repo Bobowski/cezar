@@ -290,6 +290,8 @@ export async function launchAutomationRun(options: {
       return { ...launched, note };
     }
   }
+  // The poll filtered these out; one held while open and closed since is marked at release (§5).
+  if (candidate.prClosed && definition.filters.includeClosed !== true) throw new AutomationLaunchOutcome('skipped', `pr-closed: #${candidate.number} is closed or merged; a ${candidate.event} there starts no task.`);
   // A comment that would start a run is held the same way: its author's turn, the hourly cap.
   const hold = candidate.comment ? await holdOf() : undefined;
   if (hold?.result === 'held') throw new AutomationLaunchOutcome('held', hold.reason);

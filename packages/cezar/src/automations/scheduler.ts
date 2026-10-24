@@ -95,6 +95,8 @@ export class ProjectAutomationScheduler {
     let exhausted = false;
     let stillPinned = false;
     let polledState: AutomationRuntimeState = {};
+    /** PRs any drain of this cycle read as closed: a held event released after it re-checks here. */
+    const closedPrs = new Set<number>();
     return runEventPollCycle({
       store, definition, mode, scheduled, onChange: this.handle.onChange,
       poll: async state => {
@@ -110,7 +112,10 @@ export class ProjectAutomationScheduler {
           activity: maxRecords === undefined ? activity : { ...activity, etags: undefined },
           ...(traces ? { traces } : {}),
           ...(maxRecords === undefined ? {} : { maxRecords }),
-        }));
+        })).then((observed) => {
+          for (const number of observed.closedPrs ?? []) closedPrs.add(number);
+          return observed;
+        });
         const pinned = (observed: GithubPollResult): boolean =>
           observed.truncated && laterCursor(state.cursor, observed.cursor) === state.cursor;
         let result = await drain();
@@ -137,7 +142,7 @@ export class ProjectAutomationScheduler {
       eligible: (candidate, state) => candidate.cursorless === true || !state.cursor
         || Date.parse(candidate.timestamp) >= Date.parse(state.cursor.timestamp) - CURSOR_OVERLAP_MS,
       launch: (candidate: GithubCandidate) => this.launch(definition, candidate),
-      releaseHeld: () => this.releaseHeld(definition),
+      releaseHeld: () => this.releaseHeld(definition, closedPrs),
       persist: (result, current) => {
         const cursor = laterCursor(current.cursor, result.cursor);
         // A webhook wake that arrived while this poll ran stays due — a minute on, the shortest
@@ -194,9 +199,15 @@ export class ProjectAutomationScheduler {
   }
 
   /** Held events (spec 2026-10-23-github-events §11) are decided again on every execute poll. */
-  private async releaseHeld(definition: GithubAutomationDefinition): Promise<void> {
+  private async releaseHeld(definition: GithubAutomationDefinition, closedPrs: ReadonlySet<number> = new Set()): Promise<void> {
     const launch = this.handle.launch;
     if (!launch) return;
+    const repo = this.handle.github ? `${this.handle.github.owner}/${this.handle.github.repo}`.toLowerCase() : undefined;
+    // Held while open, closed since: the launch decides on the state this poll read (§5).
+    const current = (candidate: GithubCandidate): GithubCandidate =>
+      !candidate.prClosed && candidate.number !== undefined && candidate.repo.toLowerCase() === repo && closedPrs.has(candidate.number)
+        ? { ...candidate, prClosed: true }
+        : candidate;
     await releaseHeldEvents<GithubCandidate>({
       store: this.handle.store, definition,
       candidateOf: (receipt) => receipt.candidate as GithubCandidate | undefined,
@@ -206,7 +217,7 @@ export class ProjectAutomationScheduler {
         const traces = await this.handle.traces?.();
         return !!traces && isOwnTrace(candidate, traces, definition.filters.includeOwnPushes);
       },
-      launch: (receiptId, candidate, admit) => launch(definition, candidate, receiptId, { admit }),
+      launch: (receiptId, candidate, admit) => launch(definition, current(candidate), receiptId, { admit }),
     });
   }
 

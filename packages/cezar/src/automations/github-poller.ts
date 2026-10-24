@@ -122,6 +122,8 @@ export interface GithubPollResult {
   cursor?: { timestamp: string; tieBreaker: string };
   /** Present when an activity source ran: the state to persist after an execute cycle. */
   activity?: GithubActivityState;
+  /** PRs this poll read as closed or merged; a held event re-checks against them. */
+  closedPrs?: number[];
 }
 
 export interface GithubPollerOptions {
@@ -227,6 +229,7 @@ export class GithubPoller {
       candidate?: GithubCandidate;
     }> = [];
     let truncated = false;
+    const closedPrs = new Set<number>();
     for (const source of sources) {
       const query = buildSearchQuery(
         owner,
@@ -266,6 +269,7 @@ export class GithubPoller {
       for (const item of closedSource ? items : items.slice(0, HARD_CANDIDATE_CAP)) {
         const itemRepoUrl = item.repository_url.toLowerCase();
         if (this.host ? !itemRepoUrl.endsWith(expectedRepoPath) : itemRepoUrl !== expectedRepoUrl) continue;
+        if (item.pull_request && item.closed_at) closedPrs.add(item.number);
         if (source.opened && item.pull_request && definition.events.includes('pull_request.opened')) {
           const candidate = normalizeOpened(owner, repo, item, 'pull_request.opened');
           if (atOrAfter(candidate.timestamp, options.since)) {
@@ -377,6 +381,7 @@ export class GithubPoller {
         permissions: this.permissions,
       });
       truncated ||= activity.truncated;
+      for (const number of activity.closedPrs) closedPrs.add(number);
       for (const group of activity.groups) {
         group.sort(compareObservation);
         truncated ||= group.length > maxRecords;
@@ -405,6 +410,7 @@ export class GithubPoller {
       pages: sources.length + (activity?.groups.length ?? 0),
       cursor: cursor ? { timestamp: cursor.timestamp, tieBreaker: cursor.tieBreaker } : undefined,
       ...(activity ? { activity: activity.state } : {}),
+      ...(closedPrs.size ? { closedPrs: [...closedPrs] } : {}),
     };
   }
 

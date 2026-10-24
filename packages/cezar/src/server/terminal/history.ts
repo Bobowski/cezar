@@ -183,6 +183,10 @@ const FLAG_TAIL = /^[a-z][a-z-]*(?:=.*)?$/;
 
 /** Registry clients whose `login -p` takes the password; `-p` is a port or a publish elsewhere. */
 const LOGIN_PASSWORD = new Set(['docker', 'podman', 'nerdctl', 'buildah', 'skopeo', 'helm', 'oras']);
+/** Redis clients: `-a` is the password, `-p` the port. */
+const REDIS_CLIENTS = new Set(['redis-cli', 'valkey-cli', 'keydb-cli']);
+/** sshpass options that take a value; its first other word starts the command it runs. */
+const SSHPASS_VALUE_FLAGS = new Set(['-p', '-f', '-d', '-P']);
 /** Commands whose `-p`/`-a` is a parents, all, append, pid, port or prompt flag — never a password. */
 const NO_SHORT_SECRET = new Set([
   'mkdir', 'cp', 'mv', 'ls', 'ln', 'install', 'rsync', 'tar', 'unzip', 'ps', 'kill', 'pkill', 'pgrep', 'lsof', 'ssh', 'nc',
@@ -202,20 +206,34 @@ function redactClientPassword(segment: string): string {
   while (COMMAND_PREFIX.has(tokens[at]?.text ?? '') && tokens[at + 1] && !tokens[at + 1]!.text.startsWith('-')) at += 1;
   if (!tokens[at]) return segment;
   const command = baseName(tokens[at]!.text);
+  if (command === 'sshpass') {
+    let index = at + 1;
+    while (tokens[index]?.text.startsWith('-')) index += SSHPASS_VALUE_FLAGS.has(tokens[index]!.text) ? 2 : 1;
+    const inner = tokens[index];
+    if (inner) return redactClientPassword(segment.slice(0, inner.start)) + redactClientPassword(segment.slice(inner.start));
+  }
   const words = tokens.map((token) => token.text);
   let out = segment;
   const verb = SECRET_VERBS.find((parts) => parts.every((part, index) => (index === 0 ? command : words[at + index]) === part));
   const positional = verb && tokens.slice(at + verb.length).find((token) => !token.text.startsWith('-'));
   if (positional) out = `${out.slice(0, positional.start)}***${out.slice(positional.start + positional.text.length)}`;
-  if (GLUED_PASSWORD.has(command)) out = out.replace(GLUED_PASSWORD_FLAG, '$1-p***');
   const generic = LOGIN_PASSWORD.has(command) ? words.includes('login') : !NO_SHORT_SECRET.has(command);
   if (!generic) return out;
+  // The client's own password flag is masked whatever its value looks like: `-p 123456` is no port there.
+  const own = passwordFlag(command);
   out = out.replace(GLUED_PASSWORD_FLAG, (whole: string, lead: string) => {
     const value = whole.slice(lead.length + 2);
-    return value === '***' || PORT_SHAPE.test(value) || FLAG_TAIL.test(value) ? whole : `${lead}-p***`;
+    if (value === '***') return whole;
+    return own !== '-p' && (PORT_SHAPE.test(value) || FLAG_TAIL.test(value)) ? whole : `${lead}-p***`;
   });
   return out.replace(SPACED_SHORT_SECRET, (whole: string, lead: string, flag: string, gap: string) =>
-    (PORT_SHAPE.test(whole.slice(lead.length + flag.length + gap.length)) ? whole : `${lead}${flag}${gap}***`));
+    (flag !== own && PORT_SHAPE.test(whole.slice(lead.length + flag.length + gap.length)) ? whole : `${lead}${flag}${gap}***`));
+}
+
+/** The short flag that is `command`'s password, when it has one; a `login` verb was checked by the caller. */
+function passwordFlag(command: string): '-p' | '-a' | null {
+  if (GLUED_PASSWORD.has(command) || LOGIN_PASSWORD.has(command)) return '-p';
+  return REDIS_CLIENTS.has(command) ? '-a' : null;
 }
 
 /** Short names the shared credential heuristic leaves out: `DB_PASS`, `KEY`, `SMTP_PWD`. */

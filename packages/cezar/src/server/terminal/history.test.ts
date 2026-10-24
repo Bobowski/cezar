@@ -146,6 +146,24 @@ describe('history folding', () => {
     expect(historyLine('read -p "Name: " NAME')).toBe('read -p "Name: " NAME');
   });
 
+  it('stores a numeric password a password-taking client\'s flag carries: a port shape is no exemption there', () => {
+    expect(historyLine('sshpass -p 123456 ssh user@host')).toBe('sshpass -p *** ssh user@host');
+    expect(historyLine('redis-cli -a 123456 ping')).toBe('redis-cli -a *** ping');
+    expect(historyLine('docker login -u me -p 20261025 reg')).toBe('docker login -u me -p *** reg');
+    expect(historyLine('mysql -u root -p 1234 shop')).toBe('mysql -u root -p *** shop');
+    // sshpass's own `-p` only: the command it runs keeps its port.
+    expect(historyLine('sshpass -p 123456 ssh -p 2222 user@host')).toBe('sshpass -p *** ssh -p 2222 user@host');
+    // The port exemption still holds wherever `-p` is not the client's password flag.
+    expect(historyLine('ssh -p 2222 user@host')).toBe('ssh -p 2222 user@host');
+    expect(historyLine('docker run -p 8080:80 nginx')).toBe('docker run -p 8080:80 nginx');
+    expect(historyLine('redis-cli -p 6380 ping')).toBe('redis-cli -p 6380 ping');
+    expect(historyLine('mkdir -p build/out')).toBe('mkdir -p build/out');
+    expect(historyLine('find . -name x -print')).toBe('find . -name x -print');
+    expect(historyLine('gcc -pthread main.c')).toBe('gcc -pthread main.c');
+    expect(historyLine('mysql -p')).toBe('mysql -p');
+    expect(historyLine('mysql -u root -p -h db shop')).toBe('mysql -u root -p -h db shop');
+  });
+
   it('stores no password curl\'s -u carries, glued or spaced', () => {
     expect(historyLine('curl -uadmin:hunter2 http://x')).toBe('curl -uadmin:*** http://x');
     expect(historyLine('curl -u admin:hunter2 http://x')).toBe('curl -u admin:*** http://x');

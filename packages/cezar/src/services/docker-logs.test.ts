@@ -348,4 +348,52 @@ describe('docker logs followers (spec 2026-10-23-docker-management §3.4)', () =
       expect(followers.read(ID, 0).data).toBe(`${'x'.repeat(32 * 1024)} … [line cut at 32 KiB]\nok\n`);
     });
   });
+
+  // Docker splits a line past 16 KiB into records, each stamped with the line's first stamp (moby copier).
+  describe('a long line Docker split into 16 KiB records', () => {
+    const ts = (n: number) => `2026-10-24T10:00:0${n}.123456789Z`;
+    const pw = 'Zq8!rT2#vLp9@xWm4$kN7';
+    const records = (n: number, line: string) => {
+      let out = '';
+      for (let at = 0; at < line.length; at += 16 * 1024) out += `${ts(n)} ${line.slice(at, at + 16 * 1024)}`;
+      return `${out}\n`;
+    };
+
+    it('is joined into one line, its stamps stripped, a secret across a record boundary redacted', () => {
+      const line = `${'x'.repeat(16 * 1024 - 10)}${pw}${'y'.repeat(4000)}`;
+      const stream = `${records(1, line)}${ts(2)} next\n`;
+      for (const size of [stream.length, 1000, 7]) {
+        const { followers, spawned } = harness([pw]);
+        followers.read(ID, 0);
+        for (let at = 0; at < stream.length; at += size) spawned[0]!.data('out', stream.slice(at, at + size));
+        const data = followers.read(ID, 0).data;
+        expect(data).not.toContain('2026-10-24T');
+        expect(data).not.toContain(pw.slice(0, 10));
+        expect(data).not.toContain(pw.slice(10));
+        expect(data).toBe(`${'x'.repeat(16 * 1024 - 10)}${REDACTED}${'y'.repeat(4000)}\nnext\n`);
+      }
+    });
+
+    it('is one logical line past three records, cut once, and resumed from the last whole line’s stamp', () => {
+      const { followers, spawned } = harness([pw]);
+      followers.hold(ID);
+      spawned[0]!.data('out', `${records(1, 'z'.repeat(40 * 1024))}${ts(2)} next\n`);
+      expect(followers.read(ID, 0).data).toBe(`${'z'.repeat(32 * 1024)} … [line cut at 32 KiB]\nnext\n`);
+      followers.release(ID);
+      followers.hold(ID);
+      expect(spawned[1]?.args.slice(2, 4)).toEqual(['--since', ts(2)]);
+    });
+
+    it('resumes a long line still arriving from its own stamp, never re-showing its head', () => {
+      const { followers, spawned } = harness([pw]);
+      followers.hold(ID);
+      const line = 'z'.repeat(40 * 1024);
+      spawned[0]!.data('out', `${ts(1)} boot\n${records(2, line).slice(0, -1 - 100)}`);
+      followers.release(ID);
+      followers.hold(ID);
+      expect(spawned[1]?.args.slice(2, 4)).toEqual(['--since', ts(2)]);
+      spawned[1]!.data('out', `${records(2, line)}${ts(3)} next\n`);
+      expect(followers.read(ID, 0).data).toBe(`boot\n${'z'.repeat(32 * 1024)} … [line cut at 32 KiB]\nnext\n`);
+    });
+  });
 });

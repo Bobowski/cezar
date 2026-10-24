@@ -55,8 +55,14 @@ const STAMP_MAX = 40;
 
 /** One stream's stamps, in ns: the line arriving and the last one passed whole. */
 interface Stamps {
-  /** What of a line's stamp has arrived, at a line start; `null` inside a line. */
-  head: string | null;
+  /** Not parsed yet: a line start's stamp still arriving, or inside a line, what may be its stamp again. */
+  held: string;
+  atStart: boolean;
+  /**
+   * The open line's stamp as printed. Docker cuts a line past 16 KiB into records, each stamped with
+   * the line's first stamp (moby copier `partialTS`): there it is cut out and the records joined.
+   */
+  mark: string | null;
   open: bigint | null;
   done: bigint | null;
   /** A resumed follower drops the lines stamped at or before this: the killed one had them. */
@@ -65,7 +71,14 @@ interface Stamps {
 }
 
 function freshStamps(): Stamps {
-  return { head: '', open: null, done: null, after: null, dropping: false };
+  return { held: '', atStart: true, mark: null, open: null, done: null, after: null, dropping: false };
+}
+
+/** How much of `text`'s tail may be the start of `mark`. */
+function markStart(text: string, mark: string | null): number {
+  if (mark === null) return 0;
+  for (let k = Math.min(mark.length - 1, text.length); k > 0; k--) if (text.endsWith(mark.slice(0, k))) return k;
+  return 0;
 }
 
 function stampNs(match: RegExpExecArray): bigint | null {
@@ -78,35 +91,47 @@ function formatStamp(ns: bigint): string {
   return `${seconds}.${(ns % 1_000_000_000n).toString().padStart(9, '0')}Z`;
 }
 
-/** `chunk` without its line stamps, each line's noted; a line at or before `after` is dropped. */
+/**
+ * `chunk` without its record stamps, each line's noted, the records of one long line joined; a line
+ * at or before `after` is dropped.
+ */
 function unstamp(stamps: Stamps, chunk: string): string {
   let out = '';
-  let rest = chunk;
+  let rest = stamps.held + chunk;
+  stamps.held = '';
   while (rest !== '') {
-    if (stamps.head === null) {
-      const newline = rest.indexOf('\n');
-      if (!stamps.dropping) out += newline === -1 ? rest : rest.slice(0, newline + 1);
-      if (newline === -1) break;
-      if (stamps.open !== null && (stamps.done === null || stamps.open > stamps.done)) stamps.done = stamps.open;
-      stamps.open = null;
-      stamps.dropping = false;
-      stamps.head = '';
-      rest = rest.slice(newline + 1);
+    if (stamps.atStart) {
+      const match = STAMP_RE.exec(rest);
+      if (match) {
+        stamps.open = stampNs(match);
+        stamps.mark = match[0];
+        stamps.dropping = stamps.open !== null && stamps.after !== null && stamps.open <= stamps.after;
+        rest = rest.slice(match[0].length);
+      } else if (rest.length < STAMP_MAX && !/[ \n]/.test(rest)) {
+        stamps.held = rest;
+        break;
+      }
+      stamps.atStart = false;
       continue;
     }
-    const head = stamps.head + rest;
-    const match = STAMP_RE.exec(head);
-    stamps.head = null;
-    if (match) {
-      stamps.open = stampNs(match);
-      stamps.dropping = stamps.open !== null && stamps.after !== null && stamps.open <= stamps.after;
-      rest = head.slice(match[0].length);
-    } else if (head.length < STAMP_MAX && !/[ \n]/.test(head)) {
-      stamps.head = head;
-      break;
-    } else {
-      rest = head;
+    const newline = rest.indexOf('\n');
+    const line = newline === -1 ? rest : rest.slice(0, newline + 1);
+    const record = stamps.mark === null ? -1 : line.indexOf(stamps.mark);
+    if (record !== -1) {
+      if (!stamps.dropping) out += line.slice(0, record);
+      rest = rest.slice(record + stamps.mark!.length);
+      continue;
     }
+    if (newline === -1) {
+      const keep = rest.length - markStart(rest, stamps.mark);
+      if (!stamps.dropping) out += rest.slice(0, keep);
+      stamps.held = rest.slice(keep);
+      break;
+    }
+    if (!stamps.dropping) out += line;
+    if (stamps.open !== null && (stamps.done === null || stamps.open > stamps.done)) stamps.done = stamps.open;
+    Object.assign(stamps, { atStart: true, mark: null, open: null, dropping: false });
+    rest = rest.slice(newline + 1);
   }
   return out;
 }
@@ -161,7 +186,7 @@ function hideHold(entry: Entry): bigint | null {
     }
     const need = stamps.open ?? stamps.done;
     if (need !== null && (since === null || need < since)) since = need;
-    Object.assign(stamps, { head: '', open: null, dropping: false });
+    Object.assign(stamps, { held: '', atStart: true, mark: null, open: null, dropping: false });
     entry.pending[stream] = held;
     entry.hidden[stream] = held.length;
     entry.skipping[stream] = false;
@@ -295,8 +320,11 @@ export class DockerLogFollowers {
       },
       exit: (reason) => {
         if (entry.proc !== proc) return;
-        // A line start still waiting to show it carries no stamp is text.
-        for (const stream of ['out', 'err'] as const) this.append(id, entry, this.take(entry, stream, entry.stamps[stream].head ?? ''));
+        // A line start still waiting to show it carries no stamp, or a record stamp to show it is one, is text.
+        for (const stream of ['out', 'err'] as const) {
+          const stamps = entry.stamps[stream];
+          this.append(id, entry, this.take(entry, stream, stamps.dropping ? '' : stamps.held));
+        }
         const values = this.redacting() ? this.secretValues() : [];
         // A partial last line goes out; a multi-line secret it may be the start of does not.
         const rest = (['out', 'err'] as const).map((stream) => {

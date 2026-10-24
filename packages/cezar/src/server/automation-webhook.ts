@@ -18,6 +18,7 @@ import {
   webhookPath,
   writeWebhook,
   type GhJsonRun,
+  type WebhookFile,
 } from '../automations/webhook.ts';
 import type { ProjectContext } from './project-context.ts';
 import { paramZodValidator } from './validators.ts';
@@ -38,6 +39,21 @@ export interface HookProject {
 }
 
 const hookParamsSchema = z.object({ sender: z.string(), hookId: z.string() });
+
+const webhookLocks = new Map<string, Promise<unknown>>();
+
+/** One project's webhook-file mutations, one at a time: each re-reads the file inside, so a
+ *  request that read it before an await never writes back what another one changed meanwhile. */
+export async function withWebhookLock<T>(dataDir: string, fn: () => T | Promise<T>): Promise<T> {
+  const turn = (webhookLocks.get(dataDir) ?? Promise.resolve()).then(fn, fn);
+  const tail = turn.catch(() => undefined);
+  webhookLocks.set(dataDir, tail);
+  try {
+    return await turn;
+  } finally {
+    if (webhookLocks.get(dataDir) === tail) webhookLocks.delete(dataDir);
+  }
+}
 
 /**
  * Due now — or a minute after its last poll (`MIN_WAKE_POLL_MS`), so a burst of deliveries is one
@@ -120,6 +136,11 @@ export function hookRoutes(deps: {
     const event = (c.req.header('x-github-event') ?? '').replace(/[^\w.-]/g, '').slice(0, 100);
     const deliveryId = (c.req.header('x-github-delivery') ?? '').replace(/[^\w.-]/g, '').slice(0, 100);
     const now = new Date().toISOString();
+    // Bookkeeping only: a hook removed or re-registered meanwhile is never written back.
+    const record = (patch: (current: WebhookFile) => WebhookFile) => withWebhookLock(project.dataDir, () => {
+      const current = readWebhook(project.dataDir);
+      if (current && sameHookId(current.hookId, hookId)) writeWebhook(project.dataDir, patch(current));
+    }).catch(() => undefined);
     // A ping proves the route; it has nothing for a poll to find.
     const woke = event !== 'ping' && throttle.take(project.dataDir);
     // Not awaited: waking may build a project context, and GitHub gives a delivery ten seconds.
@@ -128,26 +149,17 @@ export function hookRoutes(deps: {
     else if (event !== 'ping') {
       throttle.trail(project.dataDir, () => {
         fire();
-        const current = readWebhook(project.dataDir);
-        try {
-          if (current) writeWebhook(project.dataDir, { ...current, lastWakeAt: new Date().toISOString() });
-        } catch {
-          // Bookkeeping only.
-        }
+        void record((current) => ({ ...current, lastWakeAt: new Date().toISOString() }));
       });
     }
-    try {
-      writeWebhook(project.dataDir, {
-        ...file,
-        lastDeliveryAt: now,
-        ...(event ? { lastEvent: event } : {}),
-        ...(deliveryId ? { lastDeliveryId: deliveryId } : {}),
-        ...(woke ? { lastWakeAt: now } : {}),
-        ...(event === 'ping' ? { ping: { at: now, ok: true } } : {}),
-      });
-    } catch {
-      // Bookkeeping only; the wake already happened.
-    }
+    await record((current) => ({
+      ...current,
+      lastDeliveryAt: now,
+      ...(event ? { lastEvent: event } : {}),
+      ...(deliveryId ? { lastDeliveryId: deliveryId } : {}),
+      ...(woke ? { lastWakeAt: now } : {}),
+      ...(event === 'ping' ? { ping: { at: now, ok: true } } : {}),
+    }));
     return c.json({ accepted: true as const, woke }, 202);
   });
 }
@@ -221,61 +233,67 @@ export function automationWebhookRoutes(deps: WebhookRouteDeps) {
       const current = await status(project, origin);
       if (!current.available || !origin) return c.json({ error: current.reason ?? 'webhooks are unavailable here' }, 409);
       const remote = (await deps.remote(project.root))!;
-      const previous = readWebhook(project.dataDir);
-      if (previous?.githubHookId !== undefined && previous.url === `${origin}${routeOf(previous.hookId)}`) {
-        return c.json({ webhook: current });
-      }
-      const identity = newWebhookIdentity();
-      const url = `${origin}${routeOf(identity.hookId)}`;
-      try {
-        writeWebhook(project.dataDir, { version: 1, ...identity, repo: `${remote.owner}/${remote.repo}`, url });
-        deps.changed();
-        const githubHookId = deps.dryRun?.() ? 1 : await registerGithubHook({ ...remote, url, secret: identity.secret, run: deps.run });
-        writeWebhook(project.dataDir, { ...readWebhook(project.dataDir)!, githubHookId, registeredAt: new Date().toISOString() });
-      } catch (error) {
-        // The hook GitHub already has keeps its file: losing `githubHookId` would orphan it.
-        if (previous) writeWebhook(project.dataDir, previous);
-        else rmSync(webhookPath(project.dataDir), { force: true });
-        deps.changed();
-        return c.json({ error: `GitHub refused the webhook: ${failure(error)}` }, 409);
-      }
-      if (previous?.githubHookId !== undefined && !deps.dryRun?.()) {
-        // Best-effort: an old hook that survives calls a route id no file holds any more (a 404).
-        await deleteGithubHook({ ...remote, githubHookId: previous.githubHookId, run: deps.run }).catch(() => undefined);
-      }
-      return c.json({ webhook: await status(project, origin) });
+      return withWebhookLock(project.dataDir, async () => {
+        const previous = readWebhook(project.dataDir);
+        if (previous?.githubHookId !== undefined && previous.url === `${origin}${routeOf(previous.hookId)}`) {
+          return c.json({ webhook: current });
+        }
+        const identity = newWebhookIdentity();
+        const url = `${origin}${routeOf(identity.hookId)}`;
+        try {
+          writeWebhook(project.dataDir, { version: 1, ...identity, repo: `${remote.owner}/${remote.repo}`, url });
+          deps.changed();
+          const githubHookId = deps.dryRun?.() ? 1 : await registerGithubHook({ ...remote, url, secret: identity.secret, run: deps.run });
+          writeWebhook(project.dataDir, { ...readWebhook(project.dataDir)!, githubHookId, registeredAt: new Date().toISOString() });
+        } catch (error) {
+          // The hook GitHub already has keeps its file: losing `githubHookId` would orphan it.
+          if (previous) writeWebhook(project.dataDir, previous);
+          else rmSync(webhookPath(project.dataDir), { force: true });
+          deps.changed();
+          return c.json({ error: `GitHub refused the webhook: ${failure(error)}` }, 409);
+        }
+        if (previous?.githubHookId !== undefined && !deps.dryRun?.()) {
+          // Best-effort: an old hook that survives calls a route id no file holds any more (a 404).
+          await deleteGithubHook({ ...remote, githubHookId: previous.githubHookId, run: deps.run }).catch(() => undefined);
+        }
+        return c.json({ webhook: await status(project, origin) });
+      });
     })
 
     .post('/automation-webhook/ping', async (c) => {
       const project = c.get('project');
-      const file = readWebhook(project.dataDir);
-      if (file?.githubHookId === undefined) return c.json({ error: 'no webhook is registered' }, 409);
-      const remote = await deps.remote(project.root);
-      if (!remote) return c.json({ error: 'This project has no GitHub remote.' }, 409);
-      const at = new Date().toISOString();
-      let ping: { at: string; ok: boolean; error?: string };
-      try {
-        if (!deps.dryRun?.()) await pingGithubHook({ ...remote, githubHookId: file.githubHookId, run: deps.run });
-        ping = { at, ok: true };
-      } catch (error) {
-        ping = { at, ok: false, error: failure(error) };
-      }
-      writeWebhook(project.dataDir, { ...file, ping });
-      return c.json({ webhook: await status(project, originOf(c)) });
+      return withWebhookLock(project.dataDir, async () => {
+        const file = readWebhook(project.dataDir);
+        if (file?.githubHookId === undefined) return c.json({ error: 'no webhook is registered' }, 409);
+        const remote = await deps.remote(project.root);
+        if (!remote) return c.json({ error: 'This project has no GitHub remote.' }, 409);
+        const at = new Date().toISOString();
+        let ping: { at: string; ok: boolean; error?: string };
+        try {
+          if (!deps.dryRun?.()) await pingGithubHook({ ...remote, githubHookId: file.githubHookId, run: deps.run });
+          ping = { at, ok: true };
+        } catch (error) {
+          ping = { at, ok: false, error: failure(error) };
+        }
+        writeWebhook(project.dataDir, { ...file, ping });
+        return c.json({ webhook: await status(project, originOf(c)) });
+      });
     })
 
     .delete('/automation-webhook', async (c) => {
       const project = c.get('project');
-      const file = readWebhook(project.dataDir);
-      if (file?.githubHookId !== undefined && !deps.dryRun?.()) {
-        const remote = await deps.remote(project.root);
-        if (remote) {
-          try { await deleteGithubHook({ ...remote, githubHookId: file.githubHookId, run: deps.run }); }
-          catch (error) { return c.json({ error: `GitHub refused to remove the webhook: ${failure(error)}` }, 409); }
+      return withWebhookLock(project.dataDir, async () => {
+        const file = readWebhook(project.dataDir);
+        if (file?.githubHookId !== undefined && !deps.dryRun?.()) {
+          const remote = await deps.remote(project.root);
+          if (remote) {
+            try { await deleteGithubHook({ ...remote, githubHookId: file.githubHookId, run: deps.run }); }
+            catch (error) { return c.json({ error: `GitHub refused to remove the webhook: ${failure(error)}` }, 409); }
+          }
         }
-      }
-      rmSync(webhookPath(project.dataDir), { force: true });
-      deps.changed();
-      return c.json({ webhook: await status(project, originOf(c)) });
+        rmSync(webhookPath(project.dataDir), { force: true });
+        deps.changed();
+        return c.json({ webhook: await status(project, originOf(c)) });
+      });
     });
 }

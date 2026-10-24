@@ -6,6 +6,8 @@
  * `task-workspace/design-notes.ts`.
  */
 
+import { formatSource, parsePickSource, relativeSource, type DesignSource } from './design-source'
+
 export const DESIGN_PICKS_SURFACE = 'design-picks'
 
 /** More than this in one message is a page dump, not a selection. */
@@ -34,8 +36,12 @@ export interface NewDesignPick {
   viewport: { width: number; height: number }
   /** Nearest first; empty outside a development build of React or Vue. */
   components: string[]
-  /** `file:line` when the framework exposes it, else `''`. */
-  source: string
+  /**
+   * Where a development build says the element is written (third cut §3.3). As the page reports
+   * it until the Browser column keeps it relative to the worktree (`relativeSource`) — absent
+   * when the framework says nothing, or the path is under no root.
+   */
+  source?: DesignSource
   /**
    * The picker's handle on the live element, so the page can keep it framed and numbered while
    * the pick is part of a note. Valid only for the document it was picked in — after a reload it
@@ -64,6 +70,7 @@ export function parseDesignPick(raw: unknown): NewDesignPick | null {
   const selector = str(r.selector, 400)
   const tag = str(r.tag, 40)
   if (selector === '' || tag === '') return null
+  const source = parsePickSource(r.source)
   const rect = (r.rect ?? {}) as Record<string, unknown>
   const viewport = (r.viewport ?? {}) as Record<string, unknown>
   const styles: Record<string, string> = {}
@@ -84,9 +91,17 @@ export function parseDesignPick(raw: unknown): NewDesignPick | null {
     components: Array.isArray(r.components)
       ? r.components.filter((name): name is string => typeof name === 'string').slice(0, 6).map((name) => name.slice(0, 80))
       : [],
-    source: str(r.source, 300),
+    ...(source ? { source } : {}),
     ...(typeof r.mark === 'string' && /^[a-z0-9-]{1,24}$/.test(r.mark) ? { mark: r.mark } : {}),
   }
+}
+
+/** The pick with its source kept only relative to one of `roots`, else without one (§3.3). */
+export function withSourceUnder<T extends NewDesignPick>(pick: T, roots: readonly string[]): T {
+  if (!pick.source) return pick
+  const { source, ...rest } = pick
+  const kept = relativeSource(source, roots)
+  return (kept ? { ...rest, source: kept } : rest) as T
 }
 
 export function parseDesignPicks(text: string): DesignPick[] {
@@ -133,23 +148,40 @@ const indent = (body: string): string =>
  *  markup — enough to find it in the source without a screenshot. */
 export function formatDesignPicks(picks: readonly DesignPick[]): string {
   if (picks.length === 0) return ''
-  const blocks = picks.map((pick) => {
-    const lines = [`- \`${pick.selector}\`${pick.url ? ` on ${pick.url}` : ''}`]
-    if (pick.components.length > 0) {
-      // Outermost first reads like a path into the tree.
-      lines.push(`  component: ${[...pick.components].reverse().join(' › ')}${pick.source ? ` (${pick.source})` : ''}`)
-    } else if (pick.source) {
-      lines.push(`  source: ${pick.source}`)
-    }
-    lines.push(
-      `  box: ${pick.rect.width}×${pick.rect.height} at ${pick.rect.x},${pick.rect.y} (viewport ${pick.viewport.width}×${pick.viewport.height})`,
-    )
-    if (pick.text) lines.push(`  text: ${JSON.stringify(pick.text)}`)
-    const styles = Object.entries(pick.styles)
-    if (styles.length > 0) lines.push(`  styles: ${styles.map(([name, value]) => `${name}: ${value}`).join('; ')}`)
-    return `${lines.join('\n')}\n\n${indent(fence(pick.html, 'html'))}`
+  return `${DESIGN_HEADING}\n\n${picks.map(formatDesignPick).join('\n\n')}`
+}
+
+/** One element's entry in the block. `source:` is the file a development build named, relative
+ *  to the worktree — the line that saves the agent searching the tree by selector (§3.3). */
+export function formatDesignPick(pick: NewDesignPick): string {
+  const lines = [`- \`${pick.selector}\`${pick.url ? ` on ${pick.url}` : ''}`]
+  // Outermost first reads like a path into the tree.
+  if (pick.components.length > 0) lines.push(`  component: ${[...pick.components].reverse().join(' › ')}`)
+  if (pick.source) lines.push(`  source: ${formatSource(pick.source)}`)
+  lines.push(
+    `  box: ${pick.rect.width}×${pick.rect.height} at ${pick.rect.x},${pick.rect.y} (viewport ${pick.viewport.width}×${pick.viewport.height})`,
+  )
+  if (pick.text) lines.push(`  text: ${JSON.stringify(pick.text)}`)
+  const styles = Object.entries(pick.styles)
+  if (styles.length > 0) lines.push(`  styles: ${styles.map(([name, value]) => `${name}: ${value}`).join('; ')}`)
+  return `${lines.join('\n')}\n\n${indent(fence(pick.html, 'html'))}`
+}
+
+/** The line that opens a task started from collected notes. */
+export const DESIGN_NOTES_HEADING = 'Notes on the app preview, in order:'
+
+/**
+ * The task text for several collected notes (third cut §3.2): each note's words, then the one
+ * element it is about — in the order they were collected. Throws when it would be refused.
+ */
+export function formatDesignNotesTask(notes: readonly { pick: NewDesignPick; text: string }[]): string {
+  const parts = notes.map(({ pick, text }, index) => {
+    const words = text.trim()
+    return `${index + 1}. ${words === '' ? '(no note — the element itself)' : words}\n\n${indent(formatDesignPick(pick))}`
   })
-  return `${DESIGN_HEADING}\n\n${blocks.join('\n\n')}`
+  const message = `${DESIGN_NOTES_HEADING}\n\n${parts.join('\n\n')}`
+  if (message.length > MESSAGE_TEXT_MAX) throw new Error('Too long with every note attached — start a task with fewer of them.')
+  return message
 }
 
 /**

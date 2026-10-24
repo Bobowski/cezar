@@ -218,3 +218,43 @@ describe('the cockpit is the authority on what is selected', () => {
     expect(marks()).toHaveLength(1)
   })
 })
+
+describe('where an element is written (spec 2026-10-24-design-mode-third-cut §3.3)', () => {
+  type Reported = { source?: unknown; components?: unknown }
+  const pickOf = async (el: Element): Promise<Reported> => {
+    mouse('click', el)
+    await settle()
+    return posted.filter((message) => message.type === 'picked').at(-1)!.element as Reported
+  }
+
+  it('reads React’s _debugSource off the fiber a development build hangs on the node', async () => {
+    const button = page.document.querySelector('.buy')!
+    const fiber = { type: function BuyButton() {}, _debugSource: { fileName: '/srv/wt/src/buy.tsx', lineNumber: 14 }, return: null }
+    ;(button as unknown as Record<string, unknown>)['__reactFiber$abc'] = fiber
+    const picked = await pickOf(button)
+    expect(picked.source).toEqual({ file: '/srv/wt/src/buy.tsx', line: 14 })
+    expect(picked.components).toEqual(['BuyButton'])
+  })
+
+  it('reads Vue’s component __file, from the nearest component up the tree', async () => {
+    const main = page.document.querySelector('main')!
+    ;(main as unknown as Record<string, unknown>).__vueParentComponent = { type: { __name: 'Shop', __file: '/srv/wt/src/Shop.vue' }, parent: null }
+    const picked = await pickOf(page.document.querySelector('.buy')!)
+    expect(picked.source).toEqual({ file: '/srv/wt/src/Shop.vue' })
+  })
+
+  it('reads the Astro and Svelte attributes of the element or an ancestor', async () => {
+    const main = page.document.querySelector('main')!
+    main.setAttribute('data-astro-source-file', '/srv/wt/src/pages/index.astro')
+    main.setAttribute('data-astro-source-loc', '12:5')
+    expect((await pickOf(page.document.querySelector('.buy')!)).source).toEqual({ file: '/srv/wt/src/pages/index.astro', line: 12 })
+
+    const title = page.document.querySelector('#title')!
+    title.setAttribute('data-source', 'src/routes/+page.svelte:3:1')
+    expect((await pickOf(title)).source).toEqual({ file: 'src/routes/+page.svelte', line: 3 })
+  })
+
+  it('says nothing when the build does not know', async () => {
+    expect((await pickOf(page.document.querySelector('.buy')!)).source).toBeNull()
+  })
+})

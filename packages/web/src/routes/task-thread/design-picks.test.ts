@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import {
   DESIGN_HEADING,
+  DESIGN_NOTES_HEADING,
+  formatDesignNotesTask,
   formatDesignPicks,
   messageWithDesignPicks,
   parseDesignPick,
@@ -27,7 +29,7 @@ const pick = (over: Partial<DesignPick> = {}): DesignPick => ({
   rect: { x: 240, y: 512, width: 120, height: 32 },
   viewport: { width: 1280, height: 720 },
   components: ['Button', 'SettingsForm'],
-  source: 'src/ui/button.tsx:14',
+  source: { file: 'src/ui/button.tsx', line: 14 },
   ...over,
 })
 
@@ -51,7 +53,7 @@ describe('parseDesignPick', () => {
       url: 'u'.repeat(9000),
       text: 'x'.repeat(9000),
       html: 'h'.repeat(90_000),
-      source: 'f'.repeat(9000),
+      source: { file: 'f'.repeat(9000), line: 3 },
       components: Array.from({ length: 50 }, () => 'C'.repeat(500)),
       styles: Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`prop-${String.fromCharCode(97 + (i % 26))}${'x'.repeat(i % 5)}`, 'v'.repeat(900)])),
     })!
@@ -60,7 +62,8 @@ describe('parseDesignPick', () => {
     expect(parsed.url).toHaveLength(2000)
     expect(parsed.text).toHaveLength(200)
     expect(parsed.html).toHaveLength(1600)
-    expect(parsed.source).toHaveLength(300)
+    // A path that long is not one: dropped, never cut into a different file.
+    expect(parsed.source).toBeUndefined()
     expect(parsed.components).toHaveLength(6)
     expect(parsed.components[0]).toHaveLength(80)
     expect(Object.keys(parsed.styles).length).toBeLessThanOrEqual(30)
@@ -104,7 +107,8 @@ describe('formatDesignPicks', () => {
         DESIGN_HEADING,
         '',
         '- `main > form.settings > button.btn-primary` on http://localhost:5173/settings',
-        '  component: SettingsForm › Button (src/ui/button.tsx:14)',
+        '  component: SettingsForm › Button',
+        '  source: src/ui/button.tsx:14',
         '  box: 120×32 at 240,512 (viewport 1280×720)',
         '  text: "Save"',
         '  styles: color: rgb(255, 255, 255); border-radius: 6px',
@@ -117,7 +121,7 @@ describe('formatDesignPicks', () => {
   })
 
   it('omits what the page did not provide', () => {
-    const text = formatDesignPicks([pick({ components: [], source: '', text: '', styles: {} })])
+    const text = formatDesignPicks([pick({ components: [], source: undefined, text: '', styles: {} })])
     expect(text).not.toMatch(/component:|source:|text:|styles:/)
   })
 
@@ -144,5 +148,21 @@ describe('messageWithDesignPicks', () => {
 
   it('refuses, with a reason, a message the server would reject', () => {
     expect(() => messageWithDesignPicks('x'.repeat(99_990), [pick()])).toThrow(/selected element attached/)
+  })
+})
+
+describe('formatDesignNotesTask (spec 2026-10-24-design-mode-third-cut §3.2)', () => {
+  it('lists each note with the one element it is about, in the order collected', () => {
+    const text = formatDesignNotesTask([
+      { pick: pick(), text: ' bigger ' },
+      { pick: pick({ selector: 'nav > a.home', components: [], source: undefined }), text: '' },
+    ])
+    expect(text.startsWith(`${DESIGN_NOTES_HEADING}\n\n1. bigger\n\n  - \`main > form.settings > button.btn-primary\``)).toBe(true)
+    expect(text).toContain('    source: src/ui/button.tsx:14')
+    expect(text).toContain('2. (no note — the element itself)\n\n  - `nav > a.home`')
+  })
+
+  it('refuses a task text the server would reject', () => {
+    expect(() => formatDesignNotesTask([{ pick: pick(), text: 'x'.repeat(100_001) }])).toThrow(/fewer/)
   })
 })

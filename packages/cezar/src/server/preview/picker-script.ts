@@ -298,11 +298,45 @@ const PICKER_SOURCE = String.raw`(function () {
     return '';
   }
 
+  // A source location, or null. The path is reported as the page has it — usually absolute on
+  // the dev server's machine; the cockpit keeps it only relative to the worktree (third cut §5).
+  function loc(file, line) {
+    if (typeof file !== 'string' || !file || file.length > 500) return null;
+    var out = { file: file };
+    var n = /^\d+/.exec(String(line == null ? '' : line));
+    if (n && Number(n[0]) > 0) out.line = Number(n[0]);
+    return out;
+  }
+
+  // "path:line[:column]"; a Windows drive colon is not a line.
+  function splitLoc(raw) {
+    var m = /^(.+?):(\d+)(?::\d+)?$/.exec(raw);
+    return m && !/^[A-Za-z]$/.test(m[1]) ? loc(m[1], m[2]) : loc(raw, '');
+  }
+
+  // What a dev build writes ON the node: Astro's data-astro-source-*, Svelte's __svelte_meta,
+  // and the generic data-source / data-loc a few plugins add.
+  function nodeSource(node) {
+    var astro = node.getAttribute('data-astro-source-file');
+    if (astro) return loc(astro, node.getAttribute('data-astro-source-loc'));
+    var meta = node.__svelte_meta && node.__svelte_meta.loc;
+    if (meta && typeof meta.file === 'string') return loc(meta.file, meta.line);
+    var source = node.getAttribute('data-source');
+    var at = node.getAttribute('data-loc');
+    if (source) {
+      var found = splitLoc(source);
+      return found && !found.line && at && /^\d/.test(at) ? loc(found.file, at) : found;
+    }
+    if (at && !/^\d/.test(at)) return splitLoc(at);
+    return null;
+  }
+
   // Development builds of React and Vue hang their component tree off the DOM node. Reading it
   // is best-effort by nature: a production build simply answers nothing, and that is fine.
   function componentsOf(el) {
     var names = [];
-    var source = '';
+    var source = null;
+    var vueFile = '';
     try {
       var key = null;
       for (var k in el) {
@@ -314,7 +348,7 @@ const PICKER_SOURCE = String.raw`(function () {
         var name = fnName(fiber.type);
         if (name && name.length > 1 && names.indexOf(name) === -1) names.push(name);
         if (!source && fiber._debugSource && fiber._debugSource.fileName) {
-          source = fiber._debugSource.fileName + ':' + fiber._debugSource.lineNumber;
+          source = loc(fiber._debugSource.fileName, fiber._debugSource.lineNumber);
         }
         fiber = fiber.return;
       }
@@ -327,12 +361,20 @@ const PICKER_SOURCE = String.raw`(function () {
           var type = instance.type || {};
           var vueName = type.__name || type.name || '';
           if (vueName && names.indexOf(vueName) === -1) names.push(vueName);
-          if (!source && type.__file) source = type.__file;
+          if (!vueFile && typeof type.__file === 'string') vueFile = type.__file;
           instance = instance.parent;
         }
       }
+      // The element and its ancestors, up to the first that says where it is written.
+      var up = el;
+      guard = 0;
+      while (!source && up && up.nodeType === 1 && guard++ < 40) {
+        source = nodeSource(up);
+        up = up.parentElement;
+      }
+      if (!source && vueFile) source = loc(vueFile, '');
     } catch (e) { /* a framework's internals changed shape — say nothing rather than guess */ }
-    return { names: names, source: cut(String(source), 300) };
+    return { names: names, source: source };
   }
 
   function describe(el) {

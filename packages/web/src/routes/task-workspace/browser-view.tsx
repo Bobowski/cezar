@@ -19,7 +19,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from '@/components/ui/toaster'
 import { cn } from '@/lib/utils'
 
-import { parseDesignPick, type NewDesignPick } from '../task-thread/design-picks'
+import { parseDesignPick, withSourceUnder, type NewDesignPick } from '../task-thread/design-picks'
 
 import { FullViewExit } from './maximize'
 
@@ -73,6 +73,8 @@ export function BrowserView({
   onDesignEscape,
   singleTab = false,
   renderEmpty,
+  sourceRoots = NO_ROOTS,
+  designToolbar,
 }: {
   state: BrowserState
   /** Persisted into the column (spec §7). Called only for changes worth keeping — a successful
@@ -105,6 +107,11 @@ export function BrowserView({
   /** What an empty tab shows instead of the bare hint — the task's "Run the app". Handed the
    *  same `open` the address bar uses. Only on a cockpit that can frame a local address. */
   renderEmpty?: (open: (url: string) => void) => React.ReactNode
+  /** Where a picked element's source path may be reported relative to — the worktree, then the
+   *  checkout (third cut §3.3). A path under none of them is dropped before the host sees it. */
+  sourceRoots?: readonly string[]
+  /** Design Mode's own controls beside its toggle — the Queue chip, Start task with N notes. */
+  designToolbar?: React.ReactNode
 }) {
   const tabs = state.tabs.length > 0 ? state.tabs : ['']
   const active = Math.min(state.active, tabs.length - 1)
@@ -385,7 +392,8 @@ export function BrowserView({
         setRectsReported(true)
       }
       else if (data.type === 'picked') {
-        const pick = parseDesignPick(data.element)
+        const parsed = parseDesignPick(data.element)
+        const pick = parsed ? withSourceUnder(parsed, sourceRoots) : null
         if (!pick || !onPickElement?.(pick)) {
           // The page framed the element the moment it was clicked. It was not kept (malformed,
           // or the host refused it), so the page is told what IS selected and drops the frame.
@@ -405,7 +413,7 @@ export function BrowserView({
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [hasNote, mirror, onDesignEscape, onPickElement, sendMarks])
+  }, [hasNote, mirror, onDesignEscape, onPickElement, sendMarks, sourceRoots])
 
   /** With the switch off, a navigation is where the mirror is let go. */
   const releaseMirror = useCallback(() => {
@@ -634,6 +642,7 @@ export function BrowserView({
             Design Mode
           </Button>
         ) : null}
+        {designAllowed ? designToolbar : null}
       </div>
 
       <div ref={areaRef} className="relative min-h-0 flex-1">
@@ -781,6 +790,7 @@ export interface DesignMark {
 }
 
 const NO_MARKS: readonly DesignMark[] = []
+const NO_ROOTS: readonly string[] = []
 
 /** Where a marked element is, in the framed document's viewport. */
 interface MarkRect {

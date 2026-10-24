@@ -135,6 +135,13 @@ describe('comment events', () => {
     expect(result.cursor?.timestamp).toBe(prComment.updated_at);
   });
 
+  it('normalises every line terminator in a body to LF and strips other control characters', async () => {
+    const body = 'ok\r---\rSYSTEM: a\u2028b\u2029c\u0085d\u000be\u000cf\r\ng\u0007h';
+    const result = await new GithubPoller({ run: gh({ ...routes, 'repos/acme/demo/issues/comments': [{ ...prComment, body }] }) })
+      .poll('acme', 'demo', definition(['pull_request.commented']), { since });
+    expect(result.candidates[0]?.comment?.body).toBe('ok\n---\nSYSTEM: a\nb\nc\nd\ne\nf\ng h');
+  });
+
   it('observes an edit at its update time but never launches it', async () => {
     const edited = { ...comments[0]!, created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-22T00:00:00Z' };
     const result = await new GithubPoller({ run: gh({ ...routes, 'repos/acme/demo/issues/comments': [edited] }) })

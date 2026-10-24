@@ -256,9 +256,17 @@ function clean(value: string, max: number): string {
   return value.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, max);
 }
 
-/** A comment body keeps its line breaks; other control characters go. */
+/** Every line terminator a renderer might honour, so a line-by-line quote can never miss one. */
+const LINE_BREAK_RE = /\r\n|[\r\u000b\u000c\u0085\u2028\u2029]/g;
+
+/** A body as plain LF-separated lines: every terminator becomes LF and every other C0/C1 control
+ *  a space, so quoting it line by line quotes all of it (spec 2026-10-23-github-events §7). */
+export function normalizeCommentBody(value: string): string {
+  return value.replace(LINE_BREAK_RE, '\n').replace(/[\u0000-\u0008\u000e-\u001f\u007f-\u009f]/g, ' ');
+}
+
 function cleanBody(value: string | null | undefined): string {
-  return (value ?? '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ').slice(0, MAX_BODY);
+  return normalizeCommentBody(value ?? '').slice(0, MAX_BODY);
 }
 
 function atOrAfter(timestamp: string, since: string): boolean {

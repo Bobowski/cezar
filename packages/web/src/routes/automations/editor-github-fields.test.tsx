@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import type { AutomationEvent } from '@open-mercato/cezar-api-client'
 
-import { DEFAULT_FILTERS, type DraftFilters } from './editor-draft'
+import { DEFAULT_FILTERS, GITHUB_EVENTS, type DraftFilters } from './editor-draft'
 import { EditorGithubFields } from './editor-github-fields'
 
 afterEach(cleanup)
@@ -19,6 +19,7 @@ function Harness({ events: initial = ['issue.opened'] }: { events?: AutomationEv
     <>
       <EditorGithubFields {...state} onChange={(patch) => setState((current) => ({ ...current, ...patch }))} />
       <output data-testid="events">{state.events.join(',')}</output>
+      <output data-testid="own-pushes">{String(state.filters.includeOwnPushes)}</output>
     </>
   )
 }
@@ -32,7 +33,35 @@ describe('EditorGithubFields', () => {
     expect(screen.getByTestId('events').textContent).toBe('pull_request.opened,issue.opened')
     fireEvent.click(screen.getByRole('button', { name: 'issue.opened' }))
     expect(screen.getByTestId('events').textContent).toBe('pull_request.opened')
-    expect(screen.queryByRole('button', { name: 'release.published' })).toBeNull()
+    // Exactly the contract's events (spec 2026-10-23-github-events §3), nothing GitHub merely has.
+    expect(screen.getAllByRole('group', { name: 'GitHub events' })[0]!.querySelectorAll('button')).toHaveLength(GITHUB_EVENTS.length)
+    expect(screen.getByRole('button', { name: 'release.published' })).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'deployment_status' })).toBeNull()
+  })
+
+  it('shows each activity filter only once its event is picked', () => {
+    render(<Harness events={['issue.opened']} />)
+    fireEvent.click(screen.getByRole('button', { name: /Filters/ }))
+    expect(screen.queryByLabelText(/Mentions/)).toBeNull()
+    expect(screen.queryByLabelText(/Branches/)).toBeNull()
+    expect(screen.queryByLabelText('CI result')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'pull_request.commented' }))
+    fireEvent.click(screen.getByRole('button', { name: 'push' }))
+    fireEvent.click(screen.getByRole('button', { name: 'check_suite.completed' }))
+    fireEvent.click(screen.getByRole('button', { name: 'release.published' }))
+    expect(screen.getByLabelText(/Mentions/)).not.toBeNull()
+    expect(screen.getByLabelText(/Branches/)).not.toBeNull()
+    expect(screen.getByLabelText('CI result')).not.toBeNull()
+    expect(screen.getByLabelText(/Release tags/)).not.toBeNull()
+    fireEvent.click(screen.getByLabelText('Also react to CI on commits cezar pushed'))
+    expect(screen.getByTestId('own-pushes').textContent).toBe('true')
+  })
+
+  it('offers delivery to the owning task only for pull request events', () => {
+    render(<Harness events={['issue.opened']} />)
+    expect(screen.queryByRole('combobox', { name: 'Deliver to' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'check_suite.completed' }))
+    expect(screen.getByRole('combobox', { name: 'Deliver to' }).textContent).toContain('a new task')
   })
 
   it('shows the poll line from the filters', () => {

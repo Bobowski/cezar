@@ -13,6 +13,7 @@ import { AutomationsList } from './automations-list'
 import { AutomationsSidebar } from './automations-sidebar'
 import { NextRunsRail, nextRuns } from './next-runs-rail'
 import { useAutomationActions, useAutomationsGate, useAutomationsQuery } from './use-automations'
+import { WebhookCard } from './webhook-card'
 
 export type AutomationsView = 'list' | 'week' | 'day'
 
@@ -110,6 +111,7 @@ export function AutomationsRoute({ mode = 'list' }: { mode?: 'list' | 'new' | 'e
         upcoming={upcoming}
         pollCount={pollCount}
         onNextRuns={() => setRailOpen(true)}
+        footer={query.data?.automations.some((automation) => automation.kind === 'github') ? <WebhookCard timeZone={query.data.timeZone} /> : null}
         onViewChange={(next) => setSearchParams((current) => {
           const params = new URLSearchParams(current)
           if (next === 'list') params.delete('view')

@@ -23,6 +23,7 @@ import {
 } from '@open-mercato/cezar-api-client'
 
 import { PageState } from './automations-route'
+import { GITHUB_EVENTS } from './editor-draft'
 
 /**
  * `/automations/:id/log` — one automation's execution log (spec 2026-09-14-automations-redesign
@@ -155,15 +156,11 @@ export function AutomationLog({ automationId, automation, timeZone, onBack }: {
 /** Every result the log can hold, in the contract's order — the filter's menu. */
 const RESULTS: readonly AutomationLogResult[] = [
   'launched', 'no-match', 'duplicate', 'rate-limited', 'error', 'baseline', 'preview',
-  'manual', 'catch-up', 'skipped', 'failed',
+  'manual', 'catch-up', 'skipped', 'failed', 'delivered',
 ]
 
-/** The nine bounded polls a GitHub automation can watch. */
-const EVENTS: readonly AutomationEvent[] = [
-  'pull_request.opened', 'issue.opened', 'issue.labeled', 'issue.unlabeled',
-  'pull_request.reviewed', 'pull_request.review_requested', 'pull_request.rereview_requested',
-  'pull_request.closed', 'pull_request.merged',
-]
+/** The bounded polls a GitHub automation can watch — the editor's list, so the two never drift. */
+const EVENTS: readonly AutomationEvent[] = GITHUB_EVENTS
 
 /** The receipt of a `failed` row that never got a run: the launch itself threw, and the server's
  *  retry route accepts exactly that receipt (`launch-error`, no `runId`). Undefined otherwise. */

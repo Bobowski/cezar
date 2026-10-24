@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AgentStateLocations } from '../paths.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import { TEST_IDENTITY } from './age-vector.testkit.ts';
-import { file, sealArchive, withManifest } from './craft-archive.testkit.ts';
+import { file, rawEntry, sealArchive, sealTar, tarBytes, withManifest } from './craft-archive.testkit.ts';
+import { PAX_HEADER_MAX } from './tar.ts';
 import { applyStaged, cloneWithGit, stageArchive, validCloneRemote } from './restore.ts';
 
 /** What a restore may touch (review 2026-10-24): the archive is input, not an authority. */
@@ -137,5 +138,38 @@ describe('cloning a project back', () => {
     } finally {
       await removeTempDir(dir);
     }
+  });
+});
+
+describe('staging an archive that lies about itself', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cez-restore-caps-'));
+  });
+  afterEach(() => removeTempDir(dir));
+
+  const stage = async (tar: Buffer) => {
+    const archive = join(dir, 'a.age');
+    await sealTar(tar, archive);
+    return stageArchive(archive, TEST_IDENTITY, join(dir, 'staging'));
+  };
+
+  it('stops once the staged bytes run past what the manifest declares (+10 %)', async () => {
+    const entries = withManifest([], [file('data/big.bin', Buffer.alloc(10_000))], { data: 1_000 });
+    await expect(stage(await tarBytes(entries))).rejects.toThrow(/more than its manifest/);
+    // Within the margin it stages.
+    const near = withManifest([], [file('data/big.bin', Buffer.alloc(1_050))], { data: 1_000 });
+    await expect(stage(await tarBytes(near))).resolves.toMatchObject({ host: 'crafted' });
+  });
+
+  it('wants its manifest first', async () => {
+    const [manifest, ...rest] = withManifest([], [file('data/a.json', '{}')]);
+    await expect(stage(await tarBytes([...rest, manifest!]))).rejects.toThrow(/manifest first/);
+  });
+
+  it('refuses an extended header past 1 MiB', async () => {
+    const huge = rawEntry('PaxHeader/x', 'x', Buffer.alloc(PAX_HEADER_MAX + 1, 0x41));
+    const tar = Buffer.concat([await tarBytes(withManifest([], [])).then((b) => b.subarray(0, b.length - 1024)), huge, Buffer.alloc(1024)]);
+    await expect(stage(tar)).rejects.toThrow(/extended header/);
   });
 });

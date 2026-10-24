@@ -9,6 +9,8 @@ import type { Writable } from 'node:stream';
 
 const BLOCK = 512;
 const ZERO = Buffer.alloc(BLOCK);
+/** An extended header is a path or two, never megabytes: it is held in memory to be parsed. */
+export const PAX_HEADER_MAX = 1024 * 1024;
 
 export interface TarSource {
   /** `/`-separated, relative. Directories without a trailing slash. */
@@ -228,6 +230,7 @@ export async function readTar(
     const size = octalField(block, 124, 12);
     const pad = padding(size);
     if (type === 'x' || type === 'g') {
+      if (size > PAX_HEADER_MAX) throw new Error('the archive has an oversized extended header');
       const body = size > 0 ? await reader.read(size) : Buffer.alloc(0);
       if (pad > 0) await reader.read(pad);
       if (type === 'x' && body) pax = parsePax(body);

@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createReadStream, createWriteStream, existsSync, mkdirSync } from 'node:fs';
-import { chmod, copyFile, lstat, readdir, readFile, rename } from 'node:fs/promises';
+import { chmod, copyFile, lstat, readdir, rename } from 'node:fs/promises';
+import { Writable } from 'node:stream';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { expandTilde, isAbsolutePath, type AgentStateLocations } from '../paths.ts';
@@ -25,32 +26,81 @@ export function safeArchivePath(name: string): string | null {
   return TOP.has(parts[0]!) ? name : null;
 }
 
-/** Decrypt + decompress + untar `archive` into `staging`, then answer its manifest. */
-export async function stageArchive(archive: string, identity: string, staging: string): Promise<BackupManifest> {
-  mkdirSync(staging, { recursive: true, mode: 0o700 });
-  const plain = await decrypted(createReadStream(archive), identity);
-  const tar = await decompressed(plain);
-  await readTar(tar, (entry) => {
-    const rel = safeArchivePath(entry.name);
-    if (!rel) throw new Error(`the archive holds a path outside its own layout (${entry.name.slice(0, 120)})`);
-    const abs = join(staging, ...rel.split('/'));
-    if (entry.type === 'dir') {
-      mkdirSync(abs, { recursive: true, mode: 0o700 });
-      return null;
-    }
-    if (entry.type !== 'file') return null;
-    mkdirSync(dirname(abs), { recursive: true, mode: 0o700 });
-    return createWriteStream(abs, { mode: entry.mode & 0o777 || 0o600 });
-  });
+const MANIFEST_MAX = 1024 * 1024;
+/** What an archive may stage beyond its manifest's own totals before it is refused as lying. */
+const STAGE_MARGIN = 1.1;
+
+function parseManifest(bytes: Buffer): BackupManifest {
   let raw: unknown;
   try {
-    raw = JSON.parse(await readFile(join(staging, 'manifest.json'), 'utf8'));
+    raw = JSON.parse(bytes.toString('utf8'));
   } catch {
     throw new Error('the archive has no readable manifest — it is not a cezar backup');
   }
   const parsed = backupManifestSchema.safeParse(raw);
   if (!parsed.success) throw new Error('the archive manifest is not one this cezar understands');
   return parsed.data;
+}
+
+/** The manifest entry, held in memory (capped) and parsed the moment it ends. */
+function manifestSink(onManifest: (manifest: BackupManifest) => void): Writable {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  return new Writable({
+    write(chunk: Buffer, _encoding, callback) {
+      size += chunk.length;
+      if (size > MANIFEST_MAX) return callback(new Error('the archive manifest is implausibly large'));
+      chunks.push(chunk);
+      callback();
+    },
+    final(callback) {
+      try {
+        onManifest(parseManifest(Buffer.concat(chunks)));
+        callback();
+      } catch (error) {
+        callback(error as Error);
+      }
+    },
+  });
+}
+
+/**
+ * Decrypt + decompress + untar `archive` into `staging`, then answer its manifest. The manifest
+ * comes first (it is how cezar writes one) and bounds the rest: an archive that stages more
+ * than it declares, by more than 10 %, is refused before it fills the disk.
+ */
+export async function stageArchive(archive: string, identity: string, staging: string): Promise<BackupManifest> {
+  mkdirSync(staging, { recursive: true, mode: 0o700 });
+  const plain = await decrypted(createReadStream(archive), identity);
+  const tar = await decompressed(plain);
+  let manifest: BackupManifest | undefined;
+  let budget = { bytes: 0, files: 0 };
+  await readTar(tar, (entry) => {
+    const rel = safeArchivePath(entry.name);
+    if (!rel) throw new Error(`the archive holds a path outside its own layout (${entry.name.slice(0, 120)})`);
+    if (!manifest) {
+      if (rel !== 'manifest.json' || entry.type !== 'file') throw new Error('the archive does not carry its manifest first — it is not a cezar backup');
+      return manifestSink((parsed) => {
+        manifest = parsed;
+        const { data, agents, projects, files } = parsed.sizes;
+        budget = { bytes: Math.ceil((data + agents + projects) * STAGE_MARGIN), files: Math.ceil(files * STAGE_MARGIN) };
+      });
+    }
+    if (rel === 'manifest.json') throw new Error('the archive carries a second manifest');
+    const abs = join(staging, ...rel.split('/'));
+    if (entry.type === 'dir') {
+      mkdirSync(abs, { recursive: true, mode: 0o700 });
+      return null;
+    }
+    if (entry.type !== 'file') return null;
+    budget.bytes -= entry.size;
+    budget.files -= 1;
+    if (budget.bytes < 0 || budget.files < 0) throw new Error('the archive holds more than its manifest says it does — refusing to unpack it');
+    mkdirSync(dirname(abs), { recursive: true, mode: 0o700 });
+    return createWriteStream(abs, { mode: entry.mode & 0o777 || 0o600 });
+  });
+  if (!manifest) throw new Error('the archive has no readable manifest — it is not a cezar backup');
+  return manifest;
 }
 
 const kind = async (path: string): Promise<'missing' | 'dir' | 'file' | 'other'> => {

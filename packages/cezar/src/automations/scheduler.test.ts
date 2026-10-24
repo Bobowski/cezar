@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AutomationStore } from './store.ts';
+import { RunStore } from '../runs/store.ts';
 import { ProjectAutomationScheduler, WorkspaceAutomationScheduler } from './scheduler.ts';
 import type { GithubAutomationDefinition } from './types.ts';
 
@@ -215,9 +216,9 @@ describe('ProjectAutomationScheduler', () => {
       launch: async () => ({ runId: 'unused' }),
     });
     await scheduler.check(definition);
-    expect(poll).toHaveBeenCalledWith('acme', 'demo', definition, {
+    expect(poll).toHaveBeenCalledWith('acme', 'demo', definition, expect.objectContaining({
       since: '2026-07-26T00:58:00.000Z',
-    });
+    }));
   });
 
   it('advances through scanned non-matches without moving a cursor backwards', async () => {
@@ -401,7 +402,7 @@ describe('ProjectAutomationScheduler — a saturated overlap band (#982)', () =>
     await scheduler.check(definition);
 
     expect(poll).toHaveBeenCalledTimes(1);
-    expect(poll).toHaveBeenCalledWith('acme', 'demo', definition, { since: '2026-07-26T00:58:00.000Z' });
+    expect(poll).toHaveBeenCalledWith('acme', 'demo', definition, expect.objectContaining({ since: '2026-07-26T00:58:00.000Z' }));
     expect(store.state(definition.id)?.pinnedCursor).toBeUndefined();
     expect(store.state(definition.id)?.cursor).toEqual({ timestamp: '2026-07-26T01:00:00.000Z', tieBreaker: 'current' });
     expect(store.logs({ automationId: definition.id })[0]?.reason).toBe('Scheduled check completed.');
@@ -607,5 +608,114 @@ describe('WorkspaceAutomationScheduler — a rejected check never re-arms at zer
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('ProjectAutomationScheduler — activity events (spec 2026-10-23-github-events)', () => {
+  const syncCandidate = {
+    ...reviewCandidate,
+    eventId: 'acme/demo:PR_one:pull_request.synchronize:abc',
+    event: 'pull_request.synchronize' as const,
+    // Older than the cursor's overlap band: only `cursorless` admits it.
+    timestamp: '2026-07-20T00:00:00.000Z',
+    tieBreaker: 'PR_one:synchronize:abc',
+    headSha: 'abc',
+    cursorless: true,
+  };
+
+  it('admits a cursorless candidate behind the cursor and persists the diff bases', async () => {
+    const { store, definition } = await setup();
+    store.setState(definition.id, () => ({ revision: definition.revision, baselineAt: '2026-07-01T00:00:00.000Z', cursor: { timestamp: '2026-07-26T00:00:00.000Z' }, etags: { pulls: 'old' }, headsRepo: 'acme/old' }));
+    const poll = vi.fn(async () => ({
+      candidates: [syncCandidate], truncated: false, pages: 1,
+      activity: { etags: { pulls: 'new' }, prHeads: { 8: { sha: 'abc', ref: 'feature', updatedAt: '2026-07-20T00:00:00.000Z' } }, branchHeads: { main: 'def' }, headsRepo: 'acme/demo' },
+    }));
+    const launch = vi.fn(async () => ({ runId: 'run' }));
+    const traces = { shas: new Set(['own']), comments: new Set([1]) };
+    const scheduler = new ProjectAutomationScheduler({ projectId: 'p', timeZone: 'UTC', store, github: { owner: 'acme', repo: 'demo', poller: { poll } as never }, launch, traces: () => traces });
+    await scheduler.check({ ...definition, events: ['pull_request.synchronize'] });
+    expect(launch).toHaveBeenCalledTimes(1);
+    // The poll is handed the repository the stored heads belong to.
+    expect((poll.mock.calls[0] as unknown[])[3]).toMatchObject({ activity: { etags: { pulls: 'old' }, headsRepo: 'acme/old' }, traces });
+    expect(store.state(definition.id)).toMatchObject({
+      etags: { pulls: 'new' }, prHeads: { 8: { sha: 'abc' } }, branchHeads: { main: 'def' }, headsRepo: 'acme/demo',
+    });
+
+  });
+
+  it('never stores a comment body on the receipt', async () => {
+    const { store, definition } = await setup();
+    const comment = {
+      ...reviewCandidate, eventId: 'acme/demo:comment:9', event: 'pull_request.commented' as const,
+      timestamp: '2026-07-26T02:00:00.000Z', tieBreaker: 'comment:9',
+      comment: { id: 9, kind: 'issue' as const, author: 'bob', url: 'https://github.com/acme/demo/pull/8#issuecomment-9', body: 'secret-ish review text' },
+    };
+    const bodies: Array<string | undefined> = [];
+    const launch = vi.fn(async (_definition: unknown, launched: { comment?: { body?: string } }) => {
+      bodies.push(launched.comment?.body);
+      return { runId: 'run' };
+    });
+    const scheduler = new ProjectAutomationScheduler({ projectId: 'p', timeZone: 'UTC', store, github: { owner: 'acme', repo: 'demo', poller: { poll: async () => ({ candidates: [comment], truncated: false, pages: 1 }) } as never }, launch: launch as never });
+    await scheduler.check({ ...definition, events: ['pull_request.commented'] });
+    expect(bodies).toEqual(['secret-ish review text']);
+    const receipt = store.latestReceipts().get(`one:${comment.eventId}`);
+    expect(receipt?.candidate?.comment).toMatchObject({ id: 9, author: 'bob' });
+    expect(JSON.stringify(receipt)).not.toContain('secret-ish');
+  });
+});
+
+describe('ProjectAutomationScheduler — own traces are re-read when a candidate is decided', () => {
+  const syncCandidate = {
+    ...reviewCandidate,
+    eventId: 'acme/demo:PR_one:pull_request.synchronize:abc',
+    event: 'pull_request.synchronize' as const,
+    timestamp: '2026-07-26T02:00:00.000Z',
+    tieBreaker: 'PR_one:synchronize:abc',
+    headSha: 'abc',
+    cursorless: true,
+  };
+
+  it('drops a candidate whose sha became a trace after the poll snapshotted them', async () => {
+    const { store, definition } = await setup();
+    const shas = new Set<string>();
+    // The poll's own view is a snapshot; the push is recorded while it runs.
+    const poll = vi.fn(async () => {
+      shas.add('abc');
+      return { candidates: [syncCandidate], truncated: false, pages: 1 };
+    });
+    const launch = vi.fn(async () => ({ runId: 'run' }));
+    const scheduler = new ProjectAutomationScheduler({
+      projectId: 'p', timeZone: 'UTC', store, launch,
+      github: { owner: 'acme', repo: 'demo', poller: { poll } as never },
+      traces: () => ({ shas: new Set(shas), comments: new Set<number>() }),
+    });
+    await scheduler.check({ ...definition, events: ['pull_request.synchronize'] });
+    expect(poll).toHaveBeenCalledTimes(1);
+    expect(launch).not.toHaveBeenCalled();
+    expect(store.receipts()).toEqual([]);
+  });
+
+  it('drops a comment cezar is still posting, matched by its body before GitHub returns the id', async () => {
+    const { store, definition } = await setup();
+    const runsDir = await mkdtemp(join(tmpdir(), 'cezar-traces-runs-')); dirs.push(runsDir);
+    const runs = RunStore.open(runsDir);
+    const poster = runs.createRun({ title: 't', workflow: 'quick-task', task: 't', steps: [] });
+    const comment = {
+      ...reviewCandidate, eventId: 'acme/demo:comment:9', event: 'pull_request.commented' as const,
+      timestamp: '2026-07-26T02:00:00.000Z', tieBreaker: 'comment:9',
+      comment: { id: 9, kind: 'issue' as const, author: 'cezar-bot', url: 'https://github.com/acme/demo/pull/8#issuecomment-9', body: 'Fixed in  the latest push.\r\n' },
+    };
+    const poll = vi.fn(async () => {
+      runs.notePostingComment(poster.id, 'Fixed in the latest push.');
+      return { candidates: [comment], truncated: false, pages: 1 };
+    });
+    const launch = vi.fn(async () => ({ runId: 'run' }));
+    const scheduler = new ProjectAutomationScheduler({
+      projectId: 'p', timeZone: 'UTC', store, launch,
+      github: { owner: 'acme', repo: 'demo', poller: { poll } as never },
+      traces: () => runs.githubTraces(),
+    });
+    await scheduler.check({ ...definition, events: ['pull_request.commented'] });
+    expect(launch).not.toHaveBeenCalled();
   });
 });

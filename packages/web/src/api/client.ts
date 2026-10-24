@@ -27,6 +27,7 @@ import type {
   AutomationResponse,
   AutomationRetryResponse,
   AutomationRunResponse,
+  AutomationWebhookResponse,
   AutomationTemplatesResponse,
   CreateAutomationInput,
   UpdateAutomationInput,
@@ -2687,6 +2688,37 @@ export async function runAutomationNow(id: string): Promise<AutomationRunRespons
       param: { projectId: queryScope(), id: encodeURIComponent(id) },
     }),
     `/automations/${encodeURIComponent(id)}/run`,
+  )
+}
+
+/** The project's GitHub webhook wake-up (spec 2026-10-23-github-events §4). */
+export async function getAutomationWebhook(opts?: ReadOptions): Promise<AutomationWebhookResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId']['automation-webhook'].$get({ param: { projectId: queryScope() } }, init(opts)),
+    '/automation-webhook',
+  )
+}
+
+/** Register the webhook with GitHub through the server's own `gh` (a hosted cockpit only). */
+export async function registerAutomationWebhook(): Promise<AutomationWebhookResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId']['automation-webhook'].$post({ param: { projectId: queryScope() } }),
+    '/automation-webhook',
+  )
+}
+
+/** Ask GitHub to deliver a `ping`; the delivery's arrival is what `lastDeliveryAt` then shows. */
+export async function pingAutomationWebhook(): Promise<AutomationWebhookResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId']['automation-webhook'].ping.$post({ param: { projectId: queryScope() } }),
+    '/automation-webhook/ping',
+  )
+}
+
+export async function removeAutomationWebhook(): Promise<AutomationWebhookResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId']['automation-webhook'].$delete({ param: { projectId: queryScope() } }),
+    '/automation-webhook',
   )
 }
 

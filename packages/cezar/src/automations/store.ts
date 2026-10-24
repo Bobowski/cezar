@@ -11,6 +11,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import lockfile from 'proper-lockfile';
 import { renameSyncWithRetry } from '../fs-rename.ts';
+import { commentFingerprint } from '../runs/github-traces.ts';
 import { collectSecretValues, redactDeep } from '../core/secret-redaction.ts';
 import { join } from 'node:path';
 import {
@@ -137,6 +138,8 @@ export class AutomationStore {
         updatedAt: this.now().toISOString(),
       });
       this.definitions.set(id, definition);
+      // A paused automation sends nothing it held (spec 2026-10-23-github-events §11).
+      if (!definition.enabled) this.skipHeldReceipts(id, definition.revision, 'paused: the automation was paused; a held event is not sent when it is enabled again.');
       // `pinnedCursor` records that a cursor was unescapable *under the previous definition*, and the
       // pinned poll log tells the operator to narrow the filter to escape it. Carrying the marker across
       // an edit would skip the widening re-poll that makes the narrowed filter take effect, so the very
@@ -156,7 +159,10 @@ export class AutomationStore {
     if (!mutation) throw new Error('automation mutation conflict: a launch is in progress');
     try {
       this.loadDefinitions();
-      if (!this.definitions.delete(id)) return false;
+      const current = this.definitions.get(id);
+      if (!current || !this.definitions.delete(id)) return false;
+      // Nothing is left to release them: settled now, they age out with the other receipts.
+      this.skipHeldReceipts(id, current.revision, 'deleted: the automation was deleted.', { log: false });
       this.definitionsFile.tombstones = {
         ...this.definitionsFile.tombstones,
         [id]: this.now().toISOString(),
@@ -222,8 +228,16 @@ export class AutomationStore {
     const receiptKey = receiptKeyFor(input.automationId, input.eventId);
     if (this.latestReceipts().has(receiptKey)) return undefined;
     const now = this.now().toISOString();
+    // A comment's body is GitHub content, which receipts never hold (spec 2026-07-25 § logs);
+    // a retry renders without it and the prompt points at the comment's URL instead. Its
+    // fingerprint stays, so a held event still meets a trace that names only the body.
+    const body = input.candidate?.comment?.body;
+    const candidate = input.candidate?.comment && body !== undefined
+      ? { ...input.candidate, comment: { ...input.candidate.comment, body: undefined, ...(input.candidate.comment.parts ? {} : { fingerprint: commentFingerprint(body) }) } }
+      : input.candidate;
     const receipt = automationReceiptSchema.parse({
       ...input,
+      ...(candidate ? { candidate } : {}),
       receiptKey,
       receiptId: randomUUID(),
       status: 'reserved',
@@ -232,6 +246,26 @@ export class AutomationStore {
     });
     this.appendReceipt(receipt);
     return receipt;
+  }
+
+  /**
+   * Settle every `held` receipt of `automationId` as `skipped` with `reason`, one log row each —
+   * a pause, a delete (`log: false`) or a re-baseline (spec 2026-10-23-github-events §11).
+   * Returns how many.
+   */
+  skipHeldReceipts(automationId: string, revision: number, reason: string, options: { log?: boolean } = {}): number {
+    let skipped = 0;
+    for (const receipt of this.latestReceipts().values()) {
+      if (receipt.automationId !== automationId || receipt.status !== 'held') continue;
+      this.appendReceipt({ ...receipt, status: 'skipped', error: undefined, updatedAt: this.now().toISOString() });
+      const candidate = receipt.candidate;
+      if (options.log !== false) this.appendLog({
+        automationId, revision, result: 'skipped', reason, receiptId: receipt.receiptId,
+        ...(candidate ? { event: candidate.event, githubNumber: candidate.number, githubTitle: candidate.title, githubUrl: candidate.url } : {}),
+      });
+      skipped += 1;
+    }
+    return skipped;
   }
 
   /** Called under both polling and mutation leases, after run reconciliation. */
@@ -269,9 +303,12 @@ export class AutomationStore {
 
   compact(): void {
     const cutoff = this.now().getTime() - RETENTION_MS;
-    const latest = [...this.latestReceipts().values()].filter(
-      (row) => Date.parse(row.updatedAt) >= cutoff || (this.get(row.automationId)?.kind === 'tracker'),
-    );
+    this.loadDefinitions();
+    // A held receipt waits for its automation's next poll — only while that automation exists.
+    const latest = [...this.latestReceipts().values()].filter((row) => {
+      const definition = this.definitions.get(row.automationId);
+      return Date.parse(row.updatedAt) >= cutoff || (definition && (row.status === 'held' || definition.kind === 'tracker'));
+    });
     this.rewriteNdjson(RECEIPTS, latest);
     const logs = this.readNdjson(LOG, automationLogRecordSchema);
     this.rewriteNdjson(LOG, logs.slice(-10_000));

@@ -65,6 +65,7 @@ import { ScheduleRunner } from '../automations/schedule-runner.ts';
 import { automationStats } from '../automations/stats.ts';
 import { automationTemplatesOf } from '../automations/templates.ts';
 import { AutomationLaunchOutcome, launchAutomationRun, launchScheduledRun, launchTrackerAutomationRun, rebaselineIdleAutomations, reconcileAutomationReceipts, validateAutomationPrompt } from '../automations/task-template.ts';
+import { recordLaunched, recordOutcome } from '../automations/event-poll-cycle.ts';
 import {
   automationEventSchema,
   automationFiltersSchema,
@@ -75,6 +76,7 @@ import {
   isScheduleAutomation,
   type AutomationDefinition,
 } from '../automations/types.ts';
+import { activityHeadsChanged } from '../automations/github-activity.ts';
 import { trackerTriggerSchema, trackerAutomationOptionsSchema, trackerAutomationOptionsQuerySchema, automationScheduleSchema, localTimeZone, nextOccurrence } from '@open-mercato/cezar-contract';
 import type { IncomingMessage } from 'node:http';
 import { access, constants as fsConstants, mkdir, readFile, realpath, rename, stat, statfs, unlink, writeFile } from 'node:fs/promises';
@@ -231,6 +233,8 @@ import { toPastedContent, type PastedContent, type RunManager } from '../workflo
 import { checkoutGitStatus } from '../workflows/landing.ts';
 import { deleteUpload, readUpload, writeUpload } from '../uploads.ts';
 import { branchesCheckedOutElsewhere, removeWorktree, worktreeDiff, worktreeDiffStat, worktreeSizeBytes } from '../git-worktree.ts';
+import { headShaOf } from '../runs/github-traces.ts';
+import { automationWebhookRoutes, HookIndex, hookRoutes, wakeGithubPolls, type HookProject } from './automation-webhook.ts';
 import { isReclaimable, reclaimWorktrees } from '../runs/retention.ts';
 import { worktreeLifecycleRoutes, lifecycleError } from './worktree-lifecycle.ts';
 import { readLifecycleConfigOrDefault, readLifecycleConfigRaw, lifecycleConfigFromRaw, withLifecycleConfigLock, saveLifecycleConfigLocked, isLifecycleConfigTracked, LifecycleConfigError } from '../worktree-lifecycle/config.ts';
@@ -608,11 +612,13 @@ const automationEditableSchema = z
     enabled: z.boolean().optional(),
     /** Omitted on create = `github`; omitted on update = the stored kind (spec 2026-09-14). */
     kind: z.enum(['github', 'schedule', 'tracker']).optional(),
-    events: z.array(automationEventSchema).min(1).max(7).optional(),
+    events: z.array(automationEventSchema).min(1).max(automationEventSchema.options.length).optional(),
     intervalSeconds: z.number().int().min(60).max(86_400).optional(),
     filters: automationFiltersSchema.optional(),
     trackerTrigger: trackerTriggerSchema.optional(),
     schedule: automationScheduleSchema.optional(),
+    /** spec 2026-10-23-github-events §5; the storage schema refuses it off the github kind. */
+    deliver: z.enum(['new-run', 'owning-run']).optional(),
     task: automationTaskSchema,
   })
   .strict();
@@ -667,6 +673,7 @@ function editableAutomation(definition: AutomationDefinition) {
     filters: definition.filters,
     trackerTrigger: definition.trackerTrigger,
     schedule: definition.schedule,
+    deliver: definition.deliver,
     task: definition.task,
   };
 }
@@ -4349,6 +4356,11 @@ export function createApp(deps: ServerDeps) {
       baselineAt,
       checkpoint: undefined,
       cursor: { timestamp: baselineAt },
+      // Heads seen before a pause would turn everything pushed meanwhile into events (spec
+      // 2026-10-23-github-events §3): the first poll after enabling records them afresh.
+      prHeads: undefined,
+      branchHeads: undefined,
+      etags: undefined,
       nextCheckAt: new Date(now + (automation.intervalSeconds ?? 300) * 1_000).toISOString(),
     }));
     store.appendLog({ automationId: automation.id, revision: automation.revision, result: 'baseline', reason: 'Enabled from a current-time baseline; existing records were not launched.' });
@@ -4410,6 +4422,48 @@ export function createApp(deps: ServerDeps) {
     await next();
   };
 
+  // ---- the GitHub webhook wake-up (spec 2026-10-23-github-events §4) ----
+  // `hookIndex` maps a route id to its project over every project's `github-webhook.json`; a
+  // delivery makes that project's enabled polls due now, and the scheduler does the rest.
+  const hookIndex = new HookIndex(async () => {
+    const projects = await listProjects().catch(() => [] as Awaited<ReturnType<typeof listProjects>>);
+    return [
+      { id: bootContext.id, dataDir: bootContext.dataDir },
+      ...projects
+        .filter((project) => project.status === 'ok' && resolve(project.root) !== resolve(bootRoot))
+        .map((project) => ({ id: project.id, dataDir: join(project.root, '.ai/cezar') })),
+    ];
+  });
+  const wakeHookProject = async (project: HookProject) => {
+    let store: AutomationStore;
+    try {
+      store = project.id === bootContext.id ? bootContext.automationStore : (await contexts.context(project.id)).automationStore;
+    } catch {
+      return;
+    }
+    if (wakeGithubPolls(store) > 0) automationsChanged();
+  };
+  const webhookRoutes = automationWebhookRoutes({
+    enabled: () => capabilities().automations,
+    offMessage: AUTOMATIONS_OFF,
+    canRegister: () => !isHostedMode()
+      ? { ok: false, reason: 'This cockpit runs locally, so GitHub has no public URL to call; polls keep their interval.' }
+      : !authIsEnforced()
+        ? { ok: false, reason: 'Registering a webhook needs cezar’s own sign-in, and CEZ_AUTH=0 hands it to the proxy.' }
+        : { ok: true },
+    publicOrigin: ({ host, proto }) => {
+      if (!isHostedMode() || !host || !/^[A-Za-z0-9.-]+(?::\d{1,5})?$/.test(host)) return undefined;
+      const scheme = proto?.split(',')[0]?.trim().toLowerCase() === 'http' ? 'http' : 'https';
+      return `${scheme}://${host}`;
+    },
+    remote: async (root) => {
+      const parsed = parseRemote((await getRepoInfo(root))?.remote ?? '');
+      return parsed && isGithubHost(parsed.host) ? { owner: parsed.owner, repo: parsed.repo, host: parsed.host } : undefined;
+    },
+    changed: () => hookIndex.forget(),
+    dryRun: () => process.env.CEZ_DRY_RUN === '1',
+  });
+
   // ---- chained family: GitHub automations (project-scoped) ----
   // Every handler below reads `c.get('project')` — the definitions, their runtime state and the
   // execution log are per-project files — so the family is project-scoped and mounted with the
@@ -4458,7 +4512,7 @@ export function createApp(deps: ServerDeps) {
           ...(state ? { state } : {}),
           ...(latestLog ? { latestLog } : {}),
           counts: {
-            matches: logs.filter((row) => row.result === 'launched' || row.result === 'duplicate').length,
+            matches: logs.filter((row) => row.result === 'launched' || row.result === 'delivered' || row.result === 'duplicate').length,
             launched: logs.filter((row) => row.result === 'launched' || row.result === 'manual' || row.result === 'catch-up').length,
             duplicates: logs.filter((row) => row.result === 'duplicate').length,
             errors: logs.filter((row) => row.result === 'error' || row.result === 'rate-limited' || row.result === 'failed').length,
@@ -4561,7 +4615,16 @@ export function createApp(deps: ServerDeps) {
           definition => {
             // Publish the new baseline and definition under the same mutation lease.
             if (kind === 'tracker' && definition.enabled && (!current.enabled || trackerSourceChanged)) armAutomation(automationStore, definition);
-            else if (trackerSourceChanged) {
+            else if (kind === 'github' && automationStore.state(definition.id) && activityHeadsChanged(current, definition)) {
+              // spec 2026-10-23-github-events §3: the next poll records the heads without firing.
+              automationStore.setState(definition.id, (state) => ({
+                ...state, revision: definition.revision, prHeads: undefined, branchHeads: undefined, etags: undefined,
+              }));
+              automationStore.appendLog({
+                automationId: definition.id, revision: definition.revision, result: 'baseline',
+                reason: 'The tracked events (push, synchronize, check suites) or branches changed: the next check records pull request and branch heads without launching anything.',
+              });
+            } else if (trackerSourceChanged) {
               // A paused definition still needs a compatible read-only preview. Clear source-bound
               // progress without arming a timer; Enable will establish its own current-time baseline.
               automationStore.setState(definition.id, state => ({
@@ -4669,8 +4732,9 @@ export function createApp(deps: ServerDeps) {
             timeZone: localTimeZone(),
             store,
             github: { owner: remote.owner, repo: remote.repo, poller: new GithubPoller({ host: remote.host }) },
+            traces: () => project.store.githubTraces(),
             launch: parsed.data.mode === 'execute'
-              ? (definition, candidate, receiptId) => launchAutomationRun({ root: project.root, manager: project.manager, store: project.store, definition, candidate, receiptId, dispatchEnabled: capabilities().dispatch })
+              ? (definition, candidate, receiptId, launchOptions) => launchAutomationRun({ root: project.root, manager: project.manager, store: project.store, definition, candidate, receiptId, dispatchEnabled: capabilities().dispatch, admit: launchOptions?.admit })
               : undefined,
             onChange: (automationId, revision) => emitAutomationChange(project, automationId, revision),
           });
@@ -4762,21 +4826,27 @@ export function createApp(deps: ServerDeps) {
       }
       const reserved = store.reserveRetry(receipt.receiptId);
       if (!reserved) { mutation.release(); lease.release(); return c.json({ error: 'receipt is not retryable' }, 409); }
+      const retried = receipt.candidate;
+      const log = { event: retried.event, githubNumber: retried.number, githubTitle: retried.title, githubUrl: retried.url };
       try {
-        const launched = await launchAutomationRun({ root: project.root, manager: project.manager, store: project.store, definition, candidate: receipt.candidate, receiptId: receipt.receiptId, dispatchEnabled: capabilities().dispatch });
-        store.appendReceipt({ ...reserved, status: 'launched', runId: launched.runId, updatedAt: new Date().toISOString() });
+        const launched = await launchAutomationRun({ root: project.root, manager: project.manager, store: project.store, definition, candidate: retried, receiptId: receipt.receiptId, dispatchEnabled: capabilities().dispatch });
+        // The receipt and the log row a poll would write: `delivered-to` for a delivery (§5).
+        recordLaunched(store, definition, reserved, log, launched);
         emitAutomationChange(project, definition.id, definition.revision);
         return c.json({ receiptId: receipt.receiptId, runId: launched.runId }, 202);
       } catch (error) {
         // A `pr-head` retry whose PR has since closed (or turned out a fork) is handled, not
-        // broken: a terminal `skipped` receipt, so Retry stops being offered for it.
-        const skipped = error instanceof AutomationLaunchOutcome && error.result === 'skipped';
-        store.appendReceipt({
-          ...reserved,
-          status: skipped ? 'skipped' : 'launch-error',
-          ...(skipped ? {} : { error: (error instanceof Error ? error.message : String(error)).slice(0, 2_000) }),
-          updatedAt: new Date().toISOString(),
-        });
+        // broken: a terminal `skipped` receipt, so Retry stops being offered for it; a held one
+        // waits for the polls like any other.
+        if (error instanceof AutomationLaunchOutcome && error.result !== 'failed') recordOutcome(store, definition, reserved, log, error);
+        else {
+          store.appendReceipt({
+            ...reserved,
+            status: 'launch-error',
+            error: (error instanceof Error ? error.message : String(error)).slice(0, 2_000),
+            updatedAt: new Date().toISOString(),
+          });
+        }
         return c.json({ error: error instanceof Error ? error.message : String(error) }, 409);
       } finally {
         mutation.release();
@@ -5909,7 +5979,13 @@ export function createApp(deps: ServerDeps) {
       const worktree = worktreeOf(run);
       if (!worktree) return c.json({ error: NO_WORKTREE }, 409);
       let result;
-      try { result = await withWorktreeMutation(c.get('project'), run.id, () => pushCurrentBranch(worktree)); }
+      // The sha is a trace BEFORE the push (spec 2026-10-23-github-events §6): a poll the push's
+      // own webhook wakes must already know it.
+      const recordHead = async () => {
+        const sha = await headShaOf(worktree);
+        if (sha) store.recordGithubTraces(run.id, { shas: [sha] });
+      };
+      try { result = await withWorktreeMutation(c.get('project'), run.id, async () => { await recordHead(); return pushCurrentBranch(worktree); }); }
       catch (error) { return lifecycleError(c, error); }
       if (!result.ok) return c.json({ error: result.error }, 409);
       // A push is the event that changes what the chips say about this task's pull requests —
@@ -5979,8 +6055,13 @@ export function createApp(deps: ServerDeps) {
       if (!publish) {
         const branch = run.branch;
         publish = (async () => {
+          // A trace before the push, after the pre-PR autosave (spec 2026-10-23-github-events §6).
+          const recordHead = async () => {
+            const pushedSha = run.worktreePath ? await headShaOf(run.worktreePath) : undefined;
+            if (pushedSha) store.recordGithubTraces(id, { shas: [pushedSha] });
+          };
           const outcome = await withWorktreeMutation(c.get('project'), id, () =>
-            createDraftPr({ repoRoot, run, handoffText: readHandoff(dataDir, id), draft }),
+            createDraftPr({ repoRoot, run, handoffText: readHandoff(dataDir, id), draft, beforePush: recordHead }),
           );
           if (!outcome.ok) return outcome;
           // A number the cockpit asked about BEFORE the pull request existed is cached as "this
@@ -8987,6 +9068,7 @@ export function createApp(deps: ServerDeps) {
     .route('/', workflowsRoutes)
     .route('/', planRoutes)
     .route('/', automationsRoutes)
+    .route('/', webhookRoutes)
     .route('/', dispatchRoutes)
     .route('/', runsRoutes)
     .route('/', draftRoutes)
@@ -9312,6 +9394,7 @@ export function createApp(deps: ServerDeps) {
     .route('/', workspaceSecretsRoutes)
     .route('/', fsBrowseRoutes)
     .route('/', automationChecksRoutes)
+    .route('/', hookRoutes({ find: (hookId) => hookIndex.find(hookId), wake: wakeHookProject, enabled: () => capabilities().automations }))
     .route('/', runsIndexRoutes)
     .route('/', dashboardRoutes(dashboard, () => ({ tokens: capabilities().tokenUsageMetrics, cost: capabilities().costMetrics }), () => capabilities().automations))
     .route('/', workspaceEventsRoutes)
@@ -9445,9 +9528,10 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
         },
         onChange: (automationId, revision) =>
           workspaceEvents.emit('automation-change', { project: projectId, automationId, revision }),
-        launch: async (definition, candidate, receiptId) => {
+        traces: async () => (await contextOf()).store.githubTraces(),
+        launch: async (definition, candidate, receiptId, launchOptions) => {
           const context = await contextOf();
-          return launchAutomationRun({ root: context.root, manager: context.manager, store: context.store, definition, candidate, receiptId, dispatchEnabled });
+          return launchAutomationRun({ root: context.root, manager: context.manager, store: context.store, definition, candidate, receiptId, dispatchEnabled, admit: launchOptions?.admit });
         },
         launchSchedule: async (definition, occurrence, receiptId) => {
           const context = await contextOf();

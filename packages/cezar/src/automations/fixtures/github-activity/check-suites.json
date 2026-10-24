@@ -1,0 +1,110 @@
+{
+  "total_count": 7,
+  "check_suites": [
+    {
+      "id": 83031598098,
+      "node_id": "CS_kwDODKw3uc8AAAATVRGkEg",
+      "head_branch": "tommaso-moro-skill-install-nested-discovery",
+      "head_sha": "8f44336ccb889465115aa85319c275c8dec1c3b7",
+      "status": "queued",
+      "conclusion": null,
+      "created_at": "2026-07-31T09:22:59Z",
+      "updated_at": "2026-07-31T09:22:59Z",
+      "latest_check_runs_count": 0,
+      "app": {
+        "slug": "github-service-catalog-staging",
+        "name": "GitHub Service Catalog (Staging)"
+      }
+    },
+    {
+      "id": 83031598305,
+      "node_id": "CS_kwDODKw3uc8AAAATVRGk4Q",
+      "head_branch": "tommaso-moro-skill-install-nested-discovery",
+      "head_sha": "8f44336ccb889465115aa85319c275c8dec1c3b7",
+      "status": "queued",
+      "conclusion": null,
+      "created_at": "2026-07-31T09:22:59Z",
+      "updated_at": "2026-07-31T09:22:59Z",
+      "latest_check_runs_count": 0,
+      "app": {
+        "slug": "github-service-catalog",
+        "name": "GitHub Service Catalog"
+      }
+    },
+    {
+      "id": 83031609740,
+      "node_id": "CS_kwDODKw3uc8AAAATVRHRjA",
+      "head_branch": "tommaso-moro-skill-install-nested-discovery",
+      "head_sha": "8f44336ccb889465115aa85319c275c8dec1c3b7",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-07-31T09:23:03Z",
+      "updated_at": "2026-07-31T09:26:06Z",
+      "latest_check_runs_count": 2,
+      "app": {
+        "slug": "github-actions",
+        "name": "GitHub Actions"
+      }
+    },
+    {
+      "id": 83031609755,
+      "node_id": "CS_kwDODKw3uc8AAAATVRHRmw",
+      "head_branch": "tommaso-moro-skill-install-nested-discovery",
+      "head_sha": "8f44336ccb889465115aa85319c275c8dec1c3b7",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-07-31T09:23:03Z",
+      "updated_at": "2026-07-31T09:37:04Z",
+      "latest_check_runs_count": 6,
+      "app": {
+        "slug": "github-actions",
+        "name": "GitHub Actions"
+      }
+    },
+    {
+      "id": 83031609921,
+      "node_id": "CS_kwDODKw3uc8AAAATVRHSQQ",
+      "head_branch": "tommaso-moro-skill-install-nested-discovery",
+      "head_sha": "8f44336ccb889465115aa85319c275c8dec1c3b7",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-07-31T09:23:03Z",
+      "updated_at": "2026-07-31T09:24:44Z",
+      "latest_check_runs_count": 2,
+      "app": {
+        "slug": "github-actions",
+        "name": "GitHub Actions"
+      }
+    },
+    {
+      "id": 83031748566,
+      "node_id": "CS_kwDODKw3uc8AAAATVRPv1g",
+      "head_branch": "tommaso-moro-skill-install-nested-discovery",
+      "head_sha": "8f44336ccb889465115aa85319c275c8dec1c3b7",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-07-31T09:23:51Z",
+      "updated_at": "2026-07-31T09:25:58Z",
+      "latest_check_runs_count": 1,
+      "app": {
+        "slug": "github-advanced-security",
+        "name": "GitHub Advanced Security"
+      }
+    },
+    {
+      "id": 97280115623,
+      "node_id": "CS_kwDODKw3uc8AAAAWpljDpw",
+      "head_branch": "tommaso-moro-skill-install-nested-discovery",
+      "head_sha": "8f44336ccb889465115aa85319c275c8dec1c3b7",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2026-09-23T21:43:47Z",
+      "updated_at": "2026-09-23T21:48:21Z",
+      "latest_check_runs_count": 1,
+      "app": {
+        "slug": "github-actions",
+        "name": "GitHub Actions"
+      }
+    }
+  ]
+}

@@ -1,36 +1,47 @@
 import { ChevronDownIcon } from 'lucide-react'
 import { useState } from 'react'
 
-import type { AutomationEvent } from '@open-mercato/cezar-api-client'
+import type { AutomationDeliver, AutomationEvent } from '@open-mercato/cezar-api-client'
 import { Chip } from '@/components/chip'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 
-import { GITHUB_EVENTS, POLL_MINUTES, clamp, needsChangedLabels, type DraftFilters } from './editor-draft'
+import { GITHUB_EVENTS, POLL_MINUTES, clamp, hasPullRequestEvent, needsChangedLabels, type DraftFilters } from './editor-draft'
+
+const COMMENT_EVENTS: readonly AutomationEvent[] = ['pull_request.commented', 'pull_request.review_commented', 'issue.commented']
 
 /**
  * The "When GitHub changes" half of the When section (spec 2026-09-14-automations-redesign
- * § UI/UX 4.3): the nine event chips (multi-select — the contract is `events[]`), the poll line,
- * and the shipped feature's filters under a Collapsible the export does not draw.
+ * § UI/UX 4.3): the event chips (multi-select — the contract is `events[]`), the poll line,
+ * where a pull request's event goes (spec 2026-10-23-github-events §5), and the filters under a
+ * Collapsible the export does not draw — each activity filter only once its event is picked.
  */
 export function EditorGithubFields({
   events,
   intervalSeconds,
   filters,
+  deliver,
   onChange,
 }: {
   events: readonly AutomationEvent[]
   intervalSeconds: number
   filters: DraftFilters
-  onChange: (patch: { events?: AutomationEvent[]; intervalSeconds?: number; filters?: DraftFilters }) => void
+  deliver?: AutomationDeliver
+  onChange: (patch: { events?: AutomationEvent[]; intervalSeconds?: number; filters?: DraftFilters; deliver?: AutomationDeliver }) => void
 }) {
-  const hasList = (['authors', 'assignees', 'anyLabels', 'allLabels', 'excludeLabels', 'changedLabels', 'reviewers'] as const)
+  const hasList = (['authors', 'assignees', 'anyLabels', 'allLabels', 'excludeLabels', 'changedLabels', 'reviewers', 'mentions', 'branches', 'tags'] as const)
     .some((key) => filters[key].trim().length > 0)
-  const [open, setOpen] = useState(hasList || filters.lookbackDays !== 7 || filters.maxRecords !== 25)
+  const activityFilter = filters.conclusion !== 'any' || filters.prerelease !== 'both' || filters.includeOwnPushes
+  const [open, setOpen] = useState(hasList || activityFilter || filters.lookbackDays !== 7 || filters.maxRecords !== 25)
+  const comments = events.some((event) => COMMENT_EVENTS.includes(event))
+  const branchEvents = events.includes('pull_request.synchronize') || events.includes('push')
+  const checks = events.includes('check_suite.completed')
+  const releases = events.includes('release.published')
   const setFilter = <K extends keyof DraftFilters>(key: K, value: DraftFilters[K]) =>
     onChange({ filters: { ...filters, [key]: value } })
   const toggleEvent = (event: AutomationEvent) => {
@@ -69,6 +80,57 @@ export function EditorGithubFields({
         </Select>
         <span>· last {filters.lookbackDays} days · maximum {filters.maxRecords} records</span>
       </div>
+      {hasPullRequestEvent(events) ? (
+        <div className="flex flex-wrap items-center gap-2 text-[13px] text-muted-foreground">
+          A pull request’s event goes to
+          <Select value={deliver ?? 'new-run'} onValueChange={(value) => onChange({ deliver: value as AutomationDeliver })}>
+            <SelectTrigger size="sm" aria-label="Deliver to" className="text-[13px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="new-run">a new task</SelectItem>
+              <SelectItem value="owning-run">the task that owns the PR</SelectItem>
+            </SelectContent>
+          </Select>
+          {deliver === 'owning-run' ? <span>· a new task only when no task owns it</span> : null}
+          {deliver === 'owning-run' && comments ? (
+            <span className="flex items-center gap-2">
+              <Checkbox
+                id="filter-any-author"
+                checked={filters.allowAnyAuthor}
+                onCheckedChange={(checked) => setFilter('allowAnyAuthor', checked === true)}
+              />
+              <Label htmlFor="filter-any-author" className="text-[13px] font-normal">
+                Comments from anyone (otherwise only the owner and writers, or the authors filter)
+              </Label>
+            </span>
+          ) : null}
+          {comments ? (
+            <span className="flex items-center gap-2">
+              <Checkbox
+                id="filter-self-comments"
+                checked={filters.allowSelfComments}
+                onCheckedChange={(checked) => setFilter('allowSelfComments', checked === true)}
+              />
+              <Label htmlFor="filter-self-comments" className="text-[13px] font-normal">
+                Deliver my own account’s comments at once, even during the task’s turn (otherwise held until the turn ends)
+              </Label>
+            </span>
+          ) : null}
+          {deliver !== 'owning-run' ? (
+            <span className="flex items-center gap-2">
+              <Checkbox
+                id="filter-include-closed"
+                checked={filters.includeClosed}
+                onCheckedChange={(checked) => setFilter('includeClosed', checked === true)}
+              />
+              <Label htmlFor="filter-include-closed" className="text-[13px] font-normal">
+                Also for comments and reviews on closed or merged pull requests
+              </Label>
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       <Collapsible open={open} onOpenChange={setOpen}>
         <CollapsibleTrigger asChild>
           <Button
@@ -97,6 +159,43 @@ export function EditorGithubFields({
               onChange={(value) => setFilter('changedLabels', value)}
             />
             <FilterField id="filter-reviewers" label="Reviewers" value={filters.reviewers} onChange={(value) => setFilter('reviewers', value)} />
+            {comments ? (
+              <FilterField id="filter-mentions" label="Mentions (@login in the comment)" value={filters.mentions} onChange={(value) => setFilter('mentions', value)} />
+            ) : null}
+            {branchEvents ? (
+              <FilterField id="filter-branches" label="Branches (exact or * glob)" value={filters.branches} onChange={(value) => setFilter('branches', value)} />
+            ) : null}
+            {releases ? (
+              <FilterField id="filter-tags" label="Release tags (exact or * glob)" value={filters.tags} onChange={(value) => setFilter('tags', value)} />
+            ) : null}
+            {releases ? (
+              <ChoiceField
+                id="filter-prerelease"
+                label="Prereleases"
+                value={filters.prerelease}
+                options={[['both', 'Releases and prereleases'], ['none', 'Releases only'], ['only', 'Prereleases only']]}
+                onChange={(value) => setFilter('prerelease', value)}
+              />
+            ) : null}
+            {checks ? (
+              <ChoiceField
+                id="filter-conclusion"
+                label="CI result"
+                value={filters.conclusion}
+                options={[['any', 'Any result'], ['failure', 'Failed'], ['success', 'Passed']]}
+                onChange={(value) => setFilter('conclusion', value)}
+              />
+            ) : null}
+            {checks ? (
+              <div className="flex items-center gap-2 self-end">
+                <Checkbox
+                  id="filter-own-pushes"
+                  checked={filters.includeOwnPushes}
+                  onCheckedChange={(checked) => setFilter('includeOwnPushes', checked === true)}
+                />
+                <Label htmlFor="filter-own-pushes" className="text-[13px] font-normal">Also react to CI on commits cezar pushed</Label>
+              </div>
+            ) : null}
             <NumberField id="filter-lookback" label="Lookback days (1–90)" value={filters.lookbackDays} min={1} max={90} onChange={(value) => setFilter('lookbackDays', value)} />
             <NumberField id="filter-max-records" label="Max records (1–100)" value={filters.maxRecords} min={1} max={100} onChange={(value) => setFilter('maxRecords', value)} />
           </div>
@@ -124,6 +223,28 @@ function FilterField({ id, label, value, invalid = false, onChange }: {
         onChange={(event) => onChange(event.target.value)}
         className="text-[13px]"
       />
+    </div>
+  )
+}
+
+function ChoiceField<V extends string>({ id, label, value, options, onChange }: {
+  id: string
+  label: string
+  value: V
+  options: ReadonlyArray<readonly [V, string]>
+  onChange: (value: V) => void
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor={id} className="text-[13px] font-medium">{label}</Label>
+      <Select value={value} onValueChange={(next) => onChange(next as V)}>
+        <SelectTrigger id={id} size="sm" className="text-[13px]">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map(([option, text]) => <SelectItem key={option} value={option}>{text}</SelectItem>)}
+        </SelectContent>
+      </Select>
     </div>
   )
 }

@@ -1,0 +1,47 @@
+[
+  {
+    "id": 4363240945,
+    "node_id": "PRRC_kwDODKw3uc8AAAABBBHF8Q",
+    "created_at": "2026-10-23T19:02:01Z",
+    "updated_at": "2026-10-23T19:02:01Z",
+    "author_association": "NONE",
+    "url": "https://api.github.com/repos/acme/demo/pulls/comments/4363240945",
+    "html_url": "https://github.com/acme/demo/pull/14798#discussion_r4363240945",
+    "pull_request_url": "https://api.github.com/repos/acme/demo/pulls/14798",
+    "user": {
+      "login": "erin"
+    },
+    "body": "Synthetic comment body 1.",
+    "path": "pkg/cmd/auth/login/login.go"
+  },
+  {
+    "id": 4363072349,
+    "node_id": "PRRC_kwDODKw3uc8AAAABBA8zXQ",
+    "created_at": "2026-10-23T18:41:21Z",
+    "updated_at": "2026-10-23T18:45:20Z",
+    "author_association": "MEMBER",
+    "url": "https://api.github.com/repos/acme/demo/pulls/comments/4363072349",
+    "html_url": "https://github.com/acme/demo/pull/14804#discussion_r4363072349",
+    "pull_request_url": "https://api.github.com/repos/acme/demo/pulls/14804",
+    "user": {
+      "login": "frank"
+    },
+    "body": "Synthetic comment body 2.",
+    "path": "internal/attachments/client.go"
+  },
+  {
+    "id": 4361121192,
+    "node_id": "PRRC_kwDODKw3uc8AAAABA_FtqA",
+    "created_at": "2026-10-23T15:17:32Z",
+    "updated_at": "2026-10-23T15:17:32Z",
+    "author_association": "MEMBER",
+    "url": "https://api.github.com/repos/acme/demo/pulls/comments/4361121192",
+    "html_url": "https://github.com/acme/demo/pull/14798#discussion_r4361121192",
+    "pull_request_url": "https://api.github.com/repos/acme/demo/pulls/14798",
+    "user": {
+      "login": "carol"
+    },
+    "body": "Synthetic comment body 3.",
+    "path": "pkg/cmd/auth/login/login.go"
+  }
+]

@@ -130,6 +130,25 @@ describe('fromDefinition / toBody', () => {
     })
   })
 
+  it('round-trips the activity filters and owning-run delivery (spec 2026-10-23-github-events)', () => {
+    const definition: AutomationDefinition = {
+      ...GITHUB_DEF,
+      events: ['check_suite.completed', 'pull_request.commented', 'release.published'],
+      deliver: 'owning-run',
+      filters: {
+        mentions: ['cezar'], branches: ['main', 'release/*'], tags: ['v*'],
+        conclusion: 'failure', prerelease: false, includeOwnPushes: true, allowAnyAuthor: true, allowSelfComments: true, includeClosed: true, lookbackDays: 7, maxRecords: 25,
+      },
+    }
+    const draft = fromDefinition(definition)
+    expect(draft.filters).toMatchObject({ mentions: 'cezar', branches: 'main, release/*', conclusion: 'failure', prerelease: 'none', includeOwnPushes: true, allowAnyAuthor: true, allowSelfComments: true, includeClosed: true })
+    expect(toBody(draft)).toMatchObject({ deliver: 'owning-run', filters: definition.filters })
+    // Untouched, nothing new rides along: a shipped definition saves as it always did.
+    const plain = toBody(fromDefinition(GITHUB_DEF))
+    expect(plain).not.toHaveProperty('deliver')
+    expect(Object.keys(plain.filters ?? {}).sort()).toEqual(['authors', 'changedLabels', 'lookbackDays', 'maxRecords'])
+  })
+
   it('keeps a PR-head verifier verifying the PR head when it is saved from the editor', () => {
     const verifier = {
       ...GITHUB_DEF,

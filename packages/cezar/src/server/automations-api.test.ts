@@ -72,6 +72,72 @@ describe('GitHub automation API', () => {
     expect(((await response.json()) as any).automation).toMatchObject({ enabled: false, revision: 1 });
   });
 
+  it('takes the activity events, their filters and owning-run delivery, and keeps them through enable (spec 2026-10-23-github-events)', async () => {
+    const activity = {
+      ...input,
+      events: ['pull_request.synchronize', 'pull_request.commented', 'pull_request.review_commented', 'issue.commented', 'check_suite.completed', 'push', 'release.published', 'pull_request.opened'],
+      deliver: 'owning-run',
+      filters: { lookbackDays: 7, maxRecords: 25, mentions: ['cezar'], branches: ['main'], conclusion: 'failure', includeOwnPushes: true, prerelease: false, tags: ['v*'] },
+      task: { prompt: 'CI on {{github.branch}}: {{github.check.failedJobs}} {{github.comment.body}}' },
+    };
+    const response = await apiRequest(app(), '/api/v1/automations', json(activity));
+    expect(response.status).toBe(201);
+    const created = ((await response.json()) as any).automation;
+    expect(created).toMatchObject({ deliver: 'owning-run', filters: activity.filters, events: activity.events });
+    await apiRequest(app(), `/api/v1/automations/${created.id}/enable`, { method: 'POST' });
+    const detail = ((await (await apiRequest(app(), `/api/v1/automations/${created.id}`)).json()) as any).automation;
+    expect(detail).toMatchObject({ enabled: true, deliver: 'owning-run' });
+    const schedule = await apiRequest(app(), '/api/v1/automations', json({ name: 's', kind: 'schedule', schedule: { type: 'daily', hour: 1, minute: 0 }, deliver: 'owning-run', task: { prompt: 'x' } }));
+    expect(schedule.status).toBe(400);
+  });
+
+  it('re-baselines the diff heads when an edit changes the events or branches, and only then (spec 2026-10-23-github-events §3)', async () => {
+    const automationStore = AutomationStore.open(join(root, '.ai/cezar'));
+    const server = app({ automationStore });
+    const pushes = { ...input, enabled: true, events: ['push', 'pull_request.synchronize'], filters: { lookbackDays: 7, maxRecords: 25, branches: ['main'] } };
+    const posted = ((await (await apiRequest(server, '/api/v1/automations', json(pushes))).json()) as any).automation;
+    const created = ((await (await apiRequest(server, `/api/v1/automations/${posted.id}/enable`, { method: 'POST' })).json()) as any).automation;
+    const heads = {
+      branchHeads: { main: 'a'.repeat(40) },
+      prHeads: { 8: { sha: 'b'.repeat(40), ref: 'feature', updatedAt: '2026-10-01T00:00:00.000Z' } },
+      etags: { pulls: 'W/"1"' },
+    };
+    automationStore.setState(created.id, (state) => ({ ...state, ...heads }));
+
+    // A rename or a prompt edit keeps the heads: whatever moved since the last poll still fires.
+    const renamed = await apiRequest(server, `/api/v1/automations/${created.id}`, json({ ...pushes, name: 'Renamed', expectedRevision: created.revision }, 'PUT'));
+    expect(renamed.status).toBe(200);
+    expect(automationStore.state(created.id)).toMatchObject(heads);
+    // So does adding an event that tracks no heads (a comment event).
+    const commented = await apiRequest(server, `/api/v1/automations/${created.id}`, json({
+      ...pushes, events: [...pushes.events, 'issue.commented'], expectedRevision: created.revision + 1,
+    }, 'PUT'));
+    expect(commented.status).toBe(200);
+    expect(automationStore.state(created.id)).toMatchObject(heads);
+    // And removing it again.
+    await apiRequest(server, `/api/v1/automations/${created.id}`, json({ ...pushes, expectedRevision: created.revision + 2 }, 'PUT'));
+    expect(automationStore.state(created.id)).toMatchObject(heads);
+    created.revision += 2;
+    const baselineAt = automationStore.state(created.id)?.baselineAt;
+
+    // Widening `main` to `release/*` must not turn every existing release branch into a push.
+    const widened = await apiRequest(server, `/api/v1/automations/${created.id}`, json({
+      ...pushes, filters: { ...pushes.filters, branches: ['main', 'release/*'] }, expectedRevision: created.revision + 1,
+    }, 'PUT'));
+    expect(widened.status).toBe(200);
+    const state = automationStore.state(created.id)!;
+    expect(state).toMatchObject({ revision: created.revision + 2, baselineAt });
+    expect(state.branchHeads).toBeUndefined();
+    expect(state.prHeads).toBeUndefined();
+    expect(state.etags).toBeUndefined();
+    expect(automationStore.logs({ automationId: created.id, limit: 1 })[0]).toMatchObject({ result: 'baseline' });
+
+    // So does an edit of the event list.
+    automationStore.setState(created.id, (current) => ({ ...current, ...heads }));
+    await apiRequest(server, `/api/v1/automations/${created.id}`, json({ ...pushes, events: ['push'], expectedRevision: created.revision + 2 }, 'PUT'));
+    expect(automationStore.state(created.id)?.branchHeads).toBeUndefined();
+  });
+
   it('enforces optimistic concurrency and establishes a baseline on enable', async () => {
     const created = ((await (await apiRequest(app(), '/api/v1/automations', json(input))).json()) as any).automation;
     const stale = await apiRequest(
@@ -174,6 +240,35 @@ describe('GitHub automation API', () => {
     const detail = await apiRequest(server, `/api/v1/automations/${created.id}`);
     expect(((await detail.json()) as any).state.lastSuccessAt).toBe('2026-07-27T00:00:00.000Z');
     scheduler.stop();
+  });
+
+  it('records a Retry that delivers into the owning run as delivered, with its log row (spec 2026-10-23-github-events §5)', async () => {
+    const automationStore = AutomationStore.open(join(root, '.ai/cezar'));
+    const definition = automationStore.create({
+      name: 'Fix CI', enabled: true, kind: 'github', events: ['check_suite.completed'], intervalSeconds: 300, deliver: 'owning-run',
+      filters: { lookbackDays: 7, maxRecords: 25 }, task: { prompt: 'CI failed on {{github.url}}', workflow: 'quick-task' },
+    });
+    const owner = store.createRun({ title: 'made the PR', workflow: 'quick-task', task: 't', steps: [] });
+    store.updateRun(owner.id, { pullRequestUrl: 'https://github.com/acme/demo/pull/8', worktreePath: join(root, 'wt'), status: 'review' });
+    const continued: string[] = [];
+    const manager = {
+      enqueueMessage: () => null, hasLiveSession: () => false, deferMessage: () => false, isActive: () => false,
+      continueRun: (id: string) => { continued.push(id); return { ok: true }; },
+    } as unknown as RunManager;
+    const candidate = {
+      eventId: 'acme/demo:check_suite:1', event: 'check_suite.completed' as const, timestamp: new Date().toISOString(), tieBreaker: 'suite:1',
+      repo: 'acme/demo', nodeId: 'PR_8', number: 8, title: 'Feature', url: 'https://github.com/acme/demo/pull/8', author: 'alice',
+      assignees: [], labels: [], headSha: 'abc', check: { id: 1, name: 'CI', conclusion: 'failure', url: 'https://ci', failingJobs: ['test'] },
+    };
+    const receipt = automationStore.reserveReceipt({ automationId: definition.id, revision: definition.revision, eventId: candidate.eventId, candidate })!;
+    automationStore.appendReceipt({ ...receipt, status: 'launch-error', error: 'gh was offline' });
+    const response = await apiRequest(app({ automationStore, manager }), `/api/v1/automation-log/${receipt.receiptId}/retry`, { method: 'POST' });
+    expect(response.status).toBe(202);
+    expect(continued).toEqual([owner.id]);
+    expect(automationStore.latestReceipts().get(receipt.receiptKey)).toMatchObject({ status: 'launched', runId: owner.id, delivered: true });
+    expect(automationStore.logs({ automationId: definition.id })[0]).toMatchObject({
+      result: 'delivered', runId: owner.id, receiptId: receipt.receiptId, reason: `delivered-to: ${owner.id}`, event: 'check_suite.completed', githubNumber: 8,
+    });
   });
 
   it('accepts preview as an automation-log result filter', async () => {

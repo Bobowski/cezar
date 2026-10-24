@@ -27,6 +27,8 @@ export interface LandOptions {
   env?: NodeJS.ProcessEnv;
   /** Runs one check; injectable for tests. */
   runCheck?: (command: string, cwd: string, env?: NodeJS.ProcessEnv) => Promise<{ ok: boolean; output: string }>;
+  /** Called with the sha about to be pushed, BEFORE the push (spec 2026-10-23-github-events §6). */
+  beforePush?: (sha: string) => void;
 }
 
 // cezar's own state never lands: committing `.ai/cezar/config.json` would track it, and a tracked
@@ -154,6 +156,7 @@ export async function landInPlace(root: string, options: LandOptions): Promise<L
     const files = await changedFiles(root, `${upstream.ref}..HEAD`);
     const sha = (await git(root, ['rev-parse', 'HEAD'])).stdout.trim();
     if (dryRun) return { result: 'landed', branch, sha, pushed: false, files };
+    if (sha) options.beforePush?.(sha);
     const pushed = await git(root, ['push', upstream.remote, `HEAD:${upstream.branch}`], NETWORK_TIMEOUT_MS);
     if (pushed.ok) return { result: 'landed', branch, sha, pushed: true, files };
     const rejected = /rejected|non-fast-forward|fetch first/i.test(pushed.stderr);

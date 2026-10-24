@@ -31,7 +31,8 @@ A GitHub poll:
   "name": "Review every new pull request",          // required, 1-200 chars
   "description": "What this automation is for",      // optional, up to 2000 chars
   "kind": "github",                                  // optional here — omitted means a GitHub poll
-  "events": ["pull_request.opened"],                 // 1-9 of: pull_request.opened, issue.opened, issue.labeled, issue.unlabeled, pull_request.reviewed, pull_request.review_requested, pull_request.rereview_requested, pull_request.closed (closed without merging), pull_request.merged
+  "events": ["pull_request.opened"],                 // 1-16 of: pull_request.opened, issue.opened, issue.labeled, issue.unlabeled, pull_request.reviewed, pull_request.review_requested, pull_request.rereview_requested, pull_request.closed (closed without merging), pull_request.merged, pull_request.synchronize (new commits on an open PR's head), pull_request.commented, pull_request.review_commented (a comment on the diff), issue.commented, check_suite.completed (a CI result on an open PR's head), push (a branch moved), release.published
+  "deliver": "new-run",                              // optional: "new-run" (default) launches a task per match; "owning-run" sends a pull request's event as a message into the newest cezar task that made or works on that PR, in its worktree — a new task only when none does
   "intervalSeconds": 300,                            // required: how often GitHub is polled, in seconds, 60-86400 (300 is the usual choice)
   "filters": {                                       // required, may be {}; every key optional; a candidate must pass ALL given filters
     "authors": ["octocat"],                          //   GitHub logins that opened it
@@ -41,7 +42,16 @@ A GitHub poll:
     "excludeLabels": ["wontfix"],                    //   must carry none of these
     "changedLabels": ["needs-agent"],                //   REQUIRED for issue.labeled / issue.unlabeled: the label whose change fires it
     "reviewers": ["octocat"],                        //   GitHub logins a review event must name — the reviewer for pull_request.reviewed, the requested one for the two review_requested events
-    "lookbackDays": 7,                               //   1-90 (default 7): how far back one poll looks
+    "mentions": ["octocat"],                         //   comment events: the comment must @mention one of these logins (authors means whoever COMMENTED)
+    "branches": ["main", "release/*"],               //   pull_request.synchronize (the PR's head branch) and push: exact names or * globs
+    "conclusion": "failure",                         //   check_suite.completed: success | failure | any (default any)
+    "prerelease": false,                             //   release.published: true = prereleases only, false = none; omitted = both
+    "tags": ["v*"],                                  //   release.published: tag names, exact or * globs
+    "includeOwnPushes": false,                       //   check_suite.completed: also react to CI on commits cezar itself pushed (the "fix my CI" case); otherwise cezar's own pushes and comments never trigger anything
+    "allowSelfComments": false,                      //   comment events: deliver or launch at once a comment by the login cezar runs as, written during the current turn of a task on that PR or issue (otherwise it is held until that turn ends, then sent unless a trace claims it)
+    "includeClosed": false,                          //   new-run only: comment and review events on a closed or merged PR launch too (owning-run always skips them as pr-closed)
+    "allowAnyAuthor": false,                         //   with deliver "owning-run": deliver comments from anyone; otherwise (unless authors is set) only the repository's owner, and members or collaborators with write access, can message a running task
+    "lookbackDays": 7,                              //   1-90 (default 7): how far back one poll looks
     "maxRecords": 25                                 //   1-100 (default 25): the most candidates one poll considers
   },
   "task": {                                          // the ordinary cezar task each match launches
@@ -57,7 +67,7 @@ A GitHub poll:
     "generateFollowups": false,
     "systemPrompt": "Extra guidance for every launched run",  // optional
     "dispatch": { "maxSubtasks": 4, "reviewChild": true },    // optional: let each run dispatch up to N subtasks, and ask it to dispatch a final review task
-    "checkout": "pr-head",                           // optional, pull_request.* events only: fork the run's worktree from the PR's head instead of the base branch (its check steps then verify the PR itself; the run cannot publish a PR)
+    "checkout": "pr-head",                           // optional, pull_request.* (or check_suite.completed) events only, not closed/merged: fork the run's worktree from the PR's head instead of the base branch (its check steps then verify the PR itself; the run cannot publish a PR)
     "allowForkHeads": false                          // optional, with checkout "pr-head": admit heads from forks — untrusted code, run without check credentials
   }
 }
@@ -110,9 +120,9 @@ A schedule — same "name", "description" and "task", but "kind": "schedule" and
 
 Only "filters" decide which items launch a task; the prompt never does. A condition the user states — "when user octocat opens a PR", "only bugs", "unless labelled wip" — goes into authors, labels or the other filters, never only into the prompt text: a condition left in prose launches a task for every item.
 
-For a GitHub poll, name, events, intervalSeconds, filters and task are required; for a tracker poll, name, kind, trackerTrigger, intervalSeconds, filters and task; for a schedule, name, kind, schedule and task. No other top-level key is accepted. Schedules run in the cockpit's own time zone.
+For a GitHub poll, name, events, intervalSeconds, filters and task are required, deliver optional; for a tracker poll, name, kind, trackerTrigger, intervalSeconds, filters and task; for a schedule, name, kind, schedule and task. No other top-level key is accepted. Schedules run in the cockpit's own time zone.
 
-Prompt placeholders, substituted per launch — GitHub poll: {{github.kind}} (issue | pull request), {{github.number}}, {{github.title}}, {{github.url}}, {{github.author}}, {{github.assignees}}, {{github.labels}} and {{github.event}}; schedule: {{date}}, {{time}}, {{project}} and {{automation}}. Any other {{…}} is rejected. The matched item's title, author, labels and URL (or the scheduled instant) are also appended to every launched task as untrusted context, so the prompt need not repeat them.
+Prompt placeholders, substituted per launch — GitHub poll: {{github.kind}} (issue | pull request | push | release), {{github.number}}, {{github.title}}, {{github.url}}, {{github.author}}, {{github.assignees}}, {{github.labels}}, {{github.event}}, {{github.sha}}, {{github.branch}}; comment events add {{github.comment.body}}, {{github.comment.author}}, {{github.comment.url}}; check_suite.completed adds {{github.check.name}}, {{github.check.conclusion}}, {{github.check.url}}, {{github.check.failedJobs}}; push adds {{github.push.branch}}, {{github.push.before}}, {{github.push.after}}, {{github.push.subjects}}; release.published adds {{github.release.tag}}, {{github.release.name}} (each is empty for an event that does not carry it); schedule: {{date}}, {{time}}, {{project}} and {{automation}}. Any other {{…}} is rejected. The matched item's title, author, labels and URL (or the scheduled instant) are also appended to every launched task as untrusted context, so the prompt need not repeat them.
 
 A new automation is PAUSED unless created with --enable. Enabling a GitHub poll establishes a current-time baseline: only pull requests and issues that appear AFTER it are ever launched, never the backlog. Enabling a schedule arms its next occurrence. Editing a definition never re-considers what an earlier revision already saw.`;
 

@@ -1,4 +1,4 @@
-import { cronOf, type AutomationDefinition, type AutomationDispatch, type AutomationEvent, type AutomationFilters, type AutomationSchedule } from '@open-mercato/cezar-api-client'
+import { cronOf, type AutomationDefinition, type AutomationDeliver, type AutomationDispatch, type AutomationEvent, type AutomationFilters, type AutomationSchedule } from '@open-mercato/cezar-api-client'
 
 /**
  * The editor's "Copy as CLI" card (spec 2026-09-14-automations-redesign Q1): the flag form of
@@ -18,6 +18,8 @@ export interface CliDefinition {
   events?: AutomationEvent[]
   intervalSeconds?: number
   filters?: Partial<AutomationFilters>
+  /** spec 2026-10-23-github-events §5 — JSON only: no flag says it. */
+  deliver?: AutomationDeliver
   task: {
     prompt: string
     workflow?: string
@@ -43,8 +45,10 @@ export function flagExpressible(definition: CliDefinition): boolean {
   if (definition.kind === 'schedule') return !!definition.schedule
   if (!definition.events?.length) return false
   const filters = definition.filters ?? {}
-  const extra = (['assignees', 'allLabels', 'excludeLabels', 'changedLabels'] as const).some((key) => (filters[key]?.length ?? 0) > 0)
+  const extra = (['assignees', 'allLabels', 'excludeLabels', 'changedLabels', 'mentions', 'branches', 'tags'] as const).some((key) => (filters[key]?.length ?? 0) > 0)
   if (extra) return false
+  if (filters.conclusion !== undefined || filters.prerelease !== undefined || filters.includeOwnPushes !== undefined || filters.allowAnyAuthor !== undefined || filters.allowSelfComments !== undefined || filters.includeClosed !== undefined) return false
+  if (definition.deliver !== undefined) return false
   if (filters.lookbackDays !== undefined && filters.lookbackDays !== 7) return false
   if (filters.maxRecords !== undefined && filters.maxRecords !== 25) return false
   return true
@@ -87,6 +91,7 @@ export function cliJsonOf(definition: CliDefinition): string {
       : definition.kind === 'tracker'
         ? { trackerTrigger: definition.trackerTrigger, intervalSeconds: definition.intervalSeconds ?? 1800, filters: { lookbackDays: 7, maxRecords: 25, ...definition.filters } }
         : { events: definition.events, intervalSeconds: definition.intervalSeconds ?? 300, filters: { lookbackDays: 7, maxRecords: 25, ...definition.filters } }),
+    ...(definition.deliver !== undefined ? { deliver: definition.deliver } : {}),
     task: definition.task,
     ...(definition.enable ? { enable: true } : {}),
   }

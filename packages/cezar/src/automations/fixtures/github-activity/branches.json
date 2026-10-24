@@ -1,0 +1,26 @@
+[
+  {
+    "name": "1119-support-for-owner-based-queries",
+    "commit": {
+      "sha": "e8cc7f94367a0d862501aea1e318e6e0c326f0b9",
+      "url": "https://api.github.com/repos/acme/demo/commits/e8cc7f94367a0d862501aea1e318e6e0c326f0b9"
+    },
+    "protected": true
+  },
+  {
+    "name": "3521-use-current-branch-as-ref-for-gh-workflow-run",
+    "commit": {
+      "sha": "027adc7bf5045f264bf038fb9a5dc170abef22a9",
+      "url": "https://api.github.com/repos/acme/demo/commits/027adc7bf5045f264bf038fb9a5dc170abef22a9"
+    },
+    "protected": true
+  },
+  {
+    "name": "8218-login-is-required-when-not-running-interactively-when-trying-to-pipe-commands",
+    "commit": {
+      "sha": "ccf45cc7c6caa8686b608bd156b57ba1b9d939f0",
+      "url": "https://api.github.com/repos/acme/demo/commits/ccf45cc7c6caa8686b608bd156b57ba1b9d939f0"
+    },
+    "protected": true
+  }
+]

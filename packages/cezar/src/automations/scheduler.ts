@@ -1,4 +1,5 @@
-import { runEventPollCycle, launchEventCandidate } from './event-poll-cycle.ts';
+import { runEventPollCycle, launchEventCandidate, releaseHeldEvents } from './event-poll-cycle.ts';
+import { isOwnTrace, type GithubTraces } from '../runs/github-traces.ts';
 import type { AutomationCoordinator } from './coordinator.ts';
 import { POLL_RECORD_CEILING } from './github-poller.ts';
 import type { GithubCandidate, GithubPoller, GithubPollResult } from './github-poller.ts';
@@ -8,16 +9,25 @@ import type { TrackerDriver } from '../server/tracker/types.ts';
 import type { TrackerFailure } from '@open-mercato/cezar-contract';
 import { TrackerPoller, type TrackerAutomationCandidate } from './tracker-poller.ts';
 import { isGithubAutomation, isScheduleAutomation, isTrackerAutomation, type AutomationRuntimeState, type GithubAutomationDefinition, type TrackerAutomationDefinition } from './types.ts';
+import { MIN_WAKE_POLL_MS } from './webhook.ts';
 
 const CURSOR_OVERLAP_MS = 120_000;
 
 export { LeaseHeldError } from './event-poll-cycle.ts';
 
-export interface AutomationLaunchResult { runId: string }
+export interface AutomationLaunchResult {
+  runId: string;
+  /** `deliver: 'owning-run'` put the prompt into this existing run (spec 2026-10-23-github-events §5). */
+  delivered?: true;
+  /** Why a delivery fell back to a new run. */
+  note?: string;
+}
 export type AutomationLauncher = (
   definition: GithubAutomationDefinition,
   candidate: GithubCandidate,
   receiptId: string,
+  /** `admit`: called once the holds pass, before anything starts (a held event's release). */
+  options?: { admit?: () => void },
 ) => Promise<AutomationLaunchResult>;
 export type TrackerAutomationLauncher = (
   definition: TrackerAutomationDefinition,
@@ -41,6 +51,9 @@ export interface ProjectAutomationHandle {
    *  removed or reconnected between ticks) rather than being captured once at handle build time. */
   tracker?: { getDriver: () => Promise<TrackerDriver | TrackerFailure>; poller: TrackerPoller };
   launch?: AutomationLauncher;
+  /** cezar's own traces on GitHub — the shas its runs pushed and the comments they posted (spec
+   *  2026-10-23-github-events §6). Read per poll; absent = nothing is recognised as our own. */
+  traces?: () => GithubTraces | Promise<GithubTraces>;
   launchSchedule?: ScheduleLauncher;
   launchTracker?: TrackerAutomationLauncher;
   onChange?: (automationId: string, revision: number) => void;
@@ -82,14 +95,27 @@ export class ProjectAutomationScheduler {
     let exhausted = false;
     let stillPinned = false;
     let polledState: AutomationRuntimeState = {};
+    /** PRs any drain of this cycle read as closed: a held event released after it re-checks here. */
+    const closedPrs = new Set<number>();
     return runEventPollCycle({
       store, definition, mode, scheduled, onChange: this.handle.onChange,
       poll: async state => {
         polledState = state;
         const since = state.cursor?.timestamp ?? state.baselineAt;
         const overlapSince = since ? new Date(Date.parse(since) - CURSOR_OVERLAP_MS).toISOString() : undefined;
-        const drain = (maxRecords?: number) => githubRequests.run(() => github.poller.poll(github.owner, github.repo, definition,
-          maxRecords === undefined ? { since: overlapSince } : { since: overlapSince, maxRecords }));
+        const traces = await this.handle.traces?.();
+        const activity = { etags: state.etags, prHeads: state.prHeads, branchHeads: state.branchHeads, headsRepo: state.headsRepo };
+        // A widening re-poll reads every conditional page in full: the first drain's 304 answers
+        // came from ETags whose results this cycle has not persisted yet.
+        const drain = (maxRecords?: number) => githubRequests.run(() => github.poller.poll(github.owner, github.repo, definition, {
+          since: overlapSince,
+          activity: maxRecords === undefined ? activity : { ...activity, etags: undefined },
+          ...(traces ? { traces } : {}),
+          ...(maxRecords === undefined ? {} : { maxRecords }),
+        })).then((observed) => {
+          for (const number of observed.closedPrs ?? []) closedPrs.add(number);
+          return observed;
+        });
         const pinned = (observed: GithubPollResult): boolean =>
           observed.truncated && laterCursor(state.cursor, observed.cursor) === state.cursor;
         let result = await drain();
@@ -112,18 +138,28 @@ export class ProjectAutomationScheduler {
         }
         return result;
       },
-      eligible: (candidate, state) => !state.cursor || Date.parse(candidate.timestamp) >= Date.parse(state.cursor.timestamp) - CURSOR_OVERLAP_MS,
+      // A diff-found candidate (`synchronize`, `push`) is new because the stored heads say so.
+      eligible: (candidate, state) => candidate.cursorless === true || !state.cursor
+        || Date.parse(candidate.timestamp) >= Date.parse(state.cursor.timestamp) - CURSOR_OVERLAP_MS,
       launch: (candidate: GithubCandidate) => this.launch(definition, candidate),
+      releaseHeld: () => this.releaseHeld(definition, closedPrs),
       persist: (result, current) => {
         const cursor = laterCursor(current.cursor, result.cursor);
+        // A webhook wake that arrived while this poll ran stays due — a minute on, the shortest
+        // gap a wake allows: its event may be past what this poll read (spec 2026-10-23-github-events §4).
+        const wokenMeanwhile = !!current.wakeAt && current.wakeAt !== polledState.wakeAt;
         return {
           ...current, revision: definition.revision, cursor,
           frozenHighWatermark: result.truncated && cursor?.tieBreaker ? { timestamp: cursor.timestamp, tieBreaker: cursor.tieBreaker } : undefined,
           pinnedCursor: exhausted
             ? cursor
             : sameCursor(current.pinnedCursor, cursor) ? current.pinnedCursor : undefined,
+          ...(result.activity?.etags ? { etags: result.activity.etags } : {}),
+          ...(result.activity?.prHeads ? { prHeads: result.activity.prHeads } : {}),
+          ...(result.activity?.branchHeads ? { branchHeads: result.activity.branchHeads } : {}),
+          ...(result.activity?.headsRepo ? { headsRepo: result.activity.headsRepo } : {}),
           lastSuccessAt: new Date().toISOString(),
-          nextCheckAt: new Date(Date.now() + definition.intervalSeconds * 1000).toISOString(),
+          nextCheckAt: new Date(Date.now() + Math.min(wokenMeanwhile ? MIN_WAKE_POLL_MS : Number.POSITIVE_INFINITY, definition.intervalSeconds * 1000)).toISOString(),
           consecutiveFailures: 0,
           backoffUntil: undefined,
         };
@@ -147,6 +183,10 @@ export class ProjectAutomationScheduler {
   }
 
   private async launch(definition: GithubAutomationDefinition, candidate: GithubCandidate): Promise<void> {
+    // Read again at the moment of decision: a push or comment cezar made while the poll was in
+    // flight is a trace now, though it was not when the poll began (spec 2026-10-23-github-events §6).
+    const traces = await this.handle.traces?.();
+    if (traces && isOwnTrace(candidate, traces, definition.filters.includeOwnPushes)) return;
     if (this.hasRecentReviewRequestReceipt(definition, candidate)) {
       this.handle.store.appendLog({ automationId: definition.id, revision: definition.revision, event: candidate.event, result: 'duplicate', reason: 'A durable receipt already exists for this automation and pull request review-request burst.', githubNumber: candidate.number, githubTitle: candidate.title, githubUrl: candidate.url });
       return;
@@ -155,6 +195,29 @@ export class ProjectAutomationScheduler {
       receipt: { eventId: candidate.eventId, candidate },
       log: { event: candidate.event, githubNumber: candidate.number, githubTitle: candidate.title, githubUrl: candidate.url },
       launch: receiptId => this.handle.launch!(definition, candidate, receiptId),
+    });
+  }
+
+  /** Held events (spec 2026-10-23-github-events §11) are decided again on every execute poll. */
+  private async releaseHeld(definition: GithubAutomationDefinition, closedPrs: ReadonlySet<number> = new Set()): Promise<void> {
+    const launch = this.handle.launch;
+    if (!launch) return;
+    const repo = this.handle.github ? `${this.handle.github.owner}/${this.handle.github.repo}`.toLowerCase() : undefined;
+    // Held while open, closed since: the launch decides on the state this poll read (§5).
+    const current = (candidate: GithubCandidate): GithubCandidate =>
+      !candidate.prClosed && candidate.number !== undefined && candidate.repo.toLowerCase() === repo && closedPrs.has(candidate.number)
+        ? { ...candidate, prClosed: true }
+        : candidate;
+    await releaseHeldEvents<GithubCandidate>({
+      store: this.handle.store, definition,
+      candidateOf: (receipt) => receipt.candidate as GithubCandidate | undefined,
+      log: (candidate) => ({ event: candidate.event, githubNumber: candidate.number, githubTitle: candidate.title, githubUrl: candidate.url }),
+      tracks: (candidate) => definition.events?.includes(candidate.event) ?? false,
+      own: async (candidate) => {
+        const traces = await this.handle.traces?.();
+        return !!traces && isOwnTrace(candidate, traces, definition.filters.includeOwnPushes);
+      },
+      launch: (receiptId, candidate, admit) => launch(definition, current(candidate), receiptId, { admit }),
     });
   }
 

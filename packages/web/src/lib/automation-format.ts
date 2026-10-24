@@ -108,8 +108,9 @@ export function triggerLabel(automation: Pick<AutomationDefinition, 'kind' | 'ev
 /** The log result's dot tone (spec § UI/UX 5). */
 export function resultTone(result: string): StatusDotTone {
   switch (result) {
-    case 'launched': case 'manual': case 'catch-up': return 'success'
+    case 'launched': case 'manual': case 'catch-up': case 'delivered': return 'success'
     case 'failed': case 'error': case 'rate-limited': return 'danger'
+    case 'held': return 'pending'
     default: return 'neutral'
   }
 }

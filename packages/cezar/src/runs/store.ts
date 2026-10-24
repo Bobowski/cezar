@@ -10,6 +10,7 @@ import {
   readFileSync,
   readSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -25,6 +26,7 @@ import { track } from '../telemetry.ts';
 import { reportAgentError } from './agent-error-telemetry.ts';
 // Pure, dependency-free reference helpers — the same sanity bound the marker parser applies.
 import { MAX_REF } from './task-refs.ts';
+import { commentFingerprint, githubTracesOf, mergeTraces, POSTED_BODIES_CAP, POSTED_COMMENTS_CAP, PUSHED_SHAS_CAP, type GithubTraces } from './github-traces.ts';
 // Type-only module (zod + nothing else), so this cannot cycle back into the store.
 import { workflowDefSchema } from '../workflows/types.ts';
 // A contract VALUE, like `workspaceUiStateSchema` in `workspace/migrations.ts`: the persisted
@@ -325,6 +327,12 @@ export const runRecordSchema = z.object({
   /** The PR head came from a fork the automation admitted (`allowForkHeads`): untrusted code, so
    *  its check steps never receive any secrets. */
   untrustedHead: z.boolean().optional().catch(undefined),
+  /** cezar's own traces on GitHub (spec 2026-10-23-github-events §6): shas this run pushed and
+   *  comment ids it posted, which automations never treat as triggers. Capped (`github-traces.ts`). */
+  pushedShas: z.array(z.string()).max(PUSHED_SHAS_CAP).optional().catch(undefined),
+  postedComments: z.array(z.number()).max(POSTED_COMMENTS_CAP).optional().catch(undefined),
+  /** Fingerprints of bodies it posted or was posting, each kept 24 h (`POSTED_BODY_TTL_MS`). */
+  postedCommentBodies: z.array(z.object({ hash: z.string(), at: z.string(), number: z.number().int().positive().optional() })).max(POSTED_BODIES_CAP).optional().catch(undefined),
   /**
    * Exact deadline at which a run stopped by a provider USAGE LIMIT resumes itself
    * (spec 2026-08-03-auto-resume-after-usage-limit) — the reset instant the provider named plus a
@@ -1647,6 +1655,34 @@ export class RunStore extends EventEmitter {
     return run;
   }
 
+  /** Remember shas this run pushed and comments it posted (spec 2026-10-23-github-events §6). */
+  recordGithubTraces(runId: string, add: Parameters<typeof mergeTraces>[1], now = Date.now()): void {
+    const run = this.runs.get(runId);
+    if (!run) return;
+    const patch = mergeTraces(run, add, now);
+    if (patch) this.updateRun(runId, patch);
+  }
+
+  /** A start-time push trace that turned out not to be what the push pushed (`settlePush`). */
+  dropPushedSha(runId: string, sha: string): void {
+    const run = this.runs.get(runId);
+    const wanted = sha.toLowerCase();
+    if (!run?.pushedShas?.includes(wanted)) return;
+    this.updateRun(runId, { pushedShas: run.pushedShas.filter((entry) => entry !== wanted) });
+  }
+
+  /** A comment this run is ABOUT to post on PR/issue `number` (when known): its body is a trace
+   *  before GitHub returns the id, and stays one on the record — across a restart — whether or not
+   *  the id ever comes back. */
+  notePostingComment(runId: string, body: string, number?: number, now = Date.now()): void {
+    this.recordGithubTraces(runId, { bodies: [{ hash: commentFingerprint(body), ...(number === undefined ? {} : { number }) }] }, now);
+  }
+
+  /** Every trace across this project's runs. */
+  githubTraces(now = Date.now()): GithubTraces {
+    return githubTracesOf(this.listRuns(), now);
+  }
+
   /** Record an authoritative PR association and recompute the compatibility scalar projection. */
   recordPrRef(runId: string, ref: Omit<RunPrRef, 'at'> & { at?: string }): RunRecord | undefined {
     const run = this.runs.get(runId);
@@ -1731,6 +1767,17 @@ export class RunStore extends EventEmitter {
   private hostSecrets(): readonly string[] {
     if (this.secretValues === null) this.secretValues = collectSecretValues();
     return this.secretValues;
+  }
+
+  /** The run's event file as `size:mtime`, `undefined` when it has none — what a cache of
+   *  something derived from `readEvents` keys on. */
+  eventsStamp(runId: string): string | undefined {
+    try {
+      const stat = statSync(this.eventsPath(runId));
+      return `${stat.size}:${stat.mtimeMs}`;
+    } catch {
+      return undefined;
+    }
   }
 
   readEvents(runId: string): RunEvent[] {

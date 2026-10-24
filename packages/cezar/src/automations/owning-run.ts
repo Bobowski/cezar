@@ -1,0 +1,274 @@
+import { statSync } from 'node:fs';
+import { join } from 'node:path';
+import { GITHUB_COM, ghConfigDir, isSafeHostname } from '../github-hosts.ts';
+import type { RunEvent, RunRecord } from '../runs/store.ts';
+import type { RunManager } from '../workflows/run.ts';
+import type { GithubCandidate } from './github-poller.ts';
+import { remoteForRepo, runCommand, type CommandRunner } from './pr-head.ts';
+import type { GithubAutomationDefinition } from './types.ts';
+
+/**
+ * `deliver: 'owning-run'` (spec 2026-10-23-github-events §5): an event on a pull request a cezar
+ * task owns goes into THAT task as a message, in the worktree that made the PR, instead of
+ * starting a stranger with none of the context.
+ */
+
+/** `owner/repo` and the number of a `…/owner/repo/pull/N` URL. */
+function pullOf(url: string | undefined): { repo: string; number: number } | undefined {
+  const match = url ? /\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)(?:[/?#]|$)/.exec(url) : null;
+  return match ? { repo: `${match[1]}/${match[2]}`.toLowerCase(), number: Number(match[3]) } : undefined;
+}
+
+/** `pullOf` for a pull request OR an issue URL (`…/issues/N`). */
+function itemOf(url: string | undefined): { repo: string; number: number } | undefined {
+  const match = url ? /\/([^/\s]+)\/([^/\s]+)\/(?:pull|issues)\/(\d+)(?:[/?#]|$)/.exec(url) : null;
+  return match ? { repo: `${match[1]}/${match[2]}`.toLowerCase(), number: Number(match[3]) } : undefined;
+}
+
+/**
+ * Every run on item `number` of `repo`, whatever its part — the one that made it, a reviewer, a
+ * `pr-head` verifier, a dispatched child, one an automation launched for it: any of them may
+ * have written a comment there in its turn. Wider than `findOwningRun` on purpose; what it feeds
+ * only ever defers.
+ */
+export function runsOnItem(runs: Iterable<RunRecord>, candidate: { repo: string; number?: number }): RunRecord[] {
+  const number = candidate.number;
+  if (number === undefined) return [];
+  const repo = candidate.repo.toLowerCase();
+  const same = (item: { repo: string; number: number } | undefined) => item?.repo === repo && item.number === number;
+  return [...runs].filter((run) => {
+    if (same(pullOf(run.pullRequestUrl)) || same(itemOf(run.automation?.githubUrl))) return true;
+    if (run.prHead && run.prHead.number === number && run.prHead.repo.toLowerCase() === repo) return true;
+    if (run.prRefs?.some((ref) => ref.number === number && (!ref.url || same(pullOf(ref.url))))) return true;
+    return run.prNumber === number || run.issueNumber === number;
+  });
+}
+
+/**
+ * The run that owns pull request `number` of `repo`: the newest one that CREATED it (its
+ * `pullRequestUrl`, or a `created` PR ref), else the newest that declared or was associated with
+ * it (`prRefs`) or is about it (`prNumber` — numbers are one sequence per repository, so a number
+ * names one item). A reference whose URL names another repository does not count. Never a
+ * dispatched child (its parent owns the work), never a `pr-head` verifier (it tested the PR; it
+ * cannot change it), never an archived one (a picked-against variant is archived) and never a
+ * run whose worktree is gone — the code it would fix is not there.
+ */
+export function findOwningRun(runs: Iterable<RunRecord>, candidate: { repo: string; number?: number }): RunRecord | undefined {
+  const number = candidate.number;
+  if (number === undefined) return undefined;
+  const repo = candidate.repo.toLowerCase();
+  const sameRepo = (url: string | undefined) => {
+    const pull = pullOf(url);
+    return !pull || pull.repo === repo;
+  };
+  // Every PR the run made — `pullRequestUrl` names only its latest one, `created` refs all.
+  const created = (run: RunRecord): boolean => {
+    const made = pullOf(run.pullRequestUrl);
+    if (made?.repo === repo && made.number === number) return true;
+    return run.prRefs?.some((ref) => ref.origin === 'created' && ref.number === number
+      && (ref.url ? sameRepo(ref.url) : !made || made.repo === repo)) ?? false;
+  };
+  const owns = (run: RunRecord): boolean => {
+    if (run.archived || run.prHead || run.dispatch?.parentRunId) return false;
+    if (run.worktree !== false && !run.worktreePath) return false;
+    if (created(run)) return true;
+    // A run that made a PR owns only what it made, not one it merely mentioned.
+    if (pullOf(run.pullRequestUrl)) return false;
+    if (run.prRefs?.some((ref) => ref.number === number && sameRepo(ref.url))) return true;
+    return run.prNumber === number;
+  };
+  let creator: RunRecord | undefined;
+  let newest: RunRecord | undefined;
+  for (const run of runs) {
+    if (!owns(run)) continue;
+    if (created(run) && (!creator || run.createdAt > creator.createdAt)) creator = run;
+    if (!newest || run.createdAt > newest.createdAt) newest = run;
+  }
+  return creator ?? newest;
+}
+
+export type DeliveryOutcome =
+  | { ok: true; how: 'live' | 'queued' | 'continued' }
+  | { ok: false; error: string };
+
+/**
+ * The same ladder a person's message takes, as a user-visible message: folded into a run that
+ * has not started, delivered into a session at rest or lined up behind the turn it is running
+ * (the prompt queue), buffered while it starts — and, with no session left, a Continue.
+ */
+export function deliverAutomationMessage(manager: RunManager, runId: string, text: string): DeliveryOutcome {
+  const content = [{ type: 'text' as const, text }];
+  if (manager.enqueueMessage(runId, content)) return { ok: true, how: 'queued' };
+  if (manager.hasLiveSession(runId)) {
+    const prompt = manager.enqueuePrompt(runId, text);
+    if (prompt.ok) return { ok: true, how: prompt.delivered ? 'live' : 'queued' };
+  }
+  if (manager.deferMessage(runId, content)) return { ok: true, how: 'queued' };
+  const continued = manager.continueRun(runId, { text });
+  return continued.ok ? { ok: true, how: 'continued' } : { ok: false, error: continued.error ?? 'the run could not be continued' };
+}
+
+/** The window the per-PR delivery cap counts over; the cap is the automation's `maxRecords`. */
+export const DELIVERY_CAP_WINDOW_MS = 60 * 60_000;
+/** GitHub's clock against this machine's: a comment this close before a turn began counts as in it. */
+const CLOCK_SKEW_MS = 60_000;
+
+/** What the holds need of a run's events: where its open turn began, whether it ever said
+ *  `turn.*`, and the automation deliveries into it. */
+export type RunActivity = { openTurnAt?: number; sawTurn: boolean; deliveries: ReadonlyArray<{ mark: Partial<DeliveryMark>; at: number }> };
+
+export function runActivityOf(events: readonly RunEvent[]): RunActivity {
+  let openTurnAt: number | undefined;
+  let sawTurn = false;
+  const deliveries: Array<{ mark: Partial<DeliveryMark>; at: number }> = [];
+  for (const event of events) {
+    const at = Date.parse(event.ts);
+    if (!Number.isFinite(at)) continue;
+    if (event.type === 'turn.started') {
+      sawTurn = true;
+      openTurnAt ??= at;
+    } else if (event.type === 'turn.completed' || event.type === 'session.ended') openTurnAt = undefined;
+    else if (event.type === 'note' && event.automationDelivery) deliveries.push({ mark: event.automationDelivery as Partial<DeliveryMark>, at });
+  }
+  return { ...(openTurnAt !== undefined ? { openTurnAt } : {}), sawTurn, deliveries };
+}
+
+const activityCache = new Map<string, { stamp: string; activity: RunActivity }>();
+const ACTIVITY_CACHE_CAP = 500;
+
+/** `runActivityOf` a run's events, parsed again only when its event file's `stamp` (size and
+ *  mtime) changed — a poll must not re-parse every NDJSON on the item for every candidate. */
+export function cachedRunActivity(runId: string, stamp: string | undefined, read: () => readonly RunEvent[]): RunActivity {
+  if (stamp === undefined) return { sawTurn: false, deliveries: [] };
+  const cached = activityCache.get(runId);
+  if (cached?.stamp === stamp) return cached.activity;
+  const activity = runActivityOf(read());
+  activityCache.delete(runId);
+  activityCache.set(runId, { stamp, activity });
+  while (activityCache.size > ACTIVITY_CACHE_CAP) activityCache.delete(activityCache.keys().next().value!);
+  return activity;
+}
+
+/** When the run's current turn began, while it is working: the last `turn.started` with no
+ *  `turn.completed`/`session.ended` after it, on a live run. A live run whose backend never says
+ *  `turn.*` is working since it started. `undefined` when the run is at rest. */
+export function openTurnSince(run: Pick<RunRecord, 'startedAt' | 'createdAt'>, events: readonly RunEvent[] | RunActivity, live: boolean): number | undefined {
+  if (!live) return undefined;
+  const activity = Array.isArray(events) ? runActivityOf(events) : events as RunActivity;
+  return activity.sawTurn ? activity.openTurnAt : Date.parse(run.startedAt ?? run.createdAt);
+}
+
+const loginCache = new Map<string, { login?: string; at: number }>();
+const hostCache = new Map<string, { host: string; at: number }>();
+const LOGIN_TTL_MS = 10 * 60_000;
+const LOGIN_RETRY_MS = 60_000;
+
+/** When `gh`'s own config last changed — `gh auth switch`/`login`/`logout` rewrite `hosts.yml`. */
+export function ghConfigStamp(): string {
+  const dir = ghConfigDir();
+  const mtime = (path: string) => { try { return String(statSync(path).mtimeMs); } catch { return '-'; } };
+  return `${mtime(dir)}:${mtime(join(dir, 'hosts.yml'))}`;
+}
+
+/** The login cezar's `gh` speaks as on `repo`'s host (`gh api user`), cached ten minutes per host and
+ *  `gh` config state, so a `gh auth switch` is seen on the next ask; a failed lookup is `undefined`
+ *  and is asked again a minute later. Never under `CEZ_DRY_RUN=1`. */
+export async function githubSelfLogin(
+  root: string, repo: string, exec: CommandRunner = runCommand, now = Date.now(), stamp: () => string = ghConfigStamp,
+): Promise<string | undefined> {
+  if (process.env.CEZ_DRY_RUN === '1') return undefined;
+  const repoKey = repo.toLowerCase();
+  let host = hostCache.get(repoKey);
+  if (!host || now - host.at >= LOGIN_TTL_MS) {
+    const remote = await remoteForRepo(exec, root, repo).catch(() => ({ host: undefined }));
+    host = { host: remote.host && isSafeHostname(remote.host) ? remote.host.toLowerCase() : GITHUB_COM, at: now };
+    hostCache.set(repoKey, host);
+  }
+  const key = `${host.host}\n${stamp()}`;
+  const cached = loginCache.get(key);
+  if (cached && now - cached.at < (cached.login ? LOGIN_TTL_MS : LOGIN_RETRY_MS)) return cached.login;
+  const answer = await exec('gh', ['api', ...(host.host === GITHUB_COM ? [] : ['--hostname', host.host]), 'user', '--jq', '.login'], root);
+  const login = answer.ok && /^[A-Za-z0-9-]{1,39}(?:\[bot\])?$/.test(answer.stdout.trim()) ? answer.stdout.trim() : undefined;
+  loginCache.set(key, { ...(login ? { login } : {}), at: now });
+  return login;
+}
+
+/** Test seam: forget every cached login. */
+export function forgetGithubSelfLogins(): void {
+  loginCache.clear();
+  hostCache.clear();
+}
+
+/** What a delivery note carries so the per-PR cap can count it back. */
+export type DeliveryMark = { automationId: string; repo: string; number: number };
+
+/** Why an event does not go out now (`held`, re-decided on every poll), or what the log row must
+ *  say about an event that does (`warning`). */
+export type AutomationHold = { result: 'held' | 'warning'; reason: string };
+
+/** The log row's word when `gh api user` cannot answer (#4 of the 2026-10-24 review). */
+export const SELF_LOGIN_UNREADABLE = 'warning: cannot read the gh login; self-comment guard inactive (only the traces decide).';
+
+/** `held` once this automation launched `maxRecords` runs for the candidate's item in the last
+ *  hour (§11) — for a comment, and for the new run that replaces a delivery the owner refused. */
+export function launchCapHold(definition: GithubAutomationDefinition, candidate: GithubCandidate, runs: readonly RunRecord[], now = Date.now()): AutomationHold | undefined {
+  const cap = definition.filters.maxRecords;
+  const repo = candidate.repo.toLowerCase();
+  const launches = new Set(runs.filter((run) => {
+    const about = itemOf(run.automation?.githubUrl);
+    return run.automation?.automationId === definition.id && about?.repo === repo && about.number === candidate.number
+      && now - Date.parse(run.createdAt) < DELIVERY_CAP_WINDOW_MS;
+  }).map((run) => run.automation!.receiptId)).size;
+  if (launches < cap) return undefined;
+  return { result: 'held', reason: `launch-cap: this automation already launched ${launches} runs for ${candidate.comment ? 'comments on ' : ''}#${candidate.number} in the last hour (cap ${cap}, the automation's maxRecords) — held until the window frees.` };
+}
+
+/** Why an event must not go out now (`held`), a `warning` for its log row, or `undefined`: the
+ *  hourly caps and the own-login comment hold (spec 2026-10-23-github-events §11, owning-run guard). */
+export async function automationHold(input: {
+  definition: GithubAutomationDefinition;
+  candidate: GithubCandidate;
+  owner?: RunRecord;
+  runs: readonly RunRecord[];
+  /** A run's turn boundaries and deliveries (`cachedRunActivity`); asked only of a live run, or the owner. */
+  activity: (runId: string) => RunActivity;
+  isLive: (runId: string) => boolean;
+  selfLogin: () => Promise<string | undefined>;
+  now?: number;
+}): Promise<AutomationHold | undefined> {
+  const { definition, candidate, owner } = input;
+  const now = input.now ?? Date.now();
+  const cap = definition.filters.maxRecords;
+  const item = { repo: candidate.repo.toLowerCase(), number: candidate.number };
+  if (owner) {
+    const delivered = input.activity(owner.id).deliveries.filter(({ mark, at }) =>
+      mark.automationId === definition.id && mark.number === candidate.number
+        && mark.repo?.toLowerCase() === item.repo && now - at < DELIVERY_CAP_WINDOW_MS).length;
+    if (delivered >= cap) return { result: 'held', reason: `delivery-cap: ${delivered} events of this automation already went into run ${owner.id} for #${candidate.number} in the last hour (cap ${cap}, the automation's maxRecords) — held until the window frees.` };
+  } else if (candidate.comment) {
+    const capped = launchCapHold(definition, candidate, input.runs, now);
+    if (capped) return capped;
+  }
+  const comment = candidate.comment;
+  if (!comment || definition.filters.allowSelfComments === true) return undefined;
+  // A collapsed review is decided per comment: any one of them written in the turn holds it.
+  const times = (comment.parts?.map((part) => part.at) ?? [candidate.timestamp]).map((value) => Date.parse(value)).filter(Number.isFinite);
+  const onItem = runsOnItem(input.runs, candidate);
+  if (owner && !onItem.some((run) => run.id === owner.id)) onItem.push(owner);
+  // A run at rest has no open turn: its events are never read for it.
+  const live = onItem.filter((run) => input.isLive(run.id));
+  if (!live.length) return undefined;
+  const login = await input.selfLogin();
+  // Someone else's comment is never held: decided before any event file is parsed.
+  if (login !== undefined && login.toLowerCase() !== comment.author.toLowerCase()) return undefined;
+  const working = live.find((run) => {
+    const since = openTurnSince(run, input.activity(run.id), true);
+    return since !== undefined && times.some((at) => at >= since - CLOCK_SKEW_MS);
+  });
+  if (!working) return undefined;
+  if (login === undefined) return { result: 'warning', reason: SELF_LOGIN_UNREADABLE };
+  return {
+    result: 'held',
+    reason: `own-comment: by ${login}, the login cezar runs as, during run ${working.id}'s current turn — held until the turn ends, then sent unless a trace claims it as the run's own reply.`,
+  };
+}

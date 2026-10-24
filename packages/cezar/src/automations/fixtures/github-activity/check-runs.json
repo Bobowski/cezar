@@ -1,0 +1,23 @@
+{
+  "total_count": 2,
+  "check_runs": [
+    {
+      "id": 91121153268,
+      "name": "CodeQL-Build (go, manual, ./.github/codeql/codeql-config.yml)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-07-31T09:23:13Z",
+      "completed_at": "2026-07-31T09:26:05Z",
+      "html_url": "https://github.com/acme/demo/actions/runs/30619730300/job/91121153268"
+    },
+    {
+      "id": 91121153324,
+      "name": "CodeQL-Build (actions, none, security-and-quality)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-07-31T09:23:07Z",
+      "completed_at": "2026-07-31T09:24:01Z",
+      "html_url": "https://github.com/acme/demo/actions/runs/30619730300/job/91121153324"
+    }
+  ]
+}

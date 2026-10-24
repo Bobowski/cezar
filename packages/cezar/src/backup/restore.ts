@@ -358,6 +358,17 @@ async function writeAtomically(dest: string, body: string): Promise<void> {
  * machine has none or a shorter one — an append-only log is never truncated. Files placed.
  */
 async function mergeRunHistory(from: string, root: string, manifest: BackupManifest, log: (line: string) => void): Promise<number> {
+  // As `placeTree` descends: nothing is read or written through a link or a file on the way.
+  let at = root;
+  for (const part of ['.ai', 'cezar', 'runs']) {
+    at = join(at, part);
+    const there = await kind(at);
+    if (there === 'missing') break;
+    if (there !== 'dir') {
+      log(`kept ${at}: the archive has a directory where this machine has a ${there === 'file' ? 'file' : 'link'}`);
+      return 0;
+    }
+  }
   let placed = 0;
   const destIndex = join(root, ...RUN_INDEX.split('/'));
   const archived = readJsonFile(join(from, ...RUN_INDEX.split('/')));

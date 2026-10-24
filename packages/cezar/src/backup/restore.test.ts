@@ -130,6 +130,21 @@ describe('applying a crafted archive', () => {
     expect(existsSync(join(elsewhere, 'cezar', 'runs.json'))).toBe(false);
     expect(log.join('\n')).toMatch(/kept .*\.ai: /);
   });
+
+  it('does not merge run history through a directory link either', async () => {
+    const app = join(dir, 'code', 'app');
+    const elsewhere = join(dir, 'elsewhere');
+    mkdirSync(app, { recursive: true });
+    mkdirSync(elsewhere);
+    symlinkSync(elsewhere, join(app, '.ai'), 'junction');
+    registry([{ id: 'app', root: app }]);
+    await restore(
+      [file('projects/app/.ai/cezar/runs.json', '[]'), file('projects/app/.ai/cezar/runs/r.ndjson', '{}\n')],
+      [{ id: 'app', root: app, remote: null, branch: null }],
+    );
+    expect(existsSync(join(elsewhere, 'cezar'))).toBe(false);
+    expect(log.join('\n')).toMatch(/kept .*\.ai: /);
+  });
 });
 
 describe('placing a file across filesystems (EXDEV)', () => {

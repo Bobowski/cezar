@@ -1,6 +1,6 @@
 # cezar as an MCP server — the whole API as tools, for the coding agent on your desktop
 
-> Status: proposed (2026-10-24), not built. Branch: `brutus`.
+> Status: built (2026-10-24) — see §9 for what the build settled. Branch: `brutus`.
 > Builds on: `packages/contract` (every request and response is a zod schema — the tool
 > catalog is generated from it), `2026-10-12-cockpit-authentication.md` (owner sign-in;
 > `run-tokens.ts` for a task's own CLI), `2026-09-10-dispatch.md` (`cez task create`, the one
@@ -96,3 +96,35 @@ are client-side conveniences documented in `.env.example`.
   call `runs_create`, read a thread resource.
 - VPS: add `https://agents.kinel.dev/api/v1/mcp` to desktop Claude Code with a `tasks` token;
   create a task on fancy-fence-panels from the desktop; read its thread when it reaches review.
+
+## 9. As built
+
+- **The contract entry** is `packages/contract/src/routes.ts`: one `METHOD /path` row per
+  `/api/v1` route (summary, `response`, optional `tool` name, `destructive`, `notTool` for
+  streams, bytes, cockpit beacons, sign-in and `/mcp` itself). Inputs are read off the route's
+  own validator middleware (`validators.ts` tags each with its schema), so a tool's input is
+  what the route validates. `mcp/catalog.test.ts` fails on a route without a row and on a row
+  without a route; `contract-parity.routes.test.ts` checks every `response` against the route's
+  2xx body both ways at typecheck. Names derive from the path (`GET` list/get, `POST` on a
+  collection `_create`, else the action, `PUT` `_put`, `PATCH` `_update`, `DELETE` `_delete`);
+  a row's `tool` overrides it (`POST /workflows` is `workflows_put`, `POST /runs/:id/messages`
+  `runs_send_message`). A response that is not an object travels as `{ result }`.
+- **SDK**: `@modelcontextprotocol/server` 2.4 (`createMcpHandler`, stateless; it serves the
+  2025 `initialize` handshake and the 2026-07-28 envelope). A tool call is a request through the
+  whole app with the caller's own headers, so the guard checks the scope on the route.
+- **`cezar mcp`** is a stdio↔HTTP bridge to the cockpit's `/api/v1/mcp`, not a second server:
+  local default address and the host key, or `--server`/`--token`. `bridgeTarget()` in
+  `mcp/cli.ts` is where `--as-run` (the chat spec) adds the task's own address and token.
+- **Tokens are SHA-256-hashed**, like session tokens, not scrypt: the secret is 256 random bits,
+  and a slow hash on every API request would cost ~128 MB and hundreds of milliseconds per call.
+  Minting asks for a fresh authenticator code, like every other credential change; tokens are
+  managed by the signed-in owner only (`409` on a cockpit without sign-in), and `cezar auth
+  reset` revokes the user's tokens.
+- **Scopes**: `read` is every GET except the ones that hand out a credential or raw config (the
+  launch key, agent config files, env file contents — those need the family's scope or `admin`);
+  any token may read `projects`, `health` and `models` and reach the `/mcp` transport. The
+  family map is `FAMILY_SCOPES` in `auth/api-tokens.ts`; an unmapped family is `admin`'s.
+- **Origin guard**: only a token that VERIFIES skips it; an unverified Bearer is checked like
+  any request and then refused by the auth guard.
+- **The CLI**: the host key is only ever sent to a loopback cockpit; from a shell (no
+  `CEZ_TASK_ID`) `cez task create` starts a top-level task (`--workflow`, `--runner`, `--model`).

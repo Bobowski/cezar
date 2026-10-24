@@ -1560,6 +1560,7 @@ export function createApp(deps: ServerDeps) {
       restart: () => {},
       readOnly: true,
       trimPaths: () => !capabilities().localHandoff,
+      channelEditable: () => trustedOperator(process.env, bindHost),
     });
   const starCount = deps.starCount ?? new StarCountReader();
 
@@ -2118,7 +2119,15 @@ export function createApp(deps: ServerDeps) {
   // statement's return value is discarded, so `typeof app` would record nothing
   // and `hc<AppType>` would have no endpoint to offer. `createApp` mounts this
   // under both `/api` (the frozen legacy spelling) and `/api/v1`.
-  const healthRoutes = new Hono().get('/health', async (c) => c.json(await readHealth()));
+  // The version chip reads health, so a COCKPIT reading it keeps the branch channel's bounded
+  // fetch alive (spec 2026-10-23 §3.3): an authenticated browser's same-origin read, or a trusted
+  // socket on the topic below — never a probe, a cross-site discovery read, an anonymous hosted
+  // read or a foreign local page. A closed cockpit fetches nothing.
+  const healthRoutes = new Hono().get('/health', async (c) => {
+    const principal = principalOf(c);
+    if (c.req.header('sec-fetch-site') === 'same-origin' && principal && principal.kind !== 'run') selfUpdate.touch();
+    return c.json(await readHealth());
+  });
 
   // The push twin of the poll it replaced (#369): while at least one cockpit
   // holds the `health` topic the server re-reads the snapshot on the old 5 s
@@ -2132,9 +2141,14 @@ export function createApp(deps: ServerDeps) {
     'health',
     {
       snapshot: readHealth,
-      start: (publish) => {
+      start: (publish, demand) => {
         publishHealth = publish;
-        const timer = setInterval(() => void refreshHealth(), HEALTH_TTL_MS);
+        // health is loopbackReadable, so any local page may hold it: only the cockpit counts.
+        if (demand.trusted()) selfUpdate.touch();
+        const timer = setInterval(() => {
+          if (demand.trusted()) selfUpdate.touch();
+          void refreshHealth();
+        }, HEALTH_TTL_MS);
         timer.unref?.();
         return () => {
           clearInterval(timer);
@@ -3712,11 +3726,26 @@ export function createApp(deps: ServerDeps) {
       c.json(await selfUpdate.development({ refresh: c.req.valid('query').refresh === '1' })),
     )
 
-    .put('/workspace/self-update/channel', jsonZodValidator(selfUpdateChannelRequestSchema, { message: 'body must be { channel: "stable" | "nightly" | "development" }' }), async (c) => {
-      const { channel } = c.req.valid('json');
-      await selfUpdate.setChannel(channel);
-      return c.json(await selfUpdate.status());
-    })
+    // SECURITY: a followed branch is code this server will build and run (spec 2026-10-23 §3.7),
+    // so the channel is a trusted-operator write — the line agent-config writes draw.
+    .put(
+      '/workspace/self-update/channel',
+      jsonZodValidator(selfUpdateChannelRequestSchema, {
+        message: 'body must be { channel: "stable" | "nightly" | "development" | "branch", branch?: { remote: https://, ssh:// or git@ URL, branch } }',
+      }),
+      async (c) => {
+        if (!trustedOperator(process.env, bindHost)) {
+          return c.json({ error: 'the update channel can only be changed by a trusted operator — this hosted cockpit runs without sign-in (CEZ_AUTH=0)' }, 409);
+        }
+        const { channel, branch } = c.req.valid('json');
+        try {
+          await selfUpdate.setChannel(channel, branch);
+        } catch (error) {
+          return c.json({ error: error instanceof Error ? error.message : String(error) }, 409);
+        }
+        return c.json(await selfUpdate.status());
+      },
+    )
 
     .post('/workspace/self-update/apply', jsonZodValidator(selfUpdateApplyRequestSchema, { message: 'body must be { version, whenIdle? }' }), async (c) => {
       const { version: target } = c.req.valid('json');

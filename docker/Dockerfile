@@ -41,8 +41,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN corepack enable \
  && npm install -g --no-audit --no-fund n @anthropic-ai/claude-code @openai/codex
 
-COPY --from=build /out/*.tgz /tmp/cezar.tgz
-RUN npm install -g --no-audit --no-fund /tmp/cezar.tgz && rm /tmp/cezar.tgz
+# Tools installed from the cockpit's terminal land in the /data volume and survive a rebuild
+# (spec 2026-10-23 §4.6): `npm i -g` goes to /data/npm, a release binary to /data/bin. They come
+# first on PATH, so a /data install shadows an image one of the same name.
+ENV PATH=/data/bin:/data/npm/bin:$PATH \
+    NPM_CONFIG_PREFIX=/data/npm
 
 # Everything a container must not lose lives under /data: cezar's registry, the agents' logins,
 # git identity and SSH keys. /projects holds the repositories. Both are volumes.
@@ -73,7 +76,28 @@ RUN usermod -aG docker node \
 ENV CEZ_BROWSE_ROOT=/projects
 
 COPY docker/entrypoint.sh /usr/local/bin/cezar-entrypoint
-RUN chmod +x /usr/local/bin/cezar-entrypoint
+COPY docker/supervise.sh docker/image-install.sh docker/update-seed.sh /usr/local/lib/cezar/
+COPY docker/cezar-launcher.sh /usr/local/bin/cezar
+RUN chmod +x /usr/local/bin/cezar-entrypoint /usr/local/bin/cezar \
+ && ln -s cezar /usr/local/bin/cez
+
+# The supervisor loop in the entrypoint relaunches cezar after an update: it exits 75 instead of
+# re-exec'ing itself (restart.ts), and the container — its Docker daemon, the projects' services — stays up.
+ENV CEZ_SUPERVISED=1
+
+# What this image was built from (docs/docker.md § Updating): compose passes them from the
+# environment. Empty, the image is "a build of unknown age" and the cockpit's updater keeps
+# whatever it installed since. Last on purpose — they change on every commit.
+ARG CEZ_SOURCE_COMMIT=
+ARG CEZ_SOURCE_BRANCH=
+ARG CEZ_SOURCE_REMOTE=
+ARG CEZ_SOURCE_COMMITTED_AT=
+
+# The image's own cezar, in the managed layout's shape (spec 2026-10-23 §4.1): the entrypoint
+# links /opt/cezar/<version>+image into /data/cezar/versions, so the cockpit can update past it
+# and roll back to it. The `cezar` on PATH is a launcher of whatever `current` points at.
+COPY --from=build /out/*.tgz /tmp/cezar.tgz
+RUN sh /usr/local/lib/cezar/image-install.sh /tmp/cezar.tgz /opt/cezar && rm /tmp/cezar.tgz
 
 WORKDIR /projects
 EXPOSE 4321 8500-8519

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { currentEntry, activate, activeId, assertSafeId, detectInstallKind, installId, runsFromCheckout, listInstalled, versionDir, versionEntry, versionsDir, writeManifest } from './layout.ts';
+import { currentEntry, activate, activeId, assertSafeId, detectInstallKind, installId, runsFromCheckout, listInstalled, readManifest, versionDir, versionEntry, versionsDir, writeManifest } from './layout.ts';
 import { fetchPackageDocument, RegistryCache, registryPath } from './registry.ts';
 import { SelfUpdateService } from './service.ts';
 import { restartArgs } from './restart.ts';
@@ -62,6 +62,30 @@ describe('managed layout', () => {
     writeFileSync(entry, '// entry\n');
     writeManifest(id, { version, source, installedAt: new Date(Date.parse('2026-09-25T10:00:00Z') + (source === 'local' ? 1 : 0)).toISOString() }, env);
   };
+
+  it('cezar use <version> picks that release, never a build of the same version', async () => {
+    vi.stubEnv('CEZ_HOME', home);
+    const entry = versionEntry('0.17.0+abcd1234', env);
+    mkdirSync(join(entry, '..'), { recursive: true });
+    writeFileSync(entry, '// entry\n');
+    writeManifest('0.17.0+abcd1234', { version: '0.17.0', source: 'branch', installedAt: '2026-10-20T00:00:00Z' }, env);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const use = (id: string) => runSelfUpdateCommand('use', [id], { service: null as unknown as SelfUpdateService, modifyPath: false });
+    try {
+      expect(await use('0.17.0')).toBe(1);
+      expect(activeId(env)).toBeNull();
+      fakeInstall('0.17.0', '0.17.0', 'registry');
+      expect(await use('0.17.0')).toBe(0);
+      expect(activeId(env)).toBe('0.17.0');
+      expect(await use('0.17.0+abcd1234')).toBe(0);
+      expect(activeId(env)).toBe('0.17.0+abcd1234');
+    } finally {
+      errors.mockRestore();
+      log.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
 
   it('lists complete installs only and flips `current` atomically', () => {
     fakeInstall('0.11.0', '0.11.0', 'registry');
@@ -303,6 +327,38 @@ describe('update when idle', () => {
       expect(await runSelfUpdateCommand('update', [], { service: checkout, modifyPath: false })).toBe(0);
       expect(log.mock.calls.flat().join('\n')).toContain('already up to date');
       expect(activeId(env)).toBe('0.12.1');
+    } finally {
+      log.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  // The container's boot choice dates a commitless registry install by this (spec 2026-10-23 §4.2).
+  it('cezar update records the registry publish date, as the dialog\'s install does', async () => {
+    vi.stubEnv('CEZ_HOME', home);
+    const registry = (async () =>
+      new Response(
+        JSON.stringify({ 'dist-tags': { latest: '0.12.2' }, versions: { '0.12.2': {} }, time: { '0.12.2': '2026-10-01T00:00:00.000Z' } }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+    const service = new SelfUpdateService({
+      pkgName: '@open-mercato/cezar',
+      version: '0.12.0',
+      entry: join(home, 'versions', '0.12.0', 'node_modules', '@open-mercato', 'cezar', 'dist', 'index.js'),
+      restart,
+      env: { ...env, CEZ_UPDATE_CHANNEL: 'stable' },
+      registry: new RegistryCache('@open-mercato/cezar', registry),
+      runNpm: async (args) => {
+        const dist = join(args[args.indexOf('--prefix') + 1] ?? '', 'node_modules', '@open-mercato', 'cezar', 'dist');
+        mkdirSync(dist, { recursive: true });
+        writeFileSync(join(dist, 'index.js'), '// entry\n');
+      },
+    });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      expect(await runSelfUpdateCommand('update', [], { service, modifyPath: false })).toBe(0);
+      expect(activeId(env)).toBe('0.12.2');
+      expect(readManifest('0.12.2', env)).toMatchObject({ source: 'registry', publishedAt: '2026-10-01T00:00:00.000Z' });
     } finally {
       log.mockRestore();
       vi.unstubAllEnvs();

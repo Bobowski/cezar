@@ -41,6 +41,7 @@ const status: SelfUpdateStatus = {
   job: null,
   scheduled: null,
   activeRuns: 0,
+  channelEditable: true,
 }
 
 const development: SelfUpdateDevelopment = {
@@ -289,7 +290,125 @@ describe('SelfUpdateDialog', () => {
     })
   })
 
-  it('offers three channels, and development in place of the release picker', async () => {
+  describe('the branch channel', () => {
+    const branchStatus: Partial<SelfUpdateStatus> = {
+      channel: 'branch',
+      version: '0.17.0',
+      updateAvailable: '0.17.0+b2c3d4e5',
+      checkedAt: '2026-10-23T10:00:00.000Z',
+      installed: [
+        {
+          id: '0.17.0+a1b2c3d4',
+          version: '0.17.0',
+          source: 'branch',
+          installedAt: '2026-10-22T10:00:00.000Z',
+          active: true,
+          commit: { sha: 'a1b2c3d4e5f6', subject: 'feat: the old tip', at: '2026-10-22T09:00:00.000Z', branch: 'brutus' },
+        },
+        {
+          id: '0.16.0+image.e5f6a7b8',
+          version: '0.16.0',
+          source: 'image',
+          installedAt: '2026-10-20T10:00:00.000Z',
+          active: false,
+          commit: { sha: 'e5f6a7b8c9d0', subject: '', at: '2026-10-20T09:00:00.000Z', branch: 'brutus' },
+        },
+      ],
+      branch: {
+        remote: 'https://github.com/open-mercato/cezar.git',
+        branch: 'brutus',
+        running: { sha: 'a1b2c3d4e5f6', subject: 'feat: the old tip', at: '2026-10-22T09:00:00.000Z' },
+        tip: { sha: 'b2c3d4e5f6a7', subject: 'fix: the new tip', at: '2026-10-23T09:00:00.000Z' },
+        behind: 3,
+        fastForward: true,
+        touchesImage: [],
+        fetchedAt: '2026-10-23T10:00:00.000Z',
+      },
+    }
+
+    it('is the fourth toggle, and its panel replaces the release card and picker', async () => {
+      renderDialog(branchStatus)
+      const dialog = await screen.findByRole('dialog')
+      expect(screen.getAllByRole('radio').map((radio) => radio.textContent)).toEqual(['Stable', 'Nightly', 'Development', 'Branch'])
+      expect(screen.getByRole('radio', { name: 'Branch' }).getAttribute('aria-checked')).toBe('true')
+      const panel = dialog.querySelector('[data-slot="self-update-branch"]')
+      expect(panel?.textContent).toContain('brutus')
+      expect(panel?.textContent).toContain('3 commits behind')
+      expect(panel?.textContent).toContain('fix: the new tip')
+      expect(dialog.querySelector('[data-slot="self-update-latest"]')).toBeNull()
+      expect(dialog.querySelector('[data-slot="self-update-picker"]')).toBeNull()
+      expect(dialog.textContent).toContain('brutus · a1b2c3d4')
+    })
+
+    it('updates to the tip with one click', async () => {
+      applySelfUpdate.mockReset()
+      applySelfUpdate.mockResolvedValue({ ...status, ...branchStatus })
+      renderDialog(branchStatus)
+      fireEvent.click(await screen.findByRole('button', { name: 'Update' }))
+      await waitFor(() => expect(applySelfUpdate).toHaveBeenCalledTimes(1))
+      expect(applySelfUpdate.mock.calls[0]?.[0]).toBe('0.17.0+b2c3d4e5')
+    })
+
+    it('says up to date, and offers no update', async () => {
+      renderDialog({ ...branchStatus, updateAvailable: null, branch: { ...branchStatus.branch!, behind: 0, tip: branchStatus.branch!.running } })
+      const dialog = await screen.findByRole('dialog')
+      expect(dialog.querySelector('[data-slot="self-update-branch"]')?.textContent).toContain('Up to date')
+      expect(screen.queryByRole('button', { name: 'Update' })).toBeNull()
+    })
+
+    it('says when an image rebuild is also due, and when the branch was rewritten', async () => {
+      renderDialog({ ...branchStatus, branch: { ...branchStatus.branch!, touchesImage: ['docker/Dockerfile'], fastForward: false } })
+      const dialog = await screen.findByRole('dialog')
+      expect(dialog.querySelector('[data-slot="self-update-branch-image"]')?.textContent).toContain('docker/Dockerfile')
+      expect(dialog.querySelector('[data-slot="self-update-branch-rewritten"]')).toBeTruthy()
+    })
+
+    it('lists the builds on this machine by commit, for a rollback by hand', async () => {
+      applySelfUpdate.mockReset()
+      applySelfUpdate.mockResolvedValue({ ...status, ...branchStatus })
+      renderDialog(branchStatus)
+      const builds = (await screen.findByRole('dialog')).querySelector('[data-slot="self-update-branch-builds"]') as HTMLElement
+      expect(builds.textContent).toContain('feat: the old tip')
+      fireEvent.click(within(builds).getByRole('button', { name: 'Switch to 0.16.0+image.e5f6a7b8' }))
+      await waitFor(() => expect(applySelfUpdate.mock.calls[0]?.[0]).toBe('0.16.0+image.e5f6a7b8'))
+    })
+
+    it('asks for a branch when there is none to follow yet', async () => {
+      setSelfUpdateChannel.mockReset()
+      setSelfUpdateChannel.mockRejectedValueOnce(new Error('the branch channel needs a branch to follow'))
+      setSelfUpdateChannel.mockResolvedValueOnce({ ...status, ...branchStatus })
+      renderDialog()
+      fireEvent.click(await screen.findByRole('radio', { name: 'Branch' }))
+      const form = await waitFor(() => {
+        const found = document.querySelector('[data-slot="self-update-branch-form"]')
+        expect(found).toBeTruthy()
+        return found as HTMLElement
+      })
+      const follow = within(form).getByRole('button', { name: 'Follow' }) as HTMLButtonElement
+      fireEvent.change(within(form).getByRole('textbox', { name: 'Remote' }), { target: { value: 'file:///tmp/cezar' } })
+      fireEvent.change(within(form).getByRole('textbox', { name: 'Branch' }), { target: { value: 'brutus' } })
+      expect(follow.disabled).toBe(true)
+      fireEvent.change(within(form).getByRole('textbox', { name: 'Remote' }), { target: { value: 'https://github.com/open-mercato/cezar.git' } })
+      fireEvent.click(follow)
+      await waitFor(() => expect(setSelfUpdateChannel).toHaveBeenCalledTimes(2))
+      expect(setSelfUpdateChannel.mock.calls[1]).toEqual(['branch', { remote: 'https://github.com/open-mercato/cezar.git', branch: 'brutus' }])
+    })
+
+    it('locks the channel for a caller who is not a trusted operator', async () => {
+      renderDialog({ ...branchStatus, channelEditable: false })
+      await screen.findByRole('dialog')
+      for (const radio of screen.getAllByRole('radio')) expect((radio as HTMLButtonElement).disabled).toBe(true)
+      expect(screen.queryByRole('button', { name: 'Change' })).toBeNull()
+    })
+
+    it('reports a crash-on-boot rollback', async () => {
+      renderDialog({ ...branchStatus, rollback: { from: '0.17.0+b2c3d4e5', to: '0.17.0+a1b2c3d4', exitCode: 1, at: '2026-10-23T10:05:00.000Z' } })
+      const dialog = await screen.findByRole('dialog')
+      expect(dialog.querySelector('[data-slot="self-update-rollback"]')?.textContent).toContain('it exited with 1 within 30 s')
+    })
+  })
+
+  it('offers the channels, and development in place of the release picker', async () => {
     renderDialog({ channel: 'development' })
     const dialog = await screen.findByRole('dialog')
     expect(screen.getByRole('radio', { name: 'Development' }).getAttribute('aria-checked')).toBe('true')

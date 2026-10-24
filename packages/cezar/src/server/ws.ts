@@ -53,8 +53,15 @@ export interface TopicPublisher {
   snapshot(): Promise<unknown>;
   /** Subscriber count went 0→1: start producing. Call `publish` whenever the
    *  topic has news (every call is broadcast verbatim to all subscribers).
-   *  Returns the stop function, called at 1→0. */
-  start(publish: (data: unknown) => void): () => void;
+   *  Returns the stop function, called at 1→0. `demand` says who is listening right now. */
+  start(publish: (data: unknown) => void, demand: TopicDemand): () => void;
+}
+
+/** Who holds a running topic, re-read on every call. */
+export interface TopicDemand {
+  /** At least one subscriber is a TRUSTED connection — the cockpit itself, never a foreign local
+   *  page a `loopbackReadable` topic let in (see `WsUpgradeVerdict`). */
+  trusted(): boolean;
 }
 
 export interface TopicOptions {
@@ -165,9 +172,12 @@ export function createSocketHub(options: SocketHubOptions = {}): SocketHub {
     client.topics.add(topic);
     state.subscribers.add(ws);
     if (state.stop === null) {
-      state.stop = state.publisher.start((data) => {
-        for (const subscriber of state.subscribers) send(subscriber, { type: 'event', topic, data });
-      });
+      state.stop = state.publisher.start(
+        (data) => {
+          for (const subscriber of state.subscribers) send(subscriber, { type: 'event', topic, data });
+        },
+        { trusted: () => [...state.subscribers].some((subscriber) => clients.get(subscriber)?.trusted === true) },
+      );
     }
     // The immediate snapshot — async, so the socket or the subscription may be
     // gone by the time it resolves; both are re-checked. A failing snapshot is

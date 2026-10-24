@@ -68,11 +68,59 @@ automatically (see [reference → env files](reference.md)).
 
 | Volume | Holds | Lose it and… |
 | --- | --- | --- |
-| `data` → `/data` | cezar's registry and task history, the agents' logins, `gh` login, git identity, SSH keys | you log in again and re-add projects |
+| `data` → `/data` | cezar's registry and task history, the agents' logins, `gh` login, git identity, SSH keys, the cezar builds the cockpit updated to (`/data/cezar/versions`), tools you installed (`/data/bin`, `/data/npm`) | you log in again, re-add projects, and the image's own cezar runs |
 | `projects` → `/projects` | the repositories and their task worktrees | you clone again; anything not pushed is gone |
 | `docker` → `/var/lib/docker` | images and data of the projects' own services | they are pulled and seeded again |
 
-Upgrading is a rebuild: `docker compose -f docker/compose.yml up -d --build`. The volumes stay.
+A rebuild keeps the volumes: `docker compose -f docker/compose.yml up -d --build`. Updating
+cezar itself does not need one — see [Updating](#updating).
+
+## Updating
+
+The image follows the branch it was built from — so build it with its commit recorded (the
+compose file passes these four through; on a VPS, export them before every `--build` too):
+
+```bash
+export CEZ_SOURCE_COMMIT=$(git rev-parse HEAD) CEZ_SOURCE_BRANCH=$(git rev-parse --abbrev-ref HEAD) \
+       CEZ_SOURCE_REMOTE=https://github.com/open-mercato/cezar.git CEZ_SOURCE_COMMITTED_AT=$(git log -1 --format=%cI)
+docker compose -f docker/compose.yml up -d --build
+```
+
+Give `CEZ_SOURCE_REMOTE` as a plain URL — `https://…`, `ssh://…` or `git@…`, the repository you
+build from. Never paste `$(git remote get-url origin)` when that URL carries a token — anything
+before the host, `https://user:token@…` or a bare `https://ghp_…@…`: the updater refuses any
+`https://` remote with a `user@` in it (`isUpdateRemote`), the image records only the plain URL
+in `source.json`, but as a build arg the token is still baked into the image's history
+(`docker history`) for anyone who can pull it. A private repository is fetched with the
+container's `gh` login or `/data/ssh` instead.
+
+From then on the version chip lights up when that branch has new commits (one bounded
+`git fetch` at most every five minutes, only while a cockpit is open; `CEZ_SELF_UPDATE_CHECK=0`
+stops it). **Update** in the chip's dialog builds them inside the container (under `nice` — tasks
+keep running), installs the build beside the others in `/data/cezar/versions`, and once no task is
+running restarts **only the cezar process**: the container's Docker daemon and every project's
+services stay up, and boot recovery resumes the agents.
+
+- **A version that crashes on start is rolled back.** If it exits within 30 s of its first start after
+  an update — from the dialog, or `cezar update` followed by a restart — the entrypoint
+  switches back to the build that ran before and the dialog says so. The dialog also lists the
+  builds on disk, for switching back by hand.
+- **Some commits also need a rebuild.** When the pending commits change `docker/` (the
+  Dockerfile, compose files, the Caddyfile, the entrypoint), the dialog says so; the code update
+  still applies, and the rebuild is the same command as above, over ssh.
+- **After a rebuild the newer build wins.** The entrypoint compares the image's commit date with
+  the date of what runs now — its commit date, or for a release with no commit its registry
+  publish date, else when it was installed — starts the newer one, and logs both dates
+  (`docker compose logs cezar`). An image built without the four variables is of unknown age, so
+  what runs now stays.
+- **Which branch.** The dialog's **Branch** channel shows it and, for a signed-in operator, changes
+  it (`CEZ_UPDATE_BRANCH=<remote>#<branch>` sets it from the environment). A public repository
+  needs no credentials; a private one uses the container's `gh` login or `/data/ssh`.
+  From a shell, `docker compose -f docker/compose.yml exec -u node cezar cezar update` follows the
+  same branch (`--check` only reports). Always `-u node`: the launcher refuses `update`, `install`,
+  `use`, `link` and `serve` as root, which would leave a root-owned `/data/cezar/source` or `versions/` entry the server cannot
+  write. Nothing is saved on boot — `CEZ_UPDATE_*` and a rebuilt image's branch are followed until
+  you pick a channel in the dialog, which then wins.
 
 ## Security, plainly
 
@@ -155,7 +203,7 @@ Verified on the overlay (2026-10-21, `CEZ_DOMAIN=localhost`) unless marked **on 
 | HTTP | `308` to the same path on `https://<domain>` | `curl -I http://<domain>/x` |
 | Cockpit headers | HSTS, `frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff` | `curl -kI https://<domain>/` |
 | Sign-in throttling | `429` + `Retry-After` after five failures, forged `X-Forwarded-For` ignored | |
-| **On the box:** the address cezar records | your real IP, not a Docker gateway (`172.x.0.1`) | `docker compose … exec cezar tail /data/cezar/auth-audit.ndjson` after a sign-in from your phone. A gateway address means every client shares one throttle key, so a stranger's failures delay yours. |
+| **On the box:** the address cezar records | your real IP, not a Docker gateway (`172.x.0.1`) | `docker compose … exec -u node cezar tail /data/cezar/auth-audit.ndjson` after a sign-in from your phone. A gateway address means every client shares one throttle key, so a stranger's failures delay yours. |
 | Preview port without its cookie | `401`, also with a forged ticket | `curl -k https://<domain>:8500/` |
 | Preview targets | only loopback `http://`; never cezar, a pool port, another host | |
 | Cookies across preview ports | the app never receives `__Host-cez_session` and cannot overwrite it | |
@@ -182,8 +230,10 @@ What the box itself needs:
   Restore is the same `tar xzf` into the volume (tested: identical files, `0600` kept). For
   `projects` the backup is `git push` — anything not pushed lives only there. `docker` holds the
   projects' service data, which seeds rebuild.
-- **Upgrading** is `git pull` and `docker compose -f docker/compose.yml -f docker/compose.vps.yml up -d --build`.
-  The volumes survive it: accounts, logins, projects and task history stay.
+- **Updating** cezar is the cockpit's **Update** button ([Updating](#updating)) — no ssh. A
+  rebuild (`git pull`, then the build above with `-f docker/compose.vps.yml`) is only due when the
+  dialog says the commits change `docker/`. The volumes survive it: accounts, logins, projects and
+  task history stay.
 
 ## Limits
 
@@ -192,5 +242,8 @@ What the box itself needs:
   the backend in a second Browser tab to learn its gateway address and point the app at it.
 - The image ships Node 22. A project that pins another version can switch with `n auto` (reads
   `.nvmrc`) from the terminal, as root: `docker compose exec cezar n 20`.
-- Claude Code and Codex CLIs are preinstalled. Other agent CLIs can be installed with
-  `docker compose exec cezar npm i -g …`; they are gone after a rebuild.
+- Claude Code and Codex CLIs are preinstalled. Other tools install from the cockpit's terminal
+  and **survive a rebuild**: `npm i -g @railway/cli` lands in `/data/npm`, and a release binary
+  (the Stripe CLI, say) goes in `/data/bin`. Both come first on `PATH`, for agents too, so a
+  `/data` install shadows the image's own of the same name. System packages (`apt`) and the Node
+  major still need a Dockerfile change and a rebuild.

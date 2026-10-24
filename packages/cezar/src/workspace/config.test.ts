@@ -504,4 +504,13 @@ describe('workspace config', () => {
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('is corrupt'));
     });
   });
+
+  it('keeps the update-channel source marker only when it says user (spec 2026-10-23 §3.1)', async () => {
+    write({ updateChannel: 'branch', updateChannelSource: 'user' });
+    expect((await loadWorkspaceConfig()).updateChannelSource).toBe('user');
+    write({ updateChannel: 'branch', updateChannelSource: 'image' });
+    const config = await loadWorkspaceConfig();
+    expect(config.updateChannel).toBe('branch');
+    expect(config.updateChannelSource).toBeUndefined();
+  });
 });

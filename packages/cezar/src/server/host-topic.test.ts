@@ -128,7 +128,7 @@ describe('host topic + sampler (live-server path)', () => {
     const { topic } = build();
     const published: unknown[] = [];
 
-    const stop = topic.publisher.start((data) => published.push(data));
+    const stop = topic.publisher.start((data) => published.push(data), { trusted: () => true });
     expect(published).toHaveLength(0); // priming a baseline is not a frame
     vi.advanceTimersByTime(HOST_SAMPLE_INTERVAL_MS);
     expect(published).toHaveLength(1);

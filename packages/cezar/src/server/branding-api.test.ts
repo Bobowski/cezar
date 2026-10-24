@@ -143,9 +143,14 @@ describe('the cockpit branding API', () => {
       upload('favicon', square(48)),
       json('DELETE', '/api/v1/workspace/branding/favicon'),
       json('DELETE', '/api/v1/workspace/branding'),
+      // The settings route's older spelling of the same name.
+      json('PUT', '/api/v1/workspace/config', { branding: { name: 'Hijacked' } }),
+      json('PUT', '/api/v1/workspace/config', { branding: { name: null } }),
     ]) {
       expect((await response).status).toBe(409);
     }
     expect((await branding(apiRequest(app, '/api/v1/workspace/branding'))).name).toBe('cezar');
+    // The rest of the settings route is not this gate's business.
+    expect((await json('PUT', '/api/v1/workspace/config', { skillsAutoUpdate: false })).status).toBe(200);
   });
 });

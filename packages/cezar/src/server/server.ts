@@ -3959,6 +3959,8 @@ export function createApp(deps: ServerDeps) {
     .put('/workspace/config', jsonZodValidator(() => setWorkspaceConfigInputSchema), async (c) => {
       const parsed = { data: c.req.valid('json') };
       const { browseRoot, projectsDir, skillsAutoUpdate, composerDefaults, resources, agentDefaults, branding } = parsed.data;
+      // The brand name is the same write as `PUT /workspace/branding`, under the same gate.
+      if (branding !== undefined && !trustedOperator(process.env, bindHost)) return c.json({ error: BRANDING_WRITE_REFUSAL }, 409);
       for (const [configuredRoot, create] of [
         [browseRoot, false],
         [projectsDir, true],

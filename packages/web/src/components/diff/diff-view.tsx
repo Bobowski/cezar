@@ -1,5 +1,5 @@
 import { ChevronRightIcon } from 'lucide-react'
-import { useCallback, useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Virtualizer, type VirtualizerHandle } from 'virtua'
 
 import type { DiffStat } from '@open-mercato/cezar-api-client'
@@ -132,6 +132,7 @@ export function DiffView({
   onAddComment,
   onEditComment,
   onRemoveComment,
+  hunkActions,
   className,
 }: DiffProps) {
   const stat: DiffStat = useMemo(
@@ -439,6 +440,7 @@ export function DiffView({
   }
 
   return (
+    <HunkActionsContext.Provider value={hunkActions}>
     <LineCommentsContext.Provider value={commentsApi}>
     <div
       ref={(el) => {
@@ -492,8 +494,12 @@ export function DiffView({
       )}
     </div>
     </LineCommentsContext.Provider>
+    </HunkActionsContext.Provider>
   )
 }
+
+/** `DiffProps.hunkActions`, read by the hunk header rows deep in the file bodies. */
+const HunkActionsContext = createContext<DiffProps['hunkActions']>(undefined)
 
 /** Last slot's min-height, so a file jump can park even the last file under the header. Only
  *  for consumers that jump (`viewRef`); elsewhere it would be blank space after a short diff. */
@@ -979,10 +985,21 @@ const MARKER: Record<HunkLine['kind'], string> = { add: '+', del: '−', context
 /** What a `reveal` flashes: an inset accent ring, gone after a moment (see `flash`). */
 const FLASH = 'transition-shadow duration-500 data-[flash=true]:ring-2 data-[flash=true]:ring-inset data-[flash=true]:ring-primary'
 
-function HunkHeaderRow({ hunk }: { hunk: Hunk }) {
+function HunkHeaderRow({ hunk, path }: { hunk: Hunk; path: string }) {
+  const actions = useContext(HunkActionsContext)?.(path, hunk.header)
+  if (!actions) {
+    return (
+      <div data-slot="diff-hunk" className="bg-muted/40 px-4 py-0.5 whitespace-pre text-soft-foreground">
+        {hunk.header}
+      </div>
+    )
+  }
   return (
-    <div data-slot="diff-hunk" className="bg-muted/40 px-4 py-0.5 whitespace-pre text-soft-foreground">
-      {hunk.header}
+    <div data-slot="diff-hunk" className="flex items-center gap-2 bg-muted/40 py-0.5 pr-2 pl-4 text-soft-foreground">
+      <span className="min-w-0 flex-1 truncate whitespace-pre">{hunk.header}</span>
+      <span data-slot="diff-hunk-actions" className="flex shrink-0 items-center gap-1 font-sans">
+        {actions}
+      </span>
     </div>
   )
 }
@@ -1053,7 +1070,7 @@ function UnifiedRowView({
 }) {
   const comments = useLineComments()
   const fileLines = useContext(FileLinesContext)
-  if (row.type === 'hunk') return <HunkHeaderRow hunk={row.hunk} />
+  if (row.type === 'hunk') return <HunkHeaderRow hunk={row.hunk} path={path} />
   if (row.type === 'gap') return <GapRow gap={row.gap} onExpand={onExpand} />
   const { line } = row.cell
   const anchor = anchorForLine(path, line)
@@ -1101,7 +1118,7 @@ function SplitRowView({
   tokensFor: (line: HunkLine) => SynToken[] | null
   onExpand?: (gap: ContextGap) => void
 }) {
-  if (row.type === 'hunk') return <HunkHeaderRow hunk={row.hunk} />
+  if (row.type === 'hunk') return <HunkHeaderRow hunk={row.hunk} path={path} />
   if (row.type === 'gap') return <GapRow gap={row.gap} onExpand={onExpand} />
   const leftAnchor = row.left ? anchorForLine(path, row.left.line) : undefined
   const rightAnchor = row.right ? anchorForLine(path, row.right.line) : undefined

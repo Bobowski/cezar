@@ -21,11 +21,8 @@ import { StatusDot } from '@/components/status-dot'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
-  DropdownMenu,
-  DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
-  DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -45,6 +42,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { toast } from '@/components/ui/toaster'
 import { cn, isHttpUrl } from '@/lib/utils'
 
+import { useRepoRemotes } from '@/api/repo-git'
+
+import { BranchActionsMenu } from './branch-actions'
+import { RemotesBlock, remotesHaving } from './repo-remotes'
 import { useCloseSidebarSheet } from './repo-sidebar'
 
 /** Radix Select has no empty-string item: this stands for "no base branch configured". */
@@ -78,6 +79,12 @@ export function RepoBranchesSection({
 }) {
   const health = useHealth()
   const sync = useRepoSync()
+  const remotes = useRepoRemotes()
+  // `getBranches` folds `origin/x` into `x`: a name no local branch has is that remote's.
+  const localNames = new Set((sync.data?.branches ?? []).map((branch) => branch.name))
+  const isLocal = (name: string) => !sync.data || localNames.has(name) || name === info.branch
+  const remoteNames = (remotes.data?.remotes ?? []).map((remote) => remote.name)
+  const remoteName = (name: string) => (remoteNames.some((remote) => name.startsWith(`${remote}/`)) ? name : `origin/${name}`)
   const queryClient = useQueryClient()
   const onError = (error: Error) => toast(error.message, { tone: 'danger' })
 
@@ -265,6 +272,11 @@ export function RepoBranchesSection({
                           {name}
                         </span>
                         <BranchTrackingBadge name={name} sync={sync.data} />
+                        {remotesHaving(remotes.data, name).map((remote) => (
+                          <span key={remote} data-slot="branch-on-remote" className="shrink-0 font-mono text-[11px] text-soft-foreground">
+                            {remote}/
+                          </span>
+                        ))}
                         {current ? (
                           <Badge variant="outline" data-slot="branch-current" className="gap-1.5 font-normal">
                             <StatusDot tone="success" />
@@ -284,13 +296,20 @@ export function RepoBranchesSection({
                       </div>
                     </TableCell>
                     <TableCell className="pr-3 text-right">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
+                      <BranchActionsMenu
+                        target={{
+                          // A name only a remote has is acted on as `origin/<name>` (getBranches folds it).
+                          name: isLocal(name) ? name : remoteName(name),
+                          kind: isLocal(name) ? 'local' : 'remote',
+                          current,
+                        }}
+                        hideCheckout
+                        trigger={
                           <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${name}`}>
                             <MoreHorizontalIcon aria-hidden="true" />
                           </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
+                        }
+                      >
                           {heldAt ? null : (
                             <DropdownMenuItem
                               data-action="switch-branch"
@@ -314,8 +333,7 @@ export function RepoBranchesSection({
                             <CopyIcon aria-hidden="true" />
                             Copy name
                           </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                      </BranchActionsMenu>
                     </TableCell>
                   </TableRow>
                 )
@@ -355,6 +373,8 @@ export function RepoBranchesSection({
               </SelectContent>
             </Select>
           </PageSection>
+
+          <RemotesBlock />
 
           {health.data?.forge?.available ? <ForgePullRequests /> : null}
         </div>

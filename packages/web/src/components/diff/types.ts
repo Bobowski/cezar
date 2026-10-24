@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react'
+
 /**
  * The `<Diff>` facade contract (spec §"Session git view — Changes & Files tabs (#390)",
  * R5 Step 1.4). These props are OURS — consumers (Changes tab, repo view, commit diff view)
@@ -157,5 +159,11 @@ export interface DiffProps {
   /** Absent ⇒ saved comments offer no Edit. Return `false` to refuse, as above. */
   onEditComment?: (id: string, body: string) => boolean | void
   onRemoveComment?: (id: string) => void
+  /**
+   * Per-hunk controls on the hunk's `@@` header row (the Git page's Stage / Unstage / Discard,
+   * spec 2026-10-24-git-view §3.3), given the file and the header line as the patch printed it.
+   * Absent ⇒ the header is plain text. The fallback renderer has no hunk rows and ignores it.
+   */
+  hunkActions?: (path: string, header: string) => ReactNode
   className?: string
 }

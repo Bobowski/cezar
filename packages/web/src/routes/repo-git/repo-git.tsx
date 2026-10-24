@@ -12,6 +12,7 @@ import { RepoCommitsSection } from './repo-commits'
 import { RepoEmpty } from './repo-empty'
 import { RepoFilesSection } from './repo-files'
 import { RepoGitLoading } from './repo-git-loading'
+import { RepoGraphSection } from './repo-graph'
 import { RepoSidebarHeader, type RepoTab } from './repo-sidebar'
 import { RepoSyncBar } from './repo-sync-bar'
 
@@ -77,6 +78,8 @@ function RepoView({ repo, info, tab }: { repo: RepoResponse; info: RepoInfo; tab
     <Page data-route="repo-git" width="full">
       {tab === 'changes' ? (
         <RepoChangesSection header={header()} />
+      ) : tab === 'graph' ? (
+        <RepoGraphSection header={header()} />
       ) : tab === 'commits' ? (
         <RepoCommitsSection log={repo.log} header={header()} />
       ) : tab === 'files' ? (

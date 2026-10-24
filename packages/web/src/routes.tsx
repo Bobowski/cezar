@@ -464,6 +464,15 @@ export const AppRoutes = memo(function AppRoutes() {
             </Suspense>
           }
         />
+        {/* The commit graph (spec 2026-10-24-git-view §3.1). */}
+        <Route
+          path="git/graph"
+          element={
+            <Suspense fallback={<RepoGitLoading />}>
+              <RepoGitRoute tab="graph" />
+            </Suspense>
+          }
+        />
         <Route
           path="git/commits"
           element={

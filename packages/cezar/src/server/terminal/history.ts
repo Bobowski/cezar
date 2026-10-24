@@ -256,7 +256,39 @@ function shellWordEnd(text: string, start: number): number {
   return Math.min(index, text.length);
 }
 
-/** `line` with the value of every secret-named assignment replaced by `***`. */
+/** The quote open at `end` in `text`, and where it opened; null outside quotes. */
+function openQuote(text: string, end: number): { char: string; at: number } | null {
+  let open: { char: string; at: number } | null = null;
+  for (let index = 0; index < end; index += 1) {
+    const char = text[index]!;
+    if (open?.char === "'") {
+      if (char === "'") open = null;
+    } else if (char === '\\') {
+      index += 1;
+    } else if (open) {
+      if (char === '"') open = null;
+    } else if (char === '"' || char === "'") {
+      open = { char, at: index };
+    }
+  }
+  return open;
+}
+
+/** Where a value inside an open quote ends: at its closing quote, or — when the assignment sits
+ *  mid-argument (`-m "rotate API_KEY=old"`) — at the next space too; `&` always ends a form field. */
+function quotedValueEnd(text: string, start: number, quote: string, wholeArgument: boolean): number {
+  let index = start;
+  while (index < text.length) {
+    const char = text[index]!;
+    if (char === '\\' && quote === '"') index += 2;
+    else if (char === quote || char === '&' || (!wholeArgument && /\s/.test(char))) break;
+    else index += 1;
+  }
+  return Math.min(index, text.length);
+}
+
+/** `line` with the value of every secret-named assignment replaced by `***`; a quoted value
+ *  keeps its closing quote. */
 export function redactAssignments(line: string): string {
   const head = new RegExp(ASSIGNMENT.source, 'g');
   let out = '';
@@ -264,7 +296,9 @@ export function redactAssignments(line: string): string {
   for (let match = head.exec(line); match !== null; match = head.exec(line)) {
     const name = match[2]!;
     const start = match.index + match[0].length;
-    const end = shellWordEnd(line, start);
+    const nameStart = match.index + match[1]!.length;
+    const quote = openQuote(line, nameStart);
+    const end = quote === null ? shellWordEnd(line, start) : quotedValueEnd(line, start, quote.char, quote.at === nameStart - 1);
     const value = line.slice(start, end);
     // Already masked — `'…&key=***'` from a query, whose quote is the URL's, not this value's.
     if (value === '' || /^\*\*\*(?=$|["'])/.test(value) || !(SECRET_NAME_RE.test(name) || SECRET_NAME_PART.test(name))) continue;

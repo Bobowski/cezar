@@ -73,10 +73,18 @@ describe('history folding', () => {
 
   it('masks a secret-named `name=value` anywhere in a word: after a path, a colon, a quote or another `=`', () => {
     expect(historyLine('npm config set //reg.io/:_authToken=abc123')).toBe('npm config set //reg.io/:_authToken=***');
-    expect(historyLine('curl -d "password=hunter2" https://x')).not.toContain('hunter2');
-    expect(historyLine("curl -d 'client_secret=abc' https://x")).not.toContain('abc');
+    expect(historyLine('curl -d "password=hunter2" https://x')).toBe('curl -d "password=***" https://x');
+    expect(historyLine("curl -d 'client_secret=abc' https://x")).toBe("curl -d 'client_secret=***' https://x");
     expect(historyLine('docker run -e=API_KEY=abc img')).toBe('docker run -e=API_KEY=*** img');
     expect(historyLine('helm install x --set db/PASSWORD=abc')).toBe('helm install x --set db/PASSWORD=***');
+    // A masked value inside a quoted argument keeps the closing quote, and what follows it.
+    expect(historyLine('git commit -m "rotate API_KEY=old"')).toBe('git commit -m "rotate API_KEY=***"');
+    expect(historyLine('git commit -m "rotate API_KEY=old and TOKEN=x" && git push')).toBe('git commit -m "rotate API_KEY=*** and TOKEN=***" && git push');
+    expect(historyLine('docker run -e "API_KEY=a b" img')).toBe('docker run -e "API_KEY=***" img');
+    expect(historyLine('curl -d "user=me&password=x&next=/" https://x')).toBe('curl -d "user=me&password=***&next=/" https://x');
+    expect(historyLine('bash -c \'make && TOKEN=abc ./run\'')).toBe('bash -c \'make && TOKEN=*** ./run\'');
+    // One that IS the whole argument runs to its closing quote: `"API_KEY=a b"` is one value.
+    expect(historyLine('bash -c \'TOKEN=abc ./run\'')).toBe('bash -c \'TOKEN=***\'');
     // Ordinary names in the same places stay as typed.
     expect(historyLine('curl -d "name=me" https://x/a:page=2')).toBe('curl -d "name=me" https://x/a:page=2');
   });

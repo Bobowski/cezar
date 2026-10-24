@@ -10,6 +10,7 @@ import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import { compressor, decompressed, decrypted, encrypted, parseIdentity, WrongIdentityError } from './codec.ts';
 import { archiveHost, archiveStamp, backupManifestSchema, collectBackup, isSkippedDataEntry, projectFileQualifies, projectUntrackedFiles } from './collect.ts';
 import { npmFallbackCache } from '../self-update/installer.ts';
+import { restoreMarkerPath } from '../paths.ts';
 import { safeArchivePath } from './restore.ts';
 import { readTar, tarStream, type TarEntry, type TarSource } from './tar.ts';
 import { TEST_IDENTITY, TEST_RECIPIENT } from './age-vector.testkit.ts';
@@ -251,6 +252,11 @@ describe('what CEZ_HOME contributes', () => {
     expect(isSkippedDataEntry(basename(npmFallbackCache({ CEZ_HOME: '/data/home' })))).toBe(true);
     for (const name of ['npm-cache', 'cache', 'versions', 'bin', 'backups', '.restore-upload-x.age']) expect(isSkippedDataEntry(name), name).toBe(true);
     for (const name of ['config.json', 'auth.json', 'agent-accounts.json']) expect(isSkippedDataEntry(name), name).toBe(false);
+  });
+
+  it('leaves out the restore marker, consumed or not: it describes this host\'s last restore, not state', () => {
+    const marker = basename(restoreMarkerPath({ CEZ_HOME: '/data/home' }));
+    for (const name of [marker, `${marker}.consumed`]) expect(isSkippedDataEntry(name), name).toBe(true);
   });
 });
 

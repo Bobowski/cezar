@@ -383,7 +383,9 @@ async function mergeRunHistory(from: string, root: string, manifest: BackupManif
       let here = there === 'file' ? readJsonFile(destIndex) : [];
       if (!Array.isArray(here)) {
         // Unreadable here, so nothing to merge with — but it is set aside, never overwritten.
-        await rename(destIndex, `${destIndex}.before-restore`).catch(() => {});
+        // Named through `join(dataDir, …)` so data-gitignore.test.ts sees it.
+        const dataDir = dirname(destIndex);
+        await rename(destIndex, join(dataDir, 'runs.json.before-restore')).catch(() => {});
         log(`moved an unreadable ${destIndex} aside to runs.json.before-restore`);
         here = [];
       }

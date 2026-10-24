@@ -214,6 +214,23 @@ describe('a token’s view of a task', () => {
     expectProjected(rows[0]!, 'GET /runs');
   });
 
+  // Guard: passes with and without a change — a `CEZ:TITLE` declaration lands in `titleSummary`
+  // only (`applyTurnMarkers`), so `title` stays the user's own first line and survives projection.
+  it('a title the agent declared (titleOrigin marker) reaches a read token only as the user’s own title', async () => {
+    const run = store.createRun({ title: 'fix the build', workflow: 'quick-task', task: 'fix the build\nmore detail', steps: [] });
+    store.updateRun(run.id, { titleSummary: `declared ${SECRET}`, titleOrigin: 'marker' });
+    store.flush();
+    const read = seedToken(['read']);
+    for (const path of [`/api/v1/runs/${run.id}`, '/api/v1/p/boot/runs']) {
+      const body = (await (await request(path, read)).json()) as Record<string, unknown> | Array<Record<string, unknown>>;
+      const record = Array.isArray(body) ? body[0]! : body;
+      expect(JSON.stringify(body), path).not.toContain(SECRET);
+      expect(record, path).toMatchObject({ title: 'fix the build', titleOrigin: 'marker' });
+    }
+    const full = (await (await request(`/api/v1/runs/${run.id}`, seedToken(['read', 'runs.transcript']))).json()) as Record<string, unknown>;
+    expect(full.titleSummary).toBe(`declared ${SECRET}`);
+  });
+
   // Guard: passes with and without the fix — whoever sees transcripts keeps the whole record.
   it('answers the full record to the owner and to a token that sees transcripts', async () => {
     const id = seedRun();

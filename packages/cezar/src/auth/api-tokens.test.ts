@@ -251,7 +251,8 @@ const RUN_FREE_TEXT = [
   'workflowDef.graph.nodes[].message', 'workflowDef.graph.nodes[].title', 'workflowDef.graph.nodes[].body',
 ];
 
-/** What a projected task record keeps verbatim: the user's own task text and the tracker's title. */
+/** What a projected task record keeps verbatim: the user's own task text and the tracker's title.
+ *  An agent's `CEZ:TITLE` (titleOrigin `marker`) lands in `titleSummary`, never `title`. */
 const RUN_SURVIVES = ['title', 'task', 'trackerLinks[].title'];
 
 const READ_FREE_TEXT: Record<string, { from: FreeTextOrigin; fields: string[]; also?: { from: FreeTextOrigin; fields: string[] } }> = {

@@ -1,6 +1,7 @@
 import { mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { chatLivePath, chatMayWrite, chatProposalPath, type ChatProposal } from '@open-mercato/cezar-contract';
+import { proposalRisks } from './proposal-risks.ts';
 import { commitIndex, ignoredPaths, repoIndex, stagePaths, unstagePaths, type GitOk } from '../server/repo-git.ts';
 
 /**
@@ -175,13 +176,13 @@ function appliedContent(root: string, livePath: string, proposed: string): strin
   return livePath === AUTOMATIONS ? mergeAutomations(proposed, readText(join(root, livePath))) ?? proposed : proposed;
 }
 
-/** The chat's proposals as its Changes panel shows them: each live path with its diff. */
+/** The chat's proposals as its Changes panel shows them: each live path with its diff and risks. */
 export function listProposals(root: string, dataDir: string, chatId: string): ChatProposal[] {
   return proposalPaths(dataDir, chatId).map((path) => {
     const live = readText(join(root, path));
     const next = appliedContent(root, path, readProposal(dataDir, chatId, path) ?? '');
     const status = live === undefined ? 'added' : live === next ? 'unchanged' : 'modified';
-    return { path, status, diff: unifiedDiff(path, live, next) };
+    return { path, status, diff: unifiedDiff(path, live, next), risks: proposalRisks(path, next, live) };
   });
 }
 

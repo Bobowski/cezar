@@ -24,7 +24,7 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from '@/components/ui/toaster'
 import { statusTone } from '@/lib/automation-format'
-import { chatTasks, knownChats, projectChats, proposalOversized, workflowRisks } from '@/lib/chat'
+import { chatTasks, knownChats, projectChats, proposalOversized, riskLine } from '@/lib/chat'
 import { Link, useNavigate } from '@/lib/project-router'
 import { isUnread } from '@/lib/read-state'
 import { useQueryClient } from '@tanstack/react-query'
@@ -278,7 +278,7 @@ function ChatHeader({
  * The chat's Changes: what it PROPOSES (spec §3) — nothing it writes is live until the owner applies
  * it. Each file is a diff against the live one; Apply & commit copies them into place and commits
  * the repo files (refused while anything else is staged), Discard throws them away after a confirm.
- * Apply confirms too, naming the files and every command or push a workflow adds; an oversized diff
+ * Apply confirms too, naming the files and every risk the server read from the parsed proposals; an oversized diff
  * must be opened first, and it applies exactly the paths the owner saw.
  */
 export function ChatChanges({ chatId, turn }: { chatId: string; turn?: string }) {
@@ -294,7 +294,7 @@ export function ChatChanges({ chatId, turn }: { chatId: string; turn?: string })
   const listed = proposals.data?.proposals ?? []
   const files = listed.filter((file) => file.status !== 'unchanged')
   const unread = files.filter((file) => proposalOversized(file.diff) && !opened.has(file.path))
-  const risks = files.flatMap((file) => workflowRisks(file.path, file.diff).map((line) => ({ path: file.path, line })))
+  const risks = files.flatMap((file) => file.risks.map((risk) => ({ path: file.path, line: riskLine(risk) })))
   const apply = useRepoGitAction((paths: string[]) => applyChatProposals(chatId, { paths }))
   const discard = useRepoGitAction(() => discardChatProposals(chatId))
   const busy = apply.isPending || discard.isPending
@@ -348,7 +348,7 @@ export function ChatChanges({ chatId, turn }: { chatId: string; turn?: string })
               </ul>
               {risks.length > 0 ? (
                 <>
-                  <p className="font-medium text-danger">They run commands or push without you:</p>
+                  <p className="font-medium text-danger">Once applied, these run or reach out without you:</p>
                   <ul className="flex flex-col gap-0.5 font-mono">
                     {risks.map((risk, index) => (
                       <li key={`${risk.path}:${index}`} data-slot="chat-apply-risk" title={risk.path}>{risk.line}</li>

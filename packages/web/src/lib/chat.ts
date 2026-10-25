@@ -1,4 +1,4 @@
-import type { RunRecord } from '@open-mercato/cezar-api-client'
+import type { ChatProposalRisk, RunRecord } from '@open-mercato/cezar-api-client'
 
 /**
  * The cockpit chat on the client (spec 2026-10-24-cockpit-chat): a chat is a run with
@@ -39,13 +39,19 @@ export function proposalOversized(diff: string): boolean {
   return diff.includes('@@ too large to diff here @@') || diff.includes('… (diff truncated)') || diff.split('\n').length > LONG_DIFF_LINES
 }
 
-/** What a proposed workflow adds that runs or leaves the machine unattended: every `command`
- *  (step or check node) and every push, PR or webhook node, as the added diff lines read. */
-export function workflowRisks(path: string, diff: string): string[] {
-  if (!path.startsWith('.ai/cezar/workflows/')) return []
-  return diff
-    .split('\n')
-    .filter((line) => line.startsWith('+') && !line.startsWith('+++'))
-    .map((line) => line.slice(1).trim())
-    .filter((line) => /(^|[\s{,"'])command["']?\s*:/.test(line) || /\b(?:git\.push|pr\.create|notify\.webhook)\b/.test(line))
+/** How Apply's confirm names a risk the server read from the parsed proposal (spec §3). */
+const RISK_LABELS: Record<ChatProposalRisk['kind'], string> = {
+  command: 'runs',
+  push: 'pushes',
+  'pull-request': 'opens or edits a PR',
+  comment: 'comments',
+  webhook: 'calls a URL',
+  automation: 'automation',
+  persona: 'persona',
+  mcp: 'MCP server',
+  unreadable: 'unreadable',
+}
+
+export function riskLine(risk: ChatProposalRisk): string {
+  return `${RISK_LABELS[risk.kind]} · ${risk.detail}`
 }

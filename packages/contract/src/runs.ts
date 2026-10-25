@@ -202,6 +202,14 @@ export function chatLivePath(chatId: string, proposalPath: string): string | und
   return chatMayWrite(live) ? live : undefined;
 }
 
+/** What applying a proposal lets run or leave the machine without the owner (spec
+ *  2026-10-24-cockpit-chat §3) — read by the server from the PARSED file, never from diff text. */
+export const chatProposalRiskSchema = z.object({
+  kind: z.enum(['command', 'push', 'pull-request', 'comment', 'webhook', 'automation', 'persona', 'mcp', 'unreadable']),
+  detail: z.string(),
+});
+export type ChatProposalRisk = z.infer<typeof chatProposalRiskSchema>;
+
 /** One proposed file, as the chat's Changes panel shows it: the live path and its diff. */
 export const chatProposalSchema = z.object({
   /** The live path it would replace — one of {@link CHAT_WRITABLE}. */
@@ -209,6 +217,9 @@ export const chatProposalSchema = z.object({
   status: z.enum(['added', 'modified', 'unchanged']),
   /** A unified diff, live file → proposal (capped). */
   diff: z.string(),
+  /** Every command, push, PR, comment, webhook, automation change, persona tool and MCP server of
+   *  the file as it would be applied — whatever the (capped) diff shows. */
+  risks: z.array(chatProposalRiskSchema),
 });
 export type ChatProposal = z.infer<typeof chatProposalSchema>;
 export const chatProposalsResponseSchema = z.object({ proposals: z.array(chatProposalSchema) });

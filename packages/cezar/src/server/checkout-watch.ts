@@ -63,13 +63,14 @@ const MAX_STATTED = 500;
  * What the checkout's pending changes look like: `git status` plus each listed path's mtime and
  * size, so a second edit to an already-modified file moves it too. Null when git cannot answer.
  */
-export function statusFingerprint(root: string): Promise<string | null> {
+export function statusFingerprint(root: string, run: typeof execFile = execFile): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile(
+    run(
       'git',
       ['-C', root, 'status', '--porcelain=v1', '-z', '--untracked-files=all'],
-      { timeout: 5_000, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
-      (error, stdout) => {
+      // A look every 2 s must never take `index.lock` from under the agent's own `git add`.
+      { timeout: 5_000, maxBuffer: 4 * 1024 * 1024, windowsHide: true, encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } },
+      (error: Error | null, stdout: string) => {
         if (error) return resolve(null);
         const entries = stdout.split('\0').filter((entry) => entry.length > 3);
         const paths = entries.map((entry) => entry.slice(3)).filter((path) => !IGNORED.test(path)).slice(0, MAX_STATTED);

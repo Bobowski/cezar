@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -66,6 +66,17 @@ describe('statusFingerprint', () => {
     writeFileSync(join(root, 'index.html'), '<p>one, then two</p>');
     utimesSync(join(root, 'index.html'), new Date(), new Date(Date.now() + 5_000));
     expect(await statusFingerprint(root)).not.toBe(added);
+  });
+
+  it('looks without optional locks, so it never races the agent for index.lock', async () => {
+    let seen: { env?: NodeJS.ProcessEnv } | undefined;
+    const run = ((_file: string, _args: string[], options: { env?: NodeJS.ProcessEnv }, done: (error: Error | null, stdout: string) => void) => {
+      seen = options;
+      done(null, '');
+    }) as unknown as typeof execFile;
+    expect(await statusFingerprint('/repo', run)).not.toBeNull();
+    expect(seen?.env?.GIT_OPTIONAL_LOCKS).toBe('0');
+    expect(seen?.env?.PATH ?? seen?.env?.Path).toBe(process.env.PATH ?? process.env.Path);
   });
 
   it('is null outside a repository', async () => {

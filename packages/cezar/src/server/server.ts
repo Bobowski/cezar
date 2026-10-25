@@ -6143,10 +6143,12 @@ export function createApp(deps: ServerDeps) {
       if (result.kind === 'invalid' || result.kind === 'missing') {
         return c.json({ error: result.error }, 409);
       }
-      // A token reads only what the repository index reaches, as on /repo/files: a worktree-off
-      // run's directory IS the checkout, and a worktree carries the seeded gitignored layer.
+      // A token or a run (a chat, a task's CLI) reads only what the repository index reaches, as
+      // on /repo/files: a worktree-off run's directory IS the checkout, and a worktree carries the
+      // seeded gitignored layer. Only the owner browses ignored files.
       let indexed: string[] | undefined;
-      if (principalOf(c)?.kind === 'token') {
+      const caller = principalOf(c)?.kind;
+      if (caller === 'token' || caller === 'run') {
         const index = await listRepoPaths(workingDirectory, Number.MAX_SAFE_INTEGER);
         if (!index.ok) return c.json({ error: index.error }, 409);
         if (result.kind === 'file' && !index.paths.includes(result.path)) {

@@ -346,6 +346,27 @@ describe('cockpit chat API', () => {
     expect(existsSync(join(repoRoot, '.ai/cezar/workflows/e2e.yaml'))).toBe(false);
   });
 
+  it('a chat reads a run\'s files only where the repository index reaches: no ignored config, .env or seed', async () => {
+    gitInit();
+    writeFileSync(join(repoRoot, '.gitignore'), '.env\n');
+    writeFileSync(join(repoRoot, '.env'), 'OWNER_TOKEN=s3cret\n');
+    writeFileSync(join(repoRoot, '.ai/cezar/mcp.local.json'), '{"mcpServers":{"x":{"env":{"TOKEN":"s3cret"}}}}');
+    writeFileSync(join(repoRoot, '.ai/cezar/config.local.json'), '{"secret":"s3cret"}');
+    const chat = liveChat();
+    const read = (path: string, headers = chat.bearer) =>
+      apiRequest(app, `/api/v1/p/boot/runs/${chat.id}/files?path=${encodeURIComponent(path)}`, { headers });
+    for (const path of ['.env', '.ai/cezar/mcp.local.json', '.ai/cezar/config.local.json']) {
+      const res = await read(path);
+      expect(res.status, path).toBe(409);
+      expect(await res.text(), path).not.toContain('s3cret');
+    }
+    expect((await read('README.md')).status).toBe(200);
+    const root = (await (await read('')).json()) as { entries: Array<{ name: string }> };
+    expect(root.entries.map((entry) => entry.name)).not.toContain('.env');
+    // The owner still browses the whole worktree.
+    expect((await read('.env', {})).status).toBe(200);
+  });
+
   it('the chat token is refused the tracker link, transitions, the webhook, inbox deletes and services', async () => {
     const chat = liveChat();
     const call = (method: string, path: string, body?: unknown) =>

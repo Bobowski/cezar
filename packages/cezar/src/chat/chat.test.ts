@@ -89,6 +89,21 @@ describe('the chat\'s tool policy', () => {
     expect(disallowedTools).toContain('Read(.ai/cezar/worktrees/**)');
   });
 
+  it('reads no secrets or cezar state with its file tools: .env*, .ai/cezar beyond its five paths, ~/.cezar, .claude', () => {
+    const reads = disallowedTools.filter((rule) => rule.startsWith('Read('));
+    for (const rule of ['Read(./.env*)', 'Read(**/.env*)', 'Read(~/.cezar/**)', 'Read(./.claude/**)', 'Read(**/.claude/**)']) {
+      expect(reads).toContain(rule);
+    }
+    for (const path of [
+      '.ai/cezar/config.json', '.ai/cezar/config.local.json', '.ai/cezar/mcp.local.json', '.ai/cezar/runs/r1.ndjson',
+      '.ai/cezar/worktrees/r1/.env', '.ai/cezar/.gitignore',
+    ]) expect(reads.some((rule) => covers(rule, path)), path).toBe(true);
+    for (const path of [
+      '.ai/cezar/workflows/x.yaml', '.ai/cezar/skills/a.md', '.ai/cezar/agents/a.md', '.ai/cezar/automations.json',
+      '.ai/cezar/mcp.json', '.ai/cezar/proposals/c1/workflows/x.yaml', 'src/app.ts',
+    ]) expect(reads.some((rule) => covers(rule, path)), path).toBe(false);
+  });
+
   it('lists the checkout it launches in', () => {
     const root = mkdtempSync(join(tmpdir(), 'cez-chat-tree-'));
     try {

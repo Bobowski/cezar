@@ -33,10 +33,9 @@ const WRITE_TOOLS = ['Edit', 'Write', 'MultiEdit'] as const;
 const CHAT_DENIED_WHOLE_TOOLS = ['Bash', 'BashOutput', 'KillShell', 'WebFetch', 'WebSearch', 'Agent', 'Task', 'NotebookEdit'] as const;
 const ruleOf = (path: string) => (path.endsWith('/') ? `${path}**` : path);
 
-/** cezar's own state under `.ai/cezar/` — secrets, run state, other tasks' worktrees — never readable. */
-const CHAT_UNREADABLE = DATA_GITIGNORE_ENTRIES
-  .filter((entry) => !chatMayWrite(`.ai/cezar/${entry}`) && entry !== 'proposals/')
-  .map((entry) => `.ai/cezar/${ruleOf(entry)}`);
+/** Secrets a chat's file tools never read, wherever they sit: env files, cezar's per-user home and
+ *  the agent's own settings (hooks, allow rules). `.ai/cezar/` beyond its five paths is added per tree. */
+const CHAT_UNREADABLE = ['./.env*', '**/.env*', '~/.cezar/**', './.claude/**', '**/.claude/**'] as const;
 
 /** What a chat's tool policy is built from: the entries beside the path to its proposals. */
 export interface ChatTreeListing {
@@ -84,7 +83,13 @@ export function chatToolPolicy(chatId: string, tree: ChatTreeListing): { allowed
   // `./` anchors a top-level name: a bare `src` would also match `.ai/cezar/proposals/<id>/skills/src`.
   const anchored = (prefix: string, entries: readonly string[], keep: string) =>
     entries.filter((entry) => entry !== keep).map((entry) => (prefix ? `${prefix}${ruleOf(entry)}` : `./${ruleOf(entry)}`));
-  const known = ['config.json', '.gitignore', ...DATA_GITIGNORE_ENTRIES, ...CHAT_WRITABLE.map((path) => path.slice('.ai/cezar/'.length))];
+  const writable = CHAT_WRITABLE.map((path) => path.slice('.ai/cezar/'.length));
+  const known = ['config.json', '.gitignore', ...DATA_GITIGNORE_ENTRIES, ...writable];
+  // Everything in `.ai/cezar/` but its five paths and the proposals: config, run state, worktrees.
+  const deniedReads = [
+    ...CHAT_UNREADABLE,
+    ...anchored('.ai/cezar/', [...new Set([...known, ...tree.cezar])].filter((entry) => !writable.includes(entry)), 'proposals/'),
+  ];
   const deniedWrites = [...new Set([
     ...anchored('', tree.repo, '.ai/'),
     ...anchored('.ai/', tree.ai, 'cezar/'),
@@ -96,7 +101,7 @@ export function chatToolPolicy(chatId: string, tree: ChatTreeListing): { allowed
     disallowedTools: [
       ...CHAT_DENIED_WHOLE_TOOLS,
       ...WRITE_TOOLS.flatMap((tool) => deniedWrites.map((path) => `${tool}(${path})`)),
-      ...CHAT_UNREADABLE.map((path) => `Read(${path})`),
+      ...deniedReads.map((path) => `Read(${path})`),
     ],
   };
 }

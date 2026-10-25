@@ -109,7 +109,7 @@ it('expired topic handles dispose their registration and do not remove a later r
   const { read } = fixture();
   const remove = vi.fn();
   const register = vi.fn(() => remove);
-  const watches = new TrackerWatches({ driver: async () => ({ association, listIssues: read, searchItems: read, getItem: vi.fn() }) }, { registerTopic: register, attach() {}, close() {} });
+  const watches = new TrackerWatches({ driver: async () => ({ association, listIssues: read, searchItems: read, getItem: vi.fn() }) }, { registerTopic: register, attach() {}, holders: () => new Set(), close() {} });
   await watches.open(project, input);
   await vi.advanceTimersByTimeAsync(120_000);
   expect(remove).toHaveBeenCalledTimes(1);

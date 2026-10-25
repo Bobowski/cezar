@@ -89,7 +89,7 @@ export interface TopicOptions {
  * socket. It is how a connection ends with the sign-in session that opened it (spec
  * `2026-10-12-cockpit-authentication` §6) without the hub knowing what a session is.
  */
-export type WsUpgradeVerdict = false | { trusted: boolean; alive?: () => boolean };
+export type WsUpgradeVerdict = false | { trusted: boolean; alive?: () => boolean; account?: string };
 
 /** The minimal server surface `attach` needs — satisfied by the `http.Server`
  *  that `@hono/node-server`'s `serve()` returns. */
@@ -109,6 +109,9 @@ export interface SocketHub {
    *  its `trusted` flag decides which topics the connection may read. Boot-time
    *  wiring like `registerTopic`: attaching twice throws. */
   attach(server: UpgradeCapableServer, verifyUpgrade: (req: IncomingMessage) => WsUpgradeVerdict): void;
+  /** The accounts (`WsUpgradeVerdict.account`) of the trusted connections holding `topic` right
+   *  now — how push knows a cockpit tab is visible (spec 2026-10-24-mobile-cockpit §3.5). */
+  holders(topic: string): Set<string>;
   /** Stop publishers, terminate clients, clear timers. Idempotent; also runs
    *  on the attached server's own `close`. */
   close(): void;
@@ -132,6 +135,7 @@ interface ClientState {
   trusted: boolean;
   /** `WsUpgradeVerdict.alive` — absent for a connection nothing can revoke. */
   stillAllowed?: () => boolean;
+  account?: string;
 }
 
 export interface SocketHubOptions {
@@ -208,10 +212,10 @@ export function createSocketHub(options: SocketHubOptions = {}): SocketHub {
     clients.delete(ws);
   };
 
-  wss.on('connection', (ws: WebSocket, _req: IncomingMessage, trusted?: boolean, stillAllowed?: () => boolean) => {
+  wss.on('connection', (ws: WebSocket, _req: IncomingMessage, trusted?: boolean, stillAllowed?: () => boolean, account?: string) => {
     // `trusted` is emitted by `attach` from the upgrade verdict; default false is
     // the safe read for any path that reaches here without one.
-    const client: ClientState = { alive: true, topics: new Set(), trusted: trusted === true, stillAllowed };
+    const client: ClientState = { alive: true, topics: new Set(), trusted: trusted === true, stillAllowed, account };
     clients.set(ws, client);
     ws.on('pong', () => {
       client.alive = true;
@@ -282,7 +286,7 @@ export function createSocketHub(options: SocketHubOptions = {}): SocketHub {
         }
         // Carry the verdict's trust flag onto the connection — `subscribe` reads
         // it to gate non-`loopbackReadable` topics.
-        wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, verdict.trusted, verdict.alive));
+        wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, verdict.trusted, verdict.alive, verdict.account));
       });
       server.on('close', () => hub.close());
       heartbeat = setInterval(() => {
@@ -307,6 +311,15 @@ export function createSocketHub(options: SocketHubOptions = {}): SocketHub {
       }, heartbeatMs);
       // Never the reason the process stays up — the HTTP server owns lifetime.
       heartbeat.unref?.();
+    },
+
+    holders(topic) {
+      const accounts = new Set<string>();
+      for (const ws of topics.get(topic)?.subscribers ?? []) {
+        const client = clients.get(ws);
+        if (client?.trusted && client.account !== undefined) accounts.add(client.account);
+      }
+      return accounts;
     },
 
     close() {

@@ -4,6 +4,7 @@ import type { ServicesBadge } from '@/api/services'
 import {
   ArrowUpCircleIcon,
   CheckIcon,
+  ChevronLeftIcon,
   ChevronsUpDownIcon,
   FolderGit2Icon,
   FolderIcon,
@@ -313,6 +314,17 @@ function useDesktopShell(): 'macos' | 'windows' | 'linux' | null {
   return platform
 }
 
+/** The level a phone's back button goes up to: the nearest earlier crumb that is a different
+ *  page than this one (the project crumb and Tasks share a URL), or null at the top. */
+export function phoneBackCrumb(crumbs: readonly Crumb[], pathname: string): Crumb | null {
+  const here = pathname.replace(/\/+$/, '')
+  for (let index = crumbs.length - 2; index >= 0; index -= 1) {
+    const crumb = crumbs[index]!
+    if (crumb.to && crumb.to.replace(/\/+$/, '') !== here) return crumb
+  }
+  return null
+}
+
 /**
  * The panel's top bar: where you are, and the three things that are about the whole cockpit
  * rather than about the page — search, the tools status, nothing else. Page actions stay with
@@ -329,11 +341,22 @@ function TopBar({
    *  on desktop (the sheet still carries the areas on a phone). */
   hasContext: boolean
 }) {
+  const { pathname } = useLocation()
+  const back = phoneBackCrumb(crumbs, pathname)
   return (
     <header
       data-slot="top-bar"
       className="flex h-12 shrink-0 items-center gap-2 border-b border-border/70 px-3 pt-[env(safe-area-inset-top)]"
     >
+      {/* A phone shows one level at a time — Projects (the sheet) → Tasks → Thread — so the trail
+          collapses to its last crumb and this is the way back up (spec 2026-10-24-mobile-cockpit §3.1). */}
+      {back?.to ? (
+        <Button asChild variant="ghost" size="icon" className="size-8 text-muted-foreground md:hidden">
+          <RouterLink to={back.to} data-slot="phone-back" aria-label={`Back to ${back.label}`}>
+            <ChevronLeftIcon aria-hidden="true" />
+          </RouterLink>
+        </Button>
+      ) : null}
       <SidebarTrigger className={cn('size-8 text-muted-foreground', !hasContext && 'md:hidden')} />
       <Separator
         orientation="vertical"

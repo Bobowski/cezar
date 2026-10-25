@@ -17,6 +17,7 @@ import type {
 } from '@open-mercato/cezar-api-client'
 import { resetToasts, Toaster } from '@/components/ui/toaster'
 
+import { resetViewport, stubViewport } from '@/test/phone-viewport'
 import { readDraft, resetDraft, writeDraft } from './new-task-draft'
 import { NewTaskRoute } from './new-task'
 
@@ -351,6 +352,9 @@ const draftSource = (source: { source: 'skill' | 'workflow'; ref: string }) =>
  *  skill picked ("Add skill") and the workflow pill naming the plain `quick-task` it will run. */
 async function pillReady(label = 'Add skill') {
   await waitFor(() => {
+    // A phone keeps the skill pill behind More (spec 2026-10-24-mobile-cockpit §3.4).
+    const more = document.querySelector<HTMLElement>('[data-slot="new-task-more"][aria-expanded="false"]')
+    if (more) fireEvent.click(more)
     expect(sourceLabels()).toContain(label)
     expect(textarea().disabled).toBe(false)
   })
@@ -450,6 +454,37 @@ describe('the hero surface', () => {
     const body = postedBody() as { task: string; images?: unknown[] }
     expect(body.task).toBe('')
     expect(body.images).toHaveLength(1)
+  })
+})
+
+// ---- the phone composer (spec 2026-10-24-mobile-cockpit §3.4) ---------------------------------
+
+describe('/new at 375 px', () => {
+  afterEach(() => resetViewport())
+
+  it('is the text, the workflow and Start — everything else behind More', async () => {
+    stubViewport()
+    serve()
+    renderNewTask()
+    await waitFor(() => expect(textarea().disabled).toBe(false))
+    expect(workflowPill()).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Start task' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Choose a skill' })).toBeNull()
+    expect(document.querySelector('[data-slot="model-pill"]')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Run options' })).toBeNull()
+
+    fireEvent.click(document.querySelector('[data-slot="new-task-more"]')!)
+    expect(skillPill()).toBeTruthy()
+    expect(document.querySelector('[data-slot="model-pill"]')).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Run options' })).toBeTruthy()
+  })
+
+  it('a desktop keeps every picker in view and has no More', async () => {
+    serve()
+    renderNewTask()
+    await pillReady()
+    expect(document.querySelector('[data-slot="new-task-more"]')).toBeNull()
+    expect(document.querySelector('[data-slot="model-pill"]')).not.toBeNull()
   })
 })
 

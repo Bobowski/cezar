@@ -2,6 +2,7 @@ import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useCallback } from 'react'
 
 import { authQueryKeys, logout } from '@/api/auth'
+import { dropDevicePush } from '@/api/push'
 
 /**
  * Drop everything the signed-in cockpit cached, then re-ask who we are. `AuthGate` renders the
@@ -17,7 +18,9 @@ export function useSignOut(): () => void {
   const queryClient = useQueryClient()
   return useCallback(() => {
     // Even if the request fails the cookie may be gone; either way the session answer decides.
-    void logout()
+    // This device's push goes first, while its session can still delete its own row.
+    void dropDevicePush()
+      .then(() => logout())
       .catch(() => undefined)
       .then(() => resetToSession(queryClient))
   }, [queryClient])

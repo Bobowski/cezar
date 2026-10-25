@@ -249,6 +249,16 @@ export function authAuditPath(env: NodeJS.ProcessEnv = process.env): string {
   return join(cezarHomeDir(env), 'auth-audit.ndjson');
 }
 
+/** Web Push state (spec 2026-10-24-mobile-cockpit §3.5): the VAPID key pair, generated once,
+ *  and every device's subscription by account. Both `0600`. */
+export function pushVapidPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(cezarHomeDir(env), 'push-vapid.json');
+}
+
+export function pushSubscriptionsPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(cezarHomeDir(env), 'push-subscriptions.json');
+}
+
 /** The credential a shell on this host presents to its own cockpit (`cezar runs list`). */
 export function authHostKeyPath(env: NodeJS.ProcessEnv = process.env): string {
   return join(cezarHomeDir(env), 'auth-host.key');

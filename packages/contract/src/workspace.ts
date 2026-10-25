@@ -197,6 +197,164 @@ export const setBrandingImageInputSchema = z.object({
 }).strict();
 export type SetBrandingImageInput = z.infer<typeof setBrandingImageInputSchema>;
 
+// ---- Web Push (spec 2026-10-24-mobile-cockpit §3.5, §4) -------------------------------------
+
+/**
+ * `GET /api/v1/workspace/push` — whether this cockpit can push (a hosted origin; a local one cannot
+ * reach a browser's push service over HTTPS), the VAPID key a browser subscribes with, and whether
+ * THIS device (its sign-in session) holds a subscription. No free text: the cockpit says why.
+ */
+export const workspacePushStateSchema = z.object({
+  available: z.boolean(),
+  publicKey: z.string().nullable(),
+  subscribed: z.boolean(),
+  /** This device's subscription was refused by its push service (the VAPID key rotated): the
+   *  cockpit asks to re-enable push here. */
+  stale: z.boolean(),
+});
+export type WorkspacePushState = z.infer<typeof workspacePushStateSchema>;
+
+/** `GET /api/v1/workspace/push?device=` — the subscription id (sha-256 of the endpoint, 24 hex) of
+ *  the browser's own subscription: `subscribed` and `stale` then answer for that device alone,
+ *  which is the only way to tell two devices apart on a cockpit without sign-in. */
+export const workspacePushQuerySchema = z.object({
+  device: z.string().regex(/^[0-9a-f]{24}$/, 'not a subscription id').optional(),
+});
+export type WorkspacePushQuery = z.infer<typeof workspacePushQuerySchema>;
+
+const base64url = (min: number, max: number) => z.string().min(min).max(max).regex(/^[A-Za-z0-9_-]+=*$/, 'not base64url');
+
+const ipv4Parts = (host: string): number[] | null => {
+  const parts = host.split('.');
+  if (parts.length !== 4 || !parts.every((part) => /^(0|[1-9]\d{0,2})$/.test(part))) return null;
+  const numbers = parts.map(Number);
+  return numbers.every((n) => n <= 255) ? numbers : null;
+};
+
+/** Loopback, private, link-local, CGNAT, benchmarking (198.18/15), IETF protocol (192.0.0/24),
+ *  unspecified, multicast or broadcast. */
+const ipv4Internal = ([a = 0, b = 0, c = 0]: number[]): boolean =>
+  a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
+  (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || (a === 198 && (b === 18 || b === 19)) ||
+  (a === 192 && b === 0 && c === 0);
+
+/** The eight 16-bit groups of an IPv6 literal, or null when it is not one. */
+function ipv6Groups(text: string): number[] | null {
+  let host = text;
+  const tail: number[] = [];
+  const v4 = /:(\d+\.\d+\.\d+\.\d+)$/.exec(host);
+  if (v4) {
+    const parts = ipv4Parts(v4[1]!);
+    if (!parts) return null;
+    tail.push((parts[0]! << 8) | parts[1]!, (parts[2]! << 8) | parts[3]!);
+    host = host.slice(0, v4.index);
+    if (host.endsWith(':')) host += ':'; // `::a.b.c.d`
+  }
+  const halves = host.split('::');
+  if (halves.length > 2) return null;
+  const parse = (side: string) => (side === '' ? [] : side.split(':').map((g) => (/^[0-9a-f]{1,4}$/.test(g) ? parseInt(g, 16) : NaN)));
+  const head = parse(halves[0]!);
+  const rest = halves.length === 2 ? parse(halves[1]!) : [];
+  const fill = 8 - tail.length - head.length - rest.length;
+  if ([...head, ...rest].some(Number.isNaN) || fill < 0 || (halves.length === 1 && fill !== 0)) return null;
+  return [...head, ...Array<number>(fill).fill(0), ...rest, ...tail];
+}
+
+/** An IPv4 address carried in two IPv6 groups. */
+const embeddedV4Internal = (hi = 0, lo = 0): boolean => ipv4Internal([hi >> 8, hi & 0xff, lo >> 8, lo & 0xff]);
+
+/** Unspecified, loopback, unique-local, link-local, site-local, multicast, or an internal IPv4 inside
+ *  an IPv6 one: mapped, translated, compatible, NAT64 (`64:ff9b::/96`, `64:ff9b:1::/48`) or 6to4. */
+const ipv6Internal = (g: number[]): boolean => {
+  const first = g[0] ?? 0;
+  const zeros = (from: number, to: number) => g.slice(from, to).every((x) => x === 0);
+  return zeros(0, 8) || (zeros(0, 7) && g[7] === 1) ||
+    (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80 || (first & 0xffc0) === 0xfec0 || (first & 0xff00) === 0xff00 ||
+    (zeros(0, 5) && (g[5] === 0xffff || g[5] === 0) && embeddedV4Internal(g[6], g[7])) ||
+    (zeros(0, 4) && g[4] === 0xffff && g[5] === 0 && embeddedV4Internal(g[6], g[7])) ||
+    (first === 0x64 && g[1] === 0xff9b && zeros(2, 6) && embeddedV4Internal(g[6], g[7])) ||
+    (first === 0x64 && g[1] === 0xff9b && g[2] === 1) ||
+    (first === 0x2002 && embeddedV4Internal(g[1], g[2]));
+};
+
+const NOT_PUBLIC = 'a push endpoint is on a public host';
+
+/** The parts of a WHATWG `URL` this check reads; this package has no DOM or Node types, both runtimes have it. */
+interface ParsedEndpoint { protocol: string; username: string; password: string; hostname: string }
+function parseEndpoint(text: string): ParsedEndpoint | null {
+  const Url = (globalThis as unknown as { URL: new (input: string) => ParsedEndpoint }).URL;
+  try {
+    return new Url(text);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Why a push endpoint is refused, or null. The server POSTs to it, so it must be an https URL on
+ * a public host. The host judged is the one the URL parser connects to — after percent-decoding,
+ * IDNA mapping (fullwidth digits, punycode) and numeric IPv4 forms (`2130706433`, `0x7f.1`) — never
+ * the raw authority. A public name that resolves to a private address is not caught (spec
+ * 2026-10-24-mobile-cockpit §4).
+ */
+export function pushEndpointRefusal(endpoint: string): string | null {
+  const url = parseEndpoint(endpoint);
+  if (url === null || url.protocol !== 'https:') return 'a push endpoint is an https URL';
+  if (url.username !== '' || url.password !== '') return 'a push endpoint carries no credentials';
+  const host = url.hostname.toLowerCase().replace(/\.$/, '');
+  if (host.startsWith('[')) {
+    const groups = host.endsWith(']') ? ipv6Groups(host.slice(1, -1)) : null;
+    return groups === null || ipv6Internal(groups) ? NOT_PUBLIC : null;
+  }
+  // A runtime that left a name unmapped answers no for it rather than guessing.
+  if (host === '' || /[^a-z0-9._-]/.test(host)) return NOT_PUBLIC;
+  const v4 = ipv4Parts(host);
+  if (v4) return ipv4Internal(v4) ? NOT_PUBLIC : null;
+  const labels = host.split('.');
+  if (labels.some((label) => label === '') || /^(0x[0-9a-f]*|\d+)$/.test(labels.at(-1) ?? '')) return NOT_PUBLIC;
+  if (labels.length < 2 || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return NOT_PUBLIC;
+  return null;
+}
+
+/** `POST /api/v1/workspace/push/subscribe` — the browser's `PushSubscription.toJSON()`. */
+export const pushSubscribeInputSchema = z.object({
+  endpoint: z.string().max(2048).url().superRefine((value, ctx) => {
+    const refusal = pushEndpointRefusal(value);
+    if (refusal !== null) ctx.addIssue({ code: 'custom', message: refusal });
+  }),
+  expirationTime: z.number().nullable().optional(),
+  keys: z.object({ p256dh: base64url(80, 100), auth: base64url(16, 32) }),
+});
+export type PushSubscribeInput = z.infer<typeof pushSubscribeInputSchema>;
+
+/** `DELETE /api/v1/workspace/push/subscribe` — this device's subscription: the one with this
+ *  endpoint, or, without one, every subscription of this sign-in session. */
+export const pushUnsubscribeInputSchema = z.object({
+  endpoint: z.string().max(2048).optional(),
+}).strict();
+export type PushUnsubscribeInput = z.infer<typeof pushUnsubscribeInputSchema>;
+
+/** `POST /api/v1/workspace/push/presence` — a socket-less cockpit tab's beat: still visible, or hidden
+ *  now. `tab` tells one tab of an account from another; `device` (this browser's subscription id,
+ *  as `?device=` on the GET) keys the rate limit per browser where there is no sign-in session. */
+export const pushPresenceInputSchema = z.object({
+  visible: z.boolean(),
+  tab: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, 'a tab id is a token of at most 64 letters, digits, - or _'),
+  device: z.string().regex(/^[0-9a-f]{24}$/, 'not a subscription id').optional(),
+}).strict();
+export type PushPresenceInput = z.infer<typeof pushPresenceInputSchema>;
+export const pushPresenceResponseSchema = z.object({ ok: z.literal(true) });
+export type PushPresenceResponse = z.infer<typeof pushPresenceResponseSchema>;
+
+/** What a push message carries (§5): the task's title and its attention label, never a prompt. */
+export const pushPayloadSchema = z.object({
+  title: z.string(),
+  status: z.string(),
+  url: z.string(),
+  tag: z.string(),
+});
+export type PushPayload = z.infer<typeof pushPayloadSchema>;
+
 // ---- GUI prefs — the two open bags ----------------------------------------------------------
 
 /** Settings → Appearance: accent + density + reading width. ONE shape for both ui-state files. */

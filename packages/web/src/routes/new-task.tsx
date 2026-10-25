@@ -49,6 +49,7 @@ import type {
 import { Composer, type ComposerHandle } from '@/components/composer/composer'
 import { DispatchToggle } from '@/components/dispatch-toggle'
 import { PickerPill, RunnerPill, chevron, chipClass } from '@/components/picker-pill'
+import { useIsPhone } from '@/components/larger-screen-card'
 import { RepoSyncChip } from '@/components/repo-sync-chip'
 import { PromptTemplateMenu } from '@/components/prompt-template-menu'
 import { SourcePill } from '@/components/source-pill'
@@ -241,6 +242,9 @@ export function NewTaskRoute() {
   // icon trigger inserts one by hand at the caret, and a skill whose templates are assigned to it
   // applies them on selection — but only into a box the user has not typed in (`resolveAutoApply`).
   const composerRef = useRef<ComposerHandle>(null)
+  const phone = useIsPhone()
+  const [moreOpen, setMoreOpen] = useState(false)
+  const showAllPickers = !phone || moreOpen
   const templates = useMemo(
     () =>
       availablePromptTemplates(
@@ -657,16 +661,18 @@ export function NewTaskRoute() {
           footerStart={
             <>
               {/* Beside the paperclip: both ADD something to the prompt. */}
-              <PromptTemplateMenu
-                templates={templates}
-                iconOnly
-                onInsert={(text) => composerRef.current?.insertAtCaret(text)}
-              />
+              {showAllPickers ? (
+                <PromptTemplateMenu
+                  templates={templates}
+                  iconOnly
+                  onInsert={(text) => composerRef.current?.insertAtCaret(text)}
+                />
+              ) : null}
               {/* The three choices people change most, left to right: "in this project, run
                   this skill, with this agent and model". The project control renders only once
                   the workspace holds more than one project — with a single one it offers
                   nothing, the same rule the sidebar's project groups follow. */}
-              {projectList.length > 1 && urlProjectId !== undefined ? (
+              {showAllPickers && projectList.length > 1 && urlProjectId !== undefined ? (
                 <ProjectPill
                   projects={projectList}
                   projectId={urlProjectId}
@@ -707,6 +713,23 @@ export function NewTaskRoute() {
                 workflows={workflowList}
                 onPick={(next) => update({ source: next })}
               />
+              {/* A phone keeps the text, the workflow and Start in view; everything else — with
+                  the project's defaults until touched — is one tap away (spec
+                  2026-10-24-mobile-cockpit §3.4). */}
+              {phone ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  data-slot="new-task-more"
+                  aria-expanded={moreOpen}
+                  onClick={() => setMoreOpen((open) => !open)}
+                  className={cn(chipClass, 'border-transparent bg-transparent')}
+                >
+                  <SlidersHorizontalIcon aria-hidden="true" className="size-3.5 shrink-0" />
+                  {moreOpen ? 'Less' : 'More'}
+                </Button>
+              ) : null}
+              {showAllPickers ? (
               <SourcePill
                 only="skill"
                 source={source}
@@ -716,9 +739,10 @@ export function NewTaskRoute() {
                 workflows={workflowList}
                 onPick={(next) => update({ source: next })}
               />
+              ) : null}
               {/* Shown when there is a choice to make: more than one runner, or more than one
                   login for one of them. A host with neither sees no control, exactly as before. */}
-              {runners.length > 1 || runners.some((id) => hasAccountChoice(accountChoices, id)) ? (
+              {showAllPickers && (runners.length > 1 || runners.some((id) => hasAccountChoice(accountChoices, id))) ? (
                 <RunnerPill
                   runners={runners}
                   value={displayRunner}
@@ -740,6 +764,8 @@ export function NewTaskRoute() {
                   disabled={!providersReady}
                 />
               ) : null}
+              {showAllPickers ? (
+              <>
               <PickerPill
                 slot="model-pill"
                 ariaLabel="Model"
@@ -947,6 +973,8 @@ export function NewTaskRoute() {
                   </div>
                 </PopoverContent>
               </Popover>
+              </>
+              ) : null}
             </>
           }
           footerEnd={

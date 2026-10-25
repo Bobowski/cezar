@@ -72,13 +72,47 @@ speech. Drafts are the composer's existing ones.
 ## 4. API
 
 ```
-GET  /workspace/push                       → { available, publicKey, subscribed: boolean }
-POST /workspace/push/subscribe             PushSubscription JSON
-DELETE /workspace/push/subscribe
+GET    /workspace/push[?device=<id>]       → { available, publicKey, subscribed, stale }
+POST   /workspace/push/subscribe           PushSubscription JSON → the GET's shape
+DELETE /workspace/push/subscribe           { endpoint? } or no body → the GET's shape
+POST   /workspace/push/presence            { visible, tab } → { ok: true }
 ```
 
 Workspace-level, behind sign-in; the manifest at `/manifest.webmanifest` and the worker at
 `/sw.js` are served by `static-ui.ts` beside the shell. Contract in `workspace.ts`.
+
+- **Device.** A subscription's id is the first 24 hex of its endpoint's sha-256. The cockpit
+  names its own browser's subscription with `?device=`, so `subscribed` and `stale` answer for
+  that device alone. Without it, a signed-in caller's sign-in session names the device; on a
+  cockpit without sign-in (every caller is `owner`) nothing does, so `subscribed` is "any
+  device of the account" and `stale` is always false.
+- **`stale`.** The push service refused our VAPID key for this device's subscription (401/403:
+  the key pair was regenerated). It is never sent to again, and the setting asks to re-enable
+  push on that device — a hint per device, never hidden by another device's live row.
+  Re-enabling replaces the stale rows of the same sign-in session; without a session only the
+  endpoint itself is replaced, and the cockpit DELETEs the endpoint it dropped.
+- **Limits.** Ten subscriptions per account (a new one past that replaces the oldest); sixty
+  pushes per account an hour (past that a transition is dropped, not queued); twenty held pushes
+  per account, one per run. A direct send clears a held push with the same tag, so one run never
+  notifies twice.
+- **Presence.** A socket-less tab (hosted without cezar's sign-in) beats every 30 s while
+  visible, and once with `visible: false` when it hides; a beat holds push for 45 s. `tab` is a
+  token of 1–64 `[A-Za-z0-9_-]`; optional `device` is the browser's subscription id. Past four beats a minute from one tab, or twenty tabs a minute
+  from one caller (its sign-in session, else its `device`, else its account), the route answers 429 — a refused
+  beat only means push may hold a little longer.
+- **Endpoint rules.** An endpoint is an `https:` URL with no credentials, on a public host. The
+  host judged is the one the WHATWG URL parser yields — after percent-decoding, IDNA mapping
+  (fullwidth digits, punycode) and numeric IPv4 forms — never the raw authority: loopback,
+  private, link-local, CGNAT, multicast and unspecified IPv4; their IPv6 counterparts and an
+  internal IPv4 carried in a mapped, translated, compatible, NAT64 (`64:ff9b::/96`,
+  `64:ff9b:1::/48`) or 6to4 address; `localhost`, `*.localhost`, `*.local` and single-label
+  names are refused. A trailing dot is stripped before the check.
+- **Redirects.** The server POSTs with `redirect: 'error'`: a push service never redirects, so a
+  3xx is `failed` and its location is never contacted.
+- **Accepted limitation: DNS.** The check reads the name, not what it resolves to. A public
+  hostname whose DNS answer is a private address is not detected; pinning the resolved address
+  would need a resolver in the send path, and the POST carries only an encrypted payload the
+  target cannot read.
 
 ## 5. Security
 

@@ -33,6 +33,7 @@ function stubHub() {
       return () => { topics.delete(name); };
     },
     attach: () => undefined,
+    holders: () => new Set(),
     close: () => undefined,
   };
   return { hub, topics, registrations };

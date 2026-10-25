@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { setApiBaseUrl } from '@open-mercato/cezar-api-client'
 import { App } from './app'
+import { registerServiceWorker } from './lib/push'
 import './styles/index.css'
 
 /**
@@ -22,6 +23,9 @@ function resolveApiBase(): string {
 }
 
 setApiBaseUrl(resolveApiBase())
+// The PWA's worker (spec 2026-10-24-mobile-cockpit §3.5): hashed bundles for an instant open, and
+// push. Same-origin only — a cockpit pointed at a service elsewhere has no worker of its own there.
+if (resolveApiBase() === '') registerServiceWorker()
 
 const container = document.getElementById('root')
 if (!container) throw new Error('cezar: #root container is missing from index.html')

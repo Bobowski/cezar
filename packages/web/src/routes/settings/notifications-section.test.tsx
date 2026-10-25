@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 
 import { createQueryClient } from '@/api/query-client'
 import { NotificationsSection } from './notifications-section'
@@ -151,5 +151,78 @@ describe('the notifications section', () => {
     expect(
       document.querySelector('[data-slot="notifications-unsupported"]')?.textContent,
     ).toContain('does not support')
+  })
+})
+
+describe('This device: enable push (spec 2026-10-24-mobile-cockpit §3.5)', () => {
+  function servePush(push: { available: boolean; publicKey: string | null; subscribed: boolean; stale?: boolean }) {
+    requests = []
+    const json = (payload: unknown) =>
+      new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        const method = init?.method ?? 'GET'
+        requests.push({ method, url })
+        if (url === '/api/v1/workspace/ui-state') return json({})
+        if (url.split('?')[0] === '/api/v1/workspace/push' && method === 'GET') return json(push)
+        return new Promise<never>(() => {})
+      }),
+    )
+  }
+  const pushToggle = () => screen.getByRole('switch', { name: 'This device: enable push' })
+
+  it('a local cockpit says why push is not offered, and the switch stays off and disabled', async () => {
+    servePush({ available: false, publicKey: null, subscribed: false })
+    stubNotification('default')
+    renderSection()
+    await waitFor(() => expect(document.querySelector('[data-slot="push-unavailable"]')?.textContent).toContain('hosted cockpit served over HTTPS'))
+    expect(pushToggle().getAttribute('aria-checked')).toBe('false')
+    expect(pushToggle().hasAttribute('disabled')).toBe(true)
+  })
+
+  it('a hosted cockpit in a browser without push says so instead of offering a switch that cannot work', async () => {
+    servePush({ available: true, publicKey: 'BAAA', subscribed: false })
+    stubNotification('default')
+    renderSection()
+    await waitFor(() => expect(document.querySelector('[data-slot="push-unavailable"]')?.textContent).toContain('does not support push'))
+    expect(pushToggle().hasAttribute('disabled')).toBe(true)
+  })
+
+  it('a subscription the push service refused (the key rotated) asks to re-enable push here', async () => {
+    servePush({ available: true, publicKey: 'BAAA', subscribed: false, stale: true })
+    stubNotification('granted')
+    vi.stubGlobal('isSecureContext', true)
+    vi.stubGlobal('PushManager', function PushManager() {})
+    Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { getRegistration: async () => undefined } })
+    onTestFinished(() => {
+      delete (navigator as { serviceWorker?: unknown }).serviceWorker
+    })
+    renderSection()
+    await waitFor(() => expect(document.querySelector('[data-slot="push-stale"]')?.textContent).toContain('re-enable push on this device'))
+    expect(pushToggle().getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('asks about this browser\'s own subscription, so another device\'s rows cannot answer for it', async () => {
+    servePush({ available: true, publicKey: 'BAAA', subscribed: false, stale: true })
+    stubNotification('granted')
+    vi.stubGlobal('isSecureContext', true)
+    vi.stubGlobal('PushManager', function PushManager() {})
+    const registration = { pushManager: { getSubscription: async () => ({ endpoint: 'https://push.example.net/send/abc', options: {} }) } }
+    Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { getRegistration: async () => registration } })
+    onTestFinished(() => {
+      delete (navigator as { serviceWorker?: unknown }).serviceWorker
+    })
+    renderSection()
+    await waitFor(() => expect(requests.map((r) => r.url)).toContain('/api/v1/workspace/push?device=9d96ff1923c4a7d30d7aa60e'))
+  })
+
+  it('names every blocker in words', async () => {
+    const { devicePushBlocker } = await import('./notifications-section')
+    expect(devicePushBlocker({ available: true, support: 'ok' })).toBeNull()
+    expect(devicePushBlocker({ available: undefined, support: 'ok' })).toBeNull()
+    expect(devicePushBlocker({ available: true, support: 'insecure' })).toContain('HTTPS')
+    expect(devicePushBlocker({ available: false, support: 'ok' })).toContain('runs on this machine')
   })
 })

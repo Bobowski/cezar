@@ -41,6 +41,7 @@ import { useDraft } from './thread-draft'
 import { splitToolTitle, streakLabel, type ContextGroupBlock } from './thread-groups'
 import { diffTotals, toDiffFileChange } from './tool-diff'
 import { useThreadCardCache } from './thread-open-cards'
+import { useIsPhone } from '@/components/larger-screen-card'
 import { isNearBottom } from './thread-scroll'
 import { MessageTime, clockLabel, elapsedSince, exactLabel, useNow } from './thread-time'
 import type {
@@ -769,7 +770,9 @@ function CopyCommandButton({ command, className }: { command: string; className?
  *  no longer springs its red error body open on its own (it reads as calmer that way, and a
  *  recovered failure is not an emergency); its collapsed row still carries the `failed` label and
  *  exit code. The user's own toggle always wins once they touch the card. */
-function defaultOpen(item: UiToolItem): boolean {
+function defaultOpen(item: UiToolItem, phone = false): boolean {
+  // A phone shows every tool call closed, a tap away (spec 2026-10-24-mobile-cockpit §3.2).
+  if (phone) return false
   return item.toolKind === 'execute' && item.status === 'running' && item.output !== undefined
 }
 
@@ -817,7 +820,8 @@ export function ToolCard({
     (item.error !== undefined && item.error !== '') ||
     (item.diffs !== undefined && item.diffs.length > 0) ||
     nested.length > 0
-  const open = hasDetail && (userOpen ?? defaultOpen(item))
+  const phone = useIsPhone()
+  const open = hasDetail && (userOpen ?? defaultOpen(item, phone))
   const expandedCommand = open && showCommand ? command : undefined
   const row = variant === 'row'
   const failed = item.status === 'failed'

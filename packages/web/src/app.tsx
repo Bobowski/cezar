@@ -10,6 +10,7 @@ import { AppearanceProvider } from './components/appearance-provider'
 import { AuthGate } from './components/auth/auth-gate'
 import { LastLocationController } from './components/last-location-controller'
 import { ReferenceStatusRegistry } from './components/reference-status'
+import { PushPresence } from './components/push-presence'
 import { RunNotifications } from './components/run-notifications'
 import { StarPromo } from './components/star-promo'
 import { ThemeProvider } from './components/theme-provider'
@@ -50,6 +51,9 @@ export function App() {
               (and reconciliation refetches), turning attention transitions into browser
               notifications when the tab is hidden (R6 1.7). Renders nothing. */}
           <RunNotifications />
+          {/* The push half of the same rule (spec 2026-10-24-mobile-cockpit §3.5): while this page
+              is visible on a hosted cockpit, hold the `presence` topic so no push goes out. */}
+          <PushPresence />
           {/* And beside it for the same reason: the star ask's one-time toast watches the same
               run-list cache for the user's first successful run. Once per browser, ever, and
               silent when promos are off (`CEZ_NO_BANNER=1`). Renders nothing. */}

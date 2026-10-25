@@ -31,7 +31,7 @@ import { Button } from '@/components/ui/button'
 import { isHttpUrl } from '@/lib/utils'
 
 import type { DiffComments } from '../task-thread/diff-comments'
-import { runActionFlags } from '../task-thread/run-actions'
+import { isRunActive, runActionFlags } from '../task-thread/run-actions'
 import { useFinishRun } from '../task-thread/use-finish-run'
 import { useRunActions } from '../task-thread/use-run-actions'
 import { useRunGitStep } from './run-git-step'
@@ -219,7 +219,7 @@ export function PhoneReviewBar({ run, onRequestChanges }: { run: ApiRun; onReque
       <Button type="button" size="sm" variant="outline" data-slot="phone-request-changes" onClick={onRequestChanges}>
         <CornerUpLeftIcon aria-hidden="true" /> Request changes
       </Button>
-      <Button type="button" size="sm" variant="outline" data-slot="phone-commit-base" disabled={!run.worktreePath || busy} onClick={() => land.mutate()}>
+      <Button type="button" size="sm" variant="outline" data-slot="phone-commit-base" disabled={!run.worktreePath || busy || isRunActive(run.status)} onClick={() => land.mutate()}>
         <GitMergeIcon aria-hidden="true" /> Commit to base
       </Button>
       {prOpen ? (

@@ -42,7 +42,7 @@ import { findIconCandidates, readProjectIcon, removeProjectIcons, saveProjectIco
 import { brandingBody, brandingState, deriveBranding, readBrandingAsset, removeBranding, saveBranding, type BrandingState } from '../workspace/branding.ts';
 import { searchCheckout } from './code-search.ts';
 import { refreshRepoSync, watchRepoSync } from '../git-sync.ts';
-import { checkoutWatchSupported, watchCheckout } from './checkout-watch.ts';
+import { checkoutWatchSupported, pollCheckout, watchCheckout } from './checkout-watch.ts';
 import { ignoredAmong, rerenderTaskEnvFiles } from '../worktree-env.ts';
 import { projectTerminalOwner } from './terminal/sessions.ts';
 import { ProjectServices, type ServiceProject } from '../services/manager.ts';
@@ -9434,7 +9434,7 @@ export function createApp(deps: ServerDeps) {
   const codeWatchTopics = new Set<string>();
   /** Register (once) the bell for one checkout. The watcher lives only while it has a subscriber. */
   const codeWatchTopic = (projectId: string, tree: string, root: string): string | null => {
-    if (!deps.socketHub || !checkoutWatchSupported()) return null;
+    if (!deps.socketHub) return null;
     const topic = `code:${projectId}:${tree}`;
     if (!codeWatchTopics.has(topic)) {
       codeWatchTopics.add(topic);
@@ -9443,7 +9443,9 @@ export function createApp(deps: ServerDeps) {
         snapshot: async () => ({ version }),
         start: (publish) => {
           const ring = () => publish({ version: (version += 1) });
-          return ringable(topic, ring, watchCheckout(root, ring));
+          // Where a recursive watch is refused (Linux), a demand-driven `git status` poll rings
+          // instead — the task Preview's auto-reload rides this bell (cockpit-polish §3.2).
+          return ringable(topic, ring, checkoutWatchSupported() ? watchCheckout(root, ring) : pollCheckout(root, ring));
         },
       });
     }

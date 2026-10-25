@@ -4,6 +4,7 @@ import { readRunTerminal, resizeRunTerminal, writeRunTerminal } from '@/api/clie
 import { useHostTransport } from '@/api/host-usage'
 import { subscribeTopic } from '@/api/ws'
 import type { TerminalOutput, TerminalSession } from '@open-mercato/cezar-api-client'
+import { declineEscape, isFullscreenKey } from '@/components/fullscreen-region'
 import { attachTerminalLinks } from '@/components/terminal/attach-links'
 import { CompletionController, type CompletionSources, type CompletionView, type PromptState } from '@/components/terminal/completion'
 import { CompletionPopover, type PopoverPlace } from '@/components/terminal/completion-popover'
@@ -228,6 +229,15 @@ export function TerminalPane({
         if (event.type !== 'keydown') return true
         if (controller && !controller.key(event)) {
           event.preventDefault()
+          return false
+        }
+        // Full screen's keys (cockpit-polish §3.3): `false` lets them bubble to the region instead of
+        // xterm sending them to the PTY. Esc only where no program drew a screen of its own.
+        if (isFullscreenKey(event)) return false
+        if (
+          event.key === 'Escape' && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey &&
+          term.buffer.active.type !== 'alternate' && declineEscape(event, host)
+        ) {
           return false
         }
         if (!event.metaKey && !event.ctrlKey) return true

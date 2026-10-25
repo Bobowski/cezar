@@ -77,6 +77,21 @@ function targetRegion(): Region | null {
   return regions.size === 1 ? ([...regions][0] ?? null) : null
 }
 
+/** Esc events a shell or an editor saw and declined: they leave full screen after all. */
+const declined = new WeakSet<KeyboardEvent>()
+
+/**
+ * For a program that owns Esc (a shell, an editor) and did not want this one: when `node` is in
+ * the region holding the window, marks the event so it leaves full screen, and answers true —
+ * the caller then keeps the key from the program.
+ */
+export function declineEscape(event: KeyboardEvent, node: Node | null): boolean {
+  const active = [...regions].find((region) => region.active())
+  if (!active || !node || !active.element()?.contains(node)) return false
+  declined.add(event)
+  return true
+}
+
 function onKeyDown(event: KeyboardEvent) {
   if (isFullscreenKey(event)) {
     const region = targetRegion()
@@ -90,7 +105,7 @@ function onKeyDown(event: KeyboardEvent) {
   const active = [...regions].find((region) => region.active())
   if (!active) return
   if (document.querySelector(OPEN_OVERLAY)) return
-  if (event.target instanceof Element && event.target.closest(OWNS_ESCAPE)) return
+  if (!declined.has(event) && event.target instanceof Element && event.target.closest(OWNS_ESCAPE)) return
   active.set(false)
 }
 

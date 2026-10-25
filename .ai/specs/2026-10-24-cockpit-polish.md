@@ -118,7 +118,7 @@ Behaviour (§3):
 - ~~3.3 Full screen~~ — `FullscreenRegion` (`components/fullscreen-region.tsx`) on every
   workspace window (thread, Changes, Browser, …), the terminal drawer, Scripts, Docker and the
   Code page. A layout state only (no `requestFullscreen`, the Code page's included). `Esc` goes
-  first to open overlays, then a shell or an editor (`.xterm`, `.cm-editor`); `F11` stays the
+  first to open overlays, then a shell or an editor (`.xterm`, `.cm-editor`) — a shell hands F11 on, and Esc too unless a program holds the alternate screen; `F11` stays the
   browser's while focus is outside every region. Not built: the desktop shell's native
   full-screen mapping (Tauri side).
 - §8 left open: the e2e "a change in the worktree reloads a static preview once" (the unit

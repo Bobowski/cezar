@@ -97,8 +97,9 @@ export function BrowserView({
 }: {
   /**
    * The checkout behind the page (spec 2026-10-24-cockpit-polish §3.2). Given, the bar offers
-   * **Auto-reload** — on for a page with no working hot reload, off where the gateway saw one
-   * come up — and while it is on, a change on disk reloads the page once the changes settle.
+   * **Auto-reload** — on for a page with no working hot reload (or, locally, none that can be
+   * seen), off where one was seen — and while it is on, a change on disk reloads the page once
+   * the changes settle.
    */
   liveTree?: CodeTree
   state: BrowserState
@@ -495,12 +496,15 @@ export function BrowserView({
 
   /**
    * Live preview (cockpit-polish §3.2). `hmr` is what the preview gateway saw of this page's
-   * hot-reload socket 2 s after it loaded; null where nobody can tell (a page framed directly,
-   * or not asked yet). The user's own choice outlives a reload; the default follows `hmr`.
+   * hot-reload socket 2 s after it loaded — or, on a local cockpit that frames the page directly,
+   * what the frame's own document shows of a hot-reload client where same-origin lets it be read
+   * (`frameHmr`); null where nobody can tell. Unknown on a local loopback page counts as no hot
+   * reload (§6): Auto-reload starts on there. The user's own choice outlives a reload.
    */
   const [hmr, setHmr] = useState<PreviewHmrStatus['hmr'] | null>(null)
   const [autoChoice, setAutoChoice] = useState<boolean | null>(null)
-  const autoReload = autoChoice ?? (hmr === 'none' || hmr === 'blocked')
+  const unobservedLocal = hmr === null && !remoteLoopback && isLoopback(target)
+  const autoReload = autoChoice ?? (hmr === 'none' || hmr === 'blocked' || unobservedLocal)
   const live = liveTree !== undefined
   /** Moves with the checkout (`CheckoutChangesListener`, below), listened for only while it
    *  would reload something. */
@@ -538,7 +542,11 @@ export function BrowserView({
   }
   // Read by the frame's `load` handler, which is memoised on the tab state alone.
   const probeLoaded = useRef(() => {})
-  probeLoaded.current = () => probeHmr(gatewayOrigin)
+  probeLoaded.current = () => {
+    probeHmr(gatewayOrigin)
+    // Framed directly (a local cockpit): the page itself is the only witness.
+    if (live && gatewayOrigin === null && !remoteLoopback) setHmr(frameHmr(frameRef.current))
+  }
 
   // A change reloads the page once the checkout has been quiet for a moment.
   const armed = useRef(false)
@@ -1150,6 +1158,26 @@ export function designOrigin(url: string): string | null {
 }
 
 const DESIGN_HOSTS = /^(localhost|127\.0\.0\.1|\[::1\])$/i
+
+/**
+ * A directly framed page's hot-reload client, read from its own document (cockpit-polish §3.2):
+ * Vite's `/@vite/client`, Next's development `__NEXT_DATA__`, webpack-dev-server's client.
+ * `none` for a readable page with none of them; null for a cross-origin one nobody can read.
+ */
+export function frameHmr(frame: HTMLIFrameElement | null): PreviewHmrStatus['hmr'] | null {
+  try {
+    const win = frame?.contentWindow as (Window & Record<string, unknown>) | null | undefined
+    const doc = win?.document
+    if (!win || !doc) return null
+    if (doc.querySelector('script[src*="/@vite/client"]') || '__vite_plugin_react_preamble_installed__' in win) return 'connected'
+    if ((win.__NEXT_DATA__ as { buildId?: unknown } | undefined)?.buildId === 'development') return 'connected'
+    if ('__webpack_dev_server_client__' in win) return 'connected'
+    return 'none'
+  } catch {
+    // Cross-origin: the browser will not let anyone look.
+    return null
+  }
+}
 
 export function isLoopback(url: string): boolean {
   try {

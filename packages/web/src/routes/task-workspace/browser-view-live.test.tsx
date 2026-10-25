@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { BrowserView, HMR_PROBE_DELAY_MS, RELOAD_SETTLE_MS } from './browser-view'
+import { BrowserView, HMR_PROBE_DELAY_MS, RELOAD_SETTLE_MS, frameHmr } from './browser-view'
 
 /**
  * Live preview (spec `.ai/specs/2026-10-24-cockpit-polish.md` §3.2): Auto-reload follows what the
@@ -9,8 +9,10 @@ import { BrowserView, HMR_PROBE_DELAY_MS, RELOAD_SETTLE_MS } from './browser-vie
  * page ONCE, after the changes settle.
  */
 
+/** `preview: false` is a hosted cockpit (the gateway frames a loopback page); true, a local one. */
+const cockpit = vi.hoisted(() => ({ preview: false }))
 vi.mock('@/api/queries', () => ({
-  useHealth: () => ({ data: { capabilities: { preview: false, designMode: false } } }),
+  useHealth: () => ({ data: { capabilities: { preview: cockpit.preview, designMode: false } } }),
 }))
 const openPreviewGateway = vi.hoisted(() => vi.fn())
 vi.mock('@/api/client', () => ({ openDesignProxy: vi.fn(), openPreviewGateway }))
@@ -61,6 +63,7 @@ beforeEach(() => {
   bell.count = 0
   bell.onCount = null
   hmr = 'none'
+  cockpit.preview = false
   fetchSpy.mockClear()
   vi.stubGlobal('fetch', fetchSpy)
   let ticket = 0
@@ -146,5 +149,66 @@ describe('Auto-reload', () => {
     await probed()
     expect(screen.getByText(/server: \{ hmr:/).textContent).toContain('port: undefined')
     expect(toggle()?.getAttribute('aria-pressed')).toBe('true')
+  })
+})
+
+describe('Auto-reload on a local cockpit (the page framed directly)', () => {
+  beforeEach(() => {
+    cockpit.preview = true
+  })
+
+  /** A cross-origin page: the browser lets nobody read its document. */
+  const crossOrigin = () =>
+    Object.defineProperty(frame()!, 'contentWindow', {
+      configurable: true,
+      get: () => ({
+        get document(): Document {
+          throw new DOMException('Blocked a frame from accessing a cross-origin frame.', 'SecurityError')
+        },
+      }),
+    })
+
+  it('a loopback page whose hot reload nobody can see starts with Auto-reload on — one click turns it off', async () => {
+    renderLive()
+    await waitFor(() => expect(frame()).not.toBeNull())
+    crossOrigin()
+    await loaded()
+    expect(toggle()?.getAttribute('data-hmr')).toBe('unknown')
+    expect(toggle()?.getAttribute('aria-pressed')).toBe('true')
+    expect(bell.enabled).toBe(true)
+    await act(async () => {
+      vi.advanceTimersByTime(HMR_PROBE_DELAY_MS + 10)
+    })
+    // No gateway to ask.
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(openPreviewGateway).not.toHaveBeenCalled()
+    fireEvent.click(toggle()!)
+    expect(toggle()?.getAttribute('aria-pressed')).toBe('false')
+    expect(bell.enabled).toBe(false)
+  })
+
+  it('reads a same-origin page’s own hot-reload client: Vite’s is off, none is on', async () => {
+    renderLive()
+    await waitFor(() => expect(frame()).not.toBeNull())
+    const doc = frame()!.contentDocument!
+    const client = doc.createElement('script')
+    client.setAttribute('src', '/@vite/client')
+    if (!doc.documentElement) doc.appendChild(doc.createElement('html'))
+    doc.documentElement!.append(client)
+    await loaded()
+    expect(toggle()?.getAttribute('data-hmr')).toBe('connected')
+    expect(toggle()?.getAttribute('aria-pressed')).toBe('false')
+    client.remove()
+    act(() => {
+      frame()!.dispatchEvent(new Event('load'))
+    })
+    expect(toggle()?.getAttribute('data-hmr')).toBe('none')
+    expect(toggle()?.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('reads Next’s development build as hot reload', () => {
+    const fake = { contentWindow: { document: { querySelector: () => null }, __NEXT_DATA__: { buildId: 'development' } } }
+    expect(frameHmr(fake as unknown as HTMLIFrameElement)).toBe('connected')
+    expect(frameHmr(null)).toBeNull()
   })
 })

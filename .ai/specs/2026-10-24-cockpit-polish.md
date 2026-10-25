@@ -88,8 +88,9 @@ Nothing new crosses a boundary; the reload signal carries no file contents.
 
 ## 6. Zero config
 
-Auto-reload defaults on for non-HMR pages and off for HMR pages; both are a toggle on the
-column, not a setting.
+Auto-reload defaults on for non-HMR pages and off for HMR pages; a loopback page whose HMR
+nobody can observe (a local cockpit framing another origin) counts as non-HMR, so it starts on.
+Both are a toggle on the column, not a setting.
 
 ## 7. Checklist state
 
@@ -103,8 +104,13 @@ Behaviour (§3):
   checkout bell (`code:<project>:<run>`), which on Linux now rings from a demand-driven
   `git status` poll, and — for a cockpit without the socket (remote) — `GET /repo/watch?stamp=1`
   compared every 3 s while auto-reload is on. HMR detection is the gateway's upgrade log, read at
-  `/__cez_preview/hmr` on the gateway's own port. A page framed directly (a local cockpit) cannot
-  be observed, so there Auto-reload starts off and is one click away. New Browser columns open at
+  `/__cez_preview/hmr` on the gateway's own port; only an upgrade that looks like HMR
+  (`vite-hmr`/`vite-ping`, `__webpack_hmr`, `/_next/webpack-hmr`, `sockjs`, `/vite-hmr`) counts,
+  and the log is the slot's, not one viewer's. A page framed directly (a local cockpit) is read
+  for its own HMR client (`/@vite/client`, Next's development `__NEXT_DATA__`,
+  webpack-dev-server's client) where same-origin allows; a loopback page nobody can read starts
+  with Auto-reload ON (§6), one click to turn off. The poll mutes an untracked path that moved on
+  3 looks in a row for 5 min (a dev SQLite file, a log). New Browser columns open at
   the project's `browserColumn.width` (45 %), kept from the last divider drag.
 - ~~3.3 Full screen~~ — `FullscreenRegion` (`components/fullscreen-region.tsx`) on every
   workspace window (thread, Changes, Browser, …), the terminal drawer, Scripts, Docker and the

@@ -888,13 +888,6 @@ export function resolveExtraSystemPrompt(
   return override?.trim() || configDefault?.trim() || undefined;
 }
 
-/**
- * Joins the parts of one agent step's system prompt in fixed order — skill
- * body (most task-specific), then the run's extra prompt (user guidance, can
- * amend the skill), then the handoff contract (always last, never optional in
- * practice). Blank parts drop out; survivors join with the same `\n\n---\n\n`
- * divider the skill+handoff composition has always used.
- */
 /** The tool policy of one agent session — ONE helper for `runAgentStep` and `runContinuation`,
  *  so a read-only task or the chat (spec 2026-10-24-cockpit-chat) cannot get its tools at one
  *  site and the workflow's at the other. */
@@ -907,6 +900,13 @@ function sessionTools(
   return { allowedTools: step?.allowedTools ?? DEFAULT_ALLOWED_TOOLS, bashAllowlist: step?.bashAllowlist };
 }
 
+/**
+ * Joins the parts of one agent step's system prompt in fixed order — skill
+ * body (most task-specific), then the run's extra prompt (user guidance, can
+ * amend the skill), then the handoff contract (always last, never optional in
+ * practice). Blank parts drop out; survivors join with the same `\n\n---\n\n`
+ * divider the skill+handoff composition has always used.
+ */
 export function composeSystemPrompt(...parts: Array<string | undefined>): string {
   return parts
     .map((p) => p?.trim())

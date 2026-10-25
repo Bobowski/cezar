@@ -328,6 +328,18 @@ describe('the upgrade log behind HMR_STATUS_PATH (spec 2026-10-24-cockpit-polish
     expect(isHmrUpgrade(req('/live', 'graphql-ws'))).toBe(false);
   });
 
+  it('is the slot’s log, not a viewer’s: a second tab’s page load does not mask the first’s socket', async () => {
+    const first = await enter();
+    const second = await enter();
+    expect(second.origin).toBe(first.origin);
+    expect(second.cookie).not.toBe(first.cookie);
+    await page(first.origin, first.cookie);
+    await upgrade(first.origin, first.cookie);
+    await page(second.origin, second.cookie);
+    expect((await status(second.origin, second.cookie)).body).toEqual({ hmr: 'connected' });
+    expect((await status(first.origin, first.cookie)).body).toEqual({ hmr: 'connected' });
+  });
+
   it('reads the log', () => {
     expect(hmrStateOf({ viteClient: false, connected: false, failed: false }, 0)).toBe('none');
     expect(hmrStateOf({ viteClient: true, connected: false, failed: false }, 0)).toBe('blocked');

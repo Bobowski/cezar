@@ -112,14 +112,11 @@ interface Session {
   born: number;
   used: number;
   sockets: Set<Duplex>;
-  hmr: HmrLog;
-  /** The open sockets that are a dev server's hot reload (`isHmrUpgrade`), a subset of `sockets`. */
-  hmrSockets: Set<Duplex>;
 }
 
 /**
- * The upgrade log behind `HMR_STATUS_PATH` (spec 2026-10-24-cockpit-polish §3.2): since the
- * session's last page load, did a dev server's hot-reload socket come up through here, fail, or
+ * The slot's upgrade log behind `HMR_STATUS_PATH` (spec 2026-10-24-cockpit-polish §3.2): since the
+ * slot's last page load, in any tab, did a dev server's hot-reload socket come up here, fail, or
  * never come at all? Reset by every new document.
  */
 interface HmrLog {
@@ -209,6 +206,11 @@ interface Entry {
   sessions: Map<string, Session>;
   lastUsed: number;
   sockets: Set<Duplex>;
+  /** The slot's upgrade log, not a viewer's: a second tab's page load cannot mask the first's
+   *  hot-reload socket. */
+  hmr: HmrLog;
+  /** The open sockets that are a dev server's hot reload (`isHmrUpgrade`), a subset of `sockets`. */
+  hmrSockets: Set<Duplex>;
 }
 
 export { parsePreviewPorts } from './ports.ts';
@@ -386,6 +388,8 @@ export class PreviewGateways {
         sessions: new Map(),
         lastUsed: Date.now(),
         sockets: new Set(),
+        hmr: freshHmrLog(),
+        hmrSockets: new Set(),
       };
       server.on('request', (req, res) => this.handle(entry, req, res));
       server.on('upgrade', (req, socket, head) => this.upgrade(entry, req, socket, head));
@@ -472,7 +476,7 @@ export class PreviewGateways {
       this.endSession(entry, victim![0]);
     }
     const key = randomBytes(32).toString('base64url');
-    entry.sessions.set(key, { born: Date.now(), used: Date.now(), sockets: new Set(), hmr: freshHmrLog(), hmrSockets: new Set() });
+    entry.sessions.set(key, { born: Date.now(), used: Date.now(), sockets: new Set() });
     return key;
   }
 
@@ -547,12 +551,12 @@ export class PreviewGateways {
           'access-control-allow-credentials': 'true',
           vary: 'origin',
         })
-        .end(JSON.stringify({ hmr: hmrStateOf(session.hmr, session.hmrSockets.size) }));
+        .end(JSON.stringify({ hmr: hmrStateOf(entry.hmr, entry.hmrSockets.size) }));
       return;
     }
     if (session) {
-      if (isDocumentRequest(req)) session.hmr = freshHmrLog();
-      else if (path.endsWith('/@vite/client')) session.hmr.viteClient = true;
+      if (isDocumentRequest(req)) entry.hmr = freshHmrLog();
+      else if (path.endsWith('/@vite/client')) entry.hmr.viteClient = true;
     }
 
     if (entry.design && req.method === 'GET' && path === PICKER_PATH) {
@@ -628,11 +632,11 @@ export class PreviewGateways {
     // Only a hot-reload socket is logged: the app's own WebSocket says nothing about HMR.
     const hmr = isHmrUpgrade(req);
     let answered = false;
-    const log = session.hmr;
+    const log = entry.hmr;
     const release = () => {
       if (!answered && hmr) log.failed = true;
       answered = true;
-      session.hmrSockets.delete(socket);
+      entry.hmrSockets.delete(socket);
       // The idle window starts when the socket that held it off closes (§4.4).
       if (session.sockets.delete(socket)) session.used = Date.now();
       entry.sockets.delete(socket);
@@ -664,7 +668,7 @@ export class PreviewGateways {
         answered = true;
         if (hmr && /^HTTP\/\d(\.\d)? 101\b/.test(head)) {
           log.connected = true;
-          session.hmrSockets.add(socket);
+          entry.hmrSockets.add(socket);
         } else if (hmr) log.failed = true;
         const lines = head.split('\r\n').flatMap((line, index) => {
           const colon = line.indexOf(':');

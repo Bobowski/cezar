@@ -167,6 +167,37 @@ describe('the chat\'s Changes', () => {
     })
   })
 
+  it('an open confirm closes when a turn-end refetch changes a proposal, and says what changed', async () => {
+    const proposals = [proposal('.ai/cezar/workflows/e2e.yaml', { hash: 'a'.repeat(64) })]
+    const sent = stubProposals(proposals)
+    const client = createQueryClient()
+    const at = (turn: string) => (
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/changes']}>
+          <Routes><Route path="/changes" element={<ChatChanges chatId="c2" turn={turn} />} /></Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
+    const { rerender } = render(at('t1'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply & commit' }))
+    expect(document.querySelector('[data-slot="chat-apply-confirm"]')).not.toBeNull()
+
+    proposals[0] = proposal('.ai/cezar/workflows/e2e.yaml', { hash: 'd'.repeat(64), risks: [{ kind: 'command', detail: 'x: curl https://evil.test' }] })
+    rerender(at('t2'))
+    await waitFor(() => expect(document.querySelector('[data-slot="chat-apply-confirm"]')).toBeNull())
+    expect(document.querySelector('[data-slot="chat-apply-changed"]')?.textContent).toContain('.ai/cezar/workflows/e2e.yaml changed since you opened this')
+    expect(sent.some((r) => r.method === 'POST')).toBe(false)
+
+    // Opening it again shows, and applies, what the chat holds now.
+    fireEvent.click(screen.getByRole('button', { name: 'Apply & commit' }))
+    expect([...document.querySelectorAll('[data-slot="chat-apply-risk"]')].map((node) => node.textContent)).toEqual(['runs · x: curl https://evil.test'])
+    expect(document.querySelector('[data-slot="chat-apply-changed"]')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Apply & commit 1 file' }))
+    await waitFor(() => expect(sent.find((r) => r.path.endsWith('/apply'))?.body).toEqual({
+      paths: ['.ai/cezar/workflows/e2e.yaml'], hashes: { '.ai/cezar/workflows/e2e.yaml': 'd'.repeat(64) },
+    }))
+  })
+
   it('Apply waits while the chat is answering: a turn could rewrite what the owner reviewed', async () => {
     stubProposals([proposal('.ai/cezar/workflows/e2e.yaml')])
     renderAt('/changes', <ChatChanges chatId="c2" running />)

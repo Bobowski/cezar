@@ -280,7 +280,7 @@ function ChatHeader({
  * the repo files (refused while anything else is staged), Discard throws them away after a confirm.
  * Apply confirms too, naming the files and every risk the server read from the parsed proposals; an
  * oversized diff must be opened first, a proposal over the size cap cannot be applied, and it
- * applies exactly the paths the owner saw.
+ * applies exactly the paths the owner saw — a refetch that changes one closes the confirm and says so.
  */
 export function ChatChanges({ chatId, turn, running = false }: { chatId: string; turn?: string; running?: boolean }) {
   const proposals = useChatProposals(chatId)
@@ -290,11 +290,21 @@ export function ChatChanges({ chatId, turn, running = false }: { chatId: string;
     void queryClient.invalidateQueries({ queryKey: repoGitKeys.proposals(chatId) })
   }, [queryClient, chatId, turn])
   const [confirming, setConfirming] = useState(false)
-  const [confirmingApply, setConfirmingApply] = useState(false)
-  const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set())
+  // The hashes the Apply confirm opened on; a refetch that changes any of them closes it.
+  const [confirmedOn, setConfirmedOn] = useState<ReadonlyMap<string, string> | null>(null)
+  // A diff counts as opened only at the hash it was opened at.
+  const [opened, setOpened] = useState<ReadonlyMap<string, string>>(() => new Map())
   const listed = proposals.data?.proposals ?? []
   const files = listed.filter((file) => file.status !== 'unchanged')
-  const unread = files.filter((file) => proposalOversized(file.diff) && !opened.has(file.path))
+  const changedSince = confirmedOn
+    ? [...new Set([...confirmedOn.keys(), ...listed.map((file) => file.path)])].filter(
+        (path) => confirmedOn.get(path) !== listed.find((file) => file.path === path)?.hash,
+      )
+    : []
+  const confirmingApply = confirmedOn !== null && changedSince.length === 0
+  const setConfirmingApply = (open: boolean) =>
+    setConfirmedOn(open ? new Map(listed.map((file) => [file.path, file.hash])) : null)
+  const unread = files.filter((file) => proposalOversized(file.diff) && opened.get(file.path) !== file.hash)
   const tooLarge = files.filter((file) => file.tooLarge)
   // A running turn may rewrite a proposal under the confirm; the hashes catch what slips past.
   const blocked = running || unread.length > 0 || tooLarge.length > 0
@@ -326,7 +336,7 @@ export function ChatChanges({ chatId, turn, running = false }: { chatId: string;
                 <details
                   onToggle={(event) => {
                     if (!event.currentTarget.open) return
-                    setOpened((current) => (current.has(file.path) ? current : new Set([...current, file.path])))
+                    setOpened((current) => (current.get(file.path) === file.hash ? current : new Map([...current, [file.path, file.hash]])))
                   }}
                 >
                   <summary className="flex cursor-pointer items-center gap-2 font-mono text-xs">
@@ -353,6 +363,11 @@ export function ChatChanges({ chatId, turn, running = false }: { chatId: string;
           {running ? (
             <p data-slot="chat-apply-running" className="text-xs text-muted-foreground">
               The chat is answering: Apply waits for its turn to end, so you apply what you reviewed.
+            </p>
+          ) : null}
+          {changedSince.length > 0 ? (
+            <p data-slot="chat-apply-changed" className="text-xs text-danger">
+              {changedSince.join(', ')} changed since you opened this — review it and apply again.
             </p>
           ) : null}
           {confirmingApply ? (

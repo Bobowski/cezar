@@ -84,6 +84,19 @@ describe('the agents routes', () => {
     expect(existsSync(agentsDir())).toBe(false);
   });
 
+  it("never overwrites another persona's file: x.md that names itself z is z's, not x's", async () => {
+    mkdirSync(agentsDir(), { recursive: true });
+    const theirs = '---\nname: z\n---\nI am z.\n';
+    writeFileSync(join(agentsDir(), 'x.md'), theirs);
+    const res = await put('x', '---\nname: x\n---\nI am x.\n');
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/x\.md already holds the "z" persona/);
+    expect(readFileSync(join(agentsDir(), 'x.md'), 'utf8')).toBe(theirs);
+    // z itself still saves to its own file.
+    expect((await put('z', '---\nname: z\n---\nStill z.\n')).status).toBe(200);
+    expect(readFileSync(join(agentsDir(), 'x.md'), 'utf8')).toBe('---\nname: z\n---\nStill z.\n');
+  });
+
   it('400s a name that is not a file stem', async () => {
     expect((await put('..%2Fevil', 'x')).status).toBe(400);
   });

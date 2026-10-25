@@ -4322,8 +4322,14 @@ export function createApp(deps: ServerDeps) {
       const { markdown } = c.req.valid('json');
       const root = c.get('project').root;
       // An existing project persona keeps its file even when its name is not its file name.
-      const existing = (await loadPersonas(root)).personas.find((p) => p.name === name && p.source === 'project');
+      const { personas: known } = await loadPersonas(root);
+      const existing = known.find((p) => p.name === name && p.source === 'project');
       const path = existing?.path ?? join(root, PERSONAS_DIR, `${name}.md`);
+      // …and a new one never takes over `<name>.md` when that file already names another persona.
+      const occupant = existing ? undefined : known.find((p) => p.source === 'project' && resolve(p.path) === resolve(path));
+      if (occupant) {
+        return c.json({ error: `${name}.md already holds the "${occupant.name}" persona — save this one under another name` }, 409);
+      }
       const parsed = parsePersona(markdown, path, 'project', name);
       if ('error' in parsed) return c.json({ error: parsed.error }, 400);
       if (parsed.name !== name) {

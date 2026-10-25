@@ -380,6 +380,17 @@ describe('Code page as an editor (VS Code-like)', () => {
     expect(body.querySelector('[data-slot="code-explorer"]')).not.toBeNull()
   })
 
+  it('F11 is the page’s full-screen region: in on the key, out on Esc (cockpit-polish §3.3)', async () => {
+    document.documentElement.requestFullscreen = vi.fn(async () => {})
+    setup()
+    await view()
+    fireEvent.keyDown(window, { key: 'F11' })
+    expect(document.querySelector('[data-route="code"]')?.getAttribute('data-fullscreen')).toBe('true')
+    expect(document.querySelector('[data-route="code"]')?.getAttribute('data-fullscreen-region')).toBe('Code')
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(document.querySelector('[data-route="code"]')?.getAttribute('data-fullscreen')).toBeNull()
+  })
+
   it('hides and shows its sidebar in full screen, where the shell\'s own is covered', async () => {
     document.documentElement.requestFullscreen = vi.fn(async () => {})
     setup()

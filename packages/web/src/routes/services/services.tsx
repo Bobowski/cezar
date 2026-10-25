@@ -9,6 +9,7 @@ import {
 import { queryKeys } from '@/api/queries'
 import { useServices } from '@/api/services'
 import { ContextSidebar } from '@/components/context-sidebar'
+import { FullscreenRegion, FullscreenToggle } from '@/components/fullscreen-region'
 import { Page, PageBody } from '@/components/page'
 import { StatusDot, type StatusDotTone } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
@@ -310,6 +311,7 @@ export function ServicesRoute() {
         </SidebarContent>
       </ContextSidebar>
 
+      <FullscreenRegion label="Scripts" className="flex min-h-0 flex-1 flex-col">
       <PageBody className="flex min-h-0 flex-col gap-3 pt-4">
         {state.isError ? <p role="alert" className="text-sm text-danger">{state.error.message}</p> : null}
         {state.data && !state.data.available ? (
@@ -334,6 +336,7 @@ export function ServicesRoute() {
                 ))}
               </div>
               <div className="flex shrink-0 items-center gap-2">
+                <FullscreenToggle />
                 {running ? (
                   <>
                     <Button variant="outline" size="sm" disabled={busy} onClick={() => act.mutate({ id: selected.id, action: 'restart' })}><RotateCwIcon aria-hidden="true" /> Restart</Button>
@@ -365,6 +368,7 @@ export function ServicesRoute() {
           </Empty>
         ) : null}
       </PageBody>
+      </FullscreenRegion>
     </Page>
   )
 }

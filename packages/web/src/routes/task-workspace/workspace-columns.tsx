@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { useRef, useState, type ReactNode } from 'react'
 
+import { FullscreenRegion, FullscreenToggle } from '@/components/fullscreen-region'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -233,8 +234,11 @@ export function WorkspaceColumns({
     >
       {columns.flatMap((column, index) => [
         index === pending ? pendingWindow : null,
-        <div
+        // Each window can take the whole screen (cockpit-polish §3.3) — pinned, never moved, so
+        // a Browser's page and a thread's scroll survive the trip.
+        <FullscreenRegion
           key={index}
+          label={viewLabel(column.view)}
           data-slot="workspace-column"
           data-view={column.view}
           className="relative flex min-w-0 flex-col border-l border-border/70 first:border-l-0"
@@ -274,7 +278,7 @@ export function WorkspaceColumns({
               {renderView(column.view, index, column)}
             </WorkspaceMaximizeContext.Provider>
           </div>
-        </div>,
+        </FullscreenRegion>,
       ])}
       {pending === columns.length ? pendingWindow : null}
     </div>
@@ -392,6 +396,8 @@ function ColumnHeader({
         className={cn('h-full min-w-0 flex-1', count > 1 && grip && 'cursor-grab active:cursor-grabbing')}
       />
       {extras}
+      {/* Expand: this window alone takes the screen (cockpit-polish §3.3). */}
+      <FullscreenToggle />
       {onSplit ? (
         <Tooltip>
           <TooltipTrigger asChild>

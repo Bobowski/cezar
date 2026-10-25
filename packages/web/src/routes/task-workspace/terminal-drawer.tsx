@@ -1,5 +1,5 @@
 import { Loader2Icon, PanelRightIcon, PlusIcon, SquareIcon, TerminalIcon, XIcon } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react'
 
 import { createRunTerminal, getRunTerminal, stopRunTerminal, writeRunTerminal } from '@/api/client'
 import { useHealth } from '@/api/queries'
@@ -14,6 +14,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import { FullscreenRegion, FullscreenToggle } from '@/components/fullscreen-region'
 import { Button } from '@/components/ui/button'
 import { IconTooltip } from '@/components/ui/icon-tooltip'
 import {
@@ -238,8 +239,10 @@ export function TerminalDrawer({
 
   const active = sessions.find((entry) => entry.id === activeId) ?? null
 
+  // As a column the window is the full-screen region; as the drawer it is one of its own (§3.3).
+  const Frame = fill ? 'section' : DrawerRegion
   return (
-    <section
+    <Frame
       data-slot="terminal-drawer"
       aria-label="Terminal"
       data-fill={fill ? '' : undefined}
@@ -368,6 +371,7 @@ export function TerminalDrawer({
             </Button>
           </IconTooltip>
         ) : null}
+        {fill ? null : <FullscreenToggle className="rounded" />}
         {onClose ? (
           <Button
             type="button"
@@ -432,8 +436,13 @@ export function TerminalDrawer({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </section>
+    </Frame>
   )
+}
+
+/** The drawer as a full-screen region: a `<section>` that can take the window. */
+function DrawerRegion(props: Omit<ComponentProps<typeof FullscreenRegion>, 'label' | 'as'>) {
+  return <FullscreenRegion label="Terminal" as="section" {...props} />
 }
 
 function TerminalTab({

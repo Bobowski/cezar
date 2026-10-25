@@ -391,3 +391,21 @@ describe('the task workspace’s saved layouts and resizable columns', () => {
     browser.setViewport(DESKTOP.width, DESKTOP.height)
   })
 })
+
+describe('one window takes the screen (spec 2026-10-24-cockpit-polish §3.3)', () => {
+  it('F11 on the thread hides the shell and Esc restores', () => {
+    browser.setViewport(DESKTOP.width, DESKTOP.height)
+    openWorkspace()
+    const thread = '[data-slot="workspace-column"][data-view="session"]'
+    browser.waitForFunction(`document.querySelector('${thread} [data-action="fullscreen-region"]') !== null`)
+    browser.evaluate(`document.querySelector('${thread} [data-action="fullscreen-region"]').focus()`)
+    browser.press('F11')
+    browser.waitForFunction(`document.querySelector('${thread}')?.getAttribute('data-fullscreen') === 'true'`)
+    // The rail's corner is the thread's now: the shell is covered, not merely beside it.
+    expect(browser.evaluate(`document.querySelector('${thread}').contains(document.elementFromPoint(8, 8))`)).toBe(true)
+    browser.screenshot(`${artifactsDir}/workspace-fullscreen-thread.png`)
+    browser.press('Escape')
+    browser.waitForFunction(`document.querySelector('${thread}')?.getAttribute('data-fullscreen') === null`)
+    expect(browser.evaluate(`document.querySelector('[data-slot="app-shell"]').contains(document.elementFromPoint(8, 8))`)).toBe(true)
+  })
+})

@@ -149,7 +149,7 @@ import {
 } from '@open-mercato/cezar-contract';
 import { dispatchInputSchema, dispatchIntentSchema, dispatchReportSchema } from '@open-mercato/cezar-contract';
 import { personaNameSchema, putPersonaSchema } from '@open-mercato/cezar-contract';
-import { globalPersonasDir, loadPersonas, parsePersona, personaNames, PERSONAS_DIR, type Persona } from '../personas.ts';
+import { globalPersonasDir, loadPersonas, parsePersona, personaStepChecks, PERSONAS_DIR, type Persona } from '../personas.ts';
 import { hasTaskOrAttachments, TASK_OR_ATTACHMENTS_ISSUE } from '@open-mercato/cezar-contract';
 import { detectEnvironment } from '../core/backend-detect.ts';
 import type { HostUsage } from '@open-mercato/cezar-contract';
@@ -4369,11 +4369,12 @@ export function createApp(deps: ServerDeps) {
 
   /** `stepsIssue`'s persona check, read only when a step names one. */
   const personaCheck = async (root: string, steps: ReadonlyArray<{ agent?: string }>) =>
-    steps.some((s) => s.agent) ? { personas: personaNames((await loadPersonas(root)).personas) } : {};
-  const graphPersonaCheck = async (root: string, graph: Parameters<typeof graphPersonaIssues>[0]) =>
-    graph.nodes.some((n) => n.type === 'agent' && n.agent)
-      ? graphPersonaIssues(graph, personaNames((await loadPersonas(root)).personas))
-      : [];
+    steps.some((s) => s.agent) ? personaStepChecks((await loadPersonas(root)).personas) : {};
+  const graphPersonaCheck = async (root: string, graph: Parameters<typeof graphPersonaIssues>[0]) => {
+    if (!graph.nodes.some((n) => n.type === 'agent' && n.agent)) return [];
+    const checks = personaStepChecks((await loadPersonas(root)).personas);
+    return graphPersonaIssues(graph, checks.personas, checks.personaToolsIssue);
+  };
 
   // ---- chained family: GUI prefs / ui-state (project-scoped) ----
   const uiStateRoutes = new Hono<ProjectApiEnv>()

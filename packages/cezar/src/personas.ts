@@ -195,6 +195,8 @@ export interface PersonaResolution {
   droppedTools?: string[];
   /** The persona or its step asked for Claude's sub-agent tool, which a persona never gets. */
   subagentToolRefused?: boolean;
+  /** The narrowing left the step NO tools — the step fails closed (`personaNoToolsIssue`). */
+  noToolsLeft?: boolean;
 }
 
 /** Claude's sub-agent tool (`Task`, renamed `Agent`): never granted to a persona — dispatch is the
@@ -259,12 +261,7 @@ export function applyPersona(step: WorkflowStepDef, persona: Persona | undefined
   const runner: RunnerId | undefined = step.runner ?? persona.runner;
   const personaModelApplies = !step.runner || !persona.runner || step.runner === persona.runner;
   const model = step.model ?? (personaModelApplies ? persona.model : undefined);
-  const base = step.allowedTools ?? DEFAULT_ALLOWED_TOOLS;
-  const narrowed = persona.allowedTools
-    ? narrowPersonaTools(base, persona.allowedTools, step.bashAllowlist)
-    : { tools: [...base], dropped: [] };
-  const subagentToolRefused = [...(persona.allowedTools ?? []), ...(step.allowedTools ?? [])].some(isSubagentTool);
-  const allowedTools = step.allowedTools || persona.allowedTools ? narrowed.tools.filter((t) => !isSubagentTool(t)) : undefined;
+  const { allowedTools, dropped, subagentToolRefused } = personaTools(step, persona);
   const merged: WorkflowStepDef = {
     ...step,
     ...(runner ? { runner } : {}),
@@ -277,8 +274,42 @@ export function applyPersona(step: WorkflowStepDef, persona: Persona | undefined
     persona,
     systemPrompt: personaSystemPrompt(persona),
     extraSkills,
-    ...(narrowed.dropped.length ? { droppedTools: narrowed.dropped } : {}),
+    ...(dropped.length ? { droppedTools: dropped } : {}),
     ...(subagentToolRefused ? { subagentToolRefused } : {}),
+    ...(allowedTools?.length === 0 ? { noToolsLeft: true } : {}),
+  };
+}
+
+type StepTools = Pick<WorkflowStepDef, 'allowedTools' | 'bashAllowlist'>;
+
+/** The step's tools under the persona; `allowedTools` undefined = neither names a list. */
+function personaTools(step: StepTools, persona: Persona) {
+  const base = step.allowedTools ?? DEFAULT_ALLOWED_TOOLS;
+  const narrowed = persona.allowedTools
+    ? narrowPersonaTools(base, persona.allowedTools, step.bashAllowlist)
+    : { tools: [...base], dropped: [] };
+  const subagentToolRefused = [...(persona.allowedTools ?? []), ...(step.allowedTools ?? [])].some(isSubagentTool);
+  const allowedTools = step.allowedTools || persona.allowedTools ? narrowed.tools.filter((t) => !isSubagentTool(t)) : undefined;
+  return { allowedTools, dropped: narrowed.dropped, subagentToolRefused };
+}
+
+/**
+ * A persona that narrows a step to NO tools fails closed: an empty list reads as "the default
+ * set" to a runner that skips an empty `--tools` (pi), so the step is refused instead.
+ */
+export function personaNoToolsIssue(step: StepTools, persona: Persona | undefined): string | null {
+  if (!persona || personaTools(step, persona).allowedTools?.length !== 0) return null;
+  return `persona "${persona.name}" leaves no tools for this step — its allowedTools share none with the step's`;
+}
+
+/** `stepsIssue`'s persona options for a project's loaded personas: names, and the no-tools check. */
+export function personaStepChecks(personas: readonly Persona[]): {
+  personas: Set<string>;
+  personaToolsIssue: (step: StepTools & { agent?: string }) => string | null;
+} {
+  return {
+    personas: personaNames(personas),
+    personaToolsIssue: (step) => (step.agent ? personaNoToolsIssue(step, personas.find((p) => p.name === step.agent)) : null),
   };
 }
 

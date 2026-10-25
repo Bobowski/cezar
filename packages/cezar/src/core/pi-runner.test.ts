@@ -127,6 +127,13 @@ describe('pi RPC argv', () => {
       }),
     ).toEqual(['--mode', 'rpc', '--tools', 'read']);
   });
+
+  it('an explicit empty tool list enables no tools, never the default set', () => {
+    expect(buildPiArgs({ cwd: '/repo', userPrompt: 'task', allowedTools: [] })).toEqual(['--mode', 'rpc', '--no-tools']);
+    expect(
+      buildPiArgs({ cwd: '/repo', userPrompt: 'task', allowedTools: ['Bash'], bashAllowlist: ['npm test'] }),
+    ).toEqual(['--mode', 'rpc', '--no-tools']);
+  });
 });
 
 describe('pi spawns under pi credentials, not another runner', () => {

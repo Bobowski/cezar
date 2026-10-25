@@ -1,7 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import { loadPersonas, personaNames } from '../personas.ts';
+import { loadPersonas, personaStepChecks } from '../personas.ts';
 import { graphIssues, graphToSteps, workflowGraphFileSchema, type WorkflowGraph } from './graph.ts';
 import { BUILT_IN_GRAPH_WORKFLOWS } from './templates.ts';
 import {
@@ -21,11 +21,23 @@ export interface WorkflowLoadIssue {
   message: string;
 }
 
-/** A graph's agent nodes (fork branches included) whose `agent:` names no persona. */
-export function graphPersonaIssues(graph: Pick<WorkflowGraph, 'nodes'>, personas: ReadonlySet<string>): string[] {
-  const agents = graph.nodes.flatMap((n) => (n.type === 'agent' ? [{ id: n.id, agent: n.agent }] : []));
+/** A graph's agent nodes (fork branches included) whose `agent:` names no persona — or, given the
+ *  loaded personas' checks, one that leaves the node no tools. */
+export function graphPersonaIssues(
+  graph: Pick<WorkflowGraph, 'nodes'>,
+  personas: ReadonlySet<string>,
+  personaToolsIssue?: ReturnType<typeof personaStepChecks>['personaToolsIssue'],
+): string[] {
+  const agents = graph.nodes.flatMap((n) =>
+    n.type === 'agent' ? [{ id: n.id, agent: n.agent, allowedTools: n.allowedTools, bashAllowlist: n.bashAllowlist }] : [],
+  );
   const issue = unknownPersonaIssue(agents, personas, 'agent node');
-  return issue ? [issue] : [];
+  if (issue) return [issue];
+  for (const node of personaToolsIssue ? agents : []) {
+    const toolsIssue = personaToolsIssue!(node);
+    if (toolsIssue) return [`agent node "${node.id}": ${toolsIssue}`];
+  }
+  return [];
 }
 
 /**
@@ -41,8 +53,8 @@ export async function loadWorkflows(
   const fromFiles: WorkflowDef[] = [];
   // A step's `agent:` must name a persona that exists (spec 2026-10-24-personas) — like a bad
   // `onFail.retry`, an unknown one is reported here instead of failing the run later.
-  let personas: Set<string> | undefined;
-  const knownPersonas = async () => (personas ??= personaNames((await loadPersonas(repoRoot)).personas));
+  let personas: ReturnType<typeof personaStepChecks> | undefined;
+  const knownPersonas = async () => (personas ??= personaStepChecks((await loadPersonas(repoRoot)).personas));
 
   let entries: string[] = [];
   try {
@@ -71,7 +83,8 @@ export async function loadWorkflows(
         }
         const problems = graphIssues(graphDoc.data);
         if (!problems.length && graphDoc.data.nodes.some((n) => n.type === 'agent' && n.agent)) {
-          problems.push(...graphPersonaIssues(graphDoc.data, await knownPersonas()));
+          const checks = await knownPersonas();
+          problems.push(...graphPersonaIssues(graphDoc.data, checks.personas, checks.personaToolsIssue));
         }
         if (problems.length) {
           issues.push({ path, message: problems.join('; ') });
@@ -97,7 +110,7 @@ export async function loadWorkflows(
       // `skills:` shorthand files become plain agent steps here (spec 012).
       const normalized = normalizeWorkflowDoc(parsed.data);
       // Steps referenced by onFail.retry must exist and come earlier; ids unique.
-      const issue = stepsIssue(normalized.steps, normalized.steps.some((s) => s.agent) ? { personas: await knownPersonas() } : {});
+      const issue = stepsIssue(normalized.steps, normalized.steps.some((s) => s.agent) ? await knownPersonas() : {});
       if (issue) {
         issues.push({ path, message: issue });
         continue;

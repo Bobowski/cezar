@@ -234,7 +234,11 @@ export function stepsIssue(
   steps: WorkflowStepDef[],
   /** The project's persona names. Given, an `agent:` naming none of them is an issue too
    *  (spec 2026-10-24-personas); omitted, `agent:` is not checked. */
-  opts: { personas?: ReadonlySet<string> } = {},
+  opts: {
+    personas?: ReadonlySet<string>;
+    /** A persona'd step's tool problem (`personaStepChecks`) — one that leaves it no tools. */
+    personaToolsIssue?: (step: WorkflowStepDef) => string | null;
+  } = {},
 ): string | null {
   const ids = steps.map((s) => s.id);
   const dup = ids.find((id, i) => ids.indexOf(id) !== i);
@@ -246,7 +250,13 @@ export function stepsIssue(
       return `step "${s.id}": onFail.retry must reference an earlier step (got "${s.onFail.retry}")`;
     }
   }
-  return opts.personas ? unknownPersonaIssue(steps, opts.personas) : null;
+  const unknown = opts.personas ? unknownPersonaIssue(steps, opts.personas) : null;
+  if (unknown || !opts.personaToolsIssue) return unknown;
+  for (const s of steps) {
+    const issue = opts.personaToolsIssue(s);
+    if (issue) return `step "${s.id}": ${issue}`;
+  }
+  return null;
 }
 
 /** The first step (or graph agent node — `noun`) whose `agent:` names no known persona. */

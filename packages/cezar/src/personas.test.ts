@@ -6,6 +6,8 @@ import { removeTempDir } from './test-fixtures/remove-temp-dir.testkit.ts';
 import {
   applyPersona,
   globalPersonasDir,
+  personaNoToolsIssue,
+  personaStepChecks,
   loadPersonas,
   parseClaudeAgent,
   parsePersona,
@@ -131,6 +133,25 @@ describe('discovery', () => {
     expect(issues).toEqual([{ path: expect.stringContaining('bad.yaml'), message: expect.stringMatching(/^step "review": unknown agent persona "ghost"/) }]);
   });
 
+  it('a workflow file or graph whose persona leaves a step no tools is a load issue', async () => {
+    put(join(repoRoot, '.ai/cezar/agents'), 'empty.md', '---\nallowedTools: []\n---\nNothing.');
+    put(join(repoRoot, '.ai/cezar/workflows'), 'steps.yaml', 'name: steps\nsteps:\n  - id: s\n    agent: empty\n');
+    put(
+      join(repoRoot, '.ai/cezar/workflows'),
+      'graph.yaml',
+      'version: 2\nname: graph\nnodes:\n  - { id: start, type: start }\n  - { id: n, type: agent, prompt: x, agent: empty }\nedges:\n  - { from: start, to: n }\n',
+    );
+    const { workflows, issues } = await loadWorkflows(repoRoot);
+    expect(workflows.map((w) => w.name)).not.toContain('steps');
+    expect(workflows.map((w) => w.name)).not.toContain('graph');
+    expect(issues).toEqual(
+      expect.arrayContaining([
+        { path: expect.stringContaining('steps.yaml'), message: expect.stringMatching(/^step "s": persona "empty" leaves no tools/) },
+        { path: expect.stringContaining('graph.yaml'), message: expect.stringMatching(/^agent node "n": persona "empty" leaves no tools/) },
+      ]),
+    );
+  });
+
   it('reports a broken file by name and keeps loading the rest', async () => {
     put(join(repoRoot, '.ai/cezar/agents'), 'broken.md', '---\nrunner: nope\n---\nx');
     put(join(repoRoot, '.ai/cezar/agents'), 'fine.md', 'fine');
@@ -216,6 +237,21 @@ describe('merge order: step field > persona > project default', () => {
     expect(subagentToolRefused).toBe(true);
   });
 
+  it('fails closed when the intersection is empty: [WebFetch], [] and [Task] leave a step no tools', () => {
+    for (const allowedTools of [['WebFetch'], [], ['Task']]) {
+      const narrow: Persona = { ...persona, allowedTools };
+      expect(applyPersona({ id: 's', agent: 'reviewer', prompt: 'x' }, narrow)).toMatchObject({ step: { allowedTools: [] }, noToolsLeft: true });
+      expect(personaNoToolsIssue({}, narrow)).toBe(
+        'persona "reviewer" leaves no tools for this step — its allowedTools share none with the step\'s',
+      );
+    }
+    expect(personaNoToolsIssue({ allowedTools: ['Grep'] }, { ...persona, allowedTools: ['Read'] })).toMatch(/leaves no tools/);
+    expect(personaNoToolsIssue({}, persona)).toBeNull();
+    expect(personaNoToolsIssue({}, { ...persona, allowedTools: undefined })).toBeNull();
+    expect(personaNoToolsIssue({}, undefined)).toBeNull();
+    expect(applyPersona({ id: 's', agent: 'reviewer', prompt: 'x' }, persona).noToolsLeft).toBeUndefined();
+  });
+
   it('is the identity without a persona', () => {
     const step = { id: 's', prompt: 'x' };
     expect(applyPersona(step, undefined)).toEqual({ step, extraSkills: [] });
@@ -234,6 +270,17 @@ describe('the step and dispatch surfaces', () => {
     const steps = [{ id: 'review', agent: 'ghost' }];
     expect(stepsIssue(steps, { personas: new Set() })).toMatch(/unknown agent persona "ghost"/);
     expect(stepsIssue(steps)).toBeNull();
+  });
+
+  it('is a stepsIssue when a persona leaves a step no tools', () => {
+    const checks = personaStepChecks([
+      { name: 'fetcher', allowedTools: ['WebFetch'], body: '', path: '/f.md', source: 'project' },
+      { name: 'reader', allowedTools: ['Read'], body: '', path: '/r.md', source: 'project' },
+    ]);
+    expect(stepsIssue([{ id: 'read', agent: 'reader' }, { id: 'fetch', agent: 'fetcher' }], checks)).toBe(
+      'step "fetch": persona "fetcher" leaves no tools for this step — its allowedTools share none with the step\'s',
+    );
+    expect(stepsIssue([{ id: 'read', agent: 'reader' }, { id: 'plain' }], checks)).toBeNull();
   });
 
   it('lists personas for a dispatching task, and nothing when there are none', () => {

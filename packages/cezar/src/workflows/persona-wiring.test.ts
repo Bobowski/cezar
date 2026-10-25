@@ -193,6 +193,33 @@ describe('personas on workflow steps', () => {
     expect(spawn.spec.disallowedTools).toBeUndefined();
   });
 
+  it('fails the step, never spawning, when the persona leaves it no tools', async () => {
+    writeFileSync(join(repoRoot, '.ai/cezar/agents/fetcher.md'), '---\nrunner: pi\nallowedTools: [WebFetch]\n---\nYou fetch.\n');
+    const single: WorkflowDef = { name: 'fetch', source: 'file', steps: [{ id: 'f', prompt: '{{task}}', agent: 'fetcher' }] };
+    const record = manager!.startRun(single, { task: 'x', worktree: false, runner: 'claude' });
+    await settled(record.id);
+    expect(captured.spawns).toEqual([]);
+    expect(store.getRun(record.id)?.status).toBe('failed');
+    expect(store.getRun(record.id)?.error).toMatch(/persona "fetcher" leaves no tools for this step/);
+  });
+
+  it('refuses a dispatch --as a persona that leaves the order no tools', async () => {
+    writeFileSync(join(repoRoot, '.ai/cezar/agents/delegator.md'), '---\nallowedTools: [Task]\n---\nYou delegate.\n');
+    let release!: () => void;
+    captured.hold = new Promise<void>((resolve) => (release = resolve));
+    const single: WorkflowDef = { name: 'plain', source: 'file', steps: [{ id: 'p', prompt: '{{task}}' }] };
+    const record = manager!.startRun(single, { task: 'x', worktree: false, runner: 'claude' });
+    await spawnAt(0);
+    const delegator = { name: 'delegator', allowedTools: ['Task'], body: 'You delegate.', path: '/d.md', source: 'project' as const };
+    expect(manager!.dispatch(record.id, { objective: 'help' }, { persona: delegator })).toEqual({
+      refused: 'persona "delegator" leaves no tools for this step — its allowedTools share none with the step\'s',
+    });
+    expect(store.listRuns().filter((r) => r.dispatch?.parentRunId === record.id)).toEqual([]);
+    release();
+    captured.hold = undefined;
+    await settled(record.id);
+  });
+
   it('fails the step rather than run a persona-less agent when the persona is gone', async () => {
     const ghost: WorkflowDef = { name: 'ghost', source: 'file', steps: [{ id: 'g', prompt: '{{task}}', agent: 'ghost' }] };
     const record = manager!.startRun(ghost, { task: 'x', worktree: false, runner: 'claude' });

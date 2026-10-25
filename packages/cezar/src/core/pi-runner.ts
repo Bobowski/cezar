@@ -286,8 +286,11 @@ export function buildPiArgs(spec: AgentRunSpec): string[] {
   if (spec.sessionId) args.push(spec.resume ? '--session' : '--session-id', spec.sessionId);
   if (spec.systemPrompt) args.push('--append-system-prompt', spec.systemPrompt);
   if (spec.model) args.push('--model', spec.model);
-  const tools = piTools(spec.allowedTools ?? [], spec.bashAllowlist);
-  if (tools.length > 0) args.push('--tools', tools.join(','));
+  // No `--tools` means pi's whole default set, so an explicit list that maps to nothing (`[]`, or
+  // only an unrepresentable Bash) disables every tool instead of falling back to it.
+  if (spec.allowedTools === undefined) return args;
+  const tools = piTools(spec.allowedTools, spec.bashAllowlist);
+  args.push(...(tools.length > 0 ? ['--tools', tools.join(',')] : ['--no-tools']));
   return args;
 }
 

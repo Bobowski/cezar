@@ -63,6 +63,7 @@ import { discoverSkills, type Skill } from '../skills.ts';
 import {
   PERSONA_DENIED_TOOLS,
   applyPersona,
+  personaNoToolsIssue,
   loadPersonas,
   PERSONA_LOCATIONS,
   personaSystemPrompt,
@@ -2756,6 +2757,17 @@ export class RunManager {
     const note = (message: string, tone?: 'danger') =>
       this.store.appendEvent(parentId, { type: 'note', stepId: this.active.get(parentId)?.currentStepId, message, ...(tone ? { tone } : {}) });
 
+    // `--as` a persona that leaves the order no tools is refused here, not at the child's spawn.
+    if (opts.persona) {
+      const orderStep = opts.workflow?.steps.find((s) => s.agent === opts.persona!.name)
+        ?? (input.allowed_tools?.length ? { allowedTools: input.allowed_tools } : {});
+      const noTools = personaNoToolsIssue(orderStep, opts.persona);
+      if (noTools) {
+        note(`dispatch refused — ${noTools}`, 'danger');
+        return { refused: noTools };
+      }
+    }
+
     const runs = this.store.listRuns();
     // The user's limits, when the root was started with the composer's Dispatch toggle: they may
     // only tighten the engine's own caps, and the child defaults they name fill an order's gaps.
@@ -4935,6 +4947,11 @@ export class RunManager {
       failBeforeSpawn(`persona "${toolsStep.agent}" not found in ${PERSONA_LOCATIONS}`);
       return;
     }
+    const continueNoTools = toolsStep ? personaNoToolsIssue(toolsStep, continuePersona) : null;
+    if (continueNoTools) {
+      failBeforeSpawn(continueNoTools);
+      return;
+    }
     const continueResolution = toolsStep ? applyPersona(toolsStep, continuePersona) : undefined;
     const sessionStepDef = continueResolution?.step;
     if (toolsStep && continueResolution) {
@@ -6717,6 +6734,8 @@ export class RunManager {
     const authored = step;
     const persona = authored.agent ? state.personas?.find((p) => p.name === authored.agent) : undefined;
     if (authored.agent && !persona) return `persona "${authored.agent}" not found in ${PERSONA_LOCATIONS}`;
+    const noTools = personaNoToolsIssue(authored, persona);
+    if (noTools) return noTools;
     const personaResolution = applyPersona(authored, persona);
     step = personaResolution.step;
     // Live only while THIS step's session is: set at attach, cleared in the session's `finally`,

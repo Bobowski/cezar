@@ -2764,17 +2764,6 @@ export class RunManager {
     const note = (message: string, tone?: 'danger') =>
       this.store.appendEvent(parentId, { type: 'note', stepId: this.active.get(parentId)?.currentStepId, message, ...(tone ? { tone } : {}) });
 
-    // `--as` a persona that leaves the order no tools is refused here, not at the child's spawn.
-    if (opts.persona) {
-      const orderStep = opts.workflow?.steps.find((s) => s.agent === opts.persona!.name)
-        ?? (input.allowed_tools?.length ? { allowedTools: input.allowed_tools } : {});
-      const noTools = personaNoToolsIssue(orderStep, opts.persona, input.runner ?? opts.persona.runner ?? parent.runner);
-      if (noTools) {
-        note(`dispatch refused — ${noTools}`, 'danger');
-        return { refused: noTools };
-      }
-    }
-
     const runs = this.store.listRuns();
     // The user's limits, when the root was started with the composer's Dispatch toggle: they may
     // only tighten the engine's own caps, and the child defaults they name fill an order's gaps.
@@ -2784,6 +2773,20 @@ export class RunManager {
     // parent dispatched while running that persona's step — not those of its other steps.
     const asParent = this.active.get(parentId)?.personaDispatch;
     const personaLimits = asParent?.dispatch;
+    const asPersona = opts.persona;
+    const childRunner = input.runner ?? asPersona?.runner ?? personaLimits?.runner ?? intent?.runner ?? parent.runner;
+
+    // `--as` a persona that leaves the order no tools is refused here, not at the child's spawn.
+    if (asPersona) {
+      const orderStep = opts.workflow?.steps.find((s) => s.agent === asPersona.name)
+        ?? (input.allowed_tools?.length ? { allowedTools: input.allowed_tools } : {});
+      const noTools = personaNoToolsIssue(orderStep, asPersona, childRunner);
+      if (noTools) {
+        note(`dispatch refused — ${noTools}`, 'danger');
+        return { refused: noTools };
+      }
+    }
+
     if (asParent && personaLimits?.maxSubtasks !== undefined) {
       const own = childrenOf(runs, parentId).filter((c) => c.dispatch?.personaStepId === asParent.stepId).length;
       if (own + 1 > personaLimits.maxSubtasks) {
@@ -2830,7 +2833,6 @@ export class RunManager {
     }
 
     const title = input.title ?? input.objective.split('\n')[0]?.slice(0, 120) ?? 'dispatched task';
-    const asPersona = opts.persona;
     const workflow: WorkflowDef = {
       name: '(planned)',
       source: 'built-in',
@@ -2850,7 +2852,6 @@ export class RunManager {
         },
       ],
     };
-    const childRunner = input.runner ?? asPersona?.runner ?? personaLimits?.runner ?? intent?.runner ?? parent.runner;
     // An inherited model only follows its own runner: a codex parent's `gpt-*` handed to a
     // `--runner claude` child fails at spawn (telemetry 43bdda11). Otherwise the child's runner picks.
     const sameRunner = (runner: RunnerId | undefined) => (runner ?? 'claude') === (childRunner ?? 'claude');

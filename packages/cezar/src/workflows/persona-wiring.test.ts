@@ -250,6 +250,32 @@ describe('personas on workflow steps', () => {
     await settled(record.id);
   });
 
+  it.each([
+    ["the root's intent", 'intent'],
+    ["the parent persona's dispatch limits", 'persona'],
+  ] as const)('refuses a dispatch --as before creation when %s puts the child on pi with no pi tools', async (_label, source) => {
+    let release!: () => void;
+    captured.hold = new Promise<void>((resolve) => (release = resolve));
+    const single: WorkflowDef = { name: 'plain', source: 'file', steps: [{ id: 'p', prompt: '{{task}}' }] };
+    const record = manager!.startRun(single, { task: 'x', worktree: false, runner: 'claude' });
+    await spawnAt(0);
+    if (source === 'intent') store.updateRun(record.id, { dispatch: { rootRunId: record.id, intent: { runner: 'pi' } } });
+    else {
+      const state = (manager as unknown as { active: Map<string, { personaDispatch?: unknown }> }).active.get(record.id)!;
+      state.personaDispatch = { name: 'lead', dispatch: { runner: 'pi' }, stepId: 'p' };
+    }
+    // A Bash bounded by a bashAllowlist is fine on claude, nothing left on pi.
+    const basher = { name: 'basher', allowedTools: ['Bash'], body: 'You run tests.', path: '/b.md', source: 'project' as const };
+    const node: WorkflowDef = { name: 'node', source: 'file', steps: [{ id: 't', prompt: '{{task}}', agent: 'basher', bashAllowlist: ['npm test'] }] };
+    expect(manager!.dispatch(record.id, { objective: 'test it' }, { persona: basher, workflow: node })).toEqual({
+      refused: expect.stringMatching(/persona "basher" leaves pi no tools/),
+    });
+    expect(store.listRuns().filter((r) => r.dispatch?.parentRunId === record.id)).toEqual([]);
+    release();
+    captured.hold = undefined;
+    await settled(record.id);
+  });
+
   it("a persona's maxSubtasks counts only the children its own step dispatched", async () => {
     writeFileSync(join(repoRoot, '.ai/cezar/agents/limited.md'), '---\nrunner: claude\ndispatch: { maxSubtasks: 1 }\n---\nYou delegate once.\n');
     let release!: () => void;

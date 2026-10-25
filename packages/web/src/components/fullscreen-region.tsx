@@ -98,10 +98,17 @@ function onPointerDown(event: PointerEvent) {
   touched = regionOf(event.target instanceof Node ? event.target : null)
 }
 
+/** Focus that lands outside every region ends the touched fallback: `F11` is the browser's again. */
+function onFocusIn(event: FocusEvent) {
+  const target = event.target instanceof Node ? event.target : null
+  if (target && target !== document.body && !regionOf(target)) touched = null
+}
+
 function register(region: Region): () => void {
   if (regions.size === 0) {
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('pointerdown', onPointerDown, true)
+    window.addEventListener('focusin', onFocusIn, true)
   }
   regions.add(region)
   return () => {
@@ -110,6 +117,7 @@ function register(region: Region): () => void {
     if (regions.size > 0) return
     window.removeEventListener('keydown', onKeyDown)
     window.removeEventListener('pointerdown', onPointerDown, true)
+    window.removeEventListener('focusin', onFocusIn, true)
   }
 }
 

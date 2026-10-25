@@ -76,6 +76,28 @@ describe('FullscreenRegion', () => {
     expect(isFull('Browser')).toBe(true)
   })
 
+  it('the last-clicked fallback ends when focus moves outside every region: F11 is the browser’s again', () => {
+    render(
+      <>
+        <Two />
+        <a href="#elsewhere">sidebar link</a>
+      </>,
+    )
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'in browser' }))
+    screen.getByRole('link', { name: 'sidebar link' }).focus()
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    const unclaimed = new KeyboardEvent('keydown', { key: 'F11', cancelable: true })
+    window.dispatchEvent(unclaimed)
+    expect(unclaimed.defaultPrevented).toBe(false)
+    expect(isFull('Browser')).toBe(false)
+    // Focus inside a region keeps it: the click then the region's own focus.
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'in chat' }))
+    screen.getByRole('button', { name: 'in chat' }).focus()
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    fireEvent.keyDown(window, { key: 'F11' })
+    expect(isFull('Chat')).toBe(true)
+  })
+
   it('one region at a time: entering another leaves the first', () => {
     render(<Two />)
     fireEvent.click(screen.getByRole('button', { name: 'Full screen Chat' }))

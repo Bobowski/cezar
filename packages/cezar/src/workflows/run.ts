@@ -18,12 +18,15 @@ import {
 import { AUTO_END_DELAY_MS, type AgentSession } from '../core/claude-cli-runner.ts';
 import { interruptAfterGrace, MISSING_SESSION_NOTE, ResumeFallback, trackFallbackOutcome } from './resume-fallback.ts';
 import {
-  loadPrivateMcp,
+  loadLaunchMcp,
+  mcpReachOf,
   PRIVATE_MCP_FILE,
+  PROJECT_MCP_FILE,
   skippedServersNote,
   supportsPrivateMcp,
   type PrivateMcpServer,
 } from '../core/private-mcp.ts';
+import { recordMcpLaunch, type McpLaunchOutcome } from '../mcp-servers/status.ts';
 import { currentUsage, onUsage, registerRunProcess, unregisterRunProcess, type ProcessUsage } from '../core/process-usage.ts';
 import { parseUsageLimit } from '../core/usage-limit.ts';
 import { createRunner } from '../core/runner-factory.ts';
@@ -1581,24 +1584,62 @@ export class RunManager {
   }
 
   /**
-   * The project's private MCP servers for one agent session (spec
-   * 2026-10-07-private-project-mcp), with a note naming what was attached — or why not. Read
-   * fresh per launch, like `agentEnvForStep`, so an edit applies to the very next session.
-   * Never throws: an unreadable or broken file means a run without them, plus a note.
+   * The project's MCP servers for one agent session: the committed `.ai/cezar/mcp.json`, then the
+   * private `mcp.local.json` winning per name (specs 2026-10-07-private-project-mcp,
+   * 2026-10-24-easy-mcp), `${{ secrets.X }}` resolved from the `cezar` audience. Notes name what
+   * was attached — or why not — and the outcome is indexed for Settings. Read fresh per launch,
+   * like `agentEnvForStep`, so an edit applies to the very next session. Never throws.
    */
   private async privateMcpForLaunch(
+    runId: string,
     backend: RunnerId,
     onEvent: (event: AgentEvent) => void,
   ): Promise<PrivateMcpServer[] | undefined> {
-    const { servers, problems } = await loadPrivateMcp(this.repoRoot);
-    for (const problem of problems) onEvent({ type: 'note', message: `private MCP: ${problem}` });
-    if (servers.length === 0) return undefined;
-    const names = servers.map((s) => s.name);
-    if (!supportsPrivateMcp(backend)) {
-      onEvent({ type: 'note', message: skippedServersNote(backend, names, `${backend} has no launch-time MCP channel`) });
+    // A fork's head is untrusted code (Phase 3): like its checks, its agent gets no stored secrets.
+    const untrusted = this.store.getRun(runId)?.untrustedHead === true;
+    const project = this.projectId ? { projectId: this.projectId, root: this.repoRoot } : undefined;
+    const launch = await loadLaunchMcp(this.repoRoot, async (names) =>
+      untrusted
+        ? { values: {}, notes: names.map((name) => `secret ${name} is withheld from a fork's head`) }
+        : this.secrets.resolve(project, 'cezar', names),
+    );
+    const label = (scope: 'project' | 'private') => (scope === 'project' ? 'project MCP' : 'private MCP');
+    const outcomes: McpLaunchOutcome[] = [];
+    for (const problem of launch.problems) {
+      onEvent({ type: 'note', message: `${label(problem.scope)}: ${problem.message}` });
+      if (problem.name) outcomes.push({ scope: problem.scope, name: problem.name, state: 'failed', reason: problem.message });
+    }
+    this.store.registerRunSecrets(runId, launch.secretValues.filter((value) => value.length >= MIN_SECRET_LEN));
+    const servers = launch.servers;
+    const scopeOf = (name: string) => launch.scopes.get(name) ?? 'private';
+    const record = () => void recordMcpLaunch(this.repoRoot, { runId, runner: backend }, outcomes);
+    if (servers.length === 0) {
+      record();
       return undefined;
     }
-    onEvent({ type: 'note', message: `private MCP servers from .ai/cezar/${PRIVATE_MCP_FILE}: ${names.join(', ')}` });
+    const names = servers.map((s) => s.name);
+    if (!supportsPrivateMcp(backend)) {
+      const why = `${backend} has no launch-time MCP channel`;
+      const allPrivate = names.every((name) => scopeOf(name) === 'private');
+      const note = skippedServersNote(backend, names, why);
+      onEvent({ type: 'note', message: allPrivate ? note : note.replace(/^private MCP:/, 'MCP:') });
+      for (const name of names) outcomes.push({ scope: scopeOf(name), name, state: 'failed', reason: why });
+      record();
+      return undefined;
+    }
+    const fromProject = names.filter((name) => scopeOf(name) === 'project');
+    const fromPrivate = names.filter((name) => scopeOf(name) === 'private');
+    if (fromProject.length) onEvent({ type: 'note', message: `MCP servers from .ai/cezar/${PROJECT_MCP_FILE}: ${fromProject.join(', ')}` });
+    if (fromPrivate.length) onEvent({ type: 'note', message: `private MCP servers from .ai/cezar/${PRIVATE_MCP_FILE}: ${fromPrivate.join(', ')}` });
+    for (const server of servers) {
+      const reach = mcpReachOf(server.transport).find((entry) => entry.runner === backend);
+      outcomes.push(
+        reach?.reach === 'no'
+          ? { scope: scopeOf(server.name), name: server.name, state: 'failed', reason: reach.note ?? `${backend} cannot attach it` }
+          : { scope: scopeOf(server.name), name: server.name, state: 'injected' },
+      );
+    }
+    record();
     return servers;
   }
 
@@ -4860,7 +4901,7 @@ export class RunManager {
     this.store.updateStep(runId, stepId, { profileId: continueProfile.profileId });
 
     const runner = createRunner(continueBackend);
-    const continueMcp = await this.privateMcpForLaunch(continueBackend, onEvent);
+    const continueMcp = await this.privateMcpForLaunch(runId, continueBackend, onEvent);
     if (state.cancelled) return;
     state.currentStepId = stepId;
     this.beginUsageInvocation(runId, state, stepId);
@@ -6991,7 +7032,7 @@ export class RunManager {
     this.store.updateStep(runId, step.id, { profileId: stepProfile.profileId });
 
     const runner = createRunner(stepBackend);
-    const stepMcp = await this.privateMcpForLaunch(stepBackend, onEvent);
+    const stepMcp = await this.privateMcpForLaunch(runId, stepBackend, onEvent);
     let session: AgentSession;
     state.currentStepId = step.id;
     this.beginUsageInvocation(runId, state, step.id);

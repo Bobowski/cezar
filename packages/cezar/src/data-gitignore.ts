@@ -46,6 +46,11 @@ export const DATA_GITIGNORE_ENTRIES = [
   // Private, per-project MCP servers (spec 2026-10-07-private-project-mcp) — personal tokens.
   'mcp.local.json',
   'mcp.local.json.cez-tmp-*',
+  // spec 2026-10-24-easy-mcp: `mcp.json` itself is committable (DATA_COMMITTABLE_ENTRIES); its
+  // write temp and the per-server launch index are not.
+  'mcp.json.cez-tmp-*',
+  'mcp-status.json',
+  'mcp-status.json.*.tmp',
   'tracker.json',
   'tracker.json.tmp',
   'tracker.json.*.tmp',
@@ -67,6 +72,13 @@ export const DATA_GITIGNORE_ENTRIES = [
   'automation-mutation.lock.guard/',
   'automation-mutation.lock',
 ] as const;
+
+/**
+ * Entries under `.ai/cezar/` built to be COMMITTED, where absence from the list above IS the
+ * feature: the project's workflows and skills, its optional `config.json`, its MCP servers
+ * (`mcp.json`, spec 2026-10-24-easy-mcp — secrets are references), and the `.gitignore` itself.
+ */
+export const DATA_COMMITTABLE_ENTRIES = ['workflows/', 'skills/', 'config.json', 'mcp.json', '.gitignore'] as const;
 
 /** cezar's own data directory as a git pathspec exclusion. An in-place task's Changes and its
  *  landing commit leave it out (spec 2026-10-20-trunk-based-projects): its config, ui-state and

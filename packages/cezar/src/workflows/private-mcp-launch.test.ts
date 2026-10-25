@@ -5,7 +5,9 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent, AgentRunResult, AgentRunSpec } from '../core/agent-runner.ts';
-import { privateMcpPath } from '../core/private-mcp.ts';
+import { privateMcpPath, projectMcpPath } from '../core/private-mcp.ts';
+import { readMcpStatus } from '../mcp-servers/status.ts';
+import { SecretStore } from '../workspace/secrets.ts';
 import { RunStore } from '../runs/store.ts';
 import { RunManager } from './run.ts';
 import type { WorkflowDef } from './types.ts';
@@ -125,6 +127,46 @@ describe('private MCP servers at launch', () => {
     expect((await specAt(0)).mcpServers).toBeUndefined();
     await settled(record.id);
     expect(notes(record.id)).toContain('private MCP: cursor cannot attach tracker — cursor has no launch-time MCP channel');
+  });
+
+  it('project mcp.json and private mcp.local.json both reach the session, private winning, secrets resolved (spec 2026-10-24-easy-mcp)', async () => {
+    manager?.dispose();
+    const secrets = new SecretStore(process.env, { keychain: async () => null });
+    await secrets.set({ kind: 'workspace' }, 'STRIPE_SECRET_KEY', 'sk_test_resolved_at_launch', ['cezar']);
+    await secrets.set({ kind: 'workspace' }, 'CHECKS_ONLY', 'not-for-cezar-value', ['checks']);
+    manager = new RunManager(store, repoRoot, { secrets });
+    mkdirSync(join(repoRoot, '.ai', 'cezar'), { recursive: true });
+    writeFileSync(
+      projectMcpPath(repoRoot),
+      JSON.stringify({
+        mcpServers: {
+          context7: { command: 'npx', args: ['-y', '@upstash/context7-mcp'] },
+          shared: { command: 'from-project' },
+          gated: { command: 'gated-mcp', env: { KEY: '${{ secrets.CHECKS_ONLY }}' } },
+        },
+      }),
+    );
+    writePrivateMcp({
+      shared: { command: 'from-private' },
+      stripe: { type: 'http', url: 'https://mcp.stripe.com', headers: { Authorization: 'Bearer ${{ secrets.STRIPE_SECRET_KEY }}' } },
+    });
+    const record = manager.startRun(TASK, { task: 'do it', worktree: false, runner: 'claude' });
+    const opening = await specAt(0);
+    expect(opening.mcpServers?.map((s) => [s.name, s.command ?? s.url])).toEqual([
+      ['context7', 'npx'],
+      ['shared', 'from-private'],
+      ['stripe', 'https://mcp.stripe.com'],
+    ]);
+    expect(opening.mcpServers?.find((s) => s.name === 'stripe')?.headers).toEqual({ Authorization: 'Bearer sk_test_resolved_at_launch' });
+    await settled(record.id);
+    const runNotes = notes(record.id);
+    expect(runNotes).toContain('MCP servers from .ai/cezar/mcp.json: context7');
+    expect(runNotes).toContain('private MCP servers from .ai/cezar/mcp.local.json: shared, stripe');
+    expect(runNotes.some((n) => n.startsWith('project MCP: MCP server "gated" skipped: secret CHECKS_ONLY is not available to cezar'))).toBe(true);
+    // The resolved value never reaches the event log.
+    expect(JSON.stringify(store.readEvents(record.id))).not.toContain('sk_test_resolved_at_launch');
+    await expect.poll(async () => (await readMcpStatus(repoRoot)).get('private:stripe')?.state).toBe('injected');
+    expect((await readMcpStatus(repoRoot)).get('project:gated')).toMatchObject({ state: 'failed', runId: record.id });
   });
 
   it('a broken file is a note, never a failed run', async () => {

@@ -593,6 +593,33 @@ describe('the task workspace (main)', () => {
     expect(document.documentElement.dataset.cezFullscreen).toBeUndefined()
   })
 
+  it('a window closed by dropping its bar on the card strip hands its key to nobody: the full screen stays put', async () => {
+    stubFetch()
+    renderWorkspace()
+    await ready()
+    fireEvent.click(screen.getByRole('button', { name: 'Split view' }))
+    await pickTile('changes')
+    await waitFor(() => expect(columnViews()).toEqual(['session', 'changes']))
+    fireEvent.click(within(columns()[1] as HTMLElement).getByRole('button', { name: 'Full screen Changes' }))
+    expect(columns()[1]!.getAttribute('data-fullscreen')).toBe('true')
+
+    const data = new Map<string, string>([['text/cez-column', '0']])
+    const dataTransfer = {
+      setData: (type: string, value: string) => data.set(type, value),
+      getData: (type: string) => data.get(type) ?? '',
+      get types() {
+        return [...data.keys()]
+      },
+      dropEffect: 'none',
+    }
+    const strip = document.querySelector('[data-slot="layout-cards"]') as HTMLElement
+    fireEvent.dragOver(strip, { dataTransfer })
+    fireEvent.drop(strip, { dataTransfer })
+    await waitFor(() => expect(columnViews()).toEqual(['changes']))
+    expect(columns()[0]!.getAttribute('data-fullscreen')).toBe('true')
+    expect(document.documentElement.dataset.cezFullscreen).toBe('Changes')
+  })
+
   it('docks the drawer under any layout, and the ` key toggles it', async () => {
     stubFetch()
     renderWorkspace('changes')

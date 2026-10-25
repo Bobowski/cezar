@@ -50,6 +50,45 @@ export interface ColumnActions {
 }
 
 /**
+ * A stable key per window, so its full screen, a Browser's page and a thread's scroll follow it
+ * when the windows move or one closes (cockpit-polish §3.3). Never saved: a reload starts afresh.
+ * Every close, wherever it comes from, goes through `close` — a close the keys never heard of
+ * hands the closed window's key to its neighbour.
+ */
+export interface WindowKeys {
+  /** The keys for `count` windows; a change that came from elsewhere only resizes the set. */
+  sync: (count: number) => readonly string[]
+  add: () => void
+  close: (index: number) => void
+  move: (from: number, to: number) => void
+}
+
+export function createWindowKeys(): WindowKeys {
+  let keys: string[] = []
+  let next = 0
+  const fresh = () => `window-${(next += 1)}`
+  return {
+    sync: (count) => {
+      if (keys.length > count) keys = keys.slice(0, count)
+      while (keys.length < count) keys.push(fresh())
+      return keys
+    },
+    add: () => {
+      keys = [...keys, fresh()]
+    },
+    close: (index) => {
+      keys = keys.filter((_, at) => at !== index)
+    },
+    move: (from, to) => {
+      const moved = keys[from]
+      if (moved === undefined || to < 0 || to >= keys.length) return
+      const rest = keys.filter((_, at) => at !== from)
+      keys = [...rest.slice(0, to), moved, ...rest.slice(to)]
+    },
+  }
+}
+
+/**
  * The view area: one to three side-by-side columns and the dividers between them (spec
  * `2026-10-07-task-workspace` §5.2).
  *
@@ -66,42 +105,36 @@ export function WorkspaceColumns({
   actions: given,
   renderView,
   headerExtras,
+  windowKeys,
 }: {
   columns: readonly WorkspaceColumn[]
   actions: ColumnActions
   renderView: (view: ViewId, index: number, column: WorkspaceColumn) => ReactNode
   /** Controls a view adds to its window's bar, before the split (the terminal's "Move to bottom"). */
   headerExtras?: (view: ViewId, index: number) => ReactNode
+  /** The windows' keys, when something outside closes a window too (a header drop on the card strip). */
+  windowKeys?: WindowKeys
 }) {
   // Columns go side by side only from `lg` up. The shared default (`md`, 768px) is the threshold
   // for a different question — whether a diff should wrap — and it left a 768-1024px tablet with
   // two or three columns at ~340px each, which is the squeezing §5.2 asks not to do: it names
   // "mobile/tablet" for one-column-at-a-time, and §11 repeats it.
   const desktop = useIsDesktop(SIDE_BY_SIDE_MIN_WIDTH)
-  // A stable key per window, so its full screen, a Browser's page and a thread's scroll follow
-  // it when the windows move or one closes. Never saved: a reload starts a fresh set.
-  const keys = useRef<string[]>([])
-  const nextKey = useRef(0)
-  const freshKey = () => `window-${(nextKey.current += 1)}`
-  // A change that came from elsewhere (another layout, a deep link) only resizes the set.
-  if (keys.current.length > columns.length) keys.current = keys.current.slice(0, columns.length)
-  while (keys.current.length < columns.length) keys.current.push(freshKey())
+  const ownKeys = useRef<WindowKeys | null>(null)
+  const keys = windowKeys ?? (ownKeys.current ??= createWindowKeys())
+  const windowKey = keys.sync(columns.length)
   const actions: ColumnActions = {
     ...given,
     addColumn: (view) => {
-      if (columns.length < MAX_COLUMNS) keys.current = [...keys.current, freshKey()]
+      if (columns.length < MAX_COLUMNS) keys.add()
       given.addColumn(view)
     },
     closeColumn: (index) => {
-      keys.current = keys.current.filter((_, at) => at !== index)
+      keys.close(index)
       given.closeColumn(index)
     },
     moveColumn: (from, to) => {
-      const moved = keys.current[from]
-      if (moved !== undefined && to >= 0 && to < keys.current.length) {
-        const rest = keys.current.filter((_, at) => at !== from)
-        keys.current = [...rest.slice(0, to), moved, ...rest.slice(to)]
-      }
+      keys.move(from, to)
       given.moveColumn(from, to)
     },
   }
@@ -264,7 +297,7 @@ export function WorkspaceColumns({
         // Each window can take the whole screen (cockpit-polish §3.3) — pinned, never moved, so
         // a Browser's page and a thread's scroll survive the trip.
         <FullscreenRegion
-          key={keys.current[index] ?? index}
+          key={windowKey[index] ?? index}
           label={viewLabel(column.view)}
           data-slot="workspace-column"
           data-view={column.view}

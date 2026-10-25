@@ -75,7 +75,7 @@ import { useWorkspaceLayouts } from './use-workspace-layouts'
 import { useBrowserColumnShare } from './browser-share'
 import { AvailableViewsContext } from './view-picker'
 import { ViewDropZones } from './view-drop-zones'
-import { WorkspaceColumns, type ColumnActions } from './workspace-columns'
+import { WorkspaceColumns, createWindowKeys, type ColumnActions, type WindowKeys } from './workspace-columns'
 
 /** Lazy: xterm is the heaviest thing on this screen, and most visits never open a shell. */
 const TerminalDrawer = lazy(() =>
@@ -317,7 +317,25 @@ function WorkspaceView({
     [besideItself, dropView, layouts.layout?.columns.length],
   )
   const columnCount = layouts.layout?.columns.length ?? 0
-  const closeColumnByDrop = fixedActive === null && columnCount > 1 ? layouts.closeColumn : undefined
+  // Each kept layout's window keys, held here so a close from outside its columns (a header
+  // dropped on the card strip, "Move to bottom") moves the keys as the close button does.
+  const windowKeys = useRef(new Map<string, WindowKeys>())
+  const keysFor = useCallback((name: string) => {
+    const byLayout = windowKeys.current
+    let keys = byLayout.get(name)
+    if (!keys) byLayout.set(name, (keys = createWindowKeys()))
+    return keys
+  }, [])
+  const activeLayoutName = layouts.state.active
+  const { closeColumn: closeLayoutColumn } = layouts
+  const closeColumn = useCallback(
+    (index: number) => {
+      keysFor(activeLayoutName).close(index)
+      closeLayoutColumn(index)
+    },
+    [activeLayoutName, closeLayoutColumn, keysFor],
+  )
+  const closeColumnByDrop = fixedActive === null && columnCount > 1 ? closeColumn : undefined
 
   // The drawer: browser-local open + height, per task (spec §6). Read during render on a changed
   // task id, so run A's drawer never carries into run B.
@@ -362,7 +380,6 @@ function WorkspaceView({
   const toggleDrawer = useCallback(() => {
     if (!terminalColumnShown) updateDrawer({ open: !drawerOpen })
   }, [drawerOpen, terminalColumnShown, updateDrawer])
-  const { closeColumn } = layouts
   const terminalColumns = layouts.layout?.columns
   const moveTerminalToDrawer = useCallback(() => {
     updateDrawer({ open: true })
@@ -849,6 +866,7 @@ function WorkspaceView({
                   actions={actions}
                   renderView={renderView}
                   headerExtras={headerExtras}
+                  windowKeys={keysFor(layout.name)}
                 />
               ))
             ) : (
@@ -979,12 +997,14 @@ function KeptLayout({
   actions,
   renderView,
   headerExtras,
+  windowKeys,
 }: {
   layout: WorkspaceLayout
   active: boolean
   actions: ColumnActions
   renderView: (view: ViewId, index: number, column: WorkspaceColumn, layoutName: string) => ReactNode
   headerExtras?: (view: ViewId, index: number) => ReactNode
+  windowKeys: WindowKeys
 }) {
   const name = layout.name
   const render = useCallback(
@@ -1000,6 +1020,7 @@ function KeptLayout({
           actions={actions}
           renderView={render}
           headerExtras={headerExtras}
+          windowKeys={windowKeys}
         />
       </div>
     </Activity>

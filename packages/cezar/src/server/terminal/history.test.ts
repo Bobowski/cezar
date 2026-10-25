@@ -243,6 +243,9 @@ describe('history folding', () => {
       'npm config set //reg.io/:_authToken=abc123', 'curl -d "user=me&password=x&next=/" https://x',
       'git commit -m "rotate API_KEY=old and TOKEN=x" && git push', 'docker run -e "API_KEY=a b" img',
       '0123456789abcdef0123456789abcdef', 'deploy s3cret-value-from-env',
+      'sshpass -p 123456 ssh -p 2222 user@host', 'redis-cli -a 123456 ping', 'docker login -u me -p 20261025 reg',
+      'SSHPASS=hunter2 sshpass -e ssh user@host', 'rsync -e "sshpass -p secret ssh" src host:dst',
+      "bash -c 'redis-cli -a 123456 ping'", 'ssh -p 2222 user@host', 'mysql -p',
     ];
     for (const line of lines) {
       const once = historyLine(line, ['s3cret-value-from-env'])!;

@@ -407,6 +407,10 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
     setLayout((state) => openBrowserTab(state, checked.url, { beside: options.beside ?? false }))
     return true
   }, [])
+  // The terminal's strip and links: a Browser tab, or a new window for what one may not show.
+  const openTerminalAddress = useCallback((url: string) => {
+    if (!openPage(url)) window.open(url, '_blank', 'noopener,noreferrer')
+  }, [openPage])
   const setBrowser = (id: string, next: CodeBrowser) => setLayout((state) => ({ ...state, browsers: { ...state.browsers, [id]: next } }))
   const setGateway = useCallback((id: string, origin: string | null) => setGateways((all) => {
     if ((all[id] ?? null) === origin) return all
@@ -816,7 +820,7 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
                       onPanel={togglePanel}
                       initialTerminal={initialTerminal}
                       paths={paths}
-                      onOpenBrowser={(url) => openBrowserTab(url)}
+                      onOpenBrowser={openTerminalAddress}
                     />
                   </ResizablePanel>
                 </>

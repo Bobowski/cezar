@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 
 import { isLoopbackPageAddress, queryScope, type ApiRun } from '@open-mercato/cezar-api-client'
 import { getRunTerminalUrls, getServices } from '@/api/client'
-import type { CodeTree } from '@/api/code'
+import { getProjectTerminalUrls, type CodeTree } from '@/api/code'
 import { useProjectScope } from '@/api/project-scope-context'
 import { queryKeys, useHealth } from '@/api/queries'
 import { CenteredState } from '@/components/centered-state'
@@ -39,8 +39,8 @@ export const useOpenBrowserTab = (): OpenBrowserTab => useContext(OpenBrowserTab
 
 /**
  * The addresses to suggest for a new page: what this checkout's processes printed. A task's tree
- * reads its terminals' detected addresses; the main checkout reads its services'. The project
- * terminal's own list (`GET /repo/terminal/urls`, terminal spec §4) joins here once it exists.
+ * reads its terminals' detected addresses; the main checkout reads its services' and its project
+ * terminals' (`GET /repo/terminal/urls`, terminal spec §4).
  */
 export function useDetectedAddresses(tree: CodeTree): string[] {
   const terminal = useHealth().data?.capabilities?.terminal === true
@@ -56,13 +56,21 @@ export function useDetectedAddresses(tree: CodeTree): string[] {
     queryFn: ({ signal }) => getServices({ signal }),
     enabled: terminal && runId === null,
   })
+  const projectUrls = useQuery({
+    queryKey: ['code', 'addresses', queryScope(), 'project'],
+    queryFn: () => getProjectTerminalUrls(),
+    enabled: terminal && runId === null,
+    staleTime: 5_000,
+  })
   return useMemo(() => {
-    const entries = runId !== null ? runUrls.data?.urls ?? [] : (services.data?.services ?? []).flatMap((service) => service.urls ?? [])
+    const entries = runId !== null
+      ? runUrls.data?.urls ?? []
+      : [...(services.data?.services ?? []).flatMap((service) => service.urls ?? []), ...(projectUrls.data?.urls ?? [])]
     // Known to answer first, then not probed yet, then known to be down.
     const rank = (running: boolean | null) => (running === true ? 0 : running === null ? 1 : 2)
-    const ordered = [...entries].sort((a, b) => rank(a.running) - rank(b.running)).map((entry) => entry.url)
+    const ordered = [...new Set([...entries].sort((a, b) => rank(a.running) - rank(b.running)).map((entry) => entry.url))]
     return pageSuggestions(ordered, cockpitLocation())
-  }, [runId, runUrls.data, services.data])
+  }, [runId, runUrls.data, services.data, projectUrls.data])
 }
 
 /**

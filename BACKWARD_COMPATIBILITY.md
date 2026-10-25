@@ -463,6 +463,13 @@ unset or any other value preserves the hosted-mode refusal.
   withheld/refused exactly as before. Unsetting it and restarting hides the store again without
   deleting accounts or project selections; local cockpit behavior is unchanged.
 
+## Reading width default (#976)
+
+The workspace migration cursor is now 2. Migration 002 is the compatibility
+path for the reading-width default: it removes the legacy workspace-owned
+appearance.width value narrow once, while preserving accent, density and
+unknown ui-state keys. It does not touch per-repo files.
+
 ## Automations — default-on, scheduled triggers, `automationTrigger` (spec 2026-09-14-automations-redesign)
 
 The automations redesign flips the #801 gate: `capabilities.automations` is now `CEZ_AUTOMATIONS !== '0'`

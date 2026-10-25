@@ -120,6 +120,16 @@ function setup(docker: DockerState = DOCKER, entry = '/docker', refuse: (call: s
 const confirmDialog = () => screen.findByRole('alertdialog')
 
 describe('Docker page (spec 2026-10-13-docker-view)', () => {
+  it('takes the screen from beside its tabs and gives it back (cockpit-polish §3.3)', async () => {
+    setup()
+    await screen.findByRole('alert')
+    const region = () => document.querySelector<HTMLElement>('[data-fullscreen-region="Docker"]')!
+    fireEvent.click(screen.getByRole('button', { name: 'Full screen Docker' }))
+    expect(region().getAttribute('data-fullscreen')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: 'Exit full screen' }))
+    expect(region().getAttribute('data-fullscreen')).toBeNull()
+  })
+
   it('shows every stack with its owner, and which port this project cannot have', async () => {
     setup()
     const alert = await screen.findByRole('alert')

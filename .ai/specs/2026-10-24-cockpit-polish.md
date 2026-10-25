@@ -1,6 +1,6 @@
 # Cockpit polish — the Git sidebar, live preview in a task, full screen everywhere, and the small things
 
-> Status: proposed (2026-10-24), not built. Branch: `brutus`.
+> Status: built (2026-10-25) — see §7 for what landed and what did not. Branch: `brutus`.
 > Builds on: `2026-10-13-unified-settings.md` (one frame, one nav), `2026-10-11-code-page.md`
 > (F11 full screen, `code.tsx`), `2026-10-07-task-workspace.md` (the Browser column),
 > `2026-10-10-preview-gateway.md`, `2026-10-24-git-view.md` (`repo-sidebar.tsx` grows there).
@@ -108,6 +108,9 @@ Behaviour (§3):
   workspace window (thread, Changes, Browser, …), the terminal drawer, Scripts, Docker and the
   Code page. `Esc` is left to a shell or an editor (`.xterm`, `.cm-editor`) and to open
   overlays. Not built: the desktop shell's native full-screen mapping (Tauri side).
+- §8 left open: the e2e "a change in the worktree reloads a static preview once" (the unit
+  suites cover the debounce, the bell and the stamp poll); the F11-on-the-thread e2e is in
+  `task-workspace.e2e.ts`. The VPS checks are the owner's.
 
 Consistency (§3.4):
 

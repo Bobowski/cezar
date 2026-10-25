@@ -203,6 +203,20 @@ describe('personas on workflow steps', () => {
     expect(store.getRun(record.id)?.error).toMatch(/persona "fetcher" leaves no tools for this step/);
   });
 
+  it('fails a pi step before spawning when its persona leaves pi no tools after the mapping', async () => {
+    writeFileSync(join(repoRoot, '.ai/cezar/agents/basher.md'), '---\nrunner: pi\nallowedTools: [Bash]\n---\nYou run tests.\n');
+    const single: WorkflowDef = {
+      name: 'bash-only',
+      source: 'file',
+      steps: [{ id: 'b', prompt: '{{task}}', agent: 'basher', bashAllowlist: ['npm test'] }],
+    };
+    const record = manager!.startRun(single, { task: 'x', worktree: false, runner: 'claude' });
+    await settled(record.id);
+    expect(captured.spawns).toEqual([]);
+    expect(store.getRun(record.id)?.status).toBe('failed');
+    expect(store.getRun(record.id)?.error).toMatch(/persona "basher" leaves pi no tools for this step/);
+  });
+
   it('refuses a dispatch --as a persona that leaves the order no tools', async () => {
     writeFileSync(join(repoRoot, '.ai/cezar/agents/delegator.md'), '---\nallowedTools: [Task]\n---\nYou delegate.\n');
     let release!: () => void;

@@ -252,6 +252,27 @@ describe('merge order: step field > persona > project default', () => {
     expect(applyPersona({ id: 's', agent: 'reviewer', prompt: 'x' }, persona).noToolsLeft).toBeUndefined();
   });
 
+  it('checks the tools AFTER the backend mapping: pi drops a bashAllowlist-bounded Bash, so [Bash] leaves pi nothing', () => {
+    const basher: Persona = { ...persona, runner: 'pi', allowedTools: ['Bash'] };
+    const bounded = { bashAllowlist: ['npm test'] };
+    const PI_ISSUE = /^persona "reviewer" leaves pi no tools for this step/;
+    expect(personaNoToolsIssue(bounded, basher)).toMatch(PI_ISSUE);
+    // The backend the step actually spawns on decides: the caller's resolved one, else the step's
+    // runner over the persona's.
+    expect(personaNoToolsIssue({ ...bounded, runner: 'claude' }, basher)).toBeNull();
+    expect(personaNoToolsIssue(bounded, basher, 'claude')).toBeNull();
+    expect(personaNoToolsIssue(bounded, { ...basher, runner: undefined }, 'pi')).toMatch(PI_ISSUE);
+    expect(personaNoToolsIssue(bounded, { ...basher, runner: undefined }, 'claude')).toBeNull();
+    expect(personaNoToolsIssue(bounded, { ...basher, runner: undefined })).toBeNull();
+    // Without the allowlist pi can grant the whole bash tool.
+    expect(personaNoToolsIssue({}, basher)).toBeNull();
+    // An empty intersection is refused on every backend, pi included.
+    expect(personaNoToolsIssue({}, { ...basher, allowedTools: [] }, 'pi')).toMatch(/leaves no tools for this step/);
+    // And at load: a workflow step naming the pi persona is reported.
+    const checks = personaStepChecks([basher]);
+    expect(checks.personaToolsIssue({ agent: 'reviewer', ...bounded })).toMatch(PI_ISSUE);
+  });
+
   it('is the identity without a persona', () => {
     const step = { id: 's', prompt: 'x' };
     expect(applyPersona(step, undefined)).toEqual({ step, extraSkills: [] });

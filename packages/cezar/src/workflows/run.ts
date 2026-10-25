@@ -2761,7 +2761,7 @@ export class RunManager {
     if (opts.persona) {
       const orderStep = opts.workflow?.steps.find((s) => s.agent === opts.persona!.name)
         ?? (input.allowed_tools?.length ? { allowedTools: input.allowed_tools } : {});
-      const noTools = personaNoToolsIssue(orderStep, opts.persona);
+      const noTools = personaNoToolsIssue(orderStep, opts.persona, input.runner ?? opts.persona.runner ?? parent.runner);
       if (noTools) {
         note(`dispatch refused — ${noTools}`, 'danger');
         return { refused: noTools };
@@ -4949,7 +4949,7 @@ export class RunManager {
       failBeforeSpawn(`persona "${toolsStep.agent}" not found in ${PERSONA_LOCATIONS}`);
       return;
     }
-    const continueNoTools = toolsStep ? personaNoToolsIssue(toolsStep, continuePersona) : null;
+    const continueNoTools = toolsStep ? personaNoToolsIssue(toolsStep, continuePersona, continueBackend) : null;
     if (continueNoTools) {
       failBeforeSpawn(continueNoTools);
       return;
@@ -6741,7 +6741,7 @@ export class RunManager {
     const authored = step;
     const persona = authored.agent ? state.personas?.find((p) => p.name === authored.agent) : undefined;
     if (authored.agent && !persona) return `persona "${authored.agent}" not found in ${PERSONA_LOCATIONS}`;
-    const noTools = personaNoToolsIssue(authored, persona);
+    const noTools = personaNoToolsIssue(authored, persona, authored.runner ?? persona?.runner ?? taskBackend);
     if (noTools) return noTools;
     const personaResolution = applyPersona(authored, persona);
     step = personaResolution.step;

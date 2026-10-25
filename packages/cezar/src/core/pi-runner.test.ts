@@ -128,11 +128,19 @@ describe('pi RPC argv', () => {
     ).toEqual(['--mode', 'rpc', '--tools', 'read']);
   });
 
-  it('an explicit empty tool list enables no tools, never the default set', () => {
-    expect(buildPiArgs({ cwd: '/repo', userPrompt: 'task', allowedTools: [] })).toEqual(['--mode', 'rpc', '--no-tools']);
-    expect(
-      buildPiArgs({ cwd: '/repo', userPrompt: 'task', allowedTools: ['Bash'], bashAllowlist: ['npm test'] }),
-    ).toEqual(['--mode', 'rpc', '--no-tools']);
+  it.each([
+    ['an explicit empty list', { allowedTools: [] }],
+    ['only a Bash a bashAllowlist bounds', { allowedTools: ['Bash'], bashAllowlist: ['npm test'] }],
+  ])('refuses to spawn when the tool list maps to nothing: %s', async (_label, tools) => {
+    // A bin that would surface a spawn error proves the refusal comes first: nothing is spawned.
+    const runner = new PiRunner({ bin: join(tmpdir(), 'cez-pi-must-not-spawn') });
+    const events: AgentEvent[] = [];
+    const session = runner.startSession({ cwd: tmpdir(), userPrompt: 'task', ...tools }, (e) => events.push(e));
+    await expect(session.result).rejects.toThrow(/leaves pi no tools/);
+    expect(session.pid).toBeUndefined();
+    expect(session.open).toBe(false);
+    expect(events).toEqual([{ type: 'error', message: expect.stringMatching(/leaves pi no tools/) }]);
+    expect(() => buildPiArgs({ cwd: '/repo', userPrompt: 'task', ...tools })).toThrow(/leaves pi no tools/);
   });
 });
 

@@ -9,6 +9,7 @@ import {
   type PersonaIssue,
 } from '@open-mercato/cezar-contract';
 import { RUNNER_IDS, type RunnerId } from './core/agent-runner.ts';
+import { piTools } from './core/pi-runner.ts';
 import { cezarHomeDir } from './paths.ts';
 import { DEFAULT_ALLOWED_TOOLS, type WorkflowStepDef } from './workflows/types.ts';
 
@@ -280,7 +281,7 @@ export function applyPersona(step: WorkflowStepDef, persona: Persona | undefined
   };
 }
 
-type StepTools = Pick<WorkflowStepDef, 'allowedTools' | 'bashAllowlist'>;
+type StepTools = Pick<WorkflowStepDef, 'allowedTools' | 'bashAllowlist' | 'runner'>;
 
 /** The step's tools under the persona; `allowedTools` undefined = neither names a list. */
 function personaTools(step: StepTools, persona: Persona) {
@@ -294,12 +295,27 @@ function personaTools(step: StepTools, persona: Persona) {
 }
 
 /**
- * A persona that narrows a step to NO tools fails closed: an empty list reads as "the default
- * set" to a runner that skips an empty `--tools` (pi), so the step is refused instead.
+ * A persona that narrows a step to NO tools fails closed — checked after the backend's own
+ * mapping, since pi drops a bashAllowlist-bounded Bash and has no verified tool-less mode.
+ * `backend` is the runner the step spawns on, when the caller has resolved it; at load, without
+ * it, the step's or the persona's own runner is checked.
  */
-export function personaNoToolsIssue(step: StepTools, persona: Persona | undefined): string | null {
-  if (!persona || personaTools(step, persona).allowedTools?.length !== 0) return null;
-  return `persona "${persona.name}" leaves no tools for this step — its allowedTools share none with the step's`;
+export function personaNoToolsIssue(
+  step: StepTools,
+  persona: Persona | undefined,
+  backend?: RunnerId,
+): string | null {
+  if (!persona) return null;
+  const { allowedTools } = personaTools(step, persona);
+  if (allowedTools === undefined) return null;
+  if (allowedTools.length === 0) {
+    return `persona "${persona.name}" leaves no tools for this step — its allowedTools share none with the step's`;
+  }
+  const runner = backend ?? step.runner ?? persona.runner;
+  if (runner === 'pi' && piTools(allowedTools, step.bashAllowlist).length === 0) {
+    return `persona "${persona.name}" leaves pi no tools for this step — pi cannot bound Bash by a bashAllowlist, so it drops Bash, and nothing else is left`;
+  }
+  return null;
 }
 
 /** `stepsIssue`'s persona options for a project's loaded personas: names, and the no-tools check. */

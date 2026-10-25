@@ -29,7 +29,7 @@ export function graphPersonaIssues(
   personaToolsIssue?: ReturnType<typeof personaStepChecks>['personaToolsIssue'],
 ): string[] {
   const agents = graph.nodes.flatMap((n) =>
-    n.type === 'agent' ? [{ id: n.id, agent: n.agent, allowedTools: n.allowedTools, bashAllowlist: n.bashAllowlist }] : [],
+    n.type === 'agent' ? [{ id: n.id, agent: n.agent, runner: n.runner, allowedTools: n.allowedTools, bashAllowlist: n.bashAllowlist }] : [],
   );
   const issue = unknownPersonaIssue(agents, personas, 'agent node');
   if (issue) return [issue];

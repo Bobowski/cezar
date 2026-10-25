@@ -110,6 +110,17 @@ server as with any HTTPS request; cezar does not put it in any payload.
 `https://stats.openmercato.cloud` (override with `CEZ_TELEMETRY_URL`). Sends are fire-and-forget
 with a 3 s timeout and never block or break cezar.
 
+### Push notifications (not telemetry)
+
+A separate, opt-in network destination: on a hosted cockpit, **Settings → Notifications → This
+device: enable push** subscribes that one device to Web Push. From then on the server sends a
+message when a task needs you — waiting, in review or failed — and no cockpit tab of your account
+is visible. It goes to the push service the device's browser chose (Google's for Chrome, Apple's
+for Safari, Mozilla's for Firefox), encrypted end-to-end so the push service cannot read it, and it
+carries the task's title and status only — never a prompt, path or diff. Turning it off, or signing
+that device out, removes the subscription. Nothing is sent from a cockpit where no device enabled
+it, and a local cockpit never offers it (push needs HTTPS).
+
 ## Withdrawing
 
 `cezar telemetry disable` or the switch in Settings → Privacy stops sending immediately — a

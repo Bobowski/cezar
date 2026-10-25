@@ -153,6 +153,7 @@ describe('cockpit authentication', () => {
       'GET /icon.svg',
       'GET /manifest.webmanifest', // rendered from the public brand, like the shell's <head>
       'GET /open-mercato.svg',
+      'GET /sw.js', // the service worker: build asset names and the public brand icon only
     ]);
   });
 

@@ -167,7 +167,31 @@ const CHAT_DENIED: ReadonlyArray<readonly [method: string, RegExp]> = [
   ['WRITE', /^\/env-files$/],
   ['*', /^\/secrets(?:\/|$)/],
   ['*', /^\/tracker\/connection(?:\/|$)/],
+  // Sweeps over every run in the project, the owner's included.
+  ['WRITE', /^\/runs\/(?:archive-finished|read-all)$/],
 ];
+
+/** What a chat's run- or group-scoped write acts on; undefined for anything else. */
+export type ChatMutationTarget = { run: string } | { group: string };
+
+/**
+ * The run or variant group a chat's request would change (spec 2026-10-24-cockpit-chat §5) —
+ * the guard then lets it through only for tasks the chat itself started. Reads are `read`'s.
+ */
+export function chatMutationTarget(method: string, pathname: string): ChatMutationTarget | undefined {
+  if (method === 'GET' || method === 'HEAD' || !pathname.startsWith(`${API}/`)) return undefined;
+  const rest = pathname.slice(API.length);
+  const path = /^\/p\/[^/]+(\/.*)$/.exec(rest)?.[1] ?? rest;
+  const match = /^\/(runs|groups)\/([^/]+)(?:\/|$)/.exec(path);
+  if (!match) return undefined;
+  let id: string;
+  try {
+    id = decodeURIComponent(match[2]!);
+  } catch {
+    id = match[2]!;
+  }
+  return match[1] === 'runs' ? { run: id } : { group: id };
+}
 
 /** Workspace-level reads a chat may make with a project: discovery, and an automation check's poll. */
 const CHAT_WORKSPACE_READS: readonly RegExp[] = [/^\/projects$/, /^\/health$/, /^\/models$/, new RegExp(`^/automation-checks/${SEGMENT}$`)];

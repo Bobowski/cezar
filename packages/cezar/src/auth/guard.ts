@@ -4,7 +4,7 @@ import type { ApiTokenScope, AuthUser } from '@open-mercato/cezar-contract';
 import { isLoopbackHostHeader } from '../server/capabilities.ts';
 import { apiTokenAllows, isApiToken } from './api-tokens.ts';
 import { verifyHostKey, isHostKey } from './host-key.ts';
-import { isRunToken, runTokenAllows, verifyRunToken, type RunTokenClaims } from './run-tokens.ts';
+import { chatMutationTarget, isRunToken, runTokenAllows, verifyRunToken, type ChatMutationTarget, type RunTokenClaims } from './run-tokens.ts';
 import type { AuthService } from './service.ts';
 
 /**
@@ -117,6 +117,9 @@ export interface AuthGuardOptions {
   enforced: () => boolean;
   /** Whether the run a token names is still running — a finished task's token opens nothing. */
   isRunLive: (claims: RunTokenClaims) => boolean | Promise<boolean>;
+  /** Whether a chat started the task (or every task of the group) its write targets — never
+   *  another chat or itself (spec 2026-10-24-cockpit-chat §5). Absent: a chat changes no run. */
+  chatOwns?: (claims: RunTokenClaims, target: ChatMutationTarget) => boolean | Promise<boolean>;
 }
 
 export function principalOf(c: Context): Principal | undefined {
@@ -159,6 +162,10 @@ export function createAuthGuard(options: AuthGuardOptions): MiddlewareHandler<Au
       if (!claims || !(await options.isRunLive(claims))) return unauthorized(c);
       if (!runTokenAllows(claims, c.req.method, c.req.path)) {
         return c.json({ error: 'forbidden: a task may not call this route' }, 403);
+      }
+      const target = claims.scope === 'author' ? chatMutationTarget(c.req.method, c.req.path) : undefined;
+      if (target && !(await options.chatOwns?.(claims, target))) {
+        return c.json({ error: 'forbidden: a chat may act only on the tasks it started' }, 403);
       }
       c.set('principal', { kind: 'run', role: 'agent', ...claims });
       return next();

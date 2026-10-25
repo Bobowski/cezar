@@ -73,6 +73,11 @@ No other routes: the chat is a run. `RunRecord.kind` is optional (old records pa
 - No secrets: the chat token is refused an env file's content, render and rerender, every env-file
   write, the secret store and the tracker connection; `GET /env-files` (paths and variable NAMES)
   stays readable. The prompt says so, and that file tools must not open `.env` files either.
+- A chat changes only the tasks it started: every write under `/runs/:id/…` or
+  `/groups/:groupId/…` from its token (messages, Continue, cancel, archive, PATCH, DELETE,
+  remove-worktree, a pick) needs the run — or every run of the group — to carry
+  `createdBy: chat:<its id>`, else `403` (the guard's `chatOwns`). Another chat and the chat
+  itself carry none, so neither is ever a target; the bulk archive and read-all sweeps are refused.
 - Hosted: the chat is behind sign-in like every run.
 
 ## 6. Zero config

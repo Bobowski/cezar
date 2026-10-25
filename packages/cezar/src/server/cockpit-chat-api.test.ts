@@ -32,6 +32,7 @@ describe('cockpit chat API', () => {
     active = new Set();
     const manager = {
       isActive: (id: string) => active.has(id),
+      cancel: () => true,
       startRun: (workflow: WorkflowDef, input: StartRunInput) => {
         started.push({ workflow, input });
         return store.createRun({
@@ -133,6 +134,44 @@ describe('cockpit chat API', () => {
     expect((await put(id, { ...input, enabled: true, expectedRevision: revision + 1 })).status).toBe(200);
     expect((await put(id, { ...input, name: 'Again', expectedRevision: revision + 2 }, chat.bearer)).status).toBe(403);
     expect((await put(id, { ...input, enabled: false, expectedRevision: revision + 2 }, chat.bearer)).status).toBe(200);
+  });
+
+  it('acts only on the tasks it started — never the owner\'s, another chat\'s, another chat, or itself', async () => {
+    const chat = liveChat();
+    const other = liveChat();
+    const task = (over: Record<string, unknown> = {}) => store.createRun({ title: 't', workflow: 'quick-task', task: 't', steps: [], ...over });
+    const mine = task({ createdBy: `chat:${chat.id}` });
+    const targets = {
+      owner: task().id,
+      otherChats: task({ createdBy: `chat:${other.id}` }).id,
+      otherChat: other.id,
+      itself: chat.id,
+    };
+    const mutations: Array<[string, (id: string) => string, unknown?]> = [
+      ['POST', (id) => `/runs/${id}/messages`, { text: 'hi' }],
+      ['POST', (id) => `/runs/${id}/continue`, {}],
+      ['POST', (id) => `/runs/${id}/cancel`],
+      ['POST', (id) => `/runs/${id}/archive`, {}],
+      ['POST', (id) => `/runs/${id}/remove-worktree`],
+      ['PATCH', (id) => `/runs/${id}`, { title: 'x' }],
+      ['DELETE', (id) => `/runs/${id}`],
+    ];
+    const call = (method: string, path: string, body?: unknown) =>
+      apiRequest(app, `/api/v1/p/boot${path}`, { method, headers: { ...json, ...chat.bearer }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    for (const [name, id] of Object.entries(targets)) {
+      for (const [method, path, body] of mutations) expect((await call(method, path(id), body)).status, `${method} ${path(id)} (${name})`).toBe(403);
+      // Reading stays the read scope's.
+      expect((await call('GET', `/runs/${id}`)).status, name).toBe(200);
+    }
+    expect((await call('POST', `/runs/${mine.id}/cancel`)).status).toBe(200);
+    // Bulk sweeps reach every run, so they are no chat's.
+    expect((await call('POST', '/runs/archive-finished')).status).toBe(403);
+    expect((await call('POST', '/runs/read-all')).status).toBe(403);
+    // A variant group is the chat's only when every run in it is.
+    task({ groupId: 'g-owner', variant: 'a' });
+    const picked = task({ groupId: 'g-mine', variant: 'a', createdBy: `chat:${chat.id}` });
+    expect((await call('POST', '/groups/g-owner/pick', { runId: 'x' })).status).toBe(403);
+    expect((await call('POST', '/groups/g-mine/pick', { runId: picked.id })).status).not.toBe(403);
   });
 
   it('the chat token is author on its own project even with sign-in off — never admin, never another project', async () => {

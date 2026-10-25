@@ -1952,14 +1952,23 @@ export function createApp(deps: ServerDeps) {
   const backup = deps.backup ?? new BackupService({ version: deps.version, runs: deps.semaphore });
   // A restore without a restart replaces auth.json and the sessions file under this service.
   backup.onRestored(() => auth.reloadSessions());
+  /** The project a run token names: the boot one, or an already-built context (never built here). */
+  const tokenProject = async (projectId: string | undefined): Promise<{ store: RunStore; manager: RunManager } | undefined> =>
+    projectId === undefined || projectId === 'default' || projectId === (await resolveBootProject())
+      ? { store: deps.store, manager: deps.manager }
+      : contexts.peek(projectId);
   app.use('/api/*', createAuthGuard({
     service: auth,
     enforced: authIsEnforced,
-    isRunLive: async ({ runId, projectId }) => {
-      if (projectId === undefined || projectId === 'default' || projectId === (await resolveBootProject())) {
-        return deps.manager.isActive(runId);
-      }
-      return contexts.peek(projectId)?.manager.isActive(runId) ?? false;
+    isRunLive: async ({ runId, projectId }) => (await tokenProject(projectId))?.manager.isActive(runId) ?? false,
+    chatOwns: async ({ runId: chatId, projectId }, target) => {
+      const store = (await tokenProject(projectId))?.store;
+      if (!store) return false;
+      // A chat never starts a chat, so `createdBy` alone rules out another chat and itself.
+      const owned = (run: RunRecord | undefined) => run !== undefined && !isChatRun(run) && run.createdBy === chatCreatedBy(chatId);
+      if ('run' in target) return owned(store.getRun(target.run));
+      const group = store.listRuns().filter((run) => run.groupId === target.group);
+      return group.length > 0 && group.every(owned);
     },
   }) as unknown as MiddlewareHandler);
   // An SSE stream is authenticated once, when it opens; each keepalive tick re-asks whether the

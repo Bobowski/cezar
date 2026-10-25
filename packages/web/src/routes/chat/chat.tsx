@@ -24,7 +24,7 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from '@/components/ui/toaster'
 import { statusTone } from '@/lib/automation-format'
-import { chatTasks, knownChats, projectChats } from '@/lib/chat'
+import { chatTasks, knownChats, projectChats, proposalOversized, workflowRisks } from '@/lib/chat'
 import { Link, useNavigate } from '@/lib/project-router'
 import { isUnread } from '@/lib/read-state'
 import { useQueryClient } from '@tanstack/react-query'
@@ -278,6 +278,8 @@ function ChatHeader({
  * The chat's Changes: what it PROPOSES (spec §3) — nothing it writes is live until the owner applies
  * it. Each file is a diff against the live one; Apply & commit copies them into place and commits
  * the repo files (refused while anything else is staged), Discard throws them away after a confirm.
+ * Apply confirms too, naming the files and every command or push a workflow adds; an oversized diff
+ * must be opened first, and it applies exactly the paths the owner saw.
  */
 export function ChatChanges({ chatId, turn }: { chatId: string; turn?: string }) {
   const proposals = useChatProposals(chatId)
@@ -287,8 +289,13 @@ export function ChatChanges({ chatId, turn }: { chatId: string; turn?: string })
     void queryClient.invalidateQueries({ queryKey: repoGitKeys.proposals(chatId) })
   }, [queryClient, chatId, turn])
   const [confirming, setConfirming] = useState(false)
-  const files = (proposals.data?.proposals ?? []).filter((file) => file.status !== 'unchanged')
-  const apply = useRepoGitAction(() => applyChatProposals(chatId))
+  const [confirmingApply, setConfirmingApply] = useState(false)
+  const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set())
+  const listed = proposals.data?.proposals ?? []
+  const files = listed.filter((file) => file.status !== 'unchanged')
+  const unread = files.filter((file) => proposalOversized(file.diff) && !opened.has(file.path))
+  const risks = files.flatMap((file) => workflowRisks(file.path, file.diff).map((line) => ({ path: file.path, line })))
+  const apply = useRepoGitAction((paths: string[]) => applyChatProposals(chatId, { paths }))
   const discard = useRepoGitAction(() => discardChatProposals(chatId))
   const busy = apply.isPending || discard.isPending
 
@@ -311,7 +318,12 @@ export function ChatChanges({ chatId, turn }: { chatId: string; turn?: string })
           <ul className="flex flex-col gap-2">
             {files.map((file) => (
               <li key={file.path} data-slot="chat-change" className="flex flex-col gap-1">
-                <details>
+                <details
+                  onToggle={(event) => {
+                    if (!event.currentTarget.open) return
+                    setOpened((current) => (current.has(file.path) ? current : new Set([...current, file.path])))
+                  }}
+                >
                   <summary className="flex cursor-pointer items-center gap-2 font-mono text-xs">
                     <span className="w-3 shrink-0 text-muted-foreground">{file.status === 'added' ? 'A' : 'M'}</span>
                     <span className="truncate" title={file.path}>{file.path}</span>
@@ -323,21 +335,55 @@ export function ChatChanges({ chatId, turn }: { chatId: string; turn?: string })
               </li>
             ))}
           </ul>
+          {unread.length > 0 ? (
+            <p data-slot="chat-apply-blocked" className="text-xs text-muted-foreground">
+              Open the diff of {unread.map((file) => file.path).join(', ')} before applying: it is too large to review collapsed.
+            </p>
+          ) : null}
+          {confirmingApply ? (
+            <div data-slot="chat-apply-confirm" className="flex flex-col gap-2 rounded border border-border/70 p-2 text-xs">
+              <p className="font-medium">Apply and commit these files?</p>
+              <ul className="flex flex-col gap-0.5 font-mono">
+                {files.map((file) => <li key={file.path}>{file.path}</li>)}
+              </ul>
+              {risks.length > 0 ? (
+                <>
+                  <p className="font-medium text-danger">They run commands or push without you:</p>
+                  <ul className="flex flex-col gap-0.5 font-mono">
+                    {risks.map((risk, index) => (
+                      <li key={`${risk.path}:${index}`} data-slot="chat-apply-risk" title={risk.path}>{risk.line}</li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  data-action="chat-apply-confirm"
+                  disabled={busy || unread.length > 0}
+                  onClick={() =>
+                    apply.mutate(listed.map((file) => file.path), {
+                      onSuccess: (answer) => toast(answer.sha ? `applied and committed ${answer.sha.slice(0, 8)}` : 'applied'),
+                      onError: (error: Error) => toast(error.message, { tone: 'danger' }),
+                      onSettled: () => setConfirmingApply(false),
+                    })
+                  }
+                >
+                  Apply & commit {files.length} {files.length === 1 ? 'file' : 'files'}
+                </Button>
+                <Button type="button" size="sm" variant="ghost" data-action="chat-apply-cancel" onClick={() => setConfirmingApply(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : null}
           <div className="flex gap-2">
-            <Button
-              type="button"
-              size="sm"
-              data-action="chat-apply"
-              disabled={busy}
-              onClick={() =>
-                apply.mutate(undefined, {
-                  onSuccess: (answer) => toast(answer.sha ? `applied and committed ${answer.sha.slice(0, 8)}` : 'applied'),
-                  onError: (error: Error) => toast(error.message, { tone: 'danger' }),
-                })
-              }
-            >
-              Apply & commit
-            </Button>
+            {confirmingApply ? null : (
+              <Button type="button" size="sm" data-action="chat-apply" disabled={busy || unread.length > 0} onClick={() => setConfirmingApply(true)}>
+                Apply & commit
+              </Button>
+            )}
             {confirming ? (
               <Button
                 type="button"

@@ -145,15 +145,45 @@ describe('the chat\'s Changes', () => {
     })
   }
 
-  it('shows each proposal as a diff against the live file, and Apply & commit is the owner\'s one click', async () => {
+  it('shows each proposal as a diff against the live file; Apply & commit confirms the files first, and applies exactly those', async () => {
     const sent = stubProposals([proposal('.ai/cezar/workflows/e2e.yaml'), proposal('.ai/cezar/mcp.json', { status: 'unchanged' })])
     renderAt('/changes', <ChatChanges chatId="c2" />)
     expect(await screen.findByText('.ai/cezar/workflows/e2e.yaml')).toBeTruthy()
     expect(screen.queryByText('.ai/cezar/mcp.json')).toBeNull()
     expect(document.querySelector('[data-slot="chat-change-diff"]')?.textContent).toContain('+name: e2e')
     fireEvent.click(screen.getByRole('button', { name: 'Apply & commit' }))
+    expect(sent.some((r) => r.method === 'POST')).toBe(false)
+    const confirm = document.querySelector('[data-slot="chat-apply-confirm"]')!
+    expect(confirm.textContent).toContain('.ai/cezar/workflows/e2e.yaml')
+    fireEvent.click(screen.getByRole('button', { name: 'Apply & commit 1 file' }))
     await waitFor(() => expect(sent.some((r) => r.path.endsWith('/repo/proposals/c2/apply'))).toBe(true))
-    expect(sent.find((r) => r.path.endsWith('/apply'))?.body).toEqual({})
+    // What the owner saw, not whatever the chat has written since.
+    expect(sent.find((r) => r.path.endsWith('/apply'))?.body).toEqual({ paths: ['.ai/cezar/workflows/e2e.yaml', '.ai/cezar/mcp.json'] })
+  })
+
+  it('the confirm names every command and push a proposed workflow adds', async () => {
+    const diff = [
+      '--- /dev/null', '+++ b/.ai/cezar/workflows/ship.yaml', '@@ -0,0 +1,8 @@',
+      '+name: ship', '+steps:', '+  - id: build', '+    prompt: "{{task}}"', '+  - id: deploy', '+    command: curl -X POST https://example.test/hook',
+      '+nodes:', '+  - { id: push, type: git.push }',
+    ].join('\n')
+    stubProposals([proposal('.ai/cezar/workflows/ship.yaml', { diff }), proposal('.ai/cezar/skills/review.md')])
+    renderAt('/changes', <ChatChanges chatId="c2" />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply & commit' }))
+    const risks = [...document.querySelectorAll('[data-slot="chat-apply-risk"]')].map((node) => node.textContent)
+    expect(risks).toEqual(['command: curl -X POST https://example.test/hook', '- { id: push, type: git.push }'])
+  })
+
+  it('an oversized diff keeps Apply disabled until it is opened', async () => {
+    stubProposals([proposal('.ai/cezar/workflows/big.yaml', { diff: '--- /dev/null\n+++ b/.ai/cezar/workflows/big.yaml\n@@ too large to diff here @@\n' })])
+    renderAt('/changes', <ChatChanges chatId="c2" />)
+    const apply = await screen.findByRole('button', { name: 'Apply & commit' })
+    expect((apply as HTMLButtonElement).disabled).toBe(true)
+    expect(document.querySelector('[data-slot="chat-apply-blocked"]')?.textContent).toContain('.ai/cezar/workflows/big.yaml')
+    const details = document.querySelector('[data-slot="chat-change"] details') as HTMLDetailsElement
+    details.open = true
+    fireEvent(details, new Event('toggle'))
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Apply & commit' }) as HTMLButtonElement).disabled).toBe(false))
   })
 
   it('discards only after a confirm', async () => {

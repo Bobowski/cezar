@@ -29,3 +29,23 @@ export function knownChats<R extends Pick<RunRecord, 'id' | 'kind'>>(chats: read
   for (const run of runs ?? []) if (isChatRun(run)) byId.set(run.id, run)
   return [...byId.values()]
 }
+
+/** More diff lines than a reviewer reads collapsed; the server's own caps mark the rest. */
+const LONG_DIFF_LINES = 400
+
+/** A proposal whose diff the owner must open before Apply (spec §3): one the server could not
+ *  diff or truncated, or one too long to have been read collapsed. */
+export function proposalOversized(diff: string): boolean {
+  return diff.includes('@@ too large to diff here @@') || diff.includes('… (diff truncated)') || diff.split('\n').length > LONG_DIFF_LINES
+}
+
+/** What a proposed workflow adds that runs or leaves the machine unattended: every `command`
+ *  (step or check node) and every push, PR or webhook node, as the added diff lines read. */
+export function workflowRisks(path: string, diff: string): string[] {
+  if (!path.startsWith('.ai/cezar/workflows/')) return []
+  return diff
+    .split('\n')
+    .filter((line) => line.startsWith('+') && !line.startsWith('+++'))
+    .map((line) => line.slice(1).trim())
+    .filter((line) => /(^|[\s{,"'])command["']?\s*:/.test(line) || /\b(?:git\.push|pr\.create|notify\.webhook)\b/.test(line))
+}

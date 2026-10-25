@@ -1,5 +1,11 @@
 import { z } from 'zod';
 import { agentConfigFileContentSchema, agentConfigListingSchema } from './agent-config.ts';
+import {
+  deletePersonaResponseSchema,
+  personaFileResponseSchema,
+  personasResponseSchema,
+  putPersonaResponseSchema,
+} from './agents.ts';
 import { apiTokensResponseSchema, authOkResponseSchema, createApiTokenResponseSchema } from './auth.ts';
 import {
   agentAccountDetailsResponseSchema,
@@ -307,6 +313,10 @@ export const routeContracts = {
   'GET /skills': { summary: 'The skills the project\'s agents can use.', response: list(skillSchema) },
   'GET /skills/importable': { summary: 'Skills found in agent folders that can be imported.', response: list(importableSkillSchema) },
   'POST /skills/refresh': { summary: 'Re-read skills from disk and the team repo.', response: list(skillSchema), destructive: false },
+  'GET /agents': { summary: 'The project\'s personas: named agents (prompt, runner, model, tools, skills) that workflow steps and dispatched tasks run as.', response: personasResponseSchema },
+  'GET /agents/:name': { summary: 'One persona and its Markdown file as written.', response: personaFileResponseSchema },
+  'PUT /agents/:name': { summary: 'Create or replace a project persona as .ai/cezar/agents/<name>.md (frontmatter + system prompt).', response: putPersonaResponseSchema, destructive: true },
+  'DELETE /agents/:name': { summary: 'Delete a project persona\'s file.', response: deletePersonaResponseSchema, destructive: true },
 
   // ---- projects ---------------------------------------------------------------
   'GET /projects': { summary: 'Every project this cockpit serves, with status and branch.', response: projectsResponseSchema },

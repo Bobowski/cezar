@@ -111,7 +111,7 @@ describe('DATA_GITIGNORE_ENTRIES covers everything cezar writes under .ai/cezar/
     // from the ignore list IS the feature. `workflows/` and `skills/` are the project's own
     // playbooks; `config.json` is the optional per-repo config a team may well want in git; the
     // `.gitignore` is the file itself, which git has to be able to see.
-    const committable = new Set(['workflows', 'skills', 'config.json', '.gitignore']);
+    const committable = new Set(['workflows', 'skills', 'agents', 'config.json', '.gitignore']);
     const missing = [...writtenUnderDataDir()]
       .filter((name) => !committable.has(name))
       .filter((name) => !wanted.includes(name) && !wanted.includes(`${name}/`));

@@ -61,6 +61,7 @@ const FAMILY_SETS: Record<string, string> = {
   workflows: 'workflows',
   plan: 'workflows',
   skills: 'skills',
+  agents: 'workflows',
   projects: 'projects',
   fs: 'projects',
   repo: 'repo',

@@ -24,8 +24,8 @@ export const DATA_GITIGNORE_ENTRIES = [
   // The per-project attachment library (#929): every named file a user attaches to any task is
   // copied here. It is USER content — a production log, an internal PDF, a brief — so it must
   // never surface in their `git status`, let alone ride a `git add -A` into a public repo. This
-  // list is a per-entry allowlist rather than a blanket `*` on purpose (`workflows/` and
-  // `skills/` alongside it are meant to be committable), which means a new state directory that
+  // list is a per-entry allowlist rather than a blanket `*` on purpose (`workflows/`, `skills/`
+  // and `agents/` — the personas — alongside it are meant to be committable), which means a new state directory that
   // is not named here is covered by nothing at all. `data-gitignore.test.ts` guards that rule.
   'attachments/',
   'worktrees/',

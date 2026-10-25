@@ -227,7 +227,7 @@ export function gitActionPolicy(state: GitActionState): GitAction | null {
  */
 export function isTrunkTask(
   run: { worktreePath?: string; worktree?: boolean; readOnly?: boolean },
-  config: { landing?: string; landingBlocked?: string | null } | undefined,
+  config: { landing?: string | null; landingBlocked?: string | null } | undefined,
 ): boolean {
   return (
     !run.worktreePath &&

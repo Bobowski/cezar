@@ -42,7 +42,7 @@ import { findIconCandidates, readProjectIcon, removeProjectIcons, saveProjectIco
 import { brandingBody, brandingState, deriveBranding, readBrandingAsset, removeBranding, saveBranding, type BrandingState } from '../workspace/branding.ts';
 import { searchCheckout } from './code-search.ts';
 import { refreshRepoSync, watchRepoSync } from '../git-sync.ts';
-import { checkoutWatchSupported, pollCheckout, watchCheckout } from './checkout-watch.ts';
+import { checkoutWatchSupported, pollCheckout, statusFingerprint, watchCheckout } from './checkout-watch.ts';
 import { ignoredAmong, rerenderTaskEnvFiles } from '../worktree-env.ts';
 import { projectTerminalOwner } from './terminal/sessions.ts';
 import { ProjectServices, type ServiceProject } from '../services/manager.ts';
@@ -9501,16 +9501,22 @@ export function createApp(deps: ServerDeps) {
     })
     .get('/repo/watch', queryZodValidator(codeWatchQuerySchema), async (c) => {
       const project = c.get('project');
-      const { tree } = c.req.valid('query');
+      const { tree, stamp } = c.req.valid('query');
+      // The stamp is for a client with no socket (cockpit-polish §3.2): a digest, never a path.
+      const withStamp = async (watch: CodeWatch, root: string | null): Promise<CodeWatch> => {
+        if (stamp !== '1') return watch;
+        const print = root ? await statusFingerprint(root) : null;
+        return { ...watch, stamp: print === null ? null : createHash('sha256').update(print).digest('hex').slice(0, 16) };
+      };
       const none: CodeWatch = { topic: null };
       if (tree === undefined) {
         const info = await getRepoInfo(project.root);
         const watch: CodeWatch = { topic: info ? codeWatchTopic(project.id, 'main', info.root) : null };
-        return c.json(watch, 200);
+        return c.json(await withStamp(watch, info?.root ?? null), 200);
       }
       const checkout = runCheckout(project, tree);
       const watch: CodeWatch = checkout.ok ? { topic: codeWatchTopic(project.id, tree, checkout.cwd) } : none;
-      return c.json(watch, 200);
+      return c.json(await withStamp(watch, checkout.ok ? checkout.cwd : null), 200);
     })
     // The same two reads for a task's worktree; its file read/write/rename/delete already exist.
     .get('/runs/:id/tree', async (c) => {

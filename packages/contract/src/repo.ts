@@ -326,10 +326,16 @@ export const codeSearchResultSchema = z.object({
 export type CodeSearchResult = z.infer<typeof codeSearchResultSchema>;
 
 /** `GET /repo/watch`: the topic that rings (a bare counter) when the checkout changes on disk,
- *  or `null` where this host cannot watch a tree — the client then revalidates on focus. */
-export const codeWatchQuerySchema = z.object({ tree: z.string().min(1).max(64).optional() });
+ *  or `null` where this host has no socket hub — the client then revalidates on focus.
+ *  `?stamp=1` adds `stamp`, an opaque digest of the pending changes (null when git cannot say),
+ *  for a client that cannot hold the socket: a remote cockpit's Preview compares two of them
+ *  (spec 2026-10-24-cockpit-polish §3.2). */
+export const codeWatchQuerySchema = z.object({ tree: z.string().min(1).max(64).optional(), stamp: z.literal('1').optional() });
 export type CodeWatchQuery = z.infer<typeof codeWatchQuerySchema>;
-export const codeWatchSchema = z.object({ topic: z.string().nullable() });
+export const codeWatchSchema = z.object({
+  topic: z.string().nullable(),
+  stamp: z.string().regex(/^[0-9a-f]{16}$/).nullable().optional(),
+});
 export type CodeWatch = z.infer<typeof codeWatchSchema>;
 
 /**

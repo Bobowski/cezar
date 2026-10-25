@@ -15,7 +15,7 @@ import {
   type Persona,
 } from './personas.ts';
 import { stepsIssue, unknownPersonaIssue } from './workflows/types.ts';
-import { loadWorkflows } from './workflows/load.ts';
+import { loadIssueLines, loadWorkflows } from './workflows/load.ts';
 
 const REVIEWER = `---
 name: reviewer
@@ -143,6 +143,8 @@ describe('discovery', () => {
     );
     expect(issues).toHaveLength(2);
     for (const issue of issues) expect(issue.message).toMatch(WARNING);
+    // `cezar run` says the file loaded: a warning, not a skip.
+    for (const line of loadIssueLines(workflows, issues)) expect(line).toMatch(/^! warning .*(elsewhere|graph)\.yaml: /);
   });
 
   it('a workflow file or graph whose persona leaves a step no tools is a load issue', async () => {
@@ -162,6 +164,7 @@ describe('discovery', () => {
         { path: expect.stringContaining('graph.yaml'), message: expect.stringMatching(/^agent node "n": persona "empty" leaves no tools/) },
       ]),
     );
+    for (const line of loadIssueLines(workflows, issues)) expect(line).toMatch(/^! skipped .*(steps|graph)\.yaml: /);
   });
 
   it('reports a broken file by name and keeps loading the rest', async () => {

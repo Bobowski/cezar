@@ -24,7 +24,7 @@ import { armRepoHandle } from './runs/arm-repo-handle.ts';
 import { RunStore } from './runs/store.ts';
 import { RunManager } from './workflows/run.ts';
 import { resolveTrackerAgentEnv } from './server/tracker/agent-credentials.ts';
-import { loadWorkflows } from './workflows/load.ts';
+import { loadIssueLines, loadWorkflows } from './workflows/load.ts';
 import { resolveCapabilities, trustedOperator } from './server/capabilities.ts';
 import { startServer, WorkspaceEventBus } from './server/server.ts';
 import {
@@ -636,7 +636,7 @@ async function runCommand(
   }
   await initWorkspace(repoRoot);
   const { workflows, issues } = await loadWorkflows(repoRoot);
-  for (const issue of issues) console.error(`! skipped ${issue.path}: ${issue.message}`);
+  for (const line of loadIssueLines(workflows, issues)) console.error(line);
   const name = workflowName ?? 'quick-task';
   const workflow = workflows.find((w) => w.name === name);
   if (!workflow) {

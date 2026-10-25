@@ -21,7 +21,13 @@ export interface WorkflowLoadIssue {
   message: string;
 }
 
-const graphAgentNodes = (graph: Pick<WorkflowGraph, 'nodes'>) =>
+/** `cezar run`'s stderr lines for the load issues: a file that still loaded is a warning, not a skip. */
+export function loadIssueLines(workflows: readonly WorkflowDef[], issues: readonly WorkflowLoadIssue[]): string[] {
+  const loaded = new Set(workflows.flatMap((w) => (w.path ? [w.path] : [])));
+  return issues.map((issue) => `! ${loaded.has(issue.path) ? 'warning' : 'skipped'} ${issue.path}: ${issue.message}`);
+}
+
+const graphAgentNodes =(graph: Pick<WorkflowGraph, 'nodes'>) =>
   graph.nodes.flatMap((n) =>
     n.type === 'agent' ? [{ id: n.id, agent: n.agent, runner: n.runner, allowedTools: n.allowedTools, bashAllowlist: n.bashAllowlist }] : [],
   );

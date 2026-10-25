@@ -313,7 +313,9 @@ describe('personas on workflow steps', () => {
     await settled(record.id);
     expect(captured.spawns).toEqual([]);
     expect(store.getRun(record.id)?.status).toBe('failed');
-    expect(store.getRun(record.id)?.error).toMatch(/persona "ghost"/);
+    expect(store.getRun(record.id)?.error).toBe(
+      'step "g" failed: persona "ghost" not found in .ai/cezar/agents, ~/.cezar/agents or .claude/agents — a global persona (~/.cezar/agents) must exist on the machine that runs the workflow',
+    );
   });
 
   describe('on graph nodes', () => {

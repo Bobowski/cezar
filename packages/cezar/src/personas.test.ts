@@ -123,14 +123,26 @@ describe('discovery', () => {
     ]);
   });
 
-  it('validates a workflow file\'s agent: at load time — an unknown persona is a load issue', async () => {
+  it("a committed workflow naming a persona missing on this machine (a global one) loads, with a warning", async () => {
     put(join(repoRoot, '.ai/cezar/agents'), 'reviewer.md', 'Review.');
     put(join(repoRoot, '.ai/cezar/workflows'), 'ok.yaml', 'name: ok\nsteps:\n  - id: review\n    agent: reviewer\n');
-    put(join(repoRoot, '.ai/cezar/workflows'), 'bad.yaml', 'name: bad\nsteps:\n  - id: review\n    agent: ghost\n');
+    put(join(repoRoot, '.ai/cezar/workflows'), 'elsewhere.yaml', 'name: elsewhere\nsteps:\n  - id: review\n    agent: ghost\n');
+    put(
+      join(repoRoot, '.ai/cezar/workflows'),
+      'graph.yaml',
+      'version: 2\nname: graph\nnodes:\n  - { id: start, type: start }\n  - { id: n, type: agent, prompt: x, agent: ghost }\nedges:\n  - { from: start, to: n }\n',
+    );
     const { workflows, issues } = await loadWorkflows(repoRoot);
-    expect(workflows.map((w) => w.name)).toContain('ok');
-    expect(workflows.map((w) => w.name)).not.toContain('bad');
-    expect(issues).toEqual([{ path: expect.stringContaining('bad.yaml'), message: expect.stringMatching(/^step "review": unknown agent persona "ghost"/) }]);
+    expect(workflows.map((w) => w.name)).toEqual(expect.arrayContaining(['ok', 'elsewhere', 'graph']));
+    const WARNING = /unknown agent persona "ghost" .* — loaded anyway: a global persona \(~\/\.cezar\/agents\) may be missing on this machine; the step fails when it runs until it exists$/;
+    expect(issues).toEqual(
+      expect.arrayContaining([
+        { path: expect.stringContaining('elsewhere.yaml'), message: expect.stringMatching(/^step "review": /) },
+        { path: expect.stringContaining('graph.yaml'), message: expect.stringMatching(/^agent node "n": /) },
+      ]),
+    );
+    expect(issues).toHaveLength(2);
+    for (const issue of issues) expect(issue.message).toMatch(WARNING);
   });
 
   it('a workflow file or graph whose persona leaves a step no tools is a load issue', async () => {

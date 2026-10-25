@@ -200,7 +200,7 @@ export const projectedWorkflowDefSchema = z.object({
 });
 export type ProjectedWorkflowDef = z.infer<typeof projectedWorkflowDefSchema>;
 
-/** A workflow file that failed to load. Reported, never fatal — the catalog still answers. */
+/** A workflow file that failed to load, or loaded with a warning (a persona missing on this machine). Reported, never fatal — the catalog still answers. */
 export const workflowLoadIssueSchema = z.object({
   path: z.string(),
   message: z.string(),

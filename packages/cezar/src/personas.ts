@@ -338,6 +338,12 @@ export function personaSystemPrompt(persona: Pick<Persona, 'name' | 'description
 /** Where a persona search looked, for a "not found" message. */
 export const PERSONA_LOCATIONS = `${PERSONAS_DIR}, ~/.cezar/agents or ${CLAUDE_AGENTS_DIR}`;
 
+/** Why a step naming a missing persona fails at run time — a committed workflow still loads
+ *  when it names a global persona this machine lacks. */
+export function personaNotFound(name: string): string {
+  return `persona "${name}" not found in ${PERSONA_LOCATIONS} — a global persona (~/.cezar/agents) must exist on the machine that runs the workflow`;
+}
+
 /** The persona names, for `stepsIssue`. */
 export function personaNames(personas: readonly Persona[]): Set<string> {
   return new Set(personas.map((p) => p.name));

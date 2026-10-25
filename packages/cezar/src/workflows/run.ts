@@ -65,7 +65,7 @@ import {
   applyPersona,
   personaNoToolsIssue,
   loadPersonas,
-  PERSONA_LOCATIONS,
+  personaNotFound,
   personaSystemPrompt,
   personasDispatchPrompt,
   type Persona,
@@ -4953,7 +4953,7 @@ export class RunManager {
     // read-only agent with the default tools.
     const continuePersona = toolsStep?.agent ? state.personas?.find((p) => p.name === toolsStep.agent) : undefined;
     if (toolsStep?.agent && !continuePersona) {
-      failBeforeSpawn(`persona "${toolsStep.agent}" not found in ${PERSONA_LOCATIONS}`);
+      failBeforeSpawn(personaNotFound(toolsStep.agent));
       return;
     }
     const continueNoTools = toolsStep ? personaNoToolsIssue(toolsStep, continuePersona, continueBackend) : null;
@@ -6747,7 +6747,7 @@ export class RunManager {
     // run an agent without the limits its author asked for.
     const authored = step;
     const persona = authored.agent ? state.personas?.find((p) => p.name === authored.agent) : undefined;
-    if (authored.agent && !persona) return `persona "${authored.agent}" not found in ${PERSONA_LOCATIONS}`;
+    if (authored.agent && !persona) return personaNotFound(authored.agent);
     const noTools = personaNoToolsIssue(authored, persona, authored.runner ?? persona?.runner ?? taskBackend);
     if (noTools) return noTools;
     const personaResolution = applyPersona(authored, persona);

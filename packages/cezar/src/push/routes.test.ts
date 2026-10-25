@@ -5,7 +5,7 @@ import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AuthEnv, Principal } from '../auth/guard.ts';
 import { createPresenceBeats } from './presence.ts';
-import { PRESENCE_BEATS_PER_MINUTE, PRESENCE_TABS_PER_CALLER, pushRoutes } from './routes.ts';
+import { PRESENCE_BEATS_PER_MINUTE, PRESENCE_IDLE_EVICT_MS, PRESENCE_TABS_PER_CALLER, presenceLimiter, pushRoutes } from './routes.ts';
 import { PushSubscriptionStore } from './state.ts';
 import { generateVapidKeys } from './web-push.ts';
 
@@ -102,6 +102,21 @@ describe('the presence beat route (spec 2026-10-24-mobile-cockpit §4)', () => {
     const { beat } = presenceApp('s1', () => 0);
     for (let i = 0; i < PRESENCE_TABS_PER_CALLER; i += 1) expect((await beat(`tab-${i}`, true, `${i}`.padStart(24, '0'))).status).toBe(200);
     expect((await beat('one-more', true, 'c'.repeat(24))).status).toBe(429);
+  });
+
+  it('forgets a caller idle past ten minutes when another caller beats, and keeps a recent one', () => {
+    let clock = 0;
+    const allowed = presenceLimiter(() => clock);
+    allowed('owner\0s:gone', 'tab-1');
+    clock += 5 * 60_000;
+    allowed('owner\0s:recent', 'tab-1');
+    expect(allowed.callers()).toBe(2);
+    clock += PRESENCE_IDLE_EVICT_MS - 5 * 60_000 + 1;
+    allowed('owner\0s:new', 'tab-1');
+    expect(allowed.callers()).toBe(2);
+    clock += PRESENCE_IDLE_EVICT_MS;
+    allowed('owner\0s:new', 'tab-1');
+    expect(allowed.callers()).toBe(1);
   });
 
   it('refuses a device that is not a subscription id', async () => {

@@ -39,11 +39,27 @@ export const PRESENCE_BEATS_PER_MINUTE = 4;
 export const PRESENCE_TABS_PER_CALLER = 20;
 const PRESENCE_WINDOW_MS = 60_000;
 
+/** A caller silent this long is forgotten, so sessions and devices that never beat again do not pile up. */
+export const PRESENCE_IDLE_EVICT_MS = 10 * 60_000;
+
 /** A refused beat only means push may hold a little longer; it is never queued. */
-function presenceLimiter(now: () => number) {
+export function presenceLimiter(now: () => number) {
   const byCaller = new Map<string, Map<string, number[]>>();
-  return (caller: string, tab: string): boolean => {
+  const lastSeen = new Map<string, number>();
+  let lastSweep = -Infinity;
+  const sweep = (at: number) => {
+    if (at - lastSweep < PRESENCE_WINDOW_MS) return;
+    lastSweep = at;
+    for (const [caller, seen] of lastSeen) {
+      if (at - seen <= PRESENCE_IDLE_EVICT_MS) continue;
+      lastSeen.delete(caller);
+      byCaller.delete(caller);
+    }
+  };
+  const check = (caller: string, tab: string): boolean => {
     const at = now();
+    sweep(at);
+    lastSeen.set(caller, at);
     const tabs = byCaller.get(caller) ?? new Map<string, number[]>();
     for (const [id, times] of tabs) {
       const recent = times.filter((t) => at - t < PRESENCE_WINDOW_MS);
@@ -57,6 +73,8 @@ function presenceLimiter(now: () => number) {
     else byCaller.delete(caller);
     return allowed;
   };
+  /** Callers the limiter still remembers (tests). */
+  return Object.assign(check, { callers: () => lastSeen.size });
 }
 
 export function pushRoutes(deps: {

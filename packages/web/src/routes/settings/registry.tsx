@@ -14,6 +14,7 @@ import {
   PaletteIcon,
   KeyRoundIcon,
   BlocksIcon,
+  UsersIcon,
   ShieldCheckIcon,
   TicketIcon,
   FileKeyIcon,
@@ -32,6 +33,7 @@ import { InstructionsSection } from './instructions-section'
 import { KeyboardSection } from './keyboard-section'
 import { BookmarkletsSection } from './bookmarklets-section'
 import { NotificationsSection } from './notifications-section'
+import { PersonasSection } from './personas-section'
 import { PrivacySection } from './privacy-section'
 import { ProjectsSection } from './projects-section'
 import { ResourcesSection } from './resources-section'
@@ -67,6 +69,7 @@ export type SettingsSectionId =
   | 'appearance'
   | 'accounts'
   | 'agents'
+  | 'personas'
   | 'agent-config'
   | 'instructions'
   | 'tasks'
@@ -141,6 +144,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description: 'Providers, default runner and models.',
     icon: BotIcon,
     component: AgentsSection,
+    scope: 'project',
+  },
+  {
+    id: 'personas',
+    title: 'Personas',
+    description: 'Named agents for workflow steps and dispatched tasks: prompt, runner, model, tools.',
+    icon: UsersIcon,
+    component: PersonasSection,
     scope: 'project',
   },
   {

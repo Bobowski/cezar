@@ -7,6 +7,7 @@ import type {
 import { trackerReadScope, resolveApiUrl, workspaceBrandingLogoResponseSchema } from '@open-mercato/cezar-api-client'
 import type { TaskActionSurface, TrackerAutomationOptions } from '@open-mercato/cezar-api-client'
 import type { BrandingRemovableKind, BrandingUploadKind, SetWorkspaceBrandingInput, WorkspaceBranding } from '@open-mercato/cezar-api-client'
+import type { DeletePersonaResponse, PersonaFileResponse, PersonasResponse, PutPersonaInput, PutPersonaResponse } from '@open-mercato/cezar-api-client'
 import { trackerWatchHandleSchema, trackerWatchSnapshotSchema, type TrackerWatchInput } from "@open-mercato/cezar-api-client"
 import type {
   AgentConfigFileContent,
@@ -752,6 +753,45 @@ export async function refreshSkills(): Promise<Skill[]> {
   return unwrap(
     await cez.api.v1.p[':projectId'].skills.refresh.$post({ param: { projectId: queryScope() } }),
     '/skills/refresh',
+  )
+}
+
+// ---- personas (spec 2026-10-24-personas) ----
+
+export async function getPersonas(opts?: ReadOptions): Promise<PersonasResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].agents.$get({ param: { projectId: queryScope() } }, init(opts)),
+    '/agents',
+  )
+}
+
+/** One persona and its file exactly as written — the editor opens on this, never on a rebuild. */
+export async function getPersonaFile(name: string, opts?: ReadOptions): Promise<PersonaFileResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].agents[':name'].$get(
+      { param: { projectId: queryScope(), name: encodeURIComponent(name) } },
+      init(opts),
+    ),
+    `/agents/${encodeURIComponent(name)}`,
+  )
+}
+
+export async function putPersona(name: string, body: PutPersonaInput): Promise<PutPersonaResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].agents[':name'].$put({
+      param: { projectId: queryScope(), name: encodeURIComponent(name) },
+      json: body,
+    }),
+    `/agents/${encodeURIComponent(name)}`,
+  )
+}
+
+export async function deletePersona(name: string): Promise<DeletePersonaResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].agents[':name'].$delete({
+      param: { projectId: queryScope(), name: encodeURIComponent(name) },
+    }),
+    `/agents/${encodeURIComponent(name)}`,
   )
 }
 

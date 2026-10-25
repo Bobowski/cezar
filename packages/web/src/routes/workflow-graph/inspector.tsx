@@ -1,7 +1,7 @@
 import { ArrowRightIcon, CopyIcon, Trash2Icon } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 
-import { useSkills, useWorkflows } from '@/api/queries'
+import { usePersonas, useSkills, useWorkflows } from '@/api/queries'
 import type { WorkflowGraph, WorkflowGraphNode } from '@open-mercato/cezar-api-client'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -37,6 +37,28 @@ function SkillField({ value, onChange }: { value: string | undefined; onChange: 
         onChange={(v) => onChange(v || undefined)}
         options={[
           { value: '', label: 'no skill' },
+          ...(!known && value !== undefined ? [{ value, label: `${value} (not in this repo)` }] : []),
+          ...names.map((n) => ({ value: n, label: n })),
+        ]}
+      />
+    </Field>
+  )
+}
+
+/** The agent's persona (spec 2026-10-24-personas): its runner, model, tools and prompt fill what
+ *  this node leaves out. A name the list does not know is kept, like the skill's. */
+function PersonaField({ value, onChange }: { value: string | undefined; onChange: (agent: string | undefined) => void }) {
+  const personas = usePersonas()
+  const names = (personas.data?.personas ?? []).map((p) => p.name)
+  const known = value === undefined || names.includes(value)
+  return (
+    <Field label="persona">
+      <InspectorSelect
+        value={value ?? ''}
+        onChange={(v) => onChange(v || undefined)}
+        aria-label="persona"
+        options={[
+          { value: '', label: 'no persona' },
           ...(!known && value !== undefined ? [{ value, label: `${value} (not in this repo)` }] : []),
           ...names.map((n) => ({ value: n, label: n })),
         ]}
@@ -372,12 +394,13 @@ export function Inspector({
             <Textarea value={node.prompt ?? ''} rows={5} className="font-mono text-xs" onChange={(e) => set({ prompt: e.target.value })} />
           </Field>
           <SkillField value={node.skill} onChange={(skill) => set({ skill })} />
+          <PersonaField value={node.agent} onChange={(agent) => set({ agent })} />
           <div className="grid grid-cols-2 gap-2">
             <Field label="runner">
               <InspectorSelect
                 value={node.runner ?? ''}
                 onChange={(v) => set({ runner: v || undefined })}
-                options={[{ value: '', label: 'task default' }, ...RUNNERS.map((r) => ({ value: r, label: r }))]}
+                options={[{ value: '', label: node.agent ? 'persona / task default' : 'task default' }, ...RUNNERS.map((r) => ({ value: r, label: r }))]}
               />
             </Field>
             <Field label="model">

@@ -198,6 +198,10 @@ import {
 /** Backends whose runner honors `resume` (AgentRunSpec) — graph `session.continue` and the
  *  verdict nudge need it. OpenCode always starts a new session; Cursor has no resume yet. */
 const RESUMABLE_BACKENDS: ReadonlySet<RunnerId> = new Set<RunnerId>(['claude', 'codex', 'pi']);
+
+/** Backends whose runner maps `allowedTools` onto the CLI (docs/reference.md, backend table) — a
+ *  persona's tool list is a note everywhere else (spec 2026-10-24-personas §5). */
+const TOOL_ALLOWLIST_BACKENDS: ReadonlySet<RunnerId> = new Set<RunnerId>(['claude', 'pi']);
 /**
  * The reply to a one-question ask card without the card's own framing: a click on an option
  * sends `<header>: <label>` (`web/src/routes/task-thread/ask-card.tsx` `formatAnswer`), a typed
@@ -6723,8 +6727,8 @@ export class RunManager {
       const personaBackend = step.runner ?? taskBackend;
       if (persona.source === 'claude' && personaBackend !== 'claude') {
         emit({ type: 'note', stepId: step.id, message: `persona "${persona.name}" comes from .claude/agents (Claude-only) — on ${personaBackend} it brings its instructions only` });
-      } else if (persona.allowedTools && !authored.allowedTools && personaBackend !== 'claude') {
-        emit({ type: 'note', stepId: step.id, message: `persona "${persona.name}": its tool list applies on Claude only — ${personaBackend} ignores allowedTools` });
+      } else if (persona.allowedTools && !authored.allowedTools && !TOOL_ALLOWLIST_BACKENDS.has(personaBackend)) {
+        emit({ type: 'note', stepId: step.id, message: `persona "${persona.name}": its tool list is not enforced on ${personaBackend}, which ignores allowedTools` });
       }
     }
 

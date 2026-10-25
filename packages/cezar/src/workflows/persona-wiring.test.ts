@@ -69,7 +69,10 @@ describe('personas on workflow steps', () => {
     await run('git', [...GIT_ID, 'commit', '-q', '-m', 'base'], { cwd: repoRoot });
     const agents = join(repoRoot, '.ai/cezar/agents');
     mkdirSync(agents, { recursive: true });
-    writeFileSync(join(agents, 'implementer.md'), '---\nrunner: codex\ndescription: Writes the change.\n---\nYou implement.\n');
+    writeFileSync(
+      join(agents, 'implementer.md'),
+      '---\nrunner: codex\ndescription: Writes the change.\nallowedTools: [Read, Edit]\n---\nYou implement.\n',
+    );
     writeFileSync(
       join(agents, 'reviewer.md'),
       '---\nrunner: claude\nmodel: opus\nallowedTools: [Read, Grep, Glob]\n---\nYou review and never edit.\n',
@@ -122,6 +125,10 @@ describe('personas on workflow steps', () => {
       ['implement', 'codex'],
       ['review', 'claude'],
     ]);
+    // Codex ignores allowedTools: the persona's list is a note there, never a silent promise.
+    const notes = store.readEvents(record.id).filter((e) => e.type === 'note').map((e) => String((e as { message?: unknown }).message));
+    expect(notes).toContain('persona "implementer": its tool list is not enforced on codex, which ignores allowedTools');
+    expect(notes.some((n) => n.includes('persona "reviewer"'))).toBe(false);
   });
 
   it("a Continue of the reviewer's session keeps the persona's tools and prompt", async () => {

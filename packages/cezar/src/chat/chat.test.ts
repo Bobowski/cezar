@@ -125,6 +125,31 @@ describe('the chat\'s tool policy', () => {
     expect(buildClaudeArgs({ userPrompt: 'hi', cwd: '/repo', mcpServers: [server] }, {}, '/tmp/mcp.json')).not.toContain('--strict-mcp-config');
   });
 
+  it('never writes what runs code on the owner\'s next session, even where the checkout has none yet', () => {
+    const empty = chatToolPolicy('c1', { repo: [], ai: [], cezar: [], proposals: [] });
+    for (const path of [
+      './.claude/**', '**/.claude/**', './.mcp.json', '**/CLAUDE.md', '**/AGENTS.md', './.github/**',
+      '**/.envrc', './.husky/**', '**/package.json',
+    ]) {
+      for (const tool of ['Edit', 'Write', 'MultiEdit']) expect(empty.disallowedTools, `${tool}(${path})`).toContain(`${tool}(${path})`);
+    }
+    expect(empty.disallowedTools).toContain('NotebookEdit');
+  });
+
+  it('runs in dontAsk whatever CEZ_APPROVAL_GATE says, with --settings that allow nothing', () => {
+    const policy = chatToolPolicy('c1', tree);
+    for (const env of [{}, { CEZ_APPROVAL_GATE: '1' }]) {
+      const args = buildClaudeArgs({ userPrompt: 'hi', cwd: '/repo', ...policy }, env);
+      expect(args[args.indexOf('--permission-mode') + 1]).toBe('dontAsk');
+      const settings = JSON.parse(args[args.indexOf('--settings') + 1]!) as { permissions: { allow: unknown[]; defaultMode: string } };
+      expect(settings.permissions).toEqual({ allow: [], defaultMode: 'dontAsk' });
+    }
+    // A task keeps the gate's mode and passes no settings.
+    const task = buildClaudeArgs({ userPrompt: 'hi', cwd: '/repo' }, { CEZ_APPROVAL_GATE: '1' });
+    expect(task[task.indexOf('--permission-mode') + 1]).toBe('acceptEdits');
+    expect(task).not.toContain('--settings');
+  });
+
   it('reaches claude as --disallowedTools', () => {
     const args = buildClaudeArgs({ userPrompt: 'hi', cwd: '/repo', allowedTools, disallowedTools });
     expect(args[args.indexOf('--disallowedTools') + 1]).toBe(disallowedTools.join(','));

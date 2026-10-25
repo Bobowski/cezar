@@ -92,7 +92,13 @@ list's live SSE copies.
   top-level entries as they are at launch, `.ai/`'s, `.ai/cezar/`'s (the live configuration
   included) and other chats' proposals. A top-level file the checkout does not have yet is outside
   that list; `allowedTools` under `dontAsk` still refuses it unless the repo's own settings allow
-  it. A chat cannot push, cannot open a PR, cannot change settings (`admin` scope is never granted
+  it. Whatever the checkout has, writes that would run code on the owner's next session are denied
+  outright: `.claude/**`, `.mcp.json`, `CLAUDE.md`, `AGENTS.md`, `.github/**`, `.envrc`,
+  `.husky/**` and any `package.json`. A chat runs in `dontAsk` whatever `CEZ_APPROVAL_GATE` says
+  (`acceptEdits` would pass an edit no allow rule names), with an inline `--settings` that adds no
+  allow rule. Its file tools cannot `Read` `.env*`, `~/.cezar/**`, `.claude/**` or any `.ai/cezar/`
+  entry beyond its five paths and the proposals, and `GET /runs/:id/files` serves a run principal
+  only what the repository index reaches. A chat cannot push, cannot open a PR, cannot change settings (`admin` scope is never granted
   to a run), and cannot apply or discard its own proposals.
 - **Its only MCP server is cezar's bridge.** A chat is handed no project or private MCP server:
   `.ai/cezar/mcp.local.json` is not read for it (its servers carry the owner's tokens and the

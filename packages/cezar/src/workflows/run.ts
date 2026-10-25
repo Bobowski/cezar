@@ -59,7 +59,7 @@ import {
   sanitizeAttachmentName,
   storedAttachmentExtension,
 } from '@open-mercato/cezar-contract';
-import type { AgentEvent, AgentRunResult, ContentBlock } from '../core/agent-runner.ts';
+import type { AgentEvent, AgentRunResult, AgentRunSpec, ContentBlock } from '../core/agent-runner.ts';
 import { discoverSkills, type Skill } from '../skills.ts';
 import { automationsReachable } from '../automations/builtin-skill.ts';
 import { AUTOMATIONS_PROMPT } from '../automations/prompts.ts';
@@ -895,7 +895,7 @@ function sessionTools(
   state: Pick<ActiveRun, 'readOnly' | 'chat' | 'cwd'>,
   step: Pick<WorkflowStepDef, 'allowedTools' | 'bashAllowlist'> | undefined,
   runId: string,
-): { allowedTools: string[]; bashAllowlist: string[] | undefined; disallowedTools?: string[]; strictMcp?: boolean } {
+): { allowedTools: string[]; bashAllowlist: string[] | undefined } & Pick<AgentRunSpec, 'disallowedTools' | 'strictMcp' | 'permissionMode' | 'settings'> {
   // Listed per launch: the deny rules name what is beside the chat's proposals right now. Its only
   // MCP server is cezar's bridge (`privateMcpForLaunch`), so the repo's own config stays out too.
   if (state.chat) return { ...chatToolPolicy(runId, listChatTree(state.cwd)), bashAllowlist: undefined, strictMcp: true };

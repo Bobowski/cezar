@@ -32,6 +32,12 @@ const WRITE_TOOLS = ['Edit', 'Write', 'MultiEdit'] as const;
  *  anywhere, and the network is how a prompt injection would leave with what the chat read. */
 const CHAT_DENIED_WHOLE_TOOLS = ['Bash', 'BashOutput', 'KillShell', 'WebFetch', 'WebSearch', 'Agent', 'Task', 'NotebookEdit'] as const;
 const ruleOf = (path: string) => (path.endsWith('/') ? `${path}**` : path);
+/** Writes that would run code on the owner's next session — agent settings and hooks, MCP config,
+ *  agent instructions, CI, git hooks, npm scripts — denied whether or not the checkout has them yet. */
+const CHAT_UNWRITABLE = [
+  './.claude/**', '**/.claude/**', './.mcp.json', '**/CLAUDE.md', '**/AGENTS.md', './.github/**',
+  '**/.envrc', './.husky/**', '**/package.json',
+] as const;
 
 /** Secrets a chat's file tools never read, wherever they sit: env files, cezar's per-user home and
  *  the agent's own settings (hooks, allow rules). `.ai/cezar/` beyond its five paths is added per tree. */
@@ -73,7 +79,12 @@ export function listChatTree(repoRoot: string): ChatTreeListing {
  * top-level entries, `.ai/`'s, `.ai/cezar/`'s (the live configuration included) and other chats'
  * proposals. Codex/OpenCode/Cursor ignore both lists (#430); the prompt says the same thing.
  */
-export function chatToolPolicy(chatId: string, tree: ChatTreeListing): { allowedTools: string[]; disallowedTools: string[] } {
+export function chatToolPolicy(chatId: string, tree: ChatTreeListing): {
+  allowedTools: string[];
+  disallowedTools: string[];
+  permissionMode: 'dontAsk';
+  settings: Record<string, unknown>;
+} {
   const root = chatProposalRoot(chatId);
   const allowedTools = [
     'Read', 'Grep', 'Glob',
@@ -91,6 +102,7 @@ export function chatToolPolicy(chatId: string, tree: ChatTreeListing): { allowed
     ...anchored('.ai/cezar/', [...new Set([...known, ...tree.cezar])].filter((entry) => !writable.includes(entry)), 'proposals/'),
   ];
   const deniedWrites = [...new Set([
+    ...CHAT_UNWRITABLE,
     ...anchored('', tree.repo, '.ai/'),
     ...anchored('.ai/', tree.ai, 'cezar/'),
     ...anchored('.ai/cezar/', [...new Set([...known, ...tree.cezar])], 'proposals/'),
@@ -103,6 +115,10 @@ export function chatToolPolicy(chatId: string, tree: ChatTreeListing): { allowed
       ...WRITE_TOOLS.flatMap((tool) => deniedWrites.map((path) => `${tool}(${path})`)),
       ...deniedReads.map((path) => `Read(${path})`),
     ],
+    // `dontAsk` whatever `CEZ_APPROVAL_GATE` says: `acceptEdits` would let an edit through that no
+    // allow rule names. The settings add no allow rule of their own; the deny rules above win anyway.
+    permissionMode: 'dontAsk',
+    settings: { permissions: { allow: [], defaultMode: 'dontAsk' } },
   };
 }
 

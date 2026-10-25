@@ -395,7 +395,7 @@ export class ClaudeCliRunner implements AgentRunner {
  * `--permission-mode dontAsk` keeps headless runs non-interactive: tools in
  * `--allowedTools` proceed and everything else is denied instead of prompting.
  * `CEZ_APPROVAL_GATE=1` selects Claude's `acceptEdits` mode, but cezar still
- * has no cockpit permission response channel.
+ * has no cockpit permission response channel; `spec.permissionMode` pins it.
  */
 export function buildClaudeArgs(
   spec: AgentRunSpec,
@@ -411,8 +411,9 @@ export function buildClaudeArgs(
     '--verbose',
     '--include-partial-messages',
     '--permission-mode',
-    env.CEZ_APPROVAL_GATE === '1' ? 'acceptEdits' : 'dontAsk',
+    spec.permissionMode ?? (env.CEZ_APPROVAL_GATE === '1' ? 'acceptEdits' : 'dontAsk'),
   ];
+  if (spec.settings) args.push('--settings', JSON.stringify(spec.settings));
   args.push('--append-system-prompt', appendClaudeSystemPrompt(spec.systemPrompt));
   // Pin the session so the user can `claude --resume <sessionId>` in the repo
   // to take over interactively after a run. With `resume` we reopen the

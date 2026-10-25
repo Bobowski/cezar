@@ -103,6 +103,8 @@ describe('the cockpit chat run', () => {
     expect(opening.disallowedTools).toEqual(policy.disallowedTools);
     expect(opening.disallowedTools).toContain('Bash');
     expect(opening.bashAllowlist).toBeUndefined();
+    expect(opening.permissionMode).toBe('dontAsk');
+    expect(opening.settings).toEqual(policy.settings);
     expect(opening.systemPrompt).toContain('You are the cezar chat for this project');
     expect(opening.systemPrompt).toContain('"proj"');
     const server = cezarServer(opening)!;
@@ -122,6 +124,7 @@ describe('the cockpit chat run', () => {
     expect(resumed.cwd).toBe(repoRoot);
     expect(resumed.allowedTools).toEqual(chatToolPolicy(record.id, listChatTree(repoRoot)).allowedTools);
     expect(resumed.disallowedTools).toContain('Bash');
+    expect(resumed.permissionMode).toBe('dontAsk');
     expect(resumed.systemPrompt).toContain('You are the cezar chat for this project');
     expect(cezarServer(resumed)?.args).toContain('--as-run');
     // A Continue is a new launch: a new nonce, so the opening session's token no longer opens anything.

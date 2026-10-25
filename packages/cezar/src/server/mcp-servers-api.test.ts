@@ -92,6 +92,19 @@ describe('MCP servers API (spec 2026-10-24-easy-mcp §4)', () => {
     expect((await apiRequest(instance, '/api/v1/mcp-servers/registry')).status).toBe(400);
   });
 
+  it('refuses a literal env or header value in the committed file — a reference or Private instead', async () => {
+    const { instance } = await app();
+    const env = await apiRequest(instance, '/api/v1/mcp-servers/project/x', put({ command: 'x', env: { API_KEY: 'pasted-literal-key' } }));
+    expect(env.status).toBe(400);
+    expect(((await env.json()) as { error: string }).error).toMatch(/use a secret reference/);
+    const header = await apiRequest(instance, '/api/v1/mcp-servers/project/y', put({ url: 'https://mcp.example.com', headers: { Authorization: 'Bearer pasted' } }));
+    expect(header.status).toBe(400);
+    expect(() => readFileSync(projectMcpPath(root), 'utf8')).toThrow();
+    // A reference is fine there, and the private file takes a literal.
+    expect((await apiRequest(instance, '/api/v1/mcp-servers/project/x', put({ command: 'x', env: { API_KEY: 'k ${{ secrets.API_KEY }}' } }))).status).toBe(200);
+    expect((await apiRequest(instance, '/api/v1/mcp-servers/private/x', put({ command: 'x', env: { API_KEY: 'pasted-literal-key' } }))).status).toBe(200);
+  });
+
   it('proxies the registry, marked unreviewed and cached', async () => {
     const { id, instance } = await app();
     const first = mcpRegistryResponseSchema.parse(await (await apiRequest(instance, '/api/v1/mcp-servers/registry?q=found')).json());

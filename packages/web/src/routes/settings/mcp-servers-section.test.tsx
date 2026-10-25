@@ -81,6 +81,14 @@ describe('MCP servers settings (spec 2026-10-24-easy-mcp)', () => {
     expect(JSON.parse(server.body!).definition.headers).toEqual({ Authorization: 'Bearer ${{ secrets.STRIPE_SECRET_KEY }}' })
   })
 
+  it('a manual definition is Private unless the operator picks Project', async () => {
+    setup()
+    await screen.findByText('context7')
+    fireEvent.click(screen.getByRole('button', { name: /add manually/i }))
+    expect((await screen.findByLabelText('Private') as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByLabelText('Project') as HTMLInputElement).checked).toBe(false)
+  })
+
   it('is read-only when the cockpit says so', async () => {
     setup({ ...LIST, editable: false })
     await screen.findByText('context7')

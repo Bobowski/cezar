@@ -94,6 +94,21 @@ export const mcpServerDefinitionSchema = z
   });
 export type McpServerDefinition = z.infer<typeof mcpServerDefinitionSchema>;
 
+/**
+ * Why `def` may not go into the committed `mcp.json`: an env or header value with no secret
+ * reference is a literal, and in a committed file a literal there is a pasted credential waiting
+ * to be pushed. Null when every such value is (or holds) a reference.
+ */
+export function mcpProjectLiteralIssue(def: McpServerDefinition): string | null {
+  const literal = (record: Record<string, string> | undefined) => Object.entries(record ?? {}).find(([, value]) => !hasMcpSecretReference(value))?.[0];
+  const env = literal(def.env);
+  const header = literal(def.headers);
+  const where = env !== undefined ? `env ${env}` : header !== undefined ? `header ${header}` : null;
+  return where
+    ? `${where} holds a literal value: the project file is committed, so use a secret reference (\${{ secrets.NAME }}) — or add the server as Private`
+    : null;
+}
+
 /** The transport a definition speaks. */
 export function mcpTransportOf(def: McpServerDefinition): McpTransport {
   return def.type ?? (def.command ? 'stdio' : 'http');

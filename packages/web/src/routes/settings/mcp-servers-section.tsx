@@ -409,7 +409,8 @@ function ManualSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (ope
   const invalidate = useInvalidate()
   const [name, setName] = useState('')
   const [text, setText] = useState('{\n  "command": "npx",\n  "args": ["-y", "some-mcp-server"],\n  "env": { "API_KEY": "${{ secrets.SOME_API_KEY }}" }\n}')
-  const [scope, setScope] = useState<McpScope>('project')
+  // A pasted block is the likeliest to carry a literal key: this machine only, unless the operator picks Project.
+  const [scope, setScope] = useState<McpScope>('private')
   const [error, setError] = useState<string | null>(null)
   const adding = useMutation({
     mutationFn: async () => {

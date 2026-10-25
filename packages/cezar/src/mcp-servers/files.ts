@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { McpScope, McpServerDefinition } from '@open-mercato/cezar-contract';
+import { mcpProjectLiteralIssue, type McpScope, type McpServerDefinition } from '@open-mercato/cezar-contract';
 import { privateMcpPath, projectMcpPath } from '../core/private-mcp.ts';
 import { ensureDataGitignore } from '../data-gitignore.ts';
 import { renameWithRetry } from '../fs-rename.ts';
@@ -14,7 +14,7 @@ import { renameWithRetry } from '../fs-rename.ts';
  * before the bytes land, so the private file and every temp name are ignored from their first write.
  */
 
-export type McpFileWrite = { ok: true } | { ok: false; status: 404 | 409; error: string };
+export type McpFileWrite = { ok: true } | { ok: false; status: 400 | 404 | 409; error: string };
 
 export function mcpFilePath(repoRoot: string, scope: McpScope): string {
   return scope === 'project' ? projectMcpPath(repoRoot) : privateMcpPath(repoRoot);
@@ -76,6 +76,9 @@ async function update(
 
 /** Store `definition` under `name`, replacing one of that name. */
 export function putMcpServer(repoRoot: string, scope: McpScope, name: string, definition: McpServerDefinition): Promise<McpFileWrite> {
+  // The committed file holds references only (spec 2026-10-24-easy-mcp §5).
+  const literal = scope === 'project' ? mcpProjectLiteralIssue(definition) : null;
+  if (literal) return Promise.resolve({ ok: false, status: 400, error: literal });
   return update(repoRoot, scope, (servers) => {
     servers[name] = definition;
     return true;

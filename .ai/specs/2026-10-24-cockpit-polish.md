@@ -110,7 +110,10 @@ Behaviour (§3):
   for its own HMR client (`/@vite/client`, Next's development `__NEXT_DATA__`,
   webpack-dev-server's client) where same-origin allows; a loopback page nobody can read starts
   with Auto-reload ON (§6), one click to turn off. The poll mutes an untracked path that moved on
-  3 looks in a row for 5 min (a dev SQLite file, a log). New Browser columns open at
+  3 looks in a row for 5 min (a dev SQLite file, a log); the macOS/Windows watch drops paths
+  `git check-ignore` names (answers cached 60 s) and mutes an untracked path that moved in 3
+  consecutive 2 s windows the same way. In the cockpit, a 4th auto-reload inside 30 s pauses
+  Auto-reload with a note and a Resume button. New Browser columns open at
   the project's `browserColumn.width` (45 %), kept from the last divider drag.
 - ~~3.3 Full screen~~ — `FullscreenRegion` (`components/fullscreen-region.tsx`) on every
   workspace window (thread, Changes, Browser, …), the terminal drawer, Scripts, Docker and the

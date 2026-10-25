@@ -3,6 +3,8 @@ import { watch, type FSWatcher } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { ignoredAmong } from '../worktree-env.ts';
+
 /**
  * "Something changed on disk" for an open Code page (spec `2026-10-11-code-page` §4): a debounced
  * recursive watch that exists only while somebody subscribes. It reports THAT, never what — the
@@ -21,21 +23,133 @@ export function checkoutWatchSupported(platform: NodeJS.Platform = process.platf
   return platform === 'darwin' || platform === 'win32';
 }
 
-/** Start watching `root`; `changed` fires at most once per `DEBOUNCE_MS`. Returns the stop. */
-export function watchCheckout(
-  root: string,
-  changed: () => void,
-  open: typeof watch = watch,
-): () => void {
+/** What git says about a path the watch saw move. */
+export interface PathFacts {
+  ignored: boolean;
+  tracked: boolean;
+}
+export type ClassifyPaths = (root: string, paths: string[]) => Promise<Map<string, PathFacts>>;
+
+/** How long one path's ignored/tracked answer is reused: a busy log asks git once a minute. */
+export const CLASSIFY_TTL_MS = 60_000;
+/** Paths asked about tracked-ness per window; past it a path counts as tracked (never muted). */
+const MAX_TRACKED_ASKED = 200;
+
+/** `git check-ignore --stdin` for the lot, `git ls-files` for the rest. A git that fails answers
+ *  "not ignored, tracked" — the bell rings, as it did before it could ask. */
+export const classifyPaths: ClassifyPaths = async (root, paths) => {
+  const ignored = new Set(await ignoredAmong(root, paths));
+  const rest = paths.filter((path) => !ignored.has(path));
+  const asked = rest.slice(0, MAX_TRACKED_ASKED);
+  const tracked = await trackedAmong(root, asked);
+  const facts = new Map<string, PathFacts>();
+  for (const path of paths) {
+    if (ignored.has(path)) facts.set(path, { ignored: true, tracked: false });
+    else facts.set(path, { ignored: false, tracked: tracked === null || !asked.includes(path) || tracked.has(path) });
+  }
+  return facts;
+};
+
+function trackedAmong(root: string, paths: string[]): Promise<Set<string> | null> {
+  if (paths.length === 0) return Promise.resolve(new Set());
+  return new Promise((resolve) => {
+    execFile(
+      'git',
+      ['-C', root, 'ls-files', '-z', '--', ...paths.map((path) => `:(literal)${path}`)],
+      { timeout: 5_000, maxBuffer: 1024 * 1024, windowsHide: true, encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } },
+      (error: Error | null, stdout: string) => resolve(error ? null : new Set(stdout.split('\0').filter(Boolean))),
+    );
+  });
+}
+
+/**
+ * The poll's churn rule for an event-driven watch (cockpit-polish §3.2): time is cut into
+ * `POLL_INTERVAL_MS` windows, and an untracked path that moved in `CHURN_STREAK` windows in a
+ * row is muted for `CHURN_MUTE_MS` — a dev server's log or SQLite file, written per request.
+ */
+export interface WatchChurn {
+  /** The untracked paths that moved now; answers those muted right now. */
+  moved(paths: Iterable<string>): Set<string>;
+}
+
+export function createWatchChurn(now: () => number = Date.now): WatchChurn {
+  const seen = new Map<string, { window: number; streak: number; mutedUntil: number }>();
+  return {
+    moved(paths) {
+      const at = now();
+      const window = Math.floor(at / POLL_INTERVAL_MS);
+      const muted = new Set<string>();
+      for (const path of paths) {
+        const prev = seen.get(path) ?? { window: -2, streak: 0, mutedUntil: 0 };
+        if (prev.window !== window) prev.streak = prev.window === window - 1 ? prev.streak + 1 : 1;
+        prev.window = window;
+        if (prev.mutedUntil <= at && prev.streak >= CHURN_STREAK) prev.mutedUntil = at + CHURN_MUTE_MS;
+        if (prev.mutedUntil > at) {
+          muted.add(path);
+          prev.streak = 0;
+        }
+        seen.set(path, prev);
+      }
+      for (const [path, entry] of seen) if (entry.window < window - 1 && entry.mutedUntil <= at) seen.delete(path);
+      return muted;
+    },
+  };
+}
+
+export interface WatchCheckoutOptions {
+  open?: typeof watch;
+  classify?: ClassifyPaths;
+  now?: () => number;
+}
+
+/**
+ * Start watching `root`; `changed` fires at most once per `DEBOUNCE_MS`, and only for a path git
+ * does not ignore and the churn rule has not muted — the same bell the Linux poll rings, so a
+ * dev server writing a gitignored log cannot reload a preview forever. Returns the stop.
+ */
+export function watchCheckout(root: string, changed: () => void, options: WatchCheckoutOptions = {}): () => void {
+  const open = options.open ?? watch;
+  const classify = options.classify ?? classifyPaths;
+  const now = options.now ?? Date.now;
+  const churn = createWatchChurn(now);
+  const known = new Map<string, { facts: PathFacts; at: number }>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let watcher: FSWatcher | undefined;
+  let stopped = false;
+  let pending = new Set<string>();
+  let unnamed = false;
+
+  const settle = async (paths: string[], blind: boolean) => {
+    // An event without a name cannot be asked about: it rings, as every event did before.
+    if (blind) return changed();
+    const at = now();
+    for (const [path, entry] of known) if (at - entry.at > CLASSIFY_TTL_MS) known.delete(path);
+    const unknown = paths.filter((path) => !known.has(path));
+    if (unknown.length > 0) {
+      const answered = await classify(root, unknown).catch(() => new Map<string, PathFacts>());
+      for (const path of unknown) known.set(path, { facts: answered.get(path) ?? { ignored: false, tracked: true }, at });
+    }
+    if (stopped) return;
+    const live = paths.filter((path) => !known.get(path)!.facts.ignored);
+    const muted = churn.moved(live.filter((path) => !known.get(path)!.facts.tracked));
+    if (live.some((path) => !muted.has(path))) changed();
+  };
+
   try {
     watcher = open(root, { recursive: true, persistent: false }, (_event, filename) => {
-      if (typeof filename === 'string' && IGNORED.test(filename)) return;
+      if (typeof filename === 'string') {
+        const path = filename.replace(/\\/g, '/');
+        if (IGNORED.test(path)) return;
+        pending.add(path);
+      } else unnamed = true;
       if (timer) return;
       timer = setTimeout(() => {
         timer = undefined;
-        changed();
+        const paths = [...pending];
+        const blind = unnamed;
+        pending = new Set();
+        unnamed = false;
+        void settle(paths, blind);
       }, DEBOUNCE_MS);
       timer.unref?.();
     });
@@ -44,6 +158,7 @@ export function watchCheckout(
     // A tree that vanished, or a platform that refused: no bell, and the floor still holds.
   }
   return () => {
+    stopped = true;
     clearTimeout(timer);
     timer = undefined;
     try {

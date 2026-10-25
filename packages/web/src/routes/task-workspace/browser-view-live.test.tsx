@@ -1,7 +1,14 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { BrowserView, HMR_PROBE_DELAY_MS, RELOAD_SETTLE_MS, frameHmr } from './browser-view'
+import {
+  AUTO_RELOAD_BRAKE_COUNT,
+  AUTO_RELOAD_BRAKE_WINDOW_MS,
+  BrowserView,
+  HMR_PROBE_DELAY_MS,
+  RELOAD_SETTLE_MS,
+  frameHmr,
+} from './browser-view'
 
 /**
  * Live preview (spec `.ai/specs/2026-10-24-cockpit-polish.md` §3.2): Auto-reload follows what the
@@ -123,6 +130,49 @@ describe('Auto-reload', () => {
       vi.advanceTimersByTime(RELOAD_SETTLE_MS * 3)
     })
     expect(openPreviewGateway.mock.calls.length).toBe(before + 1)
+  })
+
+  it(`pauses after ${AUTO_RELOAD_BRAKE_COUNT} reloads in ${AUTO_RELOAD_BRAKE_WINDOW_MS / 1_000} s, says so, and resumes on a click`, async () => {
+    renderLive()
+    await loaded()
+    await probed()
+    const before = openPreviewGateway.mock.calls.length
+    const changeAndSettle = async () => {
+      ring()
+      await act(async () => {
+        vi.advanceTimersByTime(RELOAD_SETTLE_MS + 10)
+      })
+    }
+    for (let reload = 1; reload <= AUTO_RELOAD_BRAKE_COUNT; reload += 1) {
+      await changeAndSettle()
+      await waitFor(() => expect(openPreviewGateway.mock.calls.length).toBe(before + reload))
+    }
+    expect(document.querySelector('[data-slot="browser-auto-reload-paused"]')).toBeNull()
+    // The fourth change inside the window is a loop, not an edit: no reload, a note instead.
+    await changeAndSettle()
+    expect(openPreviewGateway.mock.calls.length).toBe(before + AUTO_RELOAD_BRAKE_COUNT)
+    expect(screen.getByText(/Auto-reload paused: the page kept changing/)).toBeTruthy()
+    expect(bell.enabled).toBe(false)
+    fireEvent.click(document.querySelector<HTMLElement>('[data-slot="browser-auto-reload-resume"]')!)
+    expect(document.querySelector('[data-slot="browser-auto-reload-paused"]')).toBeNull()
+    expect(bell.enabled).toBe(true)
+    await changeAndSettle()
+    await waitFor(() => expect(openPreviewGateway.mock.calls.length).toBe(before + AUTO_RELOAD_BRAKE_COUNT + 1))
+  })
+
+  it('a reload a window apart is no loop', async () => {
+    renderLive()
+    await loaded()
+    await probed()
+    const before = openPreviewGateway.mock.calls.length
+    for (let reload = 1; reload <= AUTO_RELOAD_BRAKE_COUNT + 2; reload += 1) {
+      ring()
+      await act(async () => {
+        vi.advanceTimersByTime(AUTO_RELOAD_BRAKE_WINDOW_MS / AUTO_RELOAD_BRAKE_COUNT + 10)
+      })
+      await waitFor(() => expect(openPreviewGateway.mock.calls.length).toBe(before + reload))
+    }
+    expect(document.querySelector('[data-slot="browser-auto-reload-paused"]')).toBeNull()
   })
 
   it('is off where hot reload came up, and a change then reloads nothing', async () => {

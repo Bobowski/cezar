@@ -69,6 +69,9 @@ const LOAD_TIMEOUT_MS = 12_000
 
 /** Auto-reload waits for the checkout to be quiet this long (cockpit-polish §3.2). */
 export const RELOAD_SETTLE_MS = 1_500
+/** At most this many auto-reloads per window; past it Auto-reload pauses until resumed. */
+export const AUTO_RELOAD_BRAKE_COUNT = 3
+export const AUTO_RELOAD_BRAKE_WINDOW_MS = 30_000
 /** After `load`, how long a hot-reload client gets to connect before the gateway is asked. */
 export const HMR_PROBE_DELAY_MS = 2_000
 
@@ -548,9 +551,21 @@ export function BrowserView({
     if (live && gatewayOrigin === null && !remoteLoopback) setHmr(frameHmr(frameRef.current))
   }
 
+  // The loop brake: a page whose own load writes into the checkout would reload forever.
+  const [braked, setBraked] = useState(false)
+  const autoReloads = useRef<number[]>([])
+  const resumeAutoReload = () => {
+    autoReloads.current = []
+    setBraked(false)
+  }
+  useEffect(() => {
+    autoReloads.current = []
+    setBraked(false)
+  }, [target])
+
   // A change reloads the page once the checkout has been quiet for a moment.
   const armed = useRef(false)
-  armed.current = live && autoReload && target !== ''
+  armed.current = live && autoReload && !braked && target !== ''
   const lastChange = useRef(changeSignal)
   useEffect(() => {
     if (changeSignal === lastChange.current) return
@@ -558,6 +573,14 @@ export function BrowserView({
     if (!armed.current) return
     const timer = setTimeout(() => {
       if (!armed.current) return
+      const at = Date.now()
+      const recent = autoReloads.current.filter((stamp) => at - stamp < AUTO_RELOAD_BRAKE_WINDOW_MS)
+      if (recent.length >= AUTO_RELOAD_BRAKE_COUNT) {
+        autoReloads.current = recent
+        setBraked(true)
+        return
+      }
+      autoReloads.current = [...recent, at]
       setStatus('loading')
       setReloadToken((token) => token + 1)
     }, RELOAD_SETTLE_MS)
@@ -666,7 +689,7 @@ export function BrowserView({
   return (
     <div data-slot="browser-view" className="flex h-full min-h-0 flex-col">
       {liveTree ? (
-        <CheckoutChangesListener tree={liveTree} enabled={autoReload && target !== ''} onCount={onCheckoutCount} />
+        <CheckoutChangesListener tree={liveTree} enabled={autoReload && !braked && target !== ''} onCount={onCheckoutCount} />
       ) : null}
       {singleTab ? null : (
       <Tabs
@@ -800,7 +823,10 @@ export function BrowserView({
               : autoReload ? 'Reloads the page when the task’s files change'
               : 'Reload the page when the task’s files change'
             }
-            onClick={() => setAutoChoice(!autoReload)}
+            onClick={() => {
+              resumeAutoReload()
+              setAutoChoice(!autoReload)
+            }}
             className="ml-1 shrink-0 text-xs"
           >
             <RefreshCwIcon aria-hidden="true" className="size-3.5" />
@@ -843,6 +869,22 @@ export function BrowserView({
           hot-reload here, let it share the page’s port — in <code className="font-mono">vite.config</code>:{' '}
           <code className="rounded bg-muted px-1 font-mono text-foreground">{'server: { hmr: { port: undefined, clientPort: undefined } }'}</code>
         </p>
+      ) : null}
+
+      {live && autoReload && braked ? (
+        <div
+          role="note"
+          data-slot="browser-auto-reload-paused"
+          className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/70 px-3 py-1.5 text-xs text-soft-foreground"
+        >
+          <span className="min-w-0 flex-1">
+            Auto-reload paused: the page kept changing ({AUTO_RELOAD_BRAKE_COUNT} reloads in{' '}
+            {AUTO_RELOAD_BRAKE_WINDOW_MS / 1_000} s).
+          </span>
+          <Button type="button" variant="outline" size="xs" data-slot="browser-auto-reload-resume" onClick={resumeAutoReload}>
+            Resume
+          </Button>
+        </div>
       ) : null}
 
       {refusal ? (

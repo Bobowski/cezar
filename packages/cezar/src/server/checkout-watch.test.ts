@@ -4,7 +4,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { CHURN_MUTE_MS, CHURN_STREAK, createChurnFilter, pollCheckout, statusFingerprint } from './checkout-watch.ts';
+import {
+  CHURN_MUTE_MS,
+  CHURN_STREAK,
+  CLASSIFY_TTL_MS,
+  POLL_INTERVAL_MS,
+  classifyPaths,
+  createChurnFilter,
+  pollCheckout,
+  statusFingerprint,
+  watchCheckout,
+  type ClassifyPaths,
+  type PathFacts,
+} from './checkout-watch.ts';
 
 /** The polling bell (spec 2026-10-24-cockpit-polish §3.2): where Linux refuses the watch. */
 
@@ -132,5 +144,100 @@ describe('statusFingerprint', () => {
   it('is null outside a repository', async () => {
     root = mkdtempSync(join(tmpdir(), 'cez-poll-none-'));
     expect(await statusFingerprint(join(root, 'missing'))).toBeNull();
+  });
+});
+
+describe('watchCheckout (macOS, Windows)', () => {
+  /** A fake recursive watch whose events the test fires. */
+  function harness(facts: Record<string, Partial<PathFacts>>, start = 10_000_000) {
+    let emit: (filename: string | null) => void = () => {};
+    const open = ((_root: string, _options: unknown, listener: (event: string, filename: string | null) => void) => {
+      emit = (filename) => listener('change', filename);
+      return { on: () => {}, close: () => {} };
+    }) as unknown as typeof import('node:fs').watch;
+    const classify = vi.fn<ClassifyPaths>(async (_root, paths) =>
+      new Map(paths.map((path) => [path, { ignored: false, tracked: true, ...facts[path] }])),
+    );
+    let clock = start;
+    const changed = vi.fn();
+    const stop = watchCheckout('/repo', changed, { open, classify, now: () => clock });
+    /** One write at `path`, then the debounce and git's answer. */
+    const write = async (path: string | null, advance = 300) => {
+      emit(path);
+      clock += advance;
+      await vi.advanceTimersByTimeAsync(advance);
+    };
+    return { write, classify, changed, stop, tick: (ms: number) => (clock += ms) };
+  }
+
+  it('a path git ignores never rings; one it does not, does — asked once a minute, not per write', async () => {
+    vi.useFakeTimers();
+    const h = harness({ 'logs/dev.log': { ignored: true, tracked: false } });
+    await h.write('logs\\dev.log');
+    await h.write('logs/dev.log');
+    expect(h.changed).not.toHaveBeenCalled();
+    expect(h.classify).toHaveBeenCalledTimes(1);
+    expect(h.classify.mock.calls[0]![1]).toEqual(['logs/dev.log']);
+    await h.write('src/app.tsx');
+    expect(h.changed).toHaveBeenCalledTimes(1);
+    h.tick(CLASSIFY_TTL_MS + 1);
+    await h.write('logs/dev.log');
+    expect(h.classify).toHaveBeenCalledTimes(3);
+    expect(h.changed).toHaveBeenCalledTimes(1);
+    h.stop();
+  });
+
+  it(`mutes an untracked path that moved in ${CHURN_STREAK} windows in a row; a tracked edit still rings`, async () => {
+    vi.useFakeTimers();
+    const h = harness({ 'dev.sqlite': { tracked: false } }, POLL_INTERVAL_MS * 1_000);
+    for (let window = 0; window < CHURN_STREAK - 1; window += 1) await h.write('dev.sqlite', POLL_INTERVAL_MS);
+    expect(h.changed).toHaveBeenCalledTimes(CHURN_STREAK - 1);
+    await h.write('dev.sqlite', POLL_INTERVAL_MS);
+    await h.write('dev.sqlite', POLL_INTERVAL_MS);
+    expect(h.changed).toHaveBeenCalledTimes(CHURN_STREAK - 1);
+    await h.write('index.html', POLL_INTERVAL_MS);
+    expect(h.changed).toHaveBeenCalledTimes(CHURN_STREAK);
+    // A tracked file that keeps moving is someone's edit: the poll never mutes one either.
+    for (let window = 0; window < CHURN_STREAK + 1; window += 1) await h.write('index.html', POLL_INTERVAL_MS);
+    expect(h.changed).toHaveBeenCalledTimes(CHURN_STREAK * 2 + 1);
+    // Five minutes on, the churning file counts again.
+    h.tick(CHURN_MUTE_MS);
+    await h.write('dev.sqlite', POLL_INTERVAL_MS);
+    expect(h.changed).toHaveBeenCalledTimes(CHURN_STREAK * 2 + 2);
+    h.stop();
+  });
+
+  it('an event without a name still rings, and nothing rings after the stop', async () => {
+    vi.useFakeTimers();
+    const h = harness({});
+    await h.write(null);
+    expect(h.changed).toHaveBeenCalledTimes(1);
+    expect(h.classify).not.toHaveBeenCalled();
+    h.stop();
+    await h.write('src/app.tsx');
+    expect(h.changed).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('classifyPaths', () => {
+  let root = '';
+  afterEach(() => {
+    if (root) rmSync(root, { recursive: true, force: true });
+    root = '';
+  });
+
+  it('asks git which paths are ignored and which are tracked', async () => {
+    root = mkdtempSync(join(tmpdir(), 'cez-watch-classify-'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { stdio: 'ignore' });
+    git('init', '-q');
+    writeFileSync(join(root, '.gitignore'), '*.log\n');
+    writeFileSync(join(root, 'index.html'), '<p>x</p>');
+    git('add', '.');
+    writeFileSync(join(root, 'dev.log'), 'x');
+    writeFileSync(join(root, 'new [1].txt'), 'x');
+    const facts = await classifyPaths(root, ['dev.log', 'index.html', 'new [1].txt']);
+    expect(facts.get('dev.log')).toEqual({ ignored: true, tracked: false });
+    expect(facts.get('index.html')).toEqual({ ignored: false, tracked: true });
+    expect(facts.get('new [1].txt')).toEqual({ ignored: false, tracked: false });
   });
 });

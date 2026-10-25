@@ -17,6 +17,7 @@ import {
   createAgentProfile,
   getAgentConfig,
   getAgentConfigFile,
+  getPersonas,
   getAgentAccountDetails,
   getAgentAccountStatus,
   getAgentProfiles,
@@ -182,6 +183,11 @@ export const queryKeys = {
   envFiles: {
     allFor: (projectId: string) => ['env-files', projectId] as const,
     list: () => ['env-files', queryScope()] as const,
+  },
+  /** The project's personas (spec 2026-10-24-personas) — Settings → Personas and the graph inspector. */
+  personas: {
+    allFor: (projectId: string) => ['personas', projectId] as const,
+    list: () => ['personas', queryScope()] as const,
   },
   secrets: {
     allFor: (projectId: string) => ['secrets', projectId] as const,
@@ -1594,6 +1600,11 @@ export function useUiState() {
     queryKey: queryKeys.uiState,
     queryFn: ({ signal }) => getUiState({ signal }),
   })
+}
+
+/** The project's personas, with the files that failed to load and whether this cockpit may edit them. */
+export function usePersonas() {
+  return useQuery({ queryKey: queryKeys.personas.list(), queryFn: ({ signal }) => getPersonas({ signal }) })
 }
 
 /** The selected project's agent-owned config files and precedence metadata. */

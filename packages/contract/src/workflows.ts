@@ -32,6 +32,8 @@ export const workflowStepDefSchema = z
     runner: runnerSchema.optional(),
     allowedTools: z.array(z.string()).optional(),
     bashAllowlist: z.array(z.string()).optional(),
+    /** Run as this project persona (spec 2026-10-24-personas); the step's own fields win. */
+    agent: z.string().min(1).optional(),
     // check step
     command: z.string().optional(),
     onFail: z
@@ -46,7 +48,7 @@ export const workflowStepDefSchema = z
      *  renamed). Omitted means every secret whose audiences include `checks`. */
     secrets: stepSecretsSchema.optional(),
   })
-  .refine((s) => Boolean(s.command) !== Boolean(s.prompt ?? s.skill), {
+  .refine((s) => Boolean(s.command) !== Boolean(s.prompt ?? s.skill ?? s.agent), {
     message: 'a step is either an agent step (prompt/skill) or a check step (command), not both',
   })
   .refine((s) => !s.secrets || Boolean(s.command), {
@@ -103,6 +105,7 @@ export const workflowGraphNodeSchema = z.discriminatedUnion('type', [
     runner: runnerSchema.optional(),
     allowedTools: z.array(z.string()).optional(),
     bashAllowlist: z.array(z.string()).optional(),
+    agent: z.string().min(1).optional(),
     verdicts: z.array(verdictName).min(1).optional(),
     session: z.object({ continue: nodeId }).optional(),
     review: z.boolean().optional(),
@@ -197,7 +200,7 @@ export const projectedWorkflowDefSchema = z.object({
 });
 export type ProjectedWorkflowDef = z.infer<typeof projectedWorkflowDefSchema>;
 
-/** A workflow file that failed to load. Reported, never fatal — the catalog still answers. */
+/** A workflow file that failed to load, or loaded with a warning (a persona missing on this machine). Reported, never fatal — the catalog still answers. */
 export const workflowLoadIssueSchema = z.object({
   path: z.string(),
   message: z.string(),

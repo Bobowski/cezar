@@ -80,6 +80,7 @@ export async function planChain(repoRoot: string, task: string): Promise<PlanRes
         userPrompt,
         cwd: repoRoot,
         allowedTools: [],
+        toolless: true,
         ...(Object.keys(profileEnv).length > 0 ? { env: profileEnv } : {}),
         model: plannerModel,
         timeoutMs: PLANNER_TIMEOUT_MS,

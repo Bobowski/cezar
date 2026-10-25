@@ -47,6 +47,20 @@ describe('cez task', () => {
     expect(h.out[0]).toContain('dispatched child-1 on branch cez/child1');
   });
 
+  it('create --as names the persona the child runs as (spec 2026-10-24-personas)', async () => {
+    const h = harness({ status: 201, body: { id: 'child-2' } });
+    expect(await runTaskCommand(['create', 'Review it', '--as', 'reviewer', '--model', 'opus'], env, h.io)).toBe(0);
+    expect(JSON.parse(String(h.calls[0]?.init?.body))).toEqual({ objective: 'Review it', model: 'opus', as: 'reviewer' });
+  });
+
+  it('create --as from a shell is refused: a persona is for a dispatched child', async () => {
+    const h = harness({ status: 201, body: { id: 'x' } });
+    const { CEZ_TASK_ID: _task, ...shell } = env;
+    expect(await runTaskCommand(['create', 'x', '--as', 'reviewer'], shell, h.io)).toBe(1);
+    expect(h.err[0]).toContain('--as needs a parent task');
+    expect(h.calls).toEqual([]);
+  });
+
   it('create surfaces a refusal with the server’s reason and a non-zero exit', async () => {
     const h = harness({ status: 409, body: { error: 'no budget left' } });
     expect(await runTaskCommand(['create', 'x'], env, h.io)).toBe(1);

@@ -64,6 +64,18 @@ import {
 } from '@open-mercato/cezar-contract';
 import type { AgentEvent, AgentRunResult, ContentBlock } from '../core/agent-runner.ts';
 import { discoverSkills, type Skill } from '../skills.ts';
+import {
+  PERSONA_DENIED_TOOLS,
+  applyPersona,
+  personaNoToolsIssue,
+  loadPersonas,
+  personaNotFound,
+  personaSystemPrompt,
+  personasDispatchPrompt,
+  type Persona,
+  type PersonaResolution,
+} from '../personas.ts';
+import type { PersonaDispatch } from '@open-mercato/cezar-contract';
 import { automationsReachable } from '../automations/builtin-skill.ts';
 import { AUTOMATIONS_PROMPT } from '../automations/prompts.ts';
 
@@ -200,6 +212,36 @@ import {
 /** Backends whose runner honors `resume` (AgentRunSpec) — graph `session.continue` and the
  *  verdict nudge need it. OpenCode always starts a new session; Cursor has no resume yet. */
 const RESUMABLE_BACKENDS: ReadonlySet<RunnerId> = new Set<RunnerId>(['claude', 'codex', 'pi']);
+
+/** Backends whose runner maps `allowedTools` onto the CLI (docs/reference.md, backend table) — a
+ *  persona's tool list is a note everywhere else (spec 2026-10-24-personas §5). */
+const TOOL_ALLOWLIST_BACKENDS: ReadonlySet<RunnerId> = new Set<RunnerId>(['claude', 'pi']);
+
+/** Backends with sub-agent tools of their own, which cezar cannot deny a persona the way it denies
+ *  Claude's Task/Agent (`PERSONA_DENIED_TOOLS`). */
+const OWN_SUBAGENT_BACKENDS: ReadonlySet<RunnerId> = new Set<RunnerId>(['opencode', 'copilot']);
+
+/** What a persona's tools became on this backend, for the transcript — ONE helper for the spawn
+ *  and the Continue, so a resumed session says the same thing the first one did. */
+function personaToolNotes(resolution: PersonaResolution, authored: WorkflowStepDef, backend: RunnerId): string[] {
+  const persona = resolution.persona;
+  if (!persona) return [];
+  const notes: string[] = [];
+  if (persona.source === 'claude' && backend !== 'claude') {
+    notes.push(`persona "${persona.name}" comes from .claude/agents (Claude-only) — on ${backend} it brings its instructions only`);
+  } else if (persona.allowedTools && !authored.allowedTools && !TOOL_ALLOWLIST_BACKENDS.has(backend)) {
+    notes.push(`persona "${persona.name}": its tool list is not enforced on ${backend}, which ignores allowedTools`);
+  } else if (resolution.droppedTools?.length) {
+    notes.push(`persona "${persona.name}": not granted ${resolution.droppedTools.join(', ')} — a persona can only narrow the step's tools`);
+  }
+  if (resolution.subagentToolRefused) {
+    notes.push(`persona "${persona.name}": Task (sub-agents) is never granted to a persona — dispatch children with cez task create, which is budgeted and visible`);
+  }
+  if (OWN_SUBAGENT_BACKENDS.has(backend)) {
+    notes.push(`persona "${persona.name}": ${backend} keeps its own sub-agent tools — only Claude's Task/Agent are denied to a persona; dispatch children with cez task create, which is budgeted and visible`);
+  }
+  return notes;
+}
 /**
  * The reply to a one-question ask card without the card's own framing: a click on an option
  * sends `<header>: <label>` (`web/src/routes/task-thread/ask-card.tsx` `formatAnswer`), a typed
@@ -620,6 +662,17 @@ interface ActiveRun {
   /** Set by `dispatch()` during a turn, read and cleared at that turn's end: the run parks as a
    *  monitor for the children it just created. */
   dispatchedThisTurn?: boolean;
+  /**
+   * The project's personas (spec 2026-10-24-personas), snapshotted by `preparePersonasSession` at
+   * BOTH construction sites: a step's `agent:` resolves against it at spawn AND on Continue, and
+   * a Continue that resolved nothing would hand a read-only reviewer the default tools.
+   */
+  personas?: Persona[];
+  /** The `--as` list a dispatching task reads. Present ⇔ dispatch is reachable and personas exist. */
+  personasPrompt?: string;
+  /** The persona the live session runs as, when it sets defaults/limits for its children. A runtime
+   *  fact set at each spawn, like `promptRest`. */
+  personaDispatch?: { name: string; dispatch: PersonaDispatch; stepId: string };
   /** Release for exclusive execution in the user's repository working tree.
    *  Worktree-backed runs never need it; root runs ordinarily do unless the
    *  explicit unsafe bypass is active. */
@@ -2496,6 +2549,13 @@ export class RunManager {
     state.dispatchPrompt = composeDispatchPrompt(dispatch?.kind, dispatch?.parentRunId ? undefined : dispatch?.intent);
   }
 
+  /** The personas twin (spec 2026-10-24-personas), at the same two construction sites. Never throws:
+   *  an unreadable directory is a project without personas. */
+  private async preparePersonasSession(state: ActiveRun): Promise<void> {
+    state.personas = await loadPersonas(this.repoRoot).then((r) => r.personas, () => [] as Persona[]);
+    state.personasPrompt = this.dispatchReachable() ? personasDispatchPrompt(state.personas) : undefined;
+  }
+
   /**
    * The automations twin of `prepareDispatchSession` (spec 2026-09-13-automations-from-prompt):
    * the short prompt part that lets a task recognise "whenever a PR is opened, do X" as an
@@ -2744,8 +2804,9 @@ export class RunManager {
     parentId: string,
     input: DispatchInput,
     /** Internal only (graph nodes — never the route): run the child as this workflow instead of
-     *  the single synthetic step an agent's order gets. */
-    opts: { workflow?: WorkflowDef } = {},
+     *  the single synthetic step an agent's order gets. `persona` is the `--as` persona, already
+     *  resolved by the caller (spec 2026-10-24-personas). */
+    opts: { workflow?: WorkflowDef; persona?: Persona } = {},
   ): { id: string; branch?: string } | { refused: string } {
     if (!this.dispatchEnabled()) return { refused: 'dispatch is disabled on this cockpit (CEZ_DISPATCH=0) — the operator turned it off. Do not substitute sub-agents or do the delegated work yourself: stop and report that dispatch is disabled.' };
     const parent = this.store.getRun(parentId);
@@ -2758,7 +2819,40 @@ export class RunManager {
     // The user's limits, when the root was started with the composer's Dispatch toggle: they may
     // only tighten the engine's own caps, and the child defaults they name fill an order's gaps.
     const intent = runs.find((r) => r.id === (parent.dispatch?.rootRunId ?? parent.id))?.dispatch?.intent;
-    const inFlightCap = Math.min(MAX_CHILDREN_IN_FLIGHT, intent?.inFlight ?? MAX_CHILDREN_IN_FLIGHT);
+    // The persona the parent runs as may tighten the caps too, and fill an order's gaps before the
+    // root's intent does (spec 2026-10-24-personas). Its `maxSubtasks` counts the children this
+    // parent dispatched while running that persona's step — not those of its other steps.
+    const asParent = this.active.get(parentId)?.personaDispatch;
+    const personaLimits = asParent?.dispatch;
+    const asPersona = opts.persona;
+    const childRunner = input.runner ?? asPersona?.runner ?? personaLimits?.runner ?? intent?.runner ?? parent.runner;
+
+    // `--as` a persona that leaves the order no tools is refused here, not at the child's spawn.
+    if (asPersona) {
+      const orderStep = opts.workflow?.steps.find((s) => s.agent === asPersona.name)
+        ?? (input.allowed_tools?.length ? { allowedTools: input.allowed_tools } : {});
+      const noTools = personaNoToolsIssue(orderStep, asPersona, childRunner);
+      if (noTools) {
+        note(`dispatch refused — ${noTools}`, 'danger');
+        return { refused: noTools };
+      }
+    }
+
+    if (asParent && personaLimits?.maxSubtasks !== undefined) {
+      const own = childrenOf(runs, parentId).filter((c) => c.dispatch?.personaStepId === asParent.stepId).length;
+      if (own + 1 > personaLimits.maxSubtasks) {
+        const refused = personaLimits.maxSubtasks === 0
+          ? `the "${asParent.name}" persona this task runs as allows no subtasks. Do the work yourself, or report what you could not do.`
+          : `the "${asParent.name}" persona this task runs as allows at most ${personaLimits.maxSubtasks} subtask${personaLimits.maxSubtasks === 1 ? '' : 's'}; ${own} already dispatched.`;
+        note(`dispatch refused — ${refused}`, 'danger');
+        return { refused };
+      }
+    }
+    const inFlightCap = Math.min(
+      MAX_CHILDREN_IN_FLIGHT,
+      intent?.inFlight ?? MAX_CHILDREN_IN_FLIGHT,
+      personaLimits?.inFlight ?? MAX_CHILDREN_IN_FLIGHT,
+    );
     const inFlight = inFlightChildren(runs, parentId).length;
     if (inFlight + 1 > inFlightCap) {
       const refused = `${inFlight} child run${inFlight === 1 ? '' : 's'} already in flight; the cap is ${inFlightCap} per task${intent?.inFlight !== undefined && intent.inFlight < MAX_CHILDREN_IN_FLIGHT ? ' (set by the user)' : ''}. Wait for reports, then dispatch again.`;
@@ -2779,7 +2873,11 @@ export class RunManager {
     const rootRunId = parent.dispatch?.rootRunId ?? parent.id;
     if (!parent.dispatch) this.store.updateRun(parentId, { dispatch: { rootRunId } });
 
-    const budget = this.carveChildBudget(this.store.getRun(parentId) ?? parent, runs, input.max_cost ?? intent?.budgetUsd);
+    const budget = this.carveChildBudget(
+      this.store.getRun(parentId) ?? parent,
+      runs,
+      input.max_cost ?? personaLimits?.budgetUsd ?? intent?.budgetUsd,
+    );
     if ('refused' in budget) {
       note(`dispatch refused — ${budget.refused}`, 'danger');
       return { refused: budget.refused };
@@ -2797,14 +2895,20 @@ export class RunManager {
           // The order's own tool list when it names one (#430: `allowedTools` is the only tool
           // seam a step has), else the run-wide default.
           ...(input.allowed_tools?.length ? { allowedTools: input.allowed_tools } : {}),
+          // `--as`: the step runs as the persona, and an order's own runner/model ride on the
+          // step so they beat the persona's in the merge.
+          ...(asPersona
+            ? { agent: asPersona.name, ...(input.runner ? { runner: input.runner } : {}), ...(input.model ? { model: input.model } : {}) }
+            : {}),
         },
       ],
     };
-    const childRunner = input.runner ?? intent?.runner ?? parent.runner;
     // An inherited model only follows its own runner: a codex parent's `gpt-*` handed to a
     // `--runner claude` child fails at spawn (telemetry 43bdda11). Otherwise the child's runner picks.
     const sameRunner = (runner: RunnerId | undefined) => (runner ?? 'claude') === (childRunner ?? 'claude');
     const childModel = input.model
+      ?? (asPersona?.model && sameRunner(asPersona.runner ?? childRunner) ? asPersona.model : undefined)
+      ?? (personaLimits?.model && sameRunner(personaLimits.runner ?? parent.runner) ? personaLimits.model : undefined)
       ?? (intent?.model && sameRunner(intent.runner ?? parent.runner) ? intent.model : undefined)
       ?? (parent.model && sameRunner(parent.runner) ? parent.model : undefined);
     const record = this.startRun(opts.workflow ?? workflow, {
@@ -2818,6 +2922,7 @@ export class RunManager {
       dispatch: {
         rootRunId,
         parentRunId: parentId,
+        ...(asParent ? { personaStepId: asParent.stepId } : {}),
         ...(input.kind && input.kind !== 'implement' ? { kind: input.kind } : {}),
         ...(input.review_of?.length ? { reviewOf: input.review_of } : {}),
         ...(budget.budgetUsd !== undefined ? { budgetUsd: budget.budgetUsd } : {}),
@@ -4571,6 +4676,7 @@ export class RunManager {
     // that skipped this would resume a task with no dispatch prompt and no way to dispatch:
     // a run that quietly degrades into an ordinary task.
     this.prepareDispatchSession(runId, state);
+    await this.preparePersonasSession(state);
     this.prepareAutomationsSession(state);
     this.prepareTrackerSession(runId, state);
     this.prepareServicesSession(state);
@@ -4894,6 +5000,31 @@ export class RunManager {
         ? undefined
         : defSteps.find((s) => s.id === owningStep?.id)
           ?? [...defSteps].reverse().find((s) => stepKind(s) === 'agent');
+    // The owning step's persona (spec 2026-10-24-personas) names the session's tools and prompt
+    // exactly as it did at spawn; a persona deleted since fails the turn rather than resume a
+    // read-only agent with the default tools.
+    const continuePersona = toolsStep?.agent ? state.personas?.find((p) => p.name === toolsStep.agent) : undefined;
+    if (toolsStep?.agent && !continuePersona) {
+      failBeforeSpawn(personaNotFound(toolsStep.agent));
+      return;
+    }
+    const continueNoTools = toolsStep ? personaNoToolsIssue(toolsStep, continuePersona, continueBackend) : null;
+    if (continueNoTools) {
+      failBeforeSpawn(continueNoTools);
+      return;
+    }
+    const continueResolution = toolsStep ? applyPersona(toolsStep, continuePersona) : undefined;
+    const sessionStepDef = continueResolution?.step;
+    if (toolsStep && continueResolution) {
+      for (const message of personaToolNotes(continueResolution, toolsStep, backend)) {
+        this.store.appendEvent(runId, { type: 'note', stepId, message });
+      }
+    }
+    // Set at attach, as at spawn: the limits live only while the persona's session does.
+    const continuePersonaDispatch = continuePersona?.dispatch && toolsStep
+      ? { name: continuePersona.name, dispatch: continuePersona.dispatch, stepId: toolsStep.id }
+      : undefined;
+    state.personaDispatch = undefined;
     // The temp-directory preflight (#785) rides along with the account resolution: a resumed
     // turn hits the same broken `/tmp` a fresh one would, and an agent whose shell silently
     // returns nothing is worse than a turn that refuses to start and says why.
@@ -4943,7 +5074,9 @@ export class RunManager {
           // echoed on the record) rides along with the handoff contract, and a
           // dispatch prompt rides along with both (spec 2026-09-10-dispatch).
           systemPrompt: composeSystemPrompt(
+            continuePersona ? personaSystemPrompt(continuePersona) : undefined,
             dispatchPromptPart(state.dispatchPrompt, record?.systemPrompt),
+            state.dispatchPrompt ? state.personasPrompt : undefined,
             state.automationsPrompt,
             state.trackerPrompt,
             state.servicesPrompt,
@@ -4955,8 +5088,9 @@ export class RunManager {
             : contextualOpeningPrompt,
           ...(openingImages.length ? { images: openingImages } : {}),
           cwd: state.cwd,
-          allowedTools: state.readOnly ? READ_ONLY_TOOLS : toolsStep?.allowedTools ?? DEFAULT_ALLOWED_TOOLS,
-          bashAllowlist: state.readOnly ? undefined : toolsStep?.bashAllowlist,
+          allowedTools: state.readOnly ? READ_ONLY_TOOLS : sessionStepDef?.allowedTools ?? DEFAULT_ALLOWED_TOOLS,
+          bashAllowlist: state.readOnly ? undefined : sessionStepDef?.bashAllowlist,
+          ...(continuePersona ? { disallowedTools: [...PERSONA_DENIED_TOOLS] } : {}),
             additionalDirectories: agentDirectories(
               join(this.dataDir, 'runs'),
               state.grantedAttachmentLibrary,
@@ -4979,6 +5113,7 @@ export class RunManager {
       state.session = resume ? resumeGuard.track(started) : started;
       state.sessionEverOpened = true;
       this.flushDeferred(runId);
+      state.personaDispatch = continuePersonaDispatch;
       state.interrupt = () => started.interrupt();
       if (started.pid !== undefined) registerRunProcess(runId, started.pid);
       return started;
@@ -5376,6 +5511,7 @@ export class RunManager {
     // role's prompt a spawn will need). This is the FIRST of the two construction sites; the
     // twin is in `runContinuation`.
     this.prepareDispatchSession(runId, state);
+    await this.preparePersonasSession(state);
     this.prepareAutomationsSession(state);
     this.prepareTrackerSession(runId, state);
     this.prepareServicesSession(state);
@@ -5687,7 +5823,8 @@ export class RunManager {
         if (rendered.prompt) rendered.prompt = renderNodeRefs(rendered.prompt, outputs);
         const verdicts = node.verdicts ?? [];
         if (verdicts.length) rendered.prompt = `${rendered.prompt ?? '{{task}}'}\n\n${verdictInstruction(verdicts)}`;
-        const backend = node.runner ?? taskBackend;
+        // The backend this node will actually run on — its persona's runner counts (spec 2026-10-24-personas).
+        const backend = node.runner ?? state.personas?.find((p) => p.name === node.agent)?.runner ?? taskBackend;
         const lastTurn = { text: '' };
         const failure = await this.runAgentStep(
           runId,
@@ -5928,8 +6065,11 @@ export class RunManager {
             ...(a.model ? { model: a.model } : {}),
             ...(a.budgetUsd ? { max_cost: a.budgetUsd } : {}),
             ...(a.review ? { kind: 'review' as const, review_of: [reviewOf] } : {}),
+            ...(a.agent ? { as: a.agent } : {}),
           },
           {
+            // A branch run as a persona: the child's record carries the persona's runner and model.
+            ...(a.agent ? { persona: state.personas?.find((p) => p.name === a.agent) } : {}),
             // The branch's own skill and tool limits ride on the child's single step.
             workflow: {
               name: '(fork branch)',
@@ -5942,6 +6082,8 @@ export class RunManager {
                   ...(a.skill ? { skill: a.skill } : {}),
                   ...(a.allowedTools ? { allowedTools: a.allowedTools } : {}),
                   ...(a.bashAllowlist ? { bashAllowlist: a.bashAllowlist } : {}),
+                  // The node's own runner/model ride on the step so they beat the persona's there too.
+                  ...(a.agent ? { agent: a.agent, ...(a.runner ? { runner: a.runner } : {}), ...(a.model ? { model: a.model } : {}) } : {}),
                 },
               ],
             },
@@ -6560,10 +6702,11 @@ export class RunManager {
    */
   private async provisionTaskSkills(
     state: ActiveRun,
-    wantedSkills: { stepSkill?: string; slash?: string },
+    wantedSkills: { stepSkill?: string; extraSkills?: readonly string[]; slash?: string },
   ): Promise<string[]> {
     const stepSkill = wantedSkills.stepSkill?.trim() || undefined;
-    const wanted = [stepSkill, wantedSkills.slash].filter((name): name is string => Boolean(name));
+    const extraSkills = (wantedSkills.extraSkills ?? []).map((name) => name.trim()).filter(Boolean);
+    const wanted = [stepSkill, ...extraSkills, wantedSkills.slash].filter((name): name is string => Boolean(name));
     if (!wanted.length) return [];
     try {
       // Companions resolve against the ungated team list too: curating a skill out of the
@@ -6580,7 +6723,7 @@ export class RunManager {
       let roots = rootsIn(catalog);
       // An unknown `/name` is most likely a backend's own command (`/compact`): never stall it.
       // A selected step skill may still arrive with the team load, so that one waits.
-      if (!roots.length && !stepSkill) return [];
+      if (!roots.length && !stepSkill && !extraSkills.length) return [];
       const inPlace = resolvePath(state.cwd) === resolvePath(this.repoRoot);
       if (!inPlace || !roots.length) {
         // A companion (or the step skill itself) often lives only in the team repo: wait, bounded.
@@ -6651,13 +6794,31 @@ export class RunManager {
      *  instead of minting one, and hand back the last turn's text for verdict parsing. */
     graphHooks?: { resumeSessionId?: string; lastTurn?: { text: string } },
   ): Promise<string | null> {
+    // A persona (spec 2026-10-24-personas) fills the step's runner, model and tools wherever the
+    // step leaves a gap and adds its prompt and skills. An unknown one fails the step rather than
+    // run an agent without the limits its author asked for.
+    const authored = step;
+    const persona = authored.agent ? state.personas?.find((p) => p.name === authored.agent) : undefined;
+    if (authored.agent && !persona) return personaNotFound(authored.agent);
+    const noTools = personaNoToolsIssue(authored, persona, authored.runner ?? persona?.runner ?? taskBackend);
+    if (noTools) return noTools;
+    const personaResolution = applyPersona(authored, persona);
+    step = personaResolution.step;
+    // Live only while THIS step's session is: set at attach, cleared in the session's `finally`,
+    // so a later fork/dispatch node never inherits it.
+    const stepPersonaDispatch = persona?.dispatch ? { name: persona.name, dispatch: persona.dispatch, stepId: authored.id } : undefined;
+    state.personaDispatch = undefined;
     let systemPrompt: string | undefined;
     // An attachment-only task (telemetry 18c930de) — the note stands in for the missing text, so a
     // step template (`Review: {{task}}`) still reads as a sentence.
     const taskText = input.task.trim() === '' && attachments.length ? ATTACHMENT_ONLY_TASK : input.task;
     const rawPrompt = applyTemplate(step.prompt ?? '{{task}}', taskText);
     // Install the selected skill and its companions where the agent's own skill lookup looks.
-    const installed = await this.provisionTaskSkills(state, { stepSkill: step.skill, slash: leadingSlashSkillName(rawPrompt) });
+    const installed = await this.provisionTaskSkills(state, {
+      stepSkill: step.skill,
+      extraSkills: personaResolution.extraSkills,
+      slash: leadingSlashSkillName(rawPrompt),
+    });
     if (installed.length) {
       emit({ type: 'note', stepId: step.id, message: `skills installed in the task's workspace: ${installed.join(', ')}` });
     }
@@ -6675,6 +6836,19 @@ export class RunManager {
           stepId: step.id,
           message: `skill "${step.skill}" not found in .ai/cezar/skills, .ai/skills or the team skills repo — running with the plain prompt`,
         });
+      }
+    }
+    if (persona) {
+      const personaSkills: string[] = [];
+      for (const name of personaResolution.extraSkills) {
+        const skill = (state.skills ?? skills).find((s) => s.name === name);
+        if (skill) personaSkills.push(skillSystemPrompt(skill));
+        else emit({ type: 'note', stepId: step.id, message: `persona "${persona.name}": skill "${name}" not found — running without it` });
+      }
+      // Persona first, then the step's own skill, then the persona's skills.
+      systemPrompt = composeSystemPrompt(personaResolution.systemPrompt, systemPrompt, ...personaSkills) || undefined;
+      for (const message of personaToolNotes(personaResolution, authored, step.runner ?? taskBackend)) {
+        emit({ type: 'note', stepId: step.id, message });
       }
     }
 
@@ -7058,6 +7232,7 @@ export class RunManager {
           systemPrompt: composeSystemPrompt(
             systemPrompt,
             dispatchPromptPart(state.dispatchPrompt, extraSystemPrompt),
+            state.dispatchPrompt ? state.personasPrompt : undefined,
             state.automationsPrompt,
             state.trackerPrompt,
             state.servicesPrompt,
@@ -7071,6 +7246,7 @@ export class RunManager {
           cwd: state.cwd,
           allowedTools: state.readOnly ? READ_ONLY_TOOLS : step.allowedTools ?? DEFAULT_ALLOWED_TOOLS,
           bashAllowlist: state.readOnly ? undefined : step.bashAllowlist,
+          ...(persona ? { disallowedTools: [...PERSONA_DENIED_TOOLS] } : {}),
           // The handoff file lives outside the worktree — grant access.
           additionalDirectories: agentDirectories(
             join(this.dataDir, 'runs'),
@@ -7115,6 +7291,7 @@ export class RunManager {
       state.acceptReviewOnDrop = undefined;
       this.flushDeferred(runId);
       state.currentStepId = step.id;
+      state.personaDispatch = stepPersonaDispatch;
       state.interrupt = () => started.interrupt();
       if (started.pid !== undefined) registerRunProcess(runId, started.pid);
       return started;
@@ -7175,6 +7352,7 @@ export class RunManager {
       this.clearMonitoringWakeTimer(state, runId);
       state.session = undefined;
       state.currentStepId = undefined;
+      state.personaDispatch = undefined;
       state.interrupt = () => undefined;
     }
   }

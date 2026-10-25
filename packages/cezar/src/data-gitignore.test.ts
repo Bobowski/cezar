@@ -117,8 +117,8 @@ describe('DATA_GITIGNORE_ENTRIES covers everything cezar writes under .ai/cezar/
   it('names every directory and file the service writes there', () => {
     const wanted: readonly string[] = DATA_GITIGNORE_ENTRIES;
     // The deliberate exceptions: entries under this directory built to be COMMITTED, where absence
-    // from the ignore list IS the feature. `workflows/` and `skills/` are the project's own
-    // playbooks; `config.json` is the optional per-repo config a team may well want in git; the
+    // from the ignore list IS the feature. `workflows/`, `skills/` and `agents/` (personas) are the
+    // project's own playbooks; `config.json` is the optional per-repo config a team may well want in git; the
     // `.gitignore` is the file itself, which git has to be able to see.
     const committable = new Set(DATA_COMMITTABLE_ENTRIES.map((entry) => entry.replace(/\/$/, '')));
     const missing = [...writtenUnderDataDir()]

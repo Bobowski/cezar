@@ -438,6 +438,10 @@ export function buildClaudeArgs(
   if (allowed.length > 0) {
     args.push('--allowedTools', allowed.join(','));
   }
+  // A deny rule beats every allow rule and the permission mode.
+  if (spec.disallowedTools?.length) {
+    args.push('--disallowedTools', spec.disallowedTools.join(','));
+  }
   if (spec.model) {
     args.push('--model', spec.model);
   }

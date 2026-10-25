@@ -95,7 +95,7 @@ describe('graphIssues', () => {
       nodes: [{ id: 'start', type: 'start' }, { id: 'a', type: 'agent' }],
       edges: [{ from: 'start', to: 'a' }],
     };
-    expect(graphIssues(g)).toEqual(['agent node "a" needs a prompt or a skill']);
+    expect(graphIssues(g)).toEqual(['agent node "a" needs a prompt, a skill or a persona']);
   });
 
   it('rejects a graph with nothing wired past start — the v1 "add at least one step" guard', () => {

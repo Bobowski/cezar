@@ -24,8 +24,8 @@ export const DATA_GITIGNORE_ENTRIES = [
   // The per-project attachment library (#929): every named file a user attaches to any task is
   // copied here. It is USER content — a production log, an internal PDF, a brief — so it must
   // never surface in their `git status`, let alone ride a `git add -A` into a public repo. This
-  // list is a per-entry allowlist rather than a blanket `*` on purpose (`workflows/` and
-  // `skills/` alongside it are meant to be committable), which means a new state directory that
+  // list is a per-entry allowlist rather than a blanket `*` on purpose (`workflows/`, `skills/`
+  // and `agents/` — the personas — alongside it are meant to be committable), which means a new state directory that
   // is not named here is covered by nothing at all. `data-gitignore.test.ts` guards that rule.
   'attachments/',
   'worktrees/',
@@ -78,10 +78,10 @@ export const DATA_GITIGNORE_ENTRIES = [
 
 /**
  * Entries under `.ai/cezar/` built to be COMMITTED, where absence from the list above IS the
- * feature: the project's workflows and skills, its optional `config.json`, its MCP servers
+ * feature: the project's workflows, skills and personas (`agents/`), its optional `config.json`, its MCP servers
  * (`mcp.json`, spec 2026-10-24-easy-mcp — secrets are references), and the `.gitignore` itself.
  */
-export const DATA_COMMITTABLE_ENTRIES = ['workflows/', 'skills/', 'config.json', 'mcp.json', '.gitignore'] as const;
+export const DATA_COMMITTABLE_ENTRIES = ['workflows/', 'skills/', 'agents/', 'config.json', 'mcp.json', '.gitignore'] as const;
 
 /** cezar's own data directory as a git pathspec exclusion. An in-place task's Changes and its
  *  landing commit leave it out (spec 2026-10-20-trunk-based-projects): its config, ui-state and

@@ -42,6 +42,8 @@ export const FAMILY_SCOPES: Record<string, Exclude<ApiTokenScope, 'read' | 'runs
   'workspace/uploads': 'tasks',
   workflows: 'author',
   skills: 'author',
+  // Personas are operator-written prompts and launch options (spec 2026-10-24-personas).
+  agents: 'author',
   automations: 'author',
   'automation-log': 'author',
   'automation-checks': 'author',

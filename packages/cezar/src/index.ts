@@ -24,7 +24,7 @@ import { armRepoHandle } from './runs/arm-repo-handle.ts';
 import { RunStore } from './runs/store.ts';
 import { RunManager } from './workflows/run.ts';
 import { resolveTrackerAgentEnv } from './server/tracker/agent-credentials.ts';
-import { loadWorkflows } from './workflows/load.ts';
+import { loadIssueLines, loadWorkflows } from './workflows/load.ts';
 import { resolveCapabilities, trustedOperator } from './server/capabilities.ts';
 import { startServer, WorkspaceEventBus } from './server/server.ts';
 import {
@@ -63,6 +63,7 @@ import { plainHttpWarning, takeServerFlags } from './cockpit-address.ts';
 
 import { runTrackerConnectionsCommand } from './server/tracker/connections-cli.ts';
 import { runSecretsCommand } from './workspace/secrets-cli.ts';
+import { loadPersonas } from './personas.ts';
 
 const HELP = `cezar — local cockpit for AI agent tasks in your repo
 
@@ -635,7 +636,7 @@ async function runCommand(
   }
   await initWorkspace(repoRoot);
   const { workflows, issues } = await loadWorkflows(repoRoot);
-  for (const issue of issues) console.error(`! skipped ${issue.path}: ${issue.message}`);
+  for (const line of loadIssueLines(workflows, issues)) console.error(line);
   const name = workflowName ?? 'quick-task';
   const workflow = workflows.find((w) => w.name === name);
   if (!workflow) {
@@ -648,6 +649,7 @@ async function runCommand(
   const requiredProviders = providersRequiredByWorkflow(
     workflow,
     (await loadConfig(repoRoot)).defaultRunner,
+    (await loadPersonas(repoRoot)).personas,
   );
   if (requiredProviders.length > 0 && !providerAuthChecksDisabled()) {
     const [discovered, workspace] = await Promise.all([

@@ -1,12 +1,14 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import { graphIssues, graphToSteps, workflowGraphFileSchema } from './graph.ts';
+import { loadPersonas, personaStepChecks } from '../personas.ts';
+import { graphIssues, graphToSteps, workflowGraphFileSchema, type WorkflowGraph } from './graph.ts';
 import { BUILT_IN_GRAPH_WORKFLOWS } from './templates.ts';
 import {
   QUICK_TASK_WORKFLOW,
   normalizeWorkflowDoc,
   stepsIssue,
+  unknownPersonaIssue,
   workflowDefSchema,
   workflowFileSchema,
   type WorkflowDef,
@@ -17,6 +19,47 @@ export const WORKFLOWS_DIR = '.ai/cezar/workflows';
 export interface WorkflowLoadIssue {
   path: string;
   message: string;
+}
+
+/** `cezar run`'s stderr lines for the load issues: a file that still loaded is a warning, not a skip. */
+export function loadIssueLines(workflows: readonly WorkflowDef[], issues: readonly WorkflowLoadIssue[]): string[] {
+  const loaded = new Set(workflows.flatMap((w) => (w.path ? [w.path] : [])));
+  return issues.map((issue) => `! ${loaded.has(issue.path) ? 'warning' : 'skipped'} ${issue.path}: ${issue.message}`);
+}
+
+const graphAgentNodes = (graph: Pick<WorkflowGraph, 'nodes'>) =>
+  graph.nodes.flatMap((n) =>
+    n.type === 'agent' ? [{ id: n.id, agent: n.agent, runner: n.runner, allowedTools: n.allowedTools, bashAllowlist: n.bashAllowlist }] : [],
+  );
+
+/** A graph's agent nodes (fork branches included) whose `agent:` names no persona (skipped when
+ *  `personas` is undefined) — or, given the loaded personas' checks, one that leaves the node no tools. */
+export function graphPersonaIssues(
+  graph: Pick<WorkflowGraph, 'nodes'>,
+  personas: ReadonlySet<string> | undefined,
+  personaToolsIssue?: ReturnType<typeof personaStepChecks>['personaToolsIssue'],
+): string[] {
+  const agents = graphAgentNodes(graph);
+  const issue = personas ? unknownPersonaIssue(agents, personas, 'agent node') : null;
+  if (issue) return [issue];
+  for (const node of personaToolsIssue ? agents : []) {
+    const toolsIssue = personaToolsIssue!(node);
+    if (toolsIssue) return [`agent node "${node.id}": ${toolsIssue}`];
+  }
+  return [];
+}
+
+/** A committed workflow may name a global persona this machine lacks: it stays in the catalog with
+ *  this warning, and the step fails when it runs (`executeAgentStep`). */
+function missingPersonaWarning(
+  steps: ReadonlyArray<{ id: string; agent?: string }>,
+  personas: ReadonlySet<string>,
+  noun?: string,
+): string | null {
+  const unknown = unknownPersonaIssue(steps, personas, noun);
+  return unknown
+    ? `${unknown} — loaded anyway: a global persona (~/.cezar/agents) may be missing on this machine; the step fails when it runs until it exists`
+    : null;
 }
 
 /**
@@ -30,6 +73,11 @@ export async function loadWorkflows(
   const dir = resolve(repoRoot, WORKFLOWS_DIR);
   const issues: WorkflowLoadIssue[] = [];
   const fromFiles: WorkflowDef[] = [];
+  // A step's `agent:` is checked against the personas (spec 2026-10-24-personas): one that leaves
+  // a step no tools hides the file; an unknown one — perhaps a global persona this machine lacks —
+  // is a warning, and that step fails when it runs.
+  let personas: ReturnType<typeof personaStepChecks> | undefined;
+  const knownPersonas = async () => (personas ??= personaStepChecks((await loadPersonas(repoRoot)).personas));
 
   let entries: string[] = [];
   try {
@@ -57,10 +105,17 @@ export async function loadWorkflows(
           continue;
         }
         const problems = graphIssues(graphDoc.data);
+        let warning: string | null = null;
+        if (!problems.length && graphDoc.data.nodes.some((n) => n.type === 'agent' && n.agent)) {
+          const checks = await knownPersonas();
+          problems.push(...graphPersonaIssues(graphDoc.data, undefined, checks.personaToolsIssue));
+          warning = missingPersonaWarning(graphAgentNodes(graphDoc.data), checks.personas, 'agent node');
+        }
         if (problems.length) {
           issues.push({ path, message: problems.join('; ') });
           continue;
         }
+        if (warning) issues.push({ path, message: warning });
         const { version, name, description, nodes, edges, layout } = graphDoc.data;
         void version;
         fromFiles.push({
@@ -81,11 +136,14 @@ export async function loadWorkflows(
       // `skills:` shorthand files become plain agent steps here (spec 012).
       const normalized = normalizeWorkflowDoc(parsed.data);
       // Steps referenced by onFail.retry must exist and come earlier; ids unique.
-      const issue = stepsIssue(normalized.steps);
+      const checks = normalized.steps.some((s) => s.agent) ? await knownPersonas() : undefined;
+      const issue = stepsIssue(normalized.steps, checks ? { personaToolsIssue: checks.personaToolsIssue } : {});
       if (issue) {
         issues.push({ path, message: issue });
         continue;
       }
+      const warning = checks ? missingPersonaWarning(normalized.steps, checks.personas) : null;
+      if (warning) issues.push({ path, message: warning });
       fromFiles.push({ ...normalized, source: 'file', path });
     } catch (err) {
       issues.push({ path, message: err instanceof Error ? err.message : String(err) });

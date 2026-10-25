@@ -60,8 +60,14 @@ export class PiRunner implements AgentRunner {
     onEvent?: (event: AgentEvent) => void,
     opts: SessionOptions = {},
   ): AgentSession {
+    let piArgs: string[];
+    try {
+      piArgs = buildPiArgs(spec);
+    } catch (err) {
+      return refusedSession(err instanceof Error ? err.message : String(err), onEvent);
+    }
     const env = buildChildEnv({ backend: this.backend, extraEnv: spec.env });
-    const [file, argv] = disclaimedCommand(...scriptAwareCommand(this.bin, buildPiArgs(spec)), env);
+    const [file, argv] = disclaimedCommand(...scriptAwareCommand(this.bin, piArgs), env);
     const child = nodeSpawn(file, argv, { cwd: spec.cwd, env });
     let open = true;
     let settled = true;
@@ -286,12 +292,33 @@ export function buildPiArgs(spec: AgentRunSpec): string[] {
   if (spec.sessionId) args.push(spec.resume ? '--session' : '--session-id', spec.sessionId);
   if (spec.systemPrompt) args.push('--append-system-prompt', spec.systemPrompt);
   if (spec.model) args.push('--model', spec.model);
-  const tools = piTools(spec.allowedTools ?? [], spec.bashAllowlist);
-  if (tools.length > 0) args.push('--tools', tools.join(','));
+  // No `--tools` means pi's whole default set and pi has no verified tool-less mode, so an explicit
+  // list that maps to nothing (`[]`, or only an unrepresentable Bash) refuses to spawn — unless the
+  // caller is a tool-less helper, which pi runs on its defaults as it always did.
+  if (spec.allowedTools === undefined) return args;
+  const tools = piTools(spec.allowedTools, spec.bashAllowlist);
+  if (tools.length === 0) {
+    if (spec.toolless) return args;
+    throw new Error(PI_NO_TOOLS);
+  }
+  args.push('--tools', tools.join(','));
   return args;
 }
 
-function piTools(tools: string[], bashAllowlist?: string[]): string[] {
+export const PI_NO_TOOLS =
+  "the step's tool list leaves pi no tools (pi drops Bash under a bashAllowlist) — refusing to spawn pi rather than give it its default tools";
+
+/** A session that never spawned: its result rejects with `message`, as a failed spawn's does. */
+function refusedSession(message: string, onEvent?: (event: AgentEvent) => void): AgentSession {
+  const result = (async (): Promise<AgentRunResult> => {
+    onEvent?.({ type: 'error', message });
+    throw new Error(message);
+  })();
+  return { result, sendMessage: () => false, end: () => {}, interrupt: () => {}, hardStop: () => {}, open: false };
+}
+
+/** The pi tool names an `allowedTools` list maps to — what `--tools` gets. */
+export function piTools(tools: readonly string[], bashAllowlist?: readonly string[]): string[] {
   const map: Readonly<Record<string, string>> = {
     Read: 'read',
     Bash: 'bash',

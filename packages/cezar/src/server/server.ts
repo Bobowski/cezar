@@ -156,6 +156,8 @@ import {
   updateProjectInputSchema,
 } from '@open-mercato/cezar-contract';
 import { dispatchInputSchema, dispatchIntentSchema, dispatchReportSchema } from '@open-mercato/cezar-contract';
+import { HIDDEN_PERSONA_NAME, personaNameSchema, putPersonaSchema } from '@open-mercato/cezar-contract';
+import { globalPersonasDir, loadPersonas, parsePersona, personaStepChecks, PERSONAS_DIR, type Persona } from '../personas.ts';
 import { hasTaskOrAttachments, TASK_OR_ATTACHMENTS_ISSUE } from '@open-mercato/cezar-contract';
 import { detectEnvironment } from '../core/backend-detect.ts';
 import type { HostUsage } from '@open-mercato/cezar-contract';
@@ -189,7 +191,7 @@ import { RunnerModelCatalog } from '../core/runner-model-catalog.ts';
 import { currentUsage, currentTimedUsage, onUsage } from '../core/process-usage.ts';
 import { DashboardReader } from '../workspace/dashboard.ts';
 import { dashboardRoutes } from './dashboard.ts';
-import { WORKFLOWS_DIR, loadWorkflows } from '../workflows/load.ts';
+import { WORKFLOWS_DIR, graphPersonaIssues, loadWorkflows } from '../workflows/load.ts';
 import {
   NODE_CATALOG,
   graphIssues,
@@ -4344,6 +4346,93 @@ export function createApp(deps: ServerDeps) {
       return c.json(await discoverSkills(repoRoot));
     });
 
+  // ---- chained family: agent personas (project-scoped, spec 2026-10-24-personas) ----
+  // A persona is a system prompt and launch options — the trust of a workflow file — so writes are
+  // a trusted-operator capability, like agent config, and only the project's own files are written.
+  const personaParam = z.object({ name: personaNameSchema });
+  const personaWriteRefusal =
+    'editing personas is disabled on a hosted cockpit without sign-in (CEZ_AUTH=0) — edit .ai/cezar/agents on the machine that owns the checkout';
+  const agentsRoutes = new Hono<ProjectApiEnv>()
+    .get('/agents', async (c) => {
+      const editable = trustedOperator(process.env, bindHost);
+      const { personas, issues } = await loadPersonas(c.get('project').root);
+      // A global persona lives in the host's home directory: its text — and where that home is —
+      // are for a trusted operator only.
+      if (editable) return c.json({ personas, issues, editable });
+      const home = resolve(globalPersonasDir());
+      const inHome = (path: string) => resolve(path).startsWith(home + sep);
+      const served = personas.map((p) => (p.source === 'global' ? { name: HIDDEN_PERSONA_NAME, body: '', path: '', source: p.source } : p));
+      const shownIssues = issues.map((i) => (inHome(i.path) ? { path: trimPaths(i.path), message: trimPaths(i.message) } : i));
+      return c.json({ personas: served, issues: shownIssues, editable });
+    })
+    .get('/agents/:name', paramZodValidator(personaParam), async (c) => {
+      const { name } = c.req.valid('param');
+      const persona = (await loadPersonas(c.get('project').root)).personas.find((p) => p.name === name);
+      if (!persona) return c.json({ error: `unknown persona: ${name}` }, 404);
+      if (persona.source === 'global' && !trustedOperator(process.env, bindHost)) {
+        return c.json({ error: 'this persona lives in the host\'s home directory and is not served by a hosted cockpit without sign-in (CEZ_AUTH=0)' }, 409);
+      }
+      try {
+        return c.json({ persona, markdown: await readFile(persona.path, 'utf8') });
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+      }
+    })
+    .put('/agents/:name', paramZodValidator(personaParam), jsonZodValidator(putPersonaSchema), async (c) => {
+      if (!trustedOperator(process.env, bindHost)) return c.json({ error: personaWriteRefusal }, 409);
+      const { name } = c.req.valid('param');
+      const { markdown } = c.req.valid('json');
+      const root = c.get('project').root;
+      // An existing project persona keeps its file even when its name is not its file name.
+      const { personas: known } = await loadPersonas(root);
+      const existing = known.find((p) => p.name === name && p.source === 'project');
+      const path = existing?.path ?? join(root, PERSONAS_DIR, `${name}.md`);
+      // …and a new one never takes over `<name>.md` when that file already names another persona.
+      const occupant = existing ? undefined : known.find((p) => p.source === 'project' && resolve(p.path) === resolve(path));
+      if (occupant) {
+        return c.json({ error: `${name}.md already holds the "${occupant.name}" persona — save this one under another name` }, 409);
+      }
+      const parsed = parsePersona(markdown, path, 'project', name);
+      if ('error' in parsed) return c.json({ error: parsed.error }, 400);
+      if (parsed.name !== name) {
+        return c.json({ error: `the file names itself "${parsed.name}" — change its name: to "${name}" or save it as ${parsed.name}` }, 400);
+      }
+      try {
+        await mkdir(dirname(path), { recursive: true });
+        await writeFile(path, markdown, 'utf8');
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+      }
+      return c.json({ persona: parsed });
+    })
+    .delete('/agents/:name', paramZodValidator(personaParam), async (c) => {
+      if (!trustedOperator(process.env, bindHost)) return c.json({ error: personaWriteRefusal }, 409);
+      const { name } = c.req.valid('param');
+      const root = c.get('project').root;
+      const persona = (await loadPersonas(root)).personas.find((p) => p.name === name);
+      if (!persona) return c.json({ error: `unknown persona: ${name}` }, 404);
+      const dir = resolve(root, PERSONAS_DIR);
+      const target = resolve(persona.path);
+      if (persona.source !== 'project' || !target.startsWith(dir + sep)) {
+        return c.json({ error: `"${name}" is a ${persona.source} persona — cezar deletes only the project's own (${PERSONAS_DIR})` }, 400);
+      }
+      try {
+        await unlink(target);
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+      }
+      return c.json({ ok: true as const, path: target });
+    });
+
+  /** `stepsIssue`'s persona check, read only when a step names one. */
+  const personaCheck = async (root: string, steps: ReadonlyArray<{ agent?: string }>) =>
+    steps.some((s) => s.agent) ? personaStepChecks((await loadPersonas(root)).personas) : {};
+  const graphPersonaCheck = async (root: string, graph: Parameters<typeof graphPersonaIssues>[0]) => {
+    if (!graph.nodes.some((n) => n.type === 'agent' && n.agent)) return [];
+    const checks = personaStepChecks((await loadPersonas(root)).personas);
+    return graphPersonaIssues(graph, checks.personas, checks.personaToolsIssue);
+  };
+
   // ---- chained family: GUI prefs / ui-state (project-scoped) ----
   const uiStateRoutes = new Hono<ProjectApiEnv>()
     .get('/ui-state', async (c) => c.json(await readUiState(c.get('project').root)))
@@ -4381,7 +4470,7 @@ export function createApp(deps: ServerDeps) {
       const { root: repoRoot } = c.get('project');
       const parsed = { data: c.req.valid('json') };
       const steps = parsed.data.steps ?? skillsToSteps(parsed.data.skills ?? []);
-      const issue = stepsIssue(steps);
+      const issue = stepsIssue(steps, await personaCheck(repoRoot, steps));
       if (issue) return c.json({ error: issue }, 400);
       const slug = slugify(parsed.data.name) || 'chain';
       const dir = join(repoRoot, WORKFLOWS_DIR);
@@ -4438,13 +4527,15 @@ export function createApp(deps: ServerDeps) {
     // Graph workflows (spec 2026-09-30-workflow-node-editor): the palette's node catalog, a
     // structural validator the editor calls as you edit, and the `version: 2` save.
     .get('/workflows/nodes', (c) => c.json({ nodes: NODE_CATALOG }))
-    .post('/workflows/validate', jsonZodValidator(validateGraphSchema), (c) =>
-      c.json({ issues: graphIssues(c.req.valid('json').graph) }),
-    )
+    .post('/workflows/validate', jsonZodValidator(validateGraphSchema), async (c) => {
+      const { graph } = c.req.valid('json');
+      return c.json({ issues: [...graphIssues(graph), ...(await graphPersonaCheck(c.get('project').root, graph))] });
+    })
     .post('/workflows/graph', jsonZodValidator(saveGraphSchema), async (c) => {
       const { root: repoRoot } = c.get('project');
       const body = c.req.valid('json');
       const issues = graphIssues(body.graph);
+      if (!issues.length) issues.push(...(await graphPersonaCheck(repoRoot, body.graph)));
       if (issues.length) return c.json({ error: issues.join('; ') }, 400);
       const slug = slugify(body.name) || 'workflow';
       const dir = join(repoRoot, WORKFLOWS_DIR);
@@ -4492,6 +4583,7 @@ export function createApp(deps: ServerDeps) {
           return c.json({ error: graphDoc.error.issues.map((i) => i.message).join('; ') }, 400);
         }
         const problems = graphIssues(graphDoc.data);
+        if (!problems.length) problems.push(...(await graphPersonaCheck(c.get('project').root, graphDoc.data)));
         if (problems.length) return c.json({ error: problems.join('; ') }, 400);
         const { name, description, nodes, edges, layout } = graphDoc.data;
         return c.json({
@@ -4506,7 +4598,7 @@ export function createApp(deps: ServerDeps) {
         return c.json({ error: doc.error.issues.map((i) => i.message).join('; ') }, 400);
       }
       const normalized = normalizeWorkflowDoc(doc.data);
-      const issue = stepsIssue(normalized.steps);
+      const issue = stepsIssue(normalized.steps, await personaCheck(c.get('project').root, normalized.steps));
       if (issue) return c.json({ error: issue }, 400);
       return c.json(normalized);
     });
@@ -5139,9 +5231,21 @@ export function createApp(deps: ServerDeps) {
 
     /** Create ONE child of run `:id`. Refusals (cap, budget, settled parent) are 409 with the
      *  reason — the same text the parent's transcript notes. */
-    .post('/runs/:id/dispatch', jsonZodValidator(dispatchInputSchema), (c) => {
-      const { manager } = c.get('project');
-      const outcome = manager.dispatch(c.req.param('id'), c.req.valid('json'));
+    .post('/runs/:id/dispatch', jsonZodValidator(dispatchInputSchema), async (c) => {
+      const { manager, root } = c.get('project');
+      const input = c.req.valid('json');
+      // `--as <persona>` (spec 2026-10-24-personas): resolved here, against the project's files,
+      // so an unknown name is refused before anything is created.
+      let persona: Persona | undefined;
+      if (input.as !== undefined) {
+        const { personas } = await loadPersonas(root);
+        persona = personas.find((p) => p.name === input.as);
+        if (!persona) {
+          const known = personas.map((p) => p.name).join(', ');
+          return c.json({ error: `unknown persona "${input.as}" — this project has ${known || 'none'}` }, 400);
+        }
+      }
+      const outcome = persona ? manager.dispatch(c.req.param('id'), input, { persona }) : manager.dispatch(c.req.param('id'), input);
       if ('refused' in outcome) return c.json({ error: outcome.refused }, 409);
       return c.json(outcome, 201);
     })
@@ -5294,7 +5398,7 @@ export function createApp(deps: ServerDeps) {
       let workflow: WorkflowDef | undefined;
       if (parsed.data.steps) {
         // Inline chain (spec 008): an approved plan runs as an ad-hoc workflow.
-        const issue = stepsIssue(parsed.data.steps);
+        const issue = stepsIssue(parsed.data.steps, await personaCheck(repoRoot, parsed.data.steps));
         if (issue) return c.json({ error: issue }, 400);
         workflow = {
           name: '(planned)',
@@ -5307,7 +5411,7 @@ export function createApp(deps: ServerDeps) {
         if (!workflow) return c.json({ error: `unknown workflow: ${parsed.data.workflow}` }, 404);
       }
       const fallback = parsed.data.runner ?? (await loadConfig(repoRoot)).defaultRunner;
-      const blocked = await providerActionError(providersRequiredByWorkflow(workflow, fallback), {
+      const blocked = await providerActionError(providersRequiredByWorkflow(workflow, fallback, (await loadPersonas(repoRoot)).personas), {
         repoRoot,
         profileFor: (provider) => (provider === fallback ? parsed.data.agentProfile : undefined),
       });
@@ -6896,7 +7000,7 @@ export function createApp(deps: ServerDeps) {
         }
 
         const fallback = parsed.data?.runner ?? (await loadConfig(repoRoot)).defaultRunner;
-        const blocked = await providerActionError(providersRequiredByWorkflow(workflow, fallback), { repoRoot });
+        const blocked = await providerActionError(providersRequiredByWorkflow(workflow, fallback, (await loadPersonas(repoRoot)).personas), { repoRoot });
         if (blocked) return c.json({ error: blocked }, 409);
 
         const run = manager.startRun(workflow, {
@@ -9725,6 +9829,7 @@ export function createApp(deps: ServerDeps) {
     .use('*', resolveProjectScope)
     .route('/', launchKeyRoutes)
     .route('/', skillsRoutes)
+    .route('/', agentsRoutes)
     .route('/', uiStateRoutes)
     .route('/', workflowsRoutes)
     .route('/', planRoutes)

@@ -90,6 +90,9 @@ export const dispatchSchema = z.object({
   intent: dispatchIntentSchema.optional(),
   /** Absent on the root; present on every dispatched child. */
   parentRunId: z.string().optional(),
+  /** The parent's persona'd step that dispatched this child — what that persona's `maxSubtasks`
+   *  counts (spec 2026-10-24-personas). Absent when the parent ran as no persona with limits. */
+  personaStepId: z.string().optional(),
   /** What this task is for. Absent = `implement`. */
   kind: dispatchKindSchema.optional(),
   /** For a `review` task: the run ids or branches it reviews. */
@@ -152,6 +155,9 @@ export const dispatchInputSchema = z
     /** The child's backend and model. Absent = the parent's. */
     runner: runnerSchema.optional(),
     model: z.string().max(200).optional(),
+    /** Run the child as this project persona (spec 2026-10-24-personas): its runner, model, tools
+     *  and prompt fill whatever the order leaves out. */
+    as: z.string().min(1).max(64).optional(),
   })
   .strict();
 export type DispatchInput = z.infer<typeof dispatchInputSchema>;

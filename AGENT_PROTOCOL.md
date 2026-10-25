@@ -117,6 +117,11 @@ Notable fields (full doc-comments in the source):
   `model?`, `timeoutMs?`, `env?` (merged over `process.env` — carries
   `CEZ_HANDOFF_FILE` / `CEZ_TODOS_FILE` / `CEZ_TASK_ID`).
 - `allowedTools?` / `bashAllowlist?` / `additionalDirectories?` — tool access.
+  `disallowedTools?` denies tools outright (Claude `--disallowedTools`; a persona-driven
+  run denies `Task`/`Agent`, which `dontAsk` would otherwise still run).
+  `toolless?` is internal-only (set by cezar's own planner, namer and commit-message
+  helpers, never from a step, persona, YAML or API body); only pi reads it, to run those
+  helpers on its default tools where an empty `allowedTools` would otherwise be refused.
   **Caveat (#430):** the zero-config default (`DEFAULT_ALLOWED_TOOLS`) includes
   unrestricted `Bash`, and Codex/OpenCode do not honor `allowedTools` at all.
   Treat the default `auto` permission mode as full shell access, not a

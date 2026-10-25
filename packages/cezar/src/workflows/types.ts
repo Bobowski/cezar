@@ -43,6 +43,9 @@ export const workflowStepSchema = z
     runner: z.enum(RUNNER_IDS).optional(),
     allowedTools: z.array(z.string()).optional(),
     bashAllowlist: z.array(z.string()).optional(),
+    /** Run as this project persona (spec 2026-10-24-personas): its runner, model, tools, prompt
+     *  and skills fill whatever this step leaves out. An agent step may name only a persona. */
+    agent: z.string().min(1).optional(),
     // check step
     command: z.string().optional(),
     onFail: z
@@ -64,7 +67,7 @@ export const workflowStepSchema = z
      *  load time — the one place YAML could try to route a secret to a backend. */
     secrets: stepSecretsSchema.optional(),
   })
-  .refine((s) => Boolean(s.command) !== Boolean(s.prompt ?? s.skill), {
+  .refine((s) => Boolean(s.command) !== Boolean(s.prompt ?? s.skill ?? s.agent), {
     message: 'a step is either an agent step (prompt/skill) or a check step (command), not both',
   })
   .refine((s) => !s.secrets || Boolean(s.command), {
@@ -147,7 +150,7 @@ export function skillStackOf(steps: WorkflowStepDef[]): string[] | null {
     if (stepKind(s) !== 'agent' || !s.skill) return null;
     if (s.prompt !== undefined && s.prompt !== '{{task}}') return null;
     if (s.name !== undefined && s.name !== s.skill) return null;
-    if (s.model || s.runner || s.allowedTools || s.bashAllowlist || s.onFail) return null;
+    if (s.model || s.runner || s.allowedTools || s.bashAllowlist || s.onFail || s.agent) return null;
     skills.push(s.skill);
   }
   return skills.length ? skills : null;
@@ -197,7 +200,13 @@ export function chainStepNote(steps: WorkflowStepDef[], index: number): string |
   // `name` first: it is what the author called the step and what the GUI rail
   // shows. A `skill` is only ever a support for the step's goal, so naming it
   // as the goal would displace the task text the note sits above.
-  const label = step.name ? `"${step.name}"` : step.skill ? `the "${step.skill}" skill` : 'this step';
+  const label = step.name
+    ? `"${step.name}"`
+    : step.skill
+      ? `the "${step.skill}" skill`
+      : step.agent
+        ? `the "${step.agent}" persona's step`
+        : 'this step';
   const sentences = [
     `This run is a chain of ${total} agent steps; you are running step ${position} of ${total}.`,
     `Your job in THIS step is ${label} — do its work in full.`,
@@ -221,7 +230,16 @@ export function chainStepNote(steps: WorkflowStepDef[], index: number): string |
  * Returns a human-readable problem, or null when the list is sound. Shared by
  * the file loader and the inline-steps / save-workflow API routes (spec 008).
  */
-export function stepsIssue(steps: WorkflowStepDef[]): string | null {
+export function stepsIssue(
+  steps: WorkflowStepDef[],
+  /** The project's persona names. Given, an `agent:` naming none of them is an issue too
+   *  (spec 2026-10-24-personas); omitted, `agent:` is not checked. */
+  opts: {
+    personas?: ReadonlySet<string>;
+    /** A persona'd step's tool problem (`personaStepChecks`) — one that leaves it no tools. */
+    personaToolsIssue?: (step: WorkflowStepDef) => string | null;
+  } = {},
+): string | null {
   const ids = steps.map((s) => s.id);
   const dup = ids.find((id, i) => ids.indexOf(id) !== i);
   if (dup) return `duplicate step id "${dup}"`;
@@ -232,7 +250,24 @@ export function stepsIssue(steps: WorkflowStepDef[]): string | null {
       return `step "${s.id}": onFail.retry must reference an earlier step (got "${s.onFail.retry}")`;
     }
   }
+  const unknown = opts.personas ? unknownPersonaIssue(steps, opts.personas) : null;
+  if (unknown || !opts.personaToolsIssue) return unknown;
+  for (const s of steps) {
+    const issue = opts.personaToolsIssue(s);
+    if (issue) return `step "${s.id}": ${issue}`;
+  }
   return null;
+}
+
+/** The first step (or graph agent node — `noun`) whose `agent:` names no known persona. */
+export function unknownPersonaIssue(
+  steps: ReadonlyArray<{ id: string; agent?: string }>,
+  personas: ReadonlySet<string>,
+  noun = 'step',
+): string | null {
+  const unknown = steps.find((s) => s.agent !== undefined && !personas.has(s.agent));
+  if (!unknown) return null;
+  return `${noun} "${unknown.id}": unknown agent persona "${unknown.agent}" (none in .ai/cezar/agents, ~/.cezar/agents or .claude/agents)`;
 }
 
 /** Tools an agent step gets when the workflow doesn't say otherwise. */

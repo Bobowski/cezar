@@ -92,4 +92,23 @@ describe('sendWebPush', () => {
       expect(await sendWebPush(target, {}, keys, (async () => new Response(null, { status })) as unknown as typeof fetch)).toBe('stale');
     }
   });
+
+  it('never follows a redirect: a 307 is failed, and its location is never posted to', async () => {
+    // Fetch's own semantics: `redirect: 'error'` rejects on a 3xx; the default follows it.
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      calls.push(url);
+      if (init.redirect === 'error') throw new TypeError('fetch failed: unexpected redirect');
+      if (init.redirect === 'manual') return new Response(null, { status: 307, headers: { location: 'https://169.254.169.254/x' } });
+      calls.push('https://169.254.169.254/x');
+      return new Response(null, { status: 201 });
+    }) as unknown as typeof fetch;
+    expect(await sendWebPush(target, {}, keys, fetchImpl)).toBe('failed');
+    expect(calls).toEqual([target.endpoint]);
+  });
+
+  it('reports a redirect status that reaches it as failed, never sent', async () => {
+    const fetchImpl = (async () => new Response(null, { status: 307, headers: { location: 'https://x.example/' } })) as unknown as typeof fetch;
+    expect(await sendWebPush(target, {}, keys, fetchImpl)).toBe('failed');
+  });
 });

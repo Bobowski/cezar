@@ -100,8 +100,9 @@ export type PushOutcome = 'sent' | 'gone' | 'stale' | 'failed';
 /**
  * POST one message to a push service. `gone` (404/410) means the browser dropped the
  * subscription — the caller deletes it. `stale` (401/403) means the push service no longer
- * accepts our VAPID key for it (the key rotated) — only the device can re-subscribe. Never
- * throws: a push is a courtesy.
+ * accepts our VAPID key for it (the key rotated) — only the device can re-subscribe. A redirect
+ * is `failed` and never followed: a push service never sends one, and following it would let a
+ * public endpoint bounce our POST to an internal address. Never throws: a push is a courtesy.
  */
 export async function sendWebPush(
   target: PushTarget,
@@ -126,6 +127,7 @@ export async function sendWebPush(
         urgency: 'high',
       },
       body: new Uint8Array(body),
+      redirect: 'error',
       signal: AbortSignal.timeout(15_000),
     });
     if (response.status === 404 || response.status === 410) return 'gone';

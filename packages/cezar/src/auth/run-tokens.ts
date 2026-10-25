@@ -171,6 +171,8 @@ const CHAT_DENIED: ReadonlyArray<readonly [method: 'GET' | 'DELETE' | 'WRITE' | 
   // and an automation run, check, retry or enable — an enabled automation launches with nobody there.
   ['WRITE', /^\/todos\/[^/]+\/start$/],
   ['WRITE', /^\/automation-log\/[^/]+\/retry$/],
+  // A dispatch tree under one of its tasks: children start with no worktree override and no cap.
+  ['WRITE', /^\/runs\/[^/]+\/(?:dispatch|report)$/],
   // Its automation create and replace land in its proposals, paused (spec 2026-10-24-cockpit-chat
   // §3); enable, pause, run, check and delete act on the live store.
   ['WRITE', /^\/automations\/[^/]+\/[^/]+$/],

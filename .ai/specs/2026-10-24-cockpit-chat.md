@@ -106,8 +106,12 @@ list's live SSE copies.
   `landing: auto` project), and a body asking for `worktree: false`, `autonomous`, `readOnly`,
   `newBranch`, `dispatch` or inline `steps` is a `400`. It runs once (`variants` is forced to 1),
   and a chat has at most two tasks in flight (queued, running or waiting) and starts at most five
-  an hour — `409` beyond. The other launches are refused to it (`403`): an inbox start, an
-  automation run, check, retry, enable or pause, and an automation that would be enabled.
+  an hour — `409` beyond. The caps are checked in route middleware that takes the slot in the
+  same tick, before any await, and gives it back once the record exists or the start is refused,
+  so parallel `runs_create` calls cannot overrun them. The other launches are refused to it
+  (`403`): an inbox start, an automation run, check, retry, enable or pause, an automation that
+  would be enabled, and `POST /runs/:id/dispatch` (and `/report`) — a tree under one of its tasks
+  would start children with neither override nor cap.
 - **A chat's tasks are ordinary tasks.** They run in their own worktree with the full default tool
   set — `Bash`, the network and the user's git credentials — exactly like a task the owner starts;
   the review gate is what bounds them, not the chat's token. That is inherent: a task that cannot

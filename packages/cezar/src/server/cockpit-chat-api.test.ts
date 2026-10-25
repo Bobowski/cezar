@@ -415,4 +415,24 @@ describe('cockpit chat API', () => {
     // The owner is not braked.
     expect((await post('/api/v1/runs', { workflow: 'quick-task', task: 'mine' })).status).toBe(201);
   });
+
+  it('parallel runs_create calls cannot overrun the in-flight cap: the slot is taken before any await', async () => {
+    const chat = liveChat();
+    const start = () => post('/api/v1/p/boot/runs', { workflow: 'quick-task', task: 't' }, chat.bearer);
+    const statuses = (await Promise.all([start(), start(), start(), start()])).map((res) => res.status).sort();
+    expect(statuses).toEqual([201, 201, 409, 409]);
+    expect(store.listRuns().filter((run) => run.createdBy === `chat:${chat.id}`)).toHaveLength(2);
+    // A refused or failed start gives its slot back.
+    for (const run of store.listRuns()) if (run.createdBy) store.updateRun(run.id, { status: 'review' });
+    expect((await post('/api/v1/p/boot/runs', { workflow: 'no-such-workflow', task: 't' }, chat.bearer)).status).toBe(404);
+    const again = (await Promise.all([start(), start()])).map((res) => res.status);
+    expect(again).toEqual([201, 201]);
+  });
+
+  it('a chat cannot dispatch: a task tree under its task would bypass every brake', async () => {
+    const chat = liveChat();
+    const mine = store.createRun({ title: 'mine', workflow: 'quick-task', task: 't', steps: [], createdBy: `chat:${chat.id}` });
+    const res = await post(`/api/v1/p/boot/runs/${mine.id}/dispatch`, { task: 'child' }, chat.bearer);
+    expect(res.status).toBe(403);
+  });
 });

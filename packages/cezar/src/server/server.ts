@@ -1569,13 +1569,14 @@ export const CHAT_TASKS_PER_HOUR = 5;
 export const CHAT_TASKS_IN_FLIGHT = 2;
 
 /** Why a chat may not start another task now, or undefined. */
-export function chatTaskLimit(store: RunStore, chatId: string, now = Date.now()): string | undefined {
+/** `pending`: starts the route has admitted but not yet created — each counts in flight and this hour. */
+export function chatTaskLimit(store: RunStore, chatId: string, now = Date.now(), pending = 0): string | undefined {
   const mine = store.listRuns().filter((run) => run.createdBy === chatCreatedBy(chatId));
-  const inFlight = mine.filter((run) => run.status === 'queued' || run.status === 'running' || run.status === 'waiting').length;
+  const inFlight = pending + mine.filter((run) => run.status === 'queued' || run.status === 'running' || run.status === 'waiting').length;
   if (inFlight >= CHAT_TASKS_IN_FLIGHT) {
     return `this chat already has ${inFlight} tasks in flight — at most ${CHAT_TASKS_IN_FLIGHT}; wait for one to reach review`;
   }
-  const lastHour = mine.filter((run) => now - Date.parse(run.createdAt) < 3_600_000).length;
+  const lastHour = pending + mine.filter((run) => now - Date.parse(run.createdAt) < 3_600_000).length;
   if (lastHour >= CHAT_TASKS_PER_HOUR) return `this chat started ${lastHour} tasks in the last hour — at most ${CHAT_TASKS_PER_HOUR}`;
   return undefined;
 }
@@ -5214,6 +5215,9 @@ export function createApp(deps: ServerDeps) {
     }
   };
 
+  /** A chat's admitted `POST /runs` not yet created or refused, by chat id (`chatTaskLimit`). */
+  const chatTasksPending = new Map<string, number>();
+
   // ---- chained family: runs lifecycle + artifacts (project-scoped) ----
   const runsRoutes = new Hono<ProjectApiEnv>()
     .get('/runs', queryZodValidator(runsListQuerySchema), (c) => {
@@ -5300,7 +5304,23 @@ export function createApp(deps: ServerDeps) {
       return run ? c.json(run) : c.json({ error: 'not found' }, 404);
     })
 
-    .post('/runs', jsonZodValidator(startRunSchema), async (c) => {
+    .post('/runs', jsonZodValidator(startRunSchema), async (c, next) => {
+      // A chat's brakes (spec 2026-10-24-cockpit-chat §5) take the slot in this tick, before any
+      // await, and hold it until the handler has created the record or refused: parallel
+      // runs_create calls cannot all pass a check that counts records only.
+      const chatId = chatPrincipalId(c);
+      if (!chatId) return next();
+      const limit = chatTaskLimit(c.get('project').store, chatId, Date.now(), chatTasksPending.get(chatId) ?? 0);
+      if (limit) return c.json({ error: limit }, 409);
+      chatTasksPending.set(chatId, (chatTasksPending.get(chatId) ?? 0) + 1);
+      try {
+        await next();
+      } finally {
+        const left = (chatTasksPending.get(chatId) ?? 1) - 1;
+        if (left > 0) chatTasksPending.set(chatId, left);
+        else chatTasksPending.delete(chatId);
+      }
+    }, async (c) => {
       const { root: repoRoot, dataDir, manager, store } = c.get('project');
       // It would queue into an index the restore holds unwritten (`?.`: test managers are stubs).
       if (manager.restoreInProgress?.()) return c.json({ error: RESTORE_IN_PROGRESS_ERROR }, 409);
@@ -5329,8 +5349,6 @@ export function createApp(deps: ServerDeps) {
         // Only a workflow that is live (loaded, so the owner applied it): inline steps would run a
         // chain nobody reviewed, check commands and pushes included (spec §5).
         if (body.steps) return c.json({ error: 'a chat starts a task with a live workflow (workflows_list), never inline steps' }, 400);
-        const limit = chatTaskLimit(store, chatPrincipalId(c) ?? '');
-        if (limit) return c.json({ error: limit }, 409);
       }
       // Resolve the ticket link before anything is started: a scope that moved under the user is
       // refused like any tracker read, while a vendor that merely fails to answer costs the link

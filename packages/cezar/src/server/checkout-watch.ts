@@ -3,8 +3,6 @@ import { watch, type FSWatcher } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { ignoredAmong } from '../worktree-env.ts';
-
 /**
  * "Something changed on disk" for an open Code page (spec `2026-10-11-code-page` §4): a debounced
  * recursive watch that exists only while somebody subscribes. It reports THAT, never what — the
@@ -35,29 +33,66 @@ export const CLASSIFY_TTL_MS = 60_000;
 /** Paths asked about tracked-ness per window; past it a path counts as tracked (never muted). */
 const MAX_TRACKED_ASKED = 200;
 
+/** Every git the bell runs: a look must never take `index.lock` from under the agent's `git add`. */
+function quietGit(
+  run: typeof execFile,
+  root: string,
+  args: string[],
+  done: (error: Error | null, stdout: string) => void,
+  input?: string,
+): void {
+  const child = run(
+    'git',
+    ['-C', root, ...args],
+    { timeout: 5_000, maxBuffer: 1024 * 1024, windowsHide: true, encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } },
+    done,
+  ) as ReturnType<typeof execFile> | undefined;
+  if (input === undefined) return;
+  // A git that exits before reading everything must not take the process down with EPIPE.
+  child?.stdin?.on('error', () => {});
+  child?.stdin?.end(input);
+}
+
+/** One ask per root and path set at a time: a slow git is joined, never asked twice in parallel. */
+const inFlight = new Map<string, Promise<Map<string, PathFacts>>>();
+
 /** `git check-ignore --stdin` for the lot, `git ls-files` for the rest. A git that fails answers
  *  "not ignored, tracked" — the bell rings, as it did before it could ask. */
-export const classifyPaths: ClassifyPaths = async (root, paths) => {
-  const ignored = new Set(await ignoredAmong(root, paths));
+export function classifyPaths(root: string, paths: string[], run: typeof execFile = execFile): Promise<Map<string, PathFacts>> {
+  const key = `${root}\0${[...new Set(paths)].sort().join('\0')}`;
+  const joined = inFlight.get(key);
+  if (joined) return joined;
+  const asking = askGit(root, paths, run).finally(() => inFlight.delete(key));
+  inFlight.set(key, asking);
+  return asking;
+}
+
+async function askGit(root: string, paths: string[], run: typeof execFile): Promise<Map<string, PathFacts>> {
+  const ignored = new Set(await ignoredAmong(root, paths, run));
   const rest = paths.filter((path) => !ignored.has(path));
   const asked = rest.slice(0, MAX_TRACKED_ASKED);
-  const tracked = await trackedAmong(root, asked);
+  const tracked = await trackedAmong(root, asked, run);
   const facts = new Map<string, PathFacts>();
   for (const path of paths) {
     if (ignored.has(path)) facts.set(path, { ignored: true, tracked: false });
     else facts.set(path, { ignored: false, tracked: tracked === null || !asked.includes(path) || tracked.has(path) });
   }
   return facts;
-};
+}
 
-function trackedAmong(root: string, paths: string[]): Promise<Set<string> | null> {
+function ignoredAmong(root: string, paths: string[], run: typeof execFile): Promise<string[]> {
+  if (paths.length === 0) return Promise.resolve([]);
+  // Exit 1 means "none of them", which is an answer rather than a failure; stdout says which.
+  return new Promise((resolve) => {
+    quietGit(run, root, ['check-ignore', '-z', '--stdin'], (_error, stdout) => resolve((stdout ?? '').split('\0').filter(Boolean)), `${paths.join('\0')}\0`);
+  });
+}
+
+function trackedAmong(root: string, paths: string[], run: typeof execFile): Promise<Set<string> | null> {
   if (paths.length === 0) return Promise.resolve(new Set());
   return new Promise((resolve) => {
-    execFile(
-      'git',
-      ['-C', root, 'ls-files', '-z', '--', ...paths.map((path) => `:(literal)${path}`)],
-      { timeout: 5_000, maxBuffer: 1024 * 1024, windowsHide: true, encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } },
-      (error: Error | null, stdout: string) => resolve(error ? null : new Set(stdout.split('\0').filter(Boolean))),
+    quietGit(run, root, ['ls-files', '-z', '--', ...paths.map((path) => `:(literal)${path}`)], (error, stdout) =>
+      resolve(error ? null : new Set(stdout.split('\0').filter(Boolean))),
     );
   });
 }

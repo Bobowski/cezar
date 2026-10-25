@@ -241,3 +241,46 @@ describe('classifyPaths', () => {
     expect(facts.get('new [1].txt')).toEqual({ ignored: false, tracked: false });
   });
 });
+
+describe('classifyPaths (the git it runs)', () => {
+  type Done = (error: Error | null, stdout: string) => void;
+  function fakeGit() {
+    const calls: Array<{ args: string[]; options: { env?: NodeJS.ProcessEnv; timeout?: number }; done: Done }> = [];
+    const run = ((_file: string, args: string[], options: { env?: NodeJS.ProcessEnv; timeout?: number }, done: Done) => {
+      calls.push({ args, options, done });
+      return { stdin: { on: () => {}, end: () => {} } };
+    }) as unknown as typeof execFile;
+    return { calls, run };
+  }
+
+  it('asks without optional locks and with a timeout, check-ignore and ls-files alike', async () => {
+    const git = fakeGit();
+    const asking = classifyPaths('/repo-locks', ['a.txt'], git.run);
+    await vi.waitFor(() => expect(git.calls).toHaveLength(1));
+    expect(git.calls[0]!.args).toContain('check-ignore');
+    git.calls[0]!.done(Object.assign(new Error('exit 1'), { code: 1 }), '');
+    await vi.waitFor(() => expect(git.calls).toHaveLength(2));
+    expect(git.calls[1]!.args).toContain('ls-files');
+    git.calls[1]!.done(null, 'a.txt\0');
+    expect((await asking).get('a.txt')).toEqual({ ignored: false, tracked: true });
+    for (const call of git.calls) {
+      expect(call.options.env?.GIT_OPTIONAL_LOCKS).toBe('0');
+      expect(call.options.timeout).toBe(5_000);
+    }
+  });
+
+  it('joins an ask already in flight for the same paths instead of spawning a second git', async () => {
+    const git = fakeGit();
+    const first = classifyPaths('/repo-dedupe', ['b.txt', 'a.txt'], git.run);
+    const second = classifyPaths('/repo-dedupe', ['a.txt', 'b.txt'], git.run);
+    expect(second).toBe(first);
+    await vi.waitFor(() => expect(git.calls).toHaveLength(1));
+    git.calls[0]!.done(null, 'a.txt\0b.txt\0');
+    await first;
+    expect(git.calls).toHaveLength(1);
+    // Once answered, the next window asks again.
+    void classifyPaths('/repo-dedupe', ['a.txt', 'b.txt'], git.run);
+    await vi.waitFor(() => expect(git.calls).toHaveLength(2));
+    git.calls[1]!.done(null, 'a.txt\0b.txt\0');
+  });
+});

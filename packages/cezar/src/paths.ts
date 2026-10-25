@@ -124,6 +124,15 @@ export function agentAccountsPath(): string {
 }
 
 /**
+ * Which committed `.ai/cezar/mcp.json` content the operator approved on this machine, per project
+ * (spec 2026-10-24-easy-mcp §5). In the home, not the repo: nothing a commit carries — a
+ * force-added ignored file included — can approve itself. Deleting it un-approves everything.
+ */
+export function mcpApprovalsPath(): string {
+  return join(cezarHomeDir(), 'mcp-approvals.json');
+}
+
+/**
  * Expand a leading `~` to the user's home. Lives here with the other homedir
  * logic (see the module note above — one place owns `homedir()`): the
  * workspace browse/checkout roots are stored as the user wrote them (a literal `~`), so

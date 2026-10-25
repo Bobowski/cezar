@@ -492,6 +492,7 @@ export const routeContracts = {
   'GET /mcp-servers/registry': { summary: 'Search the official MCP Registry (third-party, unreviewed results; cached an hour).', response: mcpRegistryResponseSchema },
   'PUT /mcp-servers/:scope/:name': { summary: 'Add or replace an MCP server in the project (committed) or private file; credentials as ${{ secrets.KEY }} references.', response: mcpServersListSchema, destructive: true },
   'DELETE /mcp-servers/:scope/:name': { summary: 'Remove an MCP server from the project or private file.', response: mcpServersListSchema, destructive: true },
+  'POST /mcp-servers/approval': { summary: 'Approve the committed .ai/cezar/mcp.json content (by its hash) on this machine, binding the secrets each server may receive; nothing in the file runs before.', response: mcpServersListSchema, destructive: true },
   'POST /mcp-servers/:scope/:name/test': { summary: 'Run an MCP server once (initialize + tools/list, 10 s budget) and list its tools.', response: mcpServerTestResponseSchema, destructive: false },
   'GET /agent-config': { summary: 'The coding agents\' own config files for this project, by agent.', response: agentConfigListingSchema },
   'GET /agent-config/:id': { summary: 'One agent config file\'s content.', response: agentConfigFileContentSchema },

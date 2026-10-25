@@ -31,6 +31,7 @@ const LIST: McpServersList = {
   problems: { project: [], private: ['mcp.local.json is not valid JSON: x'] },
   catalog: [STRIPE],
   editable: true,
+  approval: { state: 'approved', hash: 'a'.repeat(64), approvedAt: '2026-10-24T09:00:00Z', changes: [], bindings: {} },
 }
 
 function setup(list: McpServersList = LIST) {
@@ -43,6 +44,7 @@ function setup(list: McpServersList = LIST) {
       if (method === 'GET') return new Response(JSON.stringify({ secrets: [], keyBackend: 'keychain' }), { status: 200 })
       return new Response(null, { status: 204 })
     }
+    if (url.endsWith('/approval')) return new Response(JSON.stringify(list), { status: 200 })
     if (url.endsWith('/test')) return new Response(JSON.stringify({ ok: true, tools: ['resolve-library-id', 'get-library-docs'] }), { status: 200 })
     return new Response(JSON.stringify(list), { status: 200 })
   }))
@@ -87,6 +89,27 @@ describe('MCP servers settings (spec 2026-10-24-easy-mcp)', () => {
     fireEvent.click(screen.getByRole('button', { name: /add manually/i }))
     expect((await screen.findByLabelText('Private') as HTMLInputElement).checked).toBe(true)
     expect((screen.getByLabelText('Project') as HTMLInputElement).checked).toBe(false)
+  })
+
+  it('a changed committed file shows the diff, binds only the secrets checked, and approves that content', async () => {
+    const hash = 'b'.repeat(64)
+    const calls = setup({
+      ...LIST,
+      project: [{ ...LIST.project[0]!, name: 'gh', secrets: ['GH_PAT', 'OTHER_KEY'], boundSecrets: [] }],
+      approval: {
+        state: 'changed', hash, approvedAt: '2026-10-24T09:00:00Z', bindings: { gh: ['GH_PAT'] },
+        changes: [{ name: 'gh', change: 'changed', before: '{"command": "old"}', after: '{"command": "new"}' }],
+      },
+    })
+    const panel = (await screen.findByText('Changed — review and approve')).closest('[data-slot="mcp-approval"]') as HTMLElement
+    expect(within(panel).getByLabelText('gh before').textContent).toContain('old')
+    expect(within(panel).getByLabelText('gh after').textContent).toContain('new')
+    expect((within(panel).getByLabelText('Give GH_PAT to gh') as HTMLInputElement).checked).toBe(true)
+    expect((within(panel).getByLabelText('Give OTHER_KEY to gh') as HTMLInputElement).checked).toBe(false)
+    fireEvent.click(within(panel).getByRole('button', { name: 'Approve' }))
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/mcp-servers/approval'))).toBe(true))
+    const approval = calls.find((c) => c.method === 'POST' && c.url.endsWith('/mcp-servers/approval'))!
+    expect(JSON.parse(approval.body!)).toEqual({ hash, bindings: { gh: ['GH_PAT'] } })
   })
 
   it('is read-only when the cockpit says so', async () => {

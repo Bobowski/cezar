@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent, AgentRunResult, AgentRunSpec } from '../core/agent-runner.ts';
 import { privateMcpPath, projectMcpPath } from '../core/private-mcp.ts';
+import { approveProjectMcp, mcpContentHash } from '../mcp-servers/approval.ts';
 import { readMcpStatus } from '../mcp-servers/status.ts';
 import { SecretStore } from '../workspace/secrets.ts';
 import { RunStore } from '../runs/store.ts';
@@ -136,16 +137,16 @@ describe('private MCP servers at launch', () => {
     await secrets.set({ kind: 'workspace' }, 'CHECKS_ONLY', 'not-for-cezar-value', ['checks']);
     manager = new RunManager(store, repoRoot, { secrets });
     mkdirSync(join(repoRoot, '.ai', 'cezar'), { recursive: true });
-    writeFileSync(
-      projectMcpPath(repoRoot),
-      JSON.stringify({
-        mcpServers: {
-          context7: { command: 'npx', args: ['-y', '@upstash/context7-mcp'] },
-          shared: { command: 'from-project' },
-          gated: { command: 'gated-mcp', env: { KEY: '${{ secrets.CHECKS_ONLY }}' } },
-        },
-      }),
-    );
+    const projectText = JSON.stringify({
+      mcpServers: {
+        context7: { command: 'npx', args: ['-y', '@upstash/context7-mcp'] },
+        shared: { command: 'from-project' },
+        gated: { command: 'gated-mcp', env: { KEY: '${{ secrets.CHECKS_ONLY }}' } },
+      },
+    });
+    writeFileSync(projectMcpPath(repoRoot), projectText);
+    // The committed file is repo content: it reaches a session only once approved on this machine.
+    expect(await approveProjectMcp(repoRoot, mcpContentHash(projectText), { gated: ['CHECKS_ONLY'] })).toEqual({ ok: true });
     writePrivateMcp({
       shared: { command: 'from-private' },
       stripe: { type: 'http', url: 'https://mcp.stripe.com', headers: { Authorization: 'Bearer ${{ secrets.STRIPE_SECRET_KEY }}' } },
@@ -167,6 +168,16 @@ describe('private MCP servers at launch', () => {
     expect(JSON.stringify(store.readEvents(record.id))).not.toContain('sk_test_resolved_at_launch');
     await expect.poll(async () => (await readMcpStatus(repoRoot)).get('private:stripe')?.state).toBe('injected');
     expect((await readMcpStatus(repoRoot)).get('project:gated')).toMatchObject({ state: 'failed', runId: record.id });
+  });
+
+  it('an unapproved committed mcp.json reaches no session — a note says why, the private file still applies', async () => {
+    mkdirSync(join(repoRoot, '.ai', 'cezar'), { recursive: true });
+    writeFileSync(projectMcpPath(repoRoot), JSON.stringify({ mcpServers: { pulled: { command: 'repo-chosen-mcp' } } }));
+    writePrivateMcp({ mine: { command: 'mine-mcp' } });
+    const record = manager!.startRun(TASK, { task: 'do it', worktree: false, runner: 'claude' });
+    expect((await specAt(0)).mcpServers?.map((s) => s.name)).toEqual(['mine']);
+    await settled(record.id);
+    expect(notes(record.id).some((n) => n.startsWith('project MCP: MCP server "pulled" skipped: mcp.json is not approved on this machine'))).toBe(true);
   });
 
   it('a broken file is a note, never a failed run', async () => {

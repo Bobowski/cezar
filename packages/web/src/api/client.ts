@@ -188,7 +188,7 @@ import type {
   DockerState, DockerDisk, DockerImages, DockerLogs, DockerReclaimPlan, DockerReclaimResult, DockerReclaimStep, DockerVolumes,
   GithubReposResponse, ServicePatch, ServicePin, ServicePinInput, ServicesState,
   E2eStatus, E2eSetupInput, E2eSetupResponse,
-  McpRegistryResponse, McpScope, McpServerDefinition, McpServersList, McpServerTestResponse,
+  McpRegistryResponse, McpScope, McpSecretBindings, McpServerDefinition, McpServersList, McpServerTestResponse,
 } from '@open-mercato/cezar-api-client'
 import { parseProviderStatusResponse } from '@/lib/provider-status'
 import {
@@ -1171,6 +1171,11 @@ export async function putMcpServer(scope: McpScope, name: string, definition: Mc
 export async function deleteMcpServer(scope: McpScope, name: string): Promise<McpServersList> {
   return unwrap(await cez.api.v1.p[':projectId']['mcp-servers'][':scope'][':name'].$delete(
     { param: { projectId: queryScope(), scope, name } }), '/mcp-servers')
+}
+/** Approve the committed mcp.json content the operator reviewed (named by its hash) on this machine. */
+export async function approveProjectMcp(hash: string, bindings: McpSecretBindings): Promise<McpServersList> {
+  return unwrap(await cez.api.v1.p[':projectId']['mcp-servers'].approval.$post(
+    { param: { projectId: queryScope() }, json: { hash, bindings } }), '/mcp-servers/approval')
 }
 export async function testMcpServer(scope: McpScope, name: string): Promise<McpServerTestResponse> {
   return unwrap(await cez.api.v1.p[':projectId']['mcp-servers'][':scope'][':name'].test.$post(

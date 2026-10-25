@@ -9,6 +9,7 @@ import {
 import { loadPrivateMcp, loadProjectMcp, mcpReachOf, type PrivateMcpServer } from '../core/private-mcp.ts';
 import { MCP_CATALOG } from '../mcp-catalog/catalog.ts';
 import type { SecretStore } from '../workspace/secrets.ts';
+import { projectApprovalView } from './approval.ts';
 import { redactMcpArgs, redactMcpUrl } from './redact.ts';
 import { mcpStatusOf, readMcpStatus } from './status.ts';
 
@@ -52,12 +53,15 @@ export interface ListMcpServersDeps {
 }
 
 export async function listMcpServers(repoRoot: string, deps: ListMcpServersDeps): Promise<McpServersList> {
-  const [project, priv, statuses, available] = await Promise.all([
+  const [project, priv, statuses, available, approval] = await Promise.all([
     loadProjectMcp(repoRoot),
     loadPrivateMcp(repoRoot),
     readMcpStatus(repoRoot),
     cezarSecretNames(deps.secrets, deps.project),
+    projectApprovalView(repoRoot, { raw: deps.raw === true }),
   ]);
+  // Only an approval of the current content binds anything (spec 2026-10-24-easy-mcp §5).
+  const boundOf = (name: string) => (approval.state === 'approved' ? (approval.bindings[name] ?? []) : []);
   const privateNames = new Set(priv.servers.map((server) => server.name));
   const row = (server: PrivateMcpServer, scope: McpScope): McpServer => {
     const referenced = mcpSecretNames(definitionOfServer(server));
@@ -76,6 +80,7 @@ export async function listMcpServers(repoRoot: string, deps: ListMcpServersDeps)
       shadowed: scope === 'project' && privateNames.has(server.name),
       reach: mcpReachOf(server.transport, { secretBearing: referenced.length > 0 }),
       ...(status ? { status } : {}),
+      ...(scope === 'project' ? { boundSecrets: boundOf(server.name).filter((name) => referenced.includes(name)) } : {}),
     };
   };
   return {
@@ -84,5 +89,6 @@ export async function listMcpServers(repoRoot: string, deps: ListMcpServersDeps)
     problems: { project: project.problems, private: priv.problems },
     catalog: [...MCP_CATALOG],
     editable: deps.editable,
+    approval,
   };
 }

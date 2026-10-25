@@ -140,16 +140,27 @@ export function parseMcpFile(text: string, file: string): PrivateMcpLoad {
   return { servers, problems };
 }
 
-async function loadMcpFile(path: string, file: string): Promise<PrivateMcpLoad> {
-  let text: string;
+/** A file's text: null when absent, or why it could not be read. Never throws. */
+async function readMcpText(path: string, file: string): Promise<{ text: string | null } | { problem: string }> {
   try {
-    text = await readFile(path, 'utf8');
+    return { text: await readFile(path, 'utf8') };
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') return { servers: [], problems: [] };
-    return { servers: [], problems: [`${file} could not be read: ${(err as Error).message}`] };
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { text: null };
+    return { problem: `${file} could not be read: ${(err as Error).message}` };
   }
-  return parseMcpFile(text, file);
+}
+
+async function loadMcpFile(path: string, file: string): Promise<PrivateMcpLoad> {
+  const read = await readMcpText(path, file);
+  if ('problem' in read) return { servers: [], problems: [read.problem] };
+  return parseMcpFile(read.text ?? '', file);
+}
+
+/** The committed file's exact text (null when absent): what an approval's hash is taken of. */
+export async function readProjectMcpText(repoRoot: string): Promise<string | null> {
+  const read = await readMcpText(projectMcpPath(repoRoot), PROJECT_MCP_FILE);
+  return 'text' in read ? read.text : null;
 }
 
 /** Read and parse the project's private MCP file. Never throws. */
@@ -164,8 +175,8 @@ export function loadProjectMcp(repoRoot: string): Promise<PrivateMcpLoad> {
 
 // ---- launch: both files, merged and resolved (spec 2026-10-24-easy-mcp §3) ----------------
 
-/** Every text a server carries, in the order `mcpSecretNames` reads them. */
-function referencedSecrets(server: PrivateMcpServer): string[] {
+/** Every secret a server references, in the order `mcpSecretNames` reads them. */
+export function referencedSecrets(server: PrivateMcpServer): string[] {
   return mcpSecretNames(
     server.transport === 'stdio'
       ? { command: server.command, args: server.args, env: server.env }
@@ -247,11 +258,27 @@ export function missingSecretReason(notes: readonly string[], name: string): str
 export type McpSecretResolver = (names: string[]) => Promise<{ values: Record<string, string>; notes: string[] }>;
 
 /**
- * Both files for one agent launch. Never throws: a broken file or entry, a missing secret or a
- * failing store each skip what they touch, with a problem the run surfaces as a note.
+ * Whether THIS text of the committed file was approved on this machine, and the secret names each
+ * of its servers was bound to (spec 2026-10-24-easy-mcp §5) — `mcp-servers/approval.ts`.
  */
-export async function loadLaunchMcp(repoRoot: string, resolveSecrets: McpSecretResolver): Promise<LaunchMcp> {
-  const [project, priv] = await Promise.all([loadProjectMcp(repoRoot), loadPrivateMcp(repoRoot)]);
+export type ProjectMcpGate = (text: string) => Promise<{ approved: true; bindings: Record<string, string[]> } | { approved: false; reason: string }>;
+
+export interface LaunchMcpOptions {
+  /** Absent: no project server is injected — repo content runs only once approved. */
+  projectGate?: ProjectMcpGate;
+}
+
+const NOT_APPROVED = `${PROJECT_MCP_FILE} is not approved on this machine — review and approve it in Settings → MCP servers`;
+
+/**
+ * Both files for one agent launch. Never throws: a broken file or entry, an unapproved project
+ * file, an unbound or missing secret or a failing store each skip what they touch, with a problem
+ * the run surfaces as a note. A project server asks the store only for the secrets bound to it.
+ */
+export async function loadLaunchMcp(repoRoot: string, resolveSecrets: McpSecretResolver, options: LaunchMcpOptions = {}): Promise<LaunchMcp> {
+  // One read of the committed file: the text the gate approves is the text that is parsed.
+  const [projectRead, priv] = await Promise.all([readMcpText(projectMcpPath(repoRoot), PROJECT_MCP_FILE), loadPrivateMcp(repoRoot)]);
+  const project = 'problem' in projectRead ? { servers: [], problems: [projectRead.problem] } : parseMcpFile(projectRead.text ?? '', PROJECT_MCP_FILE);
   const problems: LaunchMcpProblem[] = [
     ...project.problems.map((message) => ({ scope: 'project' as const, message })),
     ...priv.problems.map((message) => ({ scope: 'private' as const, message })),
@@ -259,6 +286,25 @@ export async function loadLaunchMcp(repoRoot: string, resolveSecrets: McpSecretR
   const merged = new Map<string, { server: PrivateMcpServer; scope: McpScope }>();
   for (const server of project.servers) merged.set(server.name, { server, scope: 'project' });
   for (const server of priv.servers) merged.set(server.name, { server, scope: 'private' });
+
+  const fromProject = [...merged.values()].filter((entry) => entry.scope === 'project');
+  if (fromProject.length > 0) {
+    const text = 'text' in projectRead ? (projectRead.text ?? '') : '';
+    const gate = options.projectGate
+      ? await options.projectGate(text).catch((err: Error) => ({ approved: false as const, reason: `its approval could not be read: ${err.message}` }))
+      : { approved: false as const, reason: NOT_APPROVED };
+    for (const { server } of fromProject) {
+      const unbound = gate.approved ? referencedSecrets(server).filter((name) => !(gate.bindings[server.name] ?? []).includes(name)) : [];
+      const why = !gate.approved
+        ? gate.reason
+        : unbound.length > 0
+          ? `secret ${unbound.join(', ')} ${unbound.length > 1 ? 'are' : 'is'} not bound to it — approve it with ${unbound.length > 1 ? 'them' : 'it'} in Settings → MCP servers`
+          : null;
+      if (!why) continue;
+      problems.push({ scope: 'project', name: server.name, message: `MCP server "${server.name}" skipped: ${why}` });
+      merged.delete(server.name);
+    }
+  }
 
   const names = [...new Set([...merged.values()].flatMap(({ server }) => referencedSecrets(server)))];
   let values: Record<string, string> = {};

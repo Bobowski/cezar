@@ -189,8 +189,40 @@ export const mcpServerSchema = z.object({
   shadowed: z.boolean(),
   reach: z.array(mcpServerReachSchema),
   status: mcpServerStatusSchema.optional(),
+  /** Project servers only: the referenced secrets the operator's approval binds to it — the only ones it receives. */
+  boundSecrets: z.array(z.string()).optional(),
 });
 export type McpServer = z.infer<typeof mcpServerSchema>;
+
+/** One server entry that differs from the approved content; `before`/`after` are redacted JSON. */
+export const mcpApprovalChangeSchema = z.object({
+  name: z.string(),
+  change: z.enum(['added', 'removed', 'changed']),
+  before: z.string().optional(),
+  after: z.string().optional(),
+});
+export type McpApprovalChange = z.infer<typeof mcpApprovalChangeSchema>;
+
+/** Secret names bound per project server at approval: `{ server: [names] }`. */
+export const mcpSecretBindingsSchema = z.record(mcpServerNameSchema, z.array(z.string()));
+export type McpSecretBindings = z.infer<typeof mcpSecretBindingsSchema>;
+
+/**
+ * Whether the committed `mcp.json` content was approved on this machine (spec 2026-10-24-easy-mcp
+ * §5). `none` = no file or no servers; `unapproved` = never approved; `changed` = it differs from
+ * what was approved. Only `approved` content is injected, each server with its bound secrets only.
+ */
+export const mcpProjectApprovalSchema = z.object({
+  state: z.enum(['none', 'approved', 'unapproved', 'changed']),
+  /** The current file content's hash — what an approval names. Null without a file. */
+  hash: z.string().nullable(),
+  approvedAt: z.string().optional(),
+  /** Every server entry that differs from the approved content (all of them when never approved). */
+  changes: z.array(mcpApprovalChangeSchema),
+  /** The last approval's bindings, to pre-fill a review. */
+  bindings: mcpSecretBindingsSchema,
+});
+export type McpProjectApproval = z.infer<typeof mcpProjectApprovalSchema>;
 
 /** `GET /mcp-servers`: both lists, the problems that skipped an entry, and the curated catalog. */
 export const mcpServersListSchema = z.object({
@@ -200,8 +232,15 @@ export const mcpServersListSchema = z.object({
   catalog: z.array(mcpCatalogEntrySchema),
   /** Whether this cockpit lets the caller write and Test (a trusted operator). */
   editable: z.boolean(),
+  approval: mcpProjectApprovalSchema,
 });
 export type McpServersList = z.infer<typeof mcpServersListSchema>;
+
+/** `POST /mcp-servers/approval`: approve the reviewed content (by its hash) with these bindings. */
+export const mcpProjectApproveSchema = z
+  .object({ hash: z.string().regex(/^[0-9a-f]{64}$/, 'the content hash the listing served'), bindings: mcpSecretBindingsSchema })
+  .strict();
+export type McpProjectApprove = z.infer<typeof mcpProjectApproveSchema>;
 
 export const mcpServerParamsSchema = z.object({ scope: mcpScopeSchema, name: mcpServerNameSchema });
 export type McpServerParams = z.infer<typeof mcpServerParamsSchema>;

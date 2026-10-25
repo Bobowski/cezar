@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { mcpProjectLiteralIssue, type McpScope, type McpServerDefinition } from '@open-mercato/cezar-contract';
+import { mcpProjectLiteralIssue, mcpSecretNames, type McpScope, type McpServerDefinition } from '@open-mercato/cezar-contract';
 import { privateMcpPath, projectMcpPath } from '../core/private-mcp.ts';
+import { carryProjectApproval, type ApprovalCarry } from './approval.ts';
 import { ensureDataGitignore } from '../data-gitignore.ts';
 import { renameWithRetry } from '../fs-rename.ts';
 
@@ -30,18 +31,18 @@ function locked<T>(path: string, work: () => Promise<T>): Promise<T> {
   return next;
 }
 
-async function readObject(path: string): Promise<{ data: Record<string, unknown> } | { error: string }> {
+async function readObject(path: string): Promise<{ data: Record<string, unknown>; text: string | null } | { error: string }> {
   let text: string;
   try {
     text = await readFile(path, 'utf8');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { data: {} };
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { data: {}, text: null };
     return { error: `the file could not be read: ${(error as Error).message}` };
   }
-  if (text.trim() === '') return { data: {} };
+  if (text.trim() === '') return { data: {}, text };
   try {
     const parsed: unknown = JSON.parse(text);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return { data: parsed as Record<string, unknown> };
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return { data: parsed as Record<string, unknown>, text };
   } catch {
     // reported below
   }
@@ -52,6 +53,7 @@ async function update(
   repoRoot: string,
   scope: McpScope,
   mutate: (servers: Record<string, unknown>) => boolean,
+  carry: ApprovalCarry,
 ): Promise<McpFileWrite> {
   const path = mcpFilePath(repoRoot, scope);
   return locked(path, async () => {
@@ -67,6 +69,8 @@ async function update(
       const content = `${JSON.stringify({ ...read.data, mcpServers: servers }, null, 2)}\n`;
       await writeFile(tmp, content, scope === 'private' ? { encoding: 'utf8', mode: 0o600 } : 'utf8');
       await renameWithRetry(tmp, path);
+      // The operator wrote this on this machine: an approved (or empty) file stays approved, with this entry's own references bound.
+      if (scope === 'project') await carryProjectApproval(repoRoot, read.text, content, carry);
     } catch (error) {
       return { ok: false, status: 409, error: `could not write ${scope === 'project' ? 'mcp.json' : 'mcp.local.json'}: ${(error as Error).message}` };
     }
@@ -82,7 +86,7 @@ export function putMcpServer(repoRoot: string, scope: McpScope, name: string, de
   return update(repoRoot, scope, (servers) => {
     servers[name] = definition;
     return true;
-  });
+  }, { bind: name, names: mcpSecretNames(definition) });
 }
 
 /** Remove `name`; 404 when the file has no such server. */
@@ -91,5 +95,5 @@ export function deleteMcpServer(repoRoot: string, scope: McpScope, name: string)
     if (!Object.hasOwn(servers, name)) return false;
     delete servers[name];
     return true;
-  });
+  }, { unbind: name });
 }

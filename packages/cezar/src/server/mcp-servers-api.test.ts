@@ -83,6 +83,35 @@ describe('MCP servers API (spec 2026-10-24-easy-mcp §4)', () => {
     expect((await apiRequest(instance, '/api/v1/mcp-servers/project/probe/test', { method: 'POST' })).status).toBe(404);
   });
 
+  it('a committed file from the repo waits for approval: listed as unapproved, Tested without secrets, approved by its hash', async () => {
+    writeFileSync(projectMcpPath(root), JSON.stringify({ mcpServers: { probe: { command: process.execPath, args: [join(root, 'server.cjs')], env: { TOKEN: '${{ secrets.MY_TOKEN }}' } } } }));
+    const { id, instance } = await app();
+    await secrets.set({ kind: 'project', projectId: id, root }, 'MY_TOKEN', 'resolved-secret-value', ['cezar']);
+    const listed = mcpServersListSchema.parse(await (await apiRequest(instance, '/api/v1/mcp-servers')).json());
+    expect(listed.approval).toMatchObject({ state: 'unapproved', changes: [{ name: 'probe', change: 'added' }] });
+    expect(listed.project[0]).toMatchObject({ name: 'probe', boundSecrets: [] });
+    const unapproved = mcpServerTestResponseSchema.parse(await (await apiRequest(instance, '/api/v1/mcp-servers/project/probe/test', { method: 'POST' })).json());
+    expect(unapproved).toMatchObject({ ok: false, reason: expect.stringMatching(/not approved on this machine/) });
+
+    const approve = (body: unknown): RequestInit => ({ method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    expect((await apiRequest(instance, '/api/v1/mcp-servers/approval', approve({ hash: 'f'.repeat(64), bindings: {} }))).status).toBe(409);
+    expect((await apiRequest(instance, '/api/v1/mcp-servers/approval', approve({ hash: 'nope', bindings: {} }))).status).toBe(400);
+    expect((await apiRequest(instance, '/api/v1/mcp-servers/approval', approve({ hash: listed.approval.hash, bindings: { probe: ['GITHUB_TOKEN'] } }))).status).toBe(400);
+    // Approved without binding MY_TOKEN: the server is still not given it.
+    const noBinding = await apiRequest(instance, `/api/v1/p/${id}/mcp-servers/approval`, approve({ hash: listed.approval.hash, bindings: {} }));
+    expect(mcpServersListSchema.parse(await noBinding.json()).approval.state).toBe('approved');
+    expect(mcpServerTestResponseSchema.parse(await (await apiRequest(instance, '/api/v1/mcp-servers/project/probe/test', { method: 'POST' })).json()))
+      .toMatchObject({ ok: false, reason: expect.stringMatching(/MY_TOKEN is not bound/) });
+    const bound = await apiRequest(instance, '/api/v1/mcp-servers/approval', approve({ hash: listed.approval.hash, bindings: { probe: ['MY_TOKEN'] } }));
+    expect(mcpServersListSchema.parse(await bound.json()).project[0]).toMatchObject({ boundSecrets: ['MY_TOKEN'] });
+    expect(mcpServerTestResponseSchema.parse(await (await apiRequest(instance, '/api/v1/mcp-servers/project/probe/test', { method: 'POST' })).json()))
+      .toEqual({ ok: true, tools: ['token-resolved'] });
+
+    vi.stubEnv('CEZ_REMOTE', '1');
+    vi.stubEnv('CEZ_AUTH', '0');
+    expect((await apiRequest(instance, '/api/v1/mcp-servers/approval', approve({ hash: listed.approval.hash, bindings: {} }))).status).toBe(409);
+  });
+
   it('validates the scope, the name and the definition as middleware', async () => {
     const { instance } = await app();
     expect((await apiRequest(instance, '/api/v1/mcp-servers/team/x', put({ command: 'x' }))).status).toBe(400);

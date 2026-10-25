@@ -26,6 +26,7 @@ import {
   supportsPrivateMcp,
   type PrivateMcpServer,
 } from '../core/private-mcp.ts';
+import { projectMcpGate } from '../mcp-servers/approval.ts';
 import { recordMcpLaunch, type McpLaunchOutcome } from '../mcp-servers/status.ts';
 import { currentUsage, onUsage, registerRunProcess, unregisterRunProcess, type ProcessUsage } from '../core/process-usage.ts';
 import { parseUsageLimit } from '../core/usage-limit.ts';
@@ -1595,13 +1596,21 @@ export class RunManager {
     backend: RunnerId,
     onEvent: (event: AgentEvent) => void,
   ): Promise<PrivateMcpServer[] | undefined> {
-    // A fork's head is untrusted code (Phase 3): like its checks, its agent gets no stored secrets.
+    // A fork's head is untrusted code (Phase 3): like its checks, its agent gets no stored secrets,
+    // and none of the committed servers — approved or not (spec 2026-10-24-easy-mcp §5).
     const untrusted = this.store.getRun(runId)?.untrustedHead === true;
     const project = this.projectId ? { projectId: this.projectId, root: this.repoRoot } : undefined;
-    const launch = await loadLaunchMcp(this.repoRoot, async (names) =>
-      untrusted
-        ? { values: {}, notes: names.map((name) => `secret ${name} is withheld from a fork's head`) }
-        : this.secrets.resolve(project, 'cezar', names),
+    const launch = await loadLaunchMcp(
+      this.repoRoot,
+      async (names) =>
+        untrusted
+          ? { values: {}, notes: names.map((name) => `secret ${name} is withheld from a fork's head`) }
+          : this.secrets.resolve(project, 'cezar', names),
+      {
+        projectGate: untrusted
+          ? async () => ({ approved: false, reason: `a fork's head never gets the servers of .ai/cezar/${PROJECT_MCP_FILE}` })
+          : projectMcpGate(this.repoRoot),
+      },
     );
     const label = (scope: 'project' | 'private') => (scope === 'project' ? 'project MCP' : 'private MCP');
     const outcomes: McpLaunchOutcome[] = [];

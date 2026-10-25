@@ -7,14 +7,16 @@ import {
   queryScope,
   secretNameIssue,
   type McpCatalogEntry,
+  type McpProjectApproval,
   type McpRegistryEntry,
   type McpScope,
+  type McpSecretBindings,
   type McpServer,
   type McpServerDefinition,
   type McpServerKey,
   type McpServerTestResponse,
 } from '@open-mercato/cezar-api-client'
-import { deleteMcpServer, putMcpServer, saveProjectSecret, searchMcpRegistry, testMcpServer } from '@/api/client'
+import { approveProjectMcp, deleteMcpServer, putMcpServer, saveProjectSecret, searchMcpRegistry, testMcpServer } from '@/api/client'
 import { queryKeys, useMcpServers, useProjectSecrets, useWorkspaceSecrets, workspaceQueryKeys } from '@/api/queries'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -121,8 +123,8 @@ function ServerRow({ server, editable }: { server: McpServer; editable: boolean 
       {server.secrets.length > 0 ? (
         <p className="text-xs text-muted-foreground">
           Secrets: {server.secrets.map((name) => (
-            <code key={name} className={`mr-1.5 font-mono ${server.missingSecrets.includes(name) ? 'text-destructive' : ''}`}>
-              {name}{server.missingSecrets.includes(name) ? ' (not stored for cezar)' : ''}
+            <code key={name} className={`mr-1.5 font-mono ${server.missingSecrets.includes(name) || (server.boundSecrets && !server.boundSecrets.includes(name)) ? 'text-destructive' : ''}`}>
+              {name}{server.missingSecrets.includes(name) ? ' (not stored for cezar)' : server.boundSecrets && !server.boundSecrets.includes(name) ? ' (not bound — approve to bind)' : ''}
             </code>
           ))}
         </p>
@@ -148,7 +150,98 @@ function ServerRow({ server, editable }: { server: McpServer; editable: boolean 
   )
 }
 
-function ServerList({ scope, servers, problems, editable }: { scope: McpScope; servers: McpServer[]; problems: string[]; editable: boolean }) {
+/**
+ * The committed file is repo content: nothing in it runs or receives a secret until the operator
+ * approves THAT content on this machine (spec 2026-10-24-easy-mcp §5) — a diff of the server
+ * entries, a secret-binding checkbox per reference, and Approve.
+ */
+function ApprovalPanel({ approval, servers, editable }: { approval: McpProjectApproval; servers: McpServer[]; editable: boolean }) {
+  const invalidate = useInvalidate()
+  const [bindings, setBindings] = useState<McpSecretBindings>(approval.bindings)
+  // A new content to review starts from the last approval's bindings, never from the previous review's clicks.
+  const approvedKey = `${approval.hash}:${JSON.stringify(approval.bindings)}`
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by content, not by the refetched object
+  useEffect(() => setBindings(approval.bindings), [approvedKey])
+  const pending = approval.state === 'unapproved' || approval.state === 'changed'
+  const unbound = servers.some((server) => server.secrets.some((name) => !(server.boundSecrets ?? []).includes(name)))
+  const approving = useMutation({
+    mutationFn: async () => {
+      const projectId = queryScope()
+      const chosen = Object.fromEntries(
+        servers
+          .map((server) => [server.name, (bindings[server.name] ?? []).filter((name) => server.secrets.includes(name))] as const)
+          .filter(([, names]) => names.length > 0),
+      )
+      await approveProjectMcp(approval.hash ?? '', chosen)
+      return projectId
+    },
+    onSuccess: async (projectId) => { await invalidate(projectId); toast('Project MCP servers approved on this machine') },
+    onError: (e: Error) => toast(e.message, { tone: 'danger' }),
+  })
+  if (approval.state === 'none') return null
+  if (!pending && !unbound) {
+    return <SettingsNote data-slot="mcp-approval-state">Approved on this machine{approval.approvedAt ? ` (${new Date(approval.approvedAt).toLocaleString()})` : ''}.</SettingsNote>
+  }
+  const withSecrets = servers.filter((server) => server.secrets.length > 0)
+  const toggle = (server: string, name: string, on: boolean) =>
+    setBindings((current) => {
+      const names = new Set(current[server] ?? [])
+      if (on) names.add(name)
+      else names.delete(name)
+      return { ...current, [server]: [...names] }
+    })
+  return (
+    <div className="space-y-3 rounded-md border border-destructive/40 p-4" data-slot="mcp-approval" data-state={approval.state}>
+      <p className="text-[13px] font-medium text-foreground">
+        {approval.state === 'changed' ? 'Changed — review and approve' : approval.state === 'unapproved' ? 'Not approved yet — review and approve' : 'Bind secrets — review and approve'}
+      </p>
+      <p className="text-xs text-muted-foreground">
+        <code className="font-mono">{SCOPE_FILES.project}</code> is part of the repository. None of its servers runs, and none receives a secret, until you approve this content on this machine. Any later change to the file asks again.
+      </p>
+      {pending ? (
+        approval.changes.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No server entry changed — only formatting or other keys of the file.</p>
+        ) : (
+          <ul className="space-y-2" aria-label="Changes since the last approval">
+            {approval.changes.map((change) => (
+              <li key={change.name} className="space-y-1" data-slot="mcp-approval-change" data-change={change.change}>
+                <p className="flex items-center gap-2 text-xs">
+                  <code className="font-mono text-foreground">{change.name}</code>
+                  <Badge variant="outline">{change.change}</Badge>
+                </p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {change.before !== undefined ? <pre className="overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-[11px] whitespace-pre-wrap break-all" aria-label={`${change.name} before`}>{change.before}</pre> : null}
+                  {change.after !== undefined ? <pre className="overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-[11px] whitespace-pre-wrap break-all" aria-label={`${change.name} after`}>{change.after}</pre> : null}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )
+      ) : null}
+      {withSecrets.length > 0 ? (
+        <fieldset className="space-y-1.5">
+          <legend className="text-xs font-medium text-foreground">Secrets each server may receive — unchecked ones are not resolved, and that server is skipped</legend>
+          {withSecrets.map((server) => server.secrets.map((name) => (
+            <label key={`${server.name}:${name}`} className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={(bindings[server.name] ?? []).includes(name)}
+                onChange={(event) => toggle(server.name, name, event.target.checked)}
+                aria-label={`Give ${name} to ${server.name}`}
+              />
+              <span><code className="font-mono">{name}</code> to <code className="font-mono">{server.name}</code></span>
+            </label>
+          )))}
+        </fieldset>
+      ) : null}
+      <div className="flex justify-end">
+        <Button size="sm" disabled={!editable || approving.isPending || !approval.hash} onClick={() => approving.mutate()}>Approve</Button>
+      </div>
+    </div>
+  )
+}
+
+function ServerList({ scope, servers, problems, editable, approval }: { scope: McpScope; servers: McpServer[]; problems: string[]; editable: boolean; approval?: McpProjectApproval }) {
   return (
     <SettingsGroup
       bare
@@ -159,6 +252,7 @@ function ServerList({ scope, servers, problems, editable }: { scope: McpScope; s
           : <>Stored in <code className="font-mono">{SCOPE_FILES.private}</code> — this machine only, never committed.</>
       }
     >
+      {approval ? <ApprovalPanel approval={approval} servers={servers} editable={editable} /> : null}
       {problems.map((problem) => (
         <SettingsNote key={problem} tone="danger">{problem}</SettingsNote>
       ))}
@@ -487,7 +581,7 @@ export function McpServersSection() {
       </SettingsGroup>
       {list.data ? (
         <>
-          <ServerList scope="project" servers={list.data.project} problems={list.data.problems.project} editable={editable} />
+          <ServerList scope="project" servers={list.data.project} problems={list.data.problems.project} editable={editable} approval={list.data.approval} />
           <ServerList scope="private" servers={list.data.private} problems={list.data.problems.private} editable={editable} />
           <CatalogSheet open={sheet === 'catalog'} onOpenChange={(open) => setSheet(open ? 'catalog' : null)} catalog={list.data.catalog} />
           <ManualSheet open={sheet === 'manual'} onOpenChange={(open) => setSheet(open ? 'manual' : null)} />

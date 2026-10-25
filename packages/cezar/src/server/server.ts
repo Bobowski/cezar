@@ -22,10 +22,11 @@ import {
   serviceLogsQuerySchema, serviceParamsSchema, servicePatchSchema, servicePinInputSchema, type ServiceLogs, type ServicesState,
   e2eSetupInputSchema, type E2eStatus, taskActionSurfaceSchema,
   codePagesSchema,
-  mcpRegistryQuerySchema, mcpServerParamsSchema, mcpServerPutSchema, mcpSecretNames, type McpServerTestResponse,
+  mcpProjectApproveSchema, mcpRegistryQuerySchema, mcpServerParamsSchema, mcpServerPutSchema, mcpSecretNames, type McpServerTestResponse,
 } from '@open-mercato/cezar-contract';
 import { SecretStore, SecretsError, type SecretScopeRef } from '../workspace/secrets.ts';
-import { loadPrivateMcp, loadProjectMcp, missingSecretReason, resolveMcpSecrets } from '../core/private-mcp.ts';
+import { loadPrivateMcp, missingSecretReason, parseMcpFile, PROJECT_MCP_FILE, readProjectMcpText, resolveMcpSecrets } from '../core/private-mcp.ts';
+import { approveProjectMcp, projectMcpGate } from '../mcp-servers/approval.ts';
 import { McpRegistrySearch } from '../mcp-catalog/registry.ts';
 import { deleteMcpServer, putMcpServer } from '../mcp-servers/files.ts';
 import { probeMcpServer } from '../mcp-servers/probe.ts';
@@ -7471,6 +7472,14 @@ export function createApp(deps: ServerDeps) {
   const mcpServersRoutes = new Hono<ProjectApiEnv>()
     .get('/mcp-servers', async (c) => c.json(await mcpListing(c.get('project'), c), 200))
     .get('/mcp-servers/registry', queryZodValidator(mcpRegistryQuerySchema), async (c) => c.json(await mcpRegistry.search(c.req.valid('query').q), 200))
+    // The committed file runs nothing until the operator approves its content here (spec §5).
+    .post('/mcp-servers/approval', jsonZodValidator(mcpProjectApproveSchema), async (c) => {
+      if (!trustedOperator(process.env, bindHost)) return c.json(mcpRefusal, 409);
+      const { hash, bindings } = c.req.valid('json');
+      const approved = await approveProjectMcp(c.get('project').root, hash, bindings);
+      if (!approved.ok) return c.json({ error: approved.error }, approved.status);
+      return c.json(await mcpListing(c.get('project'), c), 200);
+    })
     .put('/mcp-servers/:scope/:name', paramZodValidator(mcpServerParamsSchema), jsonZodValidator(mcpServerPutSchema), async (c) => {
       if (!trustedOperator(process.env, bindHost)) return c.json(mcpRefusal, 409);
       const { scope, name } = c.req.valid('param');
@@ -7489,10 +7498,20 @@ export function createApp(deps: ServerDeps) {
       if (!trustedOperator(process.env, bindHost)) return c.json(mcpRefusal, 409);
       const project = c.get('project');
       const { scope, name } = c.req.valid('param');
-      const loaded = await (scope === 'project' ? loadProjectMcp : loadPrivateMcp)(project.root);
+      const projectText = scope === 'project' ? await readProjectMcpText(project.root) : null;
+      const loaded = scope === 'project' ? parseMcpFile(projectText ?? '', PROJECT_MCP_FILE) : await loadPrivateMcp(project.root);
       const server = loaded.servers.find((entry) => entry.name === name);
       if (!server) return c.json({ error: 'no MCP server with that name' }, 404);
       const names = mcpSecretNames(definitionOfServer(server));
+      // A committed server is Tested with the secrets its approval binds, and no others — as at launch.
+      if (scope === 'project' && names.length > 0) {
+        const gate = await projectMcpGate(project.root)(projectText ?? '');
+        const unbound = gate.approved ? names.filter((secret) => !(gate.bindings[name] ?? []).includes(secret)) : names;
+        if (unbound.length > 0) {
+          const reason = gate.approved ? `secret ${unbound.join(', ')} is not bound to this server — approve the project file with it first` : gate.reason;
+          return c.json({ ok: false, reason } satisfies McpServerTestResponse, 200);
+        }
+      }
       const resolved = names.length ? await secretStore.resolve(mcpSecretsProject(project), 'cezar', names) : { values: {}, notes: [] };
       const ready = resolveMcpSecrets(server, resolved.values, (missing) => missingSecretReason(resolved.notes, missing));
       const result: McpServerTestResponse = 'error' in ready

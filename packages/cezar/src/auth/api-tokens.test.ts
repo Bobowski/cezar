@@ -126,6 +126,7 @@ describe('API token scopes, per route family', () => {
       ['PUT', '/api/v1/mcp-servers/project/context7'],
       ['DELETE', '/api/v1/p/x/mcp-servers/private/stripe'],
       ['POST', '/api/v1/mcp-servers/project/context7/test'],
+      ['POST', '/api/v1/p/x/mcp-servers/approval'],
     ] as const) {
       expect(apiTokenAllows(['read', 'tasks', 'author'], method, path), `${method} ${path}`).toBe(false);
       expect(apiTokenAllows(['admin'], method, path), `${method} ${path}`).toBe(true);

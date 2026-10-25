@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent, AgentRunResult, AgentRunSpec } from '../core/agent-runner.ts';
 import { privateMcpPath, projectMcpPath } from '../core/private-mcp.ts';
 import { approveProjectMcp, mcpContentHash } from '../mcp-servers/approval.ts';
-import { readMcpStatus } from '../mcp-servers/status.ts';
+import { mcpStatusPath, readMcpStatus } from '../mcp-servers/status.ts';
 import { SecretStore } from '../workspace/secrets.ts';
 import { RunStore } from '../runs/store.ts';
 import { RunManager } from './run.ts';
@@ -178,6 +178,43 @@ describe('private MCP servers at launch', () => {
     expect((await specAt(0)).mcpServers?.map((s) => s.name)).toEqual(['mine']);
     await settled(record.id);
     expect(notes(record.id).some((n) => n.startsWith('project MCP: MCP server "pulled" skipped: mcp.json is not approved on this machine'))).toBe(true);
+  });
+
+  it("a fork's head gets no project server, approved or not, and no resolved value reaches its notes, log or status", async () => {
+    manager?.dispose();
+    const secrets = new SecretStore(process.env, { keychain: async () => null });
+    await secrets.set({ kind: 'workspace' }, 'PROJECT_PAT', 'project-pat-resolved-value', ['cezar']);
+    await secrets.set({ kind: 'workspace' }, 'PRIVATE_PAT', 'private-pat-resolved-value', ['cezar']);
+    manager = new RunManager(store, repoRoot, { secrets });
+    mkdirSync(join(repoRoot, '.ai', 'cezar'), { recursive: true });
+    const projectText = JSON.stringify({ mcpServers: { tool: { command: 'tool-mcp', env: { PAT: '${{ secrets.PROJECT_PAT }}' } }, plain: { command: 'plain-mcp' } } });
+    writeFileSync(projectMcpPath(repoRoot), projectText);
+    expect(await approveProjectMcp(repoRoot, mcpContentHash(projectText), { tool: ['PROJECT_PAT'] })).toEqual({ ok: true });
+    writePrivateMcp({ mine: { command: 'mine-mcp', env: { PAT: '${{ secrets.PRIVATE_PAT }}' } }, open: { command: 'open-mcp' } });
+
+    const fork = manager.startRun(TASK, { task: 'review the PR', worktree: false, runner: 'claude' });
+    store.updateRun(fork.id, { untrustedHead: true });
+    expect((await specAt(0)).mcpServers?.map((s) => s.name)).toEqual(['open']);
+    await settled(fork.id);
+    const forkNotes = notes(fork.id);
+    expect(forkNotes.filter((n) => n.includes("a fork's head never gets the servers of .ai/cezar/mcp.json"))).toHaveLength(2);
+
+    // The same project on a trusted run: every server, values resolved into the spec only.
+    const trusted = manager.startRun(TASK, { task: 'do it', worktree: false, runner: 'claude' });
+    const spec = await specAt(1);
+    expect(spec.mcpServers?.map((s) => s.name)).toEqual(['tool', 'plain', 'mine', 'open']);
+    expect(spec.mcpServers?.find((s) => s.name === 'tool')?.env).toEqual({ PAT: 'project-pat-resolved-value' });
+    await settled(trusted.id);
+
+    for (const runId of [fork.id, trusted.id]) {
+      const log = JSON.stringify(store.readEvents(runId));
+      expect(log).not.toContain('project-pat-resolved-value');
+      expect(log).not.toContain('private-pat-resolved-value');
+    }
+    await expect.poll(async () => (await readMcpStatus(repoRoot)).get('project:tool')?.runId).toBe(trusted.id);
+    const status = readFileSync(mcpStatusPath(repoRoot), 'utf8');
+    expect(status).not.toContain('project-pat-resolved-value');
+    expect(status).not.toContain('private-pat-resolved-value');
   });
 
   it('a broken file is a note, never a failed run', async () => {

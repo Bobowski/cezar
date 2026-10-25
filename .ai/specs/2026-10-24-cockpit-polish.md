@@ -126,6 +126,11 @@ Consistency (§3.4):
    `error instanceof Error ? … : String(error)` sites now share `lib/error-text.ts`, and a test
    pins a 409's words reaching the toast verbatim. Remaining literal danger toasts are client-side
    refusals (a full note list, a copy the browser refused), not server failures.
+5. ~~Shortcut table in Settings → Keyboard~~ — a read-only "Page shortcuts" table under the
+   rebindable task commands, from one catalog (`lib/page-shortcuts.ts`): Everywhere, Task, Code,
+   Git, as this surface spells them (⌃⌘F for F11 on a Mac, ⌘T only in the desktop shell).
+   Reconciled: closing a tab is `Alt+W` on every surface — a browser keeps Ctrl/⌘+W and the
+   desktop shell's window menu closes the window on it, so `Mod+W` stays reserved.
 
 ## 8. Verification
 

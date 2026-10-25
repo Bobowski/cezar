@@ -2,6 +2,7 @@ import { KeyboardIcon, RotateCcwIcon, XIcon } from 'lucide-react'
 import * as React from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Kbd } from '@/components/ui/kbd'
 import { toast } from '@/components/ui/toaster'
 import {
   altGrProblem,
@@ -12,6 +13,8 @@ import {
   formatChord,
   isApplePlatform,
 } from '@/lib/keybindings'
+import { chordsFor, PAGE_SHORTCUTS } from '@/lib/page-shortcuts'
+import { clientSurface } from '@/lib/telemetry'
 import { useKeybindings } from '@/lib/use-keybindings'
 import { cn } from '@/lib/utils'
 
@@ -171,7 +174,44 @@ export function KeyboardSection() {
           </ul>
         </section>
       ))}
+
+      <PageShortcuts apple={apple} />
     </div>
+  )
+}
+
+/**
+ * Every page's own keys (cockpit-polish §3.4 item 5) — fixed, so read-only: what each screen
+ * answers to, on this surface, beside the task commands above that can be rebound.
+ */
+function PageShortcuts({ apple }: { apple: boolean }) {
+  const surface = clientSurface()
+  return (
+    <section data-slot="page-shortcuts" className="flex flex-col gap-3">
+      <div>
+        <h2 className="text-sm font-semibold text-foreground">Page shortcuts</h2>
+        <p className="text-[13px] text-muted-foreground">
+          The keys each page answers to. They are not rebindable: most are what an editor or a browser already uses.
+        </p>
+      </div>
+      {PAGE_SHORTCUTS.map((group) => (
+        <section key={group.page} data-page={group.page} className="flex flex-col gap-1">
+          <h3 className="text-xs font-medium tracking-wide text-soft-foreground uppercase">{group.page}</h3>
+          <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
+            {group.shortcuts.map((shortcut) => (
+              <li key={shortcut.label} data-slot="page-shortcut-row" className="flex items-center gap-2 px-3 py-1.5">
+                <span className="min-w-0 flex-1 truncate text-sm">{shortcut.label}</span>
+                <span className="flex shrink-0 items-center gap-1">
+                  {chordsFor(shortcut, surface, apple).map((chord) => (
+                    <Kbd key={chord}>{formatChord(chord, apple)}</Kbd>
+                  ))}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+    </section>
   )
 }
 

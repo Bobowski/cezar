@@ -48,6 +48,10 @@ export const personaSchema = z.object({
 });
 export type Persona = z.infer<typeof personaSchema>;
 
+/** What a hosted cockpit without sign-in lists in place of each global persona: it lives in the
+ *  host's home, so neither its name nor anything else about it is served. Never a valid name. */
+export const HIDDEN_PERSONA_NAME = 'global persona (hidden)';
+
 /** A persona file that did not load — reported, never fatal. The message names the file. */
 export const personaIssueSchema = z.object({ path: z.string(), message: z.string() });
 export type PersonaIssue = z.infer<typeof personaIssueSchema>;

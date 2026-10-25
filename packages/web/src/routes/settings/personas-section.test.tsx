@@ -2,7 +2,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { setApiScope, type PersonasResponse } from '@open-mercato/cezar-api-client'
+import { HIDDEN_PERSONA_NAME, setApiScope, type PersonasResponse } from '@open-mercato/cezar-api-client'
 import { createQueryClient } from '@/api/query-client'
 import { PersonasSection, newPersonaNameIssue, personaTemplate } from './personas-section'
 
@@ -72,5 +72,11 @@ describe('Settings → Personas', () => {
     await screen.findByText('reviewer')
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
     expect(screen.queryByRole('button', { name: /New persona/ })).toBeNull()
+  })
+
+  it('lists every hidden global persona a hosted cockpit serves, each on its own row', async () => {
+    const hidden = { name: HIDDEN_PERSONA_NAME, body: '', path: '', source: 'global' as const }
+    setup({ editable: false, issues: [], personas: [hidden, hidden] })
+    await waitFor(() => expect(screen.getAllByText(HIDDEN_PERSONA_NAME)).toHaveLength(2))
   })
 })

@@ -127,9 +127,10 @@ export function PersonasSection() {
         {personas.length > 0 ? (
           <Card flush>
             <ul className="divide-y divide-border" aria-label="Personas">
-              {personas.map((persona) => (
+              {personas.map((persona, index) => (
                 <li
-                  key={persona.name}
+                  // A hosted cockpit lists every hidden global persona under one name.
+                  key={`${persona.name}#${index}`}
                   data-slot="persona-row"
                   data-source={persona.source}
                   className="flex items-center justify-between gap-3 px-5 py-3"

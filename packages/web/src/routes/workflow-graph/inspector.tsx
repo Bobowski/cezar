@@ -2,7 +2,7 @@ import { ArrowRightIcon, CopyIcon, Trash2Icon } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 
 import { usePersonas, useSkills, useWorkflows } from '@/api/queries'
-import type { WorkflowGraph, WorkflowGraphNode } from '@open-mercato/cezar-api-client'
+import { HIDDEN_PERSONA_NAME, type WorkflowGraph, type WorkflowGraphNode } from '@open-mercato/cezar-api-client'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
@@ -49,7 +49,7 @@ function SkillField({ value, onChange }: { value: string | undefined; onChange: 
  *  this node leaves out. A name the list does not know is kept, like the skill's. */
 function PersonaField({ value, onChange }: { value: string | undefined; onChange: (agent: string | undefined) => void }) {
   const personas = usePersonas()
-  const names = (personas.data?.personas ?? []).map((p) => p.name)
+  const names = (personas.data?.personas ?? []).map((p) => p.name).filter((n) => n !== HIDDEN_PERSONA_NAME)
   const known = value === undefined || names.includes(value)
   return (
     <Field label="persona">

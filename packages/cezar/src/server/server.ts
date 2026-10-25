@@ -148,7 +148,7 @@ import {
   updateProjectInputSchema,
 } from '@open-mercato/cezar-contract';
 import { dispatchInputSchema, dispatchIntentSchema, dispatchReportSchema } from '@open-mercato/cezar-contract';
-import { personaNameSchema, putPersonaSchema } from '@open-mercato/cezar-contract';
+import { HIDDEN_PERSONA_NAME, personaNameSchema, putPersonaSchema } from '@open-mercato/cezar-contract';
 import { globalPersonasDir, loadPersonas, parsePersona, personaStepChecks, PERSONAS_DIR, type Persona } from '../personas.ts';
 import { hasTaskOrAttachments, TASK_OR_ATTACHMENTS_ISSUE } from '@open-mercato/cezar-contract';
 import { detectEnvironment } from '../core/backend-detect.ts';
@@ -4304,7 +4304,7 @@ export function createApp(deps: ServerDeps) {
       if (editable) return c.json({ personas, issues, editable });
       const home = resolve(globalPersonasDir());
       const inHome = (path: string) => resolve(path).startsWith(home + sep);
-      const served = personas.map((p) => (p.source === 'global' ? { ...p, body: '', path: trimPaths(p.path) } : p));
+      const served = personas.map((p) => (p.source === 'global' ? { name: HIDDEN_PERSONA_NAME, body: '', path: '', source: p.source } : p));
       const shownIssues = issues.map((i) => (inHome(i.path) ? { path: trimPaths(i.path), message: trimPaths(i.message) } : i));
       return c.json({ personas: served, issues: shownIssues, editable });
     })

@@ -17,6 +17,10 @@ const HMR_MARKERS: RegExp[] = [
   /"buildId"\s*:\s*"development"/, // Next (pages router, dev)
   /\/_next\/static\/chunks\/(webpack|react-refresh)\.js/, // Next (dev chunks are unhashed)
   /\/_next\/webpack-hmr|__webpack_hmr|webpack-dev-server/, // webpack-dev-server, hot middleware
+  /__turbopack|turbopack-hmr|next[/_]dist[/_]compiled[/_]/, // Next 15+ dev (Turbopack): app-router pages carry no buildId
+  /\/@id\/astro:|astro-dev-toolbar/, // Astro dev
+  /@sveltejs\/kit\/src\/runtime\/client\//, // SvelteKit dev (a build imports from /_app/immutable/)
+  /virtual:(remix|react-router)\/inject-hmr-runtime|__remixLiveReload|REMIX_DEV_ORIGIN/, // Remix / React Router dev
   /livereload\.js|browser-sync-client/, // a reload client already reloads the page itself
 ];
 

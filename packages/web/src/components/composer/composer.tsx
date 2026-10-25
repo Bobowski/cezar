@@ -23,6 +23,7 @@ import { IconTooltip } from '@/components/ui/icon-tooltip'
 import { Command, CommandItem, CommandList } from '@/components/ui/command'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { toast } from '@/components/ui/toaster'
+import { errorText } from '@/lib/error-text'
 import { insertTemplate } from '@/lib/prompt-templates'
 import { isEditableTarget } from '@/lib/use-command-shortcut'
 import { bumpSkillUsage, filterSkills, fuzzyMatch, isProjectSkill } from '@/lib/skills'
@@ -430,7 +431,7 @@ export function Composer({
         releaseStaged(messageImages)
         trackAttachmentsSent(messageImages.length)
       } catch (error) {
-        toast(error instanceof Error ? error.message : String(error), { tone: 'danger' })
+        toast(errorText(error), { tone: 'danger' })
         if (restoreOnError) {
           // The optimistic clear already happened — put the message back, in front of anything
           // typed since, so nothing the user wrote is lost.

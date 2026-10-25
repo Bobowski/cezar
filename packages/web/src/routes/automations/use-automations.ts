@@ -14,6 +14,7 @@ import { onWorkspaceEvent } from '@/api/global-events'
 import { queryScope } from '@open-mercato/cezar-api-client'
 import { useHealth } from '@/api/queries'
 import { toast } from '@/components/ui/toaster'
+import { errorText } from '@/lib/error-text'
 import { cliOf } from '@/lib/automation-cli'
 import { useActiveProjectId } from '@/lib/project-router'
 
@@ -66,7 +67,7 @@ export interface AutomationActions {
 export function useAutomationActions(data: AutomationsResponse | undefined): AutomationActions {
   const queryClient = useQueryClient()
   const refresh = () => queryClient.invalidateQueries({ queryKey: automationsQueryKey() })
-  const fail = (error: unknown) => toast(error instanceof Error ? error.message : String(error), { tone: 'danger' })
+  const fail = (error: unknown) => toast(errorText(error), { tone: 'danger' })
 
   const run = useMutation({
     mutationFn: async (automation: AutomationListEntry) => {

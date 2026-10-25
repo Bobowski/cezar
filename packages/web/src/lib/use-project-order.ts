@@ -4,6 +4,7 @@ import * as React from 'react'
 import { putWorkspaceUiState } from '@/api/client'
 import { useWorkspaceUiState, workspaceQueryKeys } from '@/api/queries'
 import { toast } from '@/components/ui/toaster'
+import { errorText } from '@/lib/error-text'
 import type { WorkspaceUiState } from '@open-mercato/cezar-api-client'
 import { normalizeProjectOrder, PROJECT_ORDER_LIMIT } from './project-order'
 
@@ -69,7 +70,7 @@ export function useProjectOrder(): {
         }
       })
       writeChain.current = pending.catch((error: unknown) => {
-        toast(error instanceof Error ? error.message : String(error), { tone: 'danger' })
+        toast(errorText(error), { tone: 'danger' })
         // Back to server truth rather than leaving the drawer showing an order the file never
         // took — a silently diverged sidebar is the failure mode worth spending a refetch on.
         if (writeSequence === sequence.current) {

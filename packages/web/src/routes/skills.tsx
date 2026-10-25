@@ -27,6 +27,7 @@ import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/in
 import { SidebarContent, SidebarGroup, SidebarGroupContent, SidebarHeader, useSidebar } from '@/components/ui/sidebar'
 import { Switch } from '@/components/ui/switch'
 import { toast } from '@/components/ui/toaster'
+import { errorText } from '@/lib/error-text'
 import { filterSkills, isProjectSkill, orderSkills, skillUsedBy } from '@/lib/skills'
 import { cn } from '@/lib/utils'
 
@@ -127,7 +128,7 @@ function SkillsCatalog() {
         void queryClient.invalidateQueries({ queryKey: skillsKey })
       } catch (error: unknown) {
         if (sequence !== latestWrite.current) return
-        toast(error instanceof Error ? error.message : String(error), { tone: 'danger' })
+        toast(errorText(error), { tone: 'danger' })
         void queryClient.invalidateQueries({ queryKey: key })
       }
     })

@@ -7,6 +7,7 @@ import { useTelemetryConsent, workspaceQueryKeys } from '@/api/queries'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { toast } from '@/components/ui/toaster'
+import { errorText } from '@/lib/error-text'
 import { resetSid } from '@/lib/sid'
 import { TELEMETRY_CODE_URL, TELEMETRY_DOC_URL, shouldAskForTelemetry } from '@/lib/telemetry-consent'
 
@@ -44,7 +45,7 @@ export function useSetTelemetryConsent() {
         if (consent === 'denied') resetSid()
         return true
       } catch (error) {
-        toast(error instanceof Error ? error.message : String(error), { tone: 'danger' })
+        toast(errorText(error), { tone: 'danger' })
         return false
       }
     },

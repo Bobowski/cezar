@@ -121,6 +121,11 @@ Consistency (§3.4):
    New task key, not N); Git's clean tree: "Edit a file … ready to stage"; Docker: "Start a
    stack …"; the Automations sidebar: "create one with New" (its page already had one);
    Integrations (Settings → tracker): "No tracker connected — connect one below."
+4. ~~Error toasts carry the server's text~~ — they already did (`ApiError` is the server's
+   `{ error }`, and no "Something went wrong" was left); the seventeen hand-rolled
+   `error instanceof Error ? … : String(error)` sites now share `lib/error-text.ts`, and a test
+   pins a 409's words reaching the toast verbatim. Remaining literal danger toasts are client-side
+   refusals (a full note list, a copy the browser refused), not server failures.
 
 ## 8. Verification
 

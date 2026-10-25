@@ -7,6 +7,7 @@ import { useWorkspaceUiState, workspaceQueryKeys } from '@/api/queries'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Switch } from '@/components/ui/switch'
 import { toast } from '@/components/ui/toaster'
+import { errorText } from '@/lib/error-text'
 import {
   normalizeNotifications,
   notificationSupport,
@@ -53,7 +54,7 @@ export function NotificationsSection() {
       putWorkspaceUiState({ notifications: { enabled: next } })
         .then((merged) => queryClient.setQueryData(workspaceQueryKeys.uiState, merged))
         .catch((error: unknown) => {
-          toast(error instanceof Error ? error.message : String(error), { tone: 'danger' })
+          toast(errorText(error), { tone: 'danger' })
           void queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.uiState })
         })
     },

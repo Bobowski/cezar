@@ -148,7 +148,17 @@ import {
   updateProjectInputSchema,
 } from '@open-mercato/cezar-contract';
 import { dispatchInputSchema, dispatchIntentSchema, dispatchReportSchema } from '@open-mercato/cezar-contract';
-import { hasTaskOrAttachments, TASK_OR_ATTACHMENTS_ISSUE } from '@open-mercato/cezar-contract';
+import {
+  CHAT_IS_SINGLE_ISSUE,
+  chatIsSingle,
+  hasTaskOrAttachments,
+  runKindSchema,
+  runsListQuerySchema,
+  TASK_OR_ATTACHMENTS_ISSUE,
+  WORKFLOW_XOR_STEPS_ISSUE,
+  workflowXorSteps,
+} from '@open-mercato/cezar-contract';
+import { CHAT_WORKFLOW, chatCreatedBy, isChatRun } from '../chat/chat.ts';
 import { detectEnvironment } from '../core/backend-detect.ts';
 import type { HostUsage } from '@open-mercato/cezar-contract';
 import { resolveCursorAgentBin } from '../core/cursor-bin.ts';
@@ -938,10 +948,12 @@ const startRunSchema = z
     // The tracker ticket this task was handed off from (spec 2026-10-11-tracker-ticket-context).
     // Only an id and the scope the client was looking at: the link itself is built server-side.
     tracker: trackerRunLinkInputSchema.optional(),
+    // The project's cockpit chat (spec 2026-10-24-cockpit-chat): its own one-step workflow, in
+    // the checkout, cezar's MCP injected. Omitted = an ordinary task.
+    kind: runKindSchema.optional(),
   })
-  .refine((b) => Boolean(b.workflow) !== Boolean(b.steps), {
-    message: 'provide either "workflow" or "steps", not both',
-  })
+  .refine(workflowXorSteps, WORKFLOW_XOR_STEPS_ISSUE)
+  .refine(chatIsSingle, CHAT_IS_SINGLE_ISSUE)
   .refine(hasTaskOrAttachments, TASK_OR_ATTACHMENTS_ISSUE);
 
 const pickSchema = z.object({
@@ -5132,9 +5144,12 @@ export function createApp(deps: ServerDeps) {
 
   // ---- chained family: runs lifecycle + artifacts (project-scoped) ----
   const runsRoutes = new Hono<ProjectApiEnv>()
-    .get('/runs', (c) => {
+    .get('/runs', queryZodValidator(runsListQuerySchema), (c) => {
       const scopes = runViewScopes(principalOf(c));
-      return c.json(c.get('project').store.listRuns().map((run) => redactRunForScope(withUsage(run), scopes)));
+      // `?kind=chat` lists the project's chats (spec 2026-10-24-cockpit-chat §4); absent = every run.
+      const { kind } = c.req.valid('query');
+      const runs = c.get('project').store.listRuns().filter((run) => kind === undefined || (kind === 'chat') === isChatRun(run));
+      return c.json(runs.map((run) => redactRunForScope(withUsage(run), scopes)));
     })
 
     // Registered before the `/:id/...` routes so "archive-finished" and "read-all"
@@ -5219,11 +5234,18 @@ export function createApp(deps: ServerDeps) {
       if (agentModelsLocked(repoRoot) && parsed.data.model?.trim()) {
         return c.json({ error: AGENT_MODELS_LOCKED_ERROR }, 409);
       }
+      const chat = parsed.data.kind === 'chat';
+      // A task the cockpit chat starts carries its provenance (spec 2026-10-24-cockpit-chat §3),
+      // read off the caller's own token — never a body field anyone could set.
+      const principal = principalOf(c);
+      const caller = principal?.kind === 'run' && principal.scope ? store.getRun(principal.runId) : undefined;
+      if (chat && principal?.kind === 'run') return c.json({ error: 'a task or chat cannot start a chat' }, 403);
+      const createdBy = caller && isChatRun(caller) ? chatCreatedBy(caller.id) : undefined;
       // Resolve the ticket link before anything is started: a scope that moved under the user is
       // refused like any tracker read, while a vendor that merely fails to answer costs the link
       // its title and snapshot, never the launch.
       let trackerLink: TrackerLink | undefined;
-      if (parsed.data.tracker) {
+      if (parsed.data.tracker && !chat) {
         const driver = await trackers.driver(repoRoot, dataDir);
         if ('available' in driver) return c.json({ error: driver.reason }, 409);
         if (parsed.data.tracker.expectedScope !== trackerReadScope(driver.association)) {
@@ -5235,7 +5257,9 @@ export function createApp(deps: ServerDeps) {
         trackerLink = buildTrackerLink(driver.association, parsed.data.tracker.itemId, 'handoff', read.available ? read.item : undefined);
       }
       let workflow: WorkflowDef | undefined;
-      if (parsed.data.steps) {
+      if (chat) {
+        workflow = CHAT_WORKFLOW;
+      } else if (parsed.data.steps) {
         // Inline chain (spec 008): an approved plan runs as an ad-hoc workflow.
         const issue = stepsIssue(parsed.data.steps);
         if (issue) return c.json({ error: issue }, 400);
@@ -5298,6 +5322,8 @@ export function createApp(deps: ServerDeps) {
         // CEZ_TODOS_FILE alike (RunManager.agentEnv).
         generateFollowups: capabilities().followups ? parsed.data.generateFollowups : false,
         ...(parsed.data.dispatch && capabilities().dispatch ? { dispatchIntent: parsed.data.dispatch } : {}),
+        ...(chat ? { kind: 'chat' as const } : {}),
+        ...(createdBy ? { createdBy } : {}),
         deviceSid: deviceSid(c.req.header('x-cezar-sid')),
       };
       if (variants > 1) {
@@ -8594,7 +8620,8 @@ export function createApp(deps: ServerDeps) {
   // ---- the Git page (spec 2026-10-24-git-view) ----
   /** An in-place task's agent works in the checkout: nothing may move HEAD or the files under it. */
   const inPlaceTaskBusy = (project: ProjectContext): boolean =>
-    project.store.listRuns().some((r) => r.worktree === false && (r.status === 'running' || r.status === 'waiting'));
+    // A chat parked between messages is not touching the tree, and its Commit runs through here.
+    project.store.listRuns().some((r) => r.worktree === false && (r.status === 'running' || (r.status === 'waiting' && !isChatRun(r))));
   /** Branch → the run that owns it, for the graph's labels. An in-place run's checkout branch is
    *  the user's own unless the run created it. */
   const graphTasks = (store: ProjectContext['store'], projected: boolean): Map<string, GraphTask> => {

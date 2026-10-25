@@ -10,7 +10,7 @@ import {
 } from '@open-mercato/cezar-contract';
 import { RUNNER_IDS, type RunnerId } from './core/agent-runner.ts';
 import { cezarHomeDir } from './paths.ts';
-import type { WorkflowStepDef } from './workflows/types.ts';
+import { DEFAULT_ALLOWED_TOOLS, type WorkflowStepDef } from './workflows/types.ts';
 
 export type { Persona, PersonaIssue };
 
@@ -191,19 +191,78 @@ export interface PersonaResolution {
   systemPrompt?: string;
   /** The persona's skills the step does not already name — added after the step's own skill. */
   extraSkills: string[];
+  /** Persona tools outside the step's own allowlist, so not granted (§7: narrow only). */
+  droppedTools?: string[];
+  /** The persona or its step asked for Claude's sub-agent tool, which a persona never gets. */
+  subagentToolRefused?: boolean;
+}
+
+/** Claude's sub-agent tool (`Task`, renamed `Agent`): never granted to a persona — dispatch is the
+ *  budgeted, visible path (AGENTS.md, the dispatch exception). */
+const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent']);
+const isSubagentTool = (entry: string) => SUBAGENT_TOOLS.has(entry.replace(/\(.*$/s, '').trim());
+
+/** `narrow` admits nothing `wide` does not: the same entry, a pattern of a bare tool
+ *  (`Bash(git *)` ⊂ `Bash`), or one tool of a whole MCP server (`mcp__s__t` ⊂ `mcp__s`). */
+function within(narrow: string, wide: string): boolean {
+  if (narrow === wide) return true;
+  if (wide.includes('(')) return false;
+  if (narrow.startsWith(`${wide}(`)) return true;
+  return wide.startsWith('mcp__') && wide.split('__').length === 2 && narrow.startsWith(`${wide}__`);
 }
 
 /**
- * Merge a persona into a step: a field the step sets wins, then the persona's, then — later,
+ * A persona's tools INTERSECTED with the list the step would otherwise run with (spec §7): a
+ * persona can only narrow. Each persona entry keeps the narrower of itself and what it matches.
+ */
+export function narrowPersonaTools(
+  base: readonly string[],
+  personaTools: readonly string[],
+  bashAllowlist?: readonly string[],
+): { tools: string[]; dropped: string[] } {
+  const tools: string[] = [];
+  const dropped: string[] = [];
+  const add = (entry: string) => {
+    if (!tools.includes(entry)) tools.push(entry);
+  };
+  for (const wanted of personaTools) {
+    let matched = false;
+    for (const allowed of base) {
+      if (within(wanted, allowed)) {
+        // A step's bashAllowlist bounds `Bash`; a persona's own Bash pattern cannot be compared
+        // with it, so the step's bound stands.
+        add(allowed === 'Bash' && bashAllowlist?.length ? allowed : wanted);
+        matched = true;
+        break;
+      }
+      if (within(allowed, wanted)) {
+        add(allowed);
+        matched = true;
+      }
+    }
+    if (!matched && !isSubagentTool(wanted)) dropped.push(wanted);
+  }
+  return { tools, dropped };
+}
+
+/**
+ * Merge a persona into a step: a runner/model the step sets wins, then the persona's, then — later,
  * at spawn — the project default. A persona's model follows its own runner only: a step that
- * moves the persona to another backend does not inherit a model picked for the first one.
+ * moves the persona to another backend does not inherit a model picked for the first one. Tools
+ * only narrow: the persona's list is intersected with the step's (or the default), and the
+ * sub-agent tool is never granted.
  */
 export function applyPersona(step: WorkflowStepDef, persona: Persona | undefined): PersonaResolution {
   if (!persona) return { step, extraSkills: [] };
   const runner: RunnerId | undefined = step.runner ?? persona.runner;
   const personaModelApplies = !step.runner || !persona.runner || step.runner === persona.runner;
   const model = step.model ?? (personaModelApplies ? persona.model : undefined);
-  const allowedTools = step.allowedTools ?? persona.allowedTools;
+  const base = step.allowedTools ?? DEFAULT_ALLOWED_TOOLS;
+  const narrowed = persona.allowedTools
+    ? narrowPersonaTools(base, persona.allowedTools, step.bashAllowlist)
+    : { tools: [...base], dropped: [] };
+  const subagentToolRefused = [...(persona.allowedTools ?? []), ...(step.allowedTools ?? [])].some(isSubagentTool);
+  const allowedTools = step.allowedTools || persona.allowedTools ? narrowed.tools.filter((t) => !isSubagentTool(t)) : undefined;
   const merged: WorkflowStepDef = {
     ...step,
     ...(runner ? { runner } : {}),
@@ -211,7 +270,14 @@ export function applyPersona(step: WorkflowStepDef, persona: Persona | undefined
     ...(allowedTools ? { allowedTools } : {}),
   };
   const extraSkills = [...new Set(persona.skills ?? [])].filter((name) => name !== step.skill);
-  return { step: merged, persona, systemPrompt: personaSystemPrompt(persona), extraSkills };
+  return {
+    step: merged,
+    persona,
+    systemPrompt: personaSystemPrompt(persona),
+    extraSkills,
+    ...(narrowed.dropped.length ? { droppedTools: narrowed.dropped } : {}),
+    ...(subagentToolRefused ? { subagentToolRefused } : {}),
+  };
 }
 
 /** The persona's part of the system prompt: who it is, then its own instructions. */
@@ -242,7 +308,7 @@ export function personasDispatchPrompt(personas: readonly Persona[]): string | u
   });
   if (personas.length > shown.length) lines.push(`- … and ${personas.length - shown.length} more`);
   return [
-    'Personas. This project defines named agents. Dispatch a child as one with cez task create --as <name>: the child runs with that persona\'s runner, model, tools and instructions (an explicit --runner, --model or --tools still wins). Pick the persona whose role fits the assignment:',
+    'Personas. This project defines named agents. Dispatch a child as one with cez task create --as <name>: the child runs with that persona\'s runner, model, tools and instructions (an explicit --runner or --model still wins; --tools only narrows). Pick the persona whose role fits the assignment:',
     ...lines,
   ].join('\n');
 }

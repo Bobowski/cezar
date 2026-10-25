@@ -60,7 +60,15 @@ import {
 } from '@open-mercato/cezar-contract';
 import type { AgentEvent, AgentRunResult, ContentBlock } from '../core/agent-runner.ts';
 import { discoverSkills, type Skill } from '../skills.ts';
-import { applyPersona, loadPersonas, PERSONA_LOCATIONS, personaSystemPrompt, personasDispatchPrompt, type Persona } from '../personas.ts';
+import {
+  applyPersona,
+  loadPersonas,
+  PERSONA_LOCATIONS,
+  personaSystemPrompt,
+  personasDispatchPrompt,
+  type Persona,
+  type PersonaResolution,
+} from '../personas.ts';
 import type { PersonaDispatch } from '@open-mercato/cezar-contract';
 import { automationsReachable } from '../automations/builtin-skill.ts';
 import { AUTOMATIONS_PROMPT } from '../automations/prompts.ts';
@@ -202,6 +210,25 @@ const RESUMABLE_BACKENDS: ReadonlySet<RunnerId> = new Set<RunnerId>(['claude', '
 /** Backends whose runner maps `allowedTools` onto the CLI (docs/reference.md, backend table) — a
  *  persona's tool list is a note everywhere else (spec 2026-10-24-personas §5). */
 const TOOL_ALLOWLIST_BACKENDS: ReadonlySet<RunnerId> = new Set<RunnerId>(['claude', 'pi']);
+
+/** What a persona's tools became on this backend, for the transcript — ONE helper for the spawn
+ *  and the Continue, so a resumed session says the same thing the first one did. */
+function personaToolNotes(resolution: PersonaResolution, authored: WorkflowStepDef, backend: RunnerId): string[] {
+  const persona = resolution.persona;
+  if (!persona) return [];
+  const notes: string[] = [];
+  if (persona.source === 'claude' && backend !== 'claude') {
+    notes.push(`persona "${persona.name}" comes from .claude/agents (Claude-only) — on ${backend} it brings its instructions only`);
+  } else if (persona.allowedTools && !authored.allowedTools && !TOOL_ALLOWLIST_BACKENDS.has(backend)) {
+    notes.push(`persona "${persona.name}": its tool list is not enforced on ${backend}, which ignores allowedTools`);
+  } else if (resolution.droppedTools?.length) {
+    notes.push(`persona "${persona.name}": not granted ${resolution.droppedTools.join(', ')} — a persona can only narrow the step's tools`);
+  }
+  if (resolution.subagentToolRefused) {
+    notes.push(`persona "${persona.name}": Task (sub-agents) is never granted to a persona — dispatch children with cez task create, which is budgeted and visible`);
+  }
+  return notes;
+}
 /**
  * The reply to a one-question ask card without the card's own framing: a click on an option
  * sends `<header>: <label>` (`web/src/routes/task-thread/ask-card.tsx` `formatAnswer`), a typed
@@ -4907,7 +4934,13 @@ export class RunManager {
       failBeforeSpawn(`persona "${toolsStep.agent}" not found in ${PERSONA_LOCATIONS}`);
       return;
     }
-    const sessionStepDef = toolsStep ? applyPersona(toolsStep, continuePersona).step : undefined;
+    const continueResolution = toolsStep ? applyPersona(toolsStep, continuePersona) : undefined;
+    const sessionStepDef = continueResolution?.step;
+    if (toolsStep && continueResolution) {
+      for (const message of personaToolNotes(continueResolution, toolsStep, backend)) {
+        this.store.appendEvent(runId, { type: 'note', stepId, message });
+      }
+    }
     state.personaDispatch = continuePersona?.dispatch ? { name: continuePersona.name, dispatch: continuePersona.dispatch } : undefined;
     // The temp-directory preflight (#785) rides along with the account resolution: a resumed
     // turn hits the same broken `/tmp` a fresh one would, and an agent whose shell silently
@@ -6727,11 +6760,8 @@ export class RunManager {
       }
       // Persona first, then the step's own skill, then the persona's skills.
       systemPrompt = composeSystemPrompt(personaResolution.systemPrompt, systemPrompt, ...personaSkills) || undefined;
-      const personaBackend = step.runner ?? taskBackend;
-      if (persona.source === 'claude' && personaBackend !== 'claude') {
-        emit({ type: 'note', stepId: step.id, message: `persona "${persona.name}" comes from .claude/agents (Claude-only) — on ${personaBackend} it brings its instructions only` });
-      } else if (persona.allowedTools && !authored.allowedTools && !TOOL_ALLOWLIST_BACKENDS.has(personaBackend)) {
-        emit({ type: 'note', stepId: step.id, message: `persona "${persona.name}": its tool list is not enforced on ${personaBackend}, which ignores allowedTools` });
+      for (const message of personaToolNotes(personaResolution, authored, step.runner ?? taskBackend)) {
+        emit({ type: 'note', stepId: step.id, message });
       }
     }
 

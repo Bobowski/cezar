@@ -179,6 +179,43 @@ describe('merge order: step field > persona > project default', () => {
     expect(step).toEqual({ id: 's', agent: 'bare', prompt: 'x' });
   });
 
+  it("only narrows: the persona's tools are intersected with the step's, never added to them", () => {
+    const wide: Persona = { ...persona, allowedTools: ['Read', 'Edit', 'WebFetch', 'Bash(git *)'] };
+    const onDefault = applyPersona({ id: 's', agent: 'reviewer', prompt: 'x' }, wide);
+    // WebFetch is not in the default list, so a persona cannot grant it.
+    expect(onDefault.step.allowedTools).toEqual(['Read', 'Edit', 'Bash(git *)']);
+    expect(onDefault.droppedTools).toEqual(['WebFetch']);
+    const onStep = applyPersona({ id: 's', agent: 'reviewer', prompt: 'x', allowedTools: ['Read', 'Grep'] }, wide);
+    expect(onStep.step.allowedTools).toEqual(['Read']);
+    expect(onStep.droppedTools).toEqual(['Edit', 'WebFetch', 'Bash(git *)']);
+    // A bare persona tool keeps the step's narrower pattern, and a step's bashAllowlist stays the bound.
+    const bare: Persona = { ...persona, allowedTools: ['Bash'] };
+    expect(applyPersona({ id: 's', agent: 'r', prompt: 'x', allowedTools: ['Bash(npm *)'] }, bare).step.allowedTools).toEqual(['Bash(npm *)']);
+    expect(
+      applyPersona({ id: 's', agent: 'r', prompt: 'x', bashAllowlist: ['npm test'] }, { ...persona, allowedTools: ['Bash(rm *)'] }).step.allowedTools,
+    ).toEqual(['Bash']);
+  });
+
+  it('never grants Task (unbudgeted sub-agents) to a persona — not from the persona, not from the step', () => {
+    const delegating: Persona = { ...persona, allowedTools: ['Read', 'Task', 'Agent(*)'] };
+    const fromPersona = applyPersona({ id: 's', agent: 'reviewer', prompt: 'x', allowedTools: ['Read', 'Task'] }, delegating);
+    expect(fromPersona.step.allowedTools).toEqual(['Read']);
+    expect(fromPersona.subagentToolRefused).toBe(true);
+    expect(fromPersona.droppedTools).toBeUndefined();
+    const fromStep = applyPersona({ id: 's', agent: 'reviewer', prompt: 'x', allowedTools: ['Read', 'Task'] }, { ...persona, allowedTools: undefined });
+    expect(fromStep.step.allowedTools).toEqual(['Read']);
+    expect(fromStep.subagentToolRefused).toBe(true);
+  });
+
+  it(".claude/agents tools: are intersected the same way — Claude's Task and extra tools do not ride in", () => {
+    const mapped = parseClaudeAgent('---\nname: helper\ntools: Read, Task, WebSearch\n---\nHelp.', '/r/.claude/agents/helper.md');
+    if ('error' in mapped) throw new Error(mapped.error);
+    const { step, droppedTools, subagentToolRefused } = applyPersona({ id: 's', agent: 'helper', prompt: 'x' }, mapped);
+    expect(step.allowedTools).toEqual(['Read']);
+    expect(droppedTools).toEqual(['WebSearch']);
+    expect(subagentToolRefused).toBe(true);
+  });
+
   it('is the identity without a persona', () => {
     const step = { id: 's', prompt: 'x' };
     expect(applyPersona(step, undefined)).toEqual({ step, extraSkills: [] });

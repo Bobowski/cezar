@@ -157,6 +157,31 @@ describe('personas on workflow steps', () => {
     await settled(record.id);
   });
 
+  it("a persona's tools only narrow the step's, Task is never granted — and Continue says so again", async () => {
+    writeFileSync(join(repoRoot, '.ai/cezar/agents/delegator.md'), '---\nrunner: claude\nallowedTools: [Read, Task, WebFetch]\n---\nYou delegate.\n');
+    const single: WorkflowDef = { name: 'delegate', source: 'file', steps: [{ id: 'd', prompt: '{{task}}', agent: 'delegator' }] };
+    const record = manager!.startRun(single, { task: 'x', worktree: false, runner: 'claude' });
+    const opening = await spawnAt(0);
+    await settled(record.id);
+    expect(opening.spec.allowedTools).toEqual(['Read']);
+    const toolNotes = () =>
+      store.readEvents(record.id)
+        .filter((e) => e.type === 'note')
+        .map((e) => String((e as { message?: unknown }).message))
+        .filter((m) => m.startsWith('persona "delegator"'));
+    const TASK_NOTE = 'persona "delegator": Task (sub-agents) is never granted to a persona — dispatch children with cez task create, which is budgeted and visible';
+    const DROP_NOTE = 'persona "delegator": not granted WebFetch — a persona can only narrow the step\'s tools';
+    expect(toolNotes()).toEqual([DROP_NOTE, TASK_NOTE]);
+
+    expect(manager!.continueRun(record.id, { text: 'again', runner: 'claude' })).toEqual({ ok: true });
+    const resumed = await spawnAt(1);
+    expect(resumed.spec.allowedTools).toEqual(['Read']);
+    expect(toolNotes()).toEqual([DROP_NOTE, TASK_NOTE, DROP_NOTE, TASK_NOTE]);
+    await expect
+      .poll(() => store.getRun(record.id)?.steps.find((s) => s.id === 'continue-1')?.status, { timeout: 15_000 })
+      .toSatisfy((status) => ['done', 'failed', 'cancelled'].includes(String(status)));
+  });
+
   it('fails the step rather than run a persona-less agent when the persona is gone', async () => {
     const ghost: WorkflowDef = { name: 'ghost', source: 'file', steps: [{ id: 'g', prompt: '{{task}}', agent: 'ghost' }] };
     const record = manager!.startRun(ghost, { task: 'x', worktree: false, runner: 'claude' });

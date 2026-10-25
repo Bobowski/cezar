@@ -15,6 +15,9 @@ const NODE_RISKS: Record<string, ChatProposalRisk['kind']> = {
   'github.pr-comment': 'comment',
   'github.issue-comment': 'comment',
   'notify.webhook': 'webhook',
+  dispatch: 'child-tasks',
+  workflow: 'child-tasks',
+  fork: 'child-tasks',
 };
 const PERSONA_KEYS = ['runner', 'model', 'allowedTools', 'disallowedTools', 'bashAllowlist', 'tools', 'permissionMode'] as const;
 
@@ -49,8 +52,9 @@ function workflowRisks(text: string): ChatProposalRisk[] {
     if (typeof value.command === 'string') risks.push({ kind: 'command', detail: `${id}: ${value.command}` });
     const kind = typeof value.type === 'string' ? NODE_RISKS[value.type] : undefined;
     if (kind) {
-      const url = kind === 'webhook' && typeof value.url === 'string' ? ` ${value.url}` : '';
-      risks.push({ kind, detail: `${id}: ${value.type}${url}` });
+      const target = kind === 'webhook' && typeof value.url === 'string' ? ` ${value.url}`
+        : value.type === 'workflow' && typeof value.workflow === 'string' ? ` ${value.workflow}` : '';
+      risks.push({ kind, detail: `${id}: ${value.type}${target}` });
     }
     for (const [key, child] of Object.entries(value)) if (key !== 'command') walk(child);
   };

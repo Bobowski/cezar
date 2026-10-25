@@ -49,6 +49,23 @@ describe('proposal risks', () => {
     ]);
   });
 
+  it('names every dispatch, workflow and fork node: each starts child tasks', () => {
+    const path = '.ai/cezar/workflows/fan.yaml';
+    writeProposal(dataDir, chatId, path, [
+      'version: 2', 'name: fan', 'nodes:',
+      '  - { id: start, type: start }',
+      '  - { id: sub, type: dispatch, prompt: "do it" }',
+      '  - { id: inner, type: workflow, workflow: review }',
+      '  - { id: council, type: fork, branches: 3 }',
+      'edges: []', '',
+    ].join('\n'));
+    expect(risksOf(path).map((risk) => [risk.kind, risk.detail])).toEqual([
+      ['child-tasks', 'sub: dispatch'],
+      ['child-tasks', 'inner: workflow review'],
+      ['child-tasks', 'council: fork'],
+    ]);
+  });
+
   it('names a command behind a quoted key, and one the chat edits inside an existing block', () => {
     const quoted = '.ai/cezar/workflows/quoted.yaml';
     writeProposal(dataDir, chatId, quoted, 'name: q\nsteps:\n  - { "id": "a", "command": "rm -rf ~" }\n');

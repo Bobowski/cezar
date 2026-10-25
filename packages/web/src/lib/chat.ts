@@ -46,6 +46,7 @@ const RISK_LABELS: Record<ChatProposalRisk['kind'], string> = {
   'pull-request': 'opens or edits a PR',
   comment: 'comments',
   webhook: 'calls a URL',
+  'child-tasks': 'starts child tasks',
   automation: 'automation',
   persona: 'persona',
   mcp: 'MCP server',

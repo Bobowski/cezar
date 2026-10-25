@@ -205,7 +205,7 @@ export function chatLivePath(chatId: string, proposalPath: string): string | und
 /** What applying a proposal lets run or leave the machine without the owner (spec
  *  2026-10-24-cockpit-chat §3) — read by the server from the PARSED file, never from diff text. */
 export const chatProposalRiskSchema = z.object({
-  kind: z.enum(['command', 'push', 'pull-request', 'comment', 'webhook', 'automation', 'persona', 'mcp', 'unreadable']),
+  kind: z.enum(['command', 'push', 'pull-request', 'comment', 'webhook', 'child-tasks', 'automation', 'persona', 'mcp', 'unreadable']),
   detail: z.string(),
 });
 export type ChatProposalRisk = z.infer<typeof chatProposalRiskSchema>;

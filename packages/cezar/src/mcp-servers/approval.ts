@@ -8,7 +8,16 @@ import {
   type McpProjectApproval,
   type McpSecretBindings,
 } from '@open-mercato/cezar-contract';
-import { parseMcpFile, PROJECT_MCP_FILE, readProjectMcpText, referencedSecrets, type ProjectMcpGate } from '../core/private-mcp.ts';
+import {
+  loadPrivateMcp,
+  parseMcpFile,
+  PROJECT_MCP_FILE,
+  readProjectMcpText,
+  referencedSecrets,
+  type PrivateMcpServer,
+  type PrivateOverrideGate,
+  type ProjectMcpGate,
+} from '../core/private-mcp.ts';
 import { renameWithRetry } from '../fs-rename.ts';
 import { assertCezarHomeWriteIsSandboxed, mcpApprovalsPath } from '../paths.ts';
 import { redactMcpArgs, redactMcpUrl } from './redact.ts';
@@ -37,9 +46,14 @@ const recordSchema = z.object({
 type ApprovalRecord = z.infer<typeof recordSchema>;
 
 const fileSchema = z
-  .object({ projects: z.record(z.string(), recordSchema.optional().catch(undefined)).catch({}) })
+  .object({
+    projects: z.record(z.string(), recordSchema.optional().catch(undefined)).catch({}),
+    /** Per checkout: private server name → the hash of the entry the operator confirmed as an approved project server's replacement. */
+    overrides: z.record(z.string(), z.record(z.string(), z.string()).catch({})).optional().catch(undefined),
+  })
   .passthrough()
   .catch({ projects: {} });
+type ApprovalsFile = z.infer<typeof fileSchema>;
 
 /** One key per checkout, as the OS compares paths. */
 function projectKey(repoRoot: string): string {
@@ -47,7 +61,7 @@ function projectKey(repoRoot: string): string {
   return process.platform === 'win32' ? path.toLowerCase() : path;
 }
 
-async function readAll(): Promise<z.infer<typeof fileSchema>> {
+async function readAll(): Promise<ApprovalsFile> {
   try {
     return fileSchema.parse(JSON.parse(await readFile(mcpApprovalsPath(), 'utf8')));
   } catch {
@@ -63,12 +77,12 @@ export async function readProjectApproval(repoRoot: string): Promise<ApprovalRec
 let queue: Promise<unknown> = Promise.resolve();
 
 /** Read-modify-write of the approvals file, one at a time in this process; `0600`, atomic. */
-function writeRecord(repoRoot: string, record: ApprovalRecord): Promise<void> {
+function mutateAll(change: (all: ApprovalsFile) => void): Promise<void> {
   const next = queue.then(async () => {
     const path = mcpApprovalsPath();
     assertCezarHomeWriteIsSandboxed(path);
     const all = await readAll();
-    all.projects[projectKey(repoRoot)] = record;
+    change(all);
     await mkdir(dirname(path), { recursive: true });
     const tmp = `${path}.${process.pid}-${randomUUID()}.tmp`;
     await writeFile(tmp, `${JSON.stringify(all, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
@@ -76,6 +90,48 @@ function writeRecord(repoRoot: string, record: ApprovalRecord): Promise<void> {
   });
   queue = next.catch(() => {});
   return next;
+}
+
+function writeRecord(repoRoot: string, record: ApprovalRecord): Promise<void> {
+  return mutateAll((all) => {
+    all.projects[projectKey(repoRoot)] = record;
+  });
+}
+
+// ---- a private server replacing an approved project server of its name ---------------------
+
+/** What a replacement confirmation names: the private entry as it launches, so any edit asks again. */
+export function privateOverrideHash(server: PrivateMcpServer): string {
+  const { name: _name, secretBearing: _bearing, ...entry } = server;
+  return mcpContentHash(canonical(entry));
+}
+
+/** The launch's `privateOverride`: this exact private entry was confirmed here. Never throws. */
+export const privateOverrideGate = (repoRoot: string): PrivateOverrideGate => async (server) =>
+  (await readAll()).overrides?.[projectKey(repoRoot)]?.[server.name] === privateOverrideHash(server);
+
+/** The private entries the operator confirmed, by name → hash. Never throws. */
+export async function readPrivateOverrides(repoRoot: string): Promise<Record<string, string>> {
+  return (await readAll()).overrides?.[projectKey(repoRoot)] ?? {};
+}
+
+/**
+ * The operator's Confirm (`POST /mcp-servers/override`): the private entry they saw, named by its
+ * hash, replaces the approved project server of its name at launch.
+ */
+export async function confirmPrivateOverride(repoRoot: string, name: string, hash: string): Promise<ApprovalWrite> {
+  const server = (await loadPrivateMcp(repoRoot)).servers.find((entry) => entry.name === name);
+  if (!server) return { ok: false, status: 404, error: `there is no private MCP server "${name}"` };
+  if (privateOverrideHash(server) !== hash) return { ok: false, status: 409, error: `private MCP server "${name}" changed since it was shown — review it again` };
+  try {
+    await mutateAll((all) => {
+      const key = projectKey(repoRoot);
+      all.overrides = { ...all.overrides, [key]: { ...all.overrides?.[key], [name]: hash } };
+    });
+  } catch (error) {
+    return { ok: false, status: 409, error: `the confirmation could not be saved: ${(error as Error).message}` };
+  }
+  return { ok: true };
 }
 
 /** The raw `mcpServers` object of a file's text; `{}` when there is none. */

@@ -6,10 +6,10 @@ import {
   type McpServerDefinition,
   type McpServersList,
 } from '@open-mercato/cezar-contract';
-import { loadPrivateMcp, loadProjectMcp, mcpReachOf, type PrivateMcpServer } from '../core/private-mcp.ts';
+import { isPrivateMcpTracked, loadPrivateMcp, loadProjectMcp, mcpReachOf, PRIVATE_TRACKED_PROBLEM, type PrivateMcpServer } from '../core/private-mcp.ts';
 import { MCP_CATALOG } from '../mcp-catalog/catalog.ts';
 import type { SecretStore } from '../workspace/secrets.ts';
-import { projectApprovalView } from './approval.ts';
+import { privateOverrideHash, projectApprovalView, readPrivateOverrides } from './approval.ts';
 import { redactMcpArgs, redactMcpUrl } from './redact.ts';
 import { mcpStatusOf, readMcpStatus } from './status.ts';
 
@@ -53,16 +53,27 @@ export interface ListMcpServersDeps {
 }
 
 export async function listMcpServers(repoRoot: string, deps: ListMcpServersDeps): Promise<McpServersList> {
-  const [project, priv, statuses, available, approval] = await Promise.all([
+  const [project, priv, statuses, available, approval, overrides, tracked] = await Promise.all([
     loadProjectMcp(repoRoot),
     loadPrivateMcp(repoRoot),
     readMcpStatus(repoRoot),
     cezarSecretNames(deps.secrets, deps.project),
     projectApprovalView(repoRoot, { raw: deps.raw === true }),
+    readPrivateOverrides(repoRoot),
+    isPrivateMcpTracked(repoRoot),
   ]);
   // Only an approval of the current content binds anything (spec 2026-10-24-easy-mcp §5).
   const boundOf = (name: string) => (approval.state === 'approved' ? (approval.bindings[name] ?? []) : []);
-  const privateNames = new Set(priv.servers.map((server) => server.name));
+  // A tracked private file is refused at launch, so it replaces nothing.
+  const privateServers = new Map(tracked ? [] : priv.servers.map((server) => [server.name, server] as const));
+  const projectNames = new Set(project.servers.map((server) => server.name));
+  const confirmed = (server: PrivateMcpServer) => overrides[server.name] === privateOverrideHash(server);
+  // As at launch: a project server that would go is replaced only by a confirmed private entry.
+  const replaced = (name: string, referenced: string[]) => {
+    const mine = privateServers.get(name);
+    const goes = approval.state === 'approved' && referenced.every((secret) => boundOf(name).includes(secret));
+    return mine !== undefined && (!goes || confirmed(mine));
+  };
   const row = (server: PrivateMcpServer, scope: McpScope): McpServer => {
     const referenced = mcpSecretNames(definitionOfServer(server));
     const status = mcpStatusOf(statuses, scope, server.name);
@@ -77,7 +88,8 @@ export async function listMcpServers(repoRoot: string, deps: ListMcpServersDeps)
       headers: masked(server.headers),
       secrets: referenced,
       missingSecrets: referenced.filter((name) => !available.has(name)),
-      shadowed: scope === 'project' && privateNames.has(server.name),
+      shadowed: scope === 'project' && replaced(server.name, referenced),
+      ...(scope === 'private' && projectNames.has(server.name) ? { override: { hash: privateOverrideHash(server), confirmed: confirmed(server) } } : {}),
       reach: mcpReachOf(server.transport, { secretBearing: referenced.length > 0 }),
       ...(status ? { status } : {}),
       ...(scope === 'project' ? { boundSecrets: boundOf(server.name).filter((name) => referenced.includes(name)) } : {}),
@@ -86,7 +98,7 @@ export async function listMcpServers(repoRoot: string, deps: ListMcpServersDeps)
   return {
     project: project.servers.map((server) => row(server, 'project')),
     private: priv.servers.map((server) => row(server, 'private')),
-    problems: { project: project.problems, private: priv.problems },
+    problems: { project: project.problems, private: tracked ? [...priv.problems, PRIVATE_TRACKED_PROBLEM] : priv.problems },
     catalog: [...MCP_CATALOG],
     editable: deps.editable,
     approval,

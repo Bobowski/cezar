@@ -187,6 +187,11 @@ export const mcpServerSchema = z.object({
   missingSecrets: z.array(z.string()),
   /** A project server a private one of the same name replaces at launch. */
   shadowed: z.boolean(),
+  /**
+   * Private servers named like a project server only: an approved project server is replaced only
+   * once the operator confirmed THIS entry (`hash`); until then the private one is skipped.
+   */
+  override: z.object({ hash: z.string(), confirmed: z.boolean() }).optional(),
   reach: z.array(mcpServerReachSchema),
   status: mcpServerStatusSchema.optional(),
   /** Project servers only: the referenced secrets the operator's approval binds to it — the only ones it receives. */
@@ -241,6 +246,12 @@ export const mcpProjectApproveSchema = z
   .object({ hash: z.string().regex(/^[0-9a-f]{64}$/, 'the content hash the listing served'), bindings: mcpSecretBindingsSchema })
   .strict();
 export type McpProjectApprove = z.infer<typeof mcpProjectApproveSchema>;
+
+/** `POST /mcp-servers/override`: let the private entry the listing served (by its hash) replace the approved project server of its name. */
+export const mcpPrivateOverrideSchema = z
+  .object({ name: mcpServerNameSchema, hash: z.string().regex(/^[0-9a-f]{64}$/, 'the entry hash the listing served') })
+  .strict();
+export type McpPrivateOverride = z.infer<typeof mcpPrivateOverrideSchema>;
 
 export const mcpServerParamsSchema = z.object({ scope: mcpScopeSchema, name: mcpServerNameSchema });
 export type McpServerParams = z.infer<typeof mcpServerParamsSchema>;

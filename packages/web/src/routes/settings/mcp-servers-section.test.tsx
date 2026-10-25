@@ -83,6 +83,18 @@ describe('MCP servers settings (spec 2026-10-24-easy-mcp)', () => {
     expect(JSON.parse(server.body!).definition.headers).toEqual({ Authorization: 'Bearer ${{ secrets.STRIPE_SECRET_KEY }}' })
   })
 
+  it('a private server named like a project one asks to confirm the replacement, naming the entry it saw', async () => {
+    const hash = 'c'.repeat(64)
+    const calls = setup({
+      ...LIST,
+      private: [{ ...LIST.project[0]!, scope: 'private', override: { hash, confirmed: false } }],
+    })
+    const note = await screen.findByText(/A project server is named/)
+    fireEvent.click(within(note.closest('[data-slot=mcp-override]') as HTMLElement).getByRole('button', { name: 'Confirm replacement' }))
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/mcp-servers/override'))).toBe(true))
+    expect(JSON.parse(calls.find((c) => c.url.endsWith('/mcp-servers/override'))!.body!)).toEqual({ name: 'context7', hash })
+  })
+
   it('a manual definition is Private unless the operator picks Project', async () => {
     setup()
     await screen.findByText('context7')

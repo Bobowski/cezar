@@ -22,11 +22,11 @@ import {
   serviceLogsQuerySchema, serviceParamsSchema, servicePatchSchema, servicePinInputSchema, type ServiceLogs, type ServicesState,
   e2eSetupInputSchema, type E2eStatus, taskActionSurfaceSchema,
   codePagesSchema,
-  mcpProjectApproveSchema, mcpRegistryQuerySchema, mcpServerParamsSchema, mcpServerPutSchema, mcpSecretNames, type McpServerTestResponse,
+  mcpPrivateOverrideSchema, mcpProjectApproveSchema, mcpRegistryQuerySchema, mcpServerParamsSchema, mcpServerPutSchema, mcpSecretNames, type McpServerTestResponse,
 } from '@open-mercato/cezar-contract';
 import { SecretStore, SecretsError, type SecretScopeRef } from '../workspace/secrets.ts';
 import { loadPrivateMcp, missingSecretReason, parseMcpFile, PROJECT_MCP_FILE, readProjectMcpText, resolveMcpSecrets } from '../core/private-mcp.ts';
-import { approveProjectMcp, projectMcpGate } from '../mcp-servers/approval.ts';
+import { approveProjectMcp, confirmPrivateOverride, projectMcpGate } from '../mcp-servers/approval.ts';
 import { McpRegistrySearch } from '../mcp-catalog/registry.ts';
 import { deleteMcpServer, putMcpServer } from '../mcp-servers/files.ts';
 import { probeMcpServer } from '../mcp-servers/probe.ts';
@@ -7478,6 +7478,14 @@ export function createApp(deps: ServerDeps) {
       const { hash, bindings } = c.req.valid('json');
       const approved = await approveProjectMcp(c.get('project').root, hash, bindings);
       if (!approved.ok) return c.json({ error: approved.error }, approved.status);
+      return c.json(await mcpListing(c.get('project'), c), 200);
+    })
+    // A private entry replaces an approved project server of its name only once confirmed here.
+    .post('/mcp-servers/override', jsonZodValidator(mcpPrivateOverrideSchema), async (c) => {
+      if (!trustedOperator(process.env, bindHost)) return c.json(mcpRefusal, 409);
+      const { name, hash } = c.req.valid('json');
+      const confirmed = await confirmPrivateOverride(c.get('project').root, name, hash);
+      if (!confirmed.ok) return c.json({ error: confirmed.error }, confirmed.status);
       return c.json(await mcpListing(c.get('project'), c), 200);
     })
     .put('/mcp-servers/:scope/:name', paramZodValidator(mcpServerParamsSchema), jsonZodValidator(mcpServerPutSchema), async (c) => {

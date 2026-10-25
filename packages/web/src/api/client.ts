@@ -1177,6 +1177,11 @@ export async function approveProjectMcp(hash: string, bindings: McpSecretBinding
   return unwrap(await cez.api.v1.p[':projectId']['mcp-servers'].approval.$post(
     { param: { projectId: queryScope() }, json: { hash, bindings } }), '/mcp-servers/approval')
 }
+/** Let the private entry the listing served (by its hash) replace the approved project server of its name. */
+export async function confirmPrivateMcpOverride(name: string, hash: string): Promise<McpServersList> {
+  return unwrap(await cez.api.v1.p[':projectId']['mcp-servers'].override.$post(
+    { param: { projectId: queryScope() }, json: { name, hash } }), '/mcp-servers/override')
+}
 export async function testMcpServer(scope: McpScope, name: string): Promise<McpServerTestResponse> {
   return unwrap(await cez.api.v1.p[':projectId']['mcp-servers'][':scope'][':name'].test.$post(
     { param: { projectId: queryScope(), scope, name } }), '/mcp-servers/test')

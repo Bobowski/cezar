@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mcpServersListSchema } from '@open-mercato/cezar-contract';
 import { privateMcpPath, projectMcpPath } from '../core/private-mcp.ts';
 import { SecretStore } from '../workspace/secrets.ts';
+import { confirmPrivateOverride } from './approval.ts';
 import { deleteMcpServer, putMcpServer } from './files.ts';
 import { listMcpServers } from './service.ts';
 import { recordMcpLaunch } from './status.ts';
@@ -98,6 +99,30 @@ describe('Settings → MCP servers files and listing (spec 2026-10-24-easy-mcp)'
     const again = await listMcpServers(repo, { secrets, project: { projectId: 'demo', root: repo }, editable: false });
     expect(again.project.find((server) => server.name === 'shared')!.missingSecrets).toEqual([]);
     expect(again.editable).toBe(false);
+  });
+
+  it('a git-tracked mcp.local.json is listed with a warning, and replaces no project server', async () => {
+    mkdirSync(join(repo, '.ai', 'cezar'), { recursive: true });
+    writeFileSync(projectMcpPath(repo), JSON.stringify({ mcpServers: { shared: { command: 'project-mcp' } } }));
+    await putMcpServer(repo, 'private', 'shared', { command: 'private-mcp' });
+    expect((await listMcpServers(repo, { secrets, editable: true })).project[0]?.shadowed).toBe(true);
+    execFileSync('git', ['add', '-f', privateMcpPath(repo)], { cwd: repo });
+    const list = await listMcpServers(repo, { secrets, editable: true });
+    expect(list.problems.private).toEqual([expect.stringMatching(/^mcp.local.json is tracked by git/)]);
+    expect(list.project[0]?.shadowed).toBe(false);
+  });
+
+  it('a private server named like an approved project one carries its confirmation state', async () => {
+    await putMcpServer(repo, 'project', 'shared', { command: 'project-mcp' });
+    await putMcpServer(repo, 'private', 'shared', { command: 'private-mcp' });
+    const list = await listMcpServers(repo, { secrets, editable: true });
+    expect(list.approval.state).toBe('approved');
+    expect(list.private[0]?.override).toEqual({ hash: expect.stringMatching(/^[0-9a-f]{64}$/), confirmed: false });
+    expect(list.project[0]?.shadowed).toBe(false);
+    expect(await confirmPrivateOverride(repo, 'shared', list.private[0]!.override!.hash)).toEqual({ ok: true });
+    const after = await listMcpServers(repo, { secrets, editable: true });
+    expect(after.private[0]?.override?.confirmed).toBe(true);
+    expect(after.project[0]?.shadowed).toBe(true);
   });
 
   it('redacts credential-shaped args and url parts unless the caller may see them raw', async () => {

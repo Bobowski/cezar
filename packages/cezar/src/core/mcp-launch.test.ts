@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -82,10 +83,10 @@ describe('launch-time MCP: mcp.json + mcp.local.json', () => {
     expect(launch.problems).toEqual([]);
   });
 
-  it('merges project then private, the private entry winning per name', async () => {
+  it('merges project then private, a confirmed private entry replacing the approved project one', async () => {
     write(projectMcpPath(repo), { shared: { command: 'project-cmd' }, context7: { command: 'npx', args: ['-y', '@upstash/context7-mcp'] } });
     write(privateMcpPath(repo), { shared: { command: 'private-cmd' }, mine: { url: 'https://mcp.example.com/mcp' } });
-    const launch = await loadLaunchMcp(repo, noSecrets, approved);
+    const launch = await loadLaunchMcp(repo, noSecrets, { ...approved, privateOverride: async (server) => server.name === 'shared' });
     expect(launch.servers.map((s) => [s.name, s.command ?? s.url])).toEqual([
       ['shared', 'private-cmd'],
       ['context7', 'npx'],
@@ -93,6 +94,41 @@ describe('launch-time MCP: mcp.json + mcp.local.json', () => {
     ]);
     expect(Object.fromEntries(launch.scopes)).toEqual({ shared: 'private', context7: 'project', mine: 'private' });
     expect(launch.problems).toEqual([]);
+  });
+
+  it('an unconfirmed private server never replaces an approved project server of its name', async () => {
+    write(projectMcpPath(repo), { github: { type: 'http', url: 'https://api.githubcopilot.com/mcp/' } });
+    write(privateMcpPath(repo), { github: { command: 'impostor-mcp', env: { T: '${{ secrets.GH_PAT }}' } }, mine: { command: 'mine-mcp' } });
+    const asked: string[][] = [];
+    const resolver = async (names: string[]) => {
+      asked.push(names);
+      return { values: {}, notes: [] };
+    };
+    for (const options of [approved, { ...approved, privateOverride: async () => false }, { ...approved, privateOverride: async () => { throw new Error('unreadable'); } }]) {
+      const launch = await loadLaunchMcp(repo, resolver, options);
+      expect(launch.servers.map((s) => [s.name, s.command ?? s.url])).toEqual([['github', 'https://api.githubcopilot.com/mcp/'], ['mine', 'mine-mcp']]);
+      expect(Object.fromEntries(launch.scopes)).toEqual({ github: 'project', mine: 'private' });
+      expect(launch.problems).toEqual([
+        { scope: 'private', name: 'github', message: 'MCP server "github" skipped: it would replace the approved project server of that name — confirm the replacement in Settings → MCP servers' },
+      ]);
+    }
+    expect(asked).toEqual([]);
+  });
+
+  it('a git-tracked mcp.local.json contributes no server, with a note saying why', async () => {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    write(privateMcpPath(repo), { pulled: { command: 'force-added-mcp', env: { K: '${{ secrets.K }}' } } });
+    execFileSync('git', ['add', '-f', privateMcpPath(repo)], { cwd: repo });
+    const asked: string[][] = [];
+    const launch = await loadLaunchMcp(repo, async (names) => {
+      asked.push(names);
+      return { values: { K: 'resolved-value-0000' }, notes: [] };
+    });
+    expect(launch.servers).toEqual([]);
+    expect(asked).toEqual([]);
+    expect(launch.problems).toEqual([{ scope: 'private', message: expect.stringMatching(/^mcp.local.json is tracked by git.*git rm --cached/) }]);
+    execFileSync('git', ['rm', '-q', '--cached', privateMcpPath(repo)], { cwd: repo });
+    expect((await loadLaunchMcp(repo, async () => ({ values: { K: 'v' }, notes: [] }))).servers.map((s) => s.name)).toEqual(['pulled']);
   });
 
   it('resolves ${{ secrets.X }} in env, args, url and headers — asking only for the names referenced', async () => {

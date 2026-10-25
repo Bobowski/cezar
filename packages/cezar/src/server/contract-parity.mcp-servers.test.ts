@@ -2,6 +2,7 @@ import type { InferRequestType, InferResponseType } from 'hono/client';
 import { hc } from 'hono/client';
 import { expect, it } from 'vitest';
 import type {
+  McpPrivateOverride,
   McpProjectApprove,
   McpRegistryQuery,
   McpRegistryResponse,
@@ -35,6 +36,10 @@ type Checks = [
   Assert<Mutual<McpProjectApprove, InferRequestType<typeof unscoped.approval.$post>['json']>>,
   Assert<Mutual<McpServersList, InferResponseType<typeof scoped.approval.$post, 200>>>,
   Assert<Mutual<McpServersErrorResponse, InferResponseType<typeof unscoped.approval.$post, 409>>>,
+  Assert<Mutual<McpPrivateOverride, InferRequestType<typeof unscoped.override.$post>['json']>>,
+  Assert<Mutual<McpServersList, InferResponseType<typeof scoped.override.$post, 200>>>,
+  Assert<Mutual<McpServersErrorResponse, InferResponseType<typeof unscoped.override.$post, 409>>>,
+  Assert<Mutual<McpServersErrorResponse, InferResponseType<typeof unscoped.override.$post, 404>>>,
 ];
 it('pins the MCP servers route types to the contract', () => {
   const checks: Checks | undefined = undefined;

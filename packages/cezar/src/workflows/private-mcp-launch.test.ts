@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent, AgentRunResult, AgentRunSpec } from '../core/agent-runner.ts';
-import { privateMcpPath, projectMcpPath } from '../core/private-mcp.ts';
-import { approveProjectMcp, mcpContentHash } from '../mcp-servers/approval.ts';
+import { loadPrivateMcp, privateMcpPath, projectMcpPath } from '../core/private-mcp.ts';
+import { approveProjectMcp, confirmPrivateOverride, mcpContentHash, privateOverrideHash } from '../mcp-servers/approval.ts';
 import { mcpStatusPath, readMcpStatus } from '../mcp-servers/status.ts';
 import { SecretStore } from '../workspace/secrets.ts';
 import { RunStore } from '../runs/store.ts';
@@ -130,7 +130,7 @@ describe('private MCP servers at launch', () => {
     expect(notes(record.id)).toContain('private MCP: cursor cannot attach tracker — cursor has no launch-time MCP channel');
   });
 
-  it('project mcp.json and private mcp.local.json both reach the session, private winning, secrets resolved (spec 2026-10-24-easy-mcp)', async () => {
+  it('project mcp.json and private mcp.local.json both reach the session, a confirmed private entry winning, secrets resolved (spec 2026-10-24-easy-mcp)', async () => {
     manager?.dispose();
     const secrets = new SecretStore(process.env, { keychain: async () => null });
     await secrets.set({ kind: 'workspace' }, 'STRIPE_SECRET_KEY', 'sk_test_resolved_at_launch', ['cezar']);
@@ -151,6 +151,8 @@ describe('private MCP servers at launch', () => {
       shared: { command: 'from-private' },
       stripe: { type: 'http', url: 'https://mcp.stripe.com', headers: { Authorization: 'Bearer ${{ secrets.STRIPE_SECRET_KEY }}' } },
     });
+    const shared = (await loadPrivateMcp(repoRoot)).servers.find((server) => server.name === 'shared')!;
+    expect(await confirmPrivateOverride(repoRoot, 'shared', privateOverrideHash(shared))).toEqual({ ok: true });
     const record = manager.startRun(TASK, { task: 'do it', worktree: false, runner: 'claude' });
     const opening = await specAt(0);
     expect(opening.mcpServers?.map((s) => [s.name, s.command ?? s.url])).toEqual([
@@ -168,6 +170,18 @@ describe('private MCP servers at launch', () => {
     expect(JSON.stringify(store.readEvents(record.id))).not.toContain('sk_test_resolved_at_launch');
     await expect.poll(async () => (await readMcpStatus(repoRoot)).get('private:stripe')?.state).toBe('injected');
     expect((await readMcpStatus(repoRoot)).get('project:gated')).toMatchObject({ state: 'failed', runId: record.id });
+  });
+
+  it('an unconfirmed private entry does not replace an approved project server — a note says why', async () => {
+    mkdirSync(join(repoRoot, '.ai', 'cezar'), { recursive: true });
+    const projectText = JSON.stringify({ mcpServers: { shared: { command: 'from-project' } } });
+    writeFileSync(projectMcpPath(repoRoot), projectText);
+    expect(await approveProjectMcp(repoRoot, mcpContentHash(projectText), {})).toEqual({ ok: true });
+    writePrivateMcp({ shared: { command: 'from-private' } });
+    const record = manager!.startRun(TASK, { task: 'do it', worktree: false, runner: 'claude' });
+    expect((await specAt(0)).mcpServers?.map((s) => [s.name, s.command])).toEqual([['shared', 'from-project']]);
+    await settled(record.id);
+    expect(notes(record.id)).toContain('private MCP: MCP server "shared" skipped: it would replace the approved project server of that name — confirm the replacement in Settings → MCP servers');
   });
 
   it('an unapproved committed mcp.json reaches no session — a note says why, the private file still applies', async () => {

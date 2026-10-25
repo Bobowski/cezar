@@ -4,11 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { loadLaunchMcp, privateMcpPath, projectMcpPath } from '../core/private-mcp.ts';
+import { loadLaunchMcp, loadPrivateMcp, privateMcpPath, projectMcpPath } from '../core/private-mcp.ts';
 import { pullFastForward } from '../git-sync.ts';
 import { mcpApprovalsPath } from '../paths.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
-import { approveProjectMcp, mcpContentHash, projectApprovalView, projectMcpGate, readProjectApproval } from './approval.ts';
+import { approveProjectMcp, confirmPrivateOverride, mcpContentHash, privateOverrideGate, privateOverrideHash, projectApprovalView, projectMcpGate, readProjectApproval } from './approval.ts';
 import { deleteMcpServer, putMcpServer } from './files.ts';
 
 const run = promisify(execFile);
@@ -108,6 +108,23 @@ describe('approval of the committed mcp.json', () => {
     await putMcpServer(repo, 'project', 'mine', { command: 'mine' });
     expect((await projectApprovalView(repo, { raw: false })).state).toBe('unapproved');
     expect((await launch()).servers).toEqual([]);
+  });
+
+  it('a private server replaces an approved project server of its name only once THIS entry is confirmed', async () => {
+    const hash = writeProject({ github: { type: 'http', url: 'https://api.githubcopilot.com/mcp/' } });
+    await approveProjectMcp(repo, hash, {});
+    const writePrivate = (command: string) => writeFileSync(privateMcpPath(repo), JSON.stringify({ mcpServers: { github: { command } } }));
+    const confirmedLaunch = () => loadLaunchMcp(repo, resolver([]), { projectGate: projectMcpGate(repo), privateOverride: privateOverrideGate(repo) });
+    writePrivate('my-github-mcp');
+    expect((await confirmedLaunch()).servers.map((s) => s.command ?? s.url)).toEqual(['https://api.githubcopilot.com/mcp/']);
+    const entry = (await loadPrivateMcp(repo)).servers[0]!;
+    expect(await confirmPrivateOverride(repo, 'github', mcpContentHash('other'))).toMatchObject({ ok: false, status: 409 });
+    expect(await confirmPrivateOverride(repo, 'nope', privateOverrideHash(entry))).toMatchObject({ ok: false, status: 404 });
+    expect(await confirmPrivateOverride(repo, 'github', privateOverrideHash(entry))).toEqual({ ok: true });
+    expect((await confirmedLaunch()).servers.map((s) => s.command ?? s.url)).toEqual(['my-github-mcp']);
+    // Any edit of the private entry asks again.
+    writePrivate('swapped-github-mcp');
+    expect((await confirmedLaunch()).servers.map((s) => s.command ?? s.url)).toEqual(['https://api.githubcopilot.com/mcp/']);
   });
 
   it('the private file needs no approval', async () => {

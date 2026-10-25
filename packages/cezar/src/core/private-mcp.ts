@@ -1,5 +1,7 @@
+import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { z } from 'zod';
 import { mcpSecretNames, parseMcpValue, type McpScope, type McpServerReach } from '@open-mercato/cezar-contract';
 import { RUNNER_IDS, type RunnerId } from './agent-runner.ts';
@@ -168,6 +170,20 @@ export function loadPrivateMcp(repoRoot: string): Promise<PrivateMcpLoad> {
   return loadMcpFile(privateMcpPath(repoRoot), PRIVATE_MCP_FILE);
 }
 
+/**
+ * A git-tracked `mcp.local.json` is repo content under a private name: a force-added file arriving
+ * by pull or auto-sync would run, with secrets, unapproved — refused like the worktree scripts of a
+ * tracked `config.json` (`isLifecycleConfigTracked`).
+ */
+export async function isPrivateMcpTracked(repoRoot: string): Promise<boolean> {
+  return promisify(execFile)('git', ['ls-files', '--error-unmatch', '--', join('.ai', 'cezar', PRIVATE_MCP_FILE)], { cwd: repoRoot }).then(
+    () => true,
+    () => false,
+  );
+}
+
+export const PRIVATE_TRACKED_PROBLEM = `${PRIVATE_MCP_FILE} is tracked by git, so none of its servers is used — private MCP servers come only from an untracked local file. Untrack it: git rm --cached .ai/cezar/${PRIVATE_MCP_FILE}`;
+
 /** Read and parse the project's committed MCP file (spec 2026-10-24-easy-mcp). Never throws. */
 export function loadProjectMcp(repoRoot: string): Promise<PrivateMcpLoad> {
   return loadMcpFile(projectMcpPath(repoRoot), PROJECT_MCP_FILE);
@@ -232,7 +248,7 @@ export interface LaunchMcpProblem {
 }
 
 export interface LaunchMcp {
-  /** Ready to inject: project servers, then private ones, a private entry replacing a project one of its name. */
+  /** Ready to inject: project servers, then private ones; a private entry replaces an approved project one only when confirmed. */
   servers: PrivateMcpServer[];
   /** Which file each server in `servers` came from. */
   scopes: Map<string, McpScope>;
@@ -263,9 +279,17 @@ export type McpSecretResolver = (names: string[]) => Promise<{ values: Record<st
  */
 export type ProjectMcpGate = (text: string) => Promise<{ approved: true; bindings: Record<string, string[]> } | { approved: false; reason: string }>;
 
+/**
+ * Whether the operator confirmed in Settings that THIS private entry replaces the approved project
+ * server of its name (`mcp-servers/approval.ts`).
+ */
+export type PrivateOverrideGate = (server: PrivateMcpServer) => Promise<boolean>;
+
 export interface LaunchMcpOptions {
   /** Absent: no project server is injected — repo content runs only once approved. */
   projectGate?: ProjectMcpGate;
+  /** Absent: a private server never replaces an approved project server of its name. */
+  privateOverride?: PrivateOverrideGate;
 }
 
 const NOT_APPROVED = `${PROJECT_MCP_FILE} is not approved on this machine — review and approve it in Settings → MCP servers`;
@@ -277,33 +301,58 @@ const NOT_APPROVED = `${PROJECT_MCP_FILE} is not approved on this machine — re
  */
 export async function loadLaunchMcp(repoRoot: string, resolveSecrets: McpSecretResolver, options: LaunchMcpOptions = {}): Promise<LaunchMcp> {
   // One read of the committed file: the text the gate approves is the text that is parsed.
-  const [projectRead, priv] = await Promise.all([readMcpText(projectMcpPath(repoRoot), PROJECT_MCP_FILE), loadPrivateMcp(repoRoot)]);
+  const [projectRead, loadedPriv] = await Promise.all([readMcpText(projectMcpPath(repoRoot), PROJECT_MCP_FILE), loadPrivateMcp(repoRoot)]);
   const project = 'problem' in projectRead ? { servers: [], problems: [projectRead.problem] } : parseMcpFile(projectRead.text ?? '', PROJECT_MCP_FILE);
+  const tracked = loadedPriv.servers.length > 0 && (await isPrivateMcpTracked(repoRoot));
+  const priv = tracked ? { servers: [], problems: [...loadedPriv.problems, PRIVATE_TRACKED_PROBLEM] } : loadedPriv;
   const problems: LaunchMcpProblem[] = [
     ...project.problems.map((message) => ({ scope: 'project' as const, message })),
     ...priv.problems.map((message) => ({ scope: 'private' as const, message })),
   ];
-  const merged = new Map<string, { server: PrivateMcpServer; scope: McpScope }>();
-  for (const server of project.servers) merged.set(server.name, { server, scope: 'project' });
-  for (const server of priv.servers) merged.set(server.name, { server, scope: 'private' });
 
-  const fromProject = [...merged.values()].filter((entry) => entry.scope === 'project');
-  if (fromProject.length > 0) {
+  // Why each project server cannot go — null when it goes.
+  const projectWhy = new Map<string, string | null>();
+  if (project.servers.length > 0) {
     const text = 'text' in projectRead ? (projectRead.text ?? '') : '';
     const gate = options.projectGate
       ? await options.projectGate(text).catch((err: Error) => ({ approved: false as const, reason: `its approval could not be read: ${err.message}` }))
       : { approved: false as const, reason: NOT_APPROVED };
-    for (const { server } of fromProject) {
+    for (const server of project.servers) {
       const unbound = gate.approved ? referencedSecrets(server).filter((name) => !(gate.bindings[server.name] ?? []).includes(name)) : [];
-      const why = !gate.approved
-        ? gate.reason
-        : unbound.length > 0
-          ? `secret ${unbound.join(', ')} ${unbound.length > 1 ? 'are' : 'is'} not bound to it — approve it with ${unbound.length > 1 ? 'them' : 'it'} in Settings → MCP servers`
-          : null;
-      if (!why) continue;
-      problems.push({ scope: 'project', name: server.name, message: `MCP server "${server.name}" skipped: ${why}` });
-      merged.delete(server.name);
+      projectWhy.set(
+        server.name,
+        !gate.approved
+          ? gate.reason
+          : unbound.length > 0
+            ? `secret ${unbound.join(', ')} ${unbound.length > 1 ? 'are' : 'is'} not bound to it — approve it with ${unbound.length > 1 ? 'them' : 'it'} in Settings → MCP servers`
+            : null,
+      );
     }
+  }
+
+  // A private entry replaces a project server that would not go anyway; one that goes (the
+  // operator approved it under that name) only once the operator confirmed this replacement.
+  const merged = new Map<string, { server: PrivateMcpServer; scope: McpScope }>();
+  for (const server of project.servers) merged.set(server.name, { server, scope: 'project' });
+  for (const server of priv.servers) {
+    if (projectWhy.get(server.name) === null) {
+      const confirmed = options.privateOverride ? await options.privateOverride(server).catch(() => false) : false;
+      if (!confirmed) {
+        problems.push({
+          scope: 'private',
+          name: server.name,
+          message: `MCP server "${server.name}" skipped: it would replace the approved project server of that name — confirm the replacement in Settings → MCP servers`,
+        });
+        continue;
+      }
+    }
+    merged.set(server.name, { server, scope: 'private' });
+  }
+  for (const server of project.servers) {
+    const why = projectWhy.get(server.name);
+    if (!why || merged.get(server.name)?.scope !== 'project') continue;
+    problems.push({ scope: 'project', name: server.name, message: `MCP server "${server.name}" skipped: ${why}` });
+    merged.delete(server.name);
   }
 
   const names = [...new Set([...merged.values()].flatMap(({ server }) => referencedSecrets(server)))];

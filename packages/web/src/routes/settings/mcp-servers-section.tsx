@@ -16,7 +16,7 @@ import {
   type McpServerKey,
   type McpServerTestResponse,
 } from '@open-mercato/cezar-api-client'
-import { approveProjectMcp, deleteMcpServer, putMcpServer, saveProjectSecret, searchMcpRegistry, testMcpServer } from '@/api/client'
+import { approveProjectMcp, confirmPrivateMcpOverride, deleteMcpServer, putMcpServer, saveProjectSecret, searchMcpRegistry, testMcpServer } from '@/api/client'
 import { queryKeys, useMcpServers, useProjectSecrets, useWorkspaceSecrets, workspaceQueryKeys } from '@/api/queries'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -66,7 +66,7 @@ function ScopePicker({ value, onChange }: { value: McpScope; onChange: (scope: M
             <span className="block text-xs text-muted-foreground">
               {scope === 'project'
                 ? 'Committed with the repository and shared with your team. Secrets stay references.'
-                : 'Only on this machine, never committed. Wins over a project server of the same name.'}
+                : 'Only on this machine, never committed. Replaces an approved project server of the same name once you confirm it.'}
             </span>
           </span>
         </label>
@@ -88,6 +88,11 @@ function ServerRow({ server, editable }: { server: McpServer; editable: boolean 
     onSuccess: async (projectId) => { await invalidate(projectId); toast(`${server.name} removed`) },
     onError: (e: Error) => toast(e.message, { tone: 'danger' }),
   })
+  const overriding = useMutation({
+    mutationFn: async () => { const projectId = queryScope(); await confirmPrivateMcpOverride(server.name, server.override?.hash ?? ''); return projectId },
+    onSuccess: async (projectId) => { await invalidate(projectId); toast(`${server.name} now replaces the project server`) },
+    onError: (e: Error) => toast(e.message, { tone: 'danger' }),
+  })
   const target = server.transport === 'stdio' ? [server.command, ...server.args].join(' ') : server.url
   return (
     <li className="space-y-2 px-5 py-3" data-slot="mcp-server-row" data-scope={server.scope} data-name={server.name}>
@@ -107,6 +112,12 @@ function ServerRow({ server, editable }: { server: McpServer; editable: boolean 
         </div>
       </div>
       <p className="font-mono text-xs break-all text-muted-foreground">{target}</p>
+      {server.override && !server.override.confirmed ? (
+        <SettingsNote tone="danger" data-slot="mcp-override">
+          A project server is named <code className="font-mono">{server.name}</code> too. Once that one is approved, this private server is skipped at launch until you confirm it replaces it.{' '}
+          <Button variant="outline" size="sm" disabled={!editable || overriding.isPending} onClick={() => overriding.mutate()}>Confirm replacement</Button>
+        </SettingsNote>
+      ) : null}
       <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground" aria-label={`Agents ${server.name} reaches`}>
         Reaches:
         {server.reach.map((reach) => (

@@ -26,7 +26,7 @@ import {
   supportsPrivateMcp,
   type PrivateMcpServer,
 } from '../core/private-mcp.ts';
-import { projectMcpGate } from '../mcp-servers/approval.ts';
+import { privateOverrideGate, projectMcpGate } from '../mcp-servers/approval.ts';
 import { recordMcpLaunch, type McpLaunchOutcome } from '../mcp-servers/status.ts';
 import { currentUsage, onUsage, registerRunProcess, unregisterRunProcess, type ProcessUsage } from '../core/process-usage.ts';
 import { parseUsageLimit } from '../core/usage-limit.ts';
@@ -1586,7 +1586,7 @@ export class RunManager {
 
   /**
    * The project's MCP servers for one agent session: the committed `.ai/cezar/mcp.json`, then the
-   * private `mcp.local.json` winning per name (specs 2026-10-07-private-project-mcp,
+   * private `mcp.local.json` winning per name — over an approved one only once confirmed (specs 2026-10-07-private-project-mcp,
    * 2026-10-24-easy-mcp), `${{ secrets.X }}` resolved from the `cezar` audience. Notes name what
    * was attached — or why not — and the outcome is indexed for Settings. Read fresh per launch,
    * like `agentEnvForStep`, so an edit applies to the very next session. Never throws.
@@ -1610,6 +1610,7 @@ export class RunManager {
         projectGate: untrusted
           ? async () => ({ approved: false, reason: `a fork's head never gets the servers of .ai/cezar/${PROJECT_MCP_FILE}` })
           : projectMcpGate(this.repoRoot),
+        privateOverride: privateOverrideGate(this.repoRoot),
       },
     );
     const label = (scope: 'project' | 'private') => (scope === 'project' ? 'project MCP' : 'private MCP');

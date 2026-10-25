@@ -137,6 +137,13 @@ export function createPushNotifier(deps: PushNotifierDeps): PushNotifier {
       checker.unref?.();
     }
   };
+  const unhold = (account: string, tag: string): void => {
+    const queue = held.get(account);
+    if (queue === undefined) return;
+    const rest = queue.filter((entry) => entry.payload.tag !== tag);
+    if (rest.length > 0) held.set(account, rest);
+    else held.delete(account);
+  };
   function releaseHeld(): void {
     const at = now();
     for (const [account, queue] of held) {
@@ -163,6 +170,8 @@ export function createPushNotifier(deps: PushNotifierDeps): PushNotifier {
     if (rows.length === 0) return;
     const { send: recipients, held: waiting, expired } = pushRecipients(rows, deps);
     for (const account of new Set(waiting.map((row) => row.account))) hold(account, { payload, current, heldAt: now() });
+    // One push per tag: a direct send supersedes what its account still holds for the same run.
+    for (const account of new Set(recipients.map((row) => row.account))) unhold(account, payload.tag);
     sendTo(recipients, payload, new Set(expired.map((row) => row.id)));
   };
 

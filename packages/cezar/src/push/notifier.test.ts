@@ -143,6 +143,20 @@ describe('createPushNotifier', () => {
       expect(sent).toEqual([]);
     });
 
+    it('a direct send of the same run clears its held push — one notification, not two', async () => {
+      const { notifier, sent, gate } = heldNotifier([row('a', 'owner')]);
+      const run = { ...base } as RunRecord;
+      const source = new FakeSource([run]);
+      notifier.watch('proj', source);
+      source.emitRun({ ...run, status: 'review' } as RunRecord); // held
+      source.emitRun({ ...run, status: 'running' } as RunRecord);
+      gate.visible = false;
+      source.emitRun({ ...run, status: 'review' } as RunRecord); // sent now; the held one is current again
+      await settle();
+      await notifier.idle();
+      expect(sent).toEqual([{ endpoint: 'https://push.example.net/a', tag: 'cezar-run-r1' }]);
+    });
+
     it('holds at most twenty per account, one per run', async () => {
       const { notifier, sent, gate } = heldNotifier([row('a', 'owner')]);
       const runs = Array.from({ length: 25 }, (_, i) => ({ ...base, id: `r${i}` }) as RunRecord);

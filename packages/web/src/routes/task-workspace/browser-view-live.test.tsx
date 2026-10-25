@@ -6,6 +6,8 @@ import {
   AUTO_RELOAD_BRAKE_WINDOW_MS,
   BrowserView,
   HMR_PROBE_DELAY_MS,
+  HMR_SERVER_PROBE_RETRIES,
+  HMR_SERVER_PROBE_RETRY_MS,
   RELOAD_SETTLE_MS,
   frameHmr,
 } from './browser-view'
@@ -253,6 +255,47 @@ describe('Auto-reload on a local cockpit (the page framed directly)', () => {
       frame()!.dispatchEvent(new Event('load'))
     })
     expect(probePreviewHmr).toHaveBeenCalledTimes(1)
+  })
+
+  it(`a server read that cannot tell yet is retried every ${HMR_SERVER_PROBE_RETRY_MS / 1_000} s, and the address counts as read only once it answers`, async () => {
+    probePreviewHmr.mockResolvedValueOnce({ hmr: null }).mockResolvedValueOnce({ hmr: null }).mockResolvedValue({ hmr: 'connected' })
+    renderLive()
+    await waitFor(() => expect(frame()).not.toBeNull())
+    crossOrigin()
+    await loaded()
+    await waitFor(() => expect(probePreviewHmr).toHaveBeenCalledTimes(1))
+    // A second load while the first ask is still retrying joins it.
+    act(() => {
+      frame()!.dispatchEvent(new Event('load'))
+    })
+    for (const calls of [2, 3]) {
+      await act(async () => {
+        vi.advanceTimersByTime(HMR_SERVER_PROBE_RETRY_MS)
+      })
+      await waitFor(() => expect(probePreviewHmr).toHaveBeenCalledTimes(calls))
+    }
+    await waitFor(() => expect(toggle()?.getAttribute('data-hmr')).toBe('connected'))
+    act(() => {
+      frame()!.dispatchEvent(new Event('load'))
+    })
+    expect(probePreviewHmr).toHaveBeenCalledTimes(3)
+  })
+
+  it(`gives up after ${HMR_SERVER_PROBE_RETRIES} retries, and the next load asks again`, async () => {
+    renderLive()
+    await waitFor(() => expect(frame()).not.toBeNull())
+    crossOrigin()
+    await loaded()
+    for (let retry = 0; retry <= HMR_SERVER_PROBE_RETRIES + 1; retry += 1) {
+      await act(async () => {
+        vi.advanceTimersByTime(HMR_SERVER_PROBE_RETRY_MS)
+      })
+    }
+    expect(probePreviewHmr).toHaveBeenCalledTimes(HMR_SERVER_PROBE_RETRIES + 1)
+    act(() => {
+      frame()!.dispatchEvent(new Event('load'))
+    })
+    await waitFor(() => expect(probePreviewHmr).toHaveBeenCalledTimes(HMR_SERVER_PROBE_RETRIES + 2))
   })
 
   it('reads a same-origin page’s own hot-reload client: Vite’s is off, none is on', async () => {

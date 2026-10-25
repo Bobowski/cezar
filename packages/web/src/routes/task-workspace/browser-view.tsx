@@ -74,6 +74,9 @@ export const AUTO_RELOAD_BRAKE_COUNT = 3
 export const AUTO_RELOAD_BRAKE_WINDOW_MS = 30_000
 /** After `load`, how long a hot-reload client gets to connect before the gateway is asked. */
 export const HMR_PROBE_DELAY_MS = 2_000
+/** A server read that could not tell (the page was not up yet) is retried this often, this many times. */
+export const HMR_SERVER_PROBE_RETRY_MS = 2_000
+export const HMR_SERVER_PROBE_RETRIES = 3
 
 /** Hosts that mean "the machine cezar runs on". Framing one of these from a remote cockpit would
  *  resolve on the VIEWER's machine instead — a different computer entirely. */
@@ -545,7 +548,14 @@ export function BrowserView({
   }
   // Read by the frame's `load` handler, which is memoised on the tab state alone.
   const probeLoaded = useRef(() => {})
+  /** The address the server has answered for; set only on an answer, so a dev server still booting is asked again. */
   const serverProbed = useRef<string | null>(null)
+  const serverAsk = useRef<{ target: string; timer?: ReturnType<typeof setTimeout> } | null>(null)
+  const stopServerAsk = () => {
+    clearTimeout(serverAsk.current?.timer)
+    serverAsk.current = null
+  }
+  useEffect(() => stopServerAsk, [])
   probeLoaded.current = () => {
     probeHmr(gatewayOrigin)
     // Framed directly (a local cockpit): the page's own document, where same-origin lets it be
@@ -553,15 +563,29 @@ export function BrowserView({
     if (!live || gatewayOrigin !== null || remoteLoopback) return
     const seen = frameHmr(frameRef.current)
     if (seen !== null || !isLoopback(target)) return setHmr(seen)
-    if (serverProbed.current === target) return
-    serverProbed.current = target
+    if (serverProbed.current === target || serverAsk.current?.target === target) return
+    stopServerAsk()
     const asked = target
-    Promise.resolve()
-      .then(() => probePreviewHmr({ target: asked }))
-      .then((answer) => {
-        if (answer.hmr !== null && reloadTarget.current === asked) setHmr(answer.hmr)
-      })
-      .catch(() => {})
+    const ask: { target: string; timer?: ReturnType<typeof setTimeout> } = { target: asked }
+    serverAsk.current = ask
+    const attempt = (retriesLeft: number) => {
+      Promise.resolve()
+        .then(() => probePreviewHmr({ target: asked }))
+        .then(
+          (answer) => answer.hmr,
+          () => null,
+        )
+        .then((answer) => {
+          if (serverAsk.current !== ask) return
+          if (answer !== null) {
+            serverProbed.current = asked
+            serverAsk.current = null
+            if (reloadTarget.current === asked) setHmr(answer)
+          } else if (retriesLeft > 0) ask.timer = setTimeout(() => attempt(retriesLeft - 1), HMR_SERVER_PROBE_RETRY_MS)
+          else serverAsk.current = null
+        })
+    }
+    attempt(HMR_SERVER_PROBE_RETRIES)
   }
 
   // The loop brake: a page whose own load writes into the checkout would reload forever.

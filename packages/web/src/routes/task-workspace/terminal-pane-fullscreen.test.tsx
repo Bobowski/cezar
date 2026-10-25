@@ -14,7 +14,7 @@ vi.mock('@/api/ws', () => ({ subscribeTopic: () => () => {} }))
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() {} activate() {} dispose() {} } }))
 
-const { TerminalPane } = await import('./terminal-pane')
+const { TerminalPane, agentInForeground } = await import('./terminal-pane')
 
 const write = vi.fn(async (_data: string) => {})
 let screen = ''
@@ -34,10 +34,10 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-async function mount() {
+async function mount(running: { label?: string; busy?: boolean | null } = {}) {
   render(
     <FullscreenRegion label="Terminal">
-      <TerminalPane runId="r1" session={{ id: 's-1', exitCode: null, topic: 's-1' }} active io={io} />
+      <TerminalPane runId="r1" session={{ id: 's-1', exitCode: null, topic: 's-1', ...running }} active io={io} />
     </FullscreenRegion>,
   )
   return waitFor(() => {
@@ -81,5 +81,31 @@ describe('TerminalPane — full screen keys', () => {
     press(textarea, 'Escape')
     expect(await sent()).toEqual(['\x1b'])
     expect(region().getAttribute('data-fullscreen')).toBe('true')
+  })
+
+  it('under an agent CLI, Esc interrupts the agent and full screen stays; F11 leaves', async () => {
+    const textarea = await mount({ label: 'claude', busy: true })
+    press(textarea, 'F11')
+    await waitFor(() => expect(region().getAttribute('data-fullscreen')).toBe('true'))
+    press(textarea, 'Escape')
+    expect(await sent()).toEqual(['\x1b'])
+    expect(region().getAttribute('data-fullscreen')).toBe('true')
+    press(textarea, 'F11')
+    await waitFor(() => expect(region().getAttribute('data-fullscreen')).toBeNull())
+  })
+})
+
+describe('agentInForeground', () => {
+  it('knows claude, codex and opencode, as a binary or a node script, only while running', () => {
+    expect(agentInForeground({ label: 'claude', busy: true })).toBe(true)
+    expect(agentInForeground({ label: 'codex --model o3', busy: true })).toBe(true)
+    expect(agentInForeground({ label: 'node /usr/local/bin/opencode', busy: true })).toBe(true)
+    expect(agentInForeground({ label: 'claude.exe', busy: true })).toBe(true)
+    // The label outlives the command: idle, or a host that cannot tell, is the shell's prompt.
+    expect(agentInForeground({ label: 'claude', busy: false })).toBe(false)
+    expect(agentInForeground({ label: 'claude', busy: null })).toBe(false)
+    expect(agentInForeground({ label: 'npm run dev', busy: true })).toBe(false)
+    expect(agentInForeground({ label: 'node server.js', busy: true })).toBe(false)
+    expect(agentInForeground({})).toBe(false)
   })
 })

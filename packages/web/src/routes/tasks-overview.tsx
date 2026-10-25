@@ -41,6 +41,7 @@ import { UnreadMarker } from '@/components/unread-marker'
 import { SubtaskToggle } from '@/components/subtask-toggle'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Kbd } from '@/components/ui/kbd'
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -686,7 +687,11 @@ function TasksEmptyState({
           icon={<ListChecksIcon />}
           tone="primary"
           title="No tasks yet"
-          description="Describe a task and an agent picks it up in its own worktree."
+          description={
+            <>
+              Press <Kbd>C</Kbd> to start one — an agent picks it up in its own worktree.
+            </>
+          }
           action={
             <Button asChild>
               <Link to="/new">

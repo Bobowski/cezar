@@ -91,7 +91,7 @@ export function AutomationsSidebar({
             {!data ? (
               <p className="px-2 py-1 text-xs text-muted-foreground">Loading automations…</p>
             ) : data.automations.length === 0 ? (
-              <p className="px-2 py-1 text-xs text-muted-foreground">No automations yet.</p>
+              <p className="px-2 py-1 text-xs text-muted-foreground">No automations yet — create one with New.</p>
             ) : (
               <SidebarMenu data-slot="automations-nav">
                 {data.automations.map((automation) => {

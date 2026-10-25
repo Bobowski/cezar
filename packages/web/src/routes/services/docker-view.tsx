@@ -369,7 +369,7 @@ export function DockerView({ header }: { header: ReactNode }) {
           <Empty className="border-0">
             <EmptyHeader>
               <EmptyTitle>No containers</EmptyTitle>
-              <EmptyDescription>Nothing is running in Docker on this machine, and nothing stopped is left over.</EmptyDescription>
+              <EmptyDescription>Nothing runs in Docker on this machine. Start a stack — `docker compose up` in a terminal, or a script from Scripts — and it shows up here.</EmptyDescription>
             </EmptyHeader>
           </Empty>
         ) : null}

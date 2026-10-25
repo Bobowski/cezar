@@ -240,7 +240,7 @@ function IndexSection({ header }: { header: ReactNode }) {
         <RepoEmpty
           icon={<FileDiffIcon />}
           title="Working tree clean"
-          description="No uncommitted changes in the main working tree. Edits show up here as they happen."
+          description="Edit a file — in Code, a terminal or a task — and its diff shows up here, ready to stage."
         />
       ) : (
         <PageBody className="flex flex-col gap-6 [--diff-sticky-top:0rem]">

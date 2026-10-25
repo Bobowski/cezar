@@ -117,6 +117,10 @@ Consistency (§3.4):
    carries the keyboard lights up with it (task table and cards, Graph rows); a row with no link
    (Automations) is a focus stop that opens on `Enter`; the Files tree's rows ring on focus. The
    sidebar lists (branches, changed files) were already `SidebarMenuButton`s.
+3. ~~Empty states with a verb~~ — Tasks and All tasks: "Press C to start one" (C is the rail's
+   New task key, not N); Git's clean tree: "Edit a file … ready to stage"; Docker: "Start a
+   stack …"; the Automations sidebar: "create one with New" (its page already had one);
+   Integrations (Settings → tracker): "No tracker connected — connect one below."
 
 ## 8. Verification
 

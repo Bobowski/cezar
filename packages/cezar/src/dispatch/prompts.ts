@@ -16,13 +16,14 @@ export const DISPATCH_PROMPT = `Dispatching tasks. cezar can run other cezar tas
 
 To dispatch, run (from your shell) — always through the cockpit's own binary, node "$CEZ_BIN", because a cez on your PATH may be an older install without this command; every "cez task …" below means node "$CEZ_BIN" task …:
 
-  cez task create "<objective>" [--title "…"] [--kind implement|review] [--review-of <branch or run id>] [--scope "<files or dirs it may touch>"] [--budget <usd>] [--success "<how it knows it is done>"] [--evidence "<what it must show>"] [--tools Read,Edit,Bash] [--runner ${RUNNER_IDS.join('|')}] [--model <model>]
+  cez task create "<objective>" [--title "…"] [--kind implement|review] [--review-of <branch or run id>] [--scope "<files or dirs it may touch>"] [--budget <usd>] [--success "<how it knows it is done>"] [--evidence "<what it must show>"] [--tools Read,Edit,Bash] [--runner ${RUNNER_IDS.join('|')}] [--model <model>] [--as <persona>]
 
 - The objective is the WHOLE assignment: the child sees it, its task order, and the shared tree directory (below) — nothing else you know. State the goal, the context it needs, and what finished means.
 - Give every sibling a DISJOINT scope. Two tasks editing the same file is the one failure this design cannot recover from.
 - --budget is optional: OMIT it unless the user asked for a cost limit or your own task order names a Max cost. Never invent a figure — a --budget you made up becomes a hard cap that parks the child mid-work. Under a capped parent a child that names none gets the whole remainder; under an uncapped one it is uncapped too. A --budget is carved out of your own remaining budget and returned to you, unspent, when the child settles; a dispatch that asks for more than you have left is refused with the reason.
 - The command prints the child's run id and branch. COMMIT before dispatching: children fork your committed tip, not your working tree.
 - At most ${DISPATCH_MAX_IN_FLIGHT} children in flight under you; one more is refused. Wait for reports, then dispatch again.
+- --as runs the child as one of the project's personas (listed below when the project has any): its runner, model, tools and instructions, with any --runner, --model or --tools you pass winning.
 - --runner and --model choose who runs the child; omitted, it inherits yours. If the user's instructions name a runner or model, use that. Otherwise choose deliberately: a narrow, well-specified assignment — a review, a mechanical change, a read-only investigation — is a good fit for a cheaper or faster model; keep your own model for work whose judgement you would not want to re-check.
 
 While children are working and you have nothing else to do, end your turn with a line containing exactly CEZ:MONITORING. cezar parks you, gives your slot to the children, and wakes you when a report arrives.

@@ -291,6 +291,41 @@ describe('the dispatch engine (spec 2026-09-10-dispatch)', () => {
       expect(store.getRun(explicit.id)?.dispatch?.budgetUsd).toBe(3);
     }, 40_000);
 
+    it('runs a child as a persona (--as): its runner and model unless the order names others, and its step names the persona', async () => {
+      reboot({ maxParallel: 1, maxMonitoringSessions: 0 });
+      const parent = await parkedRoot(20);
+      const reviewer = { name: 'reviewer', runner: 'codex' as const, model: 'gpt-5', allowedTools: ['Read'], body: 'Review.', path: '/p.md', source: 'project' as const };
+      const asPersona = manager.dispatch(parent.id, order('review it', { as: 'reviewer', max_cost: 1 }), { persona: reviewer });
+      if ('refused' in asPersona) throw new Error(asPersona.refused);
+      const child = store.getRun(asPersona.id);
+      expect(child?.runner).toBe('codex');
+      expect(child?.model).toBe('gpt-5');
+      expect(child?.workflowDef?.steps[0]).toMatchObject({ id: 'task', agent: 'reviewer' });
+      expect(child?.workflowDef?.steps[0]).not.toHaveProperty('runner');
+      store.updateRun(asPersona.id, { status: 'done' });
+      // An explicit --runner beats the persona's, rides on the step so the merge keeps it, and the
+      // persona's model (picked for codex) does not follow it to claude.
+      const explicit = manager.dispatch(parent.id, order('review it on claude', { as: 'reviewer', runner: 'claude', max_cost: 1 }), { persona: reviewer });
+      if ('refused' in explicit) throw new Error(explicit.refused);
+      expect(store.getRun(explicit.id)?.runner).toBe('claude');
+      expect(store.getRun(explicit.id)?.model).toBeUndefined();
+      expect(store.getRun(explicit.id)?.workflowDef?.steps[0]).toMatchObject({ agent: 'reviewer', runner: 'claude' });
+    }, 40_000);
+
+    it('honours the dispatch limits of the persona the parent runs as', async () => {
+      reboot({ maxParallel: 1, maxMonitoringSessions: 0 });
+      const parent = await parkedRoot(20);
+      const state = (manager as unknown as { active: Map<string, { personaDispatch?: unknown }> }).active.get(parent.id)!;
+      state.personaDispatch = { name: 'reviewer', dispatch: { maxSubtasks: 0 } };
+      expect(refusal(parent.id, order('a helper'))).toContain('the "reviewer" persona this task runs as allows no subtasks');
+      state.personaDispatch = { name: 'lead', dispatch: { maxSubtasks: 1, runner: 'codex', budgetUsd: 2 } };
+      const first = dispatchOk(parent.id, order('one helper'));
+      expect(store.getRun(first.id)?.runner).toBe('codex');
+      expect(store.getRun(first.id)?.dispatch?.budgetUsd).toBe(2);
+      store.updateRun(first.id, { status: 'done' });
+      expect(refusal(parent.id, order('a second helper'))).toContain('allows at most 1 subtask');
+    }, 40_000);
+
     it('a child on another runner does not inherit the parent’s or the intent’s model (telemetry 43bdda11)', async () => {
       reboot({ maxParallel: 1, maxMonitoringSessions: 0 });
       const parent = await parkedRoot(20);

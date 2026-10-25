@@ -26,10 +26,14 @@ const LABEL: Record<ProviderId, string> = {
 export function providersRequiredByWorkflow(
   workflow: WorkflowDef,
   fallback: ProviderId,
+  /** The project's personas: a step that runs as one runs on its runner (spec 2026-10-24-personas). */
+  personas: ReadonlyArray<{ name: string; runner?: ProviderId }> = [],
 ): ProviderId[] {
   const required = new Set<ProviderId>();
   for (const step of workflow.steps) {
-    if (stepKind(step) === 'agent') required.add(step.runner ?? fallback);
+    if (stepKind(step) !== 'agent') continue;
+    const persona = step.agent ? personas.find((p) => p.name === step.agent) : undefined;
+    required.add(step.runner ?? persona?.runner ?? fallback);
   }
   return ORDER.filter((provider) => required.has(provider));
 }

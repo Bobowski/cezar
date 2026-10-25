@@ -30,7 +30,7 @@ const USAGE = `cez task — dispatch cezar tasks from inside a task (on by defau
 
   cez task create "<objective>" [--title "…"] [--kind implement|review] [--review-of <branch|run>]
                   [--scope "…"] [--budget <usd>] [--success "…"] [--evidence "…"] [--tools A,B]
-                  [--runner ${RUNNER_IDS.join('|')}] [--model <model>] [--retry-limit <0-3>]
+                  [--runner ${RUNNER_IDS.join('|')}] [--model <model>] [--retry-limit <0-3>] [--as <persona>]
   cez task report --status done|partial|failed|blocked --result "…" [--evidence "…"]…
                   [--verdict approve|changes|reject] [--suggestions "…"]… [--confidence <0-1>]
                   [--side-effect "…"]… [--error "…"]… [--next "…"]
@@ -110,6 +110,7 @@ export async function runTaskCommand(
             model: { type: 'string' },
             'retry-limit': { type: 'string' },
             workflow: { type: 'string' },
+            as: { type: 'string' },
           },
         });
         if (values.workflow !== undefined && env.CEZ_TASK_ID) throw new Error('--workflow is for a top-level task; a dispatched child runs the dispatch workflow');
@@ -118,7 +119,7 @@ export async function runTaskCommand(
         if (!env.CEZ_TASK_ID) {
           // From a shell — a laptop with `--server` (spec 2026-10-24-cezar-mcp-server §4) — there
           // is no parent to dispatch from: start a top-level task instead.
-          const parentOnly = (['title', 'kind', 'review-of', 'scope', 'budget', 'success', 'evidence', 'tools', 'retry-limit'] as const)
+          const parentOnly = (['title', 'kind', 'review-of', 'scope', 'budget', 'success', 'evidence', 'tools', 'retry-limit', 'as'] as const)
             .filter((flag) => values[flag] !== undefined);
           if (parentOnly.length > 0) {
             throw new Error(`--${parentOnly[0]} needs a parent task (CEZ_TASK_ID); from a shell, cez task create starts a top-level task with --workflow, --runner and --model only`);
@@ -152,6 +153,7 @@ export async function runTaskCommand(
           ...(values.runner ? { runner: values.runner } : {}),
           ...(values.model ? { model: values.model } : {}),
           ...(values['retry-limit'] !== undefined ? { retry_limit: number(values['retry-limit'], 'retry-limit') } : {}),
+          ...(values.as ? { as: values.as } : {}),
         };
         const response = await io.fetch(`${api.scope}/runs/${encodeURIComponent(env.CEZ_TASK_ID)}/dispatch`, {
           method: 'POST',

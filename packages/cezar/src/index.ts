@@ -63,6 +63,7 @@ import { plainHttpWarning, takeServerFlags } from './cockpit-address.ts';
 
 import { runTrackerConnectionsCommand } from './server/tracker/connections-cli.ts';
 import { runSecretsCommand } from './workspace/secrets-cli.ts';
+import { loadPersonas } from './personas.ts';
 
 const HELP = `cezar — local cockpit for AI agent tasks in your repo
 
@@ -648,6 +649,7 @@ async function runCommand(
   const requiredProviders = providersRequiredByWorkflow(
     workflow,
     (await loadConfig(repoRoot)).defaultRunner,
+    (await loadPersonas(repoRoot)).personas,
   );
   if (requiredProviders.length > 0 && !providerAuthChecksDisabled()) {
     const [discovered, workspace] = await Promise.all([

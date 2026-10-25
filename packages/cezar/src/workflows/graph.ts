@@ -60,6 +60,8 @@ export const graphNodeSchema = z.discriminatedUnion('type', [
     runner: z.enum(RUNNER_IDS).optional(),
     allowedTools: z.array(z.string()).optional(),
     bashAllowlist: z.array(z.string()).optional(),
+    /** Run as this project persona (spec 2026-10-24-personas), as a v1 step's `agent:`. */
+    agent: z.string().min(1).optional(),
     /** Author-declared outcomes (D10/D17). The agent picks one by ending its turn with
      *  `CEZ:VERDICT <name>`; each becomes an output port in place of `done`. */
     verdicts: z.array(verdictName).min(1).optional(),
@@ -322,7 +324,7 @@ export function graphIssues(graph: WorkflowGraph): string[] {
       if (!ids.includes(refNode)) issues.push(`if node "${n.id}" reads unknown node "${refNode}"`);
     }
     if (n.type !== 'agent') continue;
-    if (!n.prompt && !n.skill) issues.push(`agent node "${n.id}" needs a prompt or a skill`);
+    if (!n.prompt && !n.skill && !n.agent) issues.push(`agent node "${n.id}" needs a prompt, a skill or a persona`);
     if ((n.review || n.budgetUsd) && !forkOfBranch(graph, n.id)) {
       issues.push(`agent node "${n.id}": review and budget apply only to an agent right after a fork`);
     }

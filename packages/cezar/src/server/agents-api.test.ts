@@ -117,6 +117,17 @@ describe('the agents routes', () => {
       expect(listed.issues).toEqual([{ path: 'broken.md', message: expect.stringMatching(/^broken\.md: runner/) }]);
       expect(text).not.toContain('Secret house rules');
       expect(text).not.toContain(JSON.stringify(home).slice(1, -1));
+      // Nor does the editor route open it, and no write goes through.
+      const file = await apiRequest(hosted, '/api/v1/agents/mentor');
+      expect(file.status).toBe(409);
+      expect(await file.text()).not.toContain('Secret house rules');
+      const write = await apiRequest(hosted, '/api/v1/agents/mentor', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ markdown: 'Take over.' }),
+      });
+      expect(write.status).not.toBe(200);
+      expect(existsSync(join(agentsDir(), 'mentor.md'))).toBe(false);
     } finally {
       if (saved.remote === undefined) delete process.env.CEZ_REMOTE;
       else process.env.CEZ_REMOTE = saved.remote;

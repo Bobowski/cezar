@@ -110,6 +110,8 @@ describe('Settings → MCP servers files and listing (spec 2026-10-24-easy-mcp)'
     const list = await listMcpServers(repo, { secrets, editable: true });
     expect(list.problems.private).toEqual([expect.stringMatching(/^mcp.local.json is tracked by git/)]);
     expect(list.project[0]?.shadowed).toBe(false);
+    // Nothing to confirm: a refused file replaces nothing.
+    expect(list.private[0]?.override).toBeUndefined();
   });
 
   it('a private server named like an approved project one carries its confirmation state', async () => {

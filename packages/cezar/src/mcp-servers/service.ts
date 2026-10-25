@@ -88,7 +88,8 @@ export async function listMcpServers(repoRoot: string, deps: ListMcpServersDeps)
       secrets: referenced,
       missingSecrets: referenced.filter((name) => !available.has(name)),
       shadowed: scope === 'project' && replaced(server.name, referenced),
-      ...(scope === 'private' && projectNames.has(server.name) ? { override: { hash: privateOverrideHash(server), confirmed: confirmed(server) } } : {}),
+      // A tracked file replaces nothing, so there is no replacement to confirm.
+      ...(scope === 'private' && !tracked && projectNames.has(server.name) ? { override: { hash: privateOverrideHash(server), confirmed: confirmed(server) } } : {}),
       reach: mcpReachOf(server.transport, { secretBearing: referenced.length > 0 }),
       ...(status ? { status } : {}),
       ...(scope === 'project' ? { boundSecrets: boundOf(server.name).filter((name) => referenced.includes(name)) } : {}),

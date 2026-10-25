@@ -70,6 +70,9 @@ No other routes: the chat is a run. `RunRecord.kind` is optional (old records pa
   `newBranch` or `dispatch` is a `400`. The other launches are refused to it (`403`): an inbox
   start, an automation run, check, retry or enable, and a `PUT` that leaves an automation
   enabled — the chat drafts a paused automation and the owner switches it on.
+- No secrets: the chat token is refused an env file's content, render and rerender, every env-file
+  write, the secret store and the tracker connection; `GET /env-files` (paths and variable NAMES)
+  stays readable. The prompt says so, and that file tools must not open `.env` files either.
 - Hosted: the chat is behind sign-in like every run.
 
 ## 6. Zero config

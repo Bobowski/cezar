@@ -161,6 +161,12 @@ const CHAT_DENIED: ReadonlyArray<readonly [method: string, RegExp]> = [
   ['WRITE', /^\/todos\/[^/]+\/start$/],
   ['WRITE', /^\/automations\/[^/]+\/(?:enable|run|check)$/],
   ['WRITE', /^\/automation-log\/[^/]+\/retry$/],
+  // Secrets: an env file's values and rendering, the secret store, the tracker's credentials. The
+  // env-file listing (paths and variable NAMES) stays readable.
+  ['*', /^\/env-files\//],
+  ['WRITE', /^\/env-files$/],
+  ['*', /^\/secrets(?:\/|$)/],
+  ['*', /^\/tracker\/connection(?:\/|$)/],
 ];
 
 /** Workspace-level reads a chat may make with a project: discovery, and an automation check's poll. */

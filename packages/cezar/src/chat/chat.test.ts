@@ -65,3 +65,11 @@ describe('the chat\'s .ai/cezar allowlist', () => {
     expect(prompt).not.toContain('write under .ai/cezar/ directly');
   });
 });
+
+describe('the chat prompt on secrets', () => {
+  it('says what the token refuses, and that file tools must not reach for them either', () => {
+    const prompt = cezarChatPrompt({ mcp: true });
+    expect(prompt).toContain('variable names only');
+    expect(prompt).toContain('.env files');
+  });
+});

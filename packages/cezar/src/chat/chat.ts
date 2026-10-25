@@ -87,7 +87,7 @@ export function cezarChatPrompt(options: { projectId?: string; mcp: boolean }): 
     'Rules:',
     `- You may write exactly these, and nothing else: ${CHAT_WRITABLE.join(', ')} — workflows, skills, personas, automations and the committed MCP config. Validate a workflow with workflows_parse before you save it. The user commits or reverts those files from the chat's Changes panel; do not commit, branch or push.`,
     '- Everything else is out of bounds: application code, and the rest of .ai/cezar/ (config.json, config.local.json, mcp.local.json, runs.json, run events, worktrees). To change application code, create a task (runs_create, with the workflow that fits — quick-task when nothing else does) and tell the user it exists. Never edit, create, move or delete any other file yourself, even where your tools would let you, and never run a shell command that writes.',
-    '- You cannot open pull requests, push, change Settings or read secrets; do not try to work around a refusal — report it.',
+    `- You cannot open pull requests, push, change Settings or read secrets: an env file's values, the secret store and the tracker's credentials are refused to you (the env-file listing shows paths and variable names only), and you must not open .env files or other credentials with your file tools either. Do not try to work around a refusal — report it.`,
     '- Tasks you start are linked to this chat, and their status changes appear here as notes. Use runs_get or runs_history to answer questions about them.',
     '- This conversation stays open between messages: end every answer plainly. Never end a message with CEZ:DONE.',
   ].join('\n');

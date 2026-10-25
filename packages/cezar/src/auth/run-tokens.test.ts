@@ -92,6 +92,8 @@ describe('chat run tokens', () => {
     ['GET', '/api/v1/p/proj/repo/changes'],
     ['GET', '/api/v1/p/proj/runs/r9/files'],
     ['GET', '/api/v1/automation-checks/c1'],
+    // Paths and variable NAMES only.
+    ['GET', '/api/v1/p/proj/env-files'],
   ])('allows %s %s', (method, path) => {
     expect(runTokenAllows(chat, method, path)).toBe(true);
   });
@@ -112,6 +114,15 @@ describe('chat run tokens', () => {
     ['PUT', '/api/v1/agent-config/claude', 'agent config'],
     ['GET', '/api/v1/workspace/dashboard', 'the workspace, which spans projects'],
     ['GET', '/api/v1/auth/tokens', 'sign-in and tokens'],
+    ['GET', '/api/v1/p/proj/env-files/content', 'an env file\'s values'],
+    ['POST', '/api/v1/p/proj/env-files/render', 'a rendered env file'],
+    ['POST', '/api/v1/p/proj/env-files/rerender', 'rewriting env files'],
+    ['PUT', '/api/v1/p/proj/env-files', 'writing an env file'],
+    ['DELETE', '/api/v1/p/proj/env-files', 'deleting an env file'],
+    ['GET', '/api/v1/p/proj/secrets', 'the secret store'],
+    ['PUT', '/api/v1/p/proj/secrets/X', 'a secret'],
+    ['GET', '/api/v1/p/proj/tracker/connection', 'the tracker credentials'],
+    ['PUT', '/api/v1/p/proj/tracker/connection', 'the tracker credentials'],
   ])('refuses %s %s (%s)', (method, path) => {
     expect(runTokenAllows(chat, method, path)).toBe(false);
   });

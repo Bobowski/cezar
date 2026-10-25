@@ -116,6 +116,7 @@ describe('MCP servers settings (spec 2026-10-24-easy-mcp)', () => {
     const panel = (await screen.findByText('Changed — review and approve')).closest('[data-slot="mcp-approval"]') as HTMLElement
     expect(within(panel).getByLabelText('gh before').textContent).toContain('old')
     expect(within(panel).getByLabelText('gh after').textContent).toContain('new')
+    expect(within(panel).getByText('Test runs this server now, even unapproved; approval gates agent launches.')).toBeTruthy()
     expect((within(panel).getByLabelText('Give GH_PAT to gh') as HTMLInputElement).checked).toBe(true)
     expect((within(panel).getByLabelText('Give OTHER_KEY to gh') as HTMLInputElement).checked).toBe(false)
     fireEvent.click(within(panel).getByRole('button', { name: 'Approve' }))

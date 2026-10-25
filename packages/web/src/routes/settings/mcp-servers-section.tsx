@@ -207,7 +207,7 @@ function ApprovalPanel({ approval, servers, editable }: { approval: McpProjectAp
         {approval.state === 'changed' ? 'Changed — review and approve' : approval.state === 'unapproved' ? 'Not approved yet — review and approve' : 'Bind secrets — review and approve'}
       </p>
       <p className="text-xs text-muted-foreground">
-        <code className="font-mono">{SCOPE_FILES.project}</code> is part of the repository. None of its servers runs, and none receives a secret, until you approve this content on this machine. Any later change to the file asks again.
+        <code className="font-mono">{SCOPE_FILES.project}</code> is part of the repository. None of its servers runs, and none receives a secret, until you approve this content on this machine. Any later change to the file asks again. <span data-slot="mcp-test-unapproved">Test runs this server now, even unapproved; approval gates agent launches.</span>
       </p>
       {pending ? (
         approval.changes.length === 0 ? (

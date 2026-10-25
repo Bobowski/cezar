@@ -7511,7 +7511,8 @@ export function createApp(deps: ServerDeps) {
       const server = loaded.servers.find((entry) => entry.name === name);
       if (!server) return c.json({ error: 'no MCP server with that name' }, 404);
       const names = mcpSecretNames(definitionOfServer(server));
-      // A committed server is Tested with the secrets its approval binds, and no others — as at launch.
+      // Test runs even an unapproved committed server (the operator's click; the panel says so) — but
+      // with the secrets its approval binds, and no others, as at launch.
       if (scope === 'project' && names.length > 0) {
         const gate = await projectMcpGate(project.root)(projectText ?? '');
         const unbound = gate.approved ? names.filter((secret) => !(gate.bindings[name] ?? []).includes(secret)) : names;

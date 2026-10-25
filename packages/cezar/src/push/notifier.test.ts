@@ -1,32 +1,12 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
 import type { RunRecord } from '../runs/store.ts';
-// Test-only reach into the cockpit: the server's push gate must answer exactly what the browser
-// notification's `wantsAttention` answers (spec 2026-10-24-mobile-cockpit §3.5).
-import { deriveAttention, wantsAttention } from '../../../web/src/lib/attention.ts';
-import { createPushNotifier, pushLabelOf, pushRecipients, type RunSource } from './notifier.ts';
+import { createPushNotifier, pushRecipients, type RunSource } from './notifier.ts';
 import type { PushSubscriptionStore, StoredPushSubscription } from './state.ts';
 import { generateVapidKeys } from './web-push.ts';
 
+// `pushLabelOf` is held to the cockpit's `wantsAttention` in packages/web/src/lib/push-attention-parity.test.ts.
 const base = { id: 'r1', title: 'Title', status: 'running' } as unknown as RunRecord;
-const variants: Array<Partial<RunRecord>> = [
-  { status: 'queued' }, { status: 'running' }, { status: 'running', activity: 'monitoring' } as Partial<RunRecord>,
-  { status: 'waiting' }, { status: 'review' }, { status: 'done' }, { status: 'failed' }, { status: 'cancelled' },
-  { status: 'failed', autoResumeAt: '2026-10-25T00:00:00Z' } as Partial<RunRecord>,
-  { status: 'failed', awaitingAnswerSince: '2026-10-25T00:00:00Z' } as Partial<RunRecord>,
-  { status: 'waiting', dispatch: { overBudget: true, budgetUsd: 2 } } as Partial<RunRecord>,
-  { status: 'done', worktreeLifecycle: { needsAttention: true, phase: 'cleanup' } } as Partial<RunRecord>,
-  { status: 'review', worktreeLifecycle: { activeOperationId: 'op', phase: 'setup' } } as Partial<RunRecord>,
-];
-
-describe('pushLabelOf — the server twin of wantsAttention', () => {
-  it.each(variants.map((variant) => [JSON.stringify(variant), variant]))('%s', (_name, variant) => {
-    const run = { ...base, ...variant } as RunRecord;
-    const label = pushLabelOf(run);
-    expect(label !== null).toBe(wantsAttention(run as never));
-    if (label !== null) expect(label).toBe(deriveAttention(run as never).label);
-  });
-});
 
 const row = (id: string, account: string, sessionId?: string): StoredPushSubscription => ({
   id, account, ...(sessionId ? { sessionId } : {}), endpoint: `https://push.example.net/${id}`, keys: { p256dh: 'p', auth: 'a' }, createdAt: '',

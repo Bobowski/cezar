@@ -1,27 +1,11 @@
 import type { PushPayload } from '@open-mercato/cezar-contract';
 import type { RunRecord } from '../runs/store.ts';
+import { pushLabelOf, type AttentionRun } from './attention.ts';
 import type { PushSubscriptionStore, StoredPushSubscription } from './state.ts';
 import { sendWebPush, type PushOutcome, type PushTarget, type VapidKeys } from './web-push.ts';
 
-/**
- * Which runs are worth a push, and to whom (spec 2026-10-24-mobile-cockpit §3.5). The events are
- * the ones the cockpit's `wantsAttention` names (`packages/web/src/lib/attention.ts`); this is its
- * server-side twin, and `notifier.test.ts` holds the two to the same answers.
- */
-
-type AttentionRun = Pick<RunRecord, 'status' | 'autoResumeAt' | 'awaitingAnswerSince' | 'dispatch' | 'worktreeLifecycle'>;
-
-/** The attention label of a run that wants a human, or null when it does not. */
-export function pushLabelOf(run: AttentionRun): string | null {
-  const lifecycle = run.worktreeLifecycle;
-  if (lifecycle?.needsAttention) return lifecycle.phase === 'setup' ? 'setup needs attention' : 'cleanup needs attention';
-  if (lifecycle?.activeOperationId) return null;
-  if (run.status === 'failed' && run.autoResumeAt) return null;
-  if (run.status === 'failed') return run.awaitingAnswerSince !== undefined ? 'needs you' : 'failed';
-  if (run.status === 'waiting') return run.dispatch?.overBudget && run.dispatch.budgetUsd !== undefined ? 'budget reached' : 'needs you';
-  if (run.status === 'review') return 'needs review';
-  return null;
-}
+/** Which runs push, and to whom (spec 2026-10-24-mobile-cockpit §3.5); `attention.ts` decides which. */
+export { pushLabelOf };
 
 /** Title and status only — never the prompt, a path or a diff (§5). */
 export function pushPayloadOf(projectId: string, run: Pick<RunRecord, 'id' | 'title' | 'titleSummary'>, label: string): PushPayload {

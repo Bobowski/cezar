@@ -111,6 +111,31 @@ describe('the push API', () => {
     expect((await json('POST', '/api/v1/workspace/push/subscribe', { ...SUBSCRIPTION, endpoint: 'http://push.example.net/x' })).status).toBe(400);
   });
 
+  it.each([
+    'https://127.0.0.1/x', 'https://127.1.2.3:8443/x', 'https://10.0.0.5/x', 'https://172.16.0.1/x', 'https://172.31.255.255/x',
+    'https://192.168.1.1/x', 'https://169.254.169.254/latest/meta-data', 'https://0.0.0.0/x', 'https://[::1]/x', 'https://[fe80::1]/x',
+    'https://[fd00::1]/x', 'https://[::ffff:127.0.0.1]/x', 'https://[::]/x', 'https://localhost/x', 'https://api.localhost/x',
+    'https://LOCALHOST./x', 'https://2130706433/x', 'https://0x7f.1/x', 'https://intranet/x', 'https://user@127.0.0.1/x',
+  ])('refuses a push endpoint on a loopback, private or link-local host: %s', async (endpoint) => {
+    expect((await json('POST', '/api/v1/workspace/push/subscribe', { ...SUBSCRIPTION, endpoint })).status).toBe(400);
+  });
+
+  it.each(['https://fcm.googleapis.com/fcm/send/abc', 'https://web.push.apple.com/QK', 'https://updates.push.services.mozilla.com/wpush/v2/x', 'https://8.8.8.8/x', 'https://172.32.0.1/x'])(
+    'accepts a public push endpoint: %s', async (endpoint) => {
+      expect((await json('POST', '/api/v1/workspace/push/subscribe', { ...SUBSCRIPTION, endpoint })).status).toBe(200);
+    },
+  );
+
+  it('keeps at most ten subscriptions per account — the oldest goes', async () => {
+    for (let i = 0; i < 11; i += 1) {
+      expect((await json('POST', '/api/v1/workspace/push/subscribe', { ...SUBSCRIPTION, endpoint: `https://push.example.net/send/${i}` })).status).toBe(200);
+    }
+    const rows = new PushSubscriptionStore(pushSubscriptionsPath()).list();
+    expect(rows).toHaveLength(10);
+    expect(rows.map((row) => row.endpoint)).not.toContain('https://push.example.net/send/0');
+    expect(rows.map((row) => row.endpoint)).toContain('https://push.example.net/send/10');
+  });
+
   it('pushes a task that enters review — title and status only — when no tab of the account is visible', async () => {
     expect((await state(json('POST', '/api/v1/workspace/push/subscribe', SUBSCRIPTION))).subscribed).toBe(true);
     const run = store.createRun({ title: 'Fix the login bug', workflow: 'quick-task', task: 'SECRET PROMPT TEXT', steps: [] });

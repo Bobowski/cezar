@@ -74,6 +74,32 @@ describe('createPushNotifier', () => {
     expect(sent).toHaveLength(2);
   });
 
+  it('sends at most sixty pushes per account an hour', async () => {
+    const { store } = fakeStore([row('a', 'alice'), row('b', 'bob')]);
+    const sent: string[] = [];
+    let now = 0;
+    const notifier = createPushNotifier({
+      subscriptions: store, keys: () => keys, enabled: () => true, visible: () => false, sessionAlive: () => true,
+      now: () => now,
+      send: async (target) => { sent.push(target.endpoint); return 'sent'; },
+    });
+    const run = { ...base } as RunRecord;
+    const source = new FakeSource([run]);
+    notifier.watch('proj', source);
+    for (let i = 0; i < 70; i += 1) {
+      source.emitRun({ ...run, status: 'running' } as RunRecord);
+      source.emitRun({ ...run, status: 'review' } as RunRecord);
+      now += 1_000;
+    }
+    await notifier.idle();
+    expect(sent.filter((e) => e.endsWith('/a'))).toHaveLength(60);
+    now += 3_600_000;
+    source.emitRun({ ...run, status: 'running' } as RunRecord);
+    source.emitRun({ ...run, status: 'waiting' } as RunRecord);
+    await notifier.idle();
+    expect(sent.filter((e) => e.endsWith('/a'))).toHaveLength(61);
+  });
+
   it('sends nothing while disabled (a local cockpit)', async () => {
     const { store } = fakeStore([row('a', 'owner')]);
     const sent: string[] = [];

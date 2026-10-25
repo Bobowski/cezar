@@ -72,6 +72,9 @@ function readRows(path: string): StoredPushSubscription[] {
   });
 }
 
+/** Devices one account may subscribe; a new one past this replaces the oldest. */
+export const MAX_SUBSCRIPTIONS_PER_ACCOUNT = 10;
+
 export const subscriptionIdOf = (endpoint: string): string => createHash('sha256').update(endpoint).digest('hex').slice(0, 24);
 
 export class PushSubscriptionStore {
@@ -107,7 +110,12 @@ export class PushSubscriptionStore {
     };
     const sameDevice = (existing: StoredPushSubscription) =>
       existing.stale === true && existing.account === row.account && existing.sessionId === row.sessionId;
-    this.mutate((rows) => [...rows.filter((existing) => existing.endpoint !== row.endpoint && !sameDevice(existing)), row]);
+    this.mutate((rows) => {
+      const kept = rows.filter((existing) => existing.endpoint !== row.endpoint && !sameDevice(existing));
+      const own = kept.filter((existing) => existing.account === row.account);
+      const evict = new Set(own.slice(0, Math.max(0, own.length - (MAX_SUBSCRIPTIONS_PER_ACCOUNT - 1))));
+      return [...kept.filter((existing) => !evict.has(existing)), row];
+    });
     return row;
   }
 

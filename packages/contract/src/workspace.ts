@@ -216,9 +216,81 @@ export type WorkspacePushState = z.infer<typeof workspacePushStateSchema>;
 
 const base64url = (min: number, max: number) => z.string().min(min).max(max).regex(/^[A-Za-z0-9_-]+=*$/, 'not base64url');
 
+const ipv4Parts = (host: string): number[] | null => {
+  const parts = host.split('.');
+  if (parts.length !== 4 || !parts.every((part) => /^(0|[1-9]\d{0,2})$/.test(part))) return null;
+  const numbers = parts.map(Number);
+  return numbers.every((n) => n <= 255) ? numbers : null;
+};
+
+/** Loopback, private, link-local, CGNAT, unspecified, multicast or broadcast. */
+const ipv4Internal = ([a = 0, b = 0]: number[]): boolean =>
+  a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
+  (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+
+/** The eight 16-bit groups of an IPv6 literal, or null when it is not one. */
+function ipv6Groups(text: string): number[] | null {
+  let host = text;
+  const tail: number[] = [];
+  const v4 = /:(\d+\.\d+\.\d+\.\d+)$/.exec(host);
+  if (v4) {
+    const parts = ipv4Parts(v4[1]!);
+    if (!parts) return null;
+    tail.push((parts[0]! << 8) | parts[1]!, (parts[2]! << 8) | parts[3]!);
+    host = host.slice(0, v4.index);
+    if (host.endsWith(':')) host += ':'; // `::a.b.c.d`
+  }
+  const halves = host.split('::');
+  if (halves.length > 2) return null;
+  const parse = (side: string) => (side === '' ? [] : side.split(':').map((g) => (/^[0-9a-f]{1,4}$/.test(g) ? parseInt(g, 16) : NaN)));
+  const head = parse(halves[0]!);
+  const rest = halves.length === 2 ? parse(halves[1]!) : [];
+  const fill = 8 - tail.length - head.length - rest.length;
+  if ([...head, ...rest].some(Number.isNaN) || fill < 0 || (halves.length === 1 && fill !== 0)) return null;
+  return [...head, ...Array<number>(fill).fill(0), ...rest, ...tail];
+}
+
+/** Unspecified, loopback, unique-local, link-local, site-local, multicast, or a mapped internal IPv4. */
+const ipv6Internal = (g: number[]): boolean => {
+  const first = g[0] ?? 0;
+  const zeros = (n: number) => g.slice(0, n).every((x) => x === 0);
+  return zeros(8) || (zeros(7) && g[7] === 1) ||
+    (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80 || (first & 0xffc0) === 0xfec0 || (first & 0xff00) === 0xff00 ||
+    (zeros(5) && (g[5] === 0xffff || g[5] === 0) && ipv4Internal([(g[6] ?? 0) >> 8, (g[6] ?? 0) & 0xff]));
+};
+
+const NOT_PUBLIC = 'a push endpoint is on a public host';
+
+/**
+ * Why a push endpoint is refused, or null. The server POSTs to it, so it must be an https URL on
+ * a public host: never loopback, private or link-local, and never a numeric host the URL parser
+ * would read as an address (`2130706433`, `0x7f.1`).
+ */
+export function pushEndpointRefusal(endpoint: string): string | null {
+  const match = /^https:\/\/([^/?#]*)/i.exec(endpoint);
+  if (!match) return 'a push endpoint is an https URL';
+  const authority = match[1]!;
+  if (authority.includes('@')) return 'a push endpoint carries no credentials';
+  const bracketed = /^\[([^\]]+)\](?::\d*)?$/.exec(authority);
+  if (bracketed) {
+    const groups = ipv6Groups(bracketed[1]!.toLowerCase());
+    return groups === null || ipv6Internal(groups) ? NOT_PUBLIC : null;
+  }
+  const host = authority.replace(/:\d*$/, '').toLowerCase().replace(/\.$/, '');
+  const v4 = ipv4Parts(host);
+  if (v4) return ipv4Internal(v4) ? NOT_PUBLIC : null;
+  const labels = host.split('.');
+  if (/^(0x[0-9a-f]*|\d+)$/.test(labels.at(-1) ?? '')) return NOT_PUBLIC;
+  if (labels.length < 2 || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return NOT_PUBLIC;
+  return null;
+}
+
 /** `POST /api/v1/workspace/push/subscribe` — the browser's `PushSubscription.toJSON()`. */
 export const pushSubscribeInputSchema = z.object({
-  endpoint: z.string().max(2048).url().refine((value) => value.startsWith('https://'), 'a push endpoint is an https URL'),
+  endpoint: z.string().max(2048).url().superRefine((value, ctx) => {
+    const refusal = pushEndpointRefusal(value);
+    if (refusal !== null) ctx.addIssue({ code: 'custom', message: refusal });
+  }),
   expirationTime: z.number().nullable().optional(),
   keys: z.object({ p256dh: base64url(80, 100), auth: base64url(16, 32) }),
 });

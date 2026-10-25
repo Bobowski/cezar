@@ -47,7 +47,13 @@ export interface PushNotifierDeps {
   visible: (account: string) => boolean;
   sessionAlive: (sessionId: string) => boolean;
   send?: (target: PushTarget, payload: PushPayload, keys: VapidKeys) => Promise<PushOutcome>;
+  /** The clock the per-account send budget reads (tests). */
+  now?: () => number;
 }
+
+/** Pushes one account may get in `SEND_WINDOW_MS`; past it a transition is dropped, not queued. */
+export const MAX_SENDS_PER_ACCOUNT = 60;
+const SEND_WINDOW_MS = 3_600_000;
 
 export interface PushNotifier {
   /** Follow one project's runs; returns the detach. */
@@ -58,13 +64,32 @@ export interface PushNotifier {
 
 export function createPushNotifier(deps: PushNotifierDeps): PushNotifier {
   const send = deps.send ?? sendWebPush;
+  const now = deps.now ?? Date.now;
   const inFlight = new Set<Promise<void>>();
+  // Per account, when its last pushes went: a run flapping in and out of review cannot flood a phone.
+  const sentAt = new Map<string, number[]>();
+  const withinBudget = (account: string): boolean => {
+    const at = now();
+    const recent = (sentAt.get(account) ?? []).filter((t) => at - t < SEND_WINDOW_MS);
+    if (recent.length >= MAX_SENDS_PER_ACCOUNT) {
+      sentAt.set(account, recent);
+      return false;
+    }
+    recent.push(at);
+    sentAt.set(account, recent);
+    return true;
+  };
 
   const deliver = (payload: PushPayload): void => {
     if (!deps.enabled()) return;
     const rows = deps.subscriptions.list();
     if (rows.length === 0) return;
-    const { send: recipients, expired } = pushRecipients(rows, deps);
+    const { send: eligible, expired } = pushRecipients(rows, deps);
+    const budget = new Map<string, boolean>();
+    const recipients = eligible.filter((row) => {
+      if (!budget.has(row.account)) budget.set(row.account, withinBudget(row.account));
+      return budget.get(row.account);
+    });
     const gone = new Set(expired.map((row) => row.id));
     if (recipients.length === 0 && gone.size === 0) return;
     const keys = deps.keys();

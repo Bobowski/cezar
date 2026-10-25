@@ -68,7 +68,8 @@ export function pushRoutes(deps: {
       deps.beats.beat(who.account, tab, visible);
       return c.json({ ok: true as const });
     })
-    .delete('/workspace/push/subscribe', jsonZodValidator(pushUnsubscribeInputSchema), (c) => {
+    // No body is "this device": every subscription of the caller's own sign-in session.
+    .delete('/workspace/push/subscribe', jsonZodValidator(pushUnsubscribeInputSchema, { absent: {} }), (c) => {
       const who = pushAccountOf(principalOf(c));
       if (who === null) return c.json({ error: NOT_A_PERSON }, 409);
       const { endpoint } = c.req.valid('json');

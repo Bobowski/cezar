@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { personaFileResponseSchema, personasResponseSchema, putPersonaResponseSchema } from '@open-mercato/cezar-contract';
+import { globalPersonasDir } from '../personas.ts';
 import { RunStore } from '../runs/store.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
 import type { RunManager } from '../workflows/run.ts';
@@ -95,6 +96,34 @@ describe('the agents routes', () => {
     // z itself still saves to its own file.
     expect((await put('z', '---\nname: z\n---\nStill z.\n')).status).toBe(200);
     expect(readFileSync(join(agentsDir(), 'x.md'), 'utf8')).toBe('---\nname: z\n---\nStill z.\n');
+  });
+
+  it("a hosted cockpit without sign-in serves a global persona with neither its body nor the host's home path", async () => {
+    const saved = { remote: process.env.CEZ_REMOTE, auth: process.env.CEZ_AUTH };
+    process.env.CEZ_REMOTE = '1';
+    process.env.CEZ_AUTH = '0';
+    const home = globalPersonasDir();
+    try {
+      mkdirSync(home, { recursive: true });
+      writeFileSync(join(home, 'mentor.md'), '---\ndescription: Guides.\n---\nSecret house rules.');
+      writeFileSync(join(home, 'broken.md'), '---\nrunner: nope\n---\nx');
+      const hosted = createApp({ repoRoot, store, manager: {} as RunManager, version: '0.0.0-test', providerAuth: connectedProviderAuth() });
+      const res = await apiRequest(hosted, '/api/v1/agents');
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      const listed = personasResponseSchema.parse(JSON.parse(text));
+      expect(listed.editable).toBe(false);
+      expect(listed.personas).toEqual([expect.objectContaining({ name: 'mentor', source: 'global', body: '', path: 'mentor.md' })]);
+      expect(listed.issues).toEqual([{ path: 'broken.md', message: expect.stringMatching(/^broken\.md: runner/) }]);
+      expect(text).not.toContain('Secret house rules');
+      expect(text).not.toContain(JSON.stringify(home).slice(1, -1));
+    } finally {
+      if (saved.remote === undefined) delete process.env.CEZ_REMOTE;
+      else process.env.CEZ_REMOTE = saved.remote;
+      if (saved.auth === undefined) delete process.env.CEZ_AUTH;
+      else process.env.CEZ_AUTH = saved.auth;
+      await removeTempDir(home);
+    }
   });
 
   it('400s a name that is not a file stem', async () => {

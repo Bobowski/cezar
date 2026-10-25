@@ -149,7 +149,7 @@ import {
 } from '@open-mercato/cezar-contract';
 import { dispatchInputSchema, dispatchIntentSchema, dispatchReportSchema } from '@open-mercato/cezar-contract';
 import { personaNameSchema, putPersonaSchema } from '@open-mercato/cezar-contract';
-import { loadPersonas, parsePersona, personaNames, PERSONAS_DIR, type Persona } from '../personas.ts';
+import { globalPersonasDir, loadPersonas, parsePersona, personaNames, PERSONAS_DIR, type Persona } from '../personas.ts';
 import { hasTaskOrAttachments, TASK_OR_ATTACHMENTS_ISSUE } from '@open-mercato/cezar-contract';
 import { detectEnvironment } from '../core/backend-detect.ts';
 import type { HostUsage } from '@open-mercato/cezar-contract';
@@ -4299,9 +4299,14 @@ export function createApp(deps: ServerDeps) {
     .get('/agents', async (c) => {
       const editable = trustedOperator(process.env, bindHost);
       const { personas, issues } = await loadPersonas(c.get('project').root);
-      // A global persona lives in the host's home directory: its text is for a trusted operator only.
-      const served = editable ? personas : personas.map((p) => (p.source === 'global' ? { ...p, body: '' } : p));
-      return c.json({ personas: served, issues, editable });
+      // A global persona lives in the host's home directory: its text — and where that home is —
+      // are for a trusted operator only.
+      if (editable) return c.json({ personas, issues, editable });
+      const home = resolve(globalPersonasDir());
+      const inHome = (path: string) => resolve(path).startsWith(home + sep);
+      const served = personas.map((p) => (p.source === 'global' ? { ...p, body: '', path: trimPaths(p.path) } : p));
+      const shownIssues = issues.map((i) => (inHome(i.path) ? { path: trimPaths(i.path), message: trimPaths(i.message) } : i));
+      return c.json({ personas: served, issues: shownIssues, editable });
     })
     .get('/agents/:name', paramZodValidator(personaParam), async (c) => {
       const { name } = c.req.valid('param');

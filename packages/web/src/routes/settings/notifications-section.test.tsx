@@ -153,3 +153,48 @@ describe('the notifications section', () => {
     ).toContain('does not support')
   })
 })
+
+describe('This device: enable push (spec 2026-10-24-mobile-cockpit §3.5)', () => {
+  function servePush(push: { available: boolean; publicKey: string | null; subscribed: boolean }) {
+    requests = []
+    const json = (payload: unknown) =>
+      new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        const method = init?.method ?? 'GET'
+        requests.push({ method, url })
+        if (url === '/api/v1/workspace/ui-state') return json({})
+        if (url === '/api/v1/workspace/push' && method === 'GET') return json(push)
+        return new Promise<never>(() => {})
+      }),
+    )
+  }
+  const pushToggle = () => screen.getByRole('switch', { name: 'This device: enable push' })
+
+  it('a local cockpit says why push is not offered, and the switch stays off and disabled', async () => {
+    servePush({ available: false, publicKey: null, subscribed: false })
+    stubNotification('default')
+    renderSection()
+    await waitFor(() => expect(document.querySelector('[data-slot="push-unavailable"]')?.textContent).toContain('hosted cockpit served over HTTPS'))
+    expect(pushToggle().getAttribute('aria-checked')).toBe('false')
+    expect(pushToggle().hasAttribute('disabled')).toBe(true)
+  })
+
+  it('a hosted cockpit in a browser without push says so instead of offering a switch that cannot work', async () => {
+    servePush({ available: true, publicKey: 'BAAA', subscribed: false })
+    stubNotification('default')
+    renderSection()
+    await waitFor(() => expect(document.querySelector('[data-slot="push-unavailable"]')?.textContent).toContain('does not support push'))
+    expect(pushToggle().hasAttribute('disabled')).toBe(true)
+  })
+
+  it('names every blocker in words', async () => {
+    const { devicePushBlocker } = await import('./notifications-section')
+    expect(devicePushBlocker({ available: true, support: 'ok' })).toBeNull()
+    expect(devicePushBlocker({ available: undefined, support: 'ok' })).toBeNull()
+    expect(devicePushBlocker({ available: true, support: 'insecure' })).toContain('HTTPS')
+    expect(devicePushBlocker({ available: false, support: 'ok' })).toContain('runs on this machine')
+  })
+})

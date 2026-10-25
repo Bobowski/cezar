@@ -1,8 +1,15 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyProposals, listProposals, PROPOSAL_MAX_BYTES, writeProposal } from './proposals.ts';
+
+// A pass-through spy, so a test can see which files a listing reads whole.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+});
 
 /**
  * What Apply's confirm names (spec 2026-10-24-cockpit-chat §3): computed on the server from the
@@ -132,6 +139,17 @@ describe('proposal risks', () => {
     expect(listProposals(root, dataDir, chatId).find((p) => p.path === path)?.tooLarge).toBe(true);
     const refused = await applyProposals(root, dataDir, chatId, { paths: [path] });
     expect(refused).toEqual({ ok: false, error: expect.stringMatching(/huge\.md is \d+ KB — over the 512 KB a proposal may be/) });
+  });
+
+  it('lists a proposal over the size cap without reading it whole: its hash is streamed', () => {
+    const path = '.ai/cezar/skills/huge.md';
+    const file = writeProposal(dataDir, chatId, path, `# huge\n${'x'.repeat(2 * PROPOSAL_MAX_BYTES)}\n`);
+    const expected = createHash('sha256').update(readFileSync(file)).digest('hex');
+    vi.mocked(readFileSync).mockClear();
+    const proposal = listProposals(root, dataDir, chatId).find((p) => p.path === path)!;
+    expect(proposal.tooLarge).toBe(true);
+    expect(proposal.hash).toBe(expected);
+    expect(vi.mocked(readFileSync).mock.calls.filter(([read]) => String(read) === file)).toEqual([]);
   });
 
   it('Apply with the hashes the owner reviewed refuses a proposal the chat rewrote since, and one it has no hash for', async () => {

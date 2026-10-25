@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { chatLivePath, chatMayWrite, chatProposalPath, type ChatProposal, type ChatProposalsApply } from '@open-mercato/cezar-contract';
 import { proposalRisks } from './proposal-risks.ts';
@@ -28,6 +28,23 @@ function proposalBytes(dataDir: string, chatId: string, livePath: string): numbe
 
 /** What the owner reviewed: `listProposals` answers it, Apply compares it (spec 2026-10-24-cockpit-chat §3). */
 export const proposalHash = (content: string) => createHash('sha256').update(content, 'utf8').digest('hex');
+
+/** A file's sha256 read in 64 KB chunks, so listing an oversized proposal never holds it whole.
+ *  The same digest as {@link proposalHash} for a UTF-8 file; an unreadable one hashes as empty. */
+function streamedHash(path: string): string {
+  const hash = createHash('sha256');
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, 'r');
+    const chunk = Buffer.alloc(64 * 1024);
+    for (let read = readSync(fd, chunk); read > 0; read = readSync(fd, chunk)) hash.update(chunk.subarray(0, read));
+  } catch {
+    return proposalHash('');
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+  return hash.digest('hex');
+}
 
 const tooLargeError = (path: string, bytes: number) =>
   `${path} is ${Math.ceil(bytes / 1024)} KB — over the ${PROPOSAL_MAX_BYTES / 1024} KB a proposal may be; discard it and ask the chat for a smaller one`;
@@ -200,7 +217,7 @@ export function listProposals(root: string, dataDir: string, chatId: string): Ch
     const bytes = proposalBytes(dataDir, chatId, path);
     if (bytes > PROPOSAL_MAX_BYTES) {
       const header = `--- ${live === undefined ? '/dev/null' : `a/${path}`}\n+++ b/${path}\n`;
-      const hash = proposalHash(readProposal(dataDir, chatId, path) ?? '');
+      const hash = streamedHash(proposalFile(dataDir, chatId, path));
       return { path, status: live === undefined ? 'added' : 'modified', diff: `${header}@@ ${tooLargeError(path, bytes)} @@\n`, risks: [], tooLarge: true, hash };
     }
     const proposed = readProposal(dataDir, chatId, path) ?? '';

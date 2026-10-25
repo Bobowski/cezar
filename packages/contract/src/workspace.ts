@@ -231,10 +231,12 @@ const ipv4Parts = (host: string): number[] | null => {
   return numbers.every((n) => n <= 255) ? numbers : null;
 };
 
-/** Loopback, private, link-local, CGNAT, unspecified, multicast or broadcast. */
-const ipv4Internal = ([a = 0, b = 0]: number[]): boolean =>
+/** Loopback, private, link-local, CGNAT, benchmarking (198.18/15), IETF protocol (192.0.0/24),
+ *  unspecified, multicast or broadcast. */
+const ipv4Internal = ([a = 0, b = 0, c = 0]: number[]): boolean =>
   a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
-  (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+  (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || (a === 198 && (b === 18 || b === 19)) ||
+  (a === 192 && b === 0 && c === 0);
 
 /** The eight 16-bit groups of an IPv6 literal, or null when it is not one. */
 function ipv6Groups(text: string): number[] | null {

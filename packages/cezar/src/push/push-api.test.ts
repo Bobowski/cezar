@@ -144,13 +144,15 @@ describe('the push API', () => {
     'https://127.0.0.1%2e/', 'https://10.0.0.1%2e:8080/', 'https://１２７.０.０.１/x', 'https://１０.０.０.１/x', 'https://ｌｏｃａｌｈｏｓｔ/x',
     'https://localhost%2e/x', 'https://127%2e0%2e0%2e1/x', 'https://[::ffff:7f00:1]/x', 'https://[::ffff:10.0.0.1]/x',
     'https://[64:ff9b::7f00:1]/', 'https://[64:ff9b::192.168.0.1]/x', 'https://[64:ff9b:1::a00:1]/x', 'https://[2002:7f00:1::]/x',
+    // Special-purpose IPv4: benchmarking 198.18.0.0/15 and IETF protocol assignments 192.0.0.0/24.
+    'https://198.18.0.1/', 'https://198.19.255.254/x', 'https://192.0.0.8/x', 'https://[::ffff:198.18.0.1]/x',
   ])('refuses a push endpoint on a loopback, private or link-local host: %s', async (endpoint) => {
     expect((await json('POST', '/api/v1/workspace/push/subscribe', { ...SUBSCRIPTION, endpoint })).status).toBe(400);
   });
 
   it.each([
     'https://fcm.googleapis.com/fcm/send/abc', 'https://web.push.apple.com/QK', 'https://updates.push.services.mozilla.com/wpush/v2/x',
-    'https://8.8.8.8/x', 'https://172.32.0.1/x', 'https://bücher.example/x', 'https://[64:ff9b::808:808]/x', 'https://[2606:4700::1111]/x',
+    'https://8.8.8.8/x', 'https://172.32.0.1/x', 'https://198.20.0.1/x', 'https://192.0.1.1/x', 'https://bücher.example/x', 'https://[64:ff9b::808:808]/x', 'https://[2606:4700::1111]/x',
   ])(
     'accepts a public push endpoint: %s', async (endpoint) => {
       expect((await json('POST', '/api/v1/workspace/push/subscribe', { ...SUBSCRIPTION, endpoint })).status).toBe(200);

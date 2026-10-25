@@ -371,7 +371,7 @@ describe('Code page as an editor (VS Code-like)', () => {
     const body = document.querySelector('[data-slot="context-sidebar-body"]') as HTMLElement
     fireEvent.click(screen.getByRole('button', { name: 'Toggle full screen' }))
     expect(document.querySelector('[data-route="code"]')?.getAttribute('data-fullscreen')).toBe('true')
-    expect(request).toHaveBeenCalled()
+    expect(request).not.toHaveBeenCalled()
     // The shell is covered, so the explorer moves into the page.
     expect(body.querySelector('[data-slot="code-explorer"]')).toBeNull()
     expect(document.querySelector('[data-route="code"] [data-slot="code-explorer"]')).not.toBeNull()

@@ -56,9 +56,11 @@ land on the same view. Keyboard: `Ctrl/Cmd+B` toggles it, as in Code.
 One component, `FullscreenRegion`, used by the Code page today, applied to: the task thread,
 the Changes diff, the Browser column, the terminal drawer, and the Docker/Services views.
 Entering: the control on the region's strip, `F11` (`Ctrl+Cmd+F` on macOS) on the focused
-region. Leaving: `Esc`, the control, or browser exit. The shell hides its chrome; the region
-keeps its own toolbar. State is not persisted (a reload returns to the layout). The desktop
-shell maps its native full-screen to the same signal.
+region. Leaving: `Esc`, the control, or `F11` again. It is a layout state — the region fills the
+viewport and covers the shell's chrome, keeping its own toolbar — never the browser's Fullscreen
+API, which takes `Esc` for itself before an open dialog, a shell or an editor could have it.
+State is not persisted (a reload returns to the layout). The desktop shell maps its native
+full-screen to the same signal.
 
 ### 3.4 Consistency checklist
 
@@ -106,8 +108,10 @@ Behaviour (§3):
   the project's `browserColumn.width` (45 %), kept from the last divider drag.
 - ~~3.3 Full screen~~ — `FullscreenRegion` (`components/fullscreen-region.tsx`) on every
   workspace window (thread, Changes, Browser, …), the terminal drawer, Scripts, Docker and the
-  Code page. `Esc` is left to a shell or an editor (`.xterm`, `.cm-editor`) and to open
-  overlays. Not built: the desktop shell's native full-screen mapping (Tauri side).
+  Code page. A layout state only (no `requestFullscreen`, the Code page's included). `Esc` goes
+  first to open overlays, then a shell or an editor (`.xterm`, `.cm-editor`); `F11` stays the
+  browser's while focus is outside every region. Not built: the desktop shell's native
+  full-screen mapping (Tauri side).
 - §8 left open: the e2e "a change in the worktree reloads a static preview once" (the unit
   suites cover the debounce, the bell and the stamp poll); the F11-on-the-thread e2e is in
   `task-workspace.e2e.ts`. The VPS checks are the owner's.

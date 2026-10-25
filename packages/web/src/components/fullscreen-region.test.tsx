@@ -99,20 +99,56 @@ describe('FullscreenRegion', () => {
     expect(isFull('Browser')).toBe(false)
   })
 
-  it('asks the browser for its full screen, and leaves when the browser does', () => {
+  it('is a layout state: never the browser’s Fullscreen API, so the browser cannot take Esc or the region', () => {
     const request = vi.fn(() => Promise.resolve())
     Object.defineProperty(document.documentElement, 'requestFullscreen', { value: request, configurable: true })
     try {
       render(<Two />)
       fireEvent.click(screen.getByRole('button', { name: 'Full screen Chat' }))
-      expect(request).toHaveBeenCalledTimes(1)
+      fireEvent.keyDown(window, { key: 'F11' })
+      expect(isFull('Chat')).toBe(false)
+      screen.getByRole('button', { name: 'in chat' }).focus()
+      fireEvent.keyDown(window, { key: 'F11' })
+      expect(request).not.toHaveBeenCalled()
+      expect(isFull('Chat')).toBe(true)
+      // A browser leaving its own full screen (its Esc, its F11) is not this region's business.
       act(() => {
         document.dispatchEvent(new Event('fullscreenchange'))
       })
-      expect(isFull('Chat')).toBe(false)
+      expect(isFull('Chat')).toBe(true)
     } finally {
       delete (document.documentElement as { requestFullscreen?: unknown }).requestFullscreen
     }
+  })
+
+  it('Esc goes to an open dialog first, then an editor, and only then leaves full screen', () => {
+    render(
+      <TooltipProvider>
+        <FullscreenRegion label="Code">
+          <div className="cm-editor">
+            <textarea aria-label="editor" />
+          </div>
+          <button type="button">plain</button>
+          <FullscreenToggle />
+        </FullscreenRegion>
+      </TooltipProvider>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Full screen Code' }))
+    const dialog = document.createElement('div')
+    dialog.setAttribute('role', 'alertdialog')
+    document.body.append(dialog)
+    fireEvent.keyDown(screen.getByRole('button', { name: 'plain' }), { key: 'Escape' })
+    expect(isFull('Code')).toBe(true)
+    dialog.remove()
+    fireEvent.keyDown(screen.getByLabelText('editor'), { key: 'Escape' })
+    expect(isFull('Code')).toBe(true)
+    // A handler that took the key (a popover closing itself) wins too.
+    const taken = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    taken.preventDefault()
+    window.dispatchEvent(taken)
+    expect(isFull('Code')).toBe(true)
+    fireEvent.keyDown(screen.getByRole('button', { name: 'plain' }), { key: 'Escape' })
+    expect(isFull('Code')).toBe(false)
   })
 
   it('on a screen with one region, F11 anywhere is that region’s — and nothing is persisted', () => {

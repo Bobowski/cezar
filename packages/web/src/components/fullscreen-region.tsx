@@ -10,12 +10,12 @@ import { cn } from '@/lib/utils'
  * the task thread, a diff, the Browser column, the terminal drawer, Docker/Services, the Code
  * page. The region is PINNED over the window rather than moved — an iframe that changes parent
  * reloads, and a thread or a diff that remounts loses its place — and keeps its own toolbar;
- * the shell's chrome is simply covered. The browser is asked for its own full screen too, where
- * it allows it.
+ * the shell's chrome is simply covered. A layout state only: the browser's Fullscreen API would
+ * take `Esc` for itself, before an open dialog, a shell or an editor could have it.
  *
  * Entering: the region's control, or `F11` (`Ctrl+Cmd+F` on macOS) with the focus in it — or,
- * on a screen with one region, anywhere. Leaving: `Esc`, the control, `F11` again, or the
- * browser leaving its full screen. Never persisted: a reload returns to the layout.
+ * on a screen with one region, anywhere. Leaving: `Esc` (after a dialog, a shell or an editor
+ * declined it), the control, or `F11` again. Never persisted: a reload returns to the layout.
  */
 
 export interface FullscreenControl {
@@ -44,8 +44,7 @@ export function isFullscreenKey(event: Pick<KeyboardEvent, 'key' | 'ctrlKey' | '
 interface Region {
   element: () => HTMLElement | null
   active: () => boolean
-  /** `browser: false` leaves the browser's own full screen as it is (one region handing over). */
-  set: (active: boolean, browser?: boolean) => void
+  set: (active: boolean) => void
 }
 
 const regions = new Set<Region>()
@@ -99,16 +98,10 @@ function onPointerDown(event: PointerEvent) {
   touched = regionOf(event.target instanceof Node ? event.target : null)
 }
 
-function onBrowserFullscreenChange() {
-  if (document.fullscreenElement) return
-  for (const region of regions) if (region.active()) region.set(false)
-}
-
 function register(region: Region): () => void {
   if (regions.size === 0) {
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('pointerdown', onPointerDown, true)
-    document.addEventListener('fullscreenchange', onBrowserFullscreenChange)
   }
   regions.add(region)
   return () => {
@@ -117,7 +110,6 @@ function register(region: Region): () => void {
     if (regions.size > 0) return
     window.removeEventListener('keydown', onKeyDown)
     window.removeEventListener('pointerdown', onPointerDown, true)
-    document.removeEventListener('fullscreenchange', onBrowserFullscreenChange)
   }
 }
 
@@ -137,17 +129,13 @@ export function FullscreenRegion({ label, active: activeProp, onActiveChange, as
   const latest = React.useRef({ active, onActiveChange })
   latest.current = { active, onActiveChange }
 
-  const set = React.useCallback((next: boolean, browser = true) => {
+  const set = React.useCallback((next: boolean) => {
     if (next === latest.current.active) return
-    // One region at a time: entering this one leaves any other, the browser's full screen kept.
-    if (next) for (const region of regions) if (region.active() && region.element() !== ref.current) region.set(false, false)
+    // One region at a time: entering this one leaves any other.
+    if (next) for (const region of regions) if (region.active() && region.element() !== ref.current) region.set(false)
     latest.current.active = next
     if (latest.current.onActiveChange) latest.current.onActiveChange(next)
     else setOwn(next)
-    if (!browser) return
-    if (next) {
-      if (!document.fullscreenElement) void document.documentElement.requestFullscreen?.().catch(() => {})
-    } else if (document.fullscreenElement) void document.exitFullscreen?.().catch(() => {})
   }, [])
 
   React.useEffect(

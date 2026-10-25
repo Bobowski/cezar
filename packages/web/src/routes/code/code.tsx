@@ -423,19 +423,9 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
   /** An agent tab for `runId` (`null`: a new task) — the one already showing it, if there is one. */
   const openAgentTab = (runId: string | null, side = false) => setLayout((state) => openAgent(state, newId(), runId, side))
 
-  // Full screen: the page takes the window, and the window takes the display where the browser
-  // allows it. Leaving either way (the button, or the browser's own Esc) leaves both.
-  const toggleFullscreen = () => {
-    const next = !fullscreen
-    setFullscreen(next)
-    if (next) void document.documentElement.requestFullscreen?.().catch(() => {})
-    else if (document.fullscreenElement) void document.exitFullscreen?.().catch(() => {})
-  }
-  useEffect(() => {
-    const onChange = () => { if (!document.fullscreenElement) setFullscreen(false) }
-    document.addEventListener('fullscreenchange', onChange)
-    return () => document.removeEventListener('fullscreenchange', onChange)
-  }, [])
+  // Full screen: the page takes the window — a layout state, never the browser's Fullscreen API,
+  // whose own Esc would beat a dialog or the editor to it (cockpit-polish §3.3).
+  const toggleFullscreen = () => setFullscreen((on) => !on)
 
   const created = async (input: { task: string; workflow: string }): Promise<string> => {
     const answer = await createRun({ workflow: input.workflow, task: input.task })

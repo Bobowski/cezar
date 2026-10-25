@@ -135,6 +135,9 @@ Consistency (§3.4):
    (`components/list-view.tsx`) on Automations, the tracker's Issues, the Git Graph and the Git
    Changes diff; Tasks, All tasks and GitHub already had skeletons. Spinners stay where something
    small is in flight beside content (a fetch of more, a button's own work).
+7. ~~The project switcher and the Settings nav use the same item height~~ — `h-9`
+   (`lib/nav-item.ts`) for both: the switcher's name-over-path rows (were `py-2`, ~44px) and the
+   Settings sections (were the menu button's `h-8`).
 
 ## 8. Verification
 

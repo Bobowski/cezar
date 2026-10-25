@@ -22,6 +22,7 @@ import { Link, useActiveProjectId } from '@/lib/project-router'
 import { ProjectGeneral } from './project-general'
 import { ProjectLocationNav } from './project-location'
 import { Button } from '@/components/ui/button'
+import { NAV_ITEM_HEIGHT_CLASS } from '@/lib/nav-item'
 import { visibleSettingsSections, type SettingsScope, type SettingsSection } from './registry'
 
 /**
@@ -73,7 +74,7 @@ function ProjectSettingsSidebar({
           <SidebarGroupContent>
             <SidebarMenu data-slot="settings-nav" aria-label="Settings sections">
               <SidebarMenuItem>
-                <SidebarMenuButton asChild isActive={activeId === null}>
+                <SidebarMenuButton asChild isActive={activeId === null} className={NAV_ITEM_HEIGHT_CLASS}>
                   <Link
                     to="/settings"
                     data-slot="settings-nav-index"
@@ -86,7 +87,7 @@ function ProjectSettingsSidebar({
               </SidebarMenuItem>
               {visibleSettingsSections('project', capabilities).map((section) => (
                 <SidebarMenuItem key={section.id}>
-                  <SidebarMenuButton asChild isActive={section.id === activeId}>
+                  <SidebarMenuButton asChild isActive={section.id === activeId} className={NAV_ITEM_HEIGHT_CLASS}>
                     <Link
                       to={settingsSectionPath('project', section.id)}
                       data-section={section.id}
@@ -108,7 +109,7 @@ function ProjectSettingsSidebar({
               <SidebarMenuItem>
                 {/* Appearance, notifications, resources, accounts, the registry: cezar's own,
                     a dialog over this screen rather than another page. */}
-                <SidebarMenuButton data-slot="settings-global-link" onClick={() => globalSettings.open()}>
+                <SidebarMenuButton data-slot="settings-global-link" className={NAV_ITEM_HEIGHT_CLASS} onClick={() => globalSettings.open()}>
                   <Settings2Icon aria-hidden="true" />
                   <span>Global settings…</span>
                 </SidebarMenuButton>

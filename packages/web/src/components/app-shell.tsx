@@ -85,6 +85,7 @@ import { CEZAR_REPO_URL, formatStarCount } from '@/lib/star-promo'
 import type { Theme } from '@/lib/theme'
 import { commandShortcutHint } from '@/lib/use-command-shortcut'
 import { useIsDesktop } from '@/lib/use-desktop'
+import { NAV_ITEM_HEIGHT_CLASS } from '@/lib/nav-item'
 import { cn } from '@/lib/utils'
 
 export type RepoChip = {
@@ -870,7 +871,7 @@ function ProjectSwitcher({
                     disabled={missing}
                     title={missing ? `${project.root} is gone — remove it in Global settings → Projects` : project.root}
                     onSelect={() => navigate(`/p/${encodeURIComponent(project.id)}/`)}
-                    className="gap-2.5 py-2"
+                    className={cn('gap-2.5 py-0.5', NAV_ITEM_HEIGHT_CLASS)}
                   >
                     {project.icon ? (
                       <ProjectIcon project={project} />

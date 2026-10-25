@@ -234,6 +234,8 @@ describe('the settings shell', () => {
     expect(ids).toEqual(PROJECT_SECTIONS)
     // The active section is marked for assistive tech, not just by color.
     expect(nav.querySelector('[aria-current="page"]')?.getAttribute('data-section')).toBe('agents')
+    // One item height with the project switcher (cockpit-polish §3.4 item 7).
+    for (const item of nav.querySelectorAll('[data-sidebar="menu-button"]')) expect(item.className.split(/\s+/)).toContain('h-9')
     // (The mobile pill row is gone: on phones this same nav is the sidebar sheet, and the index
     // page lists the sections — pinned by the index test below.)
   })

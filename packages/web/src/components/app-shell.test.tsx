@@ -4,6 +4,7 @@ import { Link as RouterLink, MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProjectListEntry } from '@open-mercato/cezar-api-client'
+import { NAV_ITEM_HEIGHT_CLASS } from '@/lib/nav-item'
 import { ShellProviders } from '@/test/shell-providers'
 import { AppShell, routeOwnsScrollArrival, type AppShellProps } from './app-shell'
 import { ContextSidebar, type ContextSidebarFrame } from './context-sidebar'
@@ -390,6 +391,12 @@ describe('AppShell', () => {
       const switcher = slot('project-switcher', rail()) as HTMLElement
       expect(switcher.getAttribute('aria-label')).toBe('Project: Storefront. Switch project')
       expect(slot('repo-chip', switcher)?.textContent).toBe('S')
+    })
+
+    it('lists its projects at the Settings nav’s item height (cockpit-polish §3.4 item 7)', async () => {
+      renderShell('/p/shop/', { projects: PROJECTS, activeProjectId: 'shop' })
+      const menu = await openSwitcher()
+      for (const item of items(menu)) expect(item.className.split(/\s+/)).toContain(NAV_ITEM_HEIGHT_CLASS)
     })
 
     it('lists every project with its branch and marks the current one', async () => {

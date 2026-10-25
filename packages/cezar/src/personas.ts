@@ -1,0 +1,248 @@
+import { readdir, readFile } from 'node:fs/promises';
+import { basename, extname, join, resolve } from 'node:path';
+import { parse as parseYaml } from 'yaml';
+import { z } from 'zod';
+import {
+  personaDispatchSchema,
+  personaNameSchema,
+  type Persona,
+  type PersonaIssue,
+} from '@open-mercato/cezar-contract';
+import { RUNNER_IDS, type RunnerId } from './core/agent-runner.ts';
+import { cezarHomeDir } from './paths.ts';
+import type { WorkflowStepDef } from './workflows/types.ts';
+
+export type { Persona, PersonaIssue };
+
+/**
+ * Personas (spec `.ai/specs/2026-10-24-personas.md`): named agents of a project — a system
+ * prompt plus launch options (runner, model, tools, skills) — used by workflow steps
+ * (`agent: <name>`) and dispatch children (`cez task create --as <name>`).
+ *
+ * Discovery is local-first, like skills: `.ai/cezar/agents/` (committable) → `~/.cezar/agents/`
+ * → the repo's `.claude/agents/` (Claude's own subagent files, read-only, mapped onto the
+ * Claude backend). The first source to name a persona wins. No directory → no personas, and
+ * nothing anywhere changes.
+ */
+export const PERSONAS_DIR = '.ai/cezar/agents';
+export const CLAUDE_AGENTS_DIR = '.claude/agents';
+
+export function globalPersonasDir(env: NodeJS.ProcessEnv = process.env): string {
+  return join(cezarHomeDir(env), 'agents');
+}
+
+/** A persona file's frontmatter. Unknown keys are ignored (a newer cezar's field must not
+ *  make an older one refuse the file); every known key is validated. */
+const frontmatterSchema = z.object({
+  name: personaNameSchema.optional(),
+  description: z.string().trim().min(1).optional(),
+  runner: z.enum(RUNNER_IDS, { message: `must be one of ${RUNNER_IDS.join(', ')}` }).optional(),
+  model: z.string().trim().min(1).optional(),
+  allowedTools: z.array(z.string().trim().min(1)).optional(),
+  skills: z.array(z.string().trim().min(1)).optional(),
+  dispatch: personaDispatchSchema.optional(),
+});
+
+/** `---\n…\n---` at the top of the file, CRLF- and BOM-tolerant (as `skills.ts` reads it). */
+function splitFrontmatter(raw: string): { block: string | null; body: string } {
+  const text = raw.replace(/^﻿/, '').replace(/\r\n?/g, '\n');
+  const match = /^---\n([\s\S]*?)\n---[ \t]*(?:\n|$)/.exec(text);
+  if (!match) return { block: null, body: text };
+  return { block: match[1] ?? '', body: text.slice(match[0].length) };
+}
+
+function readYamlBlock(block: string | null): Record<string, unknown> | string {
+  if (block === null || block.trim() === '') return {};
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(block);
+  } catch (err) {
+    return `frontmatter is not valid YAML: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`;
+  }
+  if (parsed === null || parsed === undefined) return {};
+  if (typeof parsed !== 'object' || Array.isArray(parsed)) return 'frontmatter must be a YAML mapping';
+  return parsed as Record<string, unknown>;
+}
+
+function zodMessage(error: z.ZodError): string {
+  return error.issues.map((issue) => (issue.path.length ? `${issue.path.join('.')}: ${issue.message}` : issue.message)).join('; ');
+}
+
+/**
+ * Parse one cezar persona file. `fallbackName` (the file's basename) names it when the
+ * frontmatter does not; a frontmatter `name` that differs is honoured, as skills do.
+ */
+export function parsePersona(
+  raw: string,
+  path: string,
+  source: 'project' | 'global',
+  fallbackName = basename(path, extname(path)),
+): Persona | { error: string } {
+  const { block, body } = splitFrontmatter(raw);
+  const yaml = readYamlBlock(block);
+  if (typeof yaml === 'string') return { error: yaml };
+  const fm = frontmatterSchema.safeParse(yaml);
+  if (!fm.success) return { error: zodMessage(fm.error) };
+  const name = fm.data.name ?? fallbackName;
+  if (!personaNameSchema.safeParse(name).success) {
+    return { error: `"${name}" is not a valid persona name (letters, digits, "-" and "_", at most 64)` };
+  }
+  return {
+    name,
+    ...(fm.data.description ? { description: fm.data.description } : {}),
+    ...(fm.data.runner ? { runner: fm.data.runner } : {}),
+    ...(fm.data.model ? { model: fm.data.model } : {}),
+    ...(fm.data.allowedTools ? { allowedTools: fm.data.allowedTools } : {}),
+    ...(fm.data.skills ? { skills: fm.data.skills } : {}),
+    ...(fm.data.dispatch ? { dispatch: fm.data.dispatch } : {}),
+    body: body.trim(),
+    path,
+    source,
+  };
+}
+
+/**
+ * Map a Claude Code subagent file (`.claude/agents/<name>.md`): `tools` (a comma list or an
+ * array) → `allowedTools`, `model` kept unless `inherit`, runner fixed to `claude`. Claude's
+ * own tool names are cezar's `allowedTools` grammar, so nothing is translated.
+ */
+export function parseClaudeAgent(raw: string, path: string): Persona | { error: string } {
+  const { block, body } = splitFrontmatter(raw);
+  const yaml = readYamlBlock(block);
+  if (typeof yaml === 'string') return { error: yaml };
+  const fallback = basename(path, extname(path));
+  const name = typeof yaml.name === 'string' && yaml.name.trim() ? yaml.name.trim() : fallback;
+  if (!personaNameSchema.safeParse(name).success) {
+    return { error: `"${name}" is not a valid persona name (letters, digits, "-" and "_", at most 64)` };
+  }
+  const tools = Array.isArray(yaml.tools)
+    ? yaml.tools.filter((t): t is string => typeof t === 'string')
+    : typeof yaml.tools === 'string'
+      ? yaml.tools.split(',')
+      : [];
+  const allowedTools = tools.map((t) => t.trim()).filter(Boolean);
+  const model = typeof yaml.model === 'string' && yaml.model.trim() && yaml.model.trim() !== 'inherit' ? yaml.model.trim() : undefined;
+  const description = typeof yaml.description === 'string' && yaml.description.trim() ? yaml.description.trim() : undefined;
+  return {
+    name,
+    ...(description ? { description } : {}),
+    runner: 'claude',
+    ...(model ? { model } : {}),
+    ...(allowedTools.length ? { allowedTools } : {}),
+    body: body.trim(),
+    path,
+    source: 'claude',
+  };
+}
+
+async function markdownFiles(dir: string): Promise<string[]> {
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && extname(entry.name).toLowerCase() === '.md')
+      .map((entry) => join(dir, entry.name))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/** Every persona the project can use, project-first, plus the files that failed to load. */
+export async function loadPersonas(
+  repoRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ personas: Persona[]; issues: PersonaIssue[] }> {
+  const sources: Array<{ dir: string; source: Persona['source'] }> = [
+    { dir: resolve(repoRoot, PERSONAS_DIR), source: 'project' },
+    { dir: globalPersonasDir(env), source: 'global' },
+    { dir: resolve(repoRoot, CLAUDE_AGENTS_DIR), source: 'claude' },
+  ];
+  const personas: Persona[] = [];
+  const issues: PersonaIssue[] = [];
+  const seen = new Set<string>();
+  for (const { dir, source } of sources) {
+    for (const path of await markdownFiles(dir)) {
+      let raw: string;
+      try {
+        raw = await readFile(path, 'utf8');
+      } catch {
+        continue;
+      }
+      const parsed = source === 'claude' ? parseClaudeAgent(raw, path) : parsePersona(raw, path, source);
+      if ('error' in parsed) {
+        issues.push({ path, message: `${basename(path)}: ${parsed.error}` });
+        continue;
+      }
+      if (seen.has(parsed.name)) continue;
+      seen.add(parsed.name);
+      personas.push(parsed);
+    }
+  }
+  personas.sort((a, b) => a.name.localeCompare(b.name));
+  return { personas, issues };
+}
+
+/** What a persona adds to a step beyond its launch fields: its prompt and its skills. */
+export interface PersonaResolution {
+  /** The step with the persona's runner, model and tools filled in wherever the step left a gap. */
+  step: WorkflowStepDef;
+  persona?: Persona;
+  /** The persona's own system-prompt part, prepended to the step's. */
+  systemPrompt?: string;
+  /** The persona's skills the step does not already name — added after the step's own skill. */
+  extraSkills: string[];
+}
+
+/**
+ * Merge a persona into a step: a field the step sets wins, then the persona's, then — later,
+ * at spawn — the project default. A persona's model follows its own runner only: a step that
+ * moves the persona to another backend does not inherit a model picked for the first one.
+ */
+export function applyPersona(step: WorkflowStepDef, persona: Persona | undefined): PersonaResolution {
+  if (!persona) return { step, extraSkills: [] };
+  const runner: RunnerId | undefined = step.runner ?? persona.runner;
+  const personaModelApplies = !step.runner || !persona.runner || step.runner === persona.runner;
+  const model = step.model ?? (personaModelApplies ? persona.model : undefined);
+  const allowedTools = step.allowedTools ?? persona.allowedTools;
+  const merged: WorkflowStepDef = {
+    ...step,
+    ...(runner ? { runner } : {}),
+    ...(model ? { model } : {}),
+    ...(allowedTools ? { allowedTools } : {}),
+  };
+  const extraSkills = [...new Set(persona.skills ?? [])].filter((name) => name !== step.skill);
+  return { step: merged, persona, systemPrompt: personaSystemPrompt(persona), extraSkills };
+}
+
+/** The persona's part of the system prompt: who it is, then its own instructions. */
+export function personaSystemPrompt(persona: Pick<Persona, 'name' | 'description' | 'body'>): string {
+  const head = [`Persona: ${persona.name}`, ...(persona.description ? [`Role: ${persona.description}`] : [])];
+  return persona.body ? `${head.join('\n')}\n\n${persona.body}` : head.join('\n');
+}
+
+/** Where a persona search looked, for a "not found" message. */
+export const PERSONA_LOCATIONS = `${PERSONAS_DIR}, ~/.cezar/agents or ${CLAUDE_AGENTS_DIR}`;
+
+/** The persona names, for `stepsIssue`. */
+export function personaNames(personas: readonly Persona[]): Set<string> {
+  return new Set(personas.map((p) => p.name));
+}
+
+/**
+ * The block a dispatching task reads: which personas `--as` can name. Bounded — it rides in
+ * every session's system prompt.
+ */
+export function personasDispatchPrompt(personas: readonly Persona[]): string | undefined {
+  if (!personas.length) return undefined;
+  const shown = personas.slice(0, 20);
+  const lines = shown.map((p) => {
+    const launch = [p.runner, p.model].filter(Boolean).join(', ');
+    const description = p.description ? ` — ${p.description.slice(0, 200)}` : '';
+    return `- ${p.name}${description}${launch ? ` (${launch})` : ''}`;
+  });
+  if (personas.length > shown.length) lines.push(`- … and ${personas.length - shown.length} more`);
+  return [
+    'Personas. This project defines named agents. Dispatch a child as one with cez task create --as <name>: the child runs with that persona\'s runner, model, tools and instructions (an explicit --runner, --model or --tools still wins). Pick the persona whose role fits the assignment:',
+    ...lines,
+  ].join('\n');
+}

@@ -7460,24 +7460,30 @@ export function createApp(deps: ServerDeps) {
     error: 'MCP servers run code on this host: adding, removing and testing them is disabled on a hosted cockpit without sign-in (CEZ_AUTH=0)',
   };
   const mcpSecretsProject = (project: ProjectContext) => (project.id === 'default' ? undefined : { projectId: project.id, root: project.root });
-  const mcpListing = (project: ProjectContext) =>
-    listMcpServers(project.root, { secrets: secretStore, project: mcpSecretsProject(project), editable: trustedOperator(process.env, bindHost) });
+  // Args and urls as written only for the operator or an `admin` token on a trusted cockpit; `author` and agents see them redacted.
+  const mcpRawView = (c: Context) => {
+    const principal = principalOf(c);
+    if (!trustedOperator(process.env, bindHost) || principal?.kind === 'run') return false;
+    return principal?.kind !== 'token' || principal.scopes.includes('admin');
+  };
+  const mcpListing = (project: ProjectContext, c: Context) =>
+    listMcpServers(project.root, { secrets: secretStore, project: mcpSecretsProject(project), editable: trustedOperator(process.env, bindHost), raw: mcpRawView(c) });
   const mcpServersRoutes = new Hono<ProjectApiEnv>()
-    .get('/mcp-servers', async (c) => c.json(await mcpListing(c.get('project')), 200))
+    .get('/mcp-servers', async (c) => c.json(await mcpListing(c.get('project'), c), 200))
     .get('/mcp-servers/registry', queryZodValidator(mcpRegistryQuerySchema), async (c) => c.json(await mcpRegistry.search(c.req.valid('query').q), 200))
     .put('/mcp-servers/:scope/:name', paramZodValidator(mcpServerParamsSchema), jsonZodValidator(mcpServerPutSchema), async (c) => {
       if (!trustedOperator(process.env, bindHost)) return c.json(mcpRefusal, 409);
       const { scope, name } = c.req.valid('param');
       const written = await putMcpServer(c.get('project').root, scope, name, c.req.valid('json').definition);
       if (!written.ok) return c.json({ error: written.error }, written.status);
-      return c.json(await mcpListing(c.get('project')), 200);
+      return c.json(await mcpListing(c.get('project'), c), 200);
     })
     .delete('/mcp-servers/:scope/:name', paramZodValidator(mcpServerParamsSchema), async (c) => {
       if (!trustedOperator(process.env, bindHost)) return c.json(mcpRefusal, 409);
       const { scope, name } = c.req.valid('param');
       const removed = await deleteMcpServer(c.get('project').root, scope, name);
       if (!removed.ok) return c.json({ error: removed.error }, removed.status);
-      return c.json(await mcpListing(c.get('project')), 200);
+      return c.json(await mcpListing(c.get('project'), c), 200);
     })
     .post('/mcp-servers/:scope/:name/test', paramZodValidator(mcpServerParamsSchema), async (c) => {
       if (!trustedOperator(process.env, bindHost)) return c.json(mcpRefusal, 409);

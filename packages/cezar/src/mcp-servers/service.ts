@@ -9,6 +9,7 @@ import {
 import { loadPrivateMcp, loadProjectMcp, mcpReachOf, type PrivateMcpServer } from '../core/private-mcp.ts';
 import { MCP_CATALOG } from '../mcp-catalog/catalog.ts';
 import type { SecretStore } from '../workspace/secrets.ts';
+import { redactMcpArgs, redactMcpUrl } from './redact.ts';
 import { mcpStatusOf, readMcpStatus } from './status.ts';
 
 /**
@@ -46,6 +47,8 @@ export interface ListMcpServersDeps {
   /** Absent for an unregistered boot project: only workspace secrets resolve then. */
   project?: { projectId: string; root: string };
   editable: boolean;
+  /** Args and url as written: only for an `admin` caller on a trusted cockpit. Default: redacted. */
+  raw?: boolean;
 }
 
 export async function listMcpServers(repoRoot: string, deps: ListMcpServersDeps): Promise<McpServersList> {
@@ -63,9 +66,9 @@ export async function listMcpServers(repoRoot: string, deps: ListMcpServersDeps)
       name: server.name,
       scope,
       transport: server.transport,
-      ...(server.command ? { command: server.command } : {}),
-      args: server.args,
-      ...(server.url ? { url: server.url } : {}),
+      ...(server.command ? { command: deps.raw ? server.command : redactMcpUrl(server.command) } : {}),
+      args: deps.raw ? server.args : redactMcpArgs(server.args),
+      ...(server.url ? { url: deps.raw ? server.url : redactMcpUrl(server.url) } : {}),
       env: masked(server.env),
       headers: masked(server.headers),
       secrets: referenced,

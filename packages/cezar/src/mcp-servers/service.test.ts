@@ -99,4 +99,27 @@ describe('Settings → MCP servers files and listing (spec 2026-10-24-easy-mcp)'
     expect(again.project.find((server) => server.name === 'shared')!.missingSecrets).toEqual([]);
     expect(again.editable).toBe(false);
   });
+
+  it('redacts credential-shaped args and url parts unless the caller may see them raw', async () => {
+    mkdirSync(join(repo, '.ai', 'cezar'), { recursive: true });
+    writeFileSync(
+      privateMcpPath(repo),
+      JSON.stringify({
+        mcpServers: {
+          cli: { command: 'db-mcp', args: ['--api-key', 'literal-api-key-value', '--token=literal-token-value', 'postgresql://u:literal-db-password@db/x', '--read-only', '--key', '${{ secrets.DB_KEY }}'] },
+          remote: { type: 'http', url: 'https://user:literal-userinfo@mcp.example.com/mcp?api_key=literal-query-key&region=eu' },
+        },
+      }),
+    );
+    const literals = ['literal-api-key-value', 'literal-token-value', 'literal-db-password', 'literal-userinfo', 'literal-query-key'];
+    const redacted = await listMcpServers(repo, { secrets, editable: true });
+    const text = JSON.stringify(redacted);
+    for (const literal of literals) expect(text, literal).not.toContain(literal);
+    const cli = redacted.private.find((server) => server.name === 'cli')!;
+    expect(cli.args).toEqual(['--api-key', '[REDACTED]', '--token=[REDACTED]', 'postgresql://***@db/x', '--read-only', '--key', '${{ secrets.DB_KEY }}']);
+    expect(redacted.private.find((server) => server.name === 'remote')!.url).toBe('https://***@mcp.example.com/mcp?api_key=[REDACTED]&region=eu');
+
+    const raw = await listMcpServers(repo, { secrets, editable: true, raw: true });
+    for (const literal of literals) expect(JSON.stringify(raw), literal).toContain(literal);
+  });
 });

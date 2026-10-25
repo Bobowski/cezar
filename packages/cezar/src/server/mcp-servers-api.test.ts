@@ -111,4 +111,15 @@ describe('MCP servers API (spec 2026-10-24-easy-mcp §4)', () => {
     expect((await apiRequest(instance, '/api/v1/mcp-servers/project/probe/test', { method: 'POST' })).status).toBe(409);
     expect(JSON.parse(readFileSync(projectMcpPath(root), 'utf8')).mcpServers).toEqual({ probe: { command: 'x' } });
   });
+
+  it('serves args and urls as written to the local operator, redacted where the cockpit is not trusted', async () => {
+    writeFileSync(privateMcpPath(root), JSON.stringify({ mcpServers: { db: { command: 'db-mcp', args: ['--token', 'literal-arg-token'] }, web: { url: 'https://u:literal-pw@mcp.example.com/mcp' } } }));
+    const { instance } = await app();
+    expect(JSON.stringify(await (await apiRequest(instance, '/api/v1/mcp-servers')).json())).toContain('literal-arg-token');
+    vi.stubEnv('CEZ_REMOTE', '1');
+    vi.stubEnv('CEZ_AUTH', '0');
+    const hosted = JSON.stringify(await (await apiRequest(instance, '/api/v1/mcp-servers')).json());
+    expect(hosted).not.toContain('literal-arg-token');
+    expect(hosted).not.toContain('literal-pw');
+  });
 });

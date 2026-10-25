@@ -26,6 +26,7 @@ import { ChangesTree } from './changes-tree'
 import { buildFileTree } from './file-tree'
 import { GitTabLoadError, GitTabLoading } from './git-tab-loading'
 import { GitToolbar } from './git-toolbar'
+import { PhoneChanges } from './phone-changes'
 import type { DiffNewLineComment } from '@/components/diff/types'
 import { trackDiffCommentAdded } from '@/lib/telemetry'
 
@@ -103,7 +104,9 @@ export function ChangesView({
   const [dockHeld, setDockHeld] = useState(false)
   if (commentCount > 0 && !dockHeld) setDockHeld(true)
   if (dockHeld && commentCount === 0 && !composerDraft.hasDraft && !sending) setDockHeld(false)
-  const showDock = commentCount > 0 || sending || (dockHeld && composerDraft.hasDraft)
+  // A phone's Request changes asks for the composer outright (spec 2026-10-24-mobile-cockpit §3.3).
+  const [dockRequested, setDockRequested] = useState(false)
+  const showDock = commentCount > 0 || sending || (dockHeld && composerDraft.hasDraft) || dockRequested
   // The dock floats OVER the diff and the file tree. It takes no room of its own (a negative top
   // margin cancels its height), so both columns get that height back as bottom padding instead —
   // their last lines can still be scrolled up above the box.
@@ -262,6 +265,21 @@ export function ChangesView({
           title="No changes yet"
           subtitle="The worktree matches its base branch. Changes appear here as the agent works."
         />
+      ) : !desktop ? (
+        <div style={{ paddingBottom: showDock ? `${dockHeight}px` : undefined }}>
+          <PhoneChanges
+            run={run}
+            files={files}
+            selected={selected}
+            onSelect={setSelected}
+            diffComments={diffComments}
+            addComment={addComment}
+            commentCounts={commentCounts}
+            loadFileText={(path) => loadWorktreeText(run.id, path)}
+            imageSrc={(path) => runFileRawUrl(run.id, path)}
+            onRequestChanges={() => setDockRequested(true)}
+          />
+        </div>
       ) : (
         // The run header scrolls away on mobile; only desktop reserves space for it.
         <div
@@ -331,7 +349,10 @@ export function ChangesView({
             run={run}
             draft={composerDraft}
             diffComments={diffComments}
-            onSendingChange={setSending}
+            onSendingChange={(next) => {
+              setSending(next)
+              if (!next) setDockRequested(false)
+            }}
             onOpenComment={(comment) =>
               revealOrScroll({ path: comment.path, side: comment.side, line: comment.line, commentId: comment.id })
             }

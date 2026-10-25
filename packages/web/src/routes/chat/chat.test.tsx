@@ -134,7 +134,7 @@ describe('a chat thread', () => {
 })
 
 describe('the chat\'s Changes', () => {
-  const proposal = (path: string, over: Partial<ChatProposal> = {}): ChatProposal => ({ path, status: 'added', diff: `--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,1 @@\n+name: e2e\n`, risks: [], ...over })
+  const proposal = (path: string, over: Partial<ChatProposal> = {}): ChatProposal => ({ path, status: 'added', diff: `--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,1 @@\n+name: e2e\n`, risks: [], tooLarge: false, ...over })
 
   function stubProposals(proposals: ChatProposal[]): Sent[] {
     return stubFetch((method, path) => {
@@ -192,6 +192,17 @@ describe('the chat\'s Changes', () => {
     details.open = true
     fireEvent(details, new Event('toggle'))
     await waitFor(() => expect((screen.getByRole('button', { name: 'Apply & commit' }) as HTMLButtonElement).disabled).toBe(false))
+  })
+
+  it('a proposal over the size cap keeps Apply disabled, and says why', async () => {
+    stubProposals([proposal('.ai/cezar/skills/huge.md', { tooLarge: true })])
+    renderAt('/changes', <ChatChanges chatId="c2" />)
+    const apply = await screen.findByRole('button', { name: 'Apply & commit' })
+    const details = document.querySelector('[data-slot="chat-change"] details') as HTMLDetailsElement
+    details.open = true
+    fireEvent(details, new Event('toggle'))
+    expect((apply as HTMLButtonElement).disabled).toBe(true)
+    expect(document.querySelector('[data-slot="chat-apply-too-large"]')?.textContent).toContain('.ai/cezar/skills/huge.md')
   })
 
   it('discards only after a confirm', async () => {

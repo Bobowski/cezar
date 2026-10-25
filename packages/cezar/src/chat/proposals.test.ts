@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { listProposals, writeProposal } from './proposals.ts';
+import { applyProposals, listProposals, PROPOSAL_MAX_BYTES, writeProposal } from './proposals.ts';
 
 /**
  * What Apply's confirm names (spec 2026-10-24-cockpit-chat §3): computed on the server from the
@@ -97,6 +97,24 @@ describe('proposal risks', () => {
       ['mcp', 'x: npx -y evil'],
       ['mcp', 'y: https://mcp.test'],
     ]);
+  });
+
+  it('a command past the diff cap is still named: risks read the whole file', () => {
+    const path = '.ai/cezar/workflows/long.yaml';
+    const padding = Array.from({ length: 6000 }, (_, i) => `  - { id: s${i}, prompt: "step ${i} ${'x'.repeat(20)}" }`).join('\n');
+    writeProposal(dataDir, chatId, path, `name: long\nsteps:\n${padding}\n  - { id: last, command: "curl https://evil.test" }\n`);
+    const proposal = listProposals(root, dataDir, chatId).find((p) => p.path === path)!;
+    expect(proposal.diff).toContain('… (diff truncated)');
+    expect(proposal.risks).toEqual([{ kind: 'command', detail: 'last: curl https://evil.test' }]);
+    expect(proposal.tooLarge).toBe(false);
+  });
+
+  it('a proposal over the size cap is marked, and Apply refuses it with a clear message', async () => {
+    const path = '.ai/cezar/skills/huge.md';
+    writeProposal(dataDir, chatId, path, `# huge\n${'x'.repeat(PROPOSAL_MAX_BYTES)}\n`);
+    expect(listProposals(root, dataDir, chatId).find((p) => p.path === path)?.tooLarge).toBe(true);
+    const refused = await applyProposals(root, dataDir, chatId, { paths: [path] });
+    expect(refused).toEqual({ ok: false, error: expect.stringMatching(/huge\.md is \d+ KB — over the 512 KB a proposal may be/) });
   });
 
   it('a skill runs nothing on its own', () => {

@@ -278,8 +278,9 @@ function ChatHeader({
  * The chat's Changes: what it PROPOSES (spec §3) — nothing it writes is live until the owner applies
  * it. Each file is a diff against the live one; Apply & commit copies them into place and commits
  * the repo files (refused while anything else is staged), Discard throws them away after a confirm.
- * Apply confirms too, naming the files and every risk the server read from the parsed proposals; an oversized diff
- * must be opened first, and it applies exactly the paths the owner saw.
+ * Apply confirms too, naming the files and every risk the server read from the parsed proposals; an
+ * oversized diff must be opened first, a proposal over the size cap cannot be applied, and it
+ * applies exactly the paths the owner saw.
  */
 export function ChatChanges({ chatId, turn }: { chatId: string; turn?: string }) {
   const proposals = useChatProposals(chatId)
@@ -294,6 +295,8 @@ export function ChatChanges({ chatId, turn }: { chatId: string; turn?: string })
   const listed = proposals.data?.proposals ?? []
   const files = listed.filter((file) => file.status !== 'unchanged')
   const unread = files.filter((file) => proposalOversized(file.diff) && !opened.has(file.path))
+  const tooLarge = files.filter((file) => file.tooLarge)
+  const blocked = unread.length > 0 || tooLarge.length > 0
   const risks = files.flatMap((file) => file.risks.map((risk) => ({ path: file.path, line: riskLine(risk) })))
   const apply = useRepoGitAction((paths: string[]) => applyChatProposals(chatId, { paths }))
   const discard = useRepoGitAction(() => discardChatProposals(chatId))
@@ -340,6 +343,11 @@ export function ChatChanges({ chatId, turn }: { chatId: string; turn?: string })
               Open the diff of {unread.map((file) => file.path).join(', ')} before applying: it is too large to review collapsed.
             </p>
           ) : null}
+          {tooLarge.length > 0 ? (
+            <p data-slot="chat-apply-too-large" className="text-xs text-danger">
+              {tooLarge.map((file) => file.path).join(', ')} is too large to apply — discard it and ask the chat for a smaller one.
+            </p>
+          ) : null}
           {confirmingApply ? (
             <div data-slot="chat-apply-confirm" className="flex flex-col gap-2 rounded border border-border/70 p-2 text-xs">
               <p className="font-medium">Apply and commit these files?</p>
@@ -361,7 +369,7 @@ export function ChatChanges({ chatId, turn }: { chatId: string; turn?: string })
                   type="button"
                   size="sm"
                   data-action="chat-apply-confirm"
-                  disabled={busy || unread.length > 0}
+                  disabled={busy || blocked}
                   onClick={() =>
                     apply.mutate(listed.map((file) => file.path), {
                       onSuccess: (answer) => toast(answer.sha ? `applied and committed ${answer.sha.slice(0, 8)}` : 'applied'),
@@ -380,7 +388,7 @@ export function ChatChanges({ chatId, turn }: { chatId: string; turn?: string })
           ) : null}
           <div className="flex gap-2">
             {confirmingApply ? null : (
-              <Button type="button" size="sm" data-action="chat-apply" disabled={busy || unread.length > 0} onClick={() => setConfirmingApply(true)}>
+              <Button type="button" size="sm" data-action="chat-apply" disabled={busy || blocked} onClick={() => setConfirmingApply(true)}>
                 Apply & commit
               </Button>
             )}

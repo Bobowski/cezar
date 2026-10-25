@@ -220,6 +220,8 @@ export const chatProposalSchema = z.object({
   /** Every command, push, PR, comment, webhook, automation change, persona tool and MCP server of
    *  the file as it would be applied — whatever the (capped) diff shows. */
   risks: z.array(chatProposalRiskSchema),
+  /** Over the size a proposal may be: Apply refuses it, so the confirm offers Discard only. */
+  tooLarge: z.boolean(),
 });
 export type ChatProposal = z.infer<typeof chatProposalSchema>;
 export const chatProposalsResponseSchema = z.object({ proposals: z.array(chatProposalSchema) });

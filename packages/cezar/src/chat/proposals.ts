@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { chatLivePath, chatMayWrite, chatProposalPath, type ChatProposal } from '@open-mercato/cezar-contract';
 import { proposalRisks } from './proposal-risks.ts';
@@ -14,6 +14,19 @@ import { commitIndex, ignoredPaths, repoIndex, stagePaths, unstagePaths, type Gi
 const AUTOMATIONS = '.ai/cezar/automations.json';
 const DIFF_CELLS = 4_000_000;
 const DIFF_CAP = 200_000;
+/** Bigger than any config file a person reviews: Apply refuses it rather than commit it unread. */
+export const PROPOSAL_MAX_BYTES = 512 * 1024;
+
+function proposalBytes(dataDir: string, chatId: string, livePath: string): number {
+  try {
+    return statSync(proposalFile(dataDir, chatId, livePath)).size;
+  } catch {
+    return 0;
+  }
+}
+
+const tooLargeError = (path: string, bytes: number) =>
+  `${path} is ${Math.ceil(bytes / 1024)} KB — over the ${PROPOSAL_MAX_BYTES / 1024} KB a proposal may be; discard it and ask the chat for a smaller one`;
 
 export function proposalRootDir(dataDir: string, chatId: string): string {
   return join(dataDir, 'proposals', chatId);
@@ -180,9 +193,14 @@ function appliedContent(root: string, livePath: string, proposed: string): strin
 export function listProposals(root: string, dataDir: string, chatId: string): ChatProposal[] {
   return proposalPaths(dataDir, chatId).map((path) => {
     const live = readText(join(root, path));
+    const bytes = proposalBytes(dataDir, chatId, path);
+    if (bytes > PROPOSAL_MAX_BYTES) {
+      const header = `--- ${live === undefined ? '/dev/null' : `a/${path}`}\n+++ b/${path}\n`;
+      return { path, status: live === undefined ? 'added' : 'modified', diff: `${header}@@ ${tooLargeError(path, bytes)} @@\n`, risks: [], tooLarge: true };
+    }
     const next = appliedContent(root, path, readProposal(dataDir, chatId, path) ?? '');
     const status = live === undefined ? 'added' : live === next ? 'unchanged' : 'modified';
-    return { path, status, diff: unifiedDiff(path, live, next), risks: proposalRisks(path, next, live) };
+    return { path, status, diff: unifiedDiff(path, live, next), risks: proposalRisks(path, next, live), tooLarge: false };
   });
 }
 
@@ -206,6 +224,10 @@ export async function applyProposals(
   const chosen = input.paths ? all.filter((path) => input.paths!.includes(path)) : all;
   if (chosen.length === 0) return { ok: false, error: 'this chat proposes nothing' };
   if (!chosen.every(chatMayWrite)) return { ok: false, error: 'a proposal outside the cezar configuration' };
+  for (const path of chosen) {
+    const bytes = proposalBytes(dataDir, chatId, path);
+    if (bytes > PROPOSAL_MAX_BYTES) return { ok: false, error: tooLargeError(path, bytes) };
+  }
   const index = await repoIndex(root);
   if (!index.ok) return index;
   if (index.index.staged.length) return { ok: false, error: 'other files are staged in the checkout — commit or unstage them first' };

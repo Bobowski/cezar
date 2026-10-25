@@ -701,13 +701,17 @@ client was shown.
 The cockpit's own **Chat** (sidebar → Chat) is this server's second client: a
 run in the checkout that cezar starts with `cezar mcp --tools all --as-run` —
 the chat's own address and run token, scoped to `read`, `tasks` and `author` on
-its project, never `admin`, push, PRs or secrets. It writes only cezar's own
-configuration — `.ai/cezar/workflows/`, `skills/`, `agents/`, `automations.json`
-and `mcp.json` (Claude enforces it; other agents are told) — and starts a task
-for anything else, in its own worktree and never autonomous; it can change only
-the tasks it started, which link back to it and report their status there. On a
-local cockpit without sign-in, an agent that ignores tool rules (Codex, OpenCode,
-Cursor) is bounded by the chat's prompt there, as any task is.
+its project, never `admin`, push, PRs or secrets. Everything it writes is a
+**proposal**: workflows, skills, personas, `automations.json` and `mcp.json` land
+in `.ai/cezar/proposals/<chat>/`, which nothing loads, and go live only when you
+press **Apply & commit** in the chat's Changes panel (an automation always
+applies paused; you switch it on). It starts a task for anything else — with a
+live workflow, in its own worktree, never autonomous, at most two in flight and
+five an hour — and can change only the tasks it started, which link back to it
+and report their status there. Its tasks are ordinary tasks, with a shell, the
+network and your git credentials. On a local cockpit without sign-in, an agent
+that ignores tool rules (Codex, OpenCode, Cursor) is bounded by the chat's prompt
+there, as any task is.
 
 The same address points the shell CLIs at another machine:
 `CEZ_TOKEN=ceztok_… cez --server https://agents.example.dev task create "…"`

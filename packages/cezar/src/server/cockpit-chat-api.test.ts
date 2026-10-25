@@ -1,10 +1,14 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { disableRunTokens, mintChatRunToken } from '../auth/run-tokens.ts';
 import { CHAT_WORKFLOW } from '../chat/chat.ts';
+import { loadWorkflows } from '../workflows/load.ts';
+import { AutomationStore } from '../automations/store.ts';
+import { ensureDataGitignore } from '../data-gitignore.ts';
 import { RunStore } from '../runs/store.ts';
 import type { RunManager, StartRunInput } from '../workflows/run.ts';
 import type { WorkflowDef } from '../workflows/types.ts';
@@ -148,25 +152,43 @@ describe('cockpit chat API', () => {
 
   it('the chat starts tasks through runs_create only: no inbox start, no automation launch or enable', async () => {
     const chat = liveChat();
-    for (const path of ['/todos/t1/start', '/automations/a1/run', '/automations/a1/enable', '/automations/a1/check', '/automation-log/r1/retry']) {
+    for (const path of ['/todos/t1/start', '/automations/a1/run', '/automations/a1/enable', '/automations/a1/pause', '/automations/a1/check', '/automation-log/r1/retry']) {
       expect((await post(`/api/v1/p/boot${path}`, {}, chat.bearer)).status, path).toBe(403);
     }
   });
 
-  it('the chat edits a paused automation, never switches one on or edits a live one', async () => {
+  const automationInput = { name: 'Review issues', events: ['issue.opened'], intervalSeconds: 300, filters: { lookbackDays: 7, maxRecords: 25 }, task: { prompt: 'Review {{github.url}}' } };
+  const proposedAutomations = (chatId: string) =>
+    JSON.parse(readFileSync(join(repoRoot, '.ai/cezar/proposals', chatId, 'automations.json'), 'utf8')) as { automations: Array<{ id: string; name: string; enabled: boolean }> };
+
+  it('a chat cannot arm an automation: POST with enable is refused, and what it creates is a paused proposal', async () => {
     const chat = liveChat();
     const put = (id: string, body: unknown, headers: Record<string, string> = {}) =>
       apiRequest(app, `/api/v1/p/boot/automations/${id}`, { method: 'PUT', headers: { ...json, ...headers }, body: JSON.stringify(body) });
-    const input = { name: 'Review issues', events: ['issue.opened'], intervalSeconds: 300, filters: { lookbackDays: 7, maxRecords: 25 }, task: { prompt: 'Review {{github.url}}' } };
-    const created = await post('/api/v1/p/boot/automations', input, chat.bearer);
+    expect((await post('/api/v1/p/boot/automations', { ...automationInput, enable: true }, chat.bearer)).status).toBe(403);
+    const created = await post('/api/v1/p/boot/automations', automationInput, chat.bearer);
     expect(created.status).toBe(201);
     const { id, revision } = ((await created.json()) as { automation: { id: string; revision: number } }).automation;
-    expect((await put(id, { ...input, enabled: true, expectedRevision: revision }, chat.bearer)).status).toBe(403);
-    expect((await put(id, { ...input, name: 'Renamed', expectedRevision: revision }, chat.bearer)).status).toBe(200);
-    // The owner switches it on; from then on the chat may only pause it.
-    expect((await put(id, { ...input, enabled: true, expectedRevision: revision + 1 })).status).toBe(200);
-    expect((await put(id, { ...input, name: 'Again', expectedRevision: revision + 2 }, chat.bearer)).status).toBe(403);
-    expect((await put(id, { ...input, enabled: false, expectedRevision: revision + 2 }, chat.bearer)).status).toBe(200);
+    // Nothing reached the live store: the proposal is all there is.
+    expect(AutomationStore.open(join(repoRoot, '.ai/cezar')).list()).toEqual([]);
+    expect(existsSync(join(repoRoot, '.ai/cezar/automations.json'))).toBe(false);
+    expect(proposedAutomations(chat.id).automations).toMatchObject([{ id, enabled: false }]);
+    // It edits its own proposal, never into an enabled one.
+    expect((await put(id, { ...automationInput, enabled: true, expectedRevision: revision }, chat.bearer)).status).toBe(403);
+    expect((await put(id, { ...automationInput, name: 'Renamed', expectedRevision: revision }, chat.bearer)).status).toBe(200);
+    expect(proposedAutomations(chat.id).automations).toMatchObject([{ id, name: 'Renamed', enabled: false }]);
+  });
+
+  it('a chat never edits a live automation that is on', async () => {
+    const chat = liveChat();
+    const owned = await post('/api/v1/p/boot/automations', { ...automationInput, enable: true });
+    expect(owned.status).toBe(201);
+    const { id, revision } = ((await owned.json()) as { automation: { id: string; revision: number } }).automation;
+    const res = await apiRequest(app, `/api/v1/p/boot/automations/${id}`, {
+      method: 'PUT', headers: { ...json, ...chat.bearer }, body: JSON.stringify({ ...automationInput, enabled: false, name: 'x', expectedRevision: revision }),
+    });
+    expect(res.status).toBe(403);
+    expect((await apiRequest(app, `/api/v1/p/boot/automations/${id}`, { method: 'DELETE', headers: chat.bearer })).status).toBe(403);
   });
 
   it('acts only on the tasks it started — never the owner\'s, another chat\'s, another chat, or itself', async () => {
@@ -241,5 +263,135 @@ describe('cockpit chat API', () => {
     const call = await (await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'runs_create', arguments: { workflow: 'quick-task', task: 'from the chat' } } })).text();
     expect(call).not.toContain('"isError":true');
     expect(started.at(-1)?.input.createdBy).toBe(`chat:${chat.id}`);
+  });
+
+  /** A git checkout for the tests that commit. */
+  function gitInit(): void {
+    const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: repoRoot, stdio: 'pipe' });
+    git('init', '-q', '-b', 'main');
+    ensureDataGitignore(repoRoot);
+    writeFileSync(join(repoRoot, 'README.md'), 'x\n');
+    git('add', 'README.md');
+    git('commit', '-q', '-m', 'base');
+    execFileSync('git', ['config', 'user.name', 't'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repoRoot });
+  }
+
+  const override = { name: 'quick-task', steps: [{ id: 'push', command: 'git push --force origin HEAD:main' }] };
+
+  it('a chat-written quick-task override is a proposal: not loaded, not runnable, until the owner applies it', async () => {
+    const chat = liveChat();
+    const saved = await post('/api/v1/p/boot/workflows', { ...override, overwrite: true }, chat.bearer);
+    expect(saved.status).toBe(201);
+    expect(((await saved.json()) as { path: string }).path).toContain(join('.ai', 'cezar', 'proposals', chat.id));
+    const { workflows } = await loadWorkflows(repoRoot);
+    expect(workflows.find((w) => w.name === 'quick-task')?.source).toBe('built-in');
+    expect(existsSync(join(repoRoot, '.ai/cezar/workflows/quick-task.yaml'))).toBe(false);
+    // Its own runs_create gets the live quick-task, and inline steps are no way around it.
+    expect((await post('/api/v1/p/boot/runs', { workflow: 'quick-task', task: 'go' }, chat.bearer)).status).toBe(201);
+    expect(started.at(-1)?.workflow.steps.some((step) => step.command)).toBe(false);
+    expect((await post('/api/v1/p/boot/runs', { steps: override.steps, task: 'go' }, chat.bearer)).status).toBe(400);
+    // A file the chat wrote by hand into its proposals is not loaded either.
+    mkdirSync(join(repoRoot, '.ai/cezar/proposals', chat.id, 'workflows'), { recursive: true });
+    writeFileSync(join(repoRoot, '.ai/cezar/proposals', chat.id, 'workflows/e2e.yaml'), 'name: e2e\nsteps:\n  - id: a\n    prompt: "{{task}}"\n');
+    expect((await loadWorkflows(repoRoot)).workflows.map((w) => w.name)).not.toContain('e2e');
+    // The chat never applies or discards its own proposals.
+    expect((await post(`/api/v1/p/boot/repo/proposals/${chat.id}/apply`, {}, chat.bearer)).status).toBe(403);
+    expect((await post(`/api/v1/p/boot/repo/proposals/${chat.id}/discard`, {}, chat.bearer)).status).toBe(403);
+  });
+
+  it('Apply & commit makes a proposal live and commits it; automations.json goes live paused; Discard drops the rest', async () => {
+    gitInit();
+    const chat = liveChat();
+    expect((await post('/api/v1/p/boot/workflows', { name: 'e2e', steps: [{ id: 'a', prompt: '{{task}}' }] }, chat.bearer)).status).toBe(201);
+    // A proposal written by hand that switches an automation on.
+    mkdirSync(join(repoRoot, '.ai/cezar/proposals', chat.id), { recursive: true });
+    writeFileSync(join(repoRoot, '.ai/cezar/proposals', chat.id, 'automations.json'), JSON.stringify({ version: 1, automations: [{ id: 'a1', enabled: true, name: 'x' }] }));
+    mkdirSync(join(repoRoot, '.ai/cezar/proposals', chat.id, 'skills'), { recursive: true });
+    writeFileSync(join(repoRoot, '.ai/cezar/proposals', chat.id, 'skills/review.md'), '# review\n');
+
+    const listed = (await (await apiRequest(app, `/api/v1/p/boot/repo/proposals/${chat.id}`)).json()) as { proposals: Array<{ path: string; status: string; diff: string }> };
+    expect(listed.proposals.map((p) => p.path)).toEqual(['.ai/cezar/automations.json', '.ai/cezar/skills/review.md', '.ai/cezar/workflows/e2e.yaml']);
+    expect(listed.proposals.every((p) => p.status === 'added')).toBe(true);
+    // The diff shows what Apply would write: the automation paused.
+    expect(listed.proposals[0]!.diff).toContain('"enabled": false');
+    expect(listed.proposals[0]!.diff).not.toContain('"enabled": true');
+
+    const applied = await post(`/api/v1/p/boot/repo/proposals/${chat.id}/apply`, { paths: ['.ai/cezar/workflows/e2e.yaml', '.ai/cezar/automations.json'] });
+    expect(applied.status, await applied.clone().text()).toBe(200);
+    const answer = (await applied.json()) as { applied: string[]; sha?: string };
+    expect(answer.applied).toEqual(['.ai/cezar/automations.json', '.ai/cezar/workflows/e2e.yaml']);
+    expect(answer.sha).toMatch(/^[0-9a-f]{40}$/);
+    expect((await loadWorkflows(repoRoot)).workflows.map((w) => w.name)).toContain('e2e');
+    const committed = execFileSync('git', ['show', '--name-only', '--format=', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim().split('\n');
+    expect(committed).toEqual(['.ai/cezar/workflows/e2e.yaml']);
+    const live = JSON.parse(readFileSync(join(repoRoot, '.ai/cezar/automations.json'), 'utf8')) as { automations: Array<{ enabled: boolean }> };
+    expect(live.automations[0]!.enabled).toBe(false);
+    // Applied proposals are gone; the rest stay until discarded.
+    const left = (await (await apiRequest(app, `/api/v1/p/boot/repo/proposals/${chat.id}`)).json()) as { proposals: Array<{ path: string }> };
+    expect(left.proposals.map((p) => p.path)).toEqual(['.ai/cezar/skills/review.md']);
+    expect(await (await post(`/api/v1/p/boot/repo/proposals/${chat.id}/discard`, {})).json()).toEqual({ discarded: ['.ai/cezar/skills/review.md'] });
+    expect(existsSync(join(repoRoot, '.ai/cezar/proposals', chat.id))).toBe(false);
+    expect(existsSync(join(repoRoot, '.ai/cezar/skills/review.md'))).toBe(false);
+  });
+
+  it('Apply refuses while other files are staged, so the commit carries nothing of the owner\'s', async () => {
+    gitInit();
+    const chat = liveChat();
+    expect((await post('/api/v1/p/boot/workflows', { name: 'e2e', steps: [{ id: 'a', prompt: '{{task}}' }] }, chat.bearer)).status).toBe(201);
+    writeFileSync(join(repoRoot, 'README.md'), 'mine\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
+    const refused = await post(`/api/v1/p/boot/repo/proposals/${chat.id}/apply`, {});
+    expect(refused.status).toBe(409);
+    expect(existsSync(join(repoRoot, '.ai/cezar/workflows/e2e.yaml'))).toBe(false);
+  });
+
+  it('the chat token is refused the tracker link, transitions, the webhook, inbox deletes and services', async () => {
+    const chat = liveChat();
+    const call = (method: string, path: string, body?: unknown) =>
+      apiRequest(app, `/api/v1/p/boot${path}`, { method, headers: { ...json, ...chat.bearer }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    for (const [method, path] of [
+      ['PUT', '/tracker/association'], ['DELETE', '/tracker/association'], ['POST', '/tracker/T-1/transition'],
+      ['POST', '/automation-webhook'], ['DELETE', '/automation-webhook'], ['DELETE', '/todos/t1'],
+      ['GET', '/todos'], ['GET', '/services'], ['GET', '/services/web/logs'], ['DELETE', '/workflows/quick-task'],
+    ] as const) {
+      expect((await call(method, path, method === 'GET' || method === 'DELETE' ? undefined : {})).status, `${method} ${path}`).toBe(403);
+    }
+  });
+
+  it('reads the transcript of its own tasks only, and sees the owner\'s tasks projected', async () => {
+    const chat = liveChat();
+    const owner = store.createRun({ title: 'owner', workflow: 'quick-task', task: 'the owner\'s secret plan', steps: [] });
+    const mine = store.createRun({ title: 'mine', workflow: 'quick-task', task: 'the chat\'s task', steps: [], createdBy: `chat:${chat.id}` });
+    const get = (path: string) => apiRequest(app, `/api/v1/p/boot${path}`, { headers: chat.bearer });
+    for (const route of ['history', 'handoff', 'history-context']) {
+      expect((await get(`/runs/${owner.id}/${route}`)).status, route).toBe(403);
+    }
+    expect((await get(`/runs/${mine.id}/history`)).status).not.toBe(403);
+    expect(((await (await get(`/runs/${owner.id}`)).json()) as { projected?: boolean }).projected).toBe(true);
+    expect(((await (await get(`/runs/${mine.id}`)).json()) as { projected?: boolean }).projected).toBeUndefined();
+  });
+
+  it('a chat starts one task at a time per call, at most two in flight and five an hour', async () => {
+    const chat = liveChat();
+    const start = (body: Record<string, unknown> = {}) => post('/api/v1/p/boot/runs', { workflow: 'quick-task', task: 't', ...body }, chat.bearer);
+    expect((await start({ variants: 3 })).status).toBe(201);
+    expect(started).toHaveLength(1);
+    expect((await start()).status).toBe(201);
+    // Two queued: a third is refused.
+    expect((await start()).status).toBe(409);
+    for (const run of store.listRuns()) if (run.createdBy) store.updateRun(run.id, { status: 'review' });
+    expect((await start()).status).toBe(201);
+    for (const run of store.listRuns()) if (run.createdBy) store.updateRun(run.id, { status: 'review' });
+    expect((await start()).status).toBe(201);
+    for (const run of store.listRuns()) if (run.createdBy) store.updateRun(run.id, { status: 'review' });
+    expect((await start()).status).toBe(201);
+    for (const run of store.listRuns()) if (run.createdBy) store.updateRun(run.id, { status: 'review' });
+    // Five in the last hour: the sixth waits.
+    const refused = await start();
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error: string }).error).toMatch(/in the last hour/);
+    // The owner is not braked.
+    expect((await post('/api/v1/runs', { workflow: 'quick-task', task: 'mine' })).status).toBe(201);
   });
 });

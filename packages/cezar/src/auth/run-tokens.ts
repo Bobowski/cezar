@@ -163,15 +163,32 @@ export const CHAT_TOKEN_SCOPES: readonly ApiTokenScope[] = ['read', 'runs.transc
 
 /** What `tasks` would grant that a chat still may not do: push, open or adopt a PR, land, Finish
  *  (which lands an in-place task), open a host app, or write a task's files (that is a task's job). */
-const CHAT_DENIED: ReadonlyArray<readonly [method: string, RegExp]> = [
+const CHAT_DENIED: ReadonlyArray<readonly [method: 'GET' | 'DELETE' | 'WRITE' | '*', RegExp]> = [
   ['*', /^\/runs\/[^/]+\/(?:git\/push|pr(?:\/|$)|land$|finish$|open-in)/],
   ['WRITE', /^\/runs\/[^/]+\/files(?:\/|$)/],
   ['*', /^\/workspace\//],
   // Launches that bypass `POST /runs`'s chat override (worktree, never autonomous): an inbox start,
   // and an automation run, check, retry or enable — an enabled automation launches with nobody there.
   ['WRITE', /^\/todos\/[^/]+\/start$/],
-  ['WRITE', /^\/automations\/[^/]+\/(?:enable|run|check)$/],
   ['WRITE', /^\/automation-log\/[^/]+\/retry$/],
+  // Its automation create and replace land in its proposals, paused (spec 2026-10-24-cockpit-chat
+  // §3); enable, pause, run, check and delete act on the live store.
+  ['WRITE', /^\/automations\/[^/]+\/[^/]+$/],
+  ['DELETE', /^\/automations\/[^/]+$/],
+  // Its workflow saves are proposals; deleting a live workflow is the owner's.
+  ['DELETE', /^\/workflows\//],
+  // Its proposals are the owner's to apply or discard.
+  ['WRITE', /^\/repo\/proposals\//],
+  // The tracker link, a ticket's transition and the forge webhook change the owner's configuration
+  // or the outside world; deleting an inbox item is the owner's.
+  ['WRITE', /^\/tracker\/association$/],
+  ['WRITE', /^\/tracker\/[^/]+\/transition$/],
+  ['WRITE', /^\/automation-webhook(?:\/|$)/],
+  ['DELETE', /^\/todos\/[^/]+$/],
+  // The inbox quotes what the owner's tasks wrote: a chat reads only its own tasks' transcripts.
+  ['GET', /^\/todos$/],
+  // A pinned service's command line can carry an inline secret (`READ_OWNERS` in api-tokens.ts).
+  ['*', /^\/services(?:\/|$)/],
   // Secrets: an env file's values and rendering, the secret store, the tracker's credentials. The
   // env-file listing (paths and variable NAMES) stays readable.
   ['*', /^\/env-files\//],
@@ -185,14 +202,27 @@ const CHAT_DENIED: ReadonlyArray<readonly [method: string, RegExp]> = [
 /** What a chat's run- or group-scoped write acts on; undefined for anything else. */
 export type ChatMutationTarget = { run: string } | { group: string };
 
+/** A run's transcript reads: what its agent wrote and its commands printed. */
+const TRANSCRIPT_READ = /^\/runs\/([^/]+)\/(?:events|history|history-context|handoff)$/;
+
 /**
- * The run or variant group a chat's request would change (spec 2026-10-24-cockpit-chat §5) —
- * the guard then lets it through only for tasks the chat itself started. Reads are `read`'s.
+ * The run or variant group a chat's request would change, or whose transcript it would read (spec
+ * 2026-10-24-cockpit-chat §5) — the guard then lets it through only for tasks the chat itself
+ * started. Other reads are `read`'s, and a run record outside its own tasks is projected.
  */
 export function chatMutationTarget(method: string, pathname: string): ChatMutationTarget | undefined {
-  if (method === 'GET' || method === 'HEAD' || !pathname.startsWith(`${API}/`)) return undefined;
+  if (!pathname.startsWith(`${API}/`)) return undefined;
   const rest = pathname.slice(API.length);
   const path = /^\/p\/[^/]+(\/.*)$/.exec(rest)?.[1] ?? rest;
+  if (method === 'GET' || method === 'HEAD') {
+    const read = TRANSCRIPT_READ.exec(path);
+    if (!read) return undefined;
+    try {
+      return { run: decodeURIComponent(read[1]!) };
+    } catch {
+      return { run: read[1]! };
+    }
+  }
   const match = /^\/(runs|groups)\/([^/]+)(?:\/|$)/.exec(path);
   if (!match) return undefined;
   let id: string;
@@ -232,7 +262,10 @@ function chatTokenAllows(claims: RunTokenClaims, method: string, pathname: strin
     // The unscoped alias is the BOOT project, which may not be this chat's.
     if (claims.projectId !== undefined && !(read && CHAT_WORKSPACE_READS.some((pattern) => pattern.test(path)))) return false;
   }
-  const write = method !== 'GET' && method !== 'HEAD';
-  if (CHAT_DENIED.some(([denied, pattern]) => (denied === '*' || (denied === 'WRITE' && write)) && pattern.test(path))) return false;
+  const verb = method.toUpperCase();
+  const write = verb !== 'GET' && verb !== 'HEAD';
+  const applies = (denied: (typeof CHAT_DENIED)[number][0]) =>
+    denied === '*' || (denied === 'WRITE' && write) || denied === verb || (denied === 'GET' && verb === 'HEAD');
+  if (CHAT_DENIED.some(([denied, pattern]) => applies(denied) && pattern.test(path))) return false;
   return apiTokenAllows(CHAT_TOKEN_SCOPES, method, pathname);
 }

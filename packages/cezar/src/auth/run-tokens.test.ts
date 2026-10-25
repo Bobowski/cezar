@@ -95,7 +95,6 @@ describe('chat run tokens', () => {
     ['GET', '/api/v1/p/proj/runs/r9/history'],
     ['POST', '/api/v1/p/proj/runs/r9/messages'],
     ['POST', '/api/v1/p/proj/workflows'],
-    ['DELETE', '/api/v1/p/proj/workflows/w1'],
     ['POST', '/api/v1/p/proj/automations'],
     ['GET', '/api/v1/p/proj/repo/changes'],
     ['GET', '/api/v1/p/proj/runs/r9/files'],
@@ -131,6 +130,19 @@ describe('chat run tokens', () => {
     ['PUT', '/api/v1/p/proj/secrets/X', 'a secret'],
     ['GET', '/api/v1/p/proj/tracker/connection', 'the tracker credentials'],
     ['PUT', '/api/v1/p/proj/tracker/connection', 'the tracker credentials'],
+    ['DELETE', '/api/v1/p/proj/workflows/w1', 'deleting a live workflow'],
+    ['POST', '/api/v1/p/proj/automations/a1/pause', 'pausing a live automation'],
+    ['DELETE', '/api/v1/p/proj/automations/a1', 'deleting a live automation'],
+    ['POST', '/api/v1/p/proj/repo/proposals/c1/apply', 'applying its own proposals'],
+    ['PUT', '/api/v1/p/proj/tracker/association', 'the tracker link'],
+    ['DELETE', '/api/v1/p/proj/tracker/association', 'the tracker link'],
+    ['POST', '/api/v1/p/proj/tracker/T-1/transition', 'a ticket transition'],
+    ['POST', '/api/v1/p/proj/automation-webhook', 'the forge webhook'],
+    ['DELETE', '/api/v1/p/proj/automation-webhook', 'the forge webhook'],
+    ['DELETE', '/api/v1/p/proj/todos/t1', 'an inbox item'],
+    ['GET', '/api/v1/p/proj/todos', 'the owner inbox'],
+    ['GET', '/api/v1/p/proj/services', 'service command lines'],
+    ['HEAD', '/api/v1/p/proj/services', 'service command lines'],
   ])('refuses %s %s (%s)', (method, path) => {
     expect(runTokenAllows(chat, method, path)).toBe(false);
   });

@@ -2,7 +2,9 @@ import type { PrivateMcpServer } from '../core/private-mcp.ts';
 import type { RunRecord, RunStore } from '../runs/store.ts';
 import type { WorkflowDef } from '../workflows/types.ts';
 import { DATA_GITIGNORE_ENTRIES } from '../data-gitignore.ts';
-import { CHAT_WRITABLE, chatMayWrite } from '@open-mercato/cezar-contract';
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { CHAT_PROPOSALS_DIR, CHAT_WRITABLE, chatMayWrite, chatProposalRoot } from '@open-mercato/cezar-contract';
 
 /**
  * The cockpit chat (spec 2026-10-24-cockpit-chat): an ordinary run with `kind: 'chat'`, in the
@@ -22,37 +24,82 @@ export const CHAT_WORKFLOW: WorkflowDef = {
   steps: [{ id: 'chat', name: 'Chat', prompt: '{{task}}' }],
 };
 
-// The list is the contract's, so the cockpit's Changes panel shows exactly what the chat may write.
+// The list is the contract's, so the cockpit's Changes panel shows exactly what the chat may propose.
 export { CHAT_WRITABLE, chatMayWrite };
 
 const WRITE_TOOLS = ['Edit', 'Write', 'MultiEdit'] as const;
+/** Whole tools a chat never has, whatever a repo's own settings allow: a shell or a sub-agent writes
+ *  anywhere, and the network is how a prompt injection would leave with what the chat read. */
+const CHAT_DENIED_WHOLE_TOOLS = ['Bash', 'BashOutput', 'KillShell', 'WebFetch', 'WebSearch', 'Agent', 'Task', 'NotebookEdit'] as const;
 const ruleOf = (path: string) => (path.endsWith('/') ? `${path}**` : path);
 
-/**
- * The rest of `.ai/cezar/`, by name: Claude's deny rules beat every allow rule (a repo's own
- * `.claude/settings.json` included) but cannot say "all but". Only the committed config stays
- * readable; secrets, run state and other tasks' worktrees do not.
- */
-const CHAT_DENIED_PATHS = ['config.json', '.gitignore', ...DATA_GITIGNORE_ENTRIES]
-  .filter((entry) => !chatMayWrite(`.ai/cezar/${entry}`))
+/** cezar's own state under `.ai/cezar/` — secrets, run state, other tasks' worktrees — never readable. */
+const CHAT_UNREADABLE = DATA_GITIGNORE_ENTRIES
+  .filter((entry) => !chatMayWrite(`.ai/cezar/${entry}`) && entry !== 'proposals/')
   .map((entry) => `.ai/cezar/${ruleOf(entry)}`);
-const READABLE_CONFIG = new Set(['.ai/cezar/config.json', '.ai/cezar/.gitignore']);
+
+/** What a chat's tool policy is built from: the entries beside the path to its proposals. */
+export interface ChatTreeListing {
+  /** Top-level entries of the checkout, directories with a trailing `/`. */
+  repo: readonly string[];
+  /** Entries of `.ai/`, of `.ai/cezar/` and of `.ai/cezar/proposals/`, the same way. */
+  ai: readonly string[];
+  cezar: readonly string[];
+  proposals: readonly string[];
+}
+
+/** Read a checkout's listing for {@link chatToolPolicy}; a missing directory lists nothing. */
+export function listChatTree(repoRoot: string): ChatTreeListing {
+  const list = (dir: string) => {
+    try {
+      return readdirSync(dir, { withFileTypes: true }).map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name));
+    } catch {
+      return [];
+    }
+  };
+  return {
+    repo: list(repoRoot),
+    ai: list(join(repoRoot, '.ai')),
+    cezar: list(join(repoRoot, '.ai/cezar')),
+    proposals: list(join(repoRoot, '.ai/cezar/proposals')),
+  };
+}
 
 /**
- * What a chat may touch where the backend honours `allowedTools` (Claude): read the repository,
- * write only {@link CHAT_WRITABLE}, call cezar's MCP (added by the runner). No Bash — a shell would
- * write anywhere. Codex/OpenCode/Cursor ignore this list (#430); the prompt says the same thing.
+ * A chat's tool policy where the backend honours it (Claude). It reads the repository and writes
+ * only its own proposals (spec 2026-10-24-cockpit-chat §3, §5): `allowedTools` grants the mirror of
+ * {@link CHAT_WRITABLE} under `.ai/cezar/proposals/<id>/`, and because a repo's own
+ * `.claude/settings.json` may allow more and deny rules beat every allow rule, `disallowedTools`
+ * names the whole tools above and EVERY sibling on the path to the proposals — the checkout's
+ * top-level entries, `.ai/`'s, `.ai/cezar/`'s (the live configuration included) and other chats'
+ * proposals. Codex/OpenCode/Cursor ignore both lists (#430); the prompt says the same thing.
  */
-export const CHAT_ALLOWED_TOOLS = [
-  'Read', 'Grep', 'Glob',
-  ...WRITE_TOOLS.flatMap((tool) => CHAT_WRITABLE.map((path) => `${tool}(${ruleOf(path)})`)),
-];
-
-/** The chat's `--disallowedTools`: everything else under `.ai/cezar/`, explicitly. */
-export const CHAT_DENIED_TOOLS = [
-  ...WRITE_TOOLS.flatMap((tool) => CHAT_DENIED_PATHS.map((path) => `${tool}(${path})`)),
-  ...CHAT_DENIED_PATHS.filter((path) => !READABLE_CONFIG.has(path)).map((path) => `Read(${path})`),
-];
+export function chatToolPolicy(chatId: string, tree: ChatTreeListing): { allowedTools: string[]; disallowedTools: string[] } {
+  const root = chatProposalRoot(chatId);
+  const allowedTools = [
+    'Read', 'Grep', 'Glob',
+    ...WRITE_TOOLS.flatMap((tool) =>
+      CHAT_WRITABLE.map((path) => `${tool}(${ruleOf(`${root}${path.slice('.ai/cezar/'.length)}`)})`)),
+  ];
+  // `./` anchors a top-level name: a bare `src` would also match `.ai/cezar/proposals/<id>/skills/src`.
+  const anchored = (prefix: string, entries: readonly string[], keep: string) =>
+    entries.filter((entry) => entry !== keep).map((entry) => (prefix ? `${prefix}${ruleOf(entry)}` : `./${ruleOf(entry)}`));
+  const known = ['config.json', '.gitignore', ...DATA_GITIGNORE_ENTRIES, ...CHAT_WRITABLE.map((path) => path.slice('.ai/cezar/'.length))];
+  const deniedWrites = [...new Set([
+    ...anchored('', tree.repo, '.ai/'),
+    ...anchored('.ai/', tree.ai, 'cezar/'),
+    ...anchored('.ai/cezar/', [...new Set([...known, ...tree.cezar])], 'proposals/'),
+    ...anchored(CHAT_PROPOSALS_DIR, tree.proposals, `${chatId}/`),
+  ])];
+  return {
+    allowedTools,
+    disallowedTools: [
+      ...CHAT_DENIED_WHOLE_TOOLS,
+      ...WRITE_TOOLS.flatMap((tool) => deniedWrites.map((path) => `${tool}(${path})`)),
+      ...CHAT_UNREADABLE.map((path) => `Read(${path})`),
+    ],
+  };
+}
 
 export function isChatRun(run: Pick<RunRecord, 'kind'> | undefined): boolean {
   return run?.kind === 'chat';
@@ -72,7 +119,8 @@ export function chatIdOf(createdBy: string | undefined): string | undefined {
  * ships only what it compiles, and a prompt that is missing from the tarball is a chat that
  * silently forgot what it is.
  */
-export function cezarChatPrompt(options: { projectId?: string; mcp: boolean }): string {
+export function cezarChatPrompt(options: { chatId: string; projectId?: string; mcp: boolean }): string {
+  const proposals = chatProposalRoot(options.chatId);
   const project = options.projectId ? ` Its projectId is "${options.projectId}"; every project tool defaults to it.` : '';
   return [
     '## You are the cezar chat for this project',
@@ -85,8 +133,9 @@ export function cezarChatPrompt(options: { projectId?: string; mcp: boolean }): 
       : 'cezar\'s MCP server is not attached to this session (the backend has no launch-time MCP channel, or the cockpit gave no address). Say so when the user asks for something only it can do; you can still read the repository and write the cezar files listed below.',
     '',
     'Rules:',
-    `- You may write exactly these, and nothing else: ${CHAT_WRITABLE.join(', ')} — workflows, skills, personas, automations and the committed MCP config. Validate a workflow with workflows_parse before you save it. The user commits or reverts those files from the chat's Changes panel; do not commit, branch or push.`,
-    '- Everything else is out of bounds: application code, and the rest of .ai/cezar/ (config.json, config.local.json, mcp.local.json, runs.json, run events, worktrees). To change application code, create a task (runs_create, with the workflow that fits — quick-task when nothing else does) and tell the user it exists. Never edit, create, move or delete any other file yourself, even where your tools would let you, and never run a shell command that writes.',
+    `- Everything you write is a PROPOSAL. Write cezar configuration under ${proposals} only, mirroring .ai/cezar/: ${CHAT_WRITABLE.map((path) => path.replace('.ai/cezar/', proposals)).join(', ')} — for ${CHAT_WRITABLE.join(', ')}. Nothing loads a proposal: the user reviews it in the chat's Changes panel and applies (and commits) it or discards it. workflows_put and automations_create save proposals too. Validate a workflow with workflows_parse before you save it. Do not commit, branch or push.`,
+    '- A proposed workflow cannot run until the user applies it: runs_create takes only a workflow that is live now (workflows_list), never inline steps. An automation you propose is always paused; only the user switches one on, and you cannot edit, run or pause a live one.',
+    '- Everything else is out of bounds: application code, the live .ai/cezar/ files and the rest of .ai/cezar/ (config.json, config.local.json, mcp.local.json, runs.json, run events, worktrees). To change application code, create a task (runs_create, with the workflow that fits — quick-task when nothing else does) and tell the user it exists. Never edit, create, move or delete any other file yourself, even where your tools would let you, and never run a shell command.',
     `- You cannot open pull requests, push, change Settings or read secrets: an env file's values, the secret store and the tracker's credentials are refused to you (the env-file listing shows paths and variable names only), and you must not open .env files or other credentials with your file tools either. Do not try to work around a refusal — report it.`,
     '- The cezar MCP server is your only way to cezar: never call the cockpit\'s HTTP API yourself (curl, fetch, a script, the cez CLI), even if you find its address. On a local cockpit without sign-in such a call would act as the owner, and these rules are the only thing that stops it.',
     '- Tasks you start are linked to this chat, and their status changes appear here as notes. Use runs_get or runs_history to answer questions about them.',

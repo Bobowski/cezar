@@ -156,9 +156,10 @@ export type RunKind = z.infer<typeof runKindSchema>;
 export const createdBySchema = z.string().regex(/^chat:[A-Za-z0-9-]{1,64}$/);
 
 /**
- * What the cockpit chat may write, show in its Changes and commit (spec 2026-10-24-cockpit-chat
- * §5): cezar configuration the owner reviews — never the owner settings, run state, private MCP
- * or task worktrees beside it under `.ai/cezar/`. A trailing `/` is a directory.
+ * The live cezar configuration a chat may PROPOSE (spec 2026-10-24-cockpit-chat §3, §5) — never the
+ * owner settings, run state, private MCP or task worktrees beside it under `.ai/cezar/`. The chat
+ * writes a mirror of these under {@link chatProposalRoot}, which nothing loads; the owner's Apply
+ * makes it live. A trailing `/` is a directory.
  */
 export const CHAT_WRITABLE = [
   '.ai/cezar/workflows/',
@@ -176,6 +177,57 @@ export function chatMayWrite(path: string): boolean {
     entry.endsWith('/') ? normalized.startsWith(entry) && normalized.length > entry.length : normalized === entry,
   );
 }
+
+/** Where a chat's proposals sit (spec 2026-10-24-cockpit-chat §3): `.ai/cezar/proposals/<chatId>/`,
+ *  mirroring `.ai/cezar/`. Ignored state — the owner's Apply & commit makes them repo content. */
+export const CHAT_PROPOSALS_DIR = '.ai/cezar/proposals/';
+const CEZAR_DIR = '.ai/cezar/';
+
+export function chatProposalRoot(chatId: string): string {
+  return `${CHAT_PROPOSALS_DIR}${chatId}/`;
+}
+
+/** The proposal path that mirrors a live {@link CHAT_WRITABLE} path; undefined for any other path. */
+export function chatProposalPath(chatId: string, livePath: string): string | undefined {
+  const normalized = livePath.replace(/\\/g, '/');
+  return chatMayWrite(normalized) ? `${chatProposalRoot(chatId)}${normalized.slice(CEZAR_DIR.length)}` : undefined;
+}
+
+/** The live path a chat's proposal stands for; undefined unless it mirrors {@link CHAT_WRITABLE}. */
+export function chatLivePath(chatId: string, proposalPath: string): string | undefined {
+  const normalized = proposalPath.replace(/\\/g, '/');
+  const root = chatProposalRoot(chatId);
+  if (!normalized.startsWith(root)) return undefined;
+  const live = `${CEZAR_DIR}${normalized.slice(root.length)}`;
+  return chatMayWrite(live) ? live : undefined;
+}
+
+/** One proposed file, as the chat's Changes panel shows it: the live path and its diff. */
+export const chatProposalSchema = z.object({
+  /** The live path it would replace — one of {@link CHAT_WRITABLE}. */
+  path: z.string(),
+  status: z.enum(['added', 'modified', 'unchanged']),
+  /** A unified diff, live file → proposal (capped). */
+  diff: z.string(),
+});
+export type ChatProposal = z.infer<typeof chatProposalSchema>;
+export const chatProposalsResponseSchema = z.object({ proposals: z.array(chatProposalSchema) });
+export type ChatProposalsResponse = z.infer<typeof chatProposalsResponseSchema>;
+
+/** `/repo/proposals/:chatId` — a run id, which is also the proposals directory's name. */
+export const chatProposalParamsSchema = z.object({ chatId: z.string().regex(/^[A-Za-z0-9-]{1,64}$/) });
+
+/** Apply or discard: the live paths to act on (absent = every proposal of the chat). */
+export const chatProposalsActionSchema = z.object({
+  paths: z.array(z.string().min(1).max(1024)).max(500).optional(),
+  message: z.string().min(1).max(20_000).optional(),
+});
+export type ChatProposalsAction = z.infer<typeof chatProposalsActionSchema>;
+/** `sha` is absent when nothing applied is repo content (`automations.json` is local state). */
+export const chatProposalsApplyResponseSchema = z.object({ applied: z.array(z.string()), sha: z.string().optional() });
+export type ChatProposalsApplyResponse = z.infer<typeof chatProposalsApplyResponseSchema>;
+export const chatProposalsDiscardResponseSchema = z.object({ discarded: z.array(z.string()) });
+export type ChatProposalsDiscardResponse = z.infer<typeof chatProposalsDiscardResponseSchema>;
 
 /** `GET /runs?kind=` — tasks by default (chats only when asked: `chat`, or `all` for both). */
 export const runsListQuerySchema = z.object({ kind: z.enum(['task', 'chat', 'all']).optional() });

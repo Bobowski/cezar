@@ -1,8 +1,12 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { chatLivePath, chatProposalPath } from '@open-mercato/cezar-contract';
 import { buildClaudeArgs } from '../core/claude-cli-runner.ts';
-import { CHAT_ALLOWED_TOOLS, CHAT_DENIED_TOOLS, CHAT_WRITABLE, cezarChatPrompt, chatMayWrite } from './chat.ts';
+import { CHAT_WRITABLE, cezarChatPrompt, chatMayWrite, chatToolPolicy, listChatTree, type ChatTreeListing } from './chat.ts';
 
-/** Spec 2026-10-24-cockpit-chat §5: the chat writes cezar configuration, never cezar's state. */
+/** Spec 2026-10-24-cockpit-chat §5: the chat proposes cezar configuration, never cezar's state. */
 describe('the chat\'s .ai/cezar allowlist', () => {
   it.each([
     '.ai/cezar/workflows/e2e.yaml',
@@ -10,9 +14,13 @@ describe('the chat\'s .ai/cezar allowlist', () => {
     '.ai/cezar/agents/reviewer.md',
     '.ai/cezar/automations.json',
     '.ai/cezar/mcp.json',
-  ])('may write %s', (path) => {
+  ])('may propose %s', (path) => {
     expect(chatMayWrite(path)).toBe(true);
     expect(chatMayWrite(path.replace(/\//g, '\\'))).toBe(true);
+    const proposal = chatProposalPath('c1', path)!;
+    expect(proposal.startsWith('.ai/cezar/proposals/c1/')).toBe(true);
+    expect(chatLivePath('c1', proposal)).toBe(path);
+    expect(chatLivePath('c2', proposal)).toBeUndefined();
   });
 
   it.each([
@@ -29,46 +37,91 @@ describe('the chat\'s .ai/cezar allowlist', () => {
     '.ai/cezar/workflows/../config.json',
     '.ai/cezar/mcp.json.bak',
     'src/app.ts',
-  ])('may not write %s', (path) => {
+  ])('may not propose %s', (path) => {
     expect(chatMayWrite(path)).toBe(false);
+    expect(chatProposalPath('c1', path)).toBeUndefined();
+  });
+});
+
+describe('the chat\'s tool policy', () => {
+  const tree: ChatTreeListing = {
+    repo: ['src/', 'README.md', 'package.json', '.claude/', '.ai/'],
+    ai: ['cezar/', 'specs/'],
+    cezar: ['workflows/', 'automations.json', 'config.json', 'runs/', 'proposals/'],
+    proposals: ['c1/', 'other-chat/'],
+  };
+  const { allowedTools, disallowedTools } = chatToolPolicy('c1', tree);
+  const pathOf = (rule: string) => /\((.*)\)$/.exec(rule)![1]!;
+  /** A gitignore-ish match good enough for these rules: `**` any suffix, an anchored `./` prefix. */
+  const covers = (rule: string, path: string) => {
+    const pattern = pathOf(rule).replace(/^\.\//, '');
+    return pattern.endsWith('/**') ? path.startsWith(pattern.slice(0, -2)) : path === pattern;
+  };
+
+  it('writes only its own proposals', () => {
+    const writes = allowedTools.filter((rule) => /^(Edit|Write|MultiEdit)\(/.test(rule));
+    expect(writes.length).toBe(3 * CHAT_WRITABLE.length);
+    for (const rule of writes) expect(pathOf(rule).startsWith('.ai/cezar/proposals/c1/'), rule).toBe(true);
+    expect(allowedTools).not.toContain('Bash');
   });
 
-  it('grants Edit/Write only on that list, and denies the rest of .ai/cezar/ explicitly', () => {
-    const writes = CHAT_ALLOWED_TOOLS.filter((rule) => /^(Edit|Write|MultiEdit)\(/.test(rule));
-    expect(writes).not.toContain('Edit(.ai/cezar/**)');
-    for (const rule of writes) {
-      const path = /\((.*)\)$/.exec(rule)![1]!.replace(/\*\*$/, 'x');
-      expect(chatMayWrite(path), rule).toBe(true);
+  it('denies a shell, the network and sub-agents outright — a repo\'s own allow rules cannot bring them back', () => {
+    for (const tool of ['Bash', 'WebFetch', 'WebSearch', 'Agent', 'Task', 'NotebookEdit']) expect(disallowedTools).toContain(tool);
+  });
+
+  it('denies every write beside the path to its proposals: application code, the live config, other chats', () => {
+    const deniedWrite = (path: string) =>
+      ['Edit', 'Write', 'MultiEdit'].every((tool) => disallowedTools.some((rule) => rule.startsWith(`${tool}(`) && covers(rule, path)));
+    for (const path of [
+      'src/app.ts', 'README.md', 'package.json', '.claude/settings.json', '.ai/specs/x.md',
+      '.ai/cezar/workflows/quick-task.yaml', '.ai/cezar/automations.json', '.ai/cezar/config.json',
+      '.ai/cezar/mcp.json', '.ai/cezar/skills/x.md', '.ai/cezar/runs/r1.ndjson',
+      '.ai/cezar/proposals/other-chat/workflows/x.yaml',
+    ]) expect(deniedWrite(path), path).toBe(true);
+    // No deny rule shadows its own proposals (deny beats allow in Claude).
+    for (const rule of disallowedTools.filter((rule) => rule.includes('('))) {
+      for (const path of ['.ai/cezar/proposals/c1/workflows/x.yaml', '.ai/cezar/proposals/c1/automations.json']) {
+        expect(covers(rule, path), rule).toBe(false);
+      }
     }
-    for (const path of ['config.json', 'config.local.json', 'mcp.local.json', 'runs.json', 'runs/**', 'worktrees/**']) {
-      for (const tool of ['Edit', 'Write', 'MultiEdit']) expect(CHAT_DENIED_TOOLS).toContain(`${tool}(.ai/cezar/${path})`);
-    }
-    // Private MCP tokens and other tasks' files are not even readable.
-    expect(CHAT_DENIED_TOOLS).toContain('Read(.ai/cezar/mcp.local.json)');
-    expect(CHAT_DENIED_TOOLS).toContain('Read(.ai/cezar/worktrees/**)');
-    // No deny rule shadows an allowed path (deny beats allow in Claude).
-    for (const rule of CHAT_DENIED_TOOLS) {
-      const path = /\((.*)\)$/.exec(rule)![1]!.replace(/\*\*$/, 'x').replace(/\*/g, 'x');
-      expect(chatMayWrite(path), rule).toBe(false);
+    // Secrets and run state are not even readable.
+    expect(disallowedTools).toContain('Read(.ai/cezar/mcp.local.json)');
+    expect(disallowedTools).toContain('Read(.ai/cezar/worktrees/**)');
+  });
+
+  it('lists the checkout it launches in', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cez-chat-tree-'));
+    try {
+      mkdirSync(join(root, 'src'));
+      mkdirSync(join(root, '.ai/cezar/proposals/c1'), { recursive: true });
+      writeFileSync(join(root, 'README.md'), 'x');
+      const listed = listChatTree(root);
+      expect([...listed.repo].sort()).toEqual(['.ai/', 'README.md', 'src/']);
+      expect(listed.proposals).toEqual(['c1/']);
+      expect(chatToolPolicy('c1', listed).disallowedTools).toEqual(expect.arrayContaining(['Write(./src/**)', 'Write(./README.md)']));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
   it('reaches claude as --disallowedTools', () => {
-    const args = buildClaudeArgs({ userPrompt: 'hi', cwd: '/repo', allowedTools: CHAT_ALLOWED_TOOLS, disallowedTools: CHAT_DENIED_TOOLS });
-    expect(args[args.indexOf('--disallowedTools') + 1]).toBe(CHAT_DENIED_TOOLS.join(','));
+    const args = buildClaudeArgs({ userPrompt: 'hi', cwd: '/repo', allowedTools, disallowedTools });
+    expect(args[args.indexOf('--disallowedTools') + 1]).toBe(disallowedTools.join(','));
+    expect(args[args.indexOf('--disallowedTools') + 1]).toContain('Bash,');
     expect(buildClaudeArgs({ userPrompt: 'hi', cwd: '/repo' })).not.toContain('--disallowedTools');
   });
 
-  it('the prompt names the same list', () => {
-    const prompt = cezarChatPrompt({ mcp: true });
-    for (const path of CHAT_WRITABLE) expect(prompt).toContain(path);
-    expect(prompt).not.toContain('write under .ai/cezar/ directly');
+  it('the prompt names the proposal paths and says a proposal runs only once applied', () => {
+    const prompt = cezarChatPrompt({ chatId: 'c1', mcp: true });
+    for (const path of CHAT_WRITABLE) expect(prompt).toContain(path.replace('.ai/cezar/', '.ai/cezar/proposals/c1/'));
+    expect(prompt).toContain('PROPOSAL');
+    expect(prompt).toContain('never inline steps');
   });
 });
 
 describe('the chat prompt on secrets', () => {
   it('says what the token refuses, and that file tools must not reach for them either', () => {
-    const prompt = cezarChatPrompt({ mcp: true });
+    const prompt = cezarChatPrompt({ chatId: 'c1', mcp: true });
     expect(prompt).toContain('variable names only');
     expect(prompt).toContain('.env files');
   });

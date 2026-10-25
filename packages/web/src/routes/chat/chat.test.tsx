@@ -2,12 +2,12 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { RepoIndex, RepoIndexFile, RunRecord } from '@open-mercato/cezar-api-client'
+import type { ChatProposal, RunRecord } from '@open-mercato/cezar-api-client'
 
 import { createQueryClient } from '@/api/query-client'
 import { Toaster, resetToasts } from '@/components/ui/toaster'
 import { ShellProviders } from '@/test/shell-providers'
-import { chatCommitMessage, chatTasks, inChatDir, projectChats } from '@/lib/chat'
+import { chatTasks, projectChats } from '@/lib/chat'
 import { listCounts } from '@/lib/task-groups'
 import { filterRunsByOrigin } from '@/lib/task-filters'
 import { unreadDoneCount } from '@/lib/read-state'
@@ -47,21 +47,6 @@ describe('the chat on the client', () => {
     expect(unreadDoneCount([run({ ...OLD_CHAT, ...finished }), run({ id: 'd', ...finished })])).toBe(1)
   })
 
-  it('touches only the chat\'s .ai/cezar/ files and names what it commits', () => {
-    expect(inChatDir('.ai/cezar/workflows/e2e.yaml')).toBe(true)
-    expect(inChatDir('.ai/cezar\\skills\\x.md')).toBe(true)
-    expect(inChatDir('.ai/cezar/agents/reviewer.md')).toBe(true)
-    expect(inChatDir('.ai/cezar/automations.json')).toBe(true)
-    expect(inChatDir('.ai/cezar/mcp.json')).toBe(true)
-    expect(inChatDir('src/app.ts')).toBe(false)
-    expect(inChatDir('.ai/cezarx/a')).toBe(false)
-    // The owner's settings, private MCP, run state and task worktrees sit beside them.
-    for (const owner of ['.ai/cezar/config.json', '.ai/cezar/config.local.json', '.ai/cezar/mcp.local.json', '.ai/cezar/runs.json', '.ai/cezar/worktrees/r1/a.ts']) {
-      expect(inChatDir(owner), owner).toBe(false)
-    }
-    expect(chatCommitMessage(['.ai/cezar/workflows/e2e.yaml'])).toBe('cezar: update workflows/e2e.yaml')
-    expect(chatCommitMessage(['.ai/cezar/a', '.ai/cezar/b', '.ai/cezar/c', '.ai/cezar/d'])).toBe('cezar: update a, b, c and 1 more')
-  })
 })
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
@@ -149,56 +134,40 @@ describe('a chat thread', () => {
 })
 
 describe('the chat\'s Changes', () => {
-  const file = (path: string, over: Partial<RepoIndexFile> = {}): RepoIndexFile => ({ path, status: 'modified', adds: 1, dels: 0, binary: false, patch: '', ...over })
-  const status = (over: Partial<RepoIndex> = {}): RepoIndex => ({
-    branch: 'main',
-    staged: [],
-    unstaged: [file('.ai/cezar/workflows/e2e.yaml', { status: 'added', untracked: true }), file('src/app.ts'), file('.ai/cezar/config.json')],
-    conflicted: [],
-    operation: null,
-    headPushed: false,
-    hasHead: true,
-    ...over,
-  }) as RepoIndex
+  const proposal = (path: string, over: Partial<ChatProposal> = {}): ChatProposal => ({ path, status: 'added', diff: `--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,1 @@\n+name: e2e\n`, ...over })
 
-  function stubRepo(index: RepoIndex): Sent[] {
+  function stubProposals(proposals: ChatProposal[]): Sent[] {
     return stubFetch((method, path) => {
-      if (method === 'GET' && path.endsWith('/repo/status')) return json(index)
-      if (method === 'GET' && path.includes('/code/watch')) return json({ topic: null })
-      if (method === 'POST' && /\/repo\/(stage|unstage|discard)$/.test(path)) return json(index)
-      if (method === 'POST' && path.endsWith('/repo/commit')) return json({ sha: 'abcdef1234567', message: 'm' })
+      if (method === 'GET' && path.endsWith('/repo/proposals/c2')) return json({ proposals })
+      if (method === 'POST' && path.endsWith('/repo/proposals/c2/apply')) return json({ applied: proposals.map((p) => p.path), sha: 'abcdef1234567' })
+      if (method === 'POST' && path.endsWith('/repo/proposals/c2/discard')) return json({ discarded: proposals.map((p) => p.path) })
       return undefined
     })
   }
 
-  it('lists only .ai/cezar/ and commits exactly those files', async () => {
-    const sent = stubRepo(status())
-    renderAt('/changes', <ChatChanges />)
+  it('shows each proposal as a diff against the live file, and Apply & commit is the owner\'s one click', async () => {
+    const sent = stubProposals([proposal('.ai/cezar/workflows/e2e.yaml'), proposal('.ai/cezar/mcp.json', { status: 'unchanged' })])
+    renderAt('/changes', <ChatChanges chatId="c2" />)
     expect(await screen.findByText('.ai/cezar/workflows/e2e.yaml')).toBeTruthy()
-    expect(screen.queryByText('src/app.ts')).toBeNull()
-    expect(screen.queryByText('.ai/cezar/config.json')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-    await waitFor(() => expect(sent.some((r) => r.path.endsWith('/repo/commit'))).toBe(true))
-    const posts = sent.filter((r) => r.method === 'POST')
-    expect(posts.map((r) => r.path.split('/').pop())).toEqual(['stage', 'commit'])
-    expect(posts[0]?.body).toEqual({ paths: ['.ai/cezar/workflows/e2e.yaml'] })
-    expect(posts[1]?.body).toEqual({ message: 'cezar: update workflows/e2e.yaml' })
+    expect(screen.queryByText('.ai/cezar/mcp.json')).toBeNull()
+    expect(document.querySelector('[data-slot="chat-change-diff"]')?.textContent).toContain('+name: e2e')
+    fireEvent.click(screen.getByRole('button', { name: 'Apply & commit' }))
+    await waitFor(() => expect(sent.some((r) => r.path.endsWith('/repo/proposals/c2/apply'))).toBe(true))
+    expect(sent.find((r) => r.path.endsWith('/apply'))?.body).toEqual({})
   })
 
-  it('will not commit while the user has other files staged', async () => {
-    stubRepo(status({ staged: [file('src/app.ts')] }))
-    renderAt('/changes', <ChatChanges />)
-    await screen.findByText('.ai/cezar/workflows/e2e.yaml')
-    expect((screen.getByRole('button', { name: 'Commit' }) as HTMLButtonElement).disabled).toBe(true)
-  })
-
-  it('reverts only after a confirm, and only its own files', async () => {
-    const sent = stubRepo(status())
-    renderAt('/changes', <ChatChanges />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Revert' }))
+  it('discards only after a confirm', async () => {
+    const sent = stubProposals([proposal('.ai/cezar/workflows/e2e.yaml')])
+    renderAt('/changes', <ChatChanges chatId="c2" />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
     expect(sent.some((r) => r.method === 'POST')).toBe(false)
-    fireEvent.click(screen.getByRole('button', { name: 'Discard 1 file' }))
-    await waitFor(() => expect(sent.some((r) => r.path.endsWith('/repo/discard'))).toBe(true))
-    expect(sent.find((r) => r.path.endsWith('/repo/discard'))?.body).toEqual({ paths: ['.ai/cezar/workflows/e2e.yaml'], confirm: true, untracked: true })
+    fireEvent.click(screen.getByRole('button', { name: 'Discard 1 proposal' }))
+    await waitFor(() => expect(sent.some((r) => r.path.endsWith('/repo/proposals/c2/discard'))).toBe(true))
+  })
+
+  it('says so when the chat proposes nothing', async () => {
+    stubProposals([])
+    renderAt('/changes', <ChatChanges chatId="c2" />)
+    expect(await screen.findByText('The chat proposes nothing right now.')).toBeTruthy()
   })
 })

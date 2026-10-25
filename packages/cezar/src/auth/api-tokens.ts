@@ -168,8 +168,10 @@ export function scopesSeeTranscript(scopes: readonly ApiTokenScope[]): boolean {
   return scopes.some((scope) => scope === 'runs.transcript' || scope === 'tasks' || scope === 'admin');
 }
 
-/** The same question for a request's principal; anything but a token is the owner and sees all. */
+/** The same question for a request's principal; anything but a token or a chat is the owner and sees all. */
 export function principalSeesTranscript(principal: Principal | undefined): boolean {
+  // A cockpit chat reads only its own tasks' transcripts (spec 2026-10-24-cockpit-chat §5).
+  if (principal?.kind === 'run' && principal.scope === 'author') return false;
   return principal?.kind !== 'token' || scopesSeeTranscript(principal.scopes);
 }
 

@@ -45,7 +45,7 @@ import {
   seedHandoffFile,
 } from '../handoff.ts';
 import { mintChatRunToken, mintRunToken, newLaunchNonce } from '../auth/run-tokens.ts';
-import { CHAT_ALLOWED_TOOLS, CHAT_DENIED_TOOLS, CHAT_MCP_SERVER, cezarChatPrompt, chatMcpServer, isChatRun, relayChatStatusNotes } from '../chat/chat.ts';
+import { CHAT_MCP_SERVER, cezarChatPrompt, chatMcpServer, chatToolPolicy, isChatRun, listChatTree, relayChatStatusNotes } from '../chat/chat.ts';
 import { todosPath } from '../todos.ts';
 // Contract VALUES, like `workspaceUiStateSchema` in workspace/migrations.ts: the attachment
 // vocabulary the routes validate with is the same one the engine stores and re-reads by, so the
@@ -892,10 +892,12 @@ export function resolveExtraSystemPrompt(
  *  so a read-only task or the chat (spec 2026-10-24-cockpit-chat) cannot get its tools at one
  *  site and the workflow's at the other. */
 function sessionTools(
-  state: Pick<ActiveRun, 'readOnly' | 'chat'>,
+  state: Pick<ActiveRun, 'readOnly' | 'chat' | 'cwd'>,
   step: Pick<WorkflowStepDef, 'allowedTools' | 'bashAllowlist'> | undefined,
+  runId: string,
 ): { allowedTools: string[]; bashAllowlist: string[] | undefined; disallowedTools?: string[] } {
-  if (state.chat) return { allowedTools: CHAT_ALLOWED_TOOLS, bashAllowlist: undefined, disallowedTools: CHAT_DENIED_TOOLS };
+  // Listed per launch: the deny rules name what is beside the chat's proposals right now.
+  if (state.chat) return { ...chatToolPolicy(runId, listChatTree(state.cwd)), bashAllowlist: undefined };
   if (state.readOnly) return { allowedTools: READ_ONLY_TOOLS, bashAllowlist: undefined };
   return { allowedTools: step?.allowedTools ?? DEFAULT_ALLOWED_TOOLS, bashAllowlist: step?.bashAllowlist };
 }
@@ -4982,7 +4984,7 @@ export class RunManager {
             : contextualOpeningPrompt,
           ...(openingImages.length ? { images: openingImages } : {}),
           cwd: state.cwd,
-          ...sessionTools(state, toolsStep),
+          ...sessionTools(state, toolsStep, runId),
             additionalDirectories: agentDirectories(
               join(this.dataDir, 'runs'),
               state.grantedAttachmentLibrary,
@@ -5167,7 +5169,7 @@ export class RunManager {
     // read-only rule or the chat's own prompt rides along, so a Continue (which reads the record) keeps it.
     const extraSystemPrompt = composeSystemPrompt(
       state.chat
-        ? cezarChatPrompt({ projectId: this.projectId, mcp: Boolean(process.env.CEZ_API_URL && process.env.CEZ_BIN) && supportsPrivateMcp(taskBackend) })
+        ? cezarChatPrompt({ chatId: runId, projectId: this.projectId, mcp: Boolean(process.env.CEZ_API_URL && process.env.CEZ_BIN) && supportsPrivateMcp(taskBackend) })
         : undefined,
       resolveExtraSystemPrompt(input.systemPrompt, config.systemPrompt),
       state.autoLand ? landingPromptPart(state.autoLand.baseLabel, state.autoLand.checks, state.autonomous === true) : undefined,
@@ -7102,7 +7104,7 @@ export class RunManager {
           userPrompt: prompt,
           images,
           cwd: state.cwd,
-          ...sessionTools(state, step),
+          ...sessionTools(state, step, runId),
           // The handoff file lives outside the worktree — grant access.
           additionalDirectories: agentDirectories(
             join(this.dataDir, 'runs'),

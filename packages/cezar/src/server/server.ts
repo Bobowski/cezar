@@ -80,6 +80,7 @@ import {
   isTrackerAutomation,
   isScheduleAutomation,
   type AutomationDefinition,
+  automationDefinitionSchema,
 } from '../automations/types.ts';
 import { activityHeadsChanged } from '../automations/github-activity.ts';
 import { trackerTriggerSchema, trackerAutomationOptionsSchema, trackerAutomationOptionsQuerySchema, automationScheduleSchema, localTimeZone, nextOccurrence } from '@open-mercato/cezar-contract';
@@ -159,6 +160,7 @@ import {
   workflowXorSteps,
 } from '@open-mercato/cezar-contract';
 import { CHAT_WORKFLOW, chatCreatedBy, isChatRun } from '../chat/chat.ts';
+import { chatProposalParamsSchema, chatProposalsActionSchema } from '@open-mercato/cezar-contract';
 import { detectEnvironment } from '../core/backend-detect.ts';
 import type { HostUsage } from '@open-mercato/cezar-contract';
 import { resolveCursorAgentBin } from '../core/cursor-bin.ts';
@@ -371,7 +373,8 @@ import { agentHomePaths, cezarHomeDir, expandTilde, isAbsolutePath } from '../pa
 import { authEnforced, fileEditRefusal, isLoopbackHostHeader, normalizeHostname, resolveCapabilities, trustedOperator } from './capabilities.ts';
 import { bearerOf, createAuthGuard, principalOf, upgradeIsAuthenticated, upgradeSessionId } from '../auth/guard.ts';
 import { isApiToken, principalSeesTranscript } from '../auth/api-tokens.ts';
-import { dispatchedTaskTitle, projectsRuns, projectTaskRow, redactRunForScope, runViewScopes, visibleTaskTitle } from '../auth/run-projection.ts';
+import { dispatchedTaskTitle, projectsRuns, projectTaskRow, redactRunForScope, runViewScopes, runViewScopesFor, visibleTaskTitle } from '../auth/run-projection.ts';
+import { applyProposals, discardProposals, listProposals, proposeAutomation, proposedAutomation } from '../chat/proposals.ts';
 import { buildCatalog, type Catalog } from '../mcp/catalog.ts';
 import { mcpRoutes } from '../mcp/http.ts';
 import { ensureHostKey } from '../auth/host-key.ts';
@@ -1555,6 +1558,28 @@ function selfUpdateFor(principal: ReturnType<typeof principalOf>, status: SelfUp
 // this function, and `AppType` (src/server/app-type.ts) is `ReturnType<typeof createApp>`.
 // Annotating it `Hono` here would erase every route from the type and leave the typed client
 // with nothing to offer. See the `routed` assembly at the end of the function.
+/** The cockpit chat a request comes from (spec 2026-10-24-cockpit-chat §5), or undefined. */
+function chatPrincipalId(c: Context): string | undefined {
+  const principal = principalOf(c);
+  return principal?.kind === 'run' && principal.scope === 'author' ? principal.runId : undefined;
+}
+
+/** A chat's brakes on the tasks it starts (spec 2026-10-24-cockpit-chat §5). */
+export const CHAT_TASKS_PER_HOUR = 5;
+export const CHAT_TASKS_IN_FLIGHT = 2;
+
+/** Why a chat may not start another task now, or undefined. */
+export function chatTaskLimit(store: RunStore, chatId: string, now = Date.now()): string | undefined {
+  const mine = store.listRuns().filter((run) => run.createdBy === chatCreatedBy(chatId));
+  const inFlight = mine.filter((run) => run.status === 'queued' || run.status === 'running' || run.status === 'waiting').length;
+  if (inFlight >= CHAT_TASKS_IN_FLIGHT) {
+    return `this chat already has ${inFlight} tasks in flight — at most ${CHAT_TASKS_IN_FLIGHT}; wait for one to reach review`;
+  }
+  const lastHour = mine.filter((run) => now - Date.parse(run.createdAt) < 3_600_000).length;
+  if (lastHour >= CHAT_TASKS_PER_HOUR) return `this chat started ${lastHour} tasks in the last hour — at most ${CHAT_TASKS_PER_HOUR}`;
+  return undefined;
+}
+
 export function createApp(deps: ServerDeps) {
   const { version, update, bindHost, bootProjectId } = deps;
   // Boot singletons keep DELIBERATELY distinct names (`boot*`): every
@@ -4355,7 +4380,8 @@ export function createApp(deps: ServerDeps) {
       const issue = stepsIssue(steps);
       if (issue) return c.json({ error: issue }, 400);
       const slug = slugify(parsed.data.name) || 'chain';
-      const dir = join(repoRoot, WORKFLOWS_DIR);
+      const chatId = chatPrincipalId(c);
+      const dir = chatId ? join(c.get('project').dataDir, 'proposals', chatId, 'workflows') : join(repoRoot, WORKFLOWS_DIR);
       const path = join(dir, `${slug}.yaml`);
       // Pure skill stacks are written in the portable compact form (spec 012) —
       // `name` + `skills:` — so the file imports cleanly in any repo.
@@ -4418,7 +4444,8 @@ export function createApp(deps: ServerDeps) {
       const issues = graphIssues(body.graph);
       if (issues.length) return c.json({ error: issues.join('; ') }, 400);
       const slug = slugify(body.name) || 'workflow';
-      const dir = join(repoRoot, WORKFLOWS_DIR);
+      const chatId = chatPrincipalId(c);
+      const dir = chatId ? join(c.get('project').dataDir, 'proposals', chatId, 'workflows') : join(repoRoot, WORKFLOWS_DIR);
       const path = join(dir, `${slug}.yaml`);
       const { nodes, edges, layout } = body.graph;
       const doc = {
@@ -4765,6 +4792,16 @@ export function createApp(deps: ServerDeps) {
       const accountIssue = await automationAccountIssue(c.get('project').root, parsed.data.task);
       if (accountIssue) return c.json({ error: accountIssue }, 400);
       const { enable, ...input } = parsed.data;
+      const chatId = chatPrincipalId(c);
+      if (chatId) {
+        // Spec 2026-10-24-cockpit-chat §3: a chat proposes a paused automation; only the owner arms one.
+        if (enable === true) return c.json({ error: 'a chat proposes a paused automation — the owner enables it' }, 403);
+        const now = new Date().toISOString();
+        const parsedDef = automationDefinitionSchema.safeParse({ ...input, kind, enabled: false, id: randomUUID(), revision: 1, createdAt: now, updatedAt: now });
+        if (!parsedDef.success) return c.json({ error: parsedDef.error.issues.map((issue) => issue.message).join('; ') }, 400);
+        proposeAutomation(c.get('project').dataDir, chatId, parsedDef.data);
+        return c.json({ automation: parsedDef.data }, 201);
+      }
       try {
         const automation = automationStore.create(
           { ...input, kind, enabled: enable === true },
@@ -4795,14 +4832,16 @@ export function createApp(deps: ServerDeps) {
     .put('/automations/:id', jsonZodValidator(() => automationUpdateSchema), async (c) => {
       const { automationStore } = c.get('project');
       const parsed = { data: c.req.valid('json') };
-      const current = automationStore.get(c.req.param('id'));
+      const chatId = chatPrincipalId(c);
+      const live = automationStore.get(c.req.param('id'));
+      // A chat edits its own proposal of an automation when it has one (spec 2026-10-24-cockpit-chat §3).
+      const proposed = chatId ? automationDefinitionSchema.safeParse(proposedAutomation(c.get('project').dataDir, chatId, c.req.param('id'))) : undefined;
+      const current = proposed?.success ? proposed.data : live;
       if (!current) return c.json({ error: 'not found' }, 404);
-      // An enabled automation launches with nobody there: the chat drafts a paused one, and the
-      // owner switches it on (spec 2026-10-24-cockpit-chat §5). Pausing stays the chat's.
-      const viewer = principalOf(c);
-      const stayingOn = parsed.data.enabled ?? current.enabled;
-      if (viewer?.kind === 'run' && viewer.scope === 'author' && stayingOn) {
-        return c.json({ error: 'the chat edits a paused automation only — the owner enables it' }, 403);
+      // An enabled automation launches with nobody there: a chat proposes paused ones only, and never
+      // touches a live one that is on (spec 2026-10-24-cockpit-chat §5).
+      if (chatId && (parsed.data.enabled === true || live?.enabled === true)) {
+        return c.json({ error: 'a chat proposes a paused automation and never edits an enabled one — the owner enables it' }, 403);
       }
       // The stored kind unless the body names one; a switch is refused — receipts and cursors
       // are kind-specific, and a silent swap would orphan them (spec 2026-09-14 § Edge cases).
@@ -4819,6 +4858,16 @@ export function createApp(deps: ServerDeps) {
       const accountIssue = await automationAccountIssue(c.get('project').root, parsed.data.task);
       if (accountIssue) return c.json({ error: accountIssue }, 400);
       const { expectedRevision, ...input } = parsed.data;
+      if (chatId) {
+        if (current.revision !== expectedRevision) return c.json({ error: 'automation revision conflict' }, 409);
+        const next = automationDefinitionSchema.safeParse({
+          ...current, ...input, kind, enabled: false, id: current.id, revision: current.revision + 1,
+          createdAt: current.createdAt, updatedAt: new Date().toISOString(),
+        });
+        if (!next.success) return c.json({ error: next.error.issues.map((issue) => issue.message).join('; ') }, 400);
+        proposeAutomation(c.get('project').dataDir, chatId, next.data);
+        return c.json({ automation: next.data });
+      }
       try {
         // Match the scanner's checkpoint identity: association and effective event selection.
         // Prompt and eligibility-filter edits keep progress so events since the last poll survive.
@@ -5173,7 +5222,8 @@ export function createApp(deps: ServerDeps) {
       // list` and every script see tasks; the cockpit, which mirrors every run event, asks `all`.
       const { kind = 'task' } = c.req.valid('query');
       const runs = c.get('project').store.listRuns().filter((run) => kind === 'all' || (kind === 'chat') === isChatRun(run));
-      return c.json(runs.map((run) => redactRunForScope(withUsage(run), scopes)));
+      const viewer = principalOf(c);
+      return c.json(runs.map((run) => redactRunForScope(withUsage(run), viewer?.kind === 'run' ? runViewScopesFor(viewer, run) : scopes)));
     })
 
     // Registered before the `/:id/...` routes so "archive-finished" and "read-all"
@@ -5263,7 +5313,10 @@ export function createApp(deps: ServerDeps) {
       // read off the caller's own token — never a body field anyone could set.
       const principal = principalOf(c);
       const caller = principal?.kind === 'run' && principal.scope ? store.getRun(principal.runId) : undefined;
-      if (chat && principal?.kind === 'run') return c.json({ error: 'a task or chat cannot start a chat' }, 403);
+      // A chat is the owner's: a signed-in user or the host (auth off), never a token (spec §5).
+      if (chat && principal && principal.kind !== 'user' && principal.kind !== 'host') {
+        return c.json({ error: 'only the owner starts a chat — not a task, a chat or an API token' }, 403);
+      }
       const createdBy = caller && isChatRun(caller) ? chatCreatedBy(caller.id) : undefined;
       // A chat's task goes through the review gate (spec 2026-10-24-cockpit-chat §5): its own
       // worktree, never autonomous — in place it would land, and push, on a `landing: auto` project.
@@ -5273,6 +5326,11 @@ export function createApp(deps: ServerDeps) {
         if (body.worktree === false || body.autonomous === true || body.readOnly || body.newBranch || body.dispatch) {
           return c.json({ error: 'a task the chat starts runs in its own worktree, is not autonomous and stops at review — drop worktree:false, autonomous, readOnly, newBranch and dispatch' }, 400);
         }
+        // Only a workflow that is live (loaded, so the owner applied it): inline steps would run a
+        // chain nobody reviewed, check commands and pushes included (spec §5).
+        if (body.steps) return c.json({ error: 'a chat starts a task with a live workflow (workflows_list), never inline steps' }, 400);
+        const limit = chatTaskLimit(store, chatPrincipalId(c) ?? '');
+        if (limit) return c.json({ error: limit }, 409);
       }
       // Resolve the ticket link before anything is started: a scope that moved under the user is
       // refused like any tracker read, while a vendor that merely fails to answer costs the link
@@ -5320,7 +5378,8 @@ export function createApp(deps: ServerDeps) {
         const account = await resolveWorkspaceProfile(fallback, parsed.data.agentProfile);
         if ('error' in account) return c.json({ error: account.error }, 400);
       }
-      const variants = parsed.data.variants ?? 1;
+      // A chat's task runs once (spec §5): its caps count tasks, and ×3 would triple each one.
+      const variants = fromChat ? 1 : parsed.data.variants ?? 1;
       if (variants > 1) {
         // Variants require git worktrees to isolate their changes.
         const repo = await getRepoInfo(repoRoot);
@@ -5378,7 +5437,7 @@ export function createApp(deps: ServerDeps) {
     .get('/runs/:id', (c) => {
       const { store } = c.get('project');
       const run = store.getRun(c.req.param('id'));
-      return run ? c.json(redactRunForScope(withUsage(run), runViewScopes(principalOf(c)))) : c.json({ error: 'not found' }, 404);
+      return run ? c.json(redactRunForScope(withUsage(run), runViewScopesFor(principalOf(c), run))) : c.json({ error: 'not found' }, 404);
     })
 
     // The ticket a run is linked to, read NOW by the cockpit for that run's agent (spec
@@ -9106,6 +9165,25 @@ export function createApp(deps: ServerDeps) {
       const { n } = c.req.valid('param');
       const r = await mutateCheckout(c.get('project'), principalOf(c), (root) => stashPop(root, n), { movesTree: true });
       return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
+    })
+    // A cockpit chat's proposals (spec 2026-10-24-cockpit-chat §3): the owner reviews them as diffs
+    // against the live files, then applies (copy, stage, commit) or discards them. Never the chat's.
+    .get('/repo/proposals/:chatId', paramZodValidator(chatProposalParamsSchema), (c) => {
+      const { root, dataDir } = c.get('project');
+      return c.json({ proposals: listProposals(root, dataDir, c.req.valid('param').chatId) });
+    })
+    .post('/repo/proposals/:chatId/apply', paramZodValidator(chatProposalParamsSchema), jsonZodValidator(chatProposalsActionSchema, { absent: {} }), async (c) => {
+      const { chatId } = c.req.valid('param');
+      const project = c.get('project');
+      const r = await mutateCheckout(project, principalOf(c), (root) => applyProposals(root, project.dataDir, chatId, c.req.valid('json')), { movesTree: true });
+      if ('error' in r) return c.json({ error: r.error }, 409);
+      if (r.value.applied.includes('.ai/cezar/automations.json')) automationsChanged();
+      return c.json(r.value, 200);
+    })
+    .post('/repo/proposals/:chatId/discard', paramZodValidator(chatProposalParamsSchema), jsonZodValidator(chatProposalsActionSchema, { absent: {} }), (c) => {
+      if (principalOf(c)?.kind === 'run') return c.json({ error: 'a chat\'s proposals are the owner\'s to discard' }, 403);
+      const { paths } = c.req.valid('json');
+      return c.json({ discarded: discardProposals(c.get('project').dataDir, c.req.valid('param').chatId, paths) }, 200);
     })
     .post('/repo/remotes/:name/fetch', paramZodValidator(repoRemoteParamSchema), async (c) => {
       const { name } = c.req.valid('param');

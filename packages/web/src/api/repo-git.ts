@@ -3,6 +3,10 @@ import { useEffect } from 'react'
 
 import {
   queryScope,
+  type ChatProposalsAction,
+  type ChatProposalsApplyResponse,
+  type ChatProposalsDiscardResponse,
+  type ChatProposalsResponse,
   type RepoCommitInput,
   type RepoCommitResponse,
   type RepoCompare,
@@ -40,6 +44,7 @@ export const repoGitKeys = {
   compare: (ref: string) => [...queryKeys.repo, 'compare', ref] as const,
   stash: () => [...queryKeys.repo, 'stash'] as const,
   remotes: () => [...queryKeys.repo, 'remotes'] as const,
+  proposals: (chatId: string) => [...queryKeys.repo, 'proposals', chatId] as const,
 }
 
 export const GRAPH_PAGE = 200
@@ -149,6 +154,20 @@ export async function fetchRemote(name: string): Promise<RepoMessageResponse> {
   )
 }
 
+/** A cockpit chat's proposals (spec 2026-10-24-cockpit-chat §3): diffs against the live files. */
+export async function getChatProposals(chatId: string, opts?: ReadOptions): Promise<ChatProposalsResponse> {
+  return unwrap(await repo().proposals[':chatId'].$get({ param: { ...scope(), chatId } }, init(opts)), '/repo/proposals')
+}
+
+/** Apply & commit: the owner copies the proposals into place and commits the repo files. */
+export async function applyChatProposals(chatId: string, input: ChatProposalsAction = {}): Promise<ChatProposalsApplyResponse> {
+  return unwrap(await repo().proposals[':chatId'].apply.$post({ param: { ...scope(), chatId }, json: input }), '/repo/proposals/apply')
+}
+
+export async function discardChatProposals(chatId: string, input: ChatProposalsAction = {}): Promise<ChatProposalsDiscardResponse> {
+  return unwrap(await repo().proposals[':chatId'].discard.$post({ param: { ...scope(), chatId }, json: input }), '/repo/proposals/discard')
+}
+
 // ---- hooks -------------------------------------------------------------------------------------
 
 export function useRepoGraph(filter: RepoGraphFilter) {
@@ -185,6 +204,16 @@ export function useRepoIndex() {
     return subscribeTopic(topic, () => void queryClient.invalidateQueries({ queryKey: repoGitKeys.index() }), () => {})
   }, [queryClient, topic])
   return query
+}
+
+export function useChatProposals(chatId: string) {
+  return useQuery({
+    queryKey: repoGitKeys.proposals(chatId),
+    queryFn: ({ signal }) => getChatProposals(chatId, { signal }),
+    retry: false,
+    refetchOnWindowFocus: true,
+    staleTime: 0,
+  })
 }
 
 export function useRepoCompare(ref: string | null) {

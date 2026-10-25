@@ -1,11 +1,11 @@
 import { ArchiveIcon, FileDiffIcon, MessagesSquareIcon, PlusIcon, SearchXIcon } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router'
-import type { ApiRun, RepoIndexFile, Runner } from '@open-mercato/cezar-api-client'
+import type { ApiRun, Runner } from '@open-mercato/cezar-api-client'
 
 import { ApiError, createRun } from '@/api/client'
 import { queryKeys, useArchiveRun, useChatRuns, useMarkRunSeen, useRun, useRuns } from '@/api/queries'
-import { changeIndex, commitIndex, discardChange, useRepoGitAction, useRepoIndex } from '@/api/repo-git'
+import { applyChatProposals, discardChatProposals, repoGitKeys, useChatProposals, useRepoGitAction } from '@/api/repo-git'
 import { CenteredState } from '@/components/centered-state'
 import { ContextSidebar } from '@/components/context-sidebar'
 import { StatusDot } from '@/components/status-dot'
@@ -24,7 +24,7 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from '@/components/ui/toaster'
 import { statusTone } from '@/lib/automation-format'
-import { chatCommitMessage, chatTasks, inChatDir, knownChats, projectChats } from '@/lib/chat'
+import { chatTasks, knownChats, projectChats } from '@/lib/chat'
 import { Link, useNavigate } from '@/lib/project-router'
 import { isUnread } from '@/lib/read-state'
 import { useQueryClient } from '@tanstack/react-query'
@@ -36,8 +36,8 @@ import { RUNNERS } from '../new-task-form'
 /**
  * `/chat`, `/chat/new`, `/chat/:id` — the project's cockpit chat (spec 2026-10-24-cockpit-chat §3):
  * a task thread without the Changes/Preview columns, beside the chats list. The newest unarchived
- * chat is the pinned one `/chat` opens; New chat starts another. Its Changes panel is the
- * checkout's diff under `.ai/cezar/`, with Commit and Revert through the Git page's own routes.
+ * chat is the pinned one `/chat` opens; New chat starts another. Its Changes panel is the chat's
+ * proposals as diffs against the live files, with Apply & commit and Discard (spec §3).
  */
 export function ChatRoute({ fresh = false }: { fresh?: boolean }) {
   const { id } = useParams<{ id?: string }>()
@@ -209,7 +209,7 @@ function ChatThread({ id, tasks }: { id: string; tasks: ApiRun[] }) {
           <ConversationColumn run={run.data} onMarkedUnread={() => {}} />
         </div>
       </div>
-      {changesOpen ? <ChatChanges /> : null}
+      {changesOpen ? <ChatChanges chatId={run.data.id} turn={`${run.data.status}:${run.data.finishedAt ?? ''}`} /> : null}
     </div>
   )
 }
@@ -275,91 +275,88 @@ function ChatHeader({
 }
 
 /**
- * The chat's Changes: the checkout's files under `.ai/cezar/` (spec §3). Commit stages exactly
- * those and commits them on the checked-out branch — refused while something else is staged, so
- * it never sweeps the user's own work in; Revert throws them away after a confirm.
+ * The chat's Changes: what it PROPOSES (spec §3) — nothing it writes is live until the owner applies
+ * it. Each file is a diff against the live one; Apply & commit copies them into place and commits
+ * the repo files (refused while anything else is staged), Discard throws them away after a confirm.
  */
-export function ChatChanges() {
-  const index = useRepoIndex()
+export function ChatChanges({ chatId, turn }: { chatId: string; turn?: string }) {
+  const proposals = useChatProposals(chatId)
+  const queryClient = useQueryClient()
+  // A turn that ended may have written proposals: read them again.
+  useEffect(() => {
+    void queryClient.invalidateQueries({ queryKey: repoGitKeys.proposals(chatId) })
+  }, [queryClient, chatId, turn])
   const [confirming, setConfirming] = useState(false)
-  const staged = (index.data?.staged ?? []).filter((file) => inChatDir(file.path))
-  const unstaged = (index.data?.unstaged ?? []).filter((file) => inChatDir(file.path))
-  const otherStaged = (index.data?.staged ?? []).filter((file) => !inChatDir(file.path))
-  const files = uniqueFiles([...staged, ...unstaged])
-
-  const commit = useRepoGitAction(async (paths: string[]) => {
-    const unstagedPaths = unstaged.map((file) => file.path)
-    if (unstagedPaths.length) await changeIndex('stage', { paths: unstagedPaths })
-    return commitIndex({ message: chatCommitMessage(paths) })
-  })
-  const revert = useRepoGitAction(async () => {
-    if (staged.length) await changeIndex('unstage', { paths: staged.map((file) => file.path) })
-    return discardChange({ paths: files.map((file) => file.path), confirm: true, untracked: true })
-  })
-  const busy = commit.isPending || revert.isPending
+  const files = (proposals.data?.proposals ?? []).filter((file) => file.status !== 'unchanged')
+  const apply = useRepoGitAction(() => applyChatProposals(chatId))
+  const discard = useRepoGitAction(() => discardChatProposals(chatId))
+  const busy = apply.isPending || discard.isPending
 
   return (
-    <aside data-slot="chat-changes" className="flex w-80 shrink-0 flex-col gap-3 border-l border-border/70 p-3">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold">Changes in .ai/cezar/</h2>
+    <aside data-slot="chat-changes" className="flex w-96 shrink-0 flex-col gap-3 overflow-y-auto border-l border-border/70 p-3">
+      <div className="flex flex-col gap-0.5">
+        <h2 className="text-sm font-semibold">Proposed changes</h2>
+        <p className="text-xs text-muted-foreground">Nothing here runs until you apply it.</p>
       </div>
-      {index.isPending ? (
-        <p className="text-xs text-muted-foreground">Reading the checkout…</p>
-      ) : index.isError ? (
-        <p className="text-xs text-danger">{index.error.message}</p>
+      {proposals.isPending ? (
+        <p className="text-xs text-muted-foreground">Reading the proposals…</p>
+      ) : proposals.isError ? (
+        <p className="text-xs text-danger">{proposals.error.message}</p>
       ) : files.length === 0 ? (
         <p data-slot="chat-changes-empty" className="text-xs text-muted-foreground">
-          Nothing the chat wrote is uncommitted.
+          The chat proposes nothing right now.
         </p>
       ) : (
         <>
-          <ul className="flex flex-col gap-1">
+          <ul className="flex flex-col gap-2">
             {files.map((file) => (
-              <li key={file.path} data-slot="chat-change" className="flex items-center gap-2 font-mono text-xs">
-                <span className="w-3 shrink-0 text-muted-foreground">{file.untracked ? 'U' : file.status.charAt(0).toUpperCase()}</span>
-                <span className="truncate" title={file.path}>{file.path}</span>
+              <li key={file.path} data-slot="chat-change" className="flex flex-col gap-1">
+                <details>
+                  <summary className="flex cursor-pointer items-center gap-2 font-mono text-xs">
+                    <span className="w-3 shrink-0 text-muted-foreground">{file.status === 'added' ? 'A' : 'M'}</span>
+                    <span className="truncate" title={file.path}>{file.path}</span>
+                  </summary>
+                  <pre data-slot="chat-change-diff" className="mt-1 max-h-72 overflow-auto rounded border border-border/70 bg-muted/40 p-2 text-[11px] leading-snug">
+                    {file.diff}
+                  </pre>
+                </details>
               </li>
             ))}
           </ul>
-          {otherStaged.length > 0 ? (
-            <p className="text-xs text-muted-foreground">
-              Other files are staged in the checkout — commit those from the Git page first.
-            </p>
-          ) : null}
           <div className="flex gap-2">
             <Button
               type="button"
               size="sm"
-              data-action="chat-commit"
-              disabled={busy || otherStaged.length > 0}
+              data-action="chat-apply"
+              disabled={busy}
               onClick={() =>
-                commit.mutate(files.map((file) => file.path), {
-                  onSuccess: (answer) => toast(`committed ${answer.sha.slice(0, 8)}`),
+                apply.mutate(undefined, {
+                  onSuccess: (answer) => toast(answer.sha ? `applied and committed ${answer.sha.slice(0, 8)}` : 'applied'),
                   onError: (error: Error) => toast(error.message, { tone: 'danger' }),
                 })
               }
             >
-              Commit
+              Apply & commit
             </Button>
             {confirming ? (
               <Button
                 type="button"
                 size="sm"
                 variant="destructive"
-                data-action="chat-revert-confirm"
+                data-action="chat-discard-confirm"
                 disabled={busy}
                 onClick={() =>
-                  revert.mutate(undefined, {
+                  discard.mutate(undefined, {
                     onSettled: () => setConfirming(false),
                     onError: (error: Error) => toast(error.message, { tone: 'danger' }),
                   })
                 }
               >
-                Discard {files.length} {files.length === 1 ? 'file' : 'files'}
+                Discard {files.length} {files.length === 1 ? 'proposal' : 'proposals'}
               </Button>
             ) : (
-              <Button type="button" size="sm" variant="outline" data-action="chat-revert" disabled={busy} onClick={() => setConfirming(true)}>
-                Revert
+              <Button type="button" size="sm" variant="outline" data-action="chat-discard" disabled={busy} onClick={() => setConfirming(true)}>
+                Discard
               </Button>
             )}
           </div>
@@ -367,11 +364,4 @@ export function ChatChanges() {
       )}
     </aside>
   )
-}
-
-/** A file staged and then edited again is on both sides of the index; it is one file here. */
-function uniqueFiles(files: RepoIndexFile[]): RepoIndexFile[] {
-  const seen = new Map<string, RepoIndexFile>()
-  for (const file of files) if (!seen.has(file.path)) seen.set(file.path, file)
-  return [...seen.values()]
 }

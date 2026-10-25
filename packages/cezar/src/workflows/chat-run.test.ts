@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { disableRunTokens, verifyRunToken } from '../auth/run-tokens.ts';
-import { CHAT_ALLOWED_TOOLS, CHAT_DENIED_TOOLS, CHAT_WORKFLOW } from '../chat/chat.ts';
+import { CHAT_WORKFLOW, chatToolPolicy, listChatTree } from '../chat/chat.ts';
 import type { AgentEvent, AgentRunResult, AgentRunSpec } from '../core/agent-runner.ts';
 import { RunStore } from '../runs/store.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
@@ -98,8 +98,10 @@ describe('the cockpit chat run', () => {
 
     const opening = await specAt(0);
     expect(opening.cwd).toBe(repoRoot);
-    expect(opening.allowedTools).toEqual(CHAT_ALLOWED_TOOLS);
-    expect(opening.disallowedTools).toEqual(CHAT_DENIED_TOOLS);
+    const policy = chatToolPolicy(record.id, listChatTree(repoRoot));
+    expect(opening.allowedTools).toEqual(policy.allowedTools);
+    expect(opening.disallowedTools).toEqual(policy.disallowedTools);
+    expect(opening.disallowedTools).toContain('Bash');
     expect(opening.bashAllowlist).toBeUndefined();
     expect(opening.systemPrompt).toContain('You are the cezar chat for this project');
     expect(opening.systemPrompt).toContain('"proj"');
@@ -118,8 +120,8 @@ describe('the cockpit chat run', () => {
     expect(manager!.continueRun(record.id, { text: 'now save it', runner: 'claude' })).toEqual({ ok: true });
     const resumed = await specAt(1);
     expect(resumed.cwd).toBe(repoRoot);
-    expect(resumed.allowedTools).toEqual(CHAT_ALLOWED_TOOLS);
-    expect(resumed.disallowedTools).toEqual(CHAT_DENIED_TOOLS);
+    expect(resumed.allowedTools).toEqual(chatToolPolicy(record.id, listChatTree(repoRoot)).allowedTools);
+    expect(resumed.disallowedTools).toContain('Bash');
     expect(resumed.systemPrompt).toContain('You are the cezar chat for this project');
     expect(cezarServer(resumed)?.args).toContain('--as-run');
     // A Continue is a new launch: a new nonce, so the opening session's token no longer opens anything.

@@ -90,6 +90,25 @@ export function PageHeader({
   )
 }
 
+/**
+ * The header scale (spec 2026-10-24-cockpit-polish §3.4 item 1), one per kind of screen:
+ *
+ *  - a whole page (Settings, Tasks, Skills): `PageHeader` — 22px, `pt-6 sm:pt-8 pb-4`;
+ *  - a master–detail screen's main area (Git, Scripts, Docker): a `PageToolbar` (or `PageBody`)
+ *    at `pt-4` led by `PageTitle` — 15px, the same size as the sidebar's own heading;
+ *  - the one thing that area shows (a commit, a service): `PageItemTitle` — 17px.
+ */
+export const PAGE_TITLE_CLASS = 'text-[15px] font-semibold text-foreground'
+export const PAGE_ITEM_TITLE_CLASS = 'text-[17px] font-semibold text-foreground'
+
+export function PageTitle({ className, ...props }: React.ComponentProps<'h1'>) {
+  return <h1 data-slot="page-title" className={cn(PAGE_TITLE_CLASS, className)} {...props} />
+}
+
+export function PageItemTitle({ className, ...props }: React.ComponentProps<'h1'>) {
+  return <h1 data-slot="page-item-title" className={cn(PAGE_ITEM_TITLE_CLASS, className)} {...props} />
+}
+
 /** Filters, search and view switches: one quiet row between the header and the content. */
 export function PageToolbar({ className, ...props }: React.ComponentProps<'div'>) {
   return (

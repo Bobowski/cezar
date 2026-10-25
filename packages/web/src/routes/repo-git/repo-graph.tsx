@@ -6,7 +6,7 @@ import { Virtualizer } from 'virtua'
 import { cherryPickCommit, useRepoGitAction, useRepoGraph } from '@/api/repo-git'
 import type { RepoGraphCommit, RepoGraphFilter, RepoGraphRef } from '@open-mercato/cezar-api-client'
 
-import { PageBody, PageToolbar } from '@/components/page'
+import { PageBody, PageTitle, PageToolbar } from '@/components/page'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -142,7 +142,7 @@ export function RepoGraphSection({ header }: { header: ReactNode }) {
       </RepoContextSidebar>
 
       <PageToolbar data-slot="repo-graph-toolbar" className="gap-x-3 pt-4">
-        <h1 className="text-[15px] font-semibold text-foreground">Graph</h1>
+        <PageTitle>Graph</PageTitle>
         <ToggleGroup
           type="single"
           size="sm"

@@ -17,7 +17,7 @@ import { queryKeys, useGithub, useHealth, useRepoSync } from '@/api/queries'
 import { BranchTrackingBadge } from './repo-sync-bar'
 import type { GithubItem, HealthResponse, RepoInfo, RepoResponse } from '@open-mercato/cezar-api-client'
 
-import { PageBody, PageSection, PageToolbar } from '@/components/page'
+import { PageBody, PageSection, PageTitle, PageToolbar } from '@/components/page'
 import { StatusDot } from '@/components/status-dot'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -194,7 +194,7 @@ export function RepoBranchesSection({
       </RepoContextSidebar>
 
       <PageToolbar className="gap-x-3 pt-4">
-        <h1 className="text-[15px] font-semibold text-foreground">Branches</h1>
+        <PageTitle>Branches</PageTitle>
         {/* Phones filter here — the sidebar (and its filter) is a closed sheet. */}
         <InputGroup className="order-last w-full md:hidden">
           <InputGroupAddon>

@@ -91,7 +91,28 @@ column, not a setting.
 
 ## 7. Checklist state
 
-(empty — filled as items land)
+Behaviour (§3):
+
+- ~~3.1 Git sidebar~~ — the shell's contextual column takes an optional frame from the screen
+  (`ContextSidebar frame=…`: width, bounds, fold to icons, the `#788` resize handle); the Git page
+  keeps it per project in ui-state `repo`. Selection: Branches and Graph `?ref=`, Changes
+  `?file=` (Commits and Files were already paths). `Ctrl/Cmd+B` folds it.
+- ~~3.2 Live preview~~ — Auto-reload in the Browser bar; the change signal is the run's
+  checkout bell (`code:<project>:<run>`), which on Linux now rings from a demand-driven
+  `git status` poll, and — for a cockpit without the socket (remote) — `GET /repo/watch?stamp=1`
+  compared every 3 s while auto-reload is on. HMR detection is the gateway's upgrade log, read at
+  `/__cez_preview/hmr` on the gateway's own port. A page framed directly (a local cockpit) cannot
+  be observed, so there Auto-reload starts off and is one click away. New Browser columns open at
+  the project's `browserColumn.width` (45 %), kept from the last divider drag.
+- ~~3.3 Full screen~~ — `FullscreenRegion` (`components/fullscreen-region.tsx`) on every
+  workspace window (thread, Changes, Browser, …), the terminal drawer, Scripts, Docker and the
+  Code page. `Esc` is left to a shell or an editor (`.xterm`, `.cm-editor`) and to open
+  overlays. Not built: the desktop shell's native full-screen mapping (Tauri side).
+
+Consistency (§3.4):
+
+1. ~~One spacing scale for page headers~~ — `PageHeader` (whole page) / `PageTitle` (a
+   master–detail main area, `pt-4`) / `PageItemTitle` (the one item shown), in `page.tsx`.
 
 ## 8. Verification
 

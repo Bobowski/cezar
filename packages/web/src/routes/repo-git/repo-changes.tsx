@@ -7,7 +7,7 @@ import { useRepoCompare, useRepoIndex } from '@/api/repo-git'
 import type { RepoDiscard, RepoIndexChange, RepoIndexFile } from '@open-mercato/cezar-api-client'
 
 import { canPreviewMarkdown, Diff, type DiffHandle, type DiffMode } from '@/components/diff'
-import { PageBody, PageToolbar } from '@/components/page'
+import { PageBody, PageTitle, PageToolbar } from '@/components/page'
 import { Button } from '@/components/ui/button'
 import { SidebarContent, SidebarGroup, SidebarGroupAction, SidebarGroupContent, SidebarGroupLabel } from '@/components/ui/sidebar'
 import { Spinner } from '@/components/ui/spinner'
@@ -206,7 +206,7 @@ function IndexSection({ header }: { header: ReactNode }) {
       </RepoContextSidebar>
 
       <PageToolbar data-slot="repo-changes-toolbar" className="gap-x-3 pt-4">
-        <h1 className="text-[15px] font-semibold text-foreground">Uncommitted changes</h1>
+        <PageTitle>Uncommitted changes</PageTitle>
         {index.data ? <AnimatedDiffStat stat={stat} /> : null}
         <span className="ml-auto flex items-center gap-2">
           {index.data ? <StashMenu /> : null}
@@ -324,7 +324,7 @@ function CompareSection({ header, target, onClose }: { header: ReactNode; target
       </RepoContextSidebar>
       <PageToolbar data-slot="repo-compare-toolbar" className="gap-x-3 pt-4">
         <GitCompareIcon aria-hidden="true" className="size-4 text-muted-foreground" />
-        <h1 className="min-w-0 truncate text-[15px] font-semibold text-foreground">
+        <PageTitle className="min-w-0 truncate">
           <span className="font-mono">{target}</span>
           {compare.data ? (
             <span className="font-normal text-muted-foreground">
@@ -332,7 +332,7 @@ function CompareSection({ header, target, onClose }: { header: ReactNode; target
               vs <span className="font-mono">{compare.data.against}</span> · from {compare.data.mergeBase.slice(0, 8)}
             </span>
           ) : null}
-        </h1>
+        </PageTitle>
         {compare.data ? <AnimatedDiffStat stat={compare.data.stat} /> : null}
         <span className="ml-auto flex items-center gap-2">
           <span className="hidden items-center gap-1 md:flex">

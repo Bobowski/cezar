@@ -10,7 +10,7 @@ import { queryKeys } from '@/api/queries'
 import { useServices } from '@/api/services'
 import { ContextSidebar } from '@/components/context-sidebar'
 import { FullscreenRegion, FullscreenToggle } from '@/components/fullscreen-region'
-import { Page, PageBody } from '@/components/page'
+import { Page, PageBody, PageItemTitle } from '@/components/page'
 import { StatusDot, type StatusDotTone } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -323,10 +323,10 @@ export function ServicesRoute() {
           <>
             <header data-slot="service-detail" className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0 space-y-1">
-                <h1 className="flex items-center gap-2 text-[17px] font-semibold text-foreground">
+                <PageItemTitle className="flex items-center gap-2">
                   <StatusDot tone={serviceTone(selected)} pulse={running} />
                   <span className="truncate">{selected.name}</span>
-                </h1>
+                </PageItemTitle>
                 <code className="block truncate font-mono text-xs text-muted-foreground">{selected.command}{selected.cwd ? `  ·  ${selected.cwd}` : ''}</code>
                 <p className={cn('text-xs text-pretty', serviceTone(selected) === 'danger' ? 'text-danger' : 'text-muted-foreground')}>{serviceStateLabel(selected)}</p>
                 {urls.map((entry) => (

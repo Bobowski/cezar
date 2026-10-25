@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { disableRunTokens, verifyRunToken } from '../auth/run-tokens.ts';
-import { CHAT_ALLOWED_TOOLS, CHAT_WORKFLOW } from '../chat/chat.ts';
+import { CHAT_ALLOWED_TOOLS, CHAT_DENIED_TOOLS, CHAT_WORKFLOW } from '../chat/chat.ts';
 import type { AgentEvent, AgentRunResult, AgentRunSpec } from '../core/agent-runner.ts';
 import { RunStore } from '../runs/store.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
@@ -99,6 +99,7 @@ describe('the cockpit chat run', () => {
     const opening = await specAt(0);
     expect(opening.cwd).toBe(repoRoot);
     expect(opening.allowedTools).toEqual(CHAT_ALLOWED_TOOLS);
+    expect(opening.disallowedTools).toEqual(CHAT_DENIED_TOOLS);
     expect(opening.bashAllowlist).toBeUndefined();
     expect(opening.systemPrompt).toContain('You are the cezar chat for this project');
     expect(opening.systemPrompt).toContain('"proj"');
@@ -115,6 +116,7 @@ describe('the cockpit chat run', () => {
     const resumed = await specAt(1);
     expect(resumed.cwd).toBe(repoRoot);
     expect(resumed.allowedTools).toEqual(CHAT_ALLOWED_TOOLS);
+    expect(resumed.disallowedTools).toEqual(CHAT_DENIED_TOOLS);
     expect(resumed.systemPrompt).toContain('You are the cezar chat for this project');
     expect(cezarServer(resumed)?.args).toContain('--as-run');
     expect(await settled(record.id)).toBe('done');

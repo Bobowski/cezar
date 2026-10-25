@@ -37,10 +37,15 @@ not know what cezar is.
 - A chat run never ends at review: when its turn finishes it parks as `waiting` for the next
   message; it is archived like any run. One chat per project is pinned; **New chat** starts
   another. Previous chats are listed under the pinned one.
-- Files it writes in `.ai/cezar/` appear in the Changes tab of the chat (the checkout's diff,
-  filtered to that directory) with **Commit** (trunk-based commit to base) and **Revert**.
-  Application code is out of bounds: the chat's `allowedTools` deny `Edit`/`Write` outside
-  `.ai/cezar/` on backends that honour them, and the prompt says so on those that do not.
+- Files it writes appear in the Changes tab of the chat (the checkout's diff, filtered to the
+  chat's files) with **Commit** (trunk-based commit to base) and **Revert**. It may write
+  exactly `CHAT_WRITABLE` (contract `runs.ts`): `.ai/cezar/workflows/**`, `.ai/cezar/skills/**`,
+  `.ai/cezar/agents/**`, `.ai/cezar/automations.json` and `.ai/cezar/mcp.json` — the
+  configuration an owner reviews and commits. Application code and the rest of `.ai/cezar/`
+  (`config.json`, `config.local.json`, `mcp.local.json`, `runs.json`, event files, `worktrees/`)
+  are out of bounds: the chat's `allowedTools` grant only that list and its `disallowedTools`
+  name the rest of `.ai/cezar/` on backends that honour them (Claude); the prompt names the same
+  list on those that do not.
 - Tasks the chat creates show up in the task list with `createdBy: chat:<runId>` and a chip in
   the chat linking to them; their status updates stream back into the chat as system notes
   ("task ffp-612 reached review").
@@ -57,7 +62,7 @@ No other routes: the chat is a run. `RunRecord.kind` is optional (old records pa
 ## 5. Security
 
 - The injected MCP token is the run's own, scoped to `author`, dies with the process.
-- Writes are limited to `.ai/cezar/` by tool policy and prompt; a chat cannot push, cannot
+- Writes are limited to `CHAT_WRITABLE` by tool policy and prompt; a chat cannot push, cannot
   open a PR, cannot change settings (`admin` scope is never granted to a run).
 - Hosted: the chat is behind sign-in like every run.
 

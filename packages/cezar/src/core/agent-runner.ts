@@ -52,6 +52,8 @@ export interface AgentRunSpec {
    *  unrestricted unless `bashAllowlist` is set, so treat the default as
    *  full shell access in `cwd`, not a sandboxed allowlist (#430). */
   allowedTools?: string[];
+  /** Deny rules that beat any allow rule (Claude `--disallowedTools`); ignored where `allowedTools` is. */
+  disallowedTools?: string[];
   /** When `Bash` is allowed, restrict it to commands starting with one of these. */
   bashAllowlist?: string[];
   /** Extra directories the agent may read/write besides `cwd`. */

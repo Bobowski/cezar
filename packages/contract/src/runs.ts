@@ -155,6 +155,28 @@ export type RunKind = z.infer<typeof runKindSchema>;
 /** `chat:<runId>` — the chat that started a task. A closed shape, never free text. */
 export const createdBySchema = z.string().regex(/^chat:[A-Za-z0-9-]{1,64}$/);
 
+/**
+ * What the cockpit chat may write, show in its Changes and commit (spec 2026-10-24-cockpit-chat
+ * §5): cezar configuration the owner reviews — never the owner settings, run state, private MCP
+ * or task worktrees beside it under `.ai/cezar/`. A trailing `/` is a directory.
+ */
+export const CHAT_WRITABLE = [
+  '.ai/cezar/workflows/',
+  '.ai/cezar/skills/',
+  '.ai/cezar/agents/',
+  '.ai/cezar/automations.json',
+  '.ai/cezar/mcp.json',
+] as const;
+
+/** Whether a repo-relative path is one of {@link CHAT_WRITABLE}. */
+export function chatMayWrite(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/');
+  if (normalized.split('/').some((segment) => segment === '..' || segment === '.')) return false;
+  return CHAT_WRITABLE.some((entry) =>
+    entry.endsWith('/') ? normalized.startsWith(entry) && normalized.length > entry.length : normalized === entry,
+  );
+}
+
 /** `GET /runs?kind=` — only chats, or only tasks; absent = every run, as before. */
 export const runsListQuerySchema = z.object({ kind: runKindSchema.optional() });
 export type RunsListQuery = z.infer<typeof runsListQuerySchema>;

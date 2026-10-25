@@ -1,11 +1,11 @@
-import type { RunRecord } from '@open-mercato/cezar-api-client'
+import { chatMayWrite, type RunRecord } from '@open-mercato/cezar-api-client'
 
 /**
  * The cockpit chat on the client (spec 2026-10-24-cockpit-chat): a chat is a run with
  * `kind: 'chat'`. It lives under Chat, never in the Tasks lists, counts or badges.
  */
 
-/** Only these files are the chat's to show, commit and revert (spec §3). */
+/** The directory the chat's files sit in; only `CHAT_WRITABLE` under it is the chat's (spec §5). */
 export const CHAT_DIR = '.ai/cezar/'
 
 export function isChatRun(run: Pick<RunRecord, 'kind'>): boolean {
@@ -24,9 +24,9 @@ export function chatTasks<R extends Pick<RunRecord, 'createdBy'>>(runs: readonly
   return runs.filter((run) => run.createdBy === `chat:${chatId}`)
 }
 
-/** Whether a checkout path is the chat's to touch. */
+/** Whether a checkout path is the chat's to show, commit and revert — the same list it may write. */
 export function inChatDir(path: string): boolean {
-  return path.replace(/\\/g, '/').startsWith(CHAT_DIR)
+  return chatMayWrite(path)
 }
 
 /** The commit message the chat panel proposes for the files it commits. */

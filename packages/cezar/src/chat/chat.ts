@@ -1,6 +1,8 @@
 import type { PrivateMcpServer } from '../core/private-mcp.ts';
 import type { RunRecord, RunStore } from '../runs/store.ts';
 import type { WorkflowDef } from '../workflows/types.ts';
+import { DATA_GITIGNORE_ENTRIES } from '../data-gitignore.ts';
+import { CHAT_WRITABLE, chatMayWrite } from '@open-mercato/cezar-contract';
 
 /**
  * The cockpit chat (spec 2026-10-24-cockpit-chat): an ordinary run with `kind: 'chat'`, in the
@@ -20,14 +22,36 @@ export const CHAT_WORKFLOW: WorkflowDef = {
   steps: [{ id: 'chat', name: 'Chat', prompt: '{{task}}' }],
 };
 
+// The list is the contract's, so the cockpit's Changes panel shows exactly what the chat may write.
+export { CHAT_WRITABLE, chatMayWrite };
+
+const WRITE_TOOLS = ['Edit', 'Write', 'MultiEdit'] as const;
+const ruleOf = (path: string) => (path.endsWith('/') ? `${path}**` : path);
+
+/**
+ * The rest of `.ai/cezar/`, by name: Claude's deny rules beat every allow rule (a repo's own
+ * `.claude/settings.json` included) but cannot say "all but". Only the committed config stays
+ * readable; secrets, run state and other tasks' worktrees do not.
+ */
+const CHAT_DENIED_PATHS = ['config.json', '.gitignore', ...DATA_GITIGNORE_ENTRIES]
+  .filter((entry) => !chatMayWrite(`.ai/cezar/${entry}`))
+  .map((entry) => `.ai/cezar/${ruleOf(entry)}`);
+const READABLE_CONFIG = new Set(['.ai/cezar/config.json', '.ai/cezar/.gitignore']);
+
 /**
  * What a chat may touch where the backend honours `allowedTools` (Claude): read the repository,
- * write only under `.ai/cezar/`, call cezar's MCP (added by the runner). No Bash — a shell would
+ * write only {@link CHAT_WRITABLE}, call cezar's MCP (added by the runner). No Bash — a shell would
  * write anywhere. Codex/OpenCode/Cursor ignore this list (#430); the prompt says the same thing.
  */
 export const CHAT_ALLOWED_TOOLS = [
   'Read', 'Grep', 'Glob',
-  'Edit(.ai/cezar/**)', 'Write(.ai/cezar/**)', 'MultiEdit(.ai/cezar/**)',
+  ...WRITE_TOOLS.flatMap((tool) => CHAT_WRITABLE.map((path) => `${tool}(${ruleOf(path)})`)),
+];
+
+/** The chat's `--disallowedTools`: everything else under `.ai/cezar/`, explicitly. */
+export const CHAT_DENIED_TOOLS = [
+  ...WRITE_TOOLS.flatMap((tool) => CHAT_DENIED_PATHS.map((path) => `${tool}(${path})`)),
+  ...CHAT_DENIED_PATHS.filter((path) => !READABLE_CONFIG.has(path)).map((path) => `Read(${path})`),
 ];
 
 export function isChatRun(run: Pick<RunRecord, 'kind'> | undefined): boolean {
@@ -58,11 +82,11 @@ export function cezarChatPrompt(options: { projectId?: string; mcp: boolean }): 
     '',
     options.mcp
       ? 'Your tools for cezar are the `cezar` MCP server: one tool per cockpit route — runs_list, runs_get, runs_create, runs_history, workflows_list, workflows_parse, workflows_put, skills_list, automations_list, automations_create, repo_changes and the rest. Every action you take through it is something the user could do in the cockpit; prefer it to editing cezar\'s files by hand.'
-      : 'cezar\'s MCP server is not attached to this session (the backend has no launch-time MCP channel, or the cockpit gave no address). Say so when the user asks for something only it can do; you can still read the repository and write under .ai/cezar/.',
+      : 'cezar\'s MCP server is not attached to this session (the backend has no launch-time MCP channel, or the cockpit gave no address). Say so when the user asks for something only it can do; you can still read the repository and write the cezar files listed below.',
     '',
     'Rules:',
-    '- Application code is out of bounds. To change anything outside .ai/cezar/, create a task (runs_create, with the workflow that fits — quick-task when nothing else does) and tell the user it exists. Never edit, create, move or delete a file outside .ai/cezar/ yourself, even where your tools would let you, and never run a shell command that writes.',
-    '- You may write under .ai/cezar/ directly: workflows (.ai/cezar/workflows/*.yaml), skills (.ai/cezar/skills/), automations and personas. Validate a workflow with workflows_parse before you save it. The user commits or reverts those files from the chat\'s Changes panel; do not commit, branch or push.',
+    `- You may write exactly these, and nothing else: ${CHAT_WRITABLE.join(', ')} — workflows, skills, personas, automations and the committed MCP config. Validate a workflow with workflows_parse before you save it. The user commits or reverts those files from the chat's Changes panel; do not commit, branch or push.`,
+    '- Everything else is out of bounds: application code, and the rest of .ai/cezar/ (config.json, config.local.json, mcp.local.json, runs.json, run events, worktrees). To change application code, create a task (runs_create, with the workflow that fits — quick-task when nothing else does) and tell the user it exists. Never edit, create, move or delete any other file yourself, even where your tools would let you, and never run a shell command that writes.',
     '- You cannot open pull requests, push, change Settings or read secrets; do not try to work around a refusal — report it.',
     '- Tasks you start are linked to this chat, and their status changes appear here as notes. Use runs_get or runs_history to answer questions about them.',
     '- This conversation stays open between messages: end every answer plainly. Never end a message with CEZ:DONE.',

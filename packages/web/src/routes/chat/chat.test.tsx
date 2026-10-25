@@ -47,11 +47,18 @@ describe('the chat on the client', () => {
     expect(unreadDoneCount([run({ ...OLD_CHAT, ...finished }), run({ id: 'd', ...finished })])).toBe(1)
   })
 
-  it('touches only .ai/cezar/ and names what it commits', () => {
+  it('touches only the chat\'s .ai/cezar/ files and names what it commits', () => {
     expect(inChatDir('.ai/cezar/workflows/e2e.yaml')).toBe(true)
     expect(inChatDir('.ai/cezar\\skills\\x.md')).toBe(true)
+    expect(inChatDir('.ai/cezar/agents/reviewer.md')).toBe(true)
+    expect(inChatDir('.ai/cezar/automations.json')).toBe(true)
+    expect(inChatDir('.ai/cezar/mcp.json')).toBe(true)
     expect(inChatDir('src/app.ts')).toBe(false)
     expect(inChatDir('.ai/cezarx/a')).toBe(false)
+    // The owner's settings, private MCP, run state and task worktrees sit beside them.
+    for (const owner of ['.ai/cezar/config.json', '.ai/cezar/config.local.json', '.ai/cezar/mcp.local.json', '.ai/cezar/runs.json', '.ai/cezar/worktrees/r1/a.ts']) {
+      expect(inChatDir(owner), owner).toBe(false)
+    }
     expect(chatCommitMessage(['.ai/cezar/workflows/e2e.yaml'])).toBe('cezar: update workflows/e2e.yaml')
     expect(chatCommitMessage(['.ai/cezar/a', '.ai/cezar/b', '.ai/cezar/c', '.ai/cezar/d'])).toBe('cezar: update a, b, c and 1 more')
   })
@@ -144,7 +151,7 @@ describe('the chat\'s Changes', () => {
   const status = (over: Partial<RepoIndex> = {}): RepoIndex => ({
     branch: 'main',
     staged: [],
-    unstaged: [file('.ai/cezar/workflows/e2e.yaml', { status: 'added', untracked: true }), file('src/app.ts')],
+    unstaged: [file('.ai/cezar/workflows/e2e.yaml', { status: 'added', untracked: true }), file('src/app.ts'), file('.ai/cezar/config.json')],
     conflicted: [],
     operation: null,
     headPushed: false,
@@ -167,6 +174,7 @@ describe('the chat\'s Changes', () => {
     renderAt('/changes', <ChatChanges />)
     expect(await screen.findByText('.ai/cezar/workflows/e2e.yaml')).toBeTruthy()
     expect(screen.queryByText('src/app.ts')).toBeNull()
+    expect(screen.queryByText('.ai/cezar/config.json')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
     await waitFor(() => expect(sent.some((r) => r.path.endsWith('/repo/commit'))).toBe(true))
     const posts = sent.filter((r) => r.method === 'POST')

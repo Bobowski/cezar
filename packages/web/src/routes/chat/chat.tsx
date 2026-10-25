@@ -142,7 +142,7 @@ function NewChat() {
         <h1 className="text-lg font-semibold">Ask cezar about this project</h1>
         <p className="text-sm text-muted-foreground">
           "Make me a workflow that runs e2e after every implement step", "which tasks touched checkout this week",
-          "start three variants of this on Codex". The chat writes only under .ai/cezar/; anything else becomes a task.
+          "start three variants of this on Codex". The chat writes only cezar's workflows, skills, personas, automations and MCP config; anything else becomes a task.
         </p>
       </div>
       <Textarea

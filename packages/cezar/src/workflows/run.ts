@@ -45,7 +45,7 @@ import {
   seedHandoffFile,
 } from '../handoff.ts';
 import { mintChatRunToken, mintRunToken } from '../auth/run-tokens.ts';
-import { CHAT_ALLOWED_TOOLS, CHAT_MCP_SERVER, cezarChatPrompt, chatMcpServer, isChatRun, relayChatStatusNotes } from '../chat/chat.ts';
+import { CHAT_ALLOWED_TOOLS, CHAT_DENIED_TOOLS, CHAT_MCP_SERVER, cezarChatPrompt, chatMcpServer, isChatRun, relayChatStatusNotes } from '../chat/chat.ts';
 import { todosPath } from '../todos.ts';
 // Contract VALUES, like `workspaceUiStateSchema` in workspace/migrations.ts: the attachment
 // vocabulary the routes validate with is the same one the engine stores and re-reads by, so the
@@ -894,8 +894,8 @@ export function resolveExtraSystemPrompt(
 function sessionTools(
   state: Pick<ActiveRun, 'readOnly' | 'chat'>,
   step: Pick<WorkflowStepDef, 'allowedTools' | 'bashAllowlist'> | undefined,
-): { allowedTools: string[]; bashAllowlist: string[] | undefined } {
-  if (state.chat) return { allowedTools: CHAT_ALLOWED_TOOLS, bashAllowlist: undefined };
+): { allowedTools: string[]; bashAllowlist: string[] | undefined; disallowedTools?: string[] } {
+  if (state.chat) return { allowedTools: CHAT_ALLOWED_TOOLS, bashAllowlist: undefined, disallowedTools: CHAT_DENIED_TOOLS };
   if (state.readOnly) return { allowedTools: READ_ONLY_TOOLS, bashAllowlist: undefined };
   return { allowedTools: step?.allowedTools ?? DEFAULT_ALLOWED_TOOLS, bashAllowlist: step?.bashAllowlist };
 }

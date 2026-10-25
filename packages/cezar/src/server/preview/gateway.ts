@@ -113,6 +113,8 @@ interface Session {
   used: number;
   sockets: Set<Duplex>;
   hmr: HmrLog;
+  /** The open sockets that are a dev server's hot reload (`isHmrUpgrade`), a subset of `sockets`. */
+  hmrSockets: Set<Duplex>;
 }
 
 /**
@@ -141,6 +143,16 @@ export function hmrStateOf(log: HmrLog, openSockets: number): PreviewHmrState {
 }
 
 const freshHmrLog = (): HmrLog => ({ viteClient: false, connected: false, failed: false });
+
+const HMR_PROTOCOL = /(^|,)\s*vite-(hmr|ping)\s*(,|$)/i;
+const HMR_PATH = /\/vite-hmr(\/|$)|__webpack_hmr|\/_next\/webpack-hmr|sockjs/i;
+
+/** A dev server's hot-reload socket, by its subprotocol or path — not the app's own WebSocket. */
+export function isHmrUpgrade(req: Pick<IncomingMessage, 'url' | 'headers'>): boolean {
+  const protocol = req.headers['sec-websocket-protocol'];
+  if (typeof protocol === 'string' && HMR_PROTOCOL.test(protocol)) return true;
+  return HMR_PATH.test((req.url ?? '').split('?')[0] ?? '');
+}
 
 /** A navigation, not a subresource: what starts a new page and so a new upgrade log. */
 function isDocumentRequest(req: IncomingMessage): boolean {
@@ -460,7 +472,7 @@ export class PreviewGateways {
       this.endSession(entry, victim![0]);
     }
     const key = randomBytes(32).toString('base64url');
-    entry.sessions.set(key, { born: Date.now(), used: Date.now(), sockets: new Set(), hmr: freshHmrLog() });
+    entry.sessions.set(key, { born: Date.now(), used: Date.now(), sockets: new Set(), hmr: freshHmrLog(), hmrSockets: new Set() });
     return key;
   }
 
@@ -535,7 +547,7 @@ export class PreviewGateways {
           'access-control-allow-credentials': 'true',
           vary: 'origin',
         })
-        .end(JSON.stringify({ hmr: hmrStateOf(session.hmr, session.sockets.size) }));
+        .end(JSON.stringify({ hmr: hmrStateOf(session.hmr, session.hmrSockets.size) }));
       return;
     }
     if (session) {
@@ -613,11 +625,14 @@ export class PreviewGateways {
 
     const upstream: Socket = connect(portOf(entry.upstream), socketHost(entry.upstream));
     // The upgrade log (§3.2): answered 101, or not. A socket the app never answered is a failure.
+    // Only a hot-reload socket is logged: the app's own WebSocket says nothing about HMR.
+    const hmr = isHmrUpgrade(req);
     let answered = false;
     const log = session.hmr;
     const release = () => {
-      if (!answered) log.failed = true;
+      if (!answered && hmr) log.failed = true;
       answered = true;
+      session.hmrSockets.delete(socket);
       // The idle window starts when the socket that held it off closes (§4.4).
       if (session.sockets.delete(socket)) session.used = Date.now();
       entry.sockets.delete(socket);
@@ -647,8 +662,10 @@ export class PreviewGateways {
         upstream.off('data', onHead);
         const head = head101.subarray(0, end).toString('latin1');
         answered = true;
-        if (/^HTTP\/\d(\.\d)? 101\b/.test(head)) log.connected = true;
-        else log.failed = true;
+        if (hmr && /^HTTP\/\d(\.\d)? 101\b/.test(head)) {
+          log.connected = true;
+          session.hmrSockets.add(socket);
+        } else if (hmr) log.failed = true;
         const lines = head.split('\r\n').flatMap((line, index) => {
           const colon = line.indexOf(':');
           if (index === 0 || colon === -1) return [line];

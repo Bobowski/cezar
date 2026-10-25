@@ -3,7 +3,7 @@ import { connect, type AddressInfo } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { HMR_STATUS_PATH, PreviewGateways, TICKET_PARAM, hmrStateOf, parsePreviewPorts } from './gateway.ts';
+import { HMR_STATUS_PATH, PreviewGateways, TICKET_PARAM, hmrStateOf, isHmrUpgrade, parsePreviewPorts } from './gateway.ts';
 
 /**
  * The preview gateway against a real loopback app (spec `2026-10-10-preview-gateway`). Real
@@ -253,14 +253,15 @@ describe('the upgrade log behind HMR_STATUS_PATH (spec 2026-10-24-cockpit-polish
   const page = (origin: string, cookie: string, path = '/') =>
     fetch(`${origin}${path}`, { headers: { cookie, 'sec-fetch-dest': path === '/' ? 'iframe' : 'script' } }).then((res) => res.text());
   /** One upgrade through the gateway; resolves once the app answered or the socket closed. */
-  const upgrade = (origin: string, cookie: string) =>
+  const upgrade = (origin: string, cookie: string, { path = '/', protocol = 'vite-hmr' as string | null } = {}) =>
     new Promise<void>((resolve) => {
       const port = Number(new URL(origin).port);
       const socket = connect(port, '127.0.0.1');
       socket.on('data', () => resolve());
       socket.on('close', () => resolve());
       socket.on('error', () => resolve());
-      socket.write(`GET / HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Protocol: vite-hmr\r\nCookie: ${cookie}\r\n\r\n`);
+      const proto = protocol === null ? '' : `Sec-WebSocket-Protocol: ${protocol}\r\n`;
+      socket.write(`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n${proto}Cookie: ${cookie}\r\n\r\n`);
       upgraded.push(socket);
     });
 
@@ -296,6 +297,35 @@ describe('the upgrade log behind HMR_STATUS_PATH (spec 2026-10-24-cockpit-polish
     });
     await upgrade(origin, cookie);
     expect((await status(origin, cookie)).body).toEqual({ hmr: 'blocked' });
+  });
+
+  it('the app’s own WebSocket is not hot reload: it neither connects nor blocks', async () => {
+    const { origin, cookie } = await enter();
+    await page(origin, cookie);
+    await upgrade(origin, cookie, { path: '/socket', protocol: null });
+    expect((await status(origin, cookie)).body).toEqual({ hmr: 'none' });
+
+    app.removeAllListeners('upgrade');
+    app.on('upgrade', (_req, socket) => {
+      upgraded.push(socket);
+      socket.end('HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n');
+    });
+    await upgrade(origin, cookie, { path: '/socket', protocol: 'graphql-ws' });
+    expect((await status(origin, cookie)).body).toEqual({ hmr: 'none' });
+  });
+
+  it('knows Next’s and webpack’s hot-reload sockets by their path', async () => {
+    const { origin, cookie } = await enter();
+    await page(origin, cookie);
+    await upgrade(origin, cookie, { path: '/_next/webpack-hmr', protocol: null });
+    expect((await status(origin, cookie)).body).toEqual({ hmr: 'connected' });
+    const req = (url: string, protocol?: string) => ({ url, headers: protocol ? { 'sec-websocket-protocol': protocol } : {} });
+    expect(isHmrUpgrade(req('/__webpack_hmr'))).toBe(true);
+    expect(isHmrUpgrade(req('/sockjs-node/123/abc/websocket'))).toBe(true);
+    expect(isHmrUpgrade(req('/vite-hmr?token=x'))).toBe(true);
+    expect(isHmrUpgrade(req('/', 'vite-ping'))).toBe(true);
+    expect(isHmrUpgrade(req('/ws'))).toBe(false);
+    expect(isHmrUpgrade(req('/live', 'graphql-ws'))).toBe(false);
   });
 
   it('reads the log', () => {

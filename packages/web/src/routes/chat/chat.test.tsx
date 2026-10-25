@@ -2,7 +2,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { RepoIndex, RunRecord } from '@open-mercato/cezar-api-client'
+import type { RepoIndex, RepoIndexFile, RunRecord } from '@open-mercato/cezar-api-client'
 
 import { createQueryClient } from '@/api/query-client'
 import { Toaster, resetToasts } from '@/components/ui/toaster'
@@ -140,7 +140,7 @@ describe('a chat thread', () => {
 })
 
 describe('the chat\'s Changes', () => {
-  const file = (path: string, over: Record<string, unknown> = {}) => ({ path, status: 'modified', adds: 1, dels: 0, binary: false, patch: '', ...over })
+  const file = (path: string, over: Partial<RepoIndexFile> = {}): RepoIndexFile => ({ path, status: 'modified', adds: 1, dels: 0, binary: false, patch: '', ...over })
   const status = (over: Partial<RepoIndex> = {}): RepoIndex => ({
     branch: 'main',
     staged: [],

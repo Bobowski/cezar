@@ -220,6 +220,34 @@ describe('personas on workflow steps', () => {
     await settled(record.id);
   });
 
+  it("a persona's maxSubtasks counts only the children its own step dispatched", async () => {
+    writeFileSync(join(repoRoot, '.ai/cezar/agents/limited.md'), '---\nrunner: claude\ndispatch: { maxSubtasks: 1 }\n---\nYou delegate once.\n');
+    let release!: () => void;
+    captured.hold = new Promise<void>((resolve) => (release = resolve));
+    const two: WorkflowDef = {
+      name: 'plain-then-limited',
+      source: 'file',
+      steps: [{ id: 'plain', prompt: '{{task}}' }, { id: 'limited', prompt: '{{task}}', agent: 'limited' }],
+    };
+    const record = manager!.startRun(two, { task: 'x', worktree: true, runner: 'claude' });
+    await spawnAt(0);
+    expect(manager!.dispatch(record.id, { objective: 'from the plain step' })).toHaveProperty('id');
+    let releaseLimited!: () => void;
+    const limitedHold = new Promise<void>((resolve) => (releaseLimited = resolve));
+    release();
+    captured.hold = limitedHold;
+    await expect
+      .poll(() => captured.spawns.some((s) => s.spec.systemPrompt?.startsWith('Persona: limited')), { timeout: 15_000 })
+      .toBe(true);
+    expect(manager!.dispatch(record.id, { objective: 'first from limited' })).toHaveProperty('id');
+    expect(manager!.dispatch(record.id, { objective: 'second from limited' })).toMatchObject({
+      refused: expect.stringContaining('allows at most 1 subtask; 1 already dispatched'),
+    });
+    releaseLimited();
+    captured.hold = undefined;
+    await settled(record.id);
+  }, 60_000);
+
   it('fails the step rather than run a persona-less agent when the persona is gone', async () => {
     const ghost: WorkflowDef = { name: 'ghost', source: 'file', steps: [{ id: 'g', prompt: '{{task}}', agent: 'ghost' }] };
     const record = manager!.startRun(ghost, { task: 'x', worktree: false, runner: 'claude' });

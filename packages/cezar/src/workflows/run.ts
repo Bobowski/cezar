@@ -661,7 +661,7 @@ interface ActiveRun {
   personasPrompt?: string;
   /** The persona the live session runs as, when it sets defaults/limits for its children. A runtime
    *  fact set at each spawn, like `promptRest`. */
-  personaDispatch?: { name: string; dispatch: PersonaDispatch };
+  personaDispatch?: { name: string; dispatch: PersonaDispatch; stepId: string };
   /** Release for exclusive execution in the user's repository working tree.
    *  Worktree-backed runs never need it; root runs ordinarily do unless the
    *  explicit unsafe bypass is active. */
@@ -2773,11 +2773,12 @@ export class RunManager {
     // only tighten the engine's own caps, and the child defaults they name fill an order's gaps.
     const intent = runs.find((r) => r.id === (parent.dispatch?.rootRunId ?? parent.id))?.dispatch?.intent;
     // The persona the parent runs as may tighten the caps too, and fill an order's gaps before the
-    // root's intent does (spec 2026-10-24-personas). Its `maxSubtasks` counts this parent's own children.
+    // root's intent does (spec 2026-10-24-personas). Its `maxSubtasks` counts the children this
+    // parent dispatched while running that persona's step — not those of its other steps.
     const asParent = this.active.get(parentId)?.personaDispatch;
     const personaLimits = asParent?.dispatch;
     if (asParent && personaLimits?.maxSubtasks !== undefined) {
-      const own = childrenOf(runs, parentId).length;
+      const own = childrenOf(runs, parentId).filter((c) => c.dispatch?.personaStepId === asParent.stepId).length;
       if (own + 1 > personaLimits.maxSubtasks) {
         const refused = personaLimits.maxSubtasks === 0
           ? `the "${asParent.name}" persona this task runs as allows no subtasks. Do the work yourself, or report what you could not do.`
@@ -2862,6 +2863,7 @@ export class RunManager {
       dispatch: {
         rootRunId,
         parentRunId: parentId,
+        ...(asParent ? { personaStepId: asParent.stepId } : {}),
         ...(input.kind && input.kind !== 'implement' ? { kind: input.kind } : {}),
         ...(input.review_of?.length ? { reviewOf: input.review_of } : {}),
         ...(budget.budgetUsd !== undefined ? { budgetUsd: budget.budgetUsd } : {}),
@@ -4959,7 +4961,9 @@ export class RunManager {
         this.store.appendEvent(runId, { type: 'note', stepId, message });
       }
     }
-    state.personaDispatch = continuePersona?.dispatch ? { name: continuePersona.name, dispatch: continuePersona.dispatch } : undefined;
+    state.personaDispatch = continuePersona?.dispatch && toolsStep
+      ? { name: continuePersona.name, dispatch: continuePersona.dispatch, stepId: toolsStep.id }
+      : undefined;
     // The temp-directory preflight (#785) rides along with the account resolution: a resumed
     // turn hits the same broken `/tmp` a fresh one would, and an agent whose shell silently
     // returns nothing is worse than a turn that refuses to start and says why.
@@ -6740,7 +6744,7 @@ export class RunManager {
     step = personaResolution.step;
     // Live only while THIS step's session is: set at attach, cleared in the session's `finally`,
     // so a later fork/dispatch node never inherits it.
-    const stepPersonaDispatch = persona?.dispatch ? { name: persona.name, dispatch: persona.dispatch } : undefined;
+    const stepPersonaDispatch = persona?.dispatch ? { name: persona.name, dispatch: persona.dispatch, stepId: authored.id } : undefined;
     state.personaDispatch = undefined;
     let systemPrompt: string | undefined;
     // An attachment-only task (telemetry 18c930de) — the note stands in for the missing text, so a

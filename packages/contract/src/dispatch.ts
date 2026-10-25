@@ -90,6 +90,9 @@ export const dispatchSchema = z.object({
   intent: dispatchIntentSchema.optional(),
   /** Absent on the root; present on every dispatched child. */
   parentRunId: z.string().optional(),
+  /** The parent's persona'd step that dispatched this child — what that persona's `maxSubtasks`
+   *  counts (spec 2026-10-24-personas). Absent when the parent ran as no persona with limits. */
+  personaStepId: z.string().optional(),
   /** What this task is for. Absent = `implement`. */
   kind: dispatchKindSchema.optional(),
   /** For a `review` task: the run ids or branches it reviews. */

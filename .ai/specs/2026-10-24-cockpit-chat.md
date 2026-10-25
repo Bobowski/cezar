@@ -54,10 +54,14 @@ not know what cezar is.
 
 ```
 POST /runs            kind: 'chat' (new optional discriminant on the create body; default 'task')
-GET  /runs?kind=chat
+GET  /runs?kind=chat   (absent = tasks only; `all` = both)
 ```
 
 No other routes: the chat is a run. `RunRecord.kind` is optional (old records parse as task).
+Chats appear only when asked for: `GET /runs` without `?kind=` lists tasks (so `runs_list`,
+`cez task list` and scripts never see a chat), and the runs index, the dashboard and the
+archive-finished sweep leave chats out. The Chat view reads `?kind=chat`, overlaid with the run
+list's live SSE copies.
 
 ## 5. Security
 

@@ -627,6 +627,15 @@ export async function getRuns(opts?: ReadOptions): Promise<ApiRun[]> {
   )
 }
 
+/** The project's cockpit chats (`GET /runs?kind=chat`): `/runs` alone lists tasks (spec
+ *  2026-10-24-cockpit-chat §4). */
+export async function getChatRuns(opts?: ReadOptions): Promise<ApiRun[]> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].runs.$get({ param: { projectId: queryScope() }, query: { kind: 'chat' } }, init(opts)),
+    '/runs',
+  )
+}
+
 /** One project's run list by EXPLICIT id (`GET /api/p/:projectId/runs`, step 3.3): the sidebar
  *  reads non-active projects' tasks, which the active-scope `send()` prefix cannot reach. An
  *  already-`/api/p/`-prefixed path passes through `apiPath` untouched, so this stays

@@ -75,15 +75,28 @@ describe('cockpit chat API', () => {
     expect(started).toHaveLength(1);
   });
 
-  it('GET /runs?kind= lists only chats or only tasks; without it, every run as before', async () => {
+  it('GET /runs lists tasks; ?kind=chat the chats, ?kind=all both', async () => {
     store.createRun({ title: 'task', workflow: 'quick-task', task: 'a', steps: [] });
     store.createRun({ title: 'chat', workflow: 'chat', task: 'b', kind: 'chat', worktree: false, steps: [] });
     const titles = async (query: string) =>
       ((await (await apiRequest(app, `/api/v1/runs${query}`)).json()) as Array<{ title: string }>).map((run) => run.title).sort();
     expect(await titles('?kind=chat')).toEqual(['chat']);
     expect(await titles('?kind=task')).toEqual(['task']);
-    expect(await titles('')).toEqual(['chat', 'task']);
+    // Chats only when asked: runs_list, `cez task list` and every script see tasks.
+    expect(await titles('')).toEqual(['task']);
+    expect(await titles('?kind=all')).toEqual(['chat', 'task']);
     expect((await apiRequest(app, '/api/v1/runs?kind=bogus')).status).toBe(400);
+  });
+
+  it('archive-finished sweeps finished tasks, not a chat parked between messages', async () => {
+    const task = store.createRun({ title: 'task', workflow: 'quick-task', task: 'a', steps: [] });
+    const chat = store.createRun({ title: 'chat', workflow: 'chat', task: 'b', kind: 'chat', worktree: false, steps: [] });
+    store.updateRun(task.id, { status: 'done' });
+    store.updateRun(chat.id, { status: 'done' });
+    const res = await post('/api/v1/runs/archive-finished', {});
+    expect(await res.json()).toEqual({ archived: 1 });
+    expect(store.getRun(task.id)?.archived).toBe(true);
+    expect(store.getRun(chat.id)?.archived).toBeFalsy();
   });
 
   it('a task the chat starts carries createdBy chat:<id>; a body cannot claim it, and a chat cannot start a chat', async () => {

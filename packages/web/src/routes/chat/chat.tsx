@@ -4,7 +4,7 @@ import { useParams } from 'react-router'
 import type { ApiRun, RepoIndexFile, Runner } from '@open-mercato/cezar-api-client'
 
 import { ApiError, createRun } from '@/api/client'
-import { queryKeys, useArchiveRun, useMarkRunSeen, useRun, useRuns } from '@/api/queries'
+import { queryKeys, useArchiveRun, useChatRuns, useMarkRunSeen, useRun, useRuns } from '@/api/queries'
 import { changeIndex, commitIndex, discardChange, useRepoGitAction, useRepoIndex } from '@/api/repo-git'
 import { CenteredState } from '@/components/centered-state'
 import { ContextSidebar } from '@/components/context-sidebar'
@@ -24,7 +24,7 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import { toast } from '@/components/ui/toaster'
 import { statusTone } from '@/lib/automation-format'
-import { chatCommitMessage, chatTasks, inChatDir, projectChats } from '@/lib/chat'
+import { chatCommitMessage, chatTasks, inChatDir, knownChats, projectChats } from '@/lib/chat'
 import { Link, useNavigate } from '@/lib/project-router'
 import { isUnread } from '@/lib/read-state'
 import { useQueryClient } from '@tanstack/react-query'
@@ -42,7 +42,8 @@ import { RUNNERS } from '../new-task-form'
 export function ChatRoute({ fresh = false }: { fresh?: boolean }) {
   const { id } = useParams<{ id?: string }>()
   const runs = useRuns()
-  const chats = useMemo(() => projectChats(runs.data ?? []), [runs.data])
+  const chatRuns = useChatRuns()
+  const chats = useMemo(() => projectChats(knownChats(chatRuns.data, runs.data)), [chatRuns.data, runs.data])
   const chatId = fresh ? undefined : id ?? chats.pinned?.id
 
   return (
@@ -51,7 +52,7 @@ export function ChatRoute({ fresh = false }: { fresh?: boolean }) {
       <div data-route="chat" className="flex min-h-0 min-w-0 flex-1 flex-col">
         {chatId ? (
           <ChatThread key={chatId} id={chatId} tasks={chatTasks(runs.data ?? [], chatId)} />
-        ) : runs.isPending && !fresh ? (
+        ) : chatRuns.isPending && !fresh ? (
           <ThreadLoading />
         ) : (
           <NewChat />

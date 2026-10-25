@@ -275,6 +275,8 @@ export class DashboardReader {
         const slim: DashboardTaskRow[] = [];
         let omitted = diagnostic.omittedRuns;
         for (const run of diagnostic.runs) {
+          // The dashboard counts tasks; a chat is not one (spec 2026-10-24-cockpit-chat §4).
+          if (run.kind === 'chat') continue;
           const parsed = dashboardTaskRowSchema.safeParse({
             ...run,
             projectId: project.id,

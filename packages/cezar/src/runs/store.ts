@@ -1354,13 +1354,15 @@ export class RunStore extends EventEmitter {
     return run;
   }
 
-  /** Bulk-archive every finished run; returns how many were archived. */
+  /** Bulk-archive every finished task; returns how many were archived. */
   archiveFinished(): number {
     let count = 0;
     for (const run of this.runs.values()) {
       // An unanswered question is a gate, not an outcome — like `review`, the bulk sweep leaves it.
+      // A chat settles `done` between messages and is archived on its own (spec 2026-10-24-cockpit-chat).
       if (
         !run.archived &&
+        run.kind !== 'chat' &&
         ['done', 'failed', 'cancelled'].includes(run.status) &&
         run.awaitingAnswerSince === undefined
       ) {

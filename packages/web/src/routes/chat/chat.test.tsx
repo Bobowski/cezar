@@ -113,7 +113,9 @@ describe('New chat', () => {
 describe('a chat thread', () => {
   it('opens the pinned chat at /chat, with its tasks as chips and its notes in the transcript', async () => {
     stubFetch((method, path) => {
-      if (method === 'GET' && path.endsWith('/runs')) return json([OLD_CHAT, NEW_CHAT, TASK])
+      // As the server answers: `/runs` is tasks, the chats come from `?kind=chat`.
+      if (method === 'GET' && path.endsWith('/runs')) return json([TASK])
+      if (method === 'GET' && path.endsWith('/runs?kind=chat')) return json([OLD_CHAT, NEW_CHAT])
       if (method === 'GET' && path.endsWith('/runs/c2')) return json(NEW_CHAT)
       if (method === 'GET' && path.includes('/runs/c2/history-context')) return json({ contextEvents: [], asOfSeq: 2 })
       if (method === 'GET' && path.includes('/runs/c2/history')) {

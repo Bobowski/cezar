@@ -177,8 +177,8 @@ export function chatMayWrite(path: string): boolean {
   );
 }
 
-/** `GET /runs?kind=` — only chats, or only tasks; absent = every run, as before. */
-export const runsListQuerySchema = z.object({ kind: runKindSchema.optional() });
+/** `GET /runs?kind=` — tasks by default (chats only when asked: `chat`, or `all` for both). */
+export const runsListQuerySchema = z.object({ kind: z.enum(['task', 'chat', 'all']).optional() });
 export type RunsListQuery = z.infer<typeof runsListQuerySchema>;
 
 /**

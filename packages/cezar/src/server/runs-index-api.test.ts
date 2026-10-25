@@ -98,6 +98,15 @@ describe('workspace runs index API', () => {
     expect(body.truncated).toEqual([]);
   });
 
+  it('indexes tasks, never the cockpit chats — live or read off disk (spec 2026-10-24-cockpit-chat §4)', async () => {
+    await registerProject(repoRoot);
+    await registerProject(otherRoot);
+    const live = store.createRun({ title: 'Boot task', workflow: 'build', task: 't', steps: [] });
+    store.createRun({ title: 'Boot chat', workflow: 'chat', task: 'hi', kind: 'chat', worktree: false, steps: [] });
+    seedColdProject(otherRoot, [storedRun({ id: 'cold-1', title: 'Cold task' }), storedRun({ id: 'cold-chat', title: 'Cold chat', kind: 'chat', worktree: false })]);
+    expect((await getIndex()).runs.map((run) => run.id).sort()).toEqual(['cold-1', live.id].sort());
+  });
+
   it('never builds a project context — a search must not resume agents', async () => {
     await registerProject(repoRoot);
     const other = await registerProject(otherRoot);

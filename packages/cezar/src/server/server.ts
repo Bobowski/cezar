@@ -5162,9 +5162,10 @@ export function createApp(deps: ServerDeps) {
   const runsRoutes = new Hono<ProjectApiEnv>()
     .get('/runs', queryZodValidator(runsListQuerySchema), (c) => {
       const scopes = runViewScopes(principalOf(c));
-      // `?kind=chat` lists the project's chats (spec 2026-10-24-cockpit-chat §4); absent = every run.
-      const { kind } = c.req.valid('query');
-      const runs = c.get('project').store.listRuns().filter((run) => kind === undefined || (kind === 'chat') === isChatRun(run));
+      // Tasks unless chats are asked for (spec 2026-10-24-cockpit-chat §4): `runs_list`, `cez task
+      // list` and every script see tasks; the cockpit, which mirrors every run event, asks `all`.
+      const { kind = 'task' } = c.req.valid('query');
+      const runs = c.get('project').store.listRuns().filter((run) => kind === 'all' || (kind === 'chat') === isChatRun(run));
       return c.json(runs.map((run) => redactRunForScope(withUsage(run), scopes)));
     })
 
@@ -9767,9 +9768,10 @@ export function createApp(deps: ServerDeps) {
         // `GET /runs`, which has always carried them, and excluding them here would mean a task
         // is findable while you stand in its project and vanishes the moment you leave — the
         // exact asymmetry a cross-project finder exists to remove.
+        // Tasks only: a chat is found under Chat (spec 2026-10-24-cockpit-chat §4).
         const recent = (
           owned ? owned.store.listRuns() : readRunIndexFromDisk(join(project.root, '.ai/cezar'))
-        ).sort(byLastActivityDesc);
+        ).filter((run) => !isChatRun(run)).sort(byLastActivityDesc);
         if (recent.length > RUNS_INDEX_PER_PROJECT) truncated.push(project.id);
         const mentioned: number[] = [];
         for (const run of recent.slice(0, RUNS_INDEX_PER_PROJECT)) {

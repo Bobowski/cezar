@@ -35,3 +35,12 @@ export function chatCommitMessage(paths: readonly string[]): string {
   const shown = names.slice(0, 3).join(', ')
   return `cezar: update ${shown}${names.length > 3 ? ` and ${names.length - 3} more` : ''}`
 }
+
+/** The chats the cockpit knows: `GET /runs?kind=chat`'s answer, overlaid with the run list's live
+ *  copies — the SSE `run` patches land there, chats included. */
+export function knownChats<R extends Pick<RunRecord, 'id' | 'kind'>>(chats: readonly R[] | undefined, runs: readonly R[] | undefined): R[] {
+  const byId = new Map<string, R>()
+  for (const chat of chats ?? []) byId.set(chat.id, chat)
+  for (const run of runs ?? []) if (isChatRun(run)) byId.set(run.id, run)
+  return [...byId.values()]
+}

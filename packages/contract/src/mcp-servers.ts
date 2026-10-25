@@ -60,6 +60,33 @@ export function hasMcpSecretReference(text: string): boolean {
   return 'pieces' in parsed && parsed.pieces.some((piece) => typeof piece !== 'string');
 }
 
+/** An HTTP auth scheme word: the one literal text a reference value may carry (`Bearer ${{ secrets.X }}`). */
+const AUTH_SCHEME = /^(Bearer|Basic|Token|Bot) $/i;
+
+/**
+ * Whether `text` is a reference and nothing else that could be a credential: one `${{ secrets.X }}`,
+ * optionally after an auth scheme word. `sk_live_X${{ secrets.Y }}` is not — its literal half is
+ * as much a secret as the reference.
+ */
+export function isMcpReferenceValue(text: string): boolean {
+  const parsed = parseMcpValue(text);
+  if (!('pieces' in parsed)) return false;
+  const [first, second] = parsed.pieces;
+  if (parsed.pieces.length === 1) return typeof first !== 'string';
+  return parsed.pieces.length === 2 && typeof first === 'string' && AUTH_SCHEME.test(first) && typeof second !== 'string';
+}
+
+/**
+ * A value as a listing may serve it: a reference value as written, the literal text of a value
+ * mixing literals with references masked (`***${{ secrets.Y }}`), and null for a plain literal.
+ */
+export function maskMcpValue(text: string): string | null {
+  if (isMcpReferenceValue(text)) return text;
+  const parsed = parseMcpValue(text);
+  if (!('pieces' in parsed) || !parsed.pieces.some((piece) => typeof piece !== 'string')) return null;
+  return parsed.pieces.map((piece) => (typeof piece === 'string' ? '***' : mcpSecretReference(piece.secret))).join('');
+}
+
 const stringRecord = z.record(z.string().min(1).regex(/^[^=\0]+$/, 'a key has no "=" or NUL'), z.string());
 
 /**
@@ -97,16 +124,18 @@ export type McpServerDefinition = z.infer<typeof mcpServerDefinitionSchema>;
 /**
  * Why `def` may not go into the committed `mcp.json`: an env or header value with no secret
  * reference is a literal, and in a committed file a literal there is a pasted credential waiting
- * to be pushed. Null when every such value is (or holds) a reference.
+ * to be pushed — so is the literal half of a value mixing text with a reference. Null when every
+ * such value is a reference value (`isMcpReferenceValue`).
  */
 export function mcpProjectLiteralIssue(def: McpServerDefinition): string | null {
-  const literal = (record: Record<string, string> | undefined) => Object.entries(record ?? {}).find(([, value]) => !hasMcpSecretReference(value))?.[0];
+  const literal = (record: Record<string, string> | undefined) => Object.entries(record ?? {}).find(([, value]) => !isMcpReferenceValue(value));
   const env = literal(def.env);
   const header = literal(def.headers);
-  const where = env !== undefined ? `env ${env}` : header !== undefined ? `header ${header}` : null;
-  return where
-    ? `${where} holds a literal value: the project file is committed, so use a secret reference (\${{ secrets.NAME }}) — or add the server as Private`
-    : null;
+  const found = env ? { where: `env ${env[0]}`, value: env[1] } : header ? { where: `header ${header[0]}`, value: header[1] } : null;
+  if (!found) return null;
+  return hasMcpSecretReference(found.value)
+    ? `${found.where} mixes literal text with a secret reference: the project file is committed, so put the whole value in the secret (only an auth scheme such as "Bearer " may precede it) — or add the server as Private`
+    : `${found.where} holds a literal value: the project file is committed, so use a secret reference (\${{ secrets.NAME }}) — or add the server as Private`;
 }
 
 /** The transport a definition speaks. */

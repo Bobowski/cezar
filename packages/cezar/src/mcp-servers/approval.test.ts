@@ -85,6 +85,14 @@ describe('approval of the committed mcp.json', () => {
     expect((await projectApprovalView(repo, { raw: true })).changes[0]?.after).toContain('--require /tmp/x.js');
   });
 
+  it('the review masks the literal half of a value mixing text with a reference', async () => {
+    writeProject({ tool: { command: 'x', env: { KEY: 'sk_live_LITERALHALF${{ secrets.Y }}', AUTH: 'Bearer ${{ secrets.Z }}' } } });
+    const after = (await projectApprovalView(repo, { raw: false })).changes[0]?.after ?? '';
+    expect(after).not.toContain('LITERALHALF');
+    expect(after).toContain('***${{ secrets.Y }}');
+    expect(after).toContain('Bearer ${{ secrets.Z }}');
+  });
+
   it('approves only the content that was reviewed, and only bindings the file references', async () => {
     const hash = writeProject({ s: { command: 'x', env: { K: '${{ secrets.K_ONE }}' } } });
     expect(await approveProjectMcp(repo, mcpContentHash('other'), {})).toMatchObject({ ok: false, status: 409 });

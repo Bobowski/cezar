@@ -129,8 +129,9 @@ describe('MCP servers API (spec 2026-10-24-easy-mcp §4)', () => {
     const header = await apiRequest(instance, '/api/v1/mcp-servers/project/y', put({ url: 'https://mcp.example.com', headers: { Authorization: 'Bearer pasted' } }));
     expect(header.status).toBe(400);
     expect(() => readFileSync(projectMcpPath(root), 'utf8')).toThrow();
-    // A reference is fine there, and the private file takes a literal.
-    expect((await apiRequest(instance, '/api/v1/mcp-servers/project/x', put({ command: 'x', env: { API_KEY: 'k ${{ secrets.API_KEY }}' } }))).status).toBe(200);
+    // A reference is fine there (a literal beside it is not), and the private file takes a literal.
+    expect((await apiRequest(instance, '/api/v1/mcp-servers/project/x', put({ command: 'x', env: { API_KEY: 'k ${{ secrets.API_KEY }}' } }))).status).toBe(400);
+    expect((await apiRequest(instance, '/api/v1/mcp-servers/project/x', put({ command: 'x', env: { API_KEY: '${{ secrets.API_KEY }}' } }))).status).toBe(200);
     expect((await apiRequest(instance, '/api/v1/mcp-servers/private/x', put({ command: 'x', env: { API_KEY: 'pasted-literal-key' } }))).status).toBe(200);
   });
 

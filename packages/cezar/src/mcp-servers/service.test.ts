@@ -125,6 +125,20 @@ describe('Settings → MCP servers files and listing (spec 2026-10-24-easy-mcp)'
     expect(after.project[0]?.shadowed).toBe(true);
   });
 
+  it('a value mixing a literal with a reference: refused in the project file, its literal half never served', async () => {
+    const mixed = { command: 'x', env: { KEY: 'sk_live_LITERALHALF${{ secrets.Y }}' } };
+    expect(await putMcpServer(repo, 'project', 'mixed', mixed)).toMatchObject({ ok: false, status: 400, error: expect.stringMatching(/^env KEY mixes literal text with a secret reference/) });
+    expect(await putMcpServer(repo, 'project', 'hdr', { type: 'http', url: 'https://x.example', headers: { A: 'tok_LITERALHALF ${{ secrets.Y }}' } })).toMatchObject({ ok: false, status: 400 });
+    expect(await putMcpServer(repo, 'project', 'bearer', { type: 'http', url: 'https://x.example', headers: { Authorization: 'Bearer ${{ secrets.Y }}' } })).toEqual({ ok: true });
+    expect(await putMcpServer(repo, 'private', 'mixed', { ...mixed, args: ['--token=sk_live_LITERALHALF${{ secrets.Y }}'] })).toEqual({ ok: true });
+    const list = await listMcpServers(repo, { secrets, editable: true });
+    expect(JSON.stringify(list)).not.toContain('LITERALHALF');
+    const row = list.private.find((server) => server.name === 'mixed')!;
+    expect(row.env).toEqual([{ key: 'KEY', value: '***${{ secrets.Y }}' }]);
+    expect(row.args).toEqual(['--token=***${{ secrets.Y }}']);
+    expect(list.project.find((server) => server.name === 'bearer')!.headers).toEqual([{ key: 'Authorization', value: 'Bearer ${{ secrets.Y }}' }]);
+  });
+
   it('redacts credential-shaped args and url parts unless the caller may see them raw', async () => {
     mkdirSync(join(repo, '.ai', 'cezar'), { recursive: true });
     writeFileSync(

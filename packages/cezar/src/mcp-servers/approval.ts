@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { z } from 'zod';
 import {
-  hasMcpSecretReference,
+  maskMcpValue,
   type McpApprovalChange,
   type McpProjectApproval,
   type McpSecretBindings,
@@ -238,7 +238,7 @@ function displayEntry(entry: unknown, raw: boolean): string {
       const record = shown[key];
       if (record && typeof record === 'object' && !Array.isArray(record)) {
         shown[key] = Object.fromEntries(
-          Object.entries(record).map(([name, value]) => [name, typeof value === 'string' && hasMcpSecretReference(value) ? value : LITERAL_HIDDEN]),
+          Object.entries(record).map(([name, value]) => [name, (typeof value === 'string' ? maskMcpValue(value) : null) ?? LITERAL_HIDDEN]),
         );
       }
     }

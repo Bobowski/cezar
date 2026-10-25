@@ -1,4 +1,4 @@
-import { hasMcpSecretReference } from '@open-mercato/cezar-contract';
+import { maskMcpValue } from '@open-mercato/cezar-contract';
 import { REDACTED, redactSecrets, SECRET_NAME_RE } from '../core/secret-redaction.ts';
 
 /**
@@ -14,12 +14,12 @@ function credentialName(name: string): boolean {
   return upper !== '' && (SECRET_NAME_RE.test(upper) || /^(KEY|PAT|AUTH|PASS|PWD|SIG|SIGNATURE|CODE)$/.test(upper));
 }
 
-const masked = (value: string) => (hasMcpSecretReference(value) ? value : REDACTED);
+const masked = (value: string) => maskMcpValue(value) ?? REDACTED;
 
 /** A URL with its userinfo and credential-named query values masked; any other text as it is. */
 export function redactMcpUrl(text: string): string {
   const withoutUserinfo = text.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^/?#@]*)@/, (whole, scheme: string, userinfo: string) =>
-    hasMcpSecretReference(userinfo) ? whole : `${scheme}***@`,
+    `${scheme}${maskMcpValue(userinfo) ?? '***'}@`,
   );
   const query = withoutUserinfo.replace(/([?&])([^=&#]+)=([^&#]*)/g, (whole, sep: string, name: string, value: string) =>
     credentialName(name) && value !== '' ? `${sep}${name}=${masked(value)}` : whole,

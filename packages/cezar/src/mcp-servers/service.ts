@@ -1,5 +1,5 @@
 import {
-  hasMcpSecretReference,
+  maskMcpValue,
   mcpSecretNames,
   type McpScope,
   type McpServer,
@@ -17,8 +17,8 @@ import { mcpStatusOf, readMcpStatus } from './status.ts';
  * `GET /mcp-servers` (spec `2026-10-24-easy-mcp` §3–§4): both files, each server with what
  * Settings shows — transport, the agents it reaches, the secrets it references and which of them a
  * launch could not resolve, and the last launch's outcome. A literal env or header value is never
- * served (it may be a pasted token in the private file); a value holding a `${{ secrets.X }}`
- * reference is, since the reference names a secret and is not one.
+ * served (it may be a pasted token in the private file), nor the literal half of a value mixing text
+ * with a reference; a `${{ secrets.X }}` reference is, since it names a secret and is not one.
  */
 
 /** A launch-ready server back to the file's definition shape (what Test and the secret scan read). */
@@ -29,8 +29,7 @@ export function definitionOfServer(server: PrivateMcpServer): McpServerDefinitio
   return { type: server.transport, url: server.url!, ...(Object.keys(server.headers).length ? { headers: server.headers } : {}) };
 }
 
-const masked = (record: Record<string, string>) =>
-  Object.entries(record).map(([key, value]) => ({ key, value: hasMcpSecretReference(value) ? value : null }));
+const masked = (record: Record<string, string>) => Object.entries(record).map(([key, value]) => ({ key, value: maskMcpValue(value) }));
 
 /** The secret names a `cezar` reader can resolve for this project: the project's and the workspace's. */
 export async function cezarSecretNames(secrets: SecretStore, project: { projectId: string; root: string } | undefined): Promise<Set<string>> {

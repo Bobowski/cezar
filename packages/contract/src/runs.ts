@@ -222,6 +222,8 @@ export const chatProposalSchema = z.object({
   risks: z.array(chatProposalRiskSchema),
   /** Over the size a proposal may be: Apply refuses it, so the confirm offers Discard only. */
   tooLarge: z.boolean(),
+  /** sha256 of the proposal file as read: Apply sends it back, and a proposal changed since is refused. */
+  hash: z.string(),
 });
 export type ChatProposal = z.infer<typeof chatProposalSchema>;
 export const chatProposalsResponseSchema = z.object({ proposals: z.array(chatProposalSchema) });
@@ -236,6 +238,12 @@ export const chatProposalsActionSchema = z.object({
   message: z.string().min(1).max(20_000).optional(),
 });
 export type ChatProposalsAction = z.infer<typeof chatProposalsActionSchema>;
+/** Apply: with `hashes` (live path → the {@link chatProposalSchema} `hash` the owner reviewed),
+ *  every applied proposal must still have that hash — a chat turn may have rewritten it since. */
+export const chatProposalsApplySchema = chatProposalsActionSchema.extend({
+  hashes: z.record(z.string().min(1).max(1024), z.string().regex(/^[0-9a-f]{64}$/)).optional(),
+});
+export type ChatProposalsApply = z.infer<typeof chatProposalsApplySchema>;
 /** `sha` is absent when nothing applied is repo content (`automations.json` is local state). */
 export const chatProposalsApplyResponseSchema = z.object({ applied: z.array(z.string()), sha: z.string().optional() });
 export type ChatProposalsApplyResponse = z.infer<typeof chatProposalsApplyResponseSchema>;

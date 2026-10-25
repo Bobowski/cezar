@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import {
   queryScope,
   type ChatProposalsAction,
+  type ChatProposalsApply,
   type ChatProposalsApplyResponse,
   type ChatProposalsDiscardResponse,
   type ChatProposalsResponse,
@@ -160,7 +161,7 @@ export async function getChatProposals(chatId: string, opts?: ReadOptions): Prom
 }
 
 /** Apply & commit: the owner copies the proposals into place and commits the repo files. */
-export async function applyChatProposals(chatId: string, input: ChatProposalsAction = {}): Promise<ChatProposalsApplyResponse> {
+export async function applyChatProposals(chatId: string, input: ChatProposalsApply = {}): Promise<ChatProposalsApplyResponse> {
   return unwrap(await repo().proposals[':chatId'].apply.$post({ param: { ...scope(), chatId }, json: input }), '/repo/proposals/apply')
 }
 

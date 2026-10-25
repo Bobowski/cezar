@@ -160,7 +160,7 @@ import {
   workflowXorSteps,
 } from '@open-mercato/cezar-contract';
 import { CHAT_WORKFLOW, chatCreatedBy, isChatRun } from '../chat/chat.ts';
-import { chatProposalParamsSchema, chatProposalsActionSchema } from '@open-mercato/cezar-contract';
+import { chatProposalParamsSchema, chatProposalsActionSchema, chatProposalsApplySchema } from '@open-mercato/cezar-contract';
 import { detectEnvironment } from '../core/backend-detect.ts';
 import type { HostUsage } from '@open-mercato/cezar-contract';
 import { resolveCursorAgentBin } from '../core/cursor-bin.ts';
@@ -9192,7 +9192,7 @@ export function createApp(deps: ServerDeps) {
       const { root, dataDir } = c.get('project');
       return c.json({ proposals: listProposals(root, dataDir, c.req.valid('param').chatId) });
     })
-    .post('/repo/proposals/:chatId/apply', paramZodValidator(chatProposalParamsSchema), jsonZodValidator(chatProposalsActionSchema, { absent: {} }), async (c) => {
+    .post('/repo/proposals/:chatId/apply', paramZodValidator(chatProposalParamsSchema), jsonZodValidator(chatProposalsApplySchema, { absent: {} }), async (c) => {
       const { chatId } = c.req.valid('param');
       const project = c.get('project');
       const r = await mutateCheckout(project, principalOf(c), (root) => applyProposals(root, project.dataDir, chatId, c.req.valid('json'), {

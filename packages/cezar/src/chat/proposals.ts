@@ -1,6 +1,7 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { chatLivePath, chatMayWrite, chatProposalPath, type ChatProposal } from '@open-mercato/cezar-contract';
+import { chatLivePath, chatMayWrite, chatProposalPath, type ChatProposal, type ChatProposalsApply } from '@open-mercato/cezar-contract';
 import { proposalRisks } from './proposal-risks.ts';
 import { commitIndex, ignoredPaths, repoIndex, stagePaths, unstagePaths, type GitOk } from '../server/repo-git.ts';
 
@@ -24,6 +25,9 @@ function proposalBytes(dataDir: string, chatId: string, livePath: string): numbe
     return 0;
   }
 }
+
+/** What the owner reviewed: `listProposals` answers it, Apply compares it (spec 2026-10-24-cockpit-chat §3). */
+export const proposalHash = (content: string) => createHash('sha256').update(content, 'utf8').digest('hex');
 
 const tooLargeError = (path: string, bytes: number) =>
   `${path} is ${Math.ceil(bytes / 1024)} KB — over the ${PROPOSAL_MAX_BYTES / 1024} KB a proposal may be; discard it and ask the chat for a smaller one`;
@@ -196,11 +200,13 @@ export function listProposals(root: string, dataDir: string, chatId: string): Ch
     const bytes = proposalBytes(dataDir, chatId, path);
     if (bytes > PROPOSAL_MAX_BYTES) {
       const header = `--- ${live === undefined ? '/dev/null' : `a/${path}`}\n+++ b/${path}\n`;
-      return { path, status: live === undefined ? 'added' : 'modified', diff: `${header}@@ ${tooLargeError(path, bytes)} @@\n`, risks: [], tooLarge: true };
+      const hash = proposalHash(readProposal(dataDir, chatId, path) ?? '');
+      return { path, status: live === undefined ? 'added' : 'modified', diff: `${header}@@ ${tooLargeError(path, bytes)} @@\n`, risks: [], tooLarge: true, hash };
     }
-    const next = appliedContent(root, path, readProposal(dataDir, chatId, path) ?? '');
+    const proposed = readProposal(dataDir, chatId, path) ?? '';
+    const next = appliedContent(root, path, proposed);
     const status = live === undefined ? 'added' : live === next ? 'unchanged' : 'modified';
-    return { path, status, diff: unifiedDiff(path, live, next), risks: proposalRisks(path, next, live), tooLarge: false };
+    return { path, status, diff: unifiedDiff(path, live, next), risks: proposalRisks(path, next, live), tooLarge: false, hash: proposalHash(proposed) };
   });
 }
 
@@ -210,12 +216,13 @@ export function listProposals(root: string, dataDir: string, chatId: string): Ch
  * what was applied. Refused while anything else is staged, so the commit carries nothing of the
  * owner's own; a failed commit puts the live files back. `automations.json` is merged and written
  * under `lockAutomations` (the automations store's mutation lease), like any other store write.
+ * With `hashes`, each proposal applies only as the owner reviewed it; what it applies is read once.
  */
 export async function applyProposals(
   root: string,
   dataDir: string,
   chatId: string,
-  input: { paths?: readonly string[]; message?: string },
+  input: ChatProposalsApply,
   options: { lockAutomations?: <T>(fn: () => T) => T } = {},
 ): Promise<GitOk<{ applied: string[]; sha?: string }>> {
   const all = proposalPaths(dataDir, chatId);
@@ -228,10 +235,15 @@ export async function applyProposals(
     const bytes = proposalBytes(dataDir, chatId, path);
     if (bytes > PROPOSAL_MAX_BYTES) return { ok: false, error: tooLargeError(path, bytes) };
   }
+  const contents = new Map(chosen.map((path) => [path, readProposal(dataDir, chatId, path) ?? ''] as const));
+  if (input.hashes) {
+    const stale = chosen.filter((path) => input.hashes![path] !== proposalHash(contents.get(path)!));
+    if (stale.length) return { ok: false, error: `the chat changed ${stale.join(', ')} since you reviewed it — review it again` };
+  }
   const index = await repoIndex(root);
   if (!index.ok) return index;
   if (index.index.staged.length) return { ok: false, error: 'other files are staged in the checkout — commit or unstage them first' };
-  if (chosen.includes(AUTOMATIONS) && mergeAutomations(readProposal(dataDir, chatId, AUTOMATIONS) ?? '', undefined) === undefined) {
+  if (chosen.includes(AUTOMATIONS) && mergeAutomations(contents.get(AUTOMATIONS)!, undefined) === undefined) {
     return { ok: false, error: 'the proposed automations.json is not an automations file' };
   }
 
@@ -243,7 +255,7 @@ export async function applyProposals(
     locked(() => {
       for (const path of chosen) {
         const before = readText(join(root, path));
-        const next = appliedContent(root, path, readProposal(dataDir, chatId, path) ?? '');
+        const next = appliedContent(root, path, contents.get(path)!);
         previous.set(path, before);
         if (before === next) continue;
         mkdirSync(dirname(join(root, path)), { recursive: true });

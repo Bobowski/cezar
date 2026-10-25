@@ -209,7 +209,7 @@ function ChatThread({ id, tasks }: { id: string; tasks: ApiRun[] }) {
           <ConversationColumn run={run.data} onMarkedUnread={() => {}} />
         </div>
       </div>
-      {changesOpen ? <ChatChanges chatId={run.data.id} turn={`${run.data.status}:${run.data.finishedAt ?? ''}`} /> : null}
+      {changesOpen ? <ChatChanges chatId={run.data.id} turn={`${run.data.status}:${run.data.finishedAt ?? ''}`} running={run.data.status === 'running'} /> : null}
     </div>
   )
 }
@@ -282,7 +282,7 @@ function ChatHeader({
  * oversized diff must be opened first, a proposal over the size cap cannot be applied, and it
  * applies exactly the paths the owner saw.
  */
-export function ChatChanges({ chatId, turn }: { chatId: string; turn?: string }) {
+export function ChatChanges({ chatId, turn, running = false }: { chatId: string; turn?: string; running?: boolean }) {
   const proposals = useChatProposals(chatId)
   const queryClient = useQueryClient()
   // A turn that ended may have written proposals: read them again.
@@ -296,9 +296,11 @@ export function ChatChanges({ chatId, turn }: { chatId: string; turn?: string })
   const files = listed.filter((file) => file.status !== 'unchanged')
   const unread = files.filter((file) => proposalOversized(file.diff) && !opened.has(file.path))
   const tooLarge = files.filter((file) => file.tooLarge)
-  const blocked = unread.length > 0 || tooLarge.length > 0
+  // A running turn may rewrite a proposal under the confirm; the hashes catch what slips past.
+  const blocked = running || unread.length > 0 || tooLarge.length > 0
   const risks = files.flatMap((file) => file.risks.map((risk) => ({ path: file.path, line: riskLine(risk) })))
-  const apply = useRepoGitAction((paths: string[]) => applyChatProposals(chatId, { paths }))
+  const apply = useRepoGitAction((reviewed: typeof listed) =>
+    applyChatProposals(chatId, { paths: reviewed.map((file) => file.path), hashes: Object.fromEntries(reviewed.map((file) => [file.path, file.hash])) }))
   const discard = useRepoGitAction(() => discardChatProposals(chatId))
   const busy = apply.isPending || discard.isPending
 
@@ -348,6 +350,11 @@ export function ChatChanges({ chatId, turn }: { chatId: string; turn?: string })
               {tooLarge.map((file) => file.path).join(', ')} is too large to apply — discard it and ask the chat for a smaller one.
             </p>
           ) : null}
+          {running ? (
+            <p data-slot="chat-apply-running" className="text-xs text-muted-foreground">
+              The chat is answering: Apply waits for its turn to end, so you apply what you reviewed.
+            </p>
+          ) : null}
           {confirmingApply ? (
             <div data-slot="chat-apply-confirm" className="flex flex-col gap-2 rounded border border-border/70 p-2 text-xs">
               <p className="font-medium">Apply and commit these files?</p>
@@ -371,7 +378,7 @@ export function ChatChanges({ chatId, turn }: { chatId: string; turn?: string })
                   data-action="chat-apply-confirm"
                   disabled={busy || blocked}
                   onClick={() =>
-                    apply.mutate(listed.map((file) => file.path), {
+                    apply.mutate(listed, {
                       onSuccess: (answer) => toast(answer.sha ? `applied and committed ${answer.sha.slice(0, 8)}` : 'applied'),
                       onError: (error: Error) => toast(error.message, { tone: 'danger' }),
                       onSettled: () => setConfirmingApply(false),

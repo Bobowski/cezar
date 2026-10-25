@@ -134,7 +134,7 @@ describe('a chat thread', () => {
 })
 
 describe('the chat\'s Changes', () => {
-  const proposal = (path: string, over: Partial<ChatProposal> = {}): ChatProposal => ({ path, status: 'added', diff: `--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,1 @@\n+name: e2e\n`, risks: [], tooLarge: false, ...over })
+  const proposal = (path: string, over: Partial<ChatProposal> = {}): ChatProposal => ({ path, status: 'added', diff: `--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,1 @@\n+name: e2e\n`, risks: [], tooLarge: false, hash: 'c'.repeat(64), ...over })
 
   function stubProposals(proposals: ChatProposal[]): Sent[] {
     return stubFetch((method, path) => {
@@ -146,7 +146,10 @@ describe('the chat\'s Changes', () => {
   }
 
   it('shows each proposal as a diff against the live file; Apply & commit confirms the files first, and applies exactly those', async () => {
-    const sent = stubProposals([proposal('.ai/cezar/workflows/e2e.yaml'), proposal('.ai/cezar/mcp.json', { status: 'unchanged' })])
+    const sent = stubProposals([
+      proposal('.ai/cezar/workflows/e2e.yaml', { hash: 'a'.repeat(64) }),
+      proposal('.ai/cezar/mcp.json', { status: 'unchanged', hash: 'b'.repeat(64) }),
+    ])
     renderAt('/changes', <ChatChanges chatId="c2" />)
     expect(await screen.findByText('.ai/cezar/workflows/e2e.yaml')).toBeTruthy()
     expect(screen.queryByText('.ai/cezar/mcp.json')).toBeNull()
@@ -158,7 +161,18 @@ describe('the chat\'s Changes', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Apply & commit 1 file' }))
     await waitFor(() => expect(sent.some((r) => r.path.endsWith('/repo/proposals/c2/apply'))).toBe(true))
     // What the owner saw, not whatever the chat has written since.
-    expect(sent.find((r) => r.path.endsWith('/apply'))?.body).toEqual({ paths: ['.ai/cezar/workflows/e2e.yaml', '.ai/cezar/mcp.json'] })
+    expect(sent.find((r) => r.path.endsWith('/apply'))?.body).toEqual({
+      paths: ['.ai/cezar/workflows/e2e.yaml', '.ai/cezar/mcp.json'],
+      hashes: { '.ai/cezar/workflows/e2e.yaml': 'a'.repeat(64), '.ai/cezar/mcp.json': 'b'.repeat(64) },
+    })
+  })
+
+  it('Apply waits while the chat is answering: a turn could rewrite what the owner reviewed', async () => {
+    stubProposals([proposal('.ai/cezar/workflows/e2e.yaml')])
+    renderAt('/changes', <ChatChanges chatId="c2" running />)
+    const apply = await screen.findByRole('button', { name: 'Apply & commit' })
+    expect((apply as HTMLButtonElement).disabled).toBe(true)
+    expect(document.querySelector('[data-slot="chat-apply-running"]')).not.toBeNull()
   })
 
   it('the confirm lists the risks the server read from the parsed file, never lines of the diff', async () => {

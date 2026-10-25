@@ -248,6 +248,35 @@ describe('personas on workflow steps', () => {
     await settled(record.id);
   }, 60_000);
 
+  it("a Continue arms the persona's dispatch limits only once its session attaches", async () => {
+    const gate: WorkflowDef = { name: 'gate', source: 'file', steps: [{ id: 'g', prompt: '{{task}}', agent: 'gatekeeper' }] };
+    const record = manager!.startRun(gate, { task: 'x', worktree: false, runner: 'claude' });
+    await spawnAt(0);
+    await settled(record.id);
+    const live = () => (manager as unknown as { active: Map<string, { personaDispatch?: { name: string } }> }).active.get(record.id);
+    let openMcp!: () => void;
+    const mcpGate = new Promise<void>((resolve) => (openMcp = resolve));
+    const mcp = vi
+      .spyOn(manager as unknown as { privateMcpForLaunch: () => Promise<undefined> }, 'privateMcpForLaunch')
+      .mockImplementationOnce(() => mcpGate.then(() => undefined));
+    let release!: () => void;
+    captured.hold = new Promise<void>((resolve) => (release = resolve));
+    expect(manager!.continueRun(record.id, { text: 'again', runner: 'claude' })).toEqual({ ok: true });
+    await expect.poll(() => mcp.mock.calls.length, { timeout: 15_000 }).toBe(1);
+    expect(live()).toBeDefined();
+    expect(live()?.personaDispatch).toBeUndefined();
+    openMcp();
+    await spawnAt(1);
+    expect(live()?.personaDispatch).toMatchObject({ name: 'gatekeeper', stepId: 'g' });
+    expect(manager!.dispatch(record.id, { objective: 'help me' })).toMatchObject({ refused: expect.stringContaining('allows no subtasks') });
+    release();
+    captured.hold = undefined;
+    await expect
+      .poll(() => store.getRun(record.id)?.steps.find((s) => s.id === 'continue-1')?.status, { timeout: 15_000 })
+      .toSatisfy((status) => ['done', 'failed', 'cancelled'].includes(String(status)));
+    mcp.mockRestore();
+  }, 60_000);
+
   it('fails the step rather than run a persona-less agent when the persona is gone', async () => {
     const ghost: WorkflowDef = { name: 'ghost', source: 'file', steps: [{ id: 'g', prompt: '{{task}}', agent: 'ghost' }] };
     const record = manager!.startRun(ghost, { task: 'x', worktree: false, runner: 'claude' });

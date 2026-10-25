@@ -4961,9 +4961,11 @@ export class RunManager {
         this.store.appendEvent(runId, { type: 'note', stepId, message });
       }
     }
-    state.personaDispatch = continuePersona?.dispatch && toolsStep
+    // Set at attach, as at spawn: the limits live only while the persona's session does.
+    const continuePersonaDispatch = continuePersona?.dispatch && toolsStep
       ? { name: continuePersona.name, dispatch: continuePersona.dispatch, stepId: toolsStep.id }
       : undefined;
+    state.personaDispatch = undefined;
     // The temp-directory preflight (#785) rides along with the account resolution: a resumed
     // turn hits the same broken `/tmp` a fresh one would, and an agent whose shell silently
     // returns nothing is worse than a turn that refuses to start and says why.
@@ -5052,6 +5054,7 @@ export class RunManager {
       state.session = resume ? resumeGuard.track(started) : started;
       state.sessionEverOpened = true;
       this.flushDeferred(runId);
+      state.personaDispatch = continuePersonaDispatch;
       state.interrupt = () => started.interrupt();
       if (started.pid !== undefined) registerRunProcess(runId, started.pid);
       return started;

@@ -53,6 +53,9 @@ let touched: Region | null = null
 
 /** Where Esc belongs to the program, not to the page: a shell, an editor. */
 const OWNS_ESCAPE = '.xterm, .cm-editor'
+/** The macOS desktop shell's drag strip (`app-shell.tsx`), pinned over the window's top edge. */
+const MACOS_SHELL = '[data-desktop="macos"]'
+export const MACOS_TITLEBAR_PX = 28
 /** An open dialog, menu or listbox owns Esc too. */
 const OPEN_OVERLAY = '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]'
 
@@ -185,7 +188,13 @@ export function FullscreenRegion({ label, active: activeProp, onActiveChange, as
         data-fullscreen-region={label}
         data-fullscreen={active ? 'true' : undefined}
         // A column's share of the row (`width: 40%`) would beat `inset-0`; in full screen it goes.
-        style={active && style ? { ...style, width: undefined, height: undefined } : style}
+        // Under the macOS drag strip, not beneath it: the strip sits above everything and would
+        // swallow the clicks on the region's own toolbar.
+        style={
+          active
+            ? { ...style, width: undefined, height: undefined, ...(ref.current?.closest(MACOS_SHELL) ? { top: MACOS_TITLEBAR_PX } : {}) }
+            : style
+        }
         // In the window the region is its own scroller: the shell's `main` is covered with it.
         className={cn(className, active && 'fixed inset-0 z-50 overflow-y-auto bg-background')}
         {...props}

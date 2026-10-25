@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { TooltipProvider } from '@/components/ui/tooltip'
 
-import { FullscreenRegion, FullscreenToggle } from './fullscreen-region'
+import { FullscreenRegion, FullscreenToggle, MACOS_TITLEBAR_PX } from './fullscreen-region'
 
 /** Spec 2026-10-24-cockpit-polish §3.3: one region takes the window, and gives it back. */
 
@@ -46,6 +46,24 @@ describe('FullscreenRegion', () => {
     expect(isFull('Chat')).toBe(false)
     expect(region('Chat').style.width).toBe('40%')
     expect(document.documentElement.dataset.cezFullscreen).toBeUndefined()
+  })
+
+  it('in the macOS desktop shell it starts below the drag strip, which would swallow its toolbar', () => {
+    render(
+      <div data-desktop="macos">
+        <Two />
+      </div>,
+    )
+    expect(region('Chat').style.top).toBe('')
+    fireEvent.click(screen.getByRole('button', { name: 'Full screen Chat' }))
+    expect(region('Chat').style.top).toBe(`${MACOS_TITLEBAR_PX}px`)
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(region('Chat').style.top).toBe('')
+    cleanup()
+    // Anywhere else it covers the whole window.
+    render(<Two />)
+    fireEvent.click(screen.getByRole('button', { name: 'Full screen Chat' }))
+    expect(region('Chat').style.top).toBe('')
   })
 
   it('F11 goes to the focused region, and F11 again leaves', () => {

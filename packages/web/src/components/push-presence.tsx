@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { beatPushPresence } from '@/api/push'
 import { useHealth } from '@/api/queries'
 import { useTransportFor, type Transport } from '@/api/socket-transport'
 import { subscribeTopic } from '@/api/ws'
+import { currentPushDeviceId } from '@/lib/push'
 
 /** The topic a visible tab holds; the server's push gate reads who holds it (`push/routes.ts`). */
 export const PRESENCE_TOPIC = 'presence'
@@ -37,6 +38,8 @@ export function PushPresence({ beatMs = PRESENCE_BEAT_MS }: { beatMs?: number } 
   const hosted = health !== undefined && health.capabilities?.localHandoff !== true
   const [visible, setVisible] = useState(pageVisible)
   const [tab] = useState(newTabId)
+  // The hide beat cannot wait on the service worker, so it reuses the last visible beat's id.
+  const device = useRef<string | undefined>(undefined)
 
   useEffect(() => {
     const onChange = () => setVisible(pageVisible())
@@ -48,11 +51,15 @@ export function PushPresence({ beatMs = PRESENCE_BEAT_MS }: { beatMs?: number } 
   useEffect(() => {
     if (channel === 'socket') return subscribeTopic(PRESENCE_TOPIC, () => undefined)
     if (channel !== 'beat') return
-    void beatPushPresence(true, tab)
-    const timer = setInterval(() => void beatPushPresence(true, tab), beatMs)
+    const beat = () => void currentPushDeviceId().then((id) => {
+      device.current = id
+      return beatPushPresence(true, tab, id)
+    })
+    beat()
+    const timer = setInterval(beat, beatMs)
     return () => {
       clearInterval(timer)
-      void beatPushPresence(false, tab)
+      void beatPushPresence(false, tab, device.current)
     }
   }, [channel, tab, beatMs])
 

@@ -27,10 +27,12 @@ export async function unsubscribePush(endpoint?: string): Promise<WorkspacePushS
   )
 }
 
-/** One beat of a socket-less tab's presence (`components/push-presence.tsx`). Never throws. */
-export async function beatPushPresence(visible: boolean, tab: string): Promise<void> {
+/** One beat of a socket-less tab's presence (`components/push-presence.tsx`); `device` is this
+ *  browser's subscription id, which keys the server's rate limit without sign-in. Never throws. */
+export async function beatPushPresence(visible: boolean, tab: string, device?: string): Promise<void> {
   try {
-    await cez.api.v1.workspace.push.presence.$post({ json: { visible, tab } }, { init: { keepalive: !visible } })
+    const json = { visible, tab, ...(device !== undefined ? { device } : {}) }
+    await cez.api.v1.workspace.push.presence.$post({ json }, { init: { keepalive: !visible } })
   } catch {
     // A missed beat only means a push may arrive while the tab is open.
   }

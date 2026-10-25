@@ -34,8 +34,9 @@ const NOT_A_PERSON = 'push subscriptions belong to a signed-in person';
 
 /** Beats one tab may send a minute: its 30 s beat plus a few visibility flips. */
 export const PRESENCE_BEATS_PER_MINUTE = 4;
-/** Tabs one caller (its sign-in session, or the account without one) may beat for in a minute. */
-export const PRESENCE_TABS_PER_CALLER = 8;
+/** Tabs one caller (its sign-in session, else its browser's push device id, else the account) may
+ *  beat for in a minute; every reload is a new tab. */
+export const PRESENCE_TABS_PER_CALLER = 20;
 const PRESENCE_WINDOW_MS = 60_000;
 
 /** A refused beat only means push may hold a little longer; it is never queued. */
@@ -103,8 +104,11 @@ export function pushRoutes(deps: {
     .post('/workspace/push/presence', jsonZodValidator(pushPresenceInputSchema), (c) => {
       const who = pushAccountOf(principalOf(c));
       if (who === null) return c.json({ error: NOT_A_PERSON }, 409);
-      const { visible, tab } = c.req.valid('json');
-      if (!presenceAllowed(`${who.account}\0${who.sessionId ?? ''}`, tab)) {
+      const { visible, tab, device } = c.req.valid('json');
+      // Without sign-in every browser is `owner`: its device id keeps one reloading browser from
+      // exhausting the cap for the phone that gets the push.
+      const caller = who.sessionId !== undefined ? `s:${who.sessionId}` : device !== undefined ? `d:${device}` : '';
+      if (!presenceAllowed(`${who.account}\0${caller}`, tab)) {
         c.header('retry-after', '60');
         return c.json({ error: 'too many presence beats — try again in a minute' }, 429);
       }

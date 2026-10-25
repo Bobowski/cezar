@@ -97,8 +97,8 @@ Workspace-level, behind sign-in; the manifest at `/manifest.webmanifest` and the
   notifies twice.
 - **Presence.** A socket-less tab (hosted without cezar's sign-in) beats every 30 s while
   visible, and once with `visible: false` when it hides; a beat holds push for 45 s. `tab` is a
-  token of 1–64 `[A-Za-z0-9_-]`. Past four beats a minute from one tab, or eight tabs a minute
-  from one caller (its sign-in session, else its account), the route answers 429 — a refused
+  token of 1–64 `[A-Za-z0-9_-]`; optional `device` is the browser's subscription id. Past four beats a minute from one tab, or twenty tabs a minute
+  from one caller (its sign-in session, else its `device`, else its account), the route answers 429 — a refused
   beat only means push may hold a little longer.
 - **Endpoint rules.** An endpoint is an `https:` URL with no credentials, on a public host. The
   host judged is the one the WHATWG URL parser yields — after percent-decoding, IDNA mapping

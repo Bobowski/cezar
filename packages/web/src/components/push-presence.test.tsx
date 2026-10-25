@@ -5,6 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createQueryClient } from '@/api/query-client'
 import { PushPresence, presenceChannel } from './push-presence'
 
+const pushDevice = vi.hoisted(() => ({ id: undefined as string | undefined }))
+vi.mock('@/lib/push', async (actual) => ({
+  ...(await actual<typeof import('@/lib/push')>()),
+  currentPushDeviceId: async () => pushDevice.id,
+}))
+
 /** The visible-tab half of the push gate (spec 2026-10-24-mobile-cockpit §3.5). */
 
 const HEALTH = {
@@ -16,7 +22,7 @@ const HEALTH = {
   capabilities: { localHandoff: false, followups: false, singleProject: false, automations: false },
 }
 
-let beats: Array<{ visible: boolean; tab: string }> = []
+let beats: Array<{ visible: boolean; tab: string; device?: string }> = []
 let sockets = 0
 
 function serve(health: unknown) {
@@ -25,7 +31,7 @@ function serve(health: unknown) {
     const url = String(input)
     if (url === '/api/v1/health') return new Response(JSON.stringify(health), { status: 200, headers: { 'content-type': 'application/json' } })
     if (url === '/api/v1/workspace/push/presence' && init.method === 'POST') {
-      beats.push(JSON.parse(String(init.body)) as { visible: boolean; tab: string })
+      beats.push(JSON.parse(String(init.body)) as { visible: boolean; tab: string; device?: string })
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } })
     }
     return new Promise<never>(() => {})
@@ -39,6 +45,7 @@ function setVisibility(state: 'visible' | 'hidden') {
 
 beforeEach(() => {
   sockets = 0
+  pushDevice.id = undefined
   vi.stubGlobal('WebSocket', class {
     readyState = 0
     constructor() {
@@ -89,6 +96,25 @@ describe('PushPresence on a hosted cockpit without sign-in (CEZ_AUTH=0)', () => 
     await new Promise((resolve) => setTimeout(resolve, 120))
     expect(beats).toHaveLength(count)
     expect(sockets).toBe(0)
+  })
+
+  it('names this browser by its push subscription id on every beat, the hide beat included', async () => {
+    pushDevice.id = 'ab'.repeat(12)
+    serve(HEALTH)
+    setVisibility('visible')
+    renderPresence()
+    await waitFor(() => expect(beats.length).toBeGreaterThanOrEqual(2))
+    act(() => setVisibility('hidden'))
+    await waitFor(() => expect(beats.at(-1)?.visible).toBe(false))
+    expect(beats.every((beat) => beat.device === 'ab'.repeat(12))).toBe(true)
+  })
+
+  it('sends no device without a subscription', async () => {
+    serve(HEALTH)
+    setVisibility('visible')
+    renderPresence()
+    await waitFor(() => expect(beats.length).toBeGreaterThanOrEqual(1))
+    expect(beats.every((beat) => !('device' in beat))).toBe(true)
   })
 
   it('a local cockpit beats nothing', async () => {

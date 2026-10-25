@@ -335,10 +335,12 @@ export const pushUnsubscribeInputSchema = z.object({
 export type PushUnsubscribeInput = z.infer<typeof pushUnsubscribeInputSchema>;
 
 /** `POST /api/v1/workspace/push/presence` — a socket-less cockpit tab's beat: still visible, or hidden
- *  now. `tab` tells one tab of an account from another. */
+ *  now. `tab` tells one tab of an account from another; `device` (this browser's subscription id,
+ *  as `?device=` on the GET) keys the rate limit per browser where there is no sign-in session. */
 export const pushPresenceInputSchema = z.object({
   visible: z.boolean(),
   tab: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, 'a tab id is a token of at most 64 letters, digits, - or _'),
+  device: z.string().regex(/^[0-9a-f]{24}$/, 'not a subscription id').optional(),
 }).strict();
 export type PushPresenceInput = z.infer<typeof pushPresenceInputSchema>;
 export const pushPresenceResponseSchema = z.object({ ok: z.literal(true) });

@@ -67,8 +67,8 @@ describe('the presence beat route (spec 2026-10-24-mobile-cockpit §4)', () => {
         await next();
       })
       .route('/', pushRoutes({ subscriptions: store, keys: () => vapid, available: () => true, beats, now }));
-    const beat = (tab: string, visible = true) => app.request('/workspace/push/presence', {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ visible, tab }),
+    const beat = (tab: string, visible = true, device?: string) => app.request('/workspace/push/presence', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ visible, tab, device }),
     });
     return { beat, beats };
   }
@@ -86,6 +86,27 @@ describe('the presence beat route (spec 2026-10-24-mobile-cockpit §4)', () => {
     const { beat } = presenceApp(undefined, () => 0);
     for (let i = 0; i < PRESENCE_TABS_PER_CALLER; i += 1) expect((await beat(`tab-${i}`)).status).toBe(200);
     expect((await beat('one-more')).status).toBe(429);
+  });
+
+  it('without sign-in keys the tab cap by the browser device id, so one browser reloading cannot starve another', async () => {
+    const { beat } = presenceApp(undefined, () => 0);
+    const laptop = 'a'.repeat(24);
+    const phone = 'b'.repeat(24);
+    for (let i = 0; i < PRESENCE_TABS_PER_CALLER; i += 1) expect((await beat(`reload-${i}`, true, laptop)).status).toBe(200);
+    expect((await beat('reload-more', true, laptop)).status).toBe(429);
+    expect((await beat('phone-tab', true, phone)).status).toBe(200);
+    expect((await beat('no-device-tab')).status).toBe(200);
+  });
+
+  it('a signed-in session is its own caller whatever device id it sends', async () => {
+    const { beat } = presenceApp('s1', () => 0);
+    for (let i = 0; i < PRESENCE_TABS_PER_CALLER; i += 1) expect((await beat(`tab-${i}`, true, `${i}`.padStart(24, '0'))).status).toBe(200);
+    expect((await beat('one-more', true, 'c'.repeat(24))).status).toBe(429);
+  });
+
+  it('refuses a device that is not a subscription id', async () => {
+    const { beat } = presenceApp(undefined, () => 0);
+    expect((await beat('tab-1', true, 'not-hex')).status).toBe(400);
   });
 
   it.each(['', 'x'.repeat(65), 'has space', '../etc', 'tab\u0000', 'taß'])('refuses a tab that is not a bounded token: %j', async (tab) => {

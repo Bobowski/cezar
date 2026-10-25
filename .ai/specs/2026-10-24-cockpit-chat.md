@@ -53,7 +53,10 @@ not know what cezar is.
   under the Git page's checkout rules: it copies them into place, stages the repo files among them
   and commits them on the checked-out branch (`automations.json` is local state: it goes live
   but is not committed), refused while anything else is staged; an automation the proposal
-  switches on is applied paused — and **Discard**. Application code and the rest of `.ai/cezar/`
+  switches on is applied paused, and `automations.json` is merged into the live file by id under
+  the automations store's mutation lock — an automation the owner added, edited (a newer
+  revision) or deleted since the proposal was made keeps the owner's state — and **Discard**
+  (also a trusted operator's). Application code and the rest of `.ai/cezar/`
   (`config.json`, `config.local.json`, `mcp.local.json`, `runs.json`, event files, `worktrees/`)
   are out of bounds even as proposals.
 - The chat's `runs_create` takes only a workflow that is LIVE (loaded): a proposed workflow cannot

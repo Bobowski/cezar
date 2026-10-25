@@ -356,6 +356,43 @@ describe('cockpit chat API', () => {
     expect(existsSync(proposal)).toBe(false);
   });
 
+  it('applying automations.json merges by id under the store\'s mutation lock: the owner\'s rows since survive', async () => {
+    gitInit();
+    const chat = liveChat();
+    const live = join(repoRoot, '.ai/cezar/automations.json');
+    const write = (path: string, automations: unknown[], extra: Record<string, unknown> = {}) =>
+      writeFileSync(path, JSON.stringify({ version: 1, automations, ...extra }));
+    write(live, [{ id: 'a', name: 'A', revision: 1, enabled: false }, { id: 'd', name: 'D', revision: 1, enabled: false }]);
+    // The proposal: the live file as the chat saw it, plus its own new row and an edit of D.
+    mkdirSync(join(repoRoot, '.ai/cezar/proposals', chat.id), { recursive: true });
+    write(join(repoRoot, '.ai/cezar/proposals', chat.id, 'automations.json'), [
+      { id: 'a', name: 'A', revision: 1, enabled: false },
+      { id: 'd', name: 'D', revision: 1, enabled: false },
+      { id: 'c', name: 'C from the chat', revision: 1, enabled: true },
+    ]);
+    // Since then the owner added B, edited A and deleted D.
+    write(live, [{ id: 'a', name: 'A edited', revision: 2, enabled: false }, { id: 'b', name: 'B', revision: 1, enabled: true }], {
+      tombstones: { d: new Date().toISOString() },
+    });
+
+    // A launch holding the lock: Apply waits for it rather than writing past it.
+    const other = AutomationStore.open(join(repoRoot, '.ai/cezar'));
+    const lease = other.acquireMutationLease()!;
+    const apply = () => post(`/api/v1/p/boot/repo/proposals/${chat.id}/apply`, { paths: ['.ai/cezar/automations.json'] });
+    try {
+      expect((await apply()).status).toBe(409);
+    } finally {
+      lease.release();
+    }
+    const applied = await apply();
+    expect(applied.status, await applied.clone().text()).toBe(200);
+    const after = JSON.parse(readFileSync(live, 'utf8')) as { automations: Array<{ id: string; name: string; enabled: boolean }>; tombstones?: Record<string, string> };
+    expect(after.automations.map((row) => [row.id, row.name, row.enabled])).toEqual([
+      ['a', 'A edited', false], ['b', 'B', true], ['c', 'C from the chat', false],
+    ]);
+    expect(after.tombstones?.d).toBeDefined();
+  });
+
   it('Apply refuses while other files are staged, so the commit carries nothing of the owner\'s', async () => {
     gitInit();
     const chat = liveChat();

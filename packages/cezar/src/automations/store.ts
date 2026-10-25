@@ -320,6 +320,16 @@ export class AutomationStore {
     }
   }
 
+  /** `fn` under the mutation lease, for a writer of `automations.json` outside the store (a chat's
+   *  applied proposal, spec 2026-10-24-cockpit-chat §3); throws while a launch holds it. */
+  withMutationLease<T>(fn: () => T): T {
+    const mutation = this.acquireMutationLease();
+    if (!mutation) throw new Error('automation mutation conflict: a launch is in progress');
+    try {
+      return fn();
+    } finally { mutation.release(); }
+  }
+
   acquireMutationLease(): AutomationLease | undefined {
     return this.acquireLease(10 * 60_000, MUTATION_LOCK);
   }

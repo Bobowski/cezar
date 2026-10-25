@@ -128,6 +128,35 @@ export function disarmAutomations(proposed: string, live: string | undefined): s
   return `${JSON.stringify({ ...file, automations }, null, 2)}\n`;
 }
 
+const revisionOf = (row: Row | undefined) => (typeof row?.revision === 'number' ? row.revision : 0);
+
+/**
+ * The live `automations.json` with a proposal's rows merged in by id — never the proposal's file
+ * wholesale, which is the live file as the chat saw it: an automation the owner added since stays,
+ * one the owner deleted since (tombstoned) stays deleted, and a row the owner edited since (a
+ * newer live revision) keeps the owner's version. New and changed rows are then disarmed.
+ * Undefined for a proposal that is not an automations file.
+ */
+export function mergeAutomations(proposed: string, live: string | undefined): string | undefined {
+  const file = parseAutomations(proposed);
+  if (!file) return undefined;
+  const liveFile = parseAutomations(live) ?? { version: 1, automations: [] };
+  const tombstones = liveFile.tombstones && typeof liveFile.tombstones === 'object' ? (liveFile.tombstones as Record<string, unknown>) : {};
+  const rows = rowsOf(liveFile);
+  for (const row of rowsOf(file)) {
+    if (typeof row.id !== 'string' || Object.hasOwn(tombstones, row.id)) continue;
+    const at = rows.findIndex((current) => current.id === row.id);
+    if (at < 0) {
+      rows.push(row);
+      continue;
+    }
+    const current = rows[at]!;
+    if (revisionOf(row) < revisionOf(current) || JSON.stringify(row) === JSON.stringify(current)) continue;
+    rows[at] = { ...row, revision: Math.max(revisionOf(current) + 1, revisionOf(row)) };
+  }
+  return disarmAutomations(JSON.stringify({ ...liveFile, automations: rows }), live);
+}
+
 /** Upsert one automation into the chat's proposed `automations.json` (based on the live file). */
 export function proposeAutomation(dataDir: string, chatId: string, definition: Row & { id: string }): void {
   const live = readText(join(dataDir, 'automations.json'));
@@ -141,9 +170,9 @@ export function proposedAutomation(dataDir: string, chatId: string, id: string):
   return rowsOf(parseAutomations(readProposal(dataDir, chatId, AUTOMATIONS))).find((row) => row.id === id);
 }
 
-/** The content a proposal would put in place (`automations.json` disarmed). */
+/** The content a proposal would put in place (`automations.json` merged and disarmed). */
 function appliedContent(root: string, livePath: string, proposed: string): string {
-  return livePath === AUTOMATIONS ? disarmAutomations(proposed, readText(join(root, livePath))) : proposed;
+  return livePath === AUTOMATIONS ? mergeAutomations(proposed, readText(join(root, livePath))) ?? proposed : proposed;
 }
 
 /** The chat's proposals as its Changes panel shows them: each live path with its diff. */
@@ -160,13 +189,15 @@ export function listProposals(root: string, dataDir: string, chatId: string): Ch
  * Apply a chat's proposals on the checkout: copy them into place, stage the repo files among them
  * (an ignored file such as `automations.json` is local state and only goes live), commit, and drop
  * what was applied. Refused while anything else is staged, so the commit carries nothing of the
- * owner's own; a failed commit puts the live files back.
+ * owner's own; a failed commit puts the live files back. `automations.json` is merged and written
+ * under `lockAutomations` (the automations store's mutation lease), like any other store write.
  */
 export async function applyProposals(
   root: string,
   dataDir: string,
   chatId: string,
   input: { paths?: readonly string[]; message?: string },
+  options: { lockAutomations?: <T>(fn: () => T) => T } = {},
 ): Promise<GitOk<{ applied: string[]; sha?: string }>> {
   const all = proposalPaths(dataDir, chatId);
   const unknown = (input.paths ?? []).filter((path) => !all.includes(path));
@@ -177,23 +208,42 @@ export async function applyProposals(
   const index = await repoIndex(root);
   if (!index.ok) return index;
   if (index.index.staged.length) return { ok: false, error: 'other files are staged in the checkout — commit or unstage them first' };
+  if (chosen.includes(AUTOMATIONS) && mergeAutomations(readProposal(dataDir, chatId, AUTOMATIONS) ?? '', undefined) === undefined) {
+    return { ok: false, error: 'the proposed automations.json is not an automations file' };
+  }
 
+  // Synchronous from the live read to the write, so the lease covers the whole read-merge-write.
+  const locked = <T>(fn: () => T): T => (chosen.includes(AUTOMATIONS) && options.lockAutomations ? options.lockAutomations(fn) : fn());
   const previous = new Map<string, string | undefined>();
   const changed: string[] = [];
-  for (const path of chosen) {
-    const before = readText(join(root, path));
-    const next = appliedContent(root, path, readProposal(dataDir, chatId, path) ?? '');
-    previous.set(path, before);
-    if (before === next) continue;
-    mkdirSync(dirname(join(root, path)), { recursive: true });
-    writeFileSync(join(root, path), next, 'utf8');
-    changed.push(path);
+  try {
+    locked(() => {
+      for (const path of chosen) {
+        const before = readText(join(root, path));
+        const next = appliedContent(root, path, readProposal(dataDir, chatId, path) ?? '');
+        previous.set(path, before);
+        if (before === next) continue;
+        mkdirSync(dirname(join(root, path)), { recursive: true });
+        writeFileSync(join(root, path), next, 'utf8');
+        changed.push(path);
+      }
+    });
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
-  const restore = () => {
+  const putBack = () => {
     for (const path of changed) {
       const before = previous.get(path);
       if (before === undefined) rmSync(join(root, path), { force: true });
       else writeFileSync(join(root, path), before, 'utf8');
+    }
+  };
+  // Put back under the lease when it is free; a failed apply must not stay half-applied either way.
+  const restore = () => {
+    try {
+      locked(putBack);
+    } catch {
+      putBack();
     }
   };
 

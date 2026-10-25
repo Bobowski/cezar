@@ -9195,7 +9195,9 @@ export function createApp(deps: ServerDeps) {
     .post('/repo/proposals/:chatId/apply', paramZodValidator(chatProposalParamsSchema), jsonZodValidator(chatProposalsActionSchema, { absent: {} }), async (c) => {
       const { chatId } = c.req.valid('param');
       const project = c.get('project');
-      const r = await mutateCheckout(project, principalOf(c), (root) => applyProposals(root, project.dataDir, chatId, c.req.valid('json')), { movesTree: true });
+      const r = await mutateCheckout(project, principalOf(c), (root) => applyProposals(root, project.dataDir, chatId, c.req.valid('json'), {
+        lockAutomations: (fn) => project.automationStore.withMutationLease(fn),
+      }), { movesTree: true });
       if ('error' in r) return c.json({ error: r.error }, 409);
       if (r.value.applied.includes('.ai/cezar/automations.json')) automationsChanged();
       return c.json(r.value, 200);

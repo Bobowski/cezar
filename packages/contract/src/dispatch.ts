@@ -152,6 +152,9 @@ export const dispatchInputSchema = z
     /** The child's backend and model. Absent = the parent's. */
     runner: runnerSchema.optional(),
     model: z.string().max(200).optional(),
+    /** Run the child as this project persona (spec 2026-10-24-personas): its runner, model, tools
+     *  and prompt fill whatever the order leaves out. */
+    as: z.string().min(1).max(64).optional(),
   })
   .strict();
 export type DispatchInput = z.infer<typeof dispatchInputSchema>;

@@ -490,6 +490,24 @@ describe('cockpit chat API', () => {
     expect((await post('/api/v1/runs', { workflow: 'quick-task', task: 'mine' })).status).toBe(201);
   });
 
+  it('the hourly cap counts the chat\'s own starts: deleting the tasks it started frees nothing', async () => {
+    const chat = liveChat();
+    const start = () => post('/api/v1/p/boot/runs', { workflow: 'quick-task', task: 't' }, chat.bearer);
+    for (let i = 0; i < 5; i += 1) {
+      expect((await start()).status).toBe(201);
+      for (const run of store.listRuns()) if (run.createdBy) store.deleteRun(run.id);
+    }
+    expect(store.listRuns().filter((run) => run.createdBy)).toHaveLength(0);
+    const refused = await start();
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error: string }).error).toMatch(/in the last hour/);
+    // An hour on, the starts age out.
+    const starts = store.getRun(chat.id)?.chatTaskStarts ?? [];
+    expect(starts).toHaveLength(5);
+    store.updateRun(chat.id, { chatTaskStarts: starts.map(() => new Date(Date.now() - 3_700_000).toISOString()) });
+    expect((await start()).status).toBe(201);
+  });
+
   it('parallel runs_create calls cannot overrun the in-flight cap: the slot is taken before any await', async () => {
     const chat = liveChat();
     const start = () => post('/api/v1/p/boot/runs', { workflow: 'quick-task', task: 't' }, chat.bearer);

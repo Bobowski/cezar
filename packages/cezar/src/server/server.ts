@@ -1576,9 +1576,19 @@ export function chatTaskLimit(store: RunStore, chatId: string, now = Date.now(),
   if (inFlight >= CHAT_TASKS_IN_FLIGHT) {
     return `this chat already has ${inFlight} tasks in flight — at most ${CHAT_TASKS_IN_FLIGHT}; wait for one to reach review`;
   }
-  const lastHour = pending + mine.filter((run) => now - Date.parse(run.createdAt) < 3_600_000).length;
+  // The chat's own durable count: a task the owner deleted still counts as started.
+  const lastHour = pending + recentChatStarts(store, chatId, now).length;
   if (lastHour >= CHAT_TASKS_PER_HOUR) return `this chat started ${lastHour} tasks in the last hour — at most ${CHAT_TASKS_PER_HOUR}`;
   return undefined;
+}
+
+function recentChatStarts(store: RunStore, chatId: string, now: number): string[] {
+  return (store.getRun(chatId)?.chatTaskStarts ?? []).filter((at) => now - Date.parse(at) < 3_600_000);
+}
+
+/** Record a task the chat started on its own record, where the hourly cap reads it. */
+export function recordChatTaskStart(store: RunStore, chatId: string, now = Date.now()): void {
+  store.updateRun(chatId, { chatTaskStarts: [...recentChatStarts(store, chatId, now), new Date(now).toISOString()] });
 }
 
 export function createApp(deps: ServerDeps) {
@@ -5315,6 +5325,7 @@ export function createApp(deps: ServerDeps) {
       chatTasksPending.set(chatId, (chatTasksPending.get(chatId) ?? 0) + 1);
       try {
         await next();
+        if (c.res.status === 201) recordChatTaskStart(c.get('project').store, chatId);
       } finally {
         const left = (chatTasksPending.get(chatId) ?? 1) - 1;
         if (left > 0) chatTasksPending.set(chatId, left);

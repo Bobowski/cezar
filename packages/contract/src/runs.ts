@@ -451,6 +451,8 @@ export const runRecordSchema = z.object({
   /** A chat's current session launch, which its MCP token names (spec 2026-10-24-cockpit-chat §5).
    *  Not a credential: the token is signed with a key only the cockpit process holds. */
   launchNonce: z.string().optional(),
+  /** A chat's task starts in the last hour, which its hourly cap counts (spec 2026-10-24-cockpit-chat §5). */
+  chatTaskStarts: z.array(z.string()).optional(),
   /** Absent for in-place runs and after an isolated worktree is removed. */
   worktreePath: z.string().optional(),
   worktreeLifecycle: worktreeLifecycleProjectionSchema.optional(),

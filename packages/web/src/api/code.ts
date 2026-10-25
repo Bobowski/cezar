@@ -78,11 +78,9 @@ export async function searchCode(tree: CodeTree, q: string, options: CodeSearchO
   return unwrap(await run().search.$get({ param: { ...scope(), id: tree.runId }, query }, init(opts)), `/runs/${tree.runId}/search`)
 }
 
-export async function getCodeWatch(tree: CodeTree, opts?: ReadOptions): Promise<CodeWatch> {
-  return unwrap(
-    await repo().watch.$get({ param: scope(), query: tree.kind === 'main' ? {} : { tree: tree.runId } }, init(opts)),
-    '/repo/watch',
-  )
+export async function getCodeWatch(tree: CodeTree, opts?: ReadOptions, stamp = false): Promise<CodeWatch> {
+  const query = { ...(tree.kind === 'main' ? {} : { tree: tree.runId }), ...(stamp ? { stamp: '1' as const } : {}) }
+  return unwrap(await repo().watch.$get({ param: scope(), query }, init(opts)), '/repo/watch')
 }
 
 // ---- terminals of the checkout: the project's own, or the task's ------------------------------

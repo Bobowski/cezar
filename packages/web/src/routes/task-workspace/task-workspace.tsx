@@ -11,6 +11,7 @@ import { Activity, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useS
 import { useNavigationType, useParams } from 'react-router'
 
 import { ApiError } from '@/api/client'
+import type { CodeTree } from '@/api/code'
 import { useHealth, useMarkRunSeen, useRun } from '@/api/queries'
 import { useRunHistory } from '@/api/run-history'
 import type { ApiRun } from '@open-mercato/cezar-api-client'
@@ -71,6 +72,7 @@ import { RunAppPanel } from './run-app'
 import { stripEntries, stripTabs, useStripKeyHints } from './strip'
 import { useSavedLayouts } from './use-saved-layouts'
 import { useWorkspaceLayouts } from './use-workspace-layouts'
+import { useBrowserColumnShare } from './browser-share'
 import { AvailableViewsContext } from './view-picker'
 import { ViewDropZones } from './view-drop-zones'
 import { WorkspaceColumns, type ColumnActions } from './workspace-columns'
@@ -166,7 +168,11 @@ function WorkspaceView({
   deepLinkView?: ViewId
   onMarkedUnread: (runId: string) => void
 }) {
-  const layouts = useWorkspaceLayouts(run.id)
+  const browserShare = useBrowserColumnShare()
+  const layouts = useWorkspaceLayouts(run.id, browserShare.share)
+  // A divider drag that sized a Browser is remembered for the next one (cockpit-polish §3.2).
+  const { observe: observeBrowserShare, markResized } = browserShare
+  useEffect(() => observeBrowserShare(layouts.layout?.columns), [layouts.layout?.columns, observeBrowserShare])
   const { openDeepLink, addLayout, closeLayout, selectLayout, setColumnBrowser, openInBrowser, applySaved, keepAs } = layouts
   // Layouts saved for every task: nothing is saved until the user names one (Layout menu).
   const savedLayouts = useSavedLayouts()
@@ -566,7 +572,10 @@ function WorkspaceView({
         fixedActive === null ? layouts.addColumn : (view: ViewId) => dropView(view, columnCount, 'insert'),
       closeColumn: layouts.closeColumn,
       setColumnView: requestColumnView,
-      resizeColumns: layouts.resizeColumns,
+      resizeColumns: (index: number, delta: number) => {
+        markResized()
+        layouts.resizeColumns(index, delta)
+      },
       moveColumn: layouts.moveColumn,
     }),
     [
@@ -577,6 +586,7 @@ function WorkspaceView({
       layouts.closeColumn,
       requestColumnView,
       layouts.resizeColumns,
+      markResized,
       layouts.moveColumn,
     ],
   )
@@ -664,6 +674,8 @@ function WorkspaceView({
   const designNotes = useDesignNotes(run)
   const { addDraft, discard: discardNote, note: noteFor, marks: designMarks } = designNotes
   const sourceRoots = useSourceRoots(run)
+  // The Preview reloads from this checkout's changes (cockpit-polish §3.2).
+  const liveTree = useMemo<CodeTree>(() => ({ kind: 'run', runId: run.id }), [run.id])
   const escapeNote = useCallback(
     (mark: string) => {
       if (noteFor(mark)?.phase === 'draft') discardNote(mark)
@@ -732,6 +744,7 @@ function WorkspaceView({
             <BrowserView
               state={column.browser ?? emptyBrowserState()}
               onChange={(browser) => setColumnBrowser(index, browser)}
+              liveTree={liveTree}
               onPickElement={addDraft}
               designMarks={designMarks}
               onDesignEscape={escapeNote}
@@ -770,6 +783,7 @@ function WorkspaceView({
       run,
       setColumnBrowser,
       sourceRoots,
+      liveTree,
       terminalAllowed,
       projectId,
       terminalColumnShown,

@@ -19,7 +19,7 @@ import { SettingsField, SettingsGroup, SettingsNote, SettingsPane } from './sett
 /** What each audience means to the person storing the secret. */
 const AUDIENCE_LABELS: Record<SecretAudience, string> = {
   checks: 'Check steps (workflow commands)',
-  cezar: 'cezar itself (its own features — not the agents)',
+  cezar: 'cezar itself (its own features, and MCP servers that reference it)',
 }
 
 /** The backend line under the list: a file fallback is never silent. */

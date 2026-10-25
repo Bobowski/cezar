@@ -1,11 +1,14 @@
 import { execFile } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent, AgentRunResult, AgentRunSpec } from '../core/agent-runner.ts';
-import { privateMcpPath } from '../core/private-mcp.ts';
+import { loadPrivateMcp, privateMcpPath, projectMcpPath } from '../core/private-mcp.ts';
+import { approveProjectMcp, confirmPrivateOverride, mcpContentHash, privateOverrideHash } from '../mcp-servers/approval.ts';
+import { mcpStatusPath, readMcpStatus } from '../mcp-servers/status.ts';
+import { SecretStore } from '../workspace/secrets.ts';
 import { RunStore } from '../runs/store.ts';
 import { RunManager } from './run.ts';
 import type { WorkflowDef } from './types.ts';
@@ -125,6 +128,107 @@ describe('private MCP servers at launch', () => {
     expect((await specAt(0)).mcpServers).toBeUndefined();
     await settled(record.id);
     expect(notes(record.id)).toContain('private MCP: cursor cannot attach tracker — cursor has no launch-time MCP channel');
+  });
+
+  it('project mcp.json and private mcp.local.json both reach the session, a confirmed private entry winning, secrets resolved (spec 2026-10-24-easy-mcp)', async () => {
+    manager?.dispose();
+    const secrets = new SecretStore(process.env, { keychain: async () => null });
+    await secrets.set({ kind: 'workspace' }, 'STRIPE_SECRET_KEY', 'sk_test_resolved_at_launch', ['cezar']);
+    await secrets.set({ kind: 'workspace' }, 'CHECKS_ONLY', 'not-for-cezar-value', ['checks']);
+    manager = new RunManager(store, repoRoot, { secrets });
+    mkdirSync(join(repoRoot, '.ai', 'cezar'), { recursive: true });
+    const projectText = JSON.stringify({
+      mcpServers: {
+        context7: { command: 'npx', args: ['-y', '@upstash/context7-mcp'] },
+        shared: { command: 'from-project' },
+        gated: { command: 'gated-mcp', env: { KEY: '${{ secrets.CHECKS_ONLY }}' } },
+      },
+    });
+    writeFileSync(projectMcpPath(repoRoot), projectText);
+    // The committed file is repo content: it reaches a session only once approved on this machine.
+    expect(await approveProjectMcp(repoRoot, mcpContentHash(projectText), { gated: ['CHECKS_ONLY'] })).toEqual({ ok: true });
+    writePrivateMcp({
+      shared: { command: 'from-private' },
+      stripe: { type: 'http', url: 'https://mcp.stripe.com', headers: { Authorization: 'Bearer ${{ secrets.STRIPE_SECRET_KEY }}' } },
+    });
+    const shared = (await loadPrivateMcp(repoRoot)).servers.find((server) => server.name === 'shared')!;
+    expect(await confirmPrivateOverride(repoRoot, 'shared', privateOverrideHash(shared))).toEqual({ ok: true });
+    const record = manager.startRun(TASK, { task: 'do it', worktree: false, runner: 'claude' });
+    const opening = await specAt(0);
+    expect(opening.mcpServers?.map((s) => [s.name, s.command ?? s.url])).toEqual([
+      ['context7', 'npx'],
+      ['shared', 'from-private'],
+      ['stripe', 'https://mcp.stripe.com'],
+    ]);
+    expect(opening.mcpServers?.find((s) => s.name === 'stripe')?.headers).toEqual({ Authorization: 'Bearer sk_test_resolved_at_launch' });
+    await settled(record.id);
+    const runNotes = notes(record.id);
+    expect(runNotes).toContain('MCP servers from .ai/cezar/mcp.json: context7');
+    expect(runNotes).toContain('private MCP servers from .ai/cezar/mcp.local.json: shared, stripe');
+    expect(runNotes.some((n) => n.startsWith('project MCP: MCP server "gated" skipped: secret CHECKS_ONLY is not available to cezar'))).toBe(true);
+    // The resolved value never reaches the event log.
+    expect(JSON.stringify(store.readEvents(record.id))).not.toContain('sk_test_resolved_at_launch');
+    await expect.poll(async () => (await readMcpStatus(repoRoot)).get('private:stripe')?.state).toBe('injected');
+    expect((await readMcpStatus(repoRoot)).get('project:gated')).toMatchObject({ state: 'failed', runId: record.id });
+  });
+
+  it('an unconfirmed private entry does not replace an approved project server — a note says why', async () => {
+    mkdirSync(join(repoRoot, '.ai', 'cezar'), { recursive: true });
+    const projectText = JSON.stringify({ mcpServers: { shared: { command: 'from-project' } } });
+    writeFileSync(projectMcpPath(repoRoot), projectText);
+    expect(await approveProjectMcp(repoRoot, mcpContentHash(projectText), {})).toEqual({ ok: true });
+    writePrivateMcp({ shared: { command: 'from-private' } });
+    const record = manager!.startRun(TASK, { task: 'do it', worktree: false, runner: 'claude' });
+    expect((await specAt(0)).mcpServers?.map((s) => [s.name, s.command])).toEqual([['shared', 'from-project']]);
+    await settled(record.id);
+    expect(notes(record.id)).toContain('private MCP: MCP server "shared" skipped: it would replace the approved project server of that name — confirm the replacement in Settings → MCP servers');
+  });
+
+  it('an unapproved committed mcp.json reaches no session — a note says why, the private file still applies', async () => {
+    mkdirSync(join(repoRoot, '.ai', 'cezar'), { recursive: true });
+    writeFileSync(projectMcpPath(repoRoot), JSON.stringify({ mcpServers: { pulled: { command: 'repo-chosen-mcp' } } }));
+    writePrivateMcp({ mine: { command: 'mine-mcp' } });
+    const record = manager!.startRun(TASK, { task: 'do it', worktree: false, runner: 'claude' });
+    expect((await specAt(0)).mcpServers?.map((s) => s.name)).toEqual(['mine']);
+    await settled(record.id);
+    expect(notes(record.id).some((n) => n.startsWith('project MCP: MCP server "pulled" skipped: mcp.json is not approved on this machine'))).toBe(true);
+  });
+
+  it("a fork's head gets no project server, approved or not, and no resolved value reaches its notes, log or status", async () => {
+    manager?.dispose();
+    const secrets = new SecretStore(process.env, { keychain: async () => null });
+    await secrets.set({ kind: 'workspace' }, 'PROJECT_PAT', 'project-pat-resolved-value', ['cezar']);
+    await secrets.set({ kind: 'workspace' }, 'PRIVATE_PAT', 'private-pat-resolved-value', ['cezar']);
+    manager = new RunManager(store, repoRoot, { secrets });
+    mkdirSync(join(repoRoot, '.ai', 'cezar'), { recursive: true });
+    const projectText = JSON.stringify({ mcpServers: { tool: { command: 'tool-mcp', env: { PAT: '${{ secrets.PROJECT_PAT }}' } }, plain: { command: 'plain-mcp' } } });
+    writeFileSync(projectMcpPath(repoRoot), projectText);
+    expect(await approveProjectMcp(repoRoot, mcpContentHash(projectText), { tool: ['PROJECT_PAT'] })).toEqual({ ok: true });
+    writePrivateMcp({ mine: { command: 'mine-mcp', env: { PAT: '${{ secrets.PRIVATE_PAT }}' } }, open: { command: 'open-mcp' } });
+
+    const fork = manager.startRun(TASK, { task: 'review the PR', worktree: false, runner: 'claude' });
+    store.updateRun(fork.id, { untrustedHead: true });
+    expect((await specAt(0)).mcpServers?.map((s) => s.name)).toEqual(['open']);
+    await settled(fork.id);
+    const forkNotes = notes(fork.id);
+    expect(forkNotes.filter((n) => n.includes("a fork's head never gets the servers of .ai/cezar/mcp.json"))).toHaveLength(2);
+
+    // The same project on a trusted run: every server, values resolved into the spec only.
+    const trusted = manager.startRun(TASK, { task: 'do it', worktree: false, runner: 'claude' });
+    const spec = await specAt(1);
+    expect(spec.mcpServers?.map((s) => s.name)).toEqual(['tool', 'plain', 'mine', 'open']);
+    expect(spec.mcpServers?.find((s) => s.name === 'tool')?.env).toEqual({ PAT: 'project-pat-resolved-value' });
+    await settled(trusted.id);
+
+    for (const runId of [fork.id, trusted.id]) {
+      const log = JSON.stringify(store.readEvents(runId));
+      expect(log).not.toContain('project-pat-resolved-value');
+      expect(log).not.toContain('private-pat-resolved-value');
+    }
+    await expect.poll(async () => (await readMcpStatus(repoRoot)).get('project:tool')?.runId).toBe(trusted.id);
+    const status = readFileSync(mcpStatusPath(repoRoot), 'utf8');
+    expect(status).not.toContain('project-pat-resolved-value');
+    expect(status).not.toContain('private-pat-resolved-value');
   });
 
   it('a broken file is a note, never a failed run', async () => {

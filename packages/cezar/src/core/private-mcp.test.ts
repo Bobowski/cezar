@@ -6,10 +6,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildClaudeArgs, writeClaudeMcpConfig } from './claude-cli-runner.ts';
 import {
   acpMcpCapabilities,
+  loadLaunchMcp,
   loadPrivateMcp,
   opencodeConfigContent,
   parsePrivateMcp,
+  PRIVATE_TRACKED_PROBLEM,
   privateMcpPath,
+  privateMcpTrackedProblem,
   supportsPrivateMcp,
   toAcpMcpServers,
   toCodexConfigOverrides,
@@ -88,6 +91,22 @@ describe('loadPrivateMcp', () => {
     mkdirSync(join(repo, '.ai', 'cezar'), { recursive: true });
     writeFileSync(privateMcpPath(repo), FILE);
     expect((await loadPrivateMcp(repo)).servers.map((s) => s.name)).toEqual(['tracker', 'docs', 'legacy']);
+  });
+
+  it('the tracked check: untracked and no-repository pass, tracked and a failing git refuse', async () => {
+    mkdirSync(join(repo, '.ai', 'cezar'), { recursive: true });
+    writeFileSync(privateMcpPath(repo), FILE);
+    expect(await privateMcpTrackedProblem(repo)).toBeNull();
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    expect(await privateMcpTrackedProblem(repo)).toBeNull();
+    execFileSync('git', ['add', '-f', privateMcpPath(repo)], { cwd: repo });
+    expect(await privateMcpTrackedProblem(repo)).toBe(PRIVATE_TRACKED_PROBLEM);
+    // A corrupt index: git cannot say, so the file is refused, and the note says why.
+    writeFileSync(join(repo, '.git', 'index'), 'not an index');
+    expect(await privateMcpTrackedProblem(repo)).toMatch(/^mcp.local.json is not used: whether git tracks it could not be checked \(.+\)$/);
+    const launch = await loadLaunchMcp(repo, async () => ({ values: {}, notes: [] }));
+    expect(launch.servers).toEqual([]);
+    expect(launch.problems).toEqual([{ scope: 'private', message: expect.stringMatching(/could not be checked/) }]);
   });
 });
 

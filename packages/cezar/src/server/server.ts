@@ -22,8 +22,15 @@ import {
   serviceLogsQuerySchema, serviceParamsSchema, servicePatchSchema, servicePinInputSchema, type ServiceLogs, type ServicesState,
   e2eSetupInputSchema, type E2eStatus, taskActionSurfaceSchema,
   codePagesSchema,
+  mcpPrivateOverrideSchema, mcpProjectApproveSchema, mcpRegistryQuerySchema, mcpServerParamsSchema, mcpServerPutSchema, mcpSecretNames, type McpServerTestResponse,
 } from '@open-mercato/cezar-contract';
 import { SecretStore, SecretsError, type SecretScopeRef } from '../workspace/secrets.ts';
+import { loadPrivateMcp, missingSecretReason, parseMcpFile, PROJECT_MCP_FILE, readProjectMcpText, resolveMcpSecrets } from '../core/private-mcp.ts';
+import { approveProjectMcp, confirmPrivateOverride, projectMcpGate } from '../mcp-servers/approval.ts';
+import { McpRegistrySearch } from '../mcp-catalog/registry.ts';
+import { deleteMcpServer, putMcpServer } from '../mcp-servers/files.ts';
+import { probeMcpServer } from '../mcp-servers/probe.ts';
+import { definitionOfServer, listMcpServers } from '../mcp-servers/service.ts';
 import { listEnvFiles, previewEnvFile, readEnvFile, removeEnvFile, writeEnvFile } from '../env-files.ts';
 import { EnvReferenceError, type EnvRenderContext } from '../env-references.ts';
 import { discoverServiceCandidates } from '../services/discover.ts';
@@ -520,6 +527,8 @@ export interface ServerDeps {
   /** The project/workspace secret store (spec 2026-10-10-project-secrets-vault-options). Tests
    *  inject one with a fake keychain; the default reads the OS keychain or a key file. */
   secrets?: SecretStore;
+  /** MCP Registry search behind Settings → MCP servers (spec 2026-10-24-easy-mcp); tests inject a fake fetch. */
+  mcpRegistry?: McpRegistrySearch;
   /** The cockpit's own updater (`/api/v1/workspace/self-update`, src/self-update/). Built by
    *  the CLI, which knows the entry file, the port and how to restart; absent in tests and for
    *  bare `createApp` callers, where the family answers a read-only "not available" status. */
@@ -7493,6 +7502,83 @@ export function createApp(deps: ServerDeps) {
       return c.body(null, 204);
     });
 
+  // ---- chained family: MCP servers ------------------------------------------
+  // Spec 2026-10-24-easy-mcp §4, at `/mcp-servers` rather than the spec's `/mcp`: `/api/v1/mcp` is
+  // cezar's own MCP endpoint. A definition is code the agents run, and Test runs it here, so every
+  // write and Test is a trusted-operator capability, like `PUT /agent-config/:id`.
+  const mcpRegistry = deps.mcpRegistry ?? new McpRegistrySearch();
+  const mcpRefusal = {
+    error: 'MCP servers run code on this host: adding, removing and testing them is disabled on a hosted cockpit without sign-in (CEZ_AUTH=0)',
+  };
+  const mcpSecretsProject = (project: ProjectContext) => (project.id === 'default' ? undefined : { projectId: project.id, root: project.root });
+  // Args and urls as written only for the operator or an `admin` token on a trusted cockpit; `author` and agents see them redacted.
+  const mcpRawView = (c: Context) => {
+    const principal = principalOf(c);
+    if (!trustedOperator(process.env, bindHost) || principal?.kind === 'run') return false;
+    return principal?.kind !== 'token' || principal.scopes.includes('admin');
+  };
+  const mcpListing = (project: ProjectContext, c: Context) =>
+    listMcpServers(project.root, { secrets: secretStore, project: mcpSecretsProject(project), editable: trustedOperator(process.env, bindHost), raw: mcpRawView(c) });
+  const mcpServersRoutes = new Hono<ProjectApiEnv>()
+    .get('/mcp-servers', async (c) => c.json(await mcpListing(c.get('project'), c), 200))
+    .get('/mcp-servers/registry', queryZodValidator(mcpRegistryQuerySchema), async (c) => c.json(await mcpRegistry.search(c.req.valid('query').q), 200))
+    // The committed file runs nothing until the operator approves its content here (spec §5).
+    .post('/mcp-servers/approval', jsonZodValidator(mcpProjectApproveSchema), async (c) => {
+      if (!trustedOperator(process.env, bindHost)) return c.json(mcpRefusal, 409);
+      const { hash, bindings } = c.req.valid('json');
+      const approved = await approveProjectMcp(c.get('project').root, hash, bindings);
+      if (!approved.ok) return c.json({ error: approved.error }, approved.status);
+      return c.json(await mcpListing(c.get('project'), c), 200);
+    })
+    // A private entry replaces an approved project server of its name only once confirmed here.
+    .post('/mcp-servers/override', jsonZodValidator(mcpPrivateOverrideSchema), async (c) => {
+      if (!trustedOperator(process.env, bindHost)) return c.json(mcpRefusal, 409);
+      const { name, hash } = c.req.valid('json');
+      const confirmed = await confirmPrivateOverride(c.get('project').root, name, hash);
+      if (!confirmed.ok) return c.json({ error: confirmed.error }, confirmed.status);
+      return c.json(await mcpListing(c.get('project'), c), 200);
+    })
+    .put('/mcp-servers/:scope/:name', paramZodValidator(mcpServerParamsSchema), jsonZodValidator(mcpServerPutSchema), async (c) => {
+      if (!trustedOperator(process.env, bindHost)) return c.json(mcpRefusal, 409);
+      const { scope, name } = c.req.valid('param');
+      const written = await putMcpServer(c.get('project').root, scope, name, c.req.valid('json').definition);
+      if (!written.ok) return c.json({ error: written.error }, written.status);
+      return c.json(await mcpListing(c.get('project'), c), 200);
+    })
+    .delete('/mcp-servers/:scope/:name', paramZodValidator(mcpServerParamsSchema), async (c) => {
+      if (!trustedOperator(process.env, bindHost)) return c.json(mcpRefusal, 409);
+      const { scope, name } = c.req.valid('param');
+      const removed = await deleteMcpServer(c.get('project').root, scope, name);
+      if (!removed.ok) return c.json({ error: removed.error }, removed.status);
+      return c.json(await mcpListing(c.get('project'), c), 200);
+    })
+    .post('/mcp-servers/:scope/:name/test', paramZodValidator(mcpServerParamsSchema), async (c) => {
+      if (!trustedOperator(process.env, bindHost)) return c.json(mcpRefusal, 409);
+      const project = c.get('project');
+      const { scope, name } = c.req.valid('param');
+      const projectText = scope === 'project' ? await readProjectMcpText(project.root) : null;
+      const loaded = scope === 'project' ? parseMcpFile(projectText ?? '', PROJECT_MCP_FILE) : await loadPrivateMcp(project.root);
+      const server = loaded.servers.find((entry) => entry.name === name);
+      if (!server) return c.json({ error: 'no MCP server with that name' }, 404);
+      const names = mcpSecretNames(definitionOfServer(server));
+      // Test runs even an unapproved committed server (the operator's click; the panel says so) — but
+      // with the secrets its approval binds, and no others, as at launch.
+      if (scope === 'project' && names.length > 0) {
+        const gate = await projectMcpGate(project.root)(projectText ?? '');
+        const unbound = gate.approved ? names.filter((secret) => !(gate.bindings[name] ?? []).includes(secret)) : names;
+        if (unbound.length > 0) {
+          const reason = gate.approved ? `secret ${unbound.join(', ')} is not bound to this server — approve the project file with it first` : gate.reason;
+          return c.json({ ok: false, reason } satisfies McpServerTestResponse, 200);
+        }
+      }
+      const resolved = names.length ? await secretStore.resolve(mcpSecretsProject(project), 'cezar', names) : { values: {}, notes: [] };
+      const ready = resolveMcpSecrets(server, resolved.values, (missing) => missingSecretReason(resolved.notes, missing));
+      const result: McpServerTestResponse = 'error' in ready
+        ? { ok: false, reason: ready.error }
+        : await probeMcpServer(ready, { secrets: Object.values(resolved.values) });
+      return c.json(result, 200);
+    });
+
   // ---- chained family: project env files -----------------------------------
   // Spec 2026-10-12-project-env-files. The listing speaks paths and variable NAMES; contents are
   // read and written only for a trusted operator, the same line as the terminal — a shell in the
@@ -9658,6 +9744,7 @@ export function createApp(deps: ServerDeps) {
     .route('/', layoutRoutes)
     .route('/', trackerRoutes)
     .route('/', secretsRoutes)
+    .route('/', mcpServersRoutes)
     .route('/', envFilesRoutes)
     .route('/', servicesRoutes)
     .route('/', dockerRoutes)

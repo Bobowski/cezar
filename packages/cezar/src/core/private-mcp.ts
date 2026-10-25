@@ -1,7 +1,10 @@
+import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { z } from 'zod';
-import type { RunnerId } from './agent-runner.ts';
+import { mcpSecretNames, parseMcpValue, type McpScope, type McpServerReach } from '@open-mercato/cezar-contract';
+import { RUNNER_IDS, type RunnerId } from './agent-runner.ts';
 
 /**
  * Private, per-project MCP servers (spec `.ai/specs/2026-10-07-private-project-mcp.md`).
@@ -14,7 +17,8 @@ import type { RunnerId } from './agent-runner.ts';
  *
  *  - `claude`   — `--mcp-config <0600 temp file>` (additive to the repo's MCP config);
  *  - `codex`    — `thread/start|resume` `config` overrides, one `mcp_servers.<name>` key each;
- *  - `opencode` — `OPENCODE_CONFIG_CONTENT` (loaded after the project config, so it wins);
+ *  - `opencode` — `OPENCODE_CONFIG_CONTENT` (loaded after the project config, so it wins) — never a
+ *    server holding resolved secrets, since the agent shell inherits that variable;
  *  - `junie`, `copilot` — ACP `session/new|load` `mcpServers`.
  *
  * `cursor` and `pi` have no launch-time MCP channel; a run on them gets a note instead.
@@ -24,10 +28,17 @@ import type { RunnerId } from './agent-runner.ts';
  */
 
 export const PRIVATE_MCP_FILE = 'mcp.local.json';
+/** The committed twin (spec `2026-10-24-easy-mcp`): same shape, secrets as `${{ secrets.X }}` references. */
+export const PROJECT_MCP_FILE = 'mcp.json';
 
 /** `<repo>/.ai/cezar/mcp.local.json` */
 export function privateMcpPath(repoRoot: string): string {
   return join(repoRoot, '.ai', 'cezar', PRIVATE_MCP_FILE);
+}
+
+/** `<repo>/.ai/cezar/mcp.json` — read from the repo root at launch, never from a worktree. */
+export function projectMcpPath(repoRoot: string): string {
+  return join(repoRoot, '.ai', 'cezar', PROJECT_MCP_FILE);
 }
 
 export type PrivateMcpTransport = 'stdio' | 'http' | 'sse';
@@ -42,6 +53,8 @@ export interface PrivateMcpServer {
   /** http/sse only. */
   url?: string;
   headers: Record<string, string>;
+  /** Carries resolved `${{ secrets.X }}` values (set at launch) — kept out of any channel the agent's shell inherits. */
+  secretBearing?: boolean;
 }
 
 /** The runners that can take private MCP servers at launch. */
@@ -55,6 +68,7 @@ export function supportsPrivateMcp(runner: string): boolean {
 const SERVER_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 const stringRecord = z.record(z.string(), z.string());
+const httpUrl = z.url({ protocol: /^https?$/ });
 
 const serverSchema = z
   .object({
@@ -62,7 +76,8 @@ const serverSchema = z
     command: z.string().min(1).optional(),
     args: z.array(z.string()).optional(),
     env: stringRecord.optional(),
-    url: z.url({ protocol: /^https?$/ }).optional(),
+    // A url holding a `${{ secrets.X }}` reference is checked again once resolved (`resolveMcpSecrets`).
+    url: z.union([httpUrl, z.string().regex(/^https?:\/\/.*\$\{\{/i)]).optional(),
     headers: stringRecord.optional(),
   })
   .passthrough();
@@ -75,22 +90,27 @@ export interface PrivateMcpLoad {
   problems: string[];
 }
 
-/** Parse the file's text. Bad entries are skipped one by one; one bad server never drops the rest. */
+/** Parse the private file's text. Bad entries are skipped one by one; one bad server never drops the rest. */
 export function parsePrivateMcp(text: string): PrivateMcpLoad {
+  return parseMcpFile(text, PRIVATE_MCP_FILE);
+}
+
+/** Parse either file's text; `file` names it in the problems. */
+export function parseMcpFile(text: string, file: string): PrivateMcpLoad {
   const problems: string[] = [];
   if (text.trim() === '') return { servers: [], problems };
   let raw: unknown;
   try {
     raw = JSON.parse(text);
   } catch (err) {
-    return { servers: [], problems: [`${PRIVATE_MCP_FILE} is not valid JSON: ${(err as Error).message}`] };
+    return { servers: [], problems: [`${file} is not valid JSON: ${(err as Error).message}`] };
   }
-  const file = fileSchema.safeParse(raw);
-  if (!file.success) {
-    return { servers: [], problems: [`${PRIVATE_MCP_FILE} must be an object with an "mcpServers" object`] };
+  const parsedFile = fileSchema.safeParse(raw);
+  if (!parsedFile.success) {
+    return { servers: [], problems: [`${file} must be an object with an "mcpServers" object`] };
   }
   const servers: PrivateMcpServer[] = [];
-  for (const [name, entry] of Object.entries(file.data.mcpServers ?? {})) {
+  for (const [name, entry] of Object.entries(parsedFile.data.mcpServers ?? {})) {
     if (!SERVER_NAME_RE.test(name)) {
       problems.push(`MCP server "${name}" skipped: names may only use letters, digits, "_" and "-"`);
       continue;
@@ -122,17 +142,280 @@ export function parsePrivateMcp(text: string): PrivateMcpLoad {
   return { servers, problems };
 }
 
-/** Read and parse the project's private MCP file. Never throws. */
-export async function loadPrivateMcp(repoRoot: string): Promise<PrivateMcpLoad> {
-  let text: string;
+/** A file's text: null when absent, or why it could not be read. Never throws. */
+async function readMcpText(path: string, file: string): Promise<{ text: string | null } | { problem: string }> {
   try {
-    text = await readFile(privateMcpPath(repoRoot), 'utf8');
+    return { text: await readFile(path, 'utf8') };
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') return { servers: [], problems: [] };
-    return { servers: [], problems: [`${PRIVATE_MCP_FILE} could not be read: ${(err as Error).message}`] };
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { text: null };
+    return { problem: `${file} could not be read: ${(err as Error).message}` };
   }
-  return parsePrivateMcp(text);
+}
+
+async function loadMcpFile(path: string, file: string): Promise<PrivateMcpLoad> {
+  const read = await readMcpText(path, file);
+  if ('problem' in read) return { servers: [], problems: [read.problem] };
+  return parseMcpFile(read.text ?? '', file);
+}
+
+/** The committed file's exact text (null when absent): what an approval's hash is taken of. */
+export async function readProjectMcpText(repoRoot: string): Promise<string | null> {
+  const read = await readMcpText(projectMcpPath(repoRoot), PROJECT_MCP_FILE);
+  return 'text' in read ? read.text : null;
+}
+
+/** Read and parse the project's private MCP file. Never throws. */
+export function loadPrivateMcp(repoRoot: string): Promise<PrivateMcpLoad> {
+  return loadMcpFile(privateMcpPath(repoRoot), PRIVATE_MCP_FILE);
+}
+
+/**
+ * A git-tracked `mcp.local.json` is repo content under a private name: a force-added file arriving
+ * by pull or auto-sync would run, with secrets, unapproved — refused like the worktree scripts of a
+ * tracked `config.json` (`isLifecycleConfigTracked`). Null when it is untracked (or there is no
+ * repository); a failing check refuses the file too, with its reason — never run on doubt.
+ */
+export async function privateMcpTrackedProblem(repoRoot: string): Promise<string | null> {
+  const args = ['ls-files', '--error-unmatch', '--', join('.ai', 'cezar', PRIVATE_MCP_FILE)];
+  try {
+    await promisify(execFile)('git', args, { cwd: repoRoot, env: { ...process.env, LC_ALL: 'C' } });
+    return PRIVATE_TRACKED_PROBLEM;
+  } catch (err) {
+    const failure = err as { code?: unknown; stderr?: unknown; message?: string };
+    const stderr = typeof failure.stderr === 'string' ? failure.stderr.trim() : '';
+    // Exit 1 is `--error-unmatch` saying "not tracked"; outside a repository nothing can be.
+    if (failure.code === 1 || stderr.includes('not a git repository')) return null;
+    const reason = stderr.split('\n')[0] || failure.message || String(err);
+    return `${PRIVATE_MCP_FILE} is not used: whether git tracks it could not be checked (${reason})`;
+  }
+}
+
+export const PRIVATE_TRACKED_PROBLEM = `${PRIVATE_MCP_FILE} is tracked by git, so none of its servers is used — private MCP servers come only from an untracked local file. Untrack it: git rm --cached .ai/cezar/${PRIVATE_MCP_FILE}`;
+
+/** Read and parse the project's committed MCP file (spec 2026-10-24-easy-mcp). Never throws. */
+export function loadProjectMcp(repoRoot: string): Promise<PrivateMcpLoad> {
+  return loadMcpFile(projectMcpPath(repoRoot), PROJECT_MCP_FILE);
+}
+
+// ---- launch: both files, merged and resolved (spec 2026-10-24-easy-mcp §3) ----------------
+
+/** Every secret a server references, in the order `mcpSecretNames` reads them. */
+export function referencedSecrets(server: PrivateMcpServer): string[] {
+  return mcpSecretNames(
+    server.transport === 'stdio'
+      ? { command: server.command, args: server.args, env: server.env }
+      : { type: server.transport, url: server.url, headers: server.headers },
+  );
+}
+
+/**
+ * `server` with every `${{ secrets.X }}` replaced from `values`, or why it cannot be. A resolved
+ * url must still be an http(s) URL. A name absent from `values` is an error: launching with the
+ * raw reference would only fail later, with a worse message.
+ */
+export function resolveMcpSecrets(
+  server: PrivateMcpServer,
+  values: Readonly<Record<string, string>>,
+  why: (name: string) => string = (name) => `secret ${name} is not stored for this project or workspace`,
+): PrivateMcpServer | { error: string } {
+  let failure: string | null = null;
+  const resolve = (text: string): string => {
+    const parsed = parseMcpValue(text);
+    if ('error' in parsed) {
+      failure ??= parsed.error;
+      return text;
+    }
+    return parsed.pieces
+      .map((piece) => {
+        if (typeof piece === 'string') return piece;
+        const value = values[piece.secret];
+        if (value === undefined) failure ??= why(piece.secret);
+        return value ?? '';
+      })
+      .join('');
+  };
+  const record = (input: Record<string, string>) => Object.fromEntries(Object.entries(input).map(([key, value]) => [key, resolve(value)]));
+  const next: PrivateMcpServer = {
+    ...server,
+    ...(server.command ? { command: resolve(server.command) } : {}),
+    args: server.args.map(resolve),
+    env: record(server.env),
+    ...(server.url ? { url: resolve(server.url) } : {}),
+    headers: record(server.headers),
+  };
+  if (failure) return { error: failure };
+  if (next.url && !httpUrl.safeParse(next.url).success) return { error: 'its url is not an http(s) URL once its secrets are filled in' };
+  return next;
+}
+
+export interface LaunchMcpProblem {
+  scope: McpScope;
+  /** Absent for a file-level problem. */
+  name?: string;
+  message: string;
+}
+
+export interface LaunchMcp {
+  /** Ready to inject: project servers, then private ones; a private entry replaces an approved project one only when confirmed. */
+  servers: PrivateMcpServer[];
+  /** Which file each server in `servers` came from. */
+  scopes: Map<string, McpScope>;
+  problems: LaunchMcpProblem[];
+  /** The resolved secret values, for the run's redaction list. */
+  secretValues: string[];
+}
+
+/**
+ * Why secret `name` did not resolve: the store's own line for that name, else a store-level line
+ * (an unreadable source) said as such — never another secret's line.
+ */
+export function missingSecretReason(notes: readonly string[], name: string): string {
+  const own = notes.find((note) => note.startsWith(`secret ${name} `));
+  if (own) return own;
+  const storeLevel = notes.filter((note) => !/^secret \S+ /.test(note));
+  return storeLevel.length
+    ? `secret ${name} could not be read — ${storeLevel.join('; ')}`
+    : `secret ${name} is not stored for this project or workspace`;
+}
+
+/** What the launch asks the secrets store: the named secrets, audience `cezar`. */
+export type McpSecretResolver = (names: string[]) => Promise<{ values: Record<string, string>; notes: string[] }>;
+
+/**
+ * Whether THIS text of the committed file was approved on this machine, and the secret names each
+ * of its servers was bound to (spec 2026-10-24-easy-mcp §5) — `mcp-servers/approval.ts`.
+ */
+export type ProjectMcpGate = (text: string) => Promise<{ approved: true; bindings: Record<string, string[]> } | { approved: false; reason: string }>;
+
+/**
+ * Whether the operator confirmed in Settings that THIS private entry replaces the approved project
+ * server of its name (`mcp-servers/approval.ts`).
+ */
+export type PrivateOverrideGate = (server: PrivateMcpServer) => Promise<boolean>;
+
+export interface LaunchMcpOptions {
+  /** Absent: no project server is injected — repo content runs only once approved. */
+  projectGate?: ProjectMcpGate;
+  /** Absent: a private server never replaces an approved project server of its name. */
+  privateOverride?: PrivateOverrideGate;
+}
+
+const NOT_APPROVED = `${PROJECT_MCP_FILE} is not approved on this machine — review and approve it in Settings → MCP servers`;
+
+/**
+ * Both files for one agent launch. Never throws: a broken file or entry, an unapproved project
+ * file, an unbound or missing secret or a failing store each skip what they touch, with a problem
+ * the run surfaces as a note. A project server asks the store only for the secrets bound to it.
+ */
+export async function loadLaunchMcp(repoRoot: string, resolveSecrets: McpSecretResolver, options: LaunchMcpOptions = {}): Promise<LaunchMcp> {
+  // One read of the committed file: the text the gate approves is the text that is parsed.
+  const [projectRead, loadedPriv] = await Promise.all([readMcpText(projectMcpPath(repoRoot), PROJECT_MCP_FILE), loadPrivateMcp(repoRoot)]);
+  const project = 'problem' in projectRead ? { servers: [], problems: [projectRead.problem] } : parseMcpFile(projectRead.text ?? '', PROJECT_MCP_FILE);
+  const trackedProblem = loadedPriv.servers.length > 0 ? await privateMcpTrackedProblem(repoRoot) : null;
+  const priv = trackedProblem ? { servers: [], problems: [...loadedPriv.problems, trackedProblem] } : loadedPriv;
+  const problems: LaunchMcpProblem[] = [
+    ...project.problems.map((message) => ({ scope: 'project' as const, message })),
+    ...priv.problems.map((message) => ({ scope: 'private' as const, message })),
+  ];
+
+  // Why each project server cannot go — null when it goes.
+  const projectWhy = new Map<string, string | null>();
+  if (project.servers.length > 0) {
+    const text = 'text' in projectRead ? (projectRead.text ?? '') : '';
+    const gate = options.projectGate
+      ? await options.projectGate(text).catch((err: Error) => ({ approved: false as const, reason: `its approval could not be read: ${err.message}` }))
+      : { approved: false as const, reason: NOT_APPROVED };
+    for (const server of project.servers) {
+      const unbound = gate.approved ? referencedSecrets(server).filter((name) => !(gate.bindings[server.name] ?? []).includes(name)) : [];
+      projectWhy.set(
+        server.name,
+        !gate.approved
+          ? gate.reason
+          : unbound.length > 0
+            ? `secret ${unbound.join(', ')} ${unbound.length > 1 ? 'are' : 'is'} not bound to it — approve it with ${unbound.length > 1 ? 'them' : 'it'} in Settings → MCP servers`
+            : null,
+      );
+    }
+  }
+
+  // A private entry replaces a project server that would not go anyway; one that goes (the
+  // operator approved it under that name) only once the operator confirmed this replacement.
+  const merged = new Map<string, { server: PrivateMcpServer; scope: McpScope }>();
+  for (const server of project.servers) merged.set(server.name, { server, scope: 'project' });
+  for (const server of priv.servers) {
+    if (projectWhy.get(server.name) === null) {
+      const confirmed = options.privateOverride ? await options.privateOverride(server).catch(() => false) : false;
+      if (!confirmed) {
+        problems.push({
+          scope: 'private',
+          name: server.name,
+          message: `MCP server "${server.name}" skipped: it would replace the approved project server of that name — confirm the replacement in Settings → MCP servers`,
+        });
+        continue;
+      }
+    }
+    merged.set(server.name, { server, scope: 'private' });
+  }
+  for (const server of project.servers) {
+    const why = projectWhy.get(server.name);
+    if (!why || merged.get(server.name)?.scope !== 'project') continue;
+    problems.push({ scope: 'project', name: server.name, message: `MCP server "${server.name}" skipped: ${why}` });
+    merged.delete(server.name);
+  }
+
+  const names = [...new Set([...merged.values()].flatMap(({ server }) => referencedSecrets(server)))];
+  let values: Record<string, string> = {};
+  let notes: string[] = [];
+  if (names.length > 0) {
+    try {
+      ({ values, notes } = await resolveSecrets(names));
+    } catch (err) {
+      notes = [`the secrets store could not be read: ${(err as Error).message}`];
+    }
+  }
+  const noteFor = (name: string) => missingSecretReason(notes, name);
+
+  const servers: PrivateMcpServer[] = [];
+  const scopes = new Map<string, McpScope>();
+  const used = new Set<string>();
+  for (const { server, scope } of merged.values()) {
+    const resolved = resolveMcpSecrets(server, values, noteFor);
+    if ('error' in resolved) {
+      problems.push({ scope, name: server.name, message: `MCP server "${server.name}" skipped: ${resolved.error}` });
+      continue;
+    }
+    const referenced = referencedSecrets(server);
+    for (const name of referenced) used.add(name);
+    servers.push(referenced.length > 0 ? { ...resolved, secretBearing: true } : resolved);
+    scopes.set(server.name, scope);
+  }
+  const secretValues = [...used].map((name) => values[name]).filter((value): value is string => typeof value === 'string');
+  return { servers, scopes, problems, secretValues };
+}
+
+/**
+ * OpenCode takes launch-time servers only through `OPENCODE_CONFIG_CONTENT`, which every shell
+ * the agent runs inherits: a server carrying a resolved secret is never given to it.
+ */
+export const OPENCODE_SECRETS_NOTE =
+  'OpenCode takes launch-time MCP servers only through an env var its shell inherits, so a server with secrets is not given to it';
+
+/**
+ * Whether a server of `transport` reaches each runner at launch — the per-agent table of spec
+ * 2026-10-07-private-project-mcp, as Settings shows it.
+ */
+export function mcpReachOf(transport: PrivateMcpTransport, options: { secretBearing?: boolean } = {}): McpServerReach[] {
+  return RUNNER_IDS.map((runner): McpServerReach => {
+    if (runner === 'opencode' && options.secretBearing) return { runner, reach: 'no', note: OPENCODE_SECRETS_NOTE };
+    if (runner === 'cursor') return { runner, reach: 'no', note: 'Cursor Agent CLI reads MCP only from .cursor/mcp.json — no launch-time channel' };
+    if (runner === 'pi') return { runner, reach: 'no', note: 'pi has no MCP support' };
+    if (runner === 'codex' && transport === 'sse') return { runner, reach: 'no', note: 'Codex speaks stdio and streamable HTTP only' };
+    if ((runner === 'junie' || runner === 'copilot') && transport !== 'stdio') {
+      return { runner, reach: 'maybe', note: `only when the agent advertises ${transport} MCP in its ACP initialize` };
+    }
+    return { runner, reach: 'yes' };
+  });
 }
 
 // ---- per-agent translations ------------------------------------------------

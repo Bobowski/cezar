@@ -188,6 +188,7 @@ import type {
   DockerState, DockerDisk, DockerImages, DockerLogs, DockerReclaimPlan, DockerReclaimResult, DockerReclaimStep, DockerVolumes,
   GithubReposResponse, ServicePatch, ServicePin, ServicePinInput, ServicesState,
   E2eStatus, E2eSetupInput, E2eSetupResponse,
+  McpRegistryResponse, McpScope, McpSecretBindings, McpServerDefinition, McpServersList, McpServerTestResponse,
 } from '@open-mercato/cezar-api-client'
 import { parseProviderStatusResponse } from '@/lib/provider-status'
 import {
@@ -1155,6 +1156,40 @@ export async function saveWorkspaceSecret(name: string, input: SecretValueInput)
 }
 export async function removeWorkspaceSecret(name: string): Promise<void> {
   await expectNoContent(await cez.api.v1.workspace.secrets[':name'].$delete({ param: { name } }))
+}
+
+// ---- MCP servers (spec 2026-10-24-easy-mcp) ----
+
+export async function getMcpServers(opts?: ReadOptions): Promise<McpServersList> {
+  return unwrap(await cez.api.v1.p[':projectId']['mcp-servers'].$get(
+    { param: { projectId: queryScope() } }, init(opts)), '/mcp-servers')
+}
+export async function putMcpServer(scope: McpScope, name: string, definition: McpServerDefinition): Promise<McpServersList> {
+  return unwrap(await cez.api.v1.p[':projectId']['mcp-servers'][':scope'][':name'].$put(
+    { param: { projectId: queryScope(), scope, name }, json: { definition } }), '/mcp-servers')
+}
+export async function deleteMcpServer(scope: McpScope, name: string): Promise<McpServersList> {
+  return unwrap(await cez.api.v1.p[':projectId']['mcp-servers'][':scope'][':name'].$delete(
+    { param: { projectId: queryScope(), scope, name } }), '/mcp-servers')
+}
+/** Approve the committed mcp.json content the operator reviewed (named by its hash) on this machine. */
+export async function approveProjectMcp(hash: string, bindings: McpSecretBindings): Promise<McpServersList> {
+  return unwrap(await cez.api.v1.p[':projectId']['mcp-servers'].approval.$post(
+    { param: { projectId: queryScope() }, json: { hash, bindings } }), '/mcp-servers/approval')
+}
+/** Let the private entry the listing served (by its hash) replace the approved project server of its name. */
+export async function confirmPrivateMcpOverride(name: string, hash: string): Promise<McpServersList> {
+  return unwrap(await cez.api.v1.p[':projectId']['mcp-servers'].override.$post(
+    { param: { projectId: queryScope() }, json: { name, hash } }), '/mcp-servers/override')
+}
+export async function testMcpServer(scope: McpScope, name: string): Promise<McpServerTestResponse> {
+  return unwrap(await cez.api.v1.p[':projectId']['mcp-servers'][':scope'][':name'].test.$post(
+    { param: { projectId: queryScope(), scope, name } }), '/mcp-servers/test')
+}
+/** Proxied MCP Registry search: a network call the server makes only when the operator types. */
+export async function searchMcpRegistry(q: string, opts?: ReadOptions): Promise<McpRegistryResponse> {
+  return unwrap(await cez.api.v1.p[':projectId']['mcp-servers'].registry.$get(
+    { param: { projectId: queryScope() }, query: { q } }, init(opts)), '/mcp-servers/registry')
 }
 
 // ---- one-click e2e setup (spec 2026-10-10-e2e-one-click-setup) ----

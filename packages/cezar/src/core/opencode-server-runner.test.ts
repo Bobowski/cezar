@@ -149,6 +149,38 @@ describe('SIGTERM→SIGKILL escalation for an opencode server that survives SIGT
     });
   });
 
+  it('never puts a server with resolved secrets into OPENCODE_CONFIG_CONTENT, which the agent shell inherits', () => {
+    const fake = signallableChild();
+    let env: NodeJS.ProcessEnv | undefined;
+    spawnHook.override = (...args: unknown[]) => {
+      env = (args[2] as { env?: NodeJS.ProcessEnv }).env;
+      return fake.child;
+    };
+    vi.useFakeTimers();
+    const events: AgentEvent[] = [];
+    try {
+      const session = new OpencodeServerRunner({ bin: 'opencode', timeoutMs: 0 }).startSession(
+        {
+          userPrompt: 'do it',
+          cwd: process.cwd(),
+          mcpServers: [
+            { name: 'plain', transport: 'stdio', command: 'plain-mcp', args: [], env: {}, headers: {} },
+            { name: 'stripe', transport: 'http', url: 'https://mcp.stripe.com', args: [], env: {}, headers: { Authorization: 'Bearer sk_live_resolved_value' }, secretBearing: true },
+          ],
+        },
+        (event) => events.push(event),
+      );
+      void session.result.catch(() => undefined);
+      session.end();
+    } finally {
+      vi.useRealTimers();
+      spawnHook.override = null;
+    }
+    expect(JSON.stringify(env)).not.toContain('sk_live_resolved_value');
+    expect(Object.keys(JSON.parse(env!.OPENCODE_CONFIG_CONTENT!).mcp)).toEqual(['plain']);
+    expect(events).toContainEqual({ type: 'note', message: expect.stringMatching(/^private MCP: opencode cannot attach stripe — /) });
+  });
+
   it('does not signal at all when the server exited before the teardown', () => {
     withFakeChild((fake) => {
       const session = startSession(0);

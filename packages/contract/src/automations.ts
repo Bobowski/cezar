@@ -160,7 +160,8 @@ export type AutomationDispatch = z.infer<typeof automationDispatchSchema>;
  *    stores and answers it plainly, so it stays optional.
  */
 export const automationTaskSchema = createRunInputBaseSchema
-  .omit({ task: true, images: true, todoId: true, systemPrompt: true, tracker: true })
+  // An automation launches tasks, never a chat (spec 2026-10-24-cockpit-chat).
+  .omit({ task: true, images: true, todoId: true, systemPrompt: true, tracker: true, kind: true })
   .extend({
     /** The prompt template. `{{github.number}}`, `{{github.title}}`, `{{github.url}}` and
      *  `{{github.labels}}` are substituted per match; GitHub content is appended as untrusted

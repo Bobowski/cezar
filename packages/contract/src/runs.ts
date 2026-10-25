@@ -148,6 +148,17 @@ export const processUsageSchema = z.object({
 });
 export type ProcessUsage = z.infer<typeof processUsageSchema>;
 
+/** What a run is (spec 2026-10-24-cockpit-chat §4): a task, or the project's cockpit chat. */
+export const runKindSchema = z.enum(['task', 'chat']);
+export type RunKind = z.infer<typeof runKindSchema>;
+
+/** `chat:<runId>` — the chat that started a task. A closed shape, never free text. */
+export const createdBySchema = z.string().regex(/^chat:[A-Za-z0-9-]{1,64}$/);
+
+/** `GET /runs?kind=` — only chats, or only tasks; absent = every run, as before. */
+export const runsListQuerySchema = z.object({ kind: runKindSchema.optional() });
+export type RunsListQuery = z.infer<typeof runsListQuerySchema>;
+
 /**
  * The stored run record, as `runs.json` holds it (`src/runs/store.ts`).
  *
@@ -336,6 +347,12 @@ export const runRecordSchema = z.object({
   /** Explicit execution policy. `false` means the run intentionally uses the repo root;
    *  absent on older runs and for the default isolated-worktree mode. */
   worktree: z.literal(false).optional(),
+  /** `chat` = the project's cockpit chat (spec 2026-10-24-cockpit-chat): in the checkout, no
+   *  review gate, no landing. Absent = an ordinary task, which every older record is. */
+  kind: runKindSchema.optional(),
+  /** `chat:<runId>` on a task the cockpit chat started (spec 2026-10-24-cockpit-chat §3), set
+   *  server-side from the caller's run token. Absent for everything a person started. */
+  createdBy: createdBySchema.optional(),
   /** Absent for in-place runs and after an isolated worktree is removed. */
   worktreePath: z.string().optional(),
   worktreeLifecycle: worktreeLifecycleProjectionSchema.optional(),
@@ -1221,6 +1238,10 @@ export const createRunInputBaseSchema = z
     /** true → a read-only Ask task (spec 2026-10-20-trunk-based-projects): runs in the repo
      *  checkout with read-only tools, takes no lease and never lands. */
     readOnly: z.boolean().optional(),
+    /** `chat` → the project's cockpit chat (spec 2026-10-24-cockpit-chat): in the checkout with
+     *  cezar's own MCP server, no review gate, no PR. It takes no `workflow`, `steps` or variants;
+     *  the worktree, branch, read-only, autonomous, dispatch and tracker keys are ignored for it. */
+    kind: runKindSchema.optional(),
     /** true → autonomous run: never parks at "waiting"; auto-continues until done. */
     autonomous: z.boolean().optional(),
     /** false → keep the handoff journal but do not expose or request a follow-up todos file.
@@ -1259,6 +1280,18 @@ export const TASK_OR_ATTACHMENTS_ISSUE = {
   path: ['task'],
 };
 
+/** A task names exactly one of `workflow` / `steps`; a chat runs its own and names neither. */
+export function workflowXorSteps(b: { workflow?: string; steps?: readonly unknown[]; kind?: RunKind }): boolean {
+  return b.kind === 'chat' ? !b.workflow && !b.steps : Boolean(b.workflow) !== Boolean(b.steps);
+}
+export const WORKFLOW_XOR_STEPS_ISSUE = { message: 'provide either "workflow" or "steps", not both (a chat takes neither)' };
+
+/** A chat is one conversation: never ×2/×3. */
+export function chatIsSingle(b: { variants?: number; kind?: RunKind }): boolean {
+  return b.kind !== 'chat' || (b.variants ?? 1) === 1;
+}
+export const CHAT_IS_SINGLE_ISSUE = { message: 'a chat runs once — no variants', path: ['variants'] };
+
 /**
  * `POST /runs`. Exactly one of `workflow` / `steps` — the server rejects both or neither.
  *
@@ -1266,9 +1299,8 @@ export const TASK_OR_ATTACHMENTS_ISSUE = {
  * process, so a client that validates before sending gets the same answer the route would give.
  */
 export const createRunInputSchema = createRunInputBaseSchema
-  .refine((b) => Boolean(b.workflow) !== Boolean(b.steps), {
-    message: 'provide either "workflow" or "steps", not both',
-  })
+  .refine(workflowXorSteps, WORKFLOW_XOR_STEPS_ISSUE)
+  .refine(chatIsSingle, CHAT_IS_SINGLE_ISSUE)
   .refine(hasTaskOrAttachments, TASK_OR_ATTACHMENTS_ISSUE);
 export type CreateRunInput = z.input<typeof createRunInputSchema>;
 

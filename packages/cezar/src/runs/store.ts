@@ -32,7 +32,7 @@ import { commentFingerprint, githubTracesOf, mergeTraces, POSTED_BODIES_CAP, POS
 import { workflowDefSchema } from '../workflows/types.ts';
 // A contract VALUE, like `workspaceUiStateSchema` in `workspace/migrations.ts`: the persisted
 // `dispatch` object and its wire half are literally the same schema, so they cannot drift.
-import { dispatchSchema, trackerAssociationSchema, trackerAutomationEventSchema, trackerLinkSchema, worktreeLifecycleProjectionSchema } from '@open-mercato/cezar-contract';
+import { createdBySchema, dispatchSchema, runKindSchema, trackerAssociationSchema, trackerAutomationEventSchema, trackerLinkSchema, worktreeLifecycleProjectionSchema } from '@open-mercato/cezar-contract';
 
 import { RUNNER_IDS } from '../core/agent-runner.ts';
 
@@ -395,6 +395,10 @@ export const runRecordSchema = z.object({
   /** Explicit execution policy. `false` means the run intentionally uses the repo root;
    *  absent on older runs and for the default isolated-worktree mode. */
   worktree: z.literal(false).optional(),
+  /** `chat` = the project's cockpit chat (spec 2026-10-24-cockpit-chat); absent = a task. */
+  kind: runKindSchema.optional(),
+  /** `chat:<runId>` — the chat that started this task (spec 2026-10-24-cockpit-chat §3). */
+  createdBy: createdBySchema.optional(),
   /** Task worktree (spec 006) — absent for in-place runs and after explicit cleanup. */
   worktreePath: z.string().optional(),
   worktreeLifecycle: worktreeLifecycleProjectionSchema.optional(),
@@ -1118,6 +1122,9 @@ export class RunStore extends EventEmitter {
     worktree?: false;
     groupId?: string;
     variant?: string;
+    /** Only `chat` is ever written; a task leaves the key absent, as every older record has it. */
+    kind?: 'chat';
+    createdBy?: string;
     steps: Array<Pick<StepState, 'id' | 'name' | 'kind'>>;
   }): RunRecord {
     const run: RunRecord = {
@@ -1139,6 +1146,8 @@ export class RunStore extends EventEmitter {
       worktree: input.worktree,
       groupId: input.groupId,
       variant: input.variant,
+      ...(input.kind ? { kind: input.kind } : {}),
+      ...(input.createdBy ? { createdBy: input.createdBy } : {}),
       status: 'queued',
       createdAt: new Date().toISOString(),
       tokensUsed: 0,

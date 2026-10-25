@@ -95,11 +95,13 @@ export function encryptPayload(target: PushTarget, plaintext: Buffer, seed: Encr
   return Buffer.concat([header, asPublic, body]);
 }
 
-export type PushOutcome = 'sent' | 'gone' | 'failed';
+export type PushOutcome = 'sent' | 'gone' | 'stale' | 'failed';
 
 /**
  * POST one message to a push service. `gone` (404/410) means the browser dropped the
- * subscription — the caller deletes it. Never throws: a push is a courtesy.
+ * subscription — the caller deletes it. `stale` (401/403) means the push service no longer
+ * accepts our VAPID key for it (the key rotated) — only the device can re-subscribe. Never
+ * throws: a push is a courtesy.
  */
 export async function sendWebPush(
   target: PushTarget,
@@ -127,6 +129,7 @@ export async function sendWebPush(
       signal: AbortSignal.timeout(15_000),
     });
     if (response.status === 404 || response.status === 410) return 'gone';
+    if (response.status === 401 || response.status === 403) return 'stale';
     return response.ok ? 'sent' : 'failed';
   } catch {
     return 'failed';

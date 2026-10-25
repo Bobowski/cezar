@@ -17,8 +17,8 @@ export function pushPayloadOf(projectId: string, run: Pick<RunRecord, 'id' | 'ti
   };
 }
 
-/** The gate, pure: every subscription of every account with no visible cockpit tab, whose
- *  sign-in session (if it had one) is still alive. */
+/** The gate, pure: every live (not `stale`) subscription of every account with no visible
+ *  cockpit tab, whose sign-in session (if it had one) is still alive. */
 export function pushRecipients(
   rows: readonly StoredPushSubscription[],
   gate: { visible: (account: string) => boolean; sessionAlive: (sessionId: string) => boolean },
@@ -27,7 +27,7 @@ export function pushRecipients(
   const expired: StoredPushSubscription[] = [];
   for (const row of rows) {
     if (row.sessionId !== undefined && !gate.sessionAlive(row.sessionId)) expired.push(row);
-    else if (!gate.visible(row.account)) send.push(row);
+    else if (row.stale !== true && !gate.visible(row.account)) send.push(row);
   }
   return { send, expired };
 }
@@ -68,14 +68,17 @@ export function createPushNotifier(deps: PushNotifierDeps): PushNotifier {
     const gone = new Set(expired.map((row) => row.id));
     if (recipients.length === 0 && gone.size === 0) return;
     const keys = deps.keys();
+    const stale = new Set<string>();
     const job = Promise.all(recipients.map(async (row) => {
-      if ((await send({ endpoint: row.endpoint, keys: row.keys }, payload, keys)) === 'gone') gone.add(row.id);
+      const outcome = await send({ endpoint: row.endpoint, keys: row.keys }, payload, keys);
+      if (outcome === 'gone') gone.add(row.id);
+      else if (outcome === 'stale') stale.add(row.id);
     })).then(() => {
-      if (gone.size === 0) return;
       try {
-        deps.subscriptions.remove((row) => gone.has(row.id));
+        if (gone.size > 0) deps.subscriptions.remove((row) => gone.has(row.id));
+        if (stale.size > 0) deps.subscriptions.markStale(stale);
       } catch {
-        // A read-only home keeps the dead rows; the next push drops them again.
+        // A read-only home keeps the rows as they were; the next push finds them again.
       }
     }).catch(() => undefined);
     inFlight.add(job);

@@ -86,4 +86,10 @@ describe('sendWebPush', () => {
     expect(await sendWebPush(target, {}, keys, (async () => new Response(null, { status: 410 })) as unknown as typeof fetch)).toBe('gone');
     expect(await sendWebPush(target, {}, keys, (async () => { throw new Error('offline'); }) as unknown as typeof fetch)).toBe('failed');
   });
+
+  it('reports a subscription made with another VAPID key (401/403) as stale', async () => {
+    for (const status of [401, 403]) {
+      expect(await sendWebPush(target, {}, keys, (async () => new Response(null, { status })) as unknown as typeof fetch)).toBe('stale');
+    }
+  });
 });

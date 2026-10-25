@@ -59,22 +59,35 @@ export async function currentPushSubscription(): Promise<PushSubscription | null
 }
 
 export type EnablePushResult =
-  | { ok: true; subscription: PushSubscriptionJSON }
+  /** `replacedEndpoint`: a subscription made with an older key was dropped for this one. */
+  | { ok: true; subscription: PushSubscriptionJSON; replacedEndpoint?: string }
   | { ok: false; reason: 'denied' | 'unsupported' | 'failed' }
 
-/** Ask for permission (here and only here), then subscribe this device with the server's key. */
+/** Whether `subscription` was made with `key`; an unknown key counts as a different one. */
+export function subscribedWithKey(subscription: Pick<PushSubscription, 'options'>, key: Uint8Array): boolean {
+  const own = subscription.options?.applicationServerKey
+  if (!own) return false
+  const bytes = new Uint8Array(own)
+  return bytes.length === key.length && bytes.every((byte, i) => byte === key[i])
+}
+
+/**
+ * Ask for permission (here and only here), then subscribe this device with the server's key. A
+ * subscription made with an older key (the server's VAPID pair was regenerated) is dropped and
+ * made again: the push service refuses every message signed with the new key for it.
+ */
 export async function enableDevicePush(publicKey: string): Promise<EnablePushResult> {
   if (pushDeviceSupport() !== 'ok') return { ok: false, reason: 'unsupported' }
   try {
     const answer = Notification.permission === 'default' ? await Notification.requestPermission() : Notification.permission
     if (answer !== 'granted') return { ok: false, reason: 'denied' }
     const registration = await readyRegistration()
+    const key = base64UrlToBytes(publicKey)
     const existing = await registration.pushManager.getSubscription()
-    const subscription = existing ?? (await registration.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: base64UrlToBytes(publicKey),
-    }))
-    return { ok: true, subscription: subscription.toJSON() }
+    if (existing && subscribedWithKey(existing, key)) return { ok: true, subscription: existing.toJSON() }
+    if (existing) await existing.unsubscribe()
+    const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key })
+    return { ok: true, subscription: subscription.toJSON(), ...(existing ? { replacedEndpoint: existing.endpoint } : {}) }
   } catch {
     return { ok: false, reason: 'failed' }
   }

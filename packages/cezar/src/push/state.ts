@@ -50,6 +50,9 @@ const subscriptionSchema = z.object({
   endpoint: z.string(),
   keys: z.object({ p256dh: z.string(), auth: z.string() }),
   createdAt: z.string(),
+  /** The push service refused our VAPID key for it (401/403): never sent to again, and the
+   *  device is asked to re-enable push. */
+  stale: z.boolean().optional(),
 }).passthrough();
 export type StoredPushSubscription = z.infer<typeof subscriptionSchema>;
 
@@ -91,7 +94,8 @@ export class PushSubscriptionStore {
     atomicWriteJsonSync(this.path, { subscriptions: after });
   }
 
-  /** One row per endpoint: re-subscribing a device moves it to the account that asked last. */
+  /** One row per endpoint: re-subscribing a device moves it to the account that asked last, and
+   *  replaces the stale rows this device (its account and sign-in session) left behind. */
   upsert(input: { account: string; sessionId?: string; target: PushTarget; now?: Date }): StoredPushSubscription {
     const row: StoredPushSubscription = {
       id: subscriptionIdOf(input.target.endpoint),
@@ -101,8 +105,21 @@ export class PushSubscriptionStore {
       keys: { p256dh: input.target.keys.p256dh, auth: input.target.keys.auth },
       createdAt: (input.now ?? new Date()).toISOString(),
     };
-    this.mutate((rows) => [...rows.filter((existing) => existing.endpoint !== row.endpoint), row]);
+    const sameDevice = (existing: StoredPushSubscription) =>
+      existing.stale === true && existing.account === row.account && existing.sessionId === row.sessionId;
+    this.mutate((rows) => [...rows.filter((existing) => existing.endpoint !== row.endpoint && !sameDevice(existing)), row]);
     return row;
+  }
+
+  /** Flag rows the push service refused (`stale`); answers how many changed. */
+  markStale(ids: ReadonlySet<string>): number {
+    let marked = 0;
+    this.mutate((rows) => rows.map((row) => {
+      if (!ids.has(row.id) || row.stale === true) return row;
+      marked += 1;
+      return { ...row, stale: true };
+    }));
+    return marked;
   }
 
   /** Remove the matching rows; answers how many went. */

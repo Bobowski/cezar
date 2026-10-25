@@ -208,6 +208,9 @@ export const workspacePushStateSchema = z.object({
   available: z.boolean(),
   publicKey: z.string().nullable(),
   subscribed: z.boolean(),
+  /** This device's subscription was refused by its push service (the VAPID key rotated): the
+   *  cockpit asks to re-enable push here. */
+  stale: z.boolean(),
 });
 export type WorkspacePushState = z.infer<typeof workspacePushStateSchema>;
 

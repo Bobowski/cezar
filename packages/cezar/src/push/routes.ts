@@ -33,9 +33,13 @@ export function pushRoutes(deps: {
   const stateFor = (c: Context): WorkspacePushState => {
     const available = deps.available();
     const who = pushAccountOf(principalOf(c));
-    const subscribed = available && who !== null && deps.subscriptions.list().some((row) =>
-      row.account === who.account && (who.sessionId === undefined || row.sessionId === who.sessionId));
-    return { available, publicKey: available ? deps.keys().publicKey : null, subscribed };
+    const mine = available && who !== null
+      ? deps.subscriptions.list().filter((row) =>
+        row.account === who.account && (who.sessionId === undefined || row.sessionId === who.sessionId))
+      : [];
+    const subscribed = mine.some((row) => row.stale !== true);
+    const stale = !subscribed && mine.some((row) => row.stale === true);
+    return { available, publicKey: available ? deps.keys().publicKey : null, subscribed, stale };
   };
 
   return new Hono<AuthEnv>()

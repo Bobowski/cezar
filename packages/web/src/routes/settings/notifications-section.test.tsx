@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 
 import { createQueryClient } from '@/api/query-client'
 import { NotificationsSection } from './notifications-section'
@@ -155,7 +155,7 @@ describe('the notifications section', () => {
 })
 
 describe('This device: enable push (spec 2026-10-24-mobile-cockpit §3.5)', () => {
-  function servePush(push: { available: boolean; publicKey: string | null; subscribed: boolean }) {
+  function servePush(push: { available: boolean; publicKey: string | null; subscribed: boolean; stale?: boolean }) {
     requests = []
     const json = (payload: unknown) =>
       new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })
@@ -188,6 +188,20 @@ describe('This device: enable push (spec 2026-10-24-mobile-cockpit §3.5)', () =
     renderSection()
     await waitFor(() => expect(document.querySelector('[data-slot="push-unavailable"]')?.textContent).toContain('does not support push'))
     expect(pushToggle().hasAttribute('disabled')).toBe(true)
+  })
+
+  it('a subscription the push service refused (the key rotated) asks to re-enable push here', async () => {
+    servePush({ available: true, publicKey: 'BAAA', subscribed: false, stale: true })
+    stubNotification('granted')
+    vi.stubGlobal('isSecureContext', true)
+    vi.stubGlobal('PushManager', function PushManager() {})
+    Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { getRegistration: async () => undefined } })
+    onTestFinished(() => {
+      delete (navigator as { serviceWorker?: unknown }).serviceWorker
+    })
+    renderSection()
+    await waitFor(() => expect(document.querySelector('[data-slot="push-stale"]')?.textContent).toContain('re-enable push on this device'))
+    expect(pushToggle().getAttribute('aria-checked')).toBe('false')
   })
 
   it('names every blocker in words', async () => {

@@ -11,7 +11,7 @@ import { createApp } from '../server/server.ts';
 import type { SocketHub } from '../server/ws.ts';
 import type { RunManager } from '../workflows/run.ts';
 import { resetPushStateCache, PushSubscriptionStore } from './state.ts';
-import type { PushTarget } from './web-push.ts';
+import type { PushOutcome, PushTarget } from './web-push.ts';
 
 /** `/api/v1/workspace/push*` and the run-transition push (spec 2026-10-24-mobile-cockpit §3.5, §4). */
 
@@ -31,6 +31,7 @@ describe('the push API', () => {
   let store: RunStore;
   let visible: Set<string>;
   let sent: Array<{ target: PushTarget; payload: PushPayload }>;
+  let sendOutcome: () => PushOutcome;
   let app: Hono;
 
   const hub: SocketHub = {
@@ -51,6 +52,7 @@ describe('the push API', () => {
     store = RunStore.open(join(repoRoot, '.ai/cezar'));
     visible = new Set();
     sent = [];
+    sendOutcome = () => 'sent';
     app = createApp({
       repoRoot,
       store,
@@ -60,7 +62,7 @@ describe('the push API', () => {
       pushSubscriptions: new PushSubscriptionStore(pushSubscriptionsPath()),
       pushSend: async (target, payload) => {
         sent.push({ target, payload });
-        return 'sent';
+        return sendOutcome();
       },
     });
   });
@@ -87,7 +89,7 @@ describe('the push API', () => {
   it('is unavailable on a local cockpit and generates no key there', async () => {
     delete process.env.CEZ_REMOTE;
     delete process.env.CEZ_AUTH;
-    expect(await state(json('GET', '/api/v1/workspace/push'))).toEqual({ available: false, publicKey: null, subscribed: false });
+    expect(await state(json('GET', '/api/v1/workspace/push'))).toEqual({ available: false, publicKey: null, subscribed: false, stale: false });
     expect((await json('POST', '/api/v1/workspace/push/subscribe', SUBSCRIPTION)).status).toBe(409);
     expect(() => statSync(pushVapidPath())).toThrow();
   });
@@ -129,6 +131,25 @@ describe('the push API', () => {
     store.updateRun(run.id, { status: 'waiting' });
     await flushed();
     expect(sent).toEqual([]);
+  });
+
+  it('marks a subscription the push service refuses with 403 stale, stops sending to it, and a re-subscribe heals it', async () => {
+    await json('POST', '/api/v1/workspace/push/subscribe', SUBSCRIPTION);
+    const outcomes: Array<'stale' | 'sent'> = ['stale', 'sent'];
+    sendOutcome = () => outcomes.shift() ?? 'sent';
+    const run = store.createRun({ title: 't', workflow: 'quick-task', task: 't', steps: [] });
+    store.updateRun(run.id, { status: 'running' });
+    store.updateRun(run.id, { status: 'review' });
+    await flushed();
+    expect(sent).toHaveLength(1);
+    expect(await state(json('GET', '/api/v1/workspace/push'))).toMatchObject({ subscribed: false, stale: true });
+
+    store.updateRun(run.id, { status: 'running' });
+    store.updateRun(run.id, { status: 'waiting' });
+    await flushed();
+    expect(sent).toHaveLength(1);
+
+    expect(await state(json('POST', '/api/v1/workspace/push/subscribe', SUBSCRIPTION))).toMatchObject({ subscribed: true, stale: false });
   });
 
   it('pushes nothing without a subscription, and nothing for a status that does not want you', async () => {

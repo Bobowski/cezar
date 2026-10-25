@@ -195,6 +195,7 @@ function DevicePushGroup() {
             setRefusal('failed')
             return
           }
+          if (result.replacedEndpoint !== undefined) await unsubscribePush(result.replacedEndpoint).catch(() => undefined)
           const state = await subscribePush({ endpoint, expirationTime: expirationTime ?? null, keys: { p256dh: keys.p256dh, auth: keys.auth } })
           setDeviceHasSubscription(true)
           queryClient.setQueryData(pushQueryKeys.state, state)
@@ -230,6 +231,14 @@ function DevicePushGroup() {
           />
         }
       >
+        {!blocker && push.data?.stale === true ? (
+          <Alert variant="destructive" data-slot="push-stale">
+            <BellOffIcon aria-hidden="true" />
+            <AlertDescription>
+              Push stopped reaching this device after the cockpit&apos;s push key changed — re-enable push on this device.
+            </AlertDescription>
+          </Alert>
+        ) : null}
         {blocker ? (
           <Alert data-slot="push-unavailable">
             <BellOffIcon aria-hidden="true" />

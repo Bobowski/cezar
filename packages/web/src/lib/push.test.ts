@@ -33,6 +33,61 @@ describe('enableDevicePush', () => {
   })
 })
 
+describe('enableDevicePush after the server key rotated', () => {
+  const OLD_KEY = 'BAEC_w'
+  const NEW_KEY = 'BAMEBQ'
+  function stubPushDevice(existing: { key: string | null } | null) {
+    const unsubscribe = vi.fn(async () => true)
+    const subscribe = vi.fn(async (options: PushSubscriptionOptionsInit) => ({
+      endpoint: 'https://push.example.net/new',
+      options,
+      toJSON: () => ({ endpoint: 'https://push.example.net/new', keys: { p256dh: 'p', auth: 'a' } }),
+      unsubscribe,
+    }))
+    const current = existing === null ? null : {
+      endpoint: 'https://push.example.net/old',
+      options: { applicationServerKey: existing.key === null ? null : base64UrlToBytes(existing.key).buffer },
+      toJSON: () => ({ endpoint: 'https://push.example.net/old', keys: { p256dh: 'p', auth: 'a' } }),
+      unsubscribe,
+    }
+    const registration = { pushManager: { getSubscription: vi.fn(async () => current), subscribe } }
+    vi.stubGlobal('isSecureContext', true)
+    vi.stubGlobal('PushManager', function PushManager() {})
+    vi.stubGlobal('Notification', Object.assign(function Notification() {}, { permission: 'granted' }))
+    Object.defineProperty(navigator, 'serviceWorker', {
+      configurable: true,
+      value: { getRegistration: async () => registration, register: async () => registration, ready: Promise.resolve(registration) },
+    })
+    return { subscribe, unsubscribe }
+  }
+  afterEach(() => {
+    delete (navigator as { serviceWorker?: unknown }).serviceWorker
+  })
+
+  it('drops a subscription made with an older key and subscribes again with the current one', async () => {
+    const device = stubPushDevice({ key: OLD_KEY })
+    const result = await enableDevicePush(NEW_KEY)
+    expect(device.unsubscribe).toHaveBeenCalledOnce()
+    expect(device.subscribe).toHaveBeenCalledOnce()
+    expect([...new Uint8Array(device.subscribe.mock.calls[0]![0].applicationServerKey as Uint8Array)]).toEqual([...base64UrlToBytes(NEW_KEY)])
+    expect(result).toEqual({ ok: true, subscription: { endpoint: 'https://push.example.net/new', keys: { p256dh: 'p', auth: 'a' } }, replacedEndpoint: 'https://push.example.net/old' })
+  })
+
+  it('keeps a subscription made with the current key', async () => {
+    const device = stubPushDevice({ key: NEW_KEY })
+    const result = await enableDevicePush(NEW_KEY)
+    expect(device.unsubscribe).not.toHaveBeenCalled()
+    expect(device.subscribe).not.toHaveBeenCalled()
+    expect(result).toEqual({ ok: true, subscription: { endpoint: 'https://push.example.net/old', keys: { p256dh: 'p', auth: 'a' } } })
+  })
+
+  it('re-subscribes when the browser does not say which key a subscription was made with', async () => {
+    const device = stubPushDevice({ key: null })
+    await enableDevicePush(NEW_KEY)
+    expect(device.subscribe).toHaveBeenCalledOnce()
+  })
+})
+
 describe('wantsPresence — the visible-tab half of the push gate', () => {
   it('holds the topic only on a hosted cockpit, over the socket, while visible', () => {
     expect(wantsPresence({ hosted: true, transport: 'local', visible: true })).toBe(true)

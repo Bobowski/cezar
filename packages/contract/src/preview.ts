@@ -117,6 +117,16 @@ export const PREVIEW_HMR_STATUS_PATH = '/__cez_preview/hmr';
 export const previewHmrStatusSchema = z.object({ hmr: z.enum(['connected', 'blocked', 'none']) });
 export type PreviewHmrStatus = z.infer<typeof previewHmrStatusSchema>;
 
+/**
+ * `POST /api/v1/preview/hmr-probe` — a LOCAL cockpit's witness for a cross-origin page it frames
+ * directly (spec 2026-10-24-cockpit-polish §3.2): the server GETs the loopback `http://` page once
+ * and looks for a hot-reload client in its HTML. `null`: the page could not be read.
+ */
+export const previewHmrProbeRequestSchema = z.object({ target: z.string().min(1).max(2048) });
+export type PreviewHmrProbeRequest = z.infer<typeof previewHmrProbeRequestSchema>;
+export const previewHmrProbeResponseSchema = z.object({ hmr: z.enum(['connected', 'none']).nullable() });
+export type PreviewHmrProbeResponse = z.infer<typeof previewHmrProbeResponseSchema>;
+
 /** `PUT /repo/design-drafts` — replace them; an empty list clears them. */
 export const setDesignDraftsInputSchema = z.object({ picks: z.array(designDraftPickSchema).max(DESIGN_DRAFTS_MAX) });
 export type SetDesignDraftsInput = z.infer<typeof setDesignDraftsInputSchema>;

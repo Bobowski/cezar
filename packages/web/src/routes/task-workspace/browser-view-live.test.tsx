@@ -22,7 +22,8 @@ vi.mock('@/api/queries', () => ({
   useHealth: () => ({ data: { capabilities: { preview: cockpit.preview, designMode: false } } }),
 }))
 const openPreviewGateway = vi.hoisted(() => vi.fn())
-vi.mock('@/api/client', () => ({ openDesignProxy: vi.fn(), openPreviewGateway }))
+const probePreviewHmr = vi.hoisted(() => vi.fn())
+vi.mock('@/api/client', () => ({ openDesignProxy: vi.fn(), openPreviewGateway, probePreviewHmr }))
 vi.mock('@/components/ui/toaster', () => ({ toast: vi.fn() }))
 
 /** The checkout bell, driven by the test: the listener hands its `onCount` out. */
@@ -72,6 +73,7 @@ beforeEach(() => {
   hmr = 'none'
   cockpit.preview = false
   fetchSpy.mockClear()
+  probePreviewHmr.mockReset().mockResolvedValue({ hmr: null })
   vi.stubGlobal('fetch', fetchSpy)
   let ticket = 0
   openPreviewGateway.mockReset().mockImplementation(async () => ({ origin: GATEWAY, ticket: `T${(ticket += 1)}`, ticketParam: '__cez_preview' }))
@@ -235,6 +237,22 @@ describe('Auto-reload on a local cockpit (the page framed directly)', () => {
     fireEvent.click(toggle()!)
     expect(toggle()?.getAttribute('aria-pressed')).toBe('false')
     expect(bell.enabled).toBe(false)
+  })
+
+  it('a cross-origin page’s HTML is read by the server once: a Vite client there turns Auto-reload off', async () => {
+    probePreviewHmr.mockResolvedValue({ hmr: 'connected' })
+    renderLive()
+    await waitFor(() => expect(frame()).not.toBeNull())
+    crossOrigin()
+    await loaded()
+    await waitFor(() => expect(toggle()?.getAttribute('data-hmr')).toBe('connected'))
+    expect(probePreviewHmr).toHaveBeenCalledWith({ target: APP })
+    expect(toggle()?.getAttribute('aria-pressed')).toBe('false')
+    // A reload of the same address does not ask again.
+    act(() => {
+      frame()!.dispatchEvent(new Event('load'))
+    })
+    expect(probePreviewHmr).toHaveBeenCalledTimes(1)
   })
 
   it('reads a same-origin page’s own hot-reload client: Vite’s is off, none is on', async () => {

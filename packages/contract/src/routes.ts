@@ -66,7 +66,12 @@ import {
 } from './github.ts';
 import { healthResponseSchema } from './health.ts';
 import { hostUsageSchema } from './host.ts';
-import { designDraftsResponseSchema, designProxyResponseSchema, previewGatewayResponseSchema } from './preview.ts';
+import {
+  designDraftsResponseSchema,
+  designProxyResponseSchema,
+  previewGatewayResponseSchema,
+  previewHmrProbeResponseSchema,
+} from './preview.ts';
 import {
   fsBrowseResponseSchema,
   githubOwnersResponseSchema,
@@ -478,6 +483,7 @@ export const routeContracts = {
   'PUT /start-app': { summary: 'Set the command that starts the project\'s app.', response: startAppStateSchema, destructive: true },
   'POST /preview/design-proxy': { summary: 'Open the Design Mode proxy for a previewed dev server.', response: designProxyResponseSchema, notTool: 'browser' },
   'POST /preview/gateway': { summary: 'Open the preview gateway for a dev server.', response: previewGatewayResponseSchema, notTool: 'browser' },
+  'POST /preview/hmr-probe': { summary: 'Whether a local page brings its own hot reload.', response: previewHmrProbeResponseSchema, notTool: 'browser' },
 
   // ---- env files, secrets ----------------------------------------------------------
   'GET /env-files': { summary: 'The project\'s managed .env files.', response: envFilesListSchema },

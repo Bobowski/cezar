@@ -14,7 +14,7 @@ import {
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 
 import { PREVIEW_HMR_STATUS_PATH, previewHmrStatusSchema, type PreviewHmrStatus } from '@open-mercato/cezar-api-client'
-import { openDesignProxy, openPreviewGateway } from '@/api/client'
+import { openDesignProxy, openPreviewGateway, probePreviewHmr } from '@/api/client'
 import type { CodeTree } from '@/api/code'
 import { useHealth } from '@/api/queries'
 import { CenteredState } from '@/components/centered-state'
@@ -545,10 +545,23 @@ export function BrowserView({
   }
   // Read by the frame's `load` handler, which is memoised on the tab state alone.
   const probeLoaded = useRef(() => {})
+  const serverProbed = useRef<string | null>(null)
   probeLoaded.current = () => {
     probeHmr(gatewayOrigin)
-    // Framed directly (a local cockpit): the page itself is the only witness.
-    if (live && gatewayOrigin === null && !remoteLoopback) setHmr(frameHmr(frameRef.current))
+    // Framed directly (a local cockpit): the page's own document, where same-origin lets it be
+    // read; else the server reads its HTML, once per address.
+    if (!live || gatewayOrigin !== null || remoteLoopback) return
+    const seen = frameHmr(frameRef.current)
+    if (seen !== null || !isLoopback(target)) return setHmr(seen)
+    if (serverProbed.current === target) return
+    serverProbed.current = target
+    const asked = target
+    Promise.resolve()
+      .then(() => probePreviewHmr({ target: asked }))
+      .then((answer) => {
+        if (answer.hmr !== null && reloadTarget.current === asked) setHmr(answer.hmr)
+      })
+      .catch(() => {})
   }
 
   // The loop brake: a page whose own load writes into the checkout would reload forever.

@@ -111,6 +111,7 @@ import {
   type StarCountPayload,
   designProxyRequestSchema,
   previewGatewayRequestSchema,
+  previewHmrProbeRequestSchema,
   promptQueueInputSchema,
   reorderPromptQueueInputSchema,
   setDesignDraftsInputSchema,
@@ -210,6 +211,7 @@ import { backupRoutes, isBackupUploadPath, setupRestoreRoutes } from '../backup/
 import { StarCountReader } from './star-count.ts';
 import { DesignProxies } from './preview/design-proxy.ts';
 import { PreviewGateways, TICKET_PARAM, parsePreviewPorts } from './preview/gateway.ts';
+import { parseProbeTarget, probeHmr } from './preview/hmr-probe.ts';
 import { getTeamSkillsCached, refreshTeamSkills, waitForTeamSkills } from '../skills-remote.ts';
 import { appendHandoffHeartbeat, handoffProgressExcerpt, readHandoff } from '../handoff.ts';
 import { markStarted, onTodosChanged, readTodos, removeTodo, todoTaskText, type TodoItem } from '../todos.ts';
@@ -537,6 +539,8 @@ export interface ServerDeps {
   /** The preview gateways behind `POST /api/v1/preview/gateway`. Defaults to the pool named by
    *  `CEZ_PREVIEW_PORTS` — none, unless an operator set it. Injected by tests. */
   previewGateways?: PreviewGateways;
+  /** The fetch behind `POST /api/v1/preview/hmr-probe`. Injected by tests. */
+  previewProbeFetch?: typeof fetch;
   /** WebSocket subscription hub (`/api/v1/ws`, src/server/ws.ts). `createApp`
    *  only registers topics on it — `startServer` builds one and attaches it
    *  to the HTTP server it binds. Optional so legacy callers/tests change
@@ -3891,6 +3895,14 @@ export function createApp(deps: ServerDeps) {
       });
       if (!opened.ok) return c.json({ error: opened.reason }, opened.code === 'invalid' ? 400 : 409);
       return c.json({ origin: opened.origin, ticket: opened.ticket, ticketParam: TICKET_PARAM });
+    })
+    // A local cockpit's witness for a cross-origin page it frames directly (cockpit-polish §3.2).
+    // Hosted, the page is the gateway's and its upgrade log already answers.
+    .post('/preview/hmr-probe', jsonZodValidator(previewHmrProbeRequestSchema), async (c) => {
+      if (!capabilities().preview) return c.json({ error: 'on a hosted cockpit the preview gateway reports hot reload' }, 409);
+      const target = parseProbeTarget(c.req.valid('json').target, ownPorts(c.req.header('host')));
+      if (!target.ok) return c.json({ error: target.reason }, 400);
+      return c.json({ hmr: await probeHmr(target.url, deps.previewProbeFetch) });
     });
 
   const selfUpdateRoutes = new Hono()

@@ -139,6 +139,8 @@ import type {
   DesignProxyRequest,
   PreviewGatewayRequest,
   PreviewGatewayResponse,
+  PreviewHmrProbeRequest,
+  PreviewHmrProbeResponse,
   PromptQueueResponse,
   RemoveQueuedPromptResponse,
   ReorderPromptQueueResponse,
@@ -531,6 +533,12 @@ export async function openDesignProxy(input: DesignProxyRequest): Promise<Design
  */
 export async function openPreviewGateway(input: PreviewGatewayRequest): Promise<PreviewGatewayResponse> {
   return unwrap(await cez.api.v1.preview.gateway.$post({ json: input }), '/preview/gateway')
+}
+
+/** Whether a loopback page a LOCAL cockpit frames cross-origin brings its own hot reload, read
+ *  by the server from the page's HTML (`POST /api/v1/preview/hmr-probe`, cockpit-polish §3.2). */
+export async function probePreviewHmr(input: PreviewHmrProbeRequest): Promise<PreviewHmrProbeResponse> {
+  return unwrap(await cez.api.v1.preview['hmr-probe'].$post({ json: input }), '/preview/hmr-probe')
 }
 
 /** The opt-in telemetry answer (`~/.cezar/config.json`), behind the consent bar and

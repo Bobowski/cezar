@@ -6,6 +6,7 @@ import { Link } from '@/lib/project-router'
 
 import { ApiError } from '@/api/client'
 import { toast } from '@/components/ui/toaster'
+import { errorText } from '@/lib/error-text'
 import {
   useEditQueuedMessage,
   useMarkRunSeen,
@@ -595,7 +596,7 @@ function FooterContinueButton({
         setPending(true)
         onContinue()
           .catch((error: unknown) =>
-            toast(error instanceof Error ? error.message : String(error), { tone: 'danger' }),
+            toast(errorText(error), { tone: 'danger' }),
           )
           .finally(() => setPending(false))
       }}

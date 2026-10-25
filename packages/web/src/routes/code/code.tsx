@@ -16,6 +16,7 @@ import { queryKeys, useHealth, useRepo, useRuns, useUiState } from '@/api/querie
 import { subscribeTopic } from '@/api/ws'
 import type { CursorPosition, LineMark } from '@/components/code-mirror-editor'
 import { ContextSidebar } from '@/components/context-sidebar'
+import { FullscreenRegion } from '@/components/fullscreen-region'
 import { Diff } from '@/components/diff'
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
@@ -422,19 +423,9 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
   /** An agent tab for `runId` (`null`: a new task) — the one already showing it, if there is one. */
   const openAgentTab = (runId: string | null, side = false) => setLayout((state) => openAgent(state, newId(), runId, side))
 
-  // Full screen: the page takes the window, and the window takes the display where the browser
-  // allows it. Leaving either way (the button, or the browser's own Esc) leaves both.
-  const toggleFullscreen = () => {
-    const next = !fullscreen
-    setFullscreen(next)
-    if (next) void document.documentElement.requestFullscreen?.().catch(() => {})
-    else if (document.fullscreenElement) void document.exitFullscreen?.().catch(() => {})
-  }
-  useEffect(() => {
-    const onChange = () => { if (!document.fullscreenElement) setFullscreen(false) }
-    document.addEventListener('fullscreenchange', onChange)
-    return () => document.removeEventListener('fullscreenchange', onChange)
-  }, [])
+  // Full screen: the page takes the window — a layout state, never the browser's Fullscreen API,
+  // whose own Esc would beat a dialog or the editor to it (cockpit-polish §3.3).
+  const toggleFullscreen = () => setFullscreen((on) => !on)
 
   const created = async (input: { task: string; workflow: string }): Promise<string> => {
     const answer = await createRun({ workflow: input.workflow, task: input.task })
@@ -545,7 +536,7 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
       // except in the terminal panel, whose shell reads it.
       else if ((plain && letter === 't') || (event.altKey && !mod && !event.shiftKey && event.code === 'KeyT' && !inPanel(event.target))) hit('view.browser')
       else if ((mod && event.shiftKey && !event.altKey && letter === 't') || (event.altKey && !mod && event.shiftKey && event.code === 'KeyT' && !inPanel(event.target))) hit('view.browserSide')
-      else if (event.key === 'F11' || (event.ctrlKey && event.metaKey && letter === 'f')) hit('view.fullscreen')
+      // F11 / Ctrl+Cmd+F is the page's full-screen region's own (components/fullscreen-region).
       else if (plain && event.key === '\\') hit('view.split')
       else if (mod && event.shiftKey && letter === 'f') hit('search.files')
       else if (mod && event.shiftKey && letter === 'e') hit('view.explorer')
@@ -716,11 +707,13 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
 
   return (
     <OpenBrowserTabContext.Provider value={openPage}>
-    <div
+    <FullscreenRegion
+      label="Code"
+      active={fullscreen}
+      onActiveChange={setFullscreen}
       data-route="code"
       data-tree={key}
-      data-fullscreen={fullscreen ? 'true' : undefined}
-      className={cn('flex h-full min-h-0 flex-col bg-background', fullscreen && 'fixed inset-0 z-40')}
+      className="flex h-full min-h-0 flex-col bg-background"
     >
       {/* The explorer, search and source control are this SCREEN's list, so they live in the
           shell's contextual sidebar. In full screen the shell is covered, and they come along. */}
@@ -901,7 +894,7 @@ function CodeWorkbench({ tree, initialPath, initialTerminal = null }: { tree: Co
         onClose={() => setDialog(null)}
         onDone={afterFileOp}
       />
-    </div>
+    </FullscreenRegion>
     </OpenBrowserTabContext.Provider>
   )
 }

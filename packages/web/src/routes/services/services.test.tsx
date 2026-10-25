@@ -120,4 +120,15 @@ describe('Services page (spec 2026-10-11-project-services §4)', () => {
     fireEvent.click(screen.getByText('web'))
     await waitFor(() => expect(document.querySelector('[data-slot="service-detail"]')?.textContent).toContain('Exited with code 1'))
   })
+
+  it('takes the screen with the selected service and gives it back (cockpit-polish §3.3)', async () => {
+    setup()
+    await screen.findByText('cms: dev')
+    const region = () => document.querySelector<HTMLElement>('[data-fullscreen-region="Scripts"]')!
+    expect(region().contains(document.querySelector('[data-slot="service-detail"]'))).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Full screen Scripts' }))
+    expect(region().getAttribute('data-fullscreen')).toBe('true')
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(region().getAttribute('data-fullscreen')).toBeNull()
+  })
 })

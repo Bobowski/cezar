@@ -184,6 +184,18 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
     expect(codeWatchSchema.parse(await (await apiRequest(instance, '/api/v1/repo/watch?tree=nope')).json())).toEqual({ topic: null });
   });
 
+  it('adds a stamp on ?stamp=1 that moves with the pending changes — a digest, no paths (cockpit-polish §3.2)', async () => {
+    const { instance } = await app();
+    const stampOf = async (path: string) => codeWatchSchema.parse(await (await apiRequest(instance, path)).json()).stamp;
+    const before = await stampOf('/api/v1/repo/watch?stamp=1');
+    expect(before).toMatch(/^[0-9a-f]{16}$/);
+    expect(await stampOf('/api/v1/repo/watch?stamp=1')).toBe(before);
+    writeFileSync(join(root, 'src/new.ts'), 'export {};\n');
+    expect(await stampOf('/api/v1/repo/watch?stamp=1')).not.toBe(before);
+    expect(await stampOf('/api/v1/repo/watch')).toBeUndefined();
+    expect(await stampOf('/api/v1/repo/watch?tree=nope&stamp=1')).toBeNull();
+  });
+
   it('reports the checkout\'s distance from origin and fast-forwards it on pull', async () => {
     const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
     const origin = mkdtempSync(join(tmpdir(), 'cez-code-api-origin-'));

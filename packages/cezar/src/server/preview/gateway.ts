@@ -3,6 +3,8 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import { connect, type Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 
+import { PREVIEW_HMR_STATUS_PATH, type PreviewHmrStatus } from '@open-mercato/cezar-contract';
+
 import { PLAIN_SESSION_COOKIE, SECURE_SESSION_COOKIE } from '../../auth/guard.ts';
 import { parseDesignTarget, relayWithPicker } from './design-proxy.ts';
 import { PICKER_PATH, pickerScript } from './picker-script.ts';
@@ -112,6 +114,51 @@ interface Session {
   sockets: Set<Duplex>;
 }
 
+/**
+ * The slot's upgrade log behind `HMR_STATUS_PATH` (spec 2026-10-24-cockpit-polish §3.2): since the
+ * slot's last page load, in any tab, did a dev server's hot-reload socket come up here, fail, or
+ * never come at all? Reset by every new document.
+ */
+interface HmrLog {
+  /** Vite's client was fetched: the page means to open a hot-reload socket. */
+  viteClient: boolean;
+  connected: boolean;
+  failed: boolean;
+}
+
+/** The gateway's own path for "does this page hot-reload through me" — answered to the cockpit. */
+export const HMR_STATUS_PATH = PREVIEW_HMR_STATUS_PATH;
+
+/** `connected`: a socket came up. `blocked`: one failed, or Vite's client came and none did —
+ *  its `server.hmr` points elsewhere. `none`: a page with no hot reload. */
+export type PreviewHmrState = PreviewHmrStatus['hmr'];
+
+export function hmrStateOf(log: HmrLog, openSockets: number): PreviewHmrState {
+  if (log.connected || openSockets > 0) return 'connected';
+  if (log.failed || log.viteClient) return 'blocked';
+  return 'none';
+}
+
+const freshHmrLog = (): HmrLog => ({ viteClient: false, connected: false, failed: false });
+
+const HMR_PROTOCOL = /(^|,)\s*vite-(hmr|ping)\s*(,|$)/i;
+const HMR_PATH = /\/vite-hmr(\/|$)|__webpack_hmr|\/_next\/webpack-hmr|sockjs/i;
+
+/** A dev server's hot-reload socket, by its subprotocol or path — not the app's own WebSocket. */
+export function isHmrUpgrade(req: Pick<IncomingMessage, 'url' | 'headers'>): boolean {
+  const protocol = req.headers['sec-websocket-protocol'];
+  if (typeof protocol === 'string' && HMR_PROTOCOL.test(protocol)) return true;
+  return HMR_PATH.test((req.url ?? '').split('?')[0] ?? '');
+}
+
+/** A navigation, not a subresource: what starts a new page and so a new upgrade log. */
+function isDocumentRequest(req: IncomingMessage): boolean {
+  if (req.method !== 'GET') return false;
+  const dest = req.headers['sec-fetch-dest'];
+  if (typeof dest === 'string') return dest === 'iframe' || dest === 'document';
+  return /text\/html/.test(req.headers.accept ?? '');
+}
+
 /** `url` without the ticket parameter, or null when it carries none (or is not a URL). */
 function withoutTicket(url: string): URL | null {
   if (!url.includes(TICKET_PARAM)) return null;
@@ -159,6 +206,11 @@ interface Entry {
   sessions: Map<string, Session>;
   lastUsed: number;
   sockets: Set<Duplex>;
+  /** The slot's upgrade log, not a viewer's: a second tab's page load cannot mask the first's
+   *  hot-reload socket. */
+  hmr: HmrLog;
+  /** The open sockets that are a dev server's hot reload (`isHmrUpgrade`), a subset of `sockets`. */
+  hmrSockets: Set<Duplex>;
 }
 
 export { parsePreviewPorts } from './ports.ts';
@@ -336,6 +388,8 @@ export class PreviewGateways {
         sessions: new Map(),
         lastUsed: Date.now(),
         sockets: new Set(),
+        hmr: freshHmrLog(),
+        hmrSockets: new Set(),
       };
       server.on('request', (req, res) => this.handle(entry, req, res));
       server.on('upgrade', (req, socket, head) => this.upgrade(entry, req, socket, head));
@@ -486,7 +540,26 @@ export class PreviewGateways {
       return;
     }
 
-    if (entry.design && req.method === 'GET' && (req.url ?? '').split('?')[0] === PICKER_PATH) {
+    const path = (req.url ?? '').split('?')[0] ?? '';
+    if (session && req.method === 'GET' && path === HMR_STATUS_PATH) {
+      // Read by the cockpit, cross-origin, with this session's cookie: CORS for it alone.
+      res
+        .writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+          'access-control-allow-origin': entry.parentOrigin,
+          'access-control-allow-credentials': 'true',
+          vary: 'origin',
+        })
+        .end(JSON.stringify({ hmr: hmrStateOf(entry.hmr, entry.hmrSockets.size) }));
+      return;
+    }
+    if (session) {
+      if (isDocumentRequest(req)) entry.hmr = freshHmrLog();
+      else if (path.endsWith('/@vite/client')) entry.hmr.viteClient = true;
+    }
+
+    if (entry.design && req.method === 'GET' && path === PICKER_PATH) {
       res
         .writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-store' })
         .end(pickerScript({ parentOrigin: entry.parentOrigin, upstreamOrigin: entry.upstream.origin }));
@@ -555,7 +628,15 @@ export class PreviewGateways {
     headers.upgrade = req.headers.upgrade ?? 'websocket';
 
     const upstream: Socket = connect(portOf(entry.upstream), socketHost(entry.upstream));
+    // The upgrade log (§3.2): answered 101, or not. A socket the app never answered is a failure.
+    // Only a hot-reload socket is logged: the app's own WebSocket says nothing about HMR.
+    const hmr = isHmrUpgrade(req);
+    let answered = false;
+    const log = entry.hmr;
     const release = () => {
+      if (!answered && hmr) log.failed = true;
+      answered = true;
+      entry.hmrSockets.delete(socket);
       // The idle window starts when the socket that held it off closes (§4.4).
       if (session.sockets.delete(socket)) session.used = Date.now();
       entry.sockets.delete(socket);
@@ -583,7 +664,13 @@ export class PreviewGateways {
           return;
         }
         upstream.off('data', onHead);
-        const lines = head101.subarray(0, end).toString('latin1').split('\r\n').flatMap((line, index) => {
+        const head = head101.subarray(0, end).toString('latin1');
+        answered = true;
+        if (hmr && /^HTTP\/\d(\.\d)? 101\b/.test(head)) {
+          log.connected = true;
+          entry.hmrSockets.add(socket);
+        } else if (hmr) log.failed = true;
+        const lines = head.split('\r\n').flatMap((line, index) => {
           const colon = line.indexOf(':');
           if (index === 0 || colon === -1) return [line];
           const allowed = answerHeader(line.slice(0, colon).trim().toLowerCase(), line.slice(colon + 1).trim());

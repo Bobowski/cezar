@@ -87,6 +87,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from '@/components/ui/toaster'
+import { errorText } from '@/lib/error-text'
 import { shortAge } from '@/lib/format'
 import { githubTaskPrompt } from '@/lib/github-task'
 import { orderSkillsByUsage } from '@/lib/skills'
@@ -283,7 +284,7 @@ export function GithubRoute({
     putUiState({ githubView: next })
       .then((merged) => queryClient.setQueryData(queryKeys.uiState, merged))
       .catch((error: unknown) => {
-        toast(error instanceof Error ? error.message : String(error), { tone: 'danger' })
+        toast(errorText(error), { tone: 'danger' })
         // The write failed — fall back to the server's truth rather than keep the tab
         // claiming a persistence it never got.
         void queryClient.invalidateQueries({ queryKey: queryKeys.uiState })
@@ -301,7 +302,7 @@ export function GithubRoute({
     putUiState({ githubSort: next })
       .then((merged) => queryClient.setQueryData(queryKeys.uiState, merged))
       .catch((error: unknown) => {
-        toast(error instanceof Error ? error.message : String(error), { tone: 'danger' })
+        toast(errorText(error), { tone: 'danger' })
         void queryClient.invalidateQueries({ queryKey: queryKeys.uiState })
       })
   }
@@ -1317,7 +1318,7 @@ function GithubMergeBox({ number }: { number: number }) {
   const refreshMergeState = useMutation({
     mutationFn: () => getGithubPrMergeState(number, { refresh: true }),
     onSuccess: (data) => queryClient.setQueryData(queryKeys.githubMergeState(number), data),
-    onError: (error) => toast(error instanceof Error ? error.message : String(error), { tone: 'danger' }),
+    onError: (error) => toast(errorText(error), { tone: 'danger' }),
   })
   const selectedMethod = method && state?.methods.includes(method)
     ? method
@@ -1340,7 +1341,7 @@ function GithubMergeBox({ number }: { number: number }) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.githubComments('pr', number) })
     },
     onError: (error) => {
-      toast(error instanceof Error ? error.message : String(error), { tone: 'danger' })
+      toast(errorText(error), { tone: 'danger' })
       void queryClient.invalidateQueries({ queryKey: queryKeys.githubMergeState(number) })
     },
   })

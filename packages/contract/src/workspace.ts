@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { worktreeLifecycleConfigSchema } from './worktree-lifecycle.ts';
 import { type Runner, runnerSchema } from './health.ts';
-import { codePagesSchema, MAX_SAVED_WORKSPACE_LAYOUTS, savedWorkspaceLayoutSchema } from './workspace-layouts.ts';
+import { browserColumnLayoutSchema, codePagesSchema, MAX_SAVED_WORKSPACE_LAYOUTS, repoLayoutSchema, savedWorkspaceLayoutSchema } from './workspace-layouts.ts';
 
 /**
  * The workspace + settings families: `~/.cezar/config.json`'s settings slice, both GUI-pref bags
@@ -434,6 +434,10 @@ export const uiStateSchema = z.looseObject({
   /** The Code page's open Browser tabs per checkout (spec 2026-10-24-code-page-browser-tabs).
    *  Absent → never saved; the cockpit salvages entry by entry on read. */
   codePages: codePagesSchema.optional(),
+  /** The Git page's sidebar width and fold (spec 2026-10-24-cockpit-polish §3.1). */
+  repo: repoLayoutSchema.optional(),
+  /** What a new task Browser column opens at, in percent of the row (same spec §3.2). */
+  browserColumn: browserColumnLayoutSchema.optional(),
 });
 export type UiState = z.infer<typeof uiStateSchema>;
 

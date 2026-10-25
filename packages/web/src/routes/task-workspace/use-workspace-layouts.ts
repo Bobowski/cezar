@@ -105,8 +105,12 @@ const SAVE_RETRY_MS = 1500
 const LOAD_RETRY_MS = 2000
 const LOAD_RETRY_MAX_MS = 30_000
 
-export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
+export function useWorkspaceLayouts(taskId: string, browserShare?: number): WorkspaceLayouts {
   const [state, setState] = useState<WorkspaceState>(defaultState)
+  /** What a new Browser column opens at in this project (cockpit-polish §3.2). Read through a ref:
+   *  the transitions below are stable callbacks, and the share is a default, not a dependency. */
+  const share = useRef(browserShare)
+  share.current = browserShare
   const [ready, setReady] = useState(false)
   /** The host refused the last save (a read-only home, a full disk). Surfaced, never swallowed:
    *  §2 asks that a degraded capability produce a CLEAR state, not an invisible one. */
@@ -333,7 +337,7 @@ export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
     ),
     keepAs: useCallback((name: string) => setState((current) => keepAsIn(current, name)), []),
     addColumn: useCallback(
-      (view: ViewId) => onActive((current, name) => addColumnTo(current, name, view)),
+      (view: ViewId) => onActive((current, name) => addColumnTo(current, name, view, share.current)),
       [onActive],
     ),
     closeColumn: useCallback(
@@ -355,7 +359,7 @@ export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
     openDeepLink: useCallback((view: ViewId) => setState((current) => openDeepLinkOn(current, view)), []),
     dropView: useCallback(
       (view: ViewId, at: number, mode: 'insert' | 'replace') =>
-        setState((current) => dropViewOn(current, view, at, mode)),
+        setState((current) => dropViewOn(current, view, at, mode, share.current)),
       [],
     ),
     setColumnBrowser: useCallback(
@@ -379,17 +383,17 @@ export function useWorkspaceLayouts(taskId: string): WorkspaceLayouts {
        * and the change cannot drift.
        */
       const committed = latest.current?.state
-      if (!committed || openInBrowserOn(committed, url) === null) return false
-      setState((current) => openInBrowserOn(current, url) ?? current)
+      if (!committed || openInBrowserOn(committed, url, share.current) === null) return false
+      setState((current) => openInBrowserOn(current, url, share.current) ?? current)
       return true
     }, []),
     openBeside: useCallback((view: ViewId) => {
       // Answered from the COMMITTED state, for the reason `openInBrowser` gives above.
       const committed = latest.current?.state ?? loaded.current.state
       if (!committed) return null
-      const placed = openBesideOf(committed, view)
+      const placed = openBesideOf(committed, view, share.current)
       if (!placed) return null
-      setState((current) => openBesideOf(current, view)?.state ?? current)
+      setState((current) => openBesideOf(current, view, share.current)?.state ?? current)
       return { name: placed.name, index: placed.index }
     }, []),
   }

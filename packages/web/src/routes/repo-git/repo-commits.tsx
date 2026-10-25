@@ -7,10 +7,10 @@ import { Link } from '@/lib/project-router'
 import { ApiError } from '@/api/client'
 import { useRepoCommit, useRepoSync } from '@/api/queries'
 import type { LogEntry } from '@open-mercato/cezar-api-client'
-import { ContextSidebar } from '@/components/context-sidebar'
+
 import { Diff, type DiffMode } from '@/components/diff'
 import { DiffStatLabel } from '@/components/diff-stat'
-import { PageBody, PageToolbar } from '@/components/page'
+import { PageBody, PageItemTitle, PageTitle, PageToolbar } from '@/components/page'
 import { Button } from '@/components/ui/button'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import {
@@ -28,7 +28,7 @@ import { cn } from '@/lib/utils'
 
 import { DiffViewToggles } from '../task-git/diff-controls'
 import { RepoEmpty } from './repo-empty'
-import { OpenSidebarButton } from './repo-sidebar'
+import { OpenSidebarButton, RepoContextSidebar } from './repo-sidebar'
 
 /**
  * The repo view's Commits segment (R5 Step 1.7): the recent-commit log the existing
@@ -50,7 +50,7 @@ export function RepoCommitsSection({ log, header }: { log: LogEntry[]; header: R
 
   return (
     <>
-      <ContextSidebar>
+      <RepoContextSidebar tab="commits">
         {header}
         <SidebarContent>
           {incoming.length > 0 ? (
@@ -93,7 +93,7 @@ export function RepoCommitsSection({ log, header }: { log: LogEntry[]; header: R
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
-      </ContextSidebar>
+      </RepoContextSidebar>
 
       {sha ? (
         <CommitDiffView sha={sha} />
@@ -119,7 +119,7 @@ export function RepoCommitsSection({ log, header }: { log: LogEntry[]; header: R
           </Empty>
           {/* Phones: the sidebar is a closed sheet, so the list is the page. */}
           <PageBody className="pt-4 md:hidden">
-            <h1 className="pb-3 text-[15px] font-semibold text-foreground">Commits</h1>
+            <PageTitle className="pb-3">Commits</PageTitle>
             {incoming.length > 0 ? (
               <>
                 <h2 className="pb-2 text-xs font-medium text-muted-foreground">
@@ -238,7 +238,7 @@ function CommitDiffView({ sha }: { sha: string }) {
       ) : (
         <PageBody className="[--diff-sticky-top:0rem]">
           <div data-slot="commit-meta" className="pb-5">
-            <h1 className="text-[17px] font-semibold text-pretty text-foreground">{commit.data.subject}</h1>
+            <PageItemTitle className="text-pretty">{commit.data.subject}</PageItemTitle>
             <p className="mt-1 text-[13px] text-muted-foreground">
               {commit.data.author} · {commit.data.when} ·{' '}
               <span className="font-mono text-xs select-all">{commit.data.sha}</span>

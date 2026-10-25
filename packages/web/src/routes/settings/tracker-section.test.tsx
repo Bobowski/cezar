@@ -321,7 +321,7 @@ it.each(['jira', 'linear'] as const)('removing %s credentials removes the connec
   render(<MemoryRouter><QueryClientProvider client={client}><TrackerSection /></QueryClientProvider></MemoryRouter>)
   expect(await screen.findByText('Saved scope')).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Remove project credentials' }))
-  expect(await screen.findByText('No tracker connected.')).toBeTruthy()
+  expect(await screen.findByText('No tracker connected — connect one below.')).toBeTruthy()
   expect(screen.queryByText('Saved scope')).toBeNull()
   expect(screen.queryByRole('button', { name: 'Disconnect' })).toBeNull()
   expect(screen.queryByText(/This scope needs reconnection/)).toBeNull()

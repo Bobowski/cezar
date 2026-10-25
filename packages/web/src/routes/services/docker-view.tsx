@@ -11,6 +11,7 @@ import { createCodeTerminal, writeCodeTerminal } from '@/api/code'
 import { queryKeys, useHealth } from '@/api/queries'
 import { useDocker } from '@/api/services'
 import { ContextSidebar } from '@/components/context-sidebar'
+import { FullscreenRegion, FullscreenToggle } from '@/components/fullscreen-region'
 import { Page, PageBody } from '@/components/page'
 import { StatusDot } from '@/components/status-dot'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -263,6 +264,7 @@ export function DockerView({ header }: { header: ReactNode }) {
         </SidebarContent>
       </ContextSidebar>
 
+      <FullscreenRegion label="Docker" className="flex min-h-0 flex-1 flex-col">
       <PageBody className="flex min-h-0 flex-col gap-3 pt-4">
         {state.isError ? <p role="alert" className="text-sm text-danger">{state.error.message}</p> : null}
         {state.data && !available ? (
@@ -271,9 +273,12 @@ export function DockerView({ header }: { header: ReactNode }) {
           </p>
         ) : null}
         {available ? (
-          <ToggleGroup type="single" variant="outline" size="sm" aria-label="Docker objects" data-slot="docker-tabs" value={tab} onValueChange={(next) => { if (next) setTab(next as DockerTab) }}>
-            {TABS.map((entry) => <ToggleGroupItem key={entry.value} value={entry.value}>{entry.label}</ToggleGroupItem>)}
-          </ToggleGroup>
+          <div className="flex items-center justify-between gap-2">
+            <ToggleGroup type="single" variant="outline" size="sm" aria-label="Docker objects" data-slot="docker-tabs" value={tab} onValueChange={(next) => { if (next) setTab(next as DockerTab) }}>
+              {TABS.map((entry) => <ToggleGroupItem key={entry.value} value={entry.value}>{entry.label}</ToggleGroupItem>)}
+            </ToggleGroup>
+            <FullscreenToggle />
+          </div>
         ) : null}
         {available && tab === 'images' ? (
           <DockerImagesView busy={busy} onConfirm={setConfirm} onRemove={(image: DockerImage, force) => act.mutate({ kind: 'image', id: image.id, force, users: image.usedBy.map((user) => user.id) })} />
@@ -364,11 +369,12 @@ export function DockerView({ header }: { header: ReactNode }) {
           <Empty className="border-0">
             <EmptyHeader>
               <EmptyTitle>No containers</EmptyTitle>
-              <EmptyDescription>Nothing is running in Docker on this machine, and nothing stopped is left over.</EmptyDescription>
+              <EmptyDescription>Nothing runs in Docker on this machine. Start a stack — `docker compose up` in a terminal, or a script from Scripts — and it shows up here.</EmptyDescription>
             </EmptyHeader>
           </Empty>
         ) : null}
       </PageBody>
+      </FullscreenRegion>
       <DockerConfirm request={confirm} onClose={() => setConfirm(null)} />
       <DockerLogsSheet container={logs} onClose={() => setLogs(null)} />
     </>

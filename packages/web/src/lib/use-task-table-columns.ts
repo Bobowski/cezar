@@ -4,6 +4,7 @@ import * as React from 'react'
 import { putWorkspaceUiState } from '@/api/client'
 import { useWorkspaceUiState, workspaceQueryKeys } from '@/api/queries'
 import { toast } from '@/components/ui/toaster'
+import { errorText } from '@/lib/error-text'
 import type { WorkspaceUiState } from '@open-mercato/cezar-api-client'
 import {
   isColumnExpanded,
@@ -70,7 +71,7 @@ export function useTaskTableColumns(): {
         }
       })
       writeChain.current = write.catch((error: unknown) => {
-        toast(error instanceof Error ? error.message : String(error), { tone: 'danger' })
+        toast(errorText(error), { tone: 'danger' })
         if (writeSequence === newestSequence.current) {
           void queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.uiState })
         }

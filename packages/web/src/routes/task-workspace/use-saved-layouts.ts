@@ -4,6 +4,7 @@ import * as React from 'react'
 import { putWorkspaceUiState } from '@/api/client'
 import { useWorkspaceUiState, workspaceQueryKeys } from '@/api/queries'
 import { toast } from '@/components/ui/toaster'
+import { errorText } from '@/lib/error-text'
 import {
   MAX_SAVED_WORKSPACE_LAYOUTS,
   savedWorkspaceLayoutSchema,
@@ -67,7 +68,7 @@ export function useSavedLayouts(): {
         if (writeSequence === sequence.current) queryClient.setQueryData(workspaceQueryKeys.uiState, merged)
       })
       writeChain.current = pending.catch((error: unknown) => {
-        toast(error instanceof Error ? error.message : String(error), { tone: 'danger' })
+        toast(errorText(error), { tone: 'danger' })
         if (writeSequence === sequence.current) void queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.uiState })
       })
     },

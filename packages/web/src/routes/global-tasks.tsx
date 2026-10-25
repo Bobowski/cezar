@@ -64,6 +64,7 @@ import { UnreadMarker } from '@/components/unread-marker'
 import { SubtaskToggle } from '@/components/subtask-toggle'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Kbd } from '@/components/ui/kbd'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import {
@@ -1623,7 +1624,11 @@ function GlobalTasksEmptyState({
     <ListEmpty
       icon={<ListChecksIcon />}
       title="No tasks yet"
-      description="Start a task in any project and it shows up here."
+      description={
+        <>
+          Press <Kbd>C</Kbd> to start one — every project’s tasks show up here.
+        </>
+      }
     />
   )
 }

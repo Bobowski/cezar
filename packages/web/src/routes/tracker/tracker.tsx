@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { useSidebar } from '@/components/ui/sidebar'
+import { ListSkeleton } from '@/components/list-view'
 import { Spinner } from '@/components/ui/spinner'
 import { StatusDot } from '@/components/status-dot'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -220,7 +221,7 @@ function TrackerBrowse({ scopePending, association, selectedId, drafts, selectio
   const notices = <>
     {watch.error ? <p role="status" className="px-4 py-2 text-[13px] text-danger">{watch.error} The displayed list may be outdated.</p> : null}
     {watch.hasChanges ? <div className="m-3 flex flex-wrap items-center gap-3 rounded-lg bg-muted/60 px-3 py-2.5 text-[13px]"><p className="text-pretty">New changes are available. Your loaded pages have been preserved.</p><Button size="sm" variant="outline" onClick={() => void watch.applyChanges()}>Show changes</Button></div> : null}
-    {result.isPending && listVisible ? <PageState text="Loading issues…" loading /> : null}
+    {result.isPending && listVisible ? <ListSkeleton label="Loading issues…" className="p-4" /> : null}
     {result.isError ? <div className="px-4"><Failure reason={result.error.message} generation={result.errorUpdatedAt} retryAfterSeconds={result.error instanceof TrackerRefreshError && result.error.failure.code === 'rate_limited' ? result.error.failure.retryAfterSeconds : undefined} retry={() => void result.restart()} /></div> : null}
     {failure && !failure.available ? <div className="px-4"><Failure reason={failure.reason} generation={result.dataUpdatedAt} retryAfterSeconds={failure.code === 'rate_limited' ? failure.retryAfterSeconds : undefined} retry={() => void result.restart()} /></div> : null}
     {!result.isPending && !result.isError && !failure && items.length === 0 ? <PageState text={query.trim() ? 'No issues match this search.' : 'No issues in this view.'} /> : null}

@@ -21,7 +21,7 @@ import {
   githubReposQuerySchema, type GithubReposResponse,
   serviceLogsQuerySchema, serviceParamsSchema, servicePatchSchema, servicePinInputSchema, type ServiceLogs, type ServicesState,
   e2eSetupInputSchema, type E2eStatus, taskActionSurfaceSchema,
-  codePagesSchema,
+  codePagesSchema, repoLayoutSchema, browserColumnLayoutSchema,
   mcpPrivateOverrideSchema, mcpProjectApproveSchema, mcpRegistryQuerySchema, mcpServerParamsSchema, mcpServerPutSchema, mcpSecretNames, type McpServerTestResponse,
 } from '@open-mercato/cezar-contract';
 import { SecretStore, SecretsError, type SecretScopeRef } from '../workspace/secrets.ts';
@@ -49,7 +49,7 @@ import { findIconCandidates, readProjectIcon, removeProjectIcons, saveProjectIco
 import { brandingBody, brandingState, deriveBranding, manifestIcons, readBrandingAsset, removeBranding, saveBranding, type BrandingState } from '../workspace/branding.ts';
 import { searchCheckout } from './code-search.ts';
 import { refreshRepoSync, watchRepoSync } from '../git-sync.ts';
-import { checkoutWatchSupported, watchCheckout } from './checkout-watch.ts';
+import { checkoutWatchSupported, pollCheckout, statusFingerprint, watchCheckout } from './checkout-watch.ts';
 import { ignoredAmong, rerenderTaskEnvFiles } from '../worktree-env.ts';
 import { projectTerminalOwner } from './terminal/sessions.ts';
 import { ProjectServices, type ServiceProject } from '../services/manager.ts';
@@ -119,6 +119,7 @@ import {
   type StarCountPayload,
   designProxyRequestSchema,
   previewGatewayRequestSchema,
+  previewHmrProbeRequestSchema,
   promptQueueInputSchema,
   reorderPromptQueueInputSchema,
   setDesignDraftsInputSchema,
@@ -231,6 +232,7 @@ import { backupRoutes, isBackupUploadPath, setupRestoreRoutes } from '../backup/
 import { StarCountReader } from './star-count.ts';
 import { DesignProxies } from './preview/design-proxy.ts';
 import { PreviewGateways, TICKET_PARAM, parsePreviewPorts } from './preview/gateway.ts';
+import { parseProbeTarget, probeHmr } from './preview/hmr-probe.ts';
 import { getTeamSkillsCached, refreshTeamSkills, waitForTeamSkills } from '../skills-remote.ts';
 import { appendHandoffHeartbeat, handoffProgressExcerpt, readHandoff } from '../handoff.ts';
 import { markStarted, onTodosChanged, readTodos, removeTodo, todoTaskText, type TodoItem } from '../todos.ts';
@@ -568,6 +570,8 @@ export interface ServerDeps {
   /** The preview gateways behind `POST /api/v1/preview/gateway`. Defaults to the pool named by
    *  `CEZ_PREVIEW_PORTS` — none, unless an operator set it. Injected by tests. */
   previewGateways?: PreviewGateways;
+  /** The fetch behind `POST /api/v1/preview/hmr-probe`. Injected by tests. */
+  previewProbeFetch?: typeof fetch;
   /** WebSocket subscription hub (`/api/v1/ws`, src/server/ws.ts). `createApp`
    *  only registers topics on it — `startServer` builds one and attaches it
    *  to the HTTP server it binds. Optional so legacy callers/tests change
@@ -1150,6 +1154,10 @@ const uiStateSchema = z
     // loopback addresses only, bounded so the whole value fits the body limit. The cockpit PUTs
     // the whole list because the merge below is shallow.
     codePages: codePagesSchema.optional(),
+    // The Git sidebar's width/fold and a new Browser column's share (spec
+    // 2026-10-24-cockpit-polish §4). Whole objects, for the same shallow-merge reason.
+    repo: repoLayoutSchema.optional(),
+    browserColumn: browserColumnLayoutSchema.optional(),
   })
   .passthrough();
 
@@ -4019,6 +4027,14 @@ export function createApp(deps: ServerDeps) {
       });
       if (!opened.ok) return c.json({ error: opened.reason }, opened.code === 'invalid' ? 400 : 409);
       return c.json({ origin: opened.origin, ticket: opened.ticket, ticketParam: TICKET_PARAM });
+    })
+    // A local cockpit's witness for a cross-origin page it frames directly (cockpit-polish §3.2).
+    // Hosted, the page is the gateway's and its upgrade log already answers.
+    .post('/preview/hmr-probe', jsonZodValidator(previewHmrProbeRequestSchema), async (c) => {
+      if (!capabilities().preview) return c.json({ error: 'on a hosted cockpit the preview gateway reports hot reload' }, 409);
+      const target = parseProbeTarget(c.req.valid('json').target, ownPorts(c.req.header('host')));
+      if (!target.ok) return c.json({ error: target.reason }, 400);
+      return c.json({ hmr: await probeHmr(target.url, deps.previewProbeFetch) });
     });
 
   const selfUpdateRoutes = new Hono()
@@ -9853,7 +9869,7 @@ export function createApp(deps: ServerDeps) {
   const codeWatchTopics = new Set<string>();
   /** Register (once) the bell for one checkout. The watcher lives only while it has a subscriber. */
   const codeWatchTopic = (projectId: string, tree: string, root: string): string | null => {
-    if (!deps.socketHub || !checkoutWatchSupported()) return null;
+    if (!deps.socketHub) return null;
     const topic = `code:${projectId}:${tree}`;
     if (!codeWatchTopics.has(topic)) {
       codeWatchTopics.add(topic);
@@ -9862,7 +9878,9 @@ export function createApp(deps: ServerDeps) {
         snapshot: async () => ({ version }),
         start: (publish) => {
           const ring = () => publish({ version: (version += 1) });
-          return ringable(topic, ring, watchCheckout(root, ring));
+          // Where a recursive watch is refused (Linux), a demand-driven `git status` poll rings
+          // instead — the task Preview's auto-reload rides this bell (cockpit-polish §3.2).
+          return ringable(topic, ring, checkoutWatchSupported() ? watchCheckout(root, ring) : pollCheckout(root, ring));
         },
       });
     }
@@ -9918,16 +9936,22 @@ export function createApp(deps: ServerDeps) {
     })
     .get('/repo/watch', queryZodValidator(codeWatchQuerySchema), async (c) => {
       const project = c.get('project');
-      const { tree } = c.req.valid('query');
+      const { tree, stamp } = c.req.valid('query');
+      // The stamp is for a client with no socket (cockpit-polish §3.2): a digest, never a path.
+      const withStamp = async (watch: CodeWatch, root: string | null): Promise<CodeWatch> => {
+        if (stamp !== '1') return watch;
+        const print = root ? await statusFingerprint(root) : null;
+        return { ...watch, stamp: print === null ? null : createHash('sha256').update(print).digest('hex').slice(0, 16) };
+      };
       const none: CodeWatch = { topic: null };
       if (tree === undefined) {
         const info = await getRepoInfo(project.root);
         const watch: CodeWatch = { topic: info ? codeWatchTopic(project.id, 'main', info.root) : null };
-        return c.json(watch, 200);
+        return c.json(await withStamp(watch, info?.root ?? null), 200);
       }
       const checkout = runCheckout(project, tree);
       const watch: CodeWatch = checkout.ok ? { topic: codeWatchTopic(project.id, tree, checkout.cwd) } : none;
-      return c.json(watch, 200);
+      return c.json(await withStamp(watch, checkout.ok ? checkout.cwd : null), 200);
     })
     // The same two reads for a task's worktree; its file read/write/rename/delete already exist.
     .get('/runs/:id/tree', async (c) => {

@@ -1,6 +1,6 @@
 # Cockpit polish — the Git sidebar, live preview in a task, full screen everywhere, and the small things
 
-> Status: proposed (2026-10-24), not built. Branch: `brutus`.
+> Status: built (2026-10-25) — see §7 for what landed and what did not. Branch: `brutus`.
 > Builds on: `2026-10-13-unified-settings.md` (one frame, one nav), `2026-10-11-code-page.md`
 > (F11 full screen, `code.tsx`), `2026-10-07-task-workspace.md` (the Browser column),
 > `2026-10-10-preview-gateway.md`, `2026-10-24-git-view.md` (`repo-sidebar.tsx` grows there).
@@ -56,9 +56,11 @@ land on the same view. Keyboard: `Ctrl/Cmd+B` toggles it, as in Code.
 One component, `FullscreenRegion`, used by the Code page today, applied to: the task thread,
 the Changes diff, the Browser column, the terminal drawer, and the Docker/Services views.
 Entering: the control on the region's strip, `F11` (`Ctrl+Cmd+F` on macOS) on the focused
-region. Leaving: `Esc`, the control, or browser exit. The shell hides its chrome; the region
-keeps its own toolbar. State is not persisted (a reload returns to the layout). The desktop
-shell maps its native full-screen to the same signal.
+region. Leaving: `Esc`, the control, or `F11` again. It is a layout state — the region fills the
+viewport and covers the shell's chrome, keeping its own toolbar — never the browser's Fullscreen
+API, which takes `Esc` for itself before an open dialog, a shell or an editor could have it.
+State is not persisted (a reload returns to the layout). The desktop shell maps its native
+full-screen to the same signal.
 
 ### 3.4 Consistency checklist
 
@@ -86,12 +88,72 @@ Nothing new crosses a boundary; the reload signal carries no file contents.
 
 ## 6. Zero config
 
-Auto-reload defaults on for non-HMR pages and off for HMR pages; both are a toggle on the
-column, not a setting.
+Auto-reload defaults on for non-HMR pages and off for HMR pages; a loopback page whose HMR
+nobody can observe (a local cockpit framing another origin) counts as non-HMR, so it starts on.
+Both are a toggle on the column, not a setting.
 
 ## 7. Checklist state
 
-(empty — filled as items land)
+Behaviour (§3):
+
+- ~~3.1 Git sidebar~~ — the shell's contextual column takes an optional frame from the screen
+  (`ContextSidebar frame=…`: width, bounds, fold to icons, the `#788` resize handle); the Git page
+  keeps it per project in ui-state `repo`. Selection: Branches and Graph `?ref=`, Changes
+  `?file=` (Commits and Files were already paths). `Ctrl/Cmd+B` folds it.
+- ~~3.2 Live preview~~ — Auto-reload in the Browser bar; the change signal is the run's
+  checkout bell (`code:<project>:<run>`), which on Linux now rings from a demand-driven
+  `git status` poll, and — for a cockpit without the socket (remote) — `GET /repo/watch?stamp=1`
+  compared every 3 s while auto-reload is on. HMR detection is the gateway's upgrade log, read at
+  `/__cez_preview/hmr` on the gateway's own port; only an upgrade that looks like HMR
+  (`vite-hmr`/`vite-ping`, `__webpack_hmr`, `/_next/webpack-hmr`, `sockjs`, `/vite-hmr`) counts,
+  and the log is the slot's, not one viewer's. A page framed directly (a local cockpit) is read
+  for its own HMR client (`/@vite/client`, Next's development `__NEXT_DATA__`,
+  webpack-dev-server's client) where same-origin allows; a loopback page nobody can read starts
+  with Auto-reload ON (§6), one click to turn off. The poll mutes an untracked path that moved on
+  3 looks in a row for 5 min (a dev SQLite file, a log); the macOS/Windows watch drops paths
+  `git check-ignore` names (answers cached 60 s) and mutes an untracked path that moved in 3
+  consecutive 2 s windows the same way. In the cockpit, a 4th auto-reload inside 30 s pauses
+  Auto-reload with a note and a Resume button. New Browser columns open at
+  the project's `browserColumn.width` (45 %), kept from the last divider drag.
+- ~~3.3 Full screen~~ — `FullscreenRegion` (`components/fullscreen-region.tsx`) on every
+  workspace window (thread, Changes, Browser, …), the terminal drawer, Scripts, Docker and the
+  Code page. A layout state only (no `requestFullscreen`, the Code page's included). `Esc` goes
+  first to open overlays, then a shell or an editor (`.xterm`, `.cm-editor`) — a shell hands F11 on, and Esc too unless a program holds the alternate screen; `F11` stays the
+  browser's while focus is outside every region. Not built: the desktop shell's native
+  full-screen mapping (Tauri side).
+- §8 left open: the e2e "a change in the worktree reloads a static preview once" (the unit
+  suites cover the debounce, the bell and the stamp poll); the F11-on-the-thread e2e is in
+  `task-workspace.e2e.ts`. The VPS checks are the owner's.
+
+Consistency (§3.4):
+
+1. ~~One spacing scale for page headers~~ — `PageHeader` (whole page) / `PageTitle` (a
+   master–detail main area, `pt-4`) / `PageItemTitle` (the one item shown), in `page.tsx`.
+2. ~~Focus rings on every clickable row, `Enter` to open~~ — `lib/row-focus.ts`: a row whose link
+   carries the keyboard lights up with it (task table and cards, Graph rows); a row with no link
+   (Automations) is a focus stop that opens on `Enter`; the Files tree's rows ring on focus. The
+   sidebar lists (branches, changed files) were already `SidebarMenuButton`s.
+3. ~~Empty states with a verb~~ — Tasks and All tasks: "Press C to start one" (C is the rail's
+   New task key, not N); Git's clean tree: "Edit a file … ready to stage"; Docker: "Start a
+   stack …"; the Automations sidebar: "create one with New" (its page already had one);
+   Integrations (Settings → tracker): "No tracker connected — connect one below."
+4. ~~Error toasts carry the server's text~~ — they already did (`ApiError` is the server's
+   `{ error }`, and no "Something went wrong" was left); the seventeen hand-rolled
+   `error instanceof Error ? … : String(error)` sites now share `lib/error-text.ts`, and a test
+   pins a 409's words reaching the toast verbatim. Remaining literal danger toasts are client-side
+   refusals (a full note list, a copy the browser refused), not server failures.
+5. ~~Shortcut table in Settings → Keyboard~~ — a read-only "Page shortcuts" table under the
+   rebindable task commands, from one catalog (`lib/page-shortcuts.ts`): Everywhere, Task, Code,
+   Git, as this surface spells them (⌃⌘F for F11 on a Mac, ⌘T only in the desktop shell).
+   Reconciled: closing a tab is `Alt+W` on every surface — a browser keeps Ctrl/⌘+W and the
+   desktop shell's window menu closes the window on it, so `Mod+W` stays reserved.
+6. ~~Loading skeletons instead of spinners on the four list pages~~ — `ListSkeleton`
+   (`components/list-view.tsx`) on Automations, the tracker's Issues, the Git Graph and the Git
+   Changes diff; Tasks, All tasks and GitHub already had skeletons. Spinners stay where something
+   small is in flight beside content (a fetch of more, a button's own work).
+7. ~~The project switcher and the Settings nav use the same item height~~ — `h-9`
+   (`lib/nav-item.ts`) for both: the switcher's name-over-path rows (were `py-2`, ~44px) and the
+   Settings sections (were the menu button's `h-8`).
 
 ## 8. Verification
 

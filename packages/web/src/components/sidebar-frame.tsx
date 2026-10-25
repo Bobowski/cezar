@@ -161,7 +161,22 @@ export function SidebarFrame({
  * Rendered inside the `<aside>` and absolutely positioned over its border, so it inherits the
  * column's height without a second element having to track it.
  */
-function SidebarResizeHandle({ width, onWidthChange }: SidebarResize) {
+export function SidebarResizeHandle({
+  width,
+  onWidthChange,
+  min = MIN_SIDEBAR_WIDTH,
+  max = MAX_SIDEBAR_WIDTH,
+  initial = DEFAULT_SIDEBAR_WIDTH,
+}: SidebarResize & {
+  /** Another column's bounds — the Git sidebar's (spec 2026-10-24-cockpit-polish §3.1). */
+  min?: number
+  max?: number
+  initial?: number
+}) {
+  const clamp = (next: number) =>
+    min === MIN_SIDEBAR_WIDTH && max === MAX_SIDEBAR_WIDTH
+      ? clampSidebarWidth(next)
+      : Math.min(max, Math.max(min, Math.round(Number.isFinite(next) ? next : initial)))
   // The width the drag started from, plus the pointer x it started at. Refs, not state: they
   // change on every pointermove and nothing renders from them.
   const origin = React.useRef<{ x: number; width: number } | null>(null)
@@ -182,7 +197,7 @@ function SidebarResizeHandle({ width, onWidthChange }: SidebarResize) {
   const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
     const start = origin.current
     if (!start) return
-    onWidthChange(clampSidebarWidth(start.width + (event.clientX - start.x)))
+    onWidthChange(clamp(start.width + (event.clientX - start.x)))
   }
 
   const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -200,14 +215,14 @@ function SidebarResizeHandle({ width, onWidthChange }: SidebarResize) {
         : event.key === 'ArrowRight'
           ? width + SIDEBAR_WIDTH_STEP
           : event.key === 'Home'
-            ? MIN_SIDEBAR_WIDTH
+            ? min
             : event.key === 'End'
-              ? MAX_SIDEBAR_WIDTH
+              ? max
               : null
     if (next === null) return
     // Only for the keys we handled: Tab, Escape and the rest stay the browser's.
     event.preventDefault()
-    onWidthChange(clampSidebarWidth(next))
+    onWidthChange(clamp(next))
   }
 
   return (
@@ -217,15 +232,15 @@ function SidebarResizeHandle({ width, onWidthChange }: SidebarResize) {
       aria-orientation="vertical"
       aria-label="Resize the sidebar"
       aria-valuenow={width}
-      aria-valuemin={MIN_SIDEBAR_WIDTH}
-      aria-valuemax={MAX_SIDEBAR_WIDTH}
+      aria-valuemin={min}
+      aria-valuemax={max}
       tabIndex={0}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
       onKeyDown={onKeyDown}
-      onDoubleClick={() => onWidthChange(DEFAULT_SIDEBAR_WIDTH)}
+      onDoubleClick={() => onWidthChange(initial)}
       title="Drag to resize the sidebar — double-click to reset"
       // A 5px grab strip straddling the border, invisible until you reach for it. `touch-none`
       // is load-bearing rather than decorative: without it a touch drag is claimed by the

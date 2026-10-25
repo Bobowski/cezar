@@ -1112,9 +1112,11 @@ describe('TasksOverview — empty and loading states', () => {
     expect(empty.getAttribute('data-empty-kind')).toBe('no-tasks')
     expect(empty.querySelector('[data-slot="empty"]')?.getAttribute('data-tone')).toBe('primary')
     expect(empty.querySelector('[data-slot="empty-title"]')?.textContent).toBe('No tasks yet')
-    expect(
-      within(empty).getByText('Describe a task and an agent picks it up in its own worktree.'),
-    ).not.toBeNull()
+    // A verb and its key (cockpit-polish §3.4 item 3): C is the cockpit's New task.
+    expect(empty.querySelector('[data-slot="empty-description"]')?.textContent).toBe(
+      'Press C to start one — an agent picks it up in its own worktree.',
+    )
+    expect(empty.querySelector('[data-slot="empty-description"] kbd')?.textContent).toBe('C')
     // Scoped inside the state — the mobile FAB is also a link named "New task".
     expect(within(empty).getByRole('link', { name: 'New task' }).getAttribute('href')).toBe('/new')
     // The one empty state with a way forward; the other two are a sentence and nothing to press.

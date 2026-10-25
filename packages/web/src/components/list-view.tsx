@@ -6,6 +6,7 @@ import { StatusDot } from '@/components/status-dot'
 import { Badge } from '@/components/ui/badge'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@/components/ui/input-group'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import type { Attention } from '@/lib/attention'
 import type { ListView } from '@/lib/task-groups'
@@ -205,5 +206,21 @@ export function ListEmpty({
       </EmptyHeader>
       {action ? <EmptyContent>{action}</EmptyContent> : null}
     </Empty>
+  )
+}
+
+/**
+ * A list on its way (spec 2026-10-24-cockpit-polish §3.4 item 6): row-shaped placeholders where
+ * the rows will land, instead of a spinner in an empty box — so the page does not jump when they
+ * arrive. `label` is what a screen reader hears.
+ */
+export function ListSkeleton({ label, rows = 6, rowClassName, className }: { label: string; rows?: number; rowClassName?: string; className?: string }) {
+  return (
+    <div role="status" aria-busy="true" data-slot="list-skeleton" className={cn('flex flex-col gap-2', className)}>
+      <span className="sr-only">{label}</span>
+      {Array.from({ length: rows }, (_, index) => (
+        <Skeleton key={index} className={cn('h-11 w-full', index === rows - 1 && 'w-2/3', rowClassName)} />
+      ))}
+    </div>
   )
 }

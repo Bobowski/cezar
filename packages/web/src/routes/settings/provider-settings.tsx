@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Switch } from '@/components/ui/switch'
 import { toast } from '@/components/ui/toaster'
+import { errorText } from '@/lib/error-text'
 import { providerStatusFor } from '@/lib/provider-status'
 import { cn } from '@/lib/utils'
 import { SettingsError, SettingsGroup } from './settings-field'
@@ -140,7 +141,7 @@ export function ProviderSettings() {
             } else {
               queryClient.removeQueries({ queryKey: key, exact: true })
             }
-            toast(error instanceof Error ? error.message : String(error), { tone: 'danger' })
+            toast(errorText(error), { tone: 'danger' })
           }
         } finally {
           pendingWrites.current[provider] -= 1

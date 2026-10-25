@@ -1,11 +1,13 @@
 import { CherryIcon, GitBranchIcon, GitCommitHorizontalIcon, MoreHorizontalIcon, TriangleAlertIcon } from 'lucide-react'
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useSearchParams } from 'react-router'
 import { Virtualizer } from 'virtua'
 
 import { cherryPickCommit, useRepoGitAction, useRepoGraph } from '@/api/repo-git'
 import type { RepoGraphCommit, RepoGraphFilter, RepoGraphRef } from '@open-mercato/cezar-api-client'
-import { ContextSidebar } from '@/components/context-sidebar'
-import { PageBody, PageToolbar } from '@/components/page'
+
+import { PageBody, PageTitle, PageToolbar } from '@/components/page'
+import { ROW_FOCUS_WITHIN_CLASS } from '@/lib/row-focus'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -24,6 +26,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from '@/components/ui/sidebar'
+import { ListSkeleton } from '@/components/list-view'
 import { Spinner } from '@/components/ui/spinner'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { toast } from '@/components/ui/toaster'
@@ -33,7 +36,7 @@ import { cn } from '@/lib/utils'
 import { BranchActionsMenu, useAnnounce } from './branch-actions'
 import { assignLanes, type LaneEdge, type LaneRow } from './graph-lanes'
 import { RepoEmpty } from './repo-empty'
-import { useCloseSidebarSheet } from './repo-sidebar'
+import { RepoContextSidebar, useCloseSidebarSheet, withParam } from './repo-sidebar'
 
 const ROW_HEIGHT = 30
 const LANE_WIDTH = 14
@@ -91,10 +94,20 @@ export function RepoGraphSection({ header }: { header: ReactNode }) {
     !needle || commit.subject.toLowerCase().includes(needle) || commit.sha.startsWith(needle)
   const matchCount = needle ? commits.filter(matches).length : commits.length
 
-  const [focused, setFocused] = useState<string | null>(null)
+  // `?ref=<sha>` (cockpit-polish §3.1): the revealed commit survives a refresh and a shared link.
+  const [params, setParams] = useSearchParams()
+  const focused = params.get('ref')
   const rowEls = useRef(new Map<string, HTMLElement>())
+  const arrivedAt = useRef(focused)
+  const loaded = commits.length > 0
+  useEffect(() => {
+    const sha = arrivedAt.current
+    if (sha === null || !loaded) return
+    arrivedAt.current = null
+    rowEls.current.get(sha)?.scrollIntoView?.({ block: 'center' })
+  }, [loaded])
   const reveal = (sha: string) => {
-    setFocused(sha)
+    setParams((current) => withParam(current, 'ref', sha), { replace: true })
     rowEls.current.get(sha)?.scrollIntoView({ block: 'center' })
   }
 
@@ -106,7 +119,7 @@ export function RepoGraphSection({ header }: { header: ReactNode }) {
 
   return (
     <section data-slot="repo-graph" className="flex min-h-0 flex-1 flex-col">
-      <ContextSidebar>
+      <RepoContextSidebar tab="graph">
         {header}
         <SidebarContent>
           {(
@@ -128,10 +141,10 @@ export function RepoGraphSection({ header }: { header: ReactNode }) {
             ) : null,
           )}
         </SidebarContent>
-      </ContextSidebar>
+      </RepoContextSidebar>
 
       <PageToolbar data-slot="repo-graph-toolbar" className="gap-x-3 pt-4">
-        <h1 className="text-[15px] font-semibold text-foreground">Graph</h1>
+        <PageTitle>Graph</PageTitle>
         <ToggleGroup
           type="single"
           size="sm"
@@ -165,9 +178,8 @@ export function RepoGraphSection({ header }: { header: ReactNode }) {
       </PageToolbar>
 
       {graph.isPending ? (
-        <PageBody className="flex items-center justify-center gap-2 py-16 text-[13px] text-muted-foreground">
-          <Spinner />
-          Loading the graph…
+        <PageBody>
+          <ListSkeleton label="Loading the graph…" rows={8} rowClassName="h-7" />
         </PageBody>
       ) : graph.isError ? (
         <RepoEmpty icon={<TriangleAlertIcon />} tone="danger" title="Could not load the graph" description={graph.error.message} />
@@ -336,6 +348,7 @@ function GraphRow({
       style={{ height: ROW_HEIGHT }}
       className={cn(
         'group flex min-w-0 items-center gap-2 pr-2 hover:bg-muted/50 md:pr-4',
+        ROW_FOCUS_WITHIN_CLASS,
         focused && 'bg-muted',
         dim && 'opacity-35',
       )}

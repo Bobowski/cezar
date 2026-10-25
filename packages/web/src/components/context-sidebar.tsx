@@ -16,19 +16,39 @@ import { createPortal } from 'react-dom'
  * `SidebarGroup`, `SidebarGroupLabel`, `SidebarMenu`, `SidebarMenuItem`, `SidebarMenuButton`,
  * `SidebarMenuSub`, `SidebarInput`, `SidebarFooter` — they render correctly here.
  */
+
+/**
+ * A screen's own frame for the column (spec 2026-10-24-cockpit-polish §3.1): its width, a resize
+ * handle, and a fold to icons instead of off-canvas — all of it the screen's state to keep. A
+ * screen that passes none gets the shell's fixed 18rem column and its remembered open state.
+ */
+export interface ContextSidebarFrame {
+  width: number
+  onWidthChange: (width: number) => void
+  minWidth: number
+  maxWidth: number
+  defaultWidth: number
+  collapsed: boolean
+  onCollapsedChange: (collapsed: boolean) => void
+}
+
 type ContextSidebarValue = {
   /** Where the children are portalled. Null while the sidebar is not mounted (a closed sheet). */
   node: HTMLElement | null
   /** Called by every mounted `<ContextSidebar>`; the returned function unregisters it. */
   register: () => () => void
+  /** Hands the shell a frame; the returned function takes it back. */
+  setFrame?: (frame: ContextSidebarFrame) => () => void
 }
 
 export const ContextSidebarContext = React.createContext<ContextSidebarValue | null>(null)
 
-export function ContextSidebar({ children }: { children: React.ReactNode }) {
+export function ContextSidebar({ children, frame }: { children: React.ReactNode; frame?: ContextSidebarFrame }) {
   const context = React.useContext(ContextSidebarContext)
   const register = context?.register
+  const setFrame = context?.setFrame
   React.useEffect(() => register?.(), [register])
+  React.useEffect(() => (frame ? setFrame?.(frame) : undefined), [frame, setFrame])
   if (!context?.node) return null
   return createPortal(children, context.node)
 }

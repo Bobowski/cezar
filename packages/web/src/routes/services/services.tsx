@@ -9,7 +9,8 @@ import {
 import { queryKeys } from '@/api/queries'
 import { useServices } from '@/api/services'
 import { ContextSidebar } from '@/components/context-sidebar'
-import { Page, PageBody } from '@/components/page'
+import { FullscreenRegion, FullscreenToggle } from '@/components/fullscreen-region'
+import { Page, PageBody, PageItemTitle } from '@/components/page'
 import { StatusDot, type StatusDotTone } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -310,6 +311,7 @@ export function ServicesRoute() {
         </SidebarContent>
       </ContextSidebar>
 
+      <FullscreenRegion label="Scripts" className="flex min-h-0 flex-1 flex-col">
       <PageBody className="flex min-h-0 flex-col gap-3 pt-4">
         {state.isError ? <p role="alert" className="text-sm text-danger">{state.error.message}</p> : null}
         {state.data && !state.data.available ? (
@@ -321,10 +323,10 @@ export function ServicesRoute() {
           <>
             <header data-slot="service-detail" className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0 space-y-1">
-                <h1 className="flex items-center gap-2 text-[17px] font-semibold text-foreground">
+                <PageItemTitle className="flex items-center gap-2">
                   <StatusDot tone={serviceTone(selected)} pulse={running} />
                   <span className="truncate">{selected.name}</span>
-                </h1>
+                </PageItemTitle>
                 <code className="block truncate font-mono text-xs text-muted-foreground">{selected.command}{selected.cwd ? `  ·  ${selected.cwd}` : ''}</code>
                 <p className={cn('text-xs text-pretty', serviceTone(selected) === 'danger' ? 'text-danger' : 'text-muted-foreground')}>{serviceStateLabel(selected)}</p>
                 {urls.map((entry) => (
@@ -334,6 +336,7 @@ export function ServicesRoute() {
                 ))}
               </div>
               <div className="flex shrink-0 items-center gap-2">
+                <FullscreenToggle />
                 {running ? (
                   <>
                     <Button variant="outline" size="sm" disabled={busy} onClick={() => act.mutate({ id: selected.id, action: 'restart' })}><RotateCwIcon aria-hidden="true" /> Restart</Button>
@@ -365,6 +368,7 @@ export function ServicesRoute() {
           </Empty>
         ) : null}
       </PageBody>
+      </FullscreenRegion>
     </Page>
   )
 }

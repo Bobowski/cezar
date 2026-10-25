@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
   addColumn,
+  browserColumnShare,
   addLayout,
   activeLayout,
   closeColumn,
@@ -251,6 +252,39 @@ describe('addColumn', () => {
     const capped = addColumn(state, 'Chat', 'commits')
     expect(capped).toBe(state)
     expect(activeLayout(capped)?.columns).toHaveLength(MAX_COLUMNS)
+  })
+})
+
+describe('a new Browser column’s share (cockpit-polish §3.2)', () => {
+  it('opens at 45 % of the row, the rest split what is left', () => {
+    let state = addColumn(defaultState(), 'Chat', 'browser')
+    expect(views(state)).toEqual(['session', 'browser'])
+    expect(widths(state)).toEqual([55, 45])
+    state = addColumn(addColumn(defaultState(), 'Chat', 'changes'), 'Chat', 'browser')
+    expect(widths(state)).toEqual([27.5, 27.5, 45])
+  })
+
+  it('opens at the project’s remembered share, bounded so the others keep their floor', () => {
+    expect(widths(addColumn(defaultState(), 'Chat', 'browser', 60))).toEqual([40, 60])
+    expect(browserColumnShare(95, 2)).toBe(80)
+    expect(browserColumnShare(80, 3)).toBe(100 - 2 * MIN_COLUMN_WIDTH)
+    expect(browserColumnShare(undefined, 2)).toBe(45)
+  })
+
+  it('applies where a Browser arrives — beside a fixed card, a drop — and never on a move', () => {
+    const beside = openBeside(defaultState(), 'browser', 50)
+    expect(widths(beside!.state)).toEqual([50, 50])
+    expect(widths(openBeside(defaultState(), 'browser')!.state)).toEqual([55, 45])
+    const dropped = dropView(defaultState(), 'browser', 1, 'insert')
+    expect(views(dropped)).toEqual(['session', 'browser'])
+    expect(widths(dropped)).toEqual([55, 45])
+    // Moving the Browser that is already there equalizes, as every reorder does.
+    expect(widths(dropView(dropped, 'browser', 0, 'insert'))).toEqual([50, 50])
+    expect(widths(dropView(defaultState(), 'browser', 1, 'insert', 40))).toEqual([60, 40])
+  })
+
+  it('leaves every other column split evenly', () => {
+    expect(widths(addColumn(defaultState(), 'Chat', 'changes', 60))).toEqual([50, 50])
   })
 })
 

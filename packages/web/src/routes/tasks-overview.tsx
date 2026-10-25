@@ -42,6 +42,7 @@ import { UnreadMarker } from '@/components/unread-marker'
 import { SubtaskToggle } from '@/components/subtask-toggle'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Kbd } from '@/components/ui/kbd'
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -107,6 +108,7 @@ import { usageMetricVisibility } from '@/lib/token-metrics'
 import { useAutomationsGate, useAutomationsQuery } from '@/routes/automations/use-automations'
 import { useTaskTableColumns } from '@/lib/use-task-table-columns'
 import { useNow } from '@/lib/use-now'
+import { ROW_FOCUS_WITHIN_CLASS } from '@/lib/row-focus'
 import { cn } from '@/lib/utils'
 
 /**
@@ -686,7 +688,11 @@ function TasksEmptyState({
           icon={<ListChecksIcon />}
           tone="primary"
           title="No tasks yet"
-          description="Describe a task and an agent picks it up in its own worktree."
+          description={
+            <>
+              Press <Kbd>C</Kbd> to start one — an agent picks it up in its own worktree.
+            </>
+          }
           action={
             <Button asChild>
               <Link to="/new">
@@ -911,7 +917,7 @@ function TaskRow({
         if ((event.target as Element).closest('a, button, input')) return
         navigate(to)
       }}
-      className="group/row cursor-pointer"
+      className={cn('group/row cursor-pointer', ROW_FOCUS_WITHIN_CLASS)}
     >
       <TableCell data-column-id="status" className={LIST_CELL_CLASS}>
         {/* A scheduled run wears its appointment in the badge. */}
@@ -1139,7 +1145,7 @@ function TaskCard({
         if ((event.target as Element).closest('a, button')) return
         navigate(to)
       }}
-      className="cursor-pointer px-4 py-3.5 select-none active:bg-muted/50"
+      className={cn('cursor-pointer px-4 py-3.5 select-none active:bg-muted/50', ROW_FOCUS_WITHIN_CLASS)}
     >
       <div className="flex items-start gap-2">
         <Link to={to} className={cn('min-w-0 flex-1 text-sm leading-snug', titleTone(run))}>

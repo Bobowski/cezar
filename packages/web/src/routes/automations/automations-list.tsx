@@ -9,6 +9,7 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTi
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Link } from '@/lib/project-router'
 
+import { ListSkeleton } from '@/components/list-view'
 import { PageState, type AutomationsView } from './automations-route'
 import { AutomationsTable } from './automations-table'
 import { DayView } from './day-view'
@@ -127,7 +128,7 @@ export function AutomationsList({
         </PageBody>
       ) : !data ? (
         <PageBody>
-          <PageState text="Loading automations…" loading />
+          <ListSkeleton label="Loading automations…" rows={5} />
         </PageBody>
       ) : data.automations.length === 0 ? (
         <Empty data-slot="centered-state" className="flex-1">

@@ -11,6 +11,9 @@
  */
 
 import {
+  DEFAULT_BROWSER_COLUMN_WIDTH,
+  MAX_BROWSER_COLUMN_WIDTH,
+  MIN_BROWSER_COLUMN_WIDTH,
   MAX_WORKSPACE_BROWSER_TABS,
   MAX_WORKSPACE_COLUMNS,
   MAX_WORKSPACE_LAYOUT_NAME_LENGTH,
@@ -299,6 +302,28 @@ function withEqualWidths(columns: readonly WorkspaceColumn[]): WorkspaceColumn[]
   return columns.map((column, index) => ({ ...column, width: widths[index] ?? 0 }))
 }
 
+/**
+ * A Browser column just placed in the row opens at the project's remembered share — 45 % unless a
+ * divider drag said otherwise (spec 2026-10-24-cockpit-polish §3.2) — and the rest split what is
+ * left. Every other arrangement stays the equal split above.
+ */
+export function browserColumnShare(raw: unknown, count: number): number {
+  const width = typeof raw === 'number' && Number.isFinite(raw) ? raw : DEFAULT_BROWSER_COLUMN_WIDTH
+  // The others keep at least their floor each.
+  const ceiling = 100 - MIN_COLUMN_WIDTH * Math.max(1, count - 1)
+  return round2(Math.min(ceiling, MAX_BROWSER_COLUMN_WIDTH, Math.max(MIN_BROWSER_COLUMN_WIDTH, width)))
+}
+
+function withBrowserShare(columns: readonly WorkspaceColumn[], share: number | undefined): WorkspaceColumn[] {
+  const at = columns.findIndex((column) => column.view === 'browser')
+  if (at < 0 || columns.length < 2) return withEqualWidths(columns)
+  const browser = browserColumnShare(share, columns.length)
+  const rest = equalWidths(columns.length - 1).map((width) => round2((width * (100 - browser)) / 100))
+  rest[rest.length - 1] = round2(100 - browser - rest.slice(0, -1).reduce((sum, width) => sum + width, 0))
+  let other = 0
+  return columns.map((column, index) => ({ ...column, width: index === at ? browser : rest[other++] ?? 0 }))
+}
+
 /* ── Reading and writing ─────────────────────────────────────────────────────────────────────── */
 
 /**
@@ -499,14 +524,16 @@ export function renameLayout(state: WorkspaceState, name: string, requested: str
   return replaceLayout(state, name, { ...layout, name: uniqueName(trimmed, state.layouts, name) })
 }
 
-/** Add a column at the right, equalizing widths. A no-op at `MAX_COLUMNS` — the control that
- *  reaches this is disabled there too, and a silent cap is better than a thrown away click. */
-export function addColumn(state: WorkspaceState, name: string, view: ViewId): WorkspaceState {
+/** Add a column at the right, equalizing widths — a new Browser takes its share instead. A no-op
+ *  at `MAX_COLUMNS` — the control that reaches this is disabled there too, and a silent cap is
+ *  better than a thrown away click. */
+export function addColumn(state: WorkspaceState, name: string, view: ViewId, browserShare?: number): WorkspaceState {
   const layout = findLayout(state, name)
   if (!layout || layout.columns.length >= MAX_COLUMNS) return state
+  const columns = [...layout.columns, newColumn(view)]
   return replaceLayout(state, name, {
     ...layout,
-    columns: withEqualWidths([...layout.columns, newColumn(view)]),
+    columns: view === 'browser' ? withBrowserShare(columns, browserShare) : withEqualWidths(columns),
   })
 }
 
@@ -552,18 +579,18 @@ export function setColumnBrowser(
  * FIXED card stays the one view it stands for, so it goes to its pair layout (`Chat + Browser`),
  * exactly as `openBeside` places a file: adding a column to it made `Chat` a stray custom card.
  */
-export function openInBrowser(state: WorkspaceState, url: string): WorkspaceState | null {
+export function openInBrowser(state: WorkspaceState, url: string, browserShare?: number): WorkspaceState | null {
   const active = activeLayout(state)
   if (!active || url.length > MAX_TAB_URL_LENGTH) return null
   let next = state
   let name = active.name
   let index = active.columns.findIndex((column) => column.view === 'browser')
   if (index < 0 && fixedViewOf(active) !== null) {
-    const placed = openBeside(state, 'browser')
+    const placed = openBeside(state, 'browser', browserShare)
     if (!placed) return null
     ;({ state: next, name, index } = placed)
   } else if (index < 0) {
-    next = addColumn(state, name, 'browser')
+    next = addColumn(state, name, 'browser', browserShare)
     if (next === state) return null
     index = active.columns.length
   }
@@ -728,17 +755,18 @@ export function openDeepLink(state: WorkspaceState, view: ViewId): WorkspaceStat
 export function openBeside(
   state: WorkspaceState,
   view: ViewId,
+  browserShare?: number,
 ): { state: WorkspaceState; name: string; index: number } | null {
   const current = activeLayout(state)
   if (current) {
     const existing = current.columns.findIndex((column) => column.view === view)
     if (existing >= 0) return { state, name: current.name, index: existing }
     if (fixedViewOf(current) === null && current.columns.length > 0 && current.columns.length < MAX_COLUMNS) {
-      return { state: addColumn(state, current.name, view), name: current.name, index: current.columns.length }
+      return { state: addColumn(state, current.name, view, browserShare), name: current.name, index: current.columns.length }
     }
   }
   const from = current?.columns[0]?.view ?? 'session'
-  const next = toWorking(state, [newColumn(from), newColumn(view)])
+  const next = toWorking(state, [newColumn(from), newColumn(view)], view === 'browser' ? { share: browserShare } : undefined)
   return next ? { state: next, name: WORKING_LAYOUT_NAME, index: 1 } : null
 }
 
@@ -754,11 +782,14 @@ export function dropView(
   view: ViewId,
   at: number,
   mode: 'insert' | 'replace',
+  browserShare?: number,
 ): WorkspaceState {
   const current = activeLayout(state)
   const columns: WorkspaceColumn[] = current?.columns.map((column) => ({ ...column })) ?? []
   const from = columns.findIndex((column) => column.view === view)
   const moved = from >= 0 ? columns[from]! : newColumn(view)
+  // A Browser arriving (not one moving) takes its share; a move keeps the equal split.
+  const newBrowser = from < 0 && view === 'browser' ? { share: browserShare } : undefined
   let next: WorkspaceColumn[]
   if (mode === 'replace') {
     if (at < 0 || at >= columns.length) return state
@@ -771,10 +802,13 @@ export function dropView(
   }
   if (next.length > MAX_COLUMNS) return state
   if (current && fixedViewOf(current) === null) {
-    return replaceLayout(state, current.name, { ...current, columns: withEqualWidths(next) })
+    return replaceLayout(state, current.name, {
+      ...current,
+      columns: newBrowser ? withBrowserShare(next, newBrowser.share) : withEqualWidths(next),
+    })
   }
   if (next.length === 1) return openDeepLink(state, next[0]!.view)
-  return toWorking(state, next) ?? state
+  return toWorking(state, next, newBrowser) ?? state
 }
 
 /**
@@ -791,8 +825,8 @@ export function isReservedLayoutName(name: string): boolean {
 }
 
 /** Show `columns` as the working arrangement, made the first time and overwritten after. */
-function toWorking(state: WorkspaceState, columns: WorkspaceColumn[]): WorkspaceState | null {
-  const layout = { name: WORKING_LAYOUT_NAME, columns: withEqualWidths(columns) }
+function toWorking(state: WorkspaceState, columns: WorkspaceColumn[], newBrowser?: { share?: number }): WorkspaceState | null {
+  const layout = { name: WORKING_LAYOUT_NAME, columns: newBrowser ? withBrowserShare(columns, newBrowser.share) : withEqualWidths(columns) }
   if (findLayout(state, WORKING_LAYOUT_NAME)) {
     return { ...replaceLayout(state, WORKING_LAYOUT_NAME, layout), active: WORKING_LAYOUT_NAME }
   }

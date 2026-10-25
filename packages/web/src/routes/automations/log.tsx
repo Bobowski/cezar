@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { toast } from '@/components/ui/toaster'
+import { errorText } from '@/lib/error-text'
 import { logTime, resultTone, statusTone, usd, AUTOMATION_COST_VISIBLE } from '@/lib/automation-format'
 import { Link, useNavigate } from '@/lib/project-router'
 import {
@@ -63,7 +64,7 @@ export function AutomationLog({ automationId, automation, timeZone, onBack }: {
   const retry = useMutation({
     mutationFn: (receiptId: string) => retryAutomationReceipt(receiptId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey }),
-    onError: (error) => toast(error instanceof Error ? error.message : String(error), { tone: 'danger' }),
+    onError: (error) => toast(errorText(error), { tone: 'danger' }),
   })
 
   const zone = timeZone ?? 'UTC'

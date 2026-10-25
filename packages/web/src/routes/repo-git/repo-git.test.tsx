@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createQueryClient } from '@/api/query-client'
@@ -21,7 +21,10 @@ import type {
 import { Toaster, resetToasts } from '@/components/ui/toaster'
 import { ShellWithSidebar } from '@/test/shell-with-sidebar'
 
+import type { ContextSidebarFrame } from '@/components/context-sidebar'
+
 import { RepoGitRoute } from './repo-git'
+import { clampRepoSidebarWidth, REPO_WIDTH_SAVE_DEBOUNCE_MS, repoLayoutOf, useRepoSidebarFrame } from './repo-sidebar-frame'
 
 beforeEach(() => {
   // Radix menus, popovers and the Select in jsdom: floating-ui wants a ResizeObserver, and the
@@ -249,11 +252,19 @@ function renderAt(entry: string) {
         </Routes>
         </ShellWithSidebar>
         <Toaster />
+        <SearchProbe />
       </MemoryRouter>
     </QueryClientProvider>,
   )
   return client
 }
+
+/** The query string, so a selection can be proven to live in the URL. */
+function SearchProbe() {
+  const location = useLocation()
+  return <output data-testid="search">{location.search}</output>
+}
+const search = () => screen.getByTestId('search').textContent ?? ''
 
 const sidebar = () => document.querySelector<HTMLElement>('[data-slot="context-sidebar-body"]')!
 /** The titles of the empty/error states on screen (shadcn `Empty`: a title, not a heading). */
@@ -1298,5 +1309,83 @@ describe('the repo view sync strip', () => {
       expect(document.querySelector('[data-branch="feature"] [data-slot="branch-tracking"]')?.textContent).toBe('local only'),
     )
     expect(document.querySelector('[data-branch="main"] [data-sync="ahead"]')?.textContent).toBe('↑1')
+  })
+})
+
+// ---- the sidebar keeps its place (spec 2026-10-24-cockpit-polish §3.1) -------------------------
+
+describe('the Git sidebar keeps its place', () => {
+  it('restores the picked branch from ?ref= and writes a new pick back to it', async () => {
+    stubFetch()
+    renderAt('/git/branches?ref=feature')
+    await waitFor(() => expect(document.querySelector('[data-slot="branch-row"][data-branch="feature"]')).not.toBeNull())
+    expect(document.querySelector('[data-slot="branch-row"][data-branch="feature"]')?.getAttribute('data-state')).toBe('selected')
+    fireEvent.click(within(sidebar()).getByTitle('main'))
+    await waitFor(() => expect(search()).toBe('?ref=main'))
+    expect(document.querySelector('[data-slot="branch-row"][data-branch="main"]')?.getAttribute('data-state')).toBe('selected')
+  })
+
+  it('restores the revealed Graph commit from ?ref=', async () => {
+    stubFetch()
+    renderAt(`/git/graph?ref=${'b'.repeat(40)}`)
+    await waitFor(() => expect(document.querySelectorAll('[data-slot="graph-row"]')).toHaveLength(3))
+    expect(document.querySelector(`[data-slot="graph-row"][data-sha="${'b'.repeat(40)}"]`)?.getAttribute('data-state')).toBe('selected')
+  })
+
+  it('keeps the picked Changes file in ?file=, beside the other keys', async () => {
+    stubFetch()
+    renderAt('/git?keep=1')
+    await waitFor(() => expect(document.querySelectorAll('[data-slot="index-file"]')).toHaveLength(2))
+    fireEvent.click(within(sidebar()).getByTitle('notes.md'))
+    await waitFor(() => expect(new URLSearchParams(search()).get('file')).toBe('unstaged:notes.md'))
+    expect(new URLSearchParams(search()).get('keep')).toBe('1')
+  })
+
+  it('reads its width and fold from the project ui-state, and writes a drag back once it rests', async () => {
+    const sent = stubFetch({ 'GET /api/v1/ui-state': () => jsonResponse({ repo: { width: 340, collapsed: false } }) })
+    let frame: ContextSidebarFrame | null = null
+    function Probe() {
+      frame = useRepoSidebarFrame()
+      return null
+    }
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <Probe />
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(frame?.width).toBe(340))
+    act(() => frame!.onWidthChange(400))
+    act(() => frame!.onWidthChange(410))
+    // The column follows at once (the cache), long before the write goes out.
+    await waitFor(() => expect(frame!.width).toBe(410))
+    expect(sent.filter((request) => request.method === 'PUT')).toHaveLength(0)
+    await waitFor(() =>
+      expect(sent.filter((request) => request.method === 'PUT').map((request) => request.body)).toEqual([
+        { repo: { width: 410, collapsed: false } },
+      ]),
+    )
+    act(() => frame!.onCollapsedChange(true))
+    await waitFor(() => expect(sent.filter((request) => request.method === 'PUT').at(-1)?.body).toEqual({ repo: { width: 410, collapsed: true } }))
+    expect(REPO_WIDTH_SAVE_DEBOUNCE_MS).toBeGreaterThan(0)
+  })
+
+  it('salvages a stored layout and clamps a width to the bounds', () => {
+    expect(repoLayoutOf(undefined)).toEqual({ width: 288, collapsed: false })
+    expect(repoLayoutOf({ repo: { width: 5_000, collapsed: true } } as never)).toEqual({ width: 560, collapsed: true })
+    expect(clampRepoSidebarWidth('nope')).toBe(288)
+    expect(clampRepoSidebarWidth(100)).toBe(220)
+  })
+
+  it('folds to one icon per section, the current one marked', async () => {
+    stubFetch()
+    renderAt('/git/commits')
+    await waitFor(() => expect(document.querySelector('[data-slot="repo-icon-rail"]')).not.toBeNull())
+    const rail = document.querySelector('[data-slot="repo-icon-rail"]') as HTMLElement
+    expect([...rail.querySelectorAll('a')].map((a) => [a.getAttribute('aria-label'), a.getAttribute('aria-current')])).toEqual([
+      ['Changes', null], ['Graph', null], ['Commits', 'page'], ['Branches', null], ['Files', null],
+    ])
+    // Hidden unless the column is folded; the full body hides then instead.
+    expect(rail.className).toContain('group-data-[collapsible=icon]:flex')
+    expect(document.querySelector('[data-slot="repo-sidebar-body"]')?.className).toContain('group-data-[collapsible=icon]:hidden')
   })
 })

@@ -213,7 +213,7 @@ export function TrackerSection() {
             </ItemMedia>
             <ItemContent>
               <ItemTitle>
-                {connection.isPending ? 'Loading connection…' : connection.isError ? 'Connection status unavailable.' : 'No tracker connected.'}
+                {connection.isPending ? 'Loading connection…' : connection.isError ? 'Connection status unavailable.' : 'No tracker connected — connect one below.'}
               </ItemTitle>
               <ItemDescription>Configure a provider below, then browse and connect a scope.</ItemDescription>
             </ItemContent>

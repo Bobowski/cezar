@@ -114,6 +114,26 @@ describe('TerminalDrawer — opening', () => {
   })
 })
 
+describe('TerminalDrawer — full screen (cockpit-polish §3.3)', () => {
+  it('the drawer takes the window from its strip and gives it back; the column form leaves that to its window', async () => {
+    getRunTerminal.mockResolvedValue({ available: true, sessions: [session('s-1')] })
+    drawer()
+    await waitFor(() => expect(screen.getByTestId('pane')).not.toBeNull())
+    const frame = () => document.querySelector<HTMLElement>('[data-slot="terminal-drawer"]')!
+    fireEvent.click(screen.getByRole('button', { name: 'Full screen Terminal' }))
+    expect(frame().getAttribute('data-fullscreen')).toBe('true')
+    expect(frame().style.height).toBe('')
+    fireEvent.click(screen.getByRole('button', { name: 'Exit full screen' }))
+    expect(frame().getAttribute('data-fullscreen')).toBeNull()
+    expect(frame().style.height).toBe('320px')
+    cleanup()
+
+    render(<TerminalDrawer runId="r1" height={0} onHeightChange={() => {}} onOpenInBrowser={() => true} fill />)
+    await waitFor(() => expect(screen.getByTestId('pane')).not.toBeNull())
+    expect(screen.queryByRole('button', { name: 'Full screen Terminal' })).toBeNull()
+  })
+})
+
 describe('TerminalDrawer — Stop', () => {
   it('sends Ctrl-C and KEEPS the tab', async () => {
     getRunTerminal.mockResolvedValue({ available: true, sessions: [session('s-1', { busy: true })] })

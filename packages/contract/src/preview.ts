@@ -106,6 +106,27 @@ export type DesignDraftPick = z.infer<typeof designDraftPickSchema>;
 export const designDraftsResponseSchema = z.object({ picks: z.array(designDraftPickSchema) });
 export type DesignDraftsResponse = z.infer<typeof designDraftsResponseSchema>;
 
+/**
+ * The preview gateway's own answer on `PREVIEW_HMR_STATUS_PATH` (spec 2026-10-24-cockpit-polish
+ * §3.2) — served on the GATEWAY's port with the viewer's preview cookie, not a cezar API route.
+ * `connected`: the page's hot-reload socket came up through the gateway. `blocked`: it failed, or
+ * Vite's client loaded and no socket came — `server.hmr` points at another port. `none`: no hot
+ * reload, so the Preview reloads the page itself when the checkout changes.
+ */
+export const PREVIEW_HMR_STATUS_PATH = '/__cez_preview/hmr';
+export const previewHmrStatusSchema = z.object({ hmr: z.enum(['connected', 'blocked', 'none']) });
+export type PreviewHmrStatus = z.infer<typeof previewHmrStatusSchema>;
+
+/**
+ * `POST /api/v1/preview/hmr-probe` — a LOCAL cockpit's witness for a cross-origin page it frames
+ * directly (spec 2026-10-24-cockpit-polish §3.2): the server GETs the loopback `http://` page once
+ * and looks for a hot-reload client in its HTML. `null`: the page could not be read.
+ */
+export const previewHmrProbeRequestSchema = z.object({ target: z.string().min(1).max(2048) });
+export type PreviewHmrProbeRequest = z.infer<typeof previewHmrProbeRequestSchema>;
+export const previewHmrProbeResponseSchema = z.object({ hmr: z.enum(['connected', 'none']).nullable() });
+export type PreviewHmrProbeResponse = z.infer<typeof previewHmrProbeResponseSchema>;
+
 /** `PUT /repo/design-drafts` — replace them; an empty list clears them. */
 export const setDesignDraftsInputSchema = z.object({ picks: z.array(designDraftPickSchema).max(DESIGN_DRAFTS_MAX) });
 export type SetDesignDraftsInput = z.infer<typeof setDesignDraftsInputSchema>;

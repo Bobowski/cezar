@@ -4,6 +4,7 @@ import { readRunTerminal, resizeRunTerminal, writeRunTerminal } from '@/api/clie
 import { useHostTransport } from '@/api/host-usage'
 import { subscribeTopic } from '@/api/ws'
 import type { TerminalOutput, TerminalSession } from '@open-mercato/cezar-api-client'
+import { declineEscape, isFullscreenKey } from '@/components/fullscreen-region'
 import { attachTerminalLinks } from '@/components/terminal/attach-links'
 import { CompletionController, type CompletionSources, type CompletionView, type PromptState } from '@/components/terminal/completion'
 import { CompletionPopover, type PopoverPlace } from '@/components/terminal/completion-popover'
@@ -70,7 +71,19 @@ export interface TerminalIo {
 
 /** What a pane needs to know about its session. `topic: null` is a session that will produce
  *  nothing more (a stopped service's kept output): it is read once and never polled. */
-export type TerminalPaneSession = Pick<TerminalSession, 'id' | 'exitCode'> & { topic: string | null }
+export type TerminalPaneSession = Pick<TerminalSession, 'id' | 'exitCode'> & { topic: string | null } & Partial<Pick<TerminalSession, 'label' | 'busy'>>
+
+/** Agent CLIs whose own Esc means "interrupt": they draw inline, not on the alternate screen. */
+const AGENT_CLIS = new Set(['claude', 'codex', 'opencode'])
+
+/** The session's running program is a known agent CLI (`claude`, or `node …/claude`), per the server's process table. */
+export function agentInForeground(session: Pick<TerminalPaneSession, 'label' | 'busy'>): boolean {
+  if (session.busy !== true || !session.label) return false
+  const name = (word: string | undefined) => (word ?? '').replace(/^.*[\\/]/, '').replace(/\.(exe|cmd|m?js)$/i, '').toLowerCase()
+  const [head, next] = session.label.trim().split(/\s+/)
+  if (AGENT_CLIS.has(name(head))) return true
+  return /^(node|bun|deno)$/.test(name(head)) && AGENT_CLIS.has(name(next))
+}
 
 /** The Code terminal's completion (spec 2026-10-24-code-page-terminal §3.3): what to offer, who
  *  to tell when a line was submitted, and whether a session's shell sits at its prompt. */
@@ -124,6 +137,9 @@ export function TerminalPane({
   const fitRef = useRef<(() => void) | null>(null)
   const focusRef = useRef<(() => void) | null>(null)
   const cursorRef = useRef(0)
+  // Read by the key handler, which is bound once per mount.
+  const agentRef = useRef(false)
+  agentRef.current = agentInForeground(session)
 
   /**
    * The emulator is mounted and can be written to.
@@ -228,6 +244,16 @@ export function TerminalPane({
         if (event.type !== 'keydown') return true
         if (controller && !controller.key(event)) {
           event.preventDefault()
+          return false
+        }
+        // Full screen's keys (cockpit-polish §3.3): `false` lets them bubble to the region instead of
+        // xterm sending them to the PTY. Esc only where no program drew a screen of its own, and
+        // never under an agent CLI, whose Esc interrupts it: there F11 or the control leaves.
+        if (isFullscreenKey(event)) return false
+        if (
+          event.key === 'Escape' && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey &&
+          term.buffer.active.type !== 'alternate' && !agentRef.current && declineEscape(event, host)
+        ) {
           return false
         }
         if (!event.metaKey && !event.ctrlKey) return true

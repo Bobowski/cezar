@@ -6,13 +6,16 @@ import {
   GlobeIcon,
   MousePointerClickIcon,
   PlusIcon,
+  RefreshCwIcon,
   RotateCwIcon,
   TriangleAlertIcon,
   XIcon,
 } from 'lucide-react'
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 
-import { openDesignProxy, openPreviewGateway } from '@/api/client'
+import { PREVIEW_HMR_STATUS_PATH, previewHmrStatusSchema, type PreviewHmrStatus } from '@open-mercato/cezar-api-client'
+import { openDesignProxy, openPreviewGateway, probePreviewHmr } from '@/api/client'
+import type { CodeTree } from '@/api/code'
 import { useHealth } from '@/api/queries'
 import { CenteredState } from '@/components/centered-state'
 import { gatewayHref } from '@/components/terminal/gateway'
@@ -24,6 +27,7 @@ import { cn } from '@/lib/utils'
 
 import { parseDesignPick, withSourceUnder, type NewDesignPick } from '../task-thread/design-picks'
 
+import { CheckoutChangesListener } from './checkout-changes'
 import { FullViewExit } from './maximize'
 
 import {
@@ -63,6 +67,17 @@ import {
  *  server can take a while to answer its first request. */
 const LOAD_TIMEOUT_MS = 12_000
 
+/** Auto-reload waits for the checkout to be quiet this long (cockpit-polish §3.2). */
+export const RELOAD_SETTLE_MS = 1_500
+/** At most this many auto-reloads per window; past it Auto-reload pauses until resumed. */
+export const AUTO_RELOAD_BRAKE_COUNT = 3
+export const AUTO_RELOAD_BRAKE_WINDOW_MS = 30_000
+/** After `load`, how long a hot-reload client gets to connect before the gateway is asked. */
+export const HMR_PROBE_DELAY_MS = 2_000
+/** A server read that could not tell (the page was not up yet) is retried this often, this many times. */
+export const HMR_SERVER_PROBE_RETRY_MS = 2_000
+export const HMR_SERVER_PROBE_RETRIES = 3
+
 /** Hosts that mean "the machine cezar runs on". Framing one of these from a remote cockpit would
  *  resolve on the VIEWER's machine instead — a different computer entirely. */
 const LOOPBACK = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?|.+\.local)$/i
@@ -84,7 +99,15 @@ export function BrowserView({
   onGateway,
   emptySubtitle,
   reloadSignal = 0,
+  liveTree,
 }: {
+  /**
+   * The checkout behind the page (spec 2026-10-24-cockpit-polish §3.2). Given, the bar offers
+   * **Auto-reload** — on for a page with no working hot reload (or, locally, none that can be
+   * seen), off where one was seen — and while it is on, a change on disk reloads the page once
+   * the changes settle.
+   */
+  liveTree?: CodeTree
   state: BrowserState
   /** Persisted into the column (spec §7). Called only for changes worth keeping — a successful
    *  load, a tab opened or closed — never for a failed attempt. */
@@ -477,6 +500,130 @@ export function BrowserView({
     setReloadToken((token) => token + 1)
   }, [reloadSignal])
 
+  /**
+   * Live preview (cockpit-polish §3.2). `hmr` is what the preview gateway saw of this page's
+   * hot-reload socket 2 s after it loaded — or, on a local cockpit that frames the page directly,
+   * what the frame's own document shows of a hot-reload client where same-origin lets it be read
+   * (`frameHmr`); null where nobody can tell. Unknown on a local loopback page counts as no hot
+   * reload (§6): Auto-reload starts on there. The user's own choice outlives a reload.
+   */
+  const [hmr, setHmr] = useState<PreviewHmrStatus['hmr'] | null>(null)
+  const [autoChoice, setAutoChoice] = useState<boolean | null>(null)
+  const unobservedLocal = hmr === null && !remoteLoopback && isLoopback(target)
+  const autoReload = autoChoice ?? (hmr === 'none' || hmr === 'blocked' || unobservedLocal)
+  const live = liveTree !== undefined
+  /** Moves with the checkout (`CheckoutChangesListener`, below), listened for only while it
+   *  would reload something. */
+  const [changeSignal, setChangeSignal] = useState(0)
+  // A remounted listener starts again from 0: only a step UP is a change.
+  const listened = useRef(0)
+  const onCheckoutCount = useCallback((count: number) => {
+    if (count > listened.current) setChangeSignal((value) => value + 1)
+    listened.current = count
+  }, [])
+  // Per address, not per load: a reload through the gateway carries a fresh ticket every time.
+  useEffect(() => setHmr(null), [target])
+  const probe = useRef<{ timer: ReturnType<typeof setTimeout>; abort: AbortController } | null>(null)
+  const stopProbe = () => {
+    if (!probe.current) return
+    clearTimeout(probe.current.timer)
+    probe.current.abort.abort()
+    probe.current = null
+  }
+  useEffect(() => stopProbe, [])
+  const probeHmr = (origin: string | null) => {
+    stopProbe()
+    if (!live || origin === null) return
+    const abort = new AbortController()
+    const timer = setTimeout(() => {
+      fetch(`${origin}${PREVIEW_HMR_STATUS_PATH}`, { credentials: 'include', signal: abort.signal, cache: 'no-store' })
+        .then((response) => (response.ok ? response.json() : null))
+        .then((body: unknown) => {
+          const parsed = previewHmrStatusSchema.safeParse(body)
+          if (parsed.success) setHmr(parsed.data.hmr)
+        })
+        .catch(() => {})
+    }, HMR_PROBE_DELAY_MS)
+    probe.current = { timer, abort }
+  }
+  // Read by the frame's `load` handler, which is memoised on the tab state alone.
+  const probeLoaded = useRef(() => {})
+  /** The address the server has answered for; set only on an answer, so a dev server still booting is asked again. */
+  const serverProbed = useRef<string | null>(null)
+  const serverAsk = useRef<{ target: string; timer?: ReturnType<typeof setTimeout> } | null>(null)
+  const stopServerAsk = () => {
+    clearTimeout(serverAsk.current?.timer)
+    serverAsk.current = null
+  }
+  useEffect(() => stopServerAsk, [])
+  probeLoaded.current = () => {
+    probeHmr(gatewayOrigin)
+    // Framed directly (a local cockpit): the page's own document, where same-origin lets it be
+    // read; else the server reads its HTML, once per address.
+    if (!live || gatewayOrigin !== null || remoteLoopback) return
+    const seen = frameHmr(frameRef.current)
+    if (seen !== null || !isLoopback(target)) return setHmr(seen)
+    if (serverProbed.current === target || serverAsk.current?.target === target) return
+    stopServerAsk()
+    const asked = target
+    const ask: { target: string; timer?: ReturnType<typeof setTimeout> } = { target: asked }
+    serverAsk.current = ask
+    const attempt = (retriesLeft: number) => {
+      Promise.resolve()
+        .then(() => probePreviewHmr({ target: asked }))
+        .then(
+          (answer) => answer.hmr,
+          () => null,
+        )
+        .then((answer) => {
+          if (serverAsk.current !== ask) return
+          if (answer !== null) {
+            serverProbed.current = asked
+            serverAsk.current = null
+            if (reloadTarget.current === asked) setHmr(answer)
+          } else if (retriesLeft > 0) ask.timer = setTimeout(() => attempt(retriesLeft - 1), HMR_SERVER_PROBE_RETRY_MS)
+          else serverAsk.current = null
+        })
+    }
+    attempt(HMR_SERVER_PROBE_RETRIES)
+  }
+
+  // The loop brake: a page whose own load writes into the checkout would reload forever.
+  const [braked, setBraked] = useState(false)
+  const autoReloads = useRef<number[]>([])
+  const resumeAutoReload = () => {
+    autoReloads.current = []
+    setBraked(false)
+  }
+  useEffect(() => {
+    autoReloads.current = []
+    setBraked(false)
+  }, [target])
+
+  // A change reloads the page once the checkout has been quiet for a moment.
+  const armed = useRef(false)
+  armed.current = live && autoReload && !braked && target !== ''
+  const lastChange = useRef(changeSignal)
+  useEffect(() => {
+    if (changeSignal === lastChange.current) return
+    lastChange.current = changeSignal
+    if (!armed.current) return
+    const timer = setTimeout(() => {
+      if (!armed.current) return
+      const at = Date.now()
+      const recent = autoReloads.current.filter((stamp) => at - stamp < AUTO_RELOAD_BRAKE_WINDOW_MS)
+      if (recent.length >= AUTO_RELOAD_BRAKE_COUNT) {
+        autoReloads.current = recent
+        setBraked(true)
+        return
+      }
+      autoReloads.current = [...recent, at]
+      setStatus('loading')
+      setReloadToken((token) => token + 1)
+    }, RELOAD_SETTLE_MS)
+    return () => clearTimeout(timer)
+  }, [changeSignal])
+
   // A page that never fires `load` is the only failure an embedder can detect at all.
   useEffect(() => {
     if (status !== 'loading' || target === '' || refused) return
@@ -534,6 +681,7 @@ export function BrowserView({
   const onLoaded = useCallback(() => {
     if (target === '') return
     setStatus('idle')
+    probeLoaded.current()
     // An address past the host's cap is shown but not kept: storing it would fail every later
     // save of this task's layouts.
     if (tabs[active] !== target && target.length <= MAX_TAB_URL_LENGTH) {
@@ -577,6 +725,9 @@ export function BrowserView({
 
   return (
     <div data-slot="browser-view" className="flex h-full min-h-0 flex-col">
+      {liveTree ? (
+        <CheckoutChangesListener tree={liveTree} enabled={autoReload && !braked && target !== ''} onCount={onCheckoutCount} />
+      ) : null}
       {singleTab ? null : (
       <Tabs
         value={String(active)}
@@ -696,6 +847,29 @@ export function BrowserView({
             </datalist>
           ) : null}
         </form>
+        {live ? (
+          <Button
+            type="button"
+            data-slot="browser-auto-reload"
+            data-hmr={hmr ?? 'unknown'}
+            variant={autoReload ? 'secondary' : 'ghost'}
+            size="sm"
+            aria-pressed={autoReload}
+            title={
+              hmr === 'connected' ? 'The page hot-reloads itself — reload it on every change anyway?'
+              : autoReload ? 'Reloads the page when the task’s files change'
+              : 'Reload the page when the task’s files change'
+            }
+            onClick={() => {
+              resumeAutoReload()
+              setAutoChoice(!autoReload)
+            }}
+            className="ml-1 shrink-0 text-xs"
+          >
+            <RefreshCwIcon aria-hidden="true" className="size-3.5" />
+            Auto-reload
+          </Button>
+        ) : null}
         {designAllowed ? (
           // The one control in this toolbar that is not navigation, and the only one a user has
           // to be told exists — so it carries its name, and wears the accent while it is on.
@@ -720,6 +894,35 @@ export function BrowserView({
         ) : null}
         {designAllowed ? designToolbar : null}
       </div>
+
+      {live && hmr === 'blocked' ? (
+        // Vite's client dials `server.hmr.port`, which the preview gateway does not forward.
+        <p
+          role="note"
+          data-slot="browser-hmr-hint"
+          className="shrink-0 border-b border-border/70 px-3 py-1.5 text-xs text-pretty text-soft-foreground"
+        >
+          Hot reload is dialing a port the preview does not forward, so this page reloads on change instead. To
+          hot-reload here, let it share the page’s port — in <code className="font-mono">vite.config</code>:{' '}
+          <code className="rounded bg-muted px-1 font-mono text-foreground">{'server: { hmr: { port: undefined, clientPort: undefined } }'}</code>
+        </p>
+      ) : null}
+
+      {live && autoReload && braked ? (
+        <div
+          role="note"
+          data-slot="browser-auto-reload-paused"
+          className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/70 px-3 py-1.5 text-xs text-soft-foreground"
+        >
+          <span className="min-w-0 flex-1">
+            Auto-reload paused: the page kept changing ({AUTO_RELOAD_BRAKE_COUNT} reloads in{' '}
+            {AUTO_RELOAD_BRAKE_WINDOW_MS / 1_000} s).
+          </span>
+          <Button type="button" variant="outline" size="xs" data-slot="browser-auto-reload-resume" onClick={resumeAutoReload}>
+            Resume
+          </Button>
+        </div>
+      ) : null}
 
       {refusal ? (
         <div
@@ -1034,6 +1237,26 @@ export function designOrigin(url: string): string | null {
 }
 
 const DESIGN_HOSTS = /^(localhost|127\.0\.0\.1|\[::1\])$/i
+
+/**
+ * A directly framed page's hot-reload client, read from its own document (cockpit-polish §3.2):
+ * Vite's `/@vite/client`, Next's development `__NEXT_DATA__`, webpack-dev-server's client.
+ * `none` for a readable page with none of them; null for a cross-origin one nobody can read.
+ */
+export function frameHmr(frame: HTMLIFrameElement | null): PreviewHmrStatus['hmr'] | null {
+  try {
+    const win = frame?.contentWindow as (Window & Record<string, unknown>) | null | undefined
+    const doc = win?.document
+    if (!win || !doc) return null
+    if (doc.querySelector('script[src*="/@vite/client"]') || '__vite_plugin_react_preamble_installed__' in win) return 'connected'
+    if ((win.__NEXT_DATA__ as { buildId?: unknown } | undefined)?.buildId === 'development') return 'connected'
+    if ('__webpack_dev_server_client__' in win) return 'connected'
+    return 'none'
+  } catch {
+    // Cross-origin: the browser will not let anyone look.
+    return null
+  }
+}
 
 export function isLoopback(url: string): boolean {
   try {

@@ -45,6 +45,18 @@ const chordOf = (id: string) =>
   document.querySelector<HTMLButtonElement>(`[data-command-id="${id}"] [data-slot="shortcut-chord"]`)!
 
 describe('Settings → Keyboard', () => {
+  it('lists every page’s own shortcuts, as this surface spells them (cockpit-polish §3.4 item 5)', () => {
+    renderSection()
+    const pages = [...document.querySelectorAll('[data-slot="page-shortcuts"] [data-page]')].map((section) => section.getAttribute('data-page'))
+    expect(pages).toEqual(['Everywhere', 'Task', 'Code', 'Git'])
+    const row = (page: string, label: string) =>
+      [...document.querySelectorAll(`[data-page="${page}"] [data-slot="page-shortcut-row"]`)].find((each) => each.textContent?.startsWith(label))
+    // A Mac: F11 is ⌃⌘F, ⌘ for Mod; closing an editor is ⌥W on every surface.
+    expect(row('Everywhere', 'Full screen')?.textContent).toContain('⌃⌘F')
+    expect(row('Code', 'Close editor')?.textContent).toBe('Close editor⌥W')
+    expect(row('Everywhere', 'New task')?.textContent).toBe('New taskC')
+  })
+
   it('lists the shipped defaults', async () => {
     renderSection()
     await waitFor(() => expect(chordOf('terminal-column').textContent).toBe('⌘/'))

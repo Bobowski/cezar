@@ -11,6 +11,7 @@ import { Activity, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useS
 import { useNavigationType, useParams } from 'react-router'
 
 import { ApiError } from '@/api/client'
+import type { CodeTree } from '@/api/code'
 import { useHealth, useMarkRunSeen, useRun } from '@/api/queries'
 import { useRunHistory } from '@/api/run-history'
 import type { ApiRun } from '@open-mercato/cezar-api-client'
@@ -71,9 +72,10 @@ import { RunAppPanel } from './run-app'
 import { stripEntries, stripTabs, useStripKeyHints } from './strip'
 import { useSavedLayouts } from './use-saved-layouts'
 import { useWorkspaceLayouts } from './use-workspace-layouts'
+import { useBrowserColumnShare } from './browser-share'
 import { AvailableViewsContext } from './view-picker'
 import { ViewDropZones } from './view-drop-zones'
-import { WorkspaceColumns, type ColumnActions } from './workspace-columns'
+import { WorkspaceColumns, createWindowKeys, type ColumnActions, type WindowKeys } from './workspace-columns'
 
 /** Lazy: xterm is the heaviest thing on this screen, and most visits never open a shell. */
 const TerminalDrawer = lazy(() =>
@@ -166,7 +168,11 @@ function WorkspaceView({
   deepLinkView?: ViewId
   onMarkedUnread: (runId: string) => void
 }) {
-  const layouts = useWorkspaceLayouts(run.id)
+  const browserShare = useBrowserColumnShare()
+  const layouts = useWorkspaceLayouts(run.id, browserShare.share)
+  // A divider drag that sized a Browser is remembered for the next one (cockpit-polish §3.2).
+  const { observe: observeBrowserShare, markResized } = browserShare
+  useEffect(() => observeBrowserShare(layouts.layout?.columns), [layouts.layout?.columns, observeBrowserShare])
   const { openDeepLink, addLayout, closeLayout, selectLayout, setColumnBrowser, openInBrowser, applySaved, keepAs } = layouts
   // Layouts saved for every task: nothing is saved until the user names one (Layout menu).
   const savedLayouts = useSavedLayouts()
@@ -311,7 +317,25 @@ function WorkspaceView({
     [besideItself, dropView, layouts.layout?.columns.length],
   )
   const columnCount = layouts.layout?.columns.length ?? 0
-  const closeColumnByDrop = fixedActive === null && columnCount > 1 ? layouts.closeColumn : undefined
+  // Each kept layout's window keys, held here so a close from outside its columns (a header
+  // dropped on the card strip, "Move to bottom") moves the keys as the close button does.
+  const windowKeys = useRef(new Map<string, WindowKeys>())
+  const keysFor = useCallback((name: string) => {
+    const byLayout = windowKeys.current
+    let keys = byLayout.get(name)
+    if (!keys) byLayout.set(name, (keys = createWindowKeys()))
+    return keys
+  }, [])
+  const activeLayoutName = layouts.state.active
+  const { closeColumn: closeLayoutColumn } = layouts
+  const closeColumn = useCallback(
+    (index: number) => {
+      keysFor(activeLayoutName).close(index)
+      closeLayoutColumn(index)
+    },
+    [activeLayoutName, closeLayoutColumn, keysFor],
+  )
+  const closeColumnByDrop = fixedActive === null && columnCount > 1 ? closeColumn : undefined
 
   // The drawer: browser-local open + height, per task (spec §6). Read during render on a changed
   // task id, so run A's drawer never carries into run B.
@@ -356,7 +380,6 @@ function WorkspaceView({
   const toggleDrawer = useCallback(() => {
     if (!terminalColumnShown) updateDrawer({ open: !drawerOpen })
   }, [drawerOpen, terminalColumnShown, updateDrawer])
-  const { closeColumn } = layouts
   const terminalColumns = layouts.layout?.columns
   const moveTerminalToDrawer = useCallback(() => {
     updateDrawer({ open: true })
@@ -566,7 +589,10 @@ function WorkspaceView({
         fixedActive === null ? layouts.addColumn : (view: ViewId) => dropView(view, columnCount, 'insert'),
       closeColumn: layouts.closeColumn,
       setColumnView: requestColumnView,
-      resizeColumns: layouts.resizeColumns,
+      resizeColumns: (index: number, delta: number) => {
+        markResized()
+        layouts.resizeColumns(index, delta)
+      },
       moveColumn: layouts.moveColumn,
     }),
     [
@@ -577,6 +603,7 @@ function WorkspaceView({
       layouts.closeColumn,
       requestColumnView,
       layouts.resizeColumns,
+      markResized,
       layouts.moveColumn,
     ],
   )
@@ -664,6 +691,8 @@ function WorkspaceView({
   const designNotes = useDesignNotes(run)
   const { addDraft, discard: discardNote, note: noteFor, marks: designMarks } = designNotes
   const sourceRoots = useSourceRoots(run)
+  // The Preview reloads from this checkout's changes (cockpit-polish §3.2).
+  const liveTree = useMemo<CodeTree>(() => ({ kind: 'run', runId: run.id }), [run.id])
   const escapeNote = useCallback(
     (mark: string) => {
       if (noteFor(mark)?.phase === 'draft') discardNote(mark)
@@ -732,6 +761,7 @@ function WorkspaceView({
             <BrowserView
               state={column.browser ?? emptyBrowserState()}
               onChange={(browser) => setColumnBrowser(index, browser)}
+              liveTree={liveTree}
               onPickElement={addDraft}
               designMarks={designMarks}
               onDesignEscape={escapeNote}
@@ -770,6 +800,7 @@ function WorkspaceView({
       run,
       setColumnBrowser,
       sourceRoots,
+      liveTree,
       terminalAllowed,
       projectId,
       terminalColumnShown,
@@ -835,6 +866,7 @@ function WorkspaceView({
                   actions={actions}
                   renderView={renderView}
                   headerExtras={headerExtras}
+                  windowKeys={keysFor(layout.name)}
                 />
               ))
             ) : (
@@ -965,12 +997,14 @@ function KeptLayout({
   actions,
   renderView,
   headerExtras,
+  windowKeys,
 }: {
   layout: WorkspaceLayout
   active: boolean
   actions: ColumnActions
   renderView: (view: ViewId, index: number, column: WorkspaceColumn, layoutName: string) => ReactNode
   headerExtras?: (view: ViewId, index: number) => ReactNode
+  windowKeys: WindowKeys
 }) {
   const name = layout.name
   const render = useCallback(
@@ -986,6 +1020,7 @@ function KeptLayout({
           actions={actions}
           renderView={render}
           headerExtras={headerExtras}
+          windowKeys={windowKeys}
         />
       </div>
     </Activity>

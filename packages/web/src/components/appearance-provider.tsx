@@ -4,6 +4,7 @@ import * as React from 'react'
 import { putWorkspaceUiState } from '@/api/client'
 import { useWorkspaceUiState, workspaceQueryKeys } from '@/api/queries'
 import { toast } from '@/components/ui/toaster'
+import { errorText } from '@/lib/error-text'
 import {
   applyAppearance,
   normalizeAppearance,
@@ -73,7 +74,7 @@ export function AppearanceProvider({ children }: { children: React.ReactNode }) 
       putWorkspaceUiState({ appearance: next })
         .then((merged) => queryClient.setQueryData(workspaceQueryKeys.uiState, merged))
         .catch((error: unknown) => {
-          toast(error instanceof Error ? error.message : String(error), { tone: 'danger' })
+          toast(errorText(error), { tone: 'danger' })
           // Fall back to the server's truth rather than keep painting an unsaved choice.
           void queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.uiState })
         })

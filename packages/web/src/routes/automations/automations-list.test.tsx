@@ -47,6 +47,9 @@ describe('AutomationsList', () => {
 
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Automations')
     expect(screen.getByText('Loading automations…')).toBeTruthy()
+    // Rows on their way, not a spinner (cockpit-polish §3.4 item 6).
+    expect(document.querySelector('[data-slot="list-skeleton"][aria-busy="true"]')?.querySelectorAll('[data-slot="skeleton"]').length).toBe(5)
+    expect(document.querySelector('[data-slot="spinner"], .animate-spin')).toBeNull()
     expect(status()).toBeNull()
     expect(document.querySelector('[data-slot="automations-table"]')).toBeNull()
   })

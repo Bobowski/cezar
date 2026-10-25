@@ -7,6 +7,7 @@ import { getAutomationWebhook, pingAutomationWebhook, registerAutomationWebhook,
 import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { toast } from '@/components/ui/toaster'
+import { errorText } from '@/lib/error-text'
 import { logTime } from '@/lib/automation-format'
 
 export const automationWebhookQueryKey = () => [queryScope(), 'automation-webhook'] as const
@@ -24,7 +25,7 @@ export function WebhookCard({ timeZone }: { timeZone: string }) {
     queryFn: ({ signal }) => getAutomationWebhook({ signal }),
   })
   const settle = (data: { webhook: AutomationWebhook }) => queryClient.setQueryData(automationWebhookQueryKey(), data)
-  const fail = (error: unknown) => toast(error instanceof Error ? error.message : String(error), { tone: 'danger' })
+  const fail = (error: unknown) => toast(errorText(error), { tone: 'danger' })
   const register = useMutation({ mutationFn: registerAutomationWebhook, onSuccess: (data) => { settle(data); toast('Webhook registered — GitHub sends a ping now.') }, onError: fail })
   const ping = useMutation({ mutationFn: pingAutomationWebhook, onSuccess: settle, onError: fail })
   const remove = useMutation({ mutationFn: removeAutomationWebhook, onSuccess: settle, onError: fail })

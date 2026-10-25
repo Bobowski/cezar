@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button'
 import { IconTooltip } from '@/components/ui/icon-tooltip'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from '@/components/ui/toaster'
+import { errorText } from '@/lib/error-text'
 import { cn } from '@/lib/utils'
 import { ServiceLog, ServiceRow } from '@/routes/services/services'
 import { TerminalPane, type TerminalCompletion, type TerminalIo } from '@/routes/task-workspace/terminal-pane'
@@ -131,7 +132,7 @@ function TerminalTab({
         await queryClient.invalidateQueries({ queryKey: key })
         await writeCodeTerminal(tree, session.id, `${command}\r`)
       })
-      .catch((error: unknown) => toast(error instanceof Error ? error.message : String(error), { tone: 'danger' }))
+      .catch((error: unknown) => toast(errorText(error), { tone: 'danger' }))
   }
   const [current, setCurrent] = useState<string | null>(initial)
   // A session handed in from outside is already open: no empty-panel shell on top of it.

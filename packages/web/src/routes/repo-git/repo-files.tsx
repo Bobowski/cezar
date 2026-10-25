@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import { ApiError } from '@/api/client'
 import { useRepoTree } from '@/api/queries'
-import { ContextSidebar } from '@/components/context-sidebar'
+
 import { PageBody } from '@/components/page'
 import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group'
 import { SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel } from '@/components/ui/sidebar'
@@ -14,7 +14,7 @@ import { buildPathTree, type PathTreeDir } from '../task-git/file-tree'
 import { isImagePath } from '../task-git/worktree-files'
 import { matchPaths } from './match-paths'
 import { RepoEmpty } from './repo-empty'
-import { OpenSidebarButton, useCloseSidebarSheet } from './repo-sidebar'
+import { OpenSidebarButton, RepoContextSidebar, useCloseSidebarSheet } from './repo-sidebar'
 
 /**
  * `/git/files` — the project repository's own file browser (spec
@@ -59,7 +59,7 @@ export function RepoFilesSection({
 
   return (
     <section data-slot="repo-files" className="flex min-h-0 flex-1 flex-col">
-      <ContextSidebar>
+      <RepoContextSidebar tab="files">
         {header}
         <SidebarContent>
           <SidebarGroup className="pt-0">
@@ -94,7 +94,7 @@ export function RepoFilesSection({
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
-      </ContextSidebar>
+      </RepoContextSidebar>
 
       {tree.isPending ? null : tree.isError ? (
         <RepoEmpty
@@ -457,7 +457,7 @@ function DirRow({
       onContextMenu={onContextMenu}
       data-drop-target={dropTarget ? 'true' : undefined}
       {...drop}
-      className={cn('flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-muted-foreground hover:bg-sidebar-accent hover:text-foreground focus:bg-muted focus:outline-none', dropTarget && 'bg-sidebar-accent text-foreground ring-1 ring-ring')}
+      className={cn('flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-muted-foreground hover:bg-sidebar-accent hover:text-foreground focus:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring', dropTarget && 'bg-sidebar-accent text-foreground ring-1 ring-ring')}
       style={indent(row.level, 6)}
     >
       <ChevronRightIcon
@@ -514,7 +514,7 @@ function FileRow({
       } : undefined}
       {...drop}
       className={cn(
-        'flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-sidebar-accent focus:outline-none',
+        'flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-sidebar-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring',
         active ? 'bg-sidebar-accent font-medium text-foreground' : 'text-muted-foreground hover:text-foreground',
       )}
       style={indent(row.level, 24)}

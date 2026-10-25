@@ -10,6 +10,7 @@ import {
 import type { WorkspaceUiState } from '@open-mercato/cezar-api-client'
 import { ProviderBanner } from '@/components/provider-banner'
 import { toast } from '@/components/ui/toaster'
+import { errorText } from '@/lib/error-text'
 import {
   mergeProviderAuthDismissals,
   providerAuthDismissals,
@@ -69,7 +70,7 @@ export function ProviderBannerContainer() {
               queryClient.setQueryData(key, lastConfirmed.current)
             }
             void queryClient.invalidateQueries({ queryKey: key })
-            toast(error instanceof Error ? error.message : String(error), { tone: 'danger' })
+            toast(errorText(error), { tone: 'danger' })
           }
         } finally {
           pendingWrites.current -= 1

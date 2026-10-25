@@ -22,6 +22,10 @@ export const MCP_TEST_TIMEOUT_MS = 10_000;
 const PROTOCOL_VERSION = '2025-06-18';
 const MAX_PAGES = 5;
 const STDERR_TAIL = 2000;
+/** Unread stdout past this with no line end is not JSON-RPC worth waiting for. */
+const STDOUT_CAP = 64 * 1024;
+/** A literal shorter than this is too common a word to scrub from a reason. */
+const LITERAL_SCRUB_MIN = 8;
 
 export interface ProbeOptions {
   timeoutMs?: number;
@@ -54,7 +58,9 @@ function rpcFailure(message: JsonRpcMessage, method: string): string | null {
 /** Run the handshake against `server`. */
 export async function probeMcpServer(server: PrivateMcpServer, options: ProbeOptions = {}): Promise<McpServerTestResponse> {
   const timeoutMs = options.timeoutMs ?? MCP_TEST_TIMEOUT_MS;
-  const secrets = (options.secrets ?? []).filter((value) => value.length >= 4);
+  // A literal env or header value may be a pasted credential too, not only a resolved secret.
+  const literals = [...Object.values(server.env), ...Object.values(server.headers)].filter((value) => value.length >= LITERAL_SCRUB_MIN);
+  const secrets = [...new Set([...(options.secrets ?? []).filter((value) => value.length >= 4), ...literals])].sort((a, b) => b.length - a.length);
   const scrub = (text: string) => redactSecrets(text, secrets);
   try {
     const result =
@@ -150,6 +156,10 @@ async function probeStdio(server: PrivateMcpServer, timeoutMs: number, source: N
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', (chunk: string) => {
         buffer += chunk;
+        if (buffer.length > STDOUT_CAP && !buffer.includes('\n')) {
+          finish({ ok: false, reason: `the server wrote more than ${STDOUT_CAP / 1024} KiB to stdout without a line end` });
+          return;
+        }
         let newline: number;
         while ((newline = buffer.indexOf('\n')) >= 0) {
           const line = buffer.slice(0, newline).trim();
@@ -241,12 +251,27 @@ async function readRpcResponse(res: Response, id: number): Promise<JsonRpcMessag
   return (await res.json()) as JsonRpcMessage;
 }
 
+/** A fetch that follows redirects only within `origin`, so the configured headers never leave it. */
+async function sameOriginFetch(fetchImpl: typeof fetch, url: string, init: RequestInit, origin: string): Promise<Response> {
+  let target = url;
+  for (let hop = 0; hop < 5; hop += 1) {
+    if (new URL(target).origin !== origin) throw new Error('the server pointed to another origin; its configured headers are not sent there');
+    const res = await fetchImpl(target, { ...init, redirect: 'manual' });
+    const location = res.status >= 300 && res.status < 400 ? res.headers.get('location') : null;
+    if (!location) return res;
+    await res.body?.cancel().catch(() => {});
+    target = new URL(location, target).toString();
+  }
+  throw new Error('the server redirected too many times');
+}
+
 async function probeHttp(server: PrivateMcpServer, timeoutMs: number, fetchImpl: typeof fetch): Promise<McpServerTestResponse> {
   const signal = AbortSignal.timeout(timeoutMs);
   let session: string | null = null;
   let version = PROTOCOL_VERSION;
+  const origin = new URL(server.url!).origin;
   const post = async (payload: unknown) => {
-    const res = await fetchImpl(server.url!, {
+    const res = await sameOriginFetch(fetchImpl, server.url!, {
       method: 'POST',
       signal,
       headers: {
@@ -257,7 +282,7 @@ async function probeHttp(server: PrivateMcpServer, timeoutMs: number, fetchImpl:
         'mcp-protocol-version': version,
       },
       body: JSON.stringify(payload),
-    });
+    }, origin);
     if (!res.ok && res.status !== 202) {
       await res.body?.cancel().catch(() => {});
       throw new Error(res.status === 401 || res.status === 403 ? `the server refused the credentials (${res.status})` : `the server answered ${res.status}`);
@@ -291,7 +316,7 @@ async function probeHttp(server: PrivateMcpServer, timeoutMs: number, fetchImpl:
     return { ok: false, reason: (error as Error).message };
   } finally {
     if (session) {
-      void fetchImpl(server.url!, { method: 'DELETE', headers: { ...server.headers, 'mcp-session-id': session } }).then(
+      void sameOriginFetch(fetchImpl, server.url!, { method: 'DELETE', headers: { ...server.headers, 'mcp-session-id': session } }, origin).then(
         (res) => res.body?.cancel(),
         () => {},
       );
@@ -304,7 +329,8 @@ async function probeSse(server: PrivateMcpServer, timeoutMs: number, fetchImpl: 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetchImpl(server.url!, { headers: { ...server.headers, accept: 'text/event-stream' }, signal: controller.signal });
+    const origin = new URL(server.url!).origin;
+    const res = await sameOriginFetch(fetchImpl, server.url!, { headers: { ...server.headers, accept: 'text/event-stream' }, signal: controller.signal }, origin);
     if (!res.ok || !res.body) return { ok: false, reason: `the server answered ${res.status}` };
     const events = sseEvents(res.body);
     const next = async () => {
@@ -318,12 +344,13 @@ async function probeSse(server: PrivateMcpServer, timeoutMs: number, fetchImpl: 
       if (event.event === 'endpoint') endpoint = new URL(event.data.trim(), server.url).toString();
     }
     const post = async (payload: unknown) => {
-      const sent = await fetchImpl(endpoint!, {
+      // The endpoint is the server's word: it may name any host, and the headers stay on the configured origin.
+      const sent = await sameOriginFetch(fetchImpl, endpoint!, {
         method: 'POST',
         signal: controller.signal,
         headers: { ...server.headers, 'content-type': 'application/json' },
         body: JSON.stringify(payload),
-      });
+      }, origin);
       await sent.body?.cancel().catch(() => {});
       if (!sent.ok) throw new Error(`the server answered ${sent.status}`);
     };

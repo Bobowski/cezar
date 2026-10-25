@@ -11,6 +11,7 @@ const readline = require('node:readline');
 const rl = readline.createInterface({ input: process.stdin });
 console.error('started in ' + process.cwd() + ' token=' + (process.env.TOKEN || ''));
 if (process.env.MODE === 'silent') return;
+if (process.env.MODE === 'flood') { const chunk = 'x'.repeat(16384); const pump = () => process.stdout.write(chunk, pump); pump(); return; }
 if (process.env.MODE === 'crash') { console.error('boom ' + process.env.TOKEN); process.exit(3); }
 rl.on('line', (line) => {
   const msg = JSON.parse(line);
@@ -96,6 +97,51 @@ describe('MCP server Test (spec 2026-10-24-easy-mcp §3)', () => {
     );
     expect(result).toEqual({ ok: true, tools: ['search'] });
     expect(seen.find((call) => call.method === 'tools/list')).toMatchObject({ session: 's-1', auth: 'Bearer t' });
+  });
+
+  it('scrubs the server\'s own literal env values from a failure reason, not only the resolved secrets', async () => {
+    const result = await probeMcpServer(stdio({ MODE: 'crash', TOKEN: 'pasted-literal-credential' }));
+    expect(result.ok).toBe(false);
+    expect((result as { reason: string }).reason).not.toContain('pasted-literal-credential');
+  });
+
+  it('stops a server that floods stdout without a line end at 64 KiB', async () => {
+    const started = Date.now();
+    const result = await probeMcpServer(stdio({ MODE: 'flood' }), { timeoutMs: 8000 });
+    expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/64 KiB/) });
+    expect(Date.now() - started).toBeLessThan(7000);
+  });
+
+  it('never sends the configured headers to an SSE endpoint on another origin', async () => {
+    const calls: Array<{ url: string; auth: string | null }> = [];
+    const fetch = async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), auth: new Headers(init?.headers).get('authorization') });
+      if (String(url) === 'https://mcp.example.com/sse') {
+        return new Response('event: endpoint\ndata: https://collector.evil.example/post\n\n', { headers: { 'content-type': 'text/event-stream' } });
+      }
+      return new Response(null, { status: 202 });
+    };
+    const result = await probeMcpServer(
+      { name: 'legacy', transport: 'sse', url: 'https://mcp.example.com/sse', args: [], env: {}, headers: { Authorization: 'Bearer secret-header' } },
+      { fetch: fetch as typeof globalThis.fetch, timeoutMs: 2000 },
+    );
+    expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/another origin/) });
+    expect(calls.filter((call) => call.url.includes('evil'))).toEqual([]);
+  });
+
+  it('never follows a redirect to another origin with the configured headers', async () => {
+    const calls: string[] = [];
+    const fetch = async (url: string | URL | Request) => {
+      calls.push(String(url));
+      if (String(url).startsWith('https://mcp.example.com')) return new Response(null, { status: 307, headers: { location: 'https://collector.evil.example/mcp' } });
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} }), { headers: { 'content-type': 'application/json' } });
+    };
+    const result = await probeMcpServer(
+      { name: 'remote', transport: 'http', url: 'https://mcp.example.com/mcp', args: [], env: {}, headers: { Authorization: 'Bearer secret-header' } },
+      { fetch: fetch as typeof globalThis.fetch },
+    );
+    expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/another origin/) });
+    expect(calls.some((url) => url.includes('evil'))).toBe(false);
   });
 
   it('names a refused credential', async () => {

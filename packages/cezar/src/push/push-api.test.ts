@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { workspacePushStateSchema, type PushPayload } from '@open-mercato/cezar-contract';
+import { pushEndpointRefusal, workspacePushStateSchema, type PushPayload } from '@open-mercato/cezar-contract';
 import { pushSubscriptionsPath, pushVapidPath } from '../paths.ts';
 import { RunStore } from '../runs/store.ts';
 import { apiRequest } from '../server/loopback-request.testkit.ts';
@@ -14,6 +14,19 @@ import { resetPushStateCache, PushSubscriptionStore } from './state.ts';
 import type { PushOutcome, PushTarget } from './web-push.ts';
 
 /** `/api/v1/workspace/push*` and the run-transition push (spec 2026-10-24-mobile-cockpit §3.5, §4). */
+
+describe('pushEndpointRefusal judges the host the URL parser would connect to', () => {
+  it.each([
+    'https://127.0.0.1%2e/', 'https://10.0.0.1%2e:8080/', 'https://１２７.０.０.１/', 'https://[::ffff:127.0.0.1]/', 'https://[64:ff9b::7f00:1]/',
+    'https://localhost%2e/', 'https://ｌｏｃａｌｈｏｓｔ/', 'https://xn--/', 'https://exa mple.com/',
+  ])('refuses %s', (endpoint) => {
+    expect(pushEndpointRefusal(endpoint)).not.toBeNull();
+  });
+
+  it.each(['https://fcm.googleapis.com/fcm/send/x', 'https://push.example.net./x', 'https://bücher.example/x', 'https://[64:ff9b::808:808]/x'])('accepts %s', (endpoint) => {
+    expect(pushEndpointRefusal(endpoint)).toBeNull();
+  });
+});
 
 const SUBSCRIPTION = {
   endpoint: 'https://push.example.net/send/abc',
@@ -127,11 +140,18 @@ describe('the push API', () => {
     'https://192.168.1.1/x', 'https://169.254.169.254/latest/meta-data', 'https://0.0.0.0/x', 'https://[::1]/x', 'https://[fe80::1]/x',
     'https://[fd00::1]/x', 'https://[::ffff:127.0.0.1]/x', 'https://[::]/x', 'https://localhost/x', 'https://api.localhost/x',
     'https://LOCALHOST./x', 'https://2130706433/x', 'https://0x7f.1/x', 'https://intranet/x', 'https://user@127.0.0.1/x',
+    // What the URL parser normalises to an internal host: percent-encoded and fullwidth forms, mapped and NAT64 IPv6.
+    'https://127.0.0.1%2e/', 'https://10.0.0.1%2e:8080/', 'https://１２７.０.０.１/x', 'https://１０.０.０.１/x', 'https://ｌｏｃａｌｈｏｓｔ/x',
+    'https://localhost%2e/x', 'https://127%2e0%2e0%2e1/x', 'https://[::ffff:7f00:1]/x', 'https://[::ffff:10.0.0.1]/x',
+    'https://[64:ff9b::7f00:1]/', 'https://[64:ff9b::192.168.0.1]/x', 'https://[64:ff9b:1::a00:1]/x', 'https://[2002:7f00:1::]/x',
   ])('refuses a push endpoint on a loopback, private or link-local host: %s', async (endpoint) => {
     expect((await json('POST', '/api/v1/workspace/push/subscribe', { ...SUBSCRIPTION, endpoint })).status).toBe(400);
   });
 
-  it.each(['https://fcm.googleapis.com/fcm/send/abc', 'https://web.push.apple.com/QK', 'https://updates.push.services.mozilla.com/wpush/v2/x', 'https://8.8.8.8/x', 'https://172.32.0.1/x'])(
+  it.each([
+    'https://fcm.googleapis.com/fcm/send/abc', 'https://web.push.apple.com/QK', 'https://updates.push.services.mozilla.com/wpush/v2/x',
+    'https://8.8.8.8/x', 'https://172.32.0.1/x', 'https://bücher.example/x', 'https://[64:ff9b::808:808]/x', 'https://[2606:4700::1111]/x',
+  ])(
     'accepts a public push endpoint: %s', async (endpoint) => {
       expect((await json('POST', '/api/v1/workspace/push/subscribe', { ...SUBSCRIPTION, endpoint })).status).toBe(200);
     },

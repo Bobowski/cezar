@@ -250,37 +250,58 @@ function ipv6Groups(text: string): number[] | null {
   return [...head, ...Array<number>(fill).fill(0), ...rest, ...tail];
 }
 
-/** Unspecified, loopback, unique-local, link-local, site-local, multicast, or a mapped internal IPv4. */
+/** An IPv4 address carried in two IPv6 groups. */
+const embeddedV4Internal = (hi = 0, lo = 0): boolean => ipv4Internal([hi >> 8, hi & 0xff, lo >> 8, lo & 0xff]);
+
+/** Unspecified, loopback, unique-local, link-local, site-local, multicast, or an internal IPv4 inside
+ *  an IPv6 one: mapped, translated, compatible, NAT64 (`64:ff9b::/96`, `64:ff9b:1::/48`) or 6to4. */
 const ipv6Internal = (g: number[]): boolean => {
   const first = g[0] ?? 0;
-  const zeros = (n: number) => g.slice(0, n).every((x) => x === 0);
-  return zeros(8) || (zeros(7) && g[7] === 1) ||
+  const zeros = (from: number, to: number) => g.slice(from, to).every((x) => x === 0);
+  return zeros(0, 8) || (zeros(0, 7) && g[7] === 1) ||
     (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80 || (first & 0xffc0) === 0xfec0 || (first & 0xff00) === 0xff00 ||
-    (zeros(5) && (g[5] === 0xffff || g[5] === 0) && ipv4Internal([(g[6] ?? 0) >> 8, (g[6] ?? 0) & 0xff]));
+    (zeros(0, 5) && (g[5] === 0xffff || g[5] === 0) && embeddedV4Internal(g[6], g[7])) ||
+    (zeros(0, 4) && g[4] === 0xffff && g[5] === 0 && embeddedV4Internal(g[6], g[7])) ||
+    (first === 0x64 && g[1] === 0xff9b && zeros(2, 6) && embeddedV4Internal(g[6], g[7])) ||
+    (first === 0x64 && g[1] === 0xff9b && g[2] === 1) ||
+    (first === 0x2002 && embeddedV4Internal(g[1], g[2]));
 };
 
 const NOT_PUBLIC = 'a push endpoint is on a public host';
 
+/** The parts of a WHATWG `URL` this check reads; this package has no DOM or Node types, both runtimes have it. */
+interface ParsedEndpoint { protocol: string; username: string; password: string; hostname: string }
+function parseEndpoint(text: string): ParsedEndpoint | null {
+  const Url = (globalThis as unknown as { URL: new (input: string) => ParsedEndpoint }).URL;
+  try {
+    return new Url(text);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Why a push endpoint is refused, or null. The server POSTs to it, so it must be an https URL on
- * a public host: never loopback, private or link-local, and never a numeric host the URL parser
- * would read as an address (`2130706433`, `0x7f.1`).
+ * a public host. The host judged is the one the URL parser connects to — after percent-decoding,
+ * IDNA mapping (fullwidth digits, punycode) and numeric IPv4 forms (`2130706433`, `0x7f.1`) — never
+ * the raw authority. A public name that resolves to a private address is not caught (spec
+ * 2026-10-24-mobile-cockpit §4).
  */
 export function pushEndpointRefusal(endpoint: string): string | null {
-  const match = /^https:\/\/([^/?#]*)/i.exec(endpoint);
-  if (!match) return 'a push endpoint is an https URL';
-  const authority = match[1]!;
-  if (authority.includes('@')) return 'a push endpoint carries no credentials';
-  const bracketed = /^\[([^\]]+)\](?::\d*)?$/.exec(authority);
-  if (bracketed) {
-    const groups = ipv6Groups(bracketed[1]!.toLowerCase());
+  const url = parseEndpoint(endpoint);
+  if (url === null || url.protocol !== 'https:') return 'a push endpoint is an https URL';
+  if (url.username !== '' || url.password !== '') return 'a push endpoint carries no credentials';
+  const host = url.hostname.toLowerCase().replace(/\.$/, '');
+  if (host.startsWith('[')) {
+    const groups = host.endsWith(']') ? ipv6Groups(host.slice(1, -1)) : null;
     return groups === null || ipv6Internal(groups) ? NOT_PUBLIC : null;
   }
-  const host = authority.replace(/:\d*$/, '').toLowerCase().replace(/\.$/, '');
+  // A runtime that left a name unmapped answers no for it rather than guessing.
+  if (host === '' || /[^a-z0-9._-]/.test(host)) return NOT_PUBLIC;
   const v4 = ipv4Parts(host);
   if (v4) return ipv4Internal(v4) ? NOT_PUBLIC : null;
   const labels = host.split('.');
-  if (/^(0x[0-9a-f]*|\d+)$/.test(labels.at(-1) ?? '')) return NOT_PUBLIC;
+  if (labels.some((label) => label === '') || /^(0x[0-9a-f]*|\d+)$/.test(labels.at(-1) ?? '')) return NOT_PUBLIC;
   if (labels.length < 2 || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return NOT_PUBLIC;
   return null;
 }

@@ -107,6 +107,18 @@ describe('approval of the committed mcp.json', () => {
     expect(existsSync(lock)).toBe(false);
   });
 
+  it('a Settings write of mcp.json behind a busy approvals lock leaves the file as it was', async () => {
+    expect(await putMcpServer(repo, 'project', 'first', { command: 'first-mcp' })).toEqual({ ok: true });
+    const before = readFileSync(projectMcpPath(repo), 'utf8');
+    const lock = `${mcpApprovalsPath()}.lock`;
+    mkdirSync(lock, { recursive: true });
+    writeFileSync(join(lock, `${process.ppid}-00000000-0000-4000-8000-000000000000`), '');
+    expect(await putMcpServer(repo, 'project', 'second', { command: 'second-mcp' })).toEqual({ ok: false, status: 409, error: `could not write mcp.json: ${APPROVALS_BUSY}` });
+    expect(readFileSync(projectMcpPath(repo), 'utf8')).toBe(before);
+    rmSync(lock, { recursive: true, force: true });
+    expect((await launch()).servers.map((server) => server.name)).toEqual(['first']);
+  });
+
   it('approves only the content that was reviewed, and only bindings the file references', async () => {
     const hash = writeProject({ s: { command: 'x', env: { K: '${{ secrets.K_ONE }}' } } });
     expect(await approveProjectMcp(repo, mcpContentHash('other'), {})).toMatchObject({ ok: false, status: 409 });

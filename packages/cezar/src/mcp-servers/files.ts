@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { mcpProjectLiteralIssue, mcpSecretNames, type McpScope, type McpServerDefinition } from '@open-mercato/cezar-contract';
 import { privateMcpPath, projectMcpPath } from '../core/private-mcp.ts';
@@ -49,6 +49,20 @@ async function readObject(path: string): Promise<{ data: Record<string, unknown>
   return { error: 'the file is not a JSON object — fix it in Settings → Agent config before adding servers here' };
 }
 
+/** Best effort: the previous bytes back, or no file when there was none. */
+async function restore(path: string, text: string | null): Promise<void> {
+  try {
+    if (text === null) await rm(path, { force: true });
+    else {
+      const tmp = `${path}.cez-tmp-${process.pid}-${randomUUID()}`;
+      await writeFile(tmp, text, 'utf8');
+      await renameWithRetry(tmp, path);
+    }
+  } catch {
+    // the write's own error is what the caller reports
+  }
+}
+
 async function update(
   repoRoot: string,
   scope: McpScope,
@@ -62,16 +76,23 @@ async function update(
     const current = read.data.mcpServers;
     const servers: Record<string, unknown> = current && typeof current === 'object' && !Array.isArray(current) ? { ...(current as Record<string, unknown>) } : {};
     if (!mutate(servers)) return { ok: false, status: 404, error: 'no MCP server with that name' };
-    try {
+    const content = `${JSON.stringify({ ...read.data, mcpServers: servers }, null, 2)}\n`;
+    let written = false;
+    const commit = async () => {
       await mkdir(dirname(path), { recursive: true });
       ensureDataGitignore(repoRoot);
       const tmp = `${path}.cez-tmp-${process.pid}-${randomUUID()}`;
-      const content = `${JSON.stringify({ ...read.data, mcpServers: servers }, null, 2)}\n`;
       await writeFile(tmp, content, scope === 'private' ? { encoding: 'utf8', mode: 0o600 } : 'utf8');
       await renameWithRetry(tmp, path);
+      written = true;
+    };
+    try {
       // The operator wrote this on this machine: an approved (or empty) file stays approved, with this entry's own references bound.
-      if (scope === 'project') await carryProjectApproval(repoRoot, read.text, content, carry);
+      if (scope === 'project') await carryProjectApproval(repoRoot, read.text, content, carry, commit);
+      else await commit();
     } catch (error) {
+      // The approval record failed after the file landed: put the file back rather than leave it unapproved.
+      if (written && scope === 'project') await restore(path, read.text);
       return { ok: false, status: 409, error: `could not write ${scope === 'project' ? 'mcp.json' : 'mcp.local.json'}: ${(error as Error).message}` };
     }
     return { ok: true };

@@ -85,13 +85,13 @@ export const APPROVALS_BUSY = 'another cezar process is writing MCP approvals �
  * under the mkdir + PID-owner lock (`withLifecycleFileLock`) — contention past its wait throws, so
  * nothing is approved on a write that lost; `0600`, atomic. `change` returns false to write nothing.
  */
-function mutateAll(change: (all: ApprovalsFile) => boolean | void): Promise<void> {
+function mutateAll(change: (all: ApprovalsFile) => boolean | void | Promise<boolean | void>): Promise<void> {
   const next = queue.then(async () => {
     const path = mcpApprovalsPath();
     assertCezarHomeWriteIsSandboxed(path);
     await withLifecycleFileLock(`${path}.lock`, async () => {
       const all = await readAll(path);
-      if (change(all) === false) return;
+      if ((await change(all)) === false) return;
       const tmp = `${path}.${process.pid}-${randomUUID()}.tmp`;
       await writeFile(tmp, `${JSON.stringify(all, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
       await renameWithRetry(tmp, path);
@@ -212,12 +212,14 @@ export type ApprovalCarry = { bind: string; names: string[] } | { unbind: string
  * After the operator's own Settings write of the project file: when the content before it was
  * approved (or empty), the new content is approved too, carrying the other servers' bindings and
  * binding the written entry's own references (the operator just picked them). A file still
- * awaiting review stays awaiting it — a write never approves content nobody looked at.
+ * awaiting review stays awaiting it — a write never approves content nobody looked at. `commit`
+ * lands the file under the approvals lock, so a busy lock leaves it unwritten rather than unapproved.
  */
-export async function carryProjectApproval(repoRoot: string, before: string | null, after: string, carry: ApprovalCarry): Promise<void> {
+export async function carryProjectApproval(repoRoot: string, before: string | null, after: string, carry: ApprovalCarry, commit: () => Promise<void>): Promise<void> {
   const wasEmpty = Object.keys(serversOf(before)).length === 0;
   // Decided under the lock: another process's approval between read and write is seen, not lost.
-  await mutateAll((all) => {
+  await mutateAll(async (all) => {
+    await commit();
     const key = projectKey(repoRoot);
     const record = all.projects[key];
     if (!wasEmpty && record?.hash !== mcpContentHash(before ?? '')) return false;

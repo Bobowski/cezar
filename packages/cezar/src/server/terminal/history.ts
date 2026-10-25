@@ -130,7 +130,7 @@ export function redactHistoryLine(line: string, secrets: readonly string[] = [])
     .replace(USER_PASSWORD_FLAG, '$1$2$3$4:***')
     .replace(GLUED_USER_PASSWORD, '$1-u$2:***')
     .replace(SECRET_HEADER, '$1$2$3***');
-  out = out.split(/(\|\|?|&&?|;)/).map(redactClientPassword).join('');
+  out = out.split(SEPARATOR).map(redactClientPassword).join('');
   if (STDIN_SECRET_FLAG.test(out) || SUDO_STDIN.test(out)) {
     out = out.replace(HERE_STRING, '<<< ***').replace(ECHOED, '$1$2$3 ***');
   }
@@ -197,13 +197,46 @@ const NO_SHORT_SECRET = new Set([
 const SECRET_VERBS: readonly (readonly string[])[] = [['vault', 'login'], ['vault', 'auth'], ['wrangler', 'secret', 'put']];
 /** Wrappers that run their next word as the command. */
 const COMMAND_PREFIX = new Set(['sudo', 'exec', 'npx', 'bunx']);
+const SEPARATOR = /(\|\|?|&&?|;)/;
+/** Flags whose quoted value is a command line: `rsync -e "sshpass -p … ssh"`, `bash -c '…'`. */
+const SUBCOMMAND_FLAG = /^(?:-e|-c|--rsh=?|--command=?)$/;
+/** Commands whose quoted arguments are a command line they run. */
+const COMMAND_RUNNERS = new Set(['ssh', 'sh', 'bash', 'zsh', 'dash', 'eval']);
 
-function redactClientPassword(segment: string): string {
+type Token = { text: string; start: number };
+
+/** The segment's words but its assignments, and the index of its command among them. */
+function commandTokens(segment: string): { tokens: Token[]; at: number } {
   const tokens = [...segment.matchAll(new RegExp(WORD, 'g'))]
     .map((match) => ({ text: match[0], start: match.index }))
     .filter((token) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(token.text));
   let at = 0;
   while (COMMAND_PREFIX.has(tokens[at]?.text ?? '') && tokens[at + 1] && !tokens[at + 1]!.text.startsWith('-')) at += 1;
+  return { tokens, at };
+}
+
+function redactClientPassword(segment: string): string {
+  return redactCommandPassword(redactSubcommands(segment));
+}
+
+/** Every quoted command line the segment runs, with the client rules applied inside its quotes. */
+function redactSubcommands(segment: string): string {
+  const { tokens, at } = commandTokens(segment);
+  const runner = COMMAND_RUNNERS.has(baseName(tokens[at]?.text ?? ''));
+  let out = segment;
+  for (let index = tokens.length - 1; index > at; index -= 1) {
+    const { text, start } = tokens[index]!;
+    const quote = text[0];
+    if ((quote !== '"' && quote !== "'") || !(runner || SUBCOMMAND_FLAG.test(tokens[index - 1]!.text))) continue;
+    const closed = text.length > 1 && text.endsWith(quote);
+    const inner = text.slice(1, closed ? -1 : undefined).split(SEPARATOR).map(redactClientPassword).join('');
+    out = `${out.slice(0, start)}${quote}${inner}${closed ? quote : ''}${out.slice(start + text.length)}`;
+  }
+  return out;
+}
+
+function redactCommandPassword(segment: string): string {
+  const { tokens, at } = commandTokens(segment);
   if (!tokens[at]) return segment;
   const command = baseName(tokens[at]!.text);
   if (command === 'sshpass') {
@@ -236,8 +269,8 @@ function passwordFlag(command: string): '-p' | '-a' | null {
   return REDIS_CLIENTS.has(command) ? '-a' : null;
 }
 
-/** Short names the shared credential heuristic leaves out: `DB_PASS`, `KEY`, `SMTP_PWD`. */
-const SECRET_NAME_PART = /(^|_)(PASS|PWD|KEY|PIN)(_|$)/i;
+/** Short names the shared credential heuristic leaves out: `DB_PASS`, `KEY`, `SMTP_PWD`, sshpass's `SSHPASS`. */
+const SECRET_NAME_PART = /(^|_)(PASS|PWD|KEY|PIN)(_|$)|^SSHPASS$/i;
 /** `NAME=` wherever a name can start inside a word — after a separator, a quote, another `=`, a
  *  `/` or a `:` (`//reg/:_authToken=…`, `-d "password=…"`); its value is the shell word after it. */
 const ASSIGNMENT = /(^|[\s;&|(`=/:"'])([A-Za-z_][A-Za-z0-9_]*)=/g;

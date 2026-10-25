@@ -164,6 +164,19 @@ describe('history folding', () => {
     expect(historyLine('mysql -u root -p -h db shop')).toBe('mysql -u root -p -h db shop');
   });
 
+  it('stores no password sshpass reads from SSHPASS or a client gets inside a quoted sub-command', () => {
+    expect(historyLine('SSHPASS=hunter2 sshpass -e ssh user@host')).toBe('SSHPASS=*** sshpass -e ssh user@host');
+    expect(historyLine('export SSHPASS=hunter2 && sshpass -e ssh user@host')).toBe('export SSHPASS=*** && sshpass -e ssh user@host');
+    expect(historyLine('rsync -e "sshpass -p secret ssh" src host:dst')).toBe('rsync -e "sshpass -p *** ssh" src host:dst');
+    expect(historyLine('rsync -e "sshpass -p 123456 ssh -p 2222" a b:c')).toBe('rsync -e "sshpass -p *** ssh -p 2222" a b:c');
+    expect(historyLine("rsync --rsh='sshpass -p secret ssh' a b:c")).toBe("rsync --rsh='sshpass -p *** ssh' a b:c");
+    expect(historyLine("bash -c 'redis-cli -a 123456 ping'")).toBe("bash -c 'redis-cli -a *** ping'");
+    expect(historyLine('ssh me@host "mysql -u root -p 1234 shop"')).toBe('ssh me@host "mysql -u root -p *** shop"');
+    // A quoted argument that runs nothing is left as typed.
+    expect(historyLine('git commit -m "add -a flag"')).toBe('git commit -m "add -a flag"');
+    expect(historyLine('rsync -e "ssh -p 2222" a b:c')).toBe('rsync -e "ssh -p 2222" a b:c');
+  });
+
   it('stores no password curl\'s -u carries, glued or spaced', () => {
     expect(historyLine('curl -uadmin:hunter2 http://x')).toBe('curl -uadmin:*** http://x');
     expect(historyLine('curl -u admin:hunter2 http://x')).toBe('curl -u admin:*** http://x');

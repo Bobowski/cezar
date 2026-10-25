@@ -83,6 +83,7 @@ const FAMILY_SETS: Record<string, string> = {
   'workspace/secrets': 'env',
   config: 'settings',
   'agent-config': 'settings',
+  'mcp-servers': 'settings',
   'ui-state': 'settings',
   'launch-key': 'settings',
   'open-in': 'settings',

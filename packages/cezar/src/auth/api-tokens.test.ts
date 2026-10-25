@@ -116,6 +116,22 @@ describe('API token scopes, per route family', () => {
     expect(apiTokenAllows(['author'], 'GET', '/api/v1/services/web/logs')).toBe(false);
   });
 
+  it('MCP server definitions are author’s to read and admin’s to write or Test (spec 2026-10-24-easy-mcp)', () => {
+    // A definition is a command or URL; a registry result is third-party text. Neither is read's.
+    for (const path of ['/api/v1/mcp-servers', '/api/v1/p/x/mcp-servers/registry']) {
+      expect(apiTokenAllows(['read'], 'GET', path), path).toBe(false);
+      expect(apiTokenAllows(['author'], 'GET', path), path).toBe(true);
+    }
+    for (const [method, path] of [
+      ['PUT', '/api/v1/mcp-servers/project/context7'],
+      ['DELETE', '/api/v1/p/x/mcp-servers/private/stripe'],
+      ['POST', '/api/v1/mcp-servers/project/context7/test'],
+    ] as const) {
+      expect(apiTokenAllows(['read', 'tasks', 'author'], method, path), `${method} ${path}`).toBe(false);
+      expect(apiTokenAllows(['admin'], method, path), `${method} ${path}`).toBe(true);
+    }
+  });
+
   it('automations are author’s to read: their tasks are commands and prompts, their log quotes gh and the tracker', () => {
     for (const path of [
       '/api/v1/automations', '/api/v1/p/x/automations/a1', '/api/v1/automation-log', '/api/v1/automation-checks/c1',

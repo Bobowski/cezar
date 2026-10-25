@@ -63,6 +63,8 @@ export const FAMILY_SCOPES: Record<string, Exclude<ApiTokenScope, 'read' | 'runs
   secrets: 'admin',
   config: 'admin',
   'agent-config': 'admin',
+  // A definition is code the agents run, and Test runs it on the host (spec 2026-10-24-easy-mcp).
+  'mcp-servers': 'admin',
   'ui-state': 'admin',
   'launch-key': 'admin',
   'open-in': 'admin',
@@ -114,6 +116,10 @@ const ROUTE_OWNERS: ReadonlyArray<readonly [RegExp, Exclude<ApiTokenScope, 'read
 const READ_OWNERS: ReadonlyMap<string, Exclude<ApiTokenScope, 'read' | 'runs.transcript'>> = new Map([
   ['/services', 'author'],
   ['/start-app', 'author'],
+  // MCP definitions are commands and URLs (literal env/header values are never served), and a
+  // registry result is third-party text: configuration, `author`'s to read, never `read`'s.
+  ['/mcp-servers', 'author'],
+  ['/mcp-servers/registry', 'author'],
 ]);
 
 /** Reads any token may make: what an agent needs to address anything at all. */

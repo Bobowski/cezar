@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent, AgentRunResult, AgentRunSpec } from '../core/agent-runner.ts';
 import { RunStore } from '../runs/store.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
+import { graphIssues, graphToSteps, type WorkflowGraph } from './graph.ts';
 import { RunManager } from './run.ts';
 import type { WorkflowDef } from './types.ts';
 
@@ -14,7 +15,11 @@ const run = promisify(execFile);
 const GIT_ID = ['-c', 'user.name=test', '-c', 'user.email=test@local'];
 
 /** Every spawn, in order: which backend the engine asked for and the spec it handed over. */
-const captured = vi.hoisted(() => ({ spawns: [] as Array<{ backend: string; spec: AgentRunSpec }> }));
+const captured = vi.hoisted(() => ({
+  spawns: [] as Array<{ backend: string; spec: AgentRunSpec }>,
+  /** Set, a session stays live until it settles — so a test can act while a step runs. */
+  hold: undefined as Promise<void> | undefined,
+}));
 
 vi.mock('../core/runner-factory.ts', () => ({
   createRunner: (backend: string) => ({
@@ -25,10 +30,13 @@ vi.mock('../core/runner-factory.ts', () => ({
       const sessionId = `sess-${captured.spawns.length}`;
       return {
         result: new Promise<AgentRunResult>((resolve) => {
-          setTimeout(() => {
-            onEvent?.({ type: 'session', sessionId });
-            resolve({ text: 'ok', toolCalls: [], tokensUsed: 0 });
-          }, 0);
+          const finish = () =>
+            setTimeout(() => {
+              onEvent?.({ type: 'session', sessionId });
+              resolve({ text: 'ok', toolCalls: [], tokensUsed: 0 });
+            }, 0);
+          if (captured.hold) void captured.hold.then(finish);
+          else finish();
         }),
         sendMessage: () => false,
         end: () => {},
@@ -62,6 +70,7 @@ describe('personas on workflow steps', () => {
 
   beforeEach(async () => {
     captured.spawns.length = 0;
+    captured.hold = undefined;
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-persona-wiring-'));
     await run('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
     writeFileSync(join(repoRoot, 'a.txt'), 'one\n');
@@ -77,6 +86,7 @@ describe('personas on workflow steps', () => {
       join(agents, 'reviewer.md'),
       '---\nrunner: claude\nmodel: opus\nallowedTools: [Read, Grep, Glob]\n---\nYou review and never edit.\n',
     );
+    writeFileSync(join(agents, 'gatekeeper.md'), '---\nrunner: claude\ndispatch: { maxSubtasks: 0 }\n---\nYou gate; you never delegate.\n');
     store = RunStore.open(join(repoRoot, '.ai/cezar'));
     manager = new RunManager(store, repoRoot);
   });
@@ -154,5 +164,82 @@ describe('personas on workflow steps', () => {
     expect(captured.spawns).toEqual([]);
     expect(store.getRun(record.id)?.status).toBe('failed');
     expect(store.getRun(record.id)?.error).toMatch(/persona "ghost"/);
+  });
+
+  describe('on graph nodes', () => {
+    const graphDef = (graph: WorkflowGraph): WorkflowDef => {
+      expect(graphIssues(graph)).toEqual([]);
+      return { name: 'graph', source: 'file', steps: graphToSteps(graph), graph };
+    };
+
+    /** A persona'd agent node, then a fork whose branches are plain agents (or one persona'd). */
+    const gateThenFork = (branchAgent?: string): WorkflowGraph => ({
+      nodes: [
+        { id: 'start', type: 'start' },
+        { id: 'gate', type: 'agent', prompt: 'gate {{task}}', agent: 'gatekeeper' },
+        { id: 'fan', type: 'fork', branches: 2 },
+        { id: 'one', type: 'agent', prompt: 'branch one', ...(branchAgent ? { agent: branchAgent } : {}) },
+        { id: 'two', type: 'agent', prompt: 'branch two' },
+        { id: 'meet', type: 'join', wait: 'all' },
+      ],
+      edges: [
+        { from: 'start', to: 'gate' },
+        { from: 'gate.done', to: 'fan' },
+        { from: 'fan.1', to: 'one' },
+        { from: 'fan.2', to: 'two' },
+        { from: 'one.done', to: 'meet' },
+        { from: 'two.done', to: 'meet' },
+      ],
+    });
+
+    const childrenOf = (id: string) => store.listRuns().filter((r) => r.dispatch?.parentRunId === id);
+    const notesOf = (id: string) =>
+      store.readEvents(id).filter((e) => e.type === 'note').map((e) => String((e as { message?: unknown }).message));
+
+    it('an agent node runs as its persona: backend, tools and system prompt', async () => {
+      const graph: WorkflowGraph = {
+        nodes: [
+          { id: 'start', type: 'start' },
+          { id: 'rev', type: 'agent', prompt: 'review {{task}}', agent: 'reviewer' },
+        ],
+        edges: [{ from: 'start', to: 'rev' }],
+      };
+      const record = manager!.startRun(graphDef(graph), { task: 'x', worktree: false, runner: 'codex' });
+      const spawn = await spawnAt(0);
+      await settled(record.id);
+      expect(spawn.backend).toBe('claude');
+      expect(spawn.spec.allowedTools).toEqual(['Read', 'Grep', 'Glob']);
+      expect(spawn.spec.systemPrompt).toMatch(/^Persona: reviewer\n\nYou review and never edit\./);
+    }, 30_000);
+
+    it("a fork after a persona'd node does not inherit that node's dispatch limits", async () => {
+      const record = manager!.startRun(graphDef(gateThenFork()), { task: 'x', worktree: true, runner: 'claude' });
+      await settled(record.id);
+      expect(notesOf(record.id).some((n) => n.includes('allows no subtasks'))).toBe(false);
+      expect(childrenOf(record.id)).toHaveLength(2);
+      expect(store.getRun(record.id)?.status).not.toBe('failed');
+    }, 60_000);
+
+    it("the persona'd node's own session still honours its dispatch limits", async () => {
+      let release!: () => void;
+      captured.hold = new Promise<void>((resolve) => (release = resolve));
+      const record = manager!.startRun(graphDef(gateThenFork()), { task: 'x', worktree: true, runner: 'claude' });
+      await spawnAt(0);
+      const refused = manager!.dispatch(record.id, { objective: 'help me' });
+      expect(refused).toMatchObject({ refused: expect.stringContaining('the "gatekeeper" persona this task runs as allows no subtasks') });
+      release();
+      captured.hold = undefined;
+      await settled(record.id);
+    }, 60_000);
+
+    it('a fork branch with a persona runs its child as that persona', async () => {
+      const record = manager!.startRun(graphDef(gateThenFork('implementer')), { task: 'x', worktree: true, runner: 'claude' });
+      await settled(record.id);
+      const one = childrenOf(record.id).find((c) => c.title === 'one');
+      expect(one?.runner).toBe('codex');
+      expect(one?.workflowDef?.steps[0]).toMatchObject({ id: 'task', agent: 'implementer' });
+      const two = childrenOf(record.id).find((c) => c.title === 'two');
+      expect(two?.workflowDef?.steps[0]).not.toHaveProperty('agent');
+    }, 60_000);
   });
 });

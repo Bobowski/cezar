@@ -6684,7 +6684,10 @@ export class RunManager {
     if (authored.agent && !persona) return `persona "${authored.agent}" not found in ${PERSONA_LOCATIONS}`;
     const personaResolution = applyPersona(authored, persona);
     step = personaResolution.step;
-    state.personaDispatch = persona?.dispatch ? { name: persona.name, dispatch: persona.dispatch } : undefined;
+    // Live only while THIS step's session is: set at attach, cleared in the session's `finally`,
+    // so a later fork/dispatch node never inherits it.
+    const stepPersonaDispatch = persona?.dispatch ? { name: persona.name, dispatch: persona.dispatch } : undefined;
+    state.personaDispatch = undefined;
     let systemPrompt: string | undefined;
     // An attachment-only task (telemetry 18c930de) — the note stands in for the missing text, so a
     // step template (`Review: {{task}}`) still reads as a sentence.
@@ -7170,6 +7173,7 @@ export class RunManager {
       state.acceptReviewOnDrop = undefined;
       this.flushDeferred(runId);
       state.currentStepId = step.id;
+      state.personaDispatch = stepPersonaDispatch;
       state.interrupt = () => started.interrupt();
       if (started.pid !== undefined) registerRunProcess(runId, started.pid);
       return started;
@@ -7230,6 +7234,7 @@ export class RunManager {
       this.clearMonitoringWakeTimer(state, runId);
       state.session = undefined;
       state.currentStepId = undefined;
+      state.personaDispatch = undefined;
       state.interrupt = () => undefined;
     }
   }

@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { queryKeys } from '@/api/queries'
 import { createQueryClient } from '@/api/query-client'
 import type { ApiRun, ChangesPayload } from '@open-mercato/cezar-api-client'
 import { Toaster, resetToasts } from '@/components/ui/toaster'
@@ -57,9 +58,9 @@ function stubFetch(run: ApiRun = RUN, config: Record<string, unknown> = {}) {
   return sent
 }
 
-function renderRoute() {
+function renderRoute(client = createQueryClient()) {
   render(
-    <QueryClientProvider client={createQueryClient()}>
+    <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={['/tasks/r1/changes']}>
         <Routes>
           <Route path="/tasks/:id/changes" element={<TaskChangesRoute />} />
@@ -69,6 +70,7 @@ function renderRoute() {
       </MemoryRouter>
     </QueryClientProvider>,
   )
+  return client
 }
 
 beforeEach(() => stubViewport())
@@ -168,7 +170,11 @@ describe('Changes at 375 px', () => {
   const TRUNK: ApiRun = { ...RUN, status: 'waiting', worktree: false, worktreePath: undefined, branch: undefined }
   const AUTO_LAND = { landing: 'auto', landingBlocked: null, baseBranch: 'main' }
   const commitButton = () => document.querySelector<HTMLButtonElement>('[data-slot="phone-commit-base"]')
-  const statusRead = (sent: Array<{ path: string }>) => sent.some((r) => r.path === '/api/v1/runs/r1/git/status')
+  // "Stays off" is only worth asserting once the config and the git status it is decided from have landed.
+  const settled = (client: ReturnType<typeof createQueryClient>) => waitFor(() => {
+    expect(client.getQueryState(queryKeys.config)?.status).toBe('success')
+    expect(client.getQueryState(queryKeys.runs.gitStatus('r1'))?.status).toBe('success')
+  })
 
   it('Commit to base is offered for an in-place trunk task resting in waiting, and lands it', async () => {
     const sent = stubFetch(TRUNK, AUTO_LAND)
@@ -179,18 +185,14 @@ describe('Changes at 375 px', () => {
   })
 
   it('Commit to base stays off for a worktree task, which the server refuses to land', async () => {
-    const sent = stubFetch(RUN, AUTO_LAND)
-    renderRoute()
-    await waitFor(() => expect(statusRead(sent)).toBe(true))
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    stubFetch(RUN, AUTO_LAND)
+    await settled(renderRoute())
     expect(commitButton()!.disabled).toBe(true)
   })
 
   it('Commit to base stays off for a trunk task while the agent is still working', async () => {
-    const sent = stubFetch({ ...TRUNK, status: 'running' }, AUTO_LAND)
-    renderRoute()
-    await waitFor(() => expect(statusRead(sent)).toBe(true))
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    stubFetch({ ...TRUNK, status: 'running' }, AUTO_LAND)
+    await settled(renderRoute())
     expect(commitButton()!.disabled).toBe(true)
   })
 })

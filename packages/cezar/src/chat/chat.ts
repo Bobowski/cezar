@@ -96,8 +96,11 @@ export function chatToolPolicy(chatId: string, tree: ChatTreeListing): {
   settings: Record<string, unknown>;
 } {
   const root = chatProposalRoot(chatId);
+  // Reads are scoped to the checkout (`./` = the session's cwd): under `dontAsk` a read no allow
+  // rule names is refused. Claude applies Read rules to Grep and Glob, so `Read(./**)` is the rule
+  // that binds; the Grep/Glob spellings only keep a bare whole-tool allow from coming back.
   const allowedTools = [
-    'Read', 'Grep', 'Glob',
+    'Read(./**)', 'Grep(./**)', 'Glob(./**)',
     ...WRITE_TOOLS.flatMap((tool) =>
       CHAT_WRITABLE.map((path) => `${tool}(${ruleOf(`${root}${path.slice('.ai/cezar/'.length)}`)})`)),
   ];

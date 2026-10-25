@@ -163,6 +163,15 @@ describe('the chat\'s tool policy', () => {
     expect(task).not.toContain('--settings');
   });
 
+  it('reads only inside the checkout: Read/Grep/Glob are path-scoped allows, never whole tools', () => {
+    const args = buildClaudeArgs({ userPrompt: 'hi', cwd: '/repo', ...chatToolPolicy('c1', tree) });
+    const allowed = args[args.indexOf('--allowedTools') + 1]!.split(',');
+    for (const rule of ['Read(./**)', 'Grep(./**)', 'Glob(./**)']) expect(allowed).toContain(rule);
+    // A bare tool name pre-approves every path, so `dontAsk` would never refuse a read outside.
+    for (const tool of ['Read', 'Grep', 'Glob']) expect(allowed).not.toContain(tool);
+    expect(args[args.indexOf('--disallowedTools') + 1]!.split(',')).toEqual(expect.arrayContaining(['Read(./.env*)', 'Read(./.claude/**)']));
+  });
+
   it('reaches claude as --disallowedTools', () => {
     const args = buildClaudeArgs({ userPrompt: 'hi', cwd: '/repo', allowedTools, disallowedTools });
     expect(args[args.indexOf('--disallowedTools') + 1]).toBe(disallowedTools.join(','));

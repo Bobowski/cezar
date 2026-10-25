@@ -94,6 +94,11 @@ list's live SSE copies.
   that list; `allowedTools` under `dontAsk` still refuses it unless the repo's own settings allow
   it. A chat cannot push, cannot open a PR, cannot change settings (`admin` scope is never granted
   to a run), and cannot apply or discard its own proposals.
+- **Its only MCP server is cezar's bridge.** A chat is handed no project or private MCP server:
+  `.ai/cezar/mcp.local.json` is not read for it (its servers carry the owner's tokens and the
+  network — how a prompt injection would leave with what the chat read), and Claude runs with
+  `--strict-mcp-config`, so the repo's `.mcp.json` and the user's own servers stay out too. A
+  task the chat starts gets the project's servers as any task does.
 - Only the owner starts a chat: `POST /runs { kind: 'chat' }` from a task's, a chat's or an API
   token is `403`; a signed-in user or the host (sign-in off) may.
 - A task the chat starts goes through the review gate: `POST /runs` from a chat token is forced
@@ -172,9 +177,10 @@ model are the project's.
   per session launch by `mintChatRunToken`, verified by the guard BEFORE the auth-off shortcut,
   so a local chat is bounded too; a task CLI's token is still minted only under enforced auth.
   `isRunLive` (running, unarchived, the record's `launchNonce`) is the token's lifetime.
-- **MCP.** `privateMcpForLaunch` appends the `cezar` stdio server (`node $CEZ_BIN mcp --tools all
-  --as-run`, env `CEZ_API_URL`/`CEZ_API_TOKEN`/`CEZ_TASK_ID`/`CEZ_PROJECT_ID`) to the private
-  servers at both session sites, replacing a private server of the same name. `--as-run` refuses
+- **MCP.** `privateMcpForLaunch` hands a chat the `cezar` stdio server (`node $CEZ_BIN mcp --tools all
+  --as-run`, env `CEZ_API_URL`/`CEZ_API_TOKEN`/`CEZ_TASK_ID`/`CEZ_PROJECT_ID`) and nothing else
+  at both session sites — no private server — and `sessionTools` sets `strictMcp` (Claude
+  `--strict-mcp-config`). `--as-run` refuses
   to start without the run's token, and never sends the host key. Over `/api/v1/mcp` a chat
   principal is listed only the tools its token reaches, and scoped tools default to its project.
   Without `CEZ_API_URL` (headless) or on a backend with no launch-time channel the chat runs

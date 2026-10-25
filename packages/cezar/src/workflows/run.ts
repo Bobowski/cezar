@@ -895,9 +895,10 @@ function sessionTools(
   state: Pick<ActiveRun, 'readOnly' | 'chat' | 'cwd'>,
   step: Pick<WorkflowStepDef, 'allowedTools' | 'bashAllowlist'> | undefined,
   runId: string,
-): { allowedTools: string[]; bashAllowlist: string[] | undefined; disallowedTools?: string[] } {
-  // Listed per launch: the deny rules name what is beside the chat's proposals right now.
-  if (state.chat) return { ...chatToolPolicy(runId, listChatTree(state.cwd)), bashAllowlist: undefined };
+): { allowedTools: string[]; bashAllowlist: string[] | undefined; disallowedTools?: string[]; strictMcp?: boolean } {
+  // Listed per launch: the deny rules name what is beside the chat's proposals right now. Its only
+  // MCP server is cezar's bridge (`privateMcpForLaunch`), so the repo's own config stays out too.
+  if (state.chat) return { ...chatToolPolicy(runId, listChatTree(state.cwd)), bashAllowlist: undefined, strictMcp: true };
   if (state.readOnly) return { allowedTools: READ_ONLY_TOOLS, bashAllowlist: undefined };
   return { allowedTools: step?.allowedTools ?? DEFAULT_ALLOWED_TOOLS, bashAllowlist: step?.bashAllowlist };
 }
@@ -1628,20 +1629,26 @@ export class RunManager {
     onEvent: (event: AgentEvent) => void,
     runId: string,
   ): Promise<PrivateMcpServer[] | undefined> {
-    const loaded = await loadPrivateMcp(this.repoRoot);
-    const { problems } = loaded;
+    // A chat gets cezar's own bridge and nothing else (spec 2026-10-24-cockpit-chat §5): a private
+    // server carries the owner's tokens and the network, which is how a prompt injection leaves.
+    if (isChatRun(this.store.getRun(runId))) {
+      const chat = this.chatMcpForLaunch(runId, backend, onEvent);
+      if (!chat) return undefined;
+      if (!supportsPrivateMcp(backend)) {
+        onEvent({ type: 'note', message: skippedServersNote(backend, [CHAT_MCP_SERVER], `${backend} has no launch-time MCP channel`) });
+        return undefined;
+      }
+      return [chat];
+    }
+    const { servers, problems } = await loadPrivateMcp(this.repoRoot);
     for (const problem of problems) onEvent({ type: 'note', message: `private MCP: ${problem}` });
-    const chat = this.chatMcpForLaunch(runId, backend, onEvent);
-    // The chat's own server wins its name over a private one (spec 2026-10-24-cockpit-chat §3).
-    const own = chat ? loaded.servers.filter((s) => s.name !== CHAT_MCP_SERVER) : loaded.servers;
-    const servers = chat ? [...own, chat] : own;
     if (servers.length === 0) return undefined;
     const names = servers.map((s) => s.name);
     if (!supportsPrivateMcp(backend)) {
       onEvent({ type: 'note', message: skippedServersNote(backend, names, `${backend} has no launch-time MCP channel`) });
       return undefined;
     }
-    if (own.length) onEvent({ type: 'note', message: `private MCP servers from .ai/cezar/${PRIVATE_MCP_FILE}: ${own.map((s) => s.name).join(', ')}` });
+    onEvent({ type: 'note', message: `private MCP servers from .ai/cezar/${PRIVATE_MCP_FILE}: ${names.join(', ')}` });
     return servers;
   }
 

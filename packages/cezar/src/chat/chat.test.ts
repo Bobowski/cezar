@@ -119,6 +119,12 @@ describe('the chat\'s tool policy', () => {
     }
   });
 
+  it('a strict MCP session passes --strict-mcp-config, so the repo\'s .mcp.json and the user\'s servers stay out', () => {
+    const server = { name: 'cezar', transport: 'stdio' as const, command: 'node', args: [], env: {}, headers: {} };
+    expect(buildClaudeArgs({ userPrompt: 'hi', cwd: '/repo', mcpServers: [server], strictMcp: true }, {}, '/tmp/mcp.json')).toContain('--strict-mcp-config');
+    expect(buildClaudeArgs({ userPrompt: 'hi', cwd: '/repo', mcpServers: [server] }, {}, '/tmp/mcp.json')).not.toContain('--strict-mcp-config');
+  });
+
   it('reaches claude as --disallowedTools', () => {
     const args = buildClaudeArgs({ userPrompt: 'hi', cwd: '/repo', allowedTools, disallowedTools });
     expect(args[args.indexOf('--disallowedTools') + 1]).toBe(disallowedTools.join(','));

@@ -431,6 +431,7 @@ export function buildClaudeArgs(
     args.push('--mcp-config', mcpConfigPath);
     allowed.push(...claudeMcpAllowRules(spec.mcpServers));
   }
+  if (spec.strictMcp) args.push('--strict-mcp-config');
   if (allowed.length > 0) {
     args.push('--allowedTools', allowed.join(','));
   }

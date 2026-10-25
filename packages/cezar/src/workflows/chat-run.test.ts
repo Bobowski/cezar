@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -129,6 +129,27 @@ describe('the cockpit chat run', () => {
     expect(cezarServer(resumed)?.env.CEZ_API_TOKEN).not.toBe(server.env.CEZ_API_TOKEN);
     expect(verifyRunToken(cezarServer(resumed)!.env.CEZ_API_TOKEN!)?.nonce).toBe(store.getRun(record.id)?.launchNonce);
     expect(await settled(record.id)).toBe('done');
+  });
+
+  it('gets cezar\'s MCP bridge and nothing else: no private server, and the repo\'s own MCP config is ignored', async () => {
+    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
+    writeFileSync(join(repoRoot, '.ai/cezar/mcp.local.json'), JSON.stringify({ mcpServers: { github: { command: 'gh-mcp', env: { GH_TOKEN: 'owner' } } } }));
+    const record = manager!.startRun(CHAT_WORKFLOW, { task: 'hi', kind: 'chat', runner: 'claude' });
+    const opening = await specAt(0);
+    expect(opening.mcpServers?.map((server) => server.name)).toEqual(['cezar']);
+    expect(opening.strictMcp).toBe(true);
+    await settled(record.id);
+    expect(manager!.continueRun(record.id, { text: 'again', runner: 'claude' })).toEqual({ ok: true });
+    const resumed = await specAt(1);
+    expect(resumed.mcpServers?.map((server) => server.name)).toEqual(['cezar']);
+    expect(resumed.strictMcp).toBe(true);
+    await settled(record.id);
+    // A task still gets the project's private servers, and the repo's own config.
+    const task = manager!.startRun(QUICK_TASK_WORKFLOW, { task: 'fix it', worktree: false, runner: 'claude' });
+    const taskSpec = await specAt(2);
+    expect(taskSpec.mcpServers?.map((server) => server.name)).toEqual(['github']);
+    expect(taskSpec.strictMcp).toBeUndefined();
+    await settled(task.id);
   });
 
   it('hands the cockpit address to the MCP bridge only — the agent itself is not told where the cockpit is', async () => {

@@ -198,8 +198,10 @@ export interface PersonaResolution {
 }
 
 /** Claude's sub-agent tool (`Task`, renamed `Agent`): never granted to a persona — dispatch is the
- *  budgeted, visible path (AGENTS.md, the dispatch exception). */
-const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent']);
+ *  budgeted, visible path (AGENTS.md, the dispatch exception). Leaving it out of `allowedTools`
+ *  does not stop it under `dontAsk`, so a persona-driven run also DENIES it (`disallowedTools`). */
+export const PERSONA_DENIED_TOOLS: readonly string[] = ['Task', 'Agent'];
+const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(PERSONA_DENIED_TOOLS);
 const isSubagentTool = (entry: string) => SUBAGENT_TOOLS.has(entry.replace(/\(.*$/s, '').trim());
 
 /** `narrow` admits nothing `wide` does not: the same entry, a pattern of a bare tool

@@ -54,6 +54,9 @@ export interface AgentRunSpec {
   allowedTools?: string[];
   /** When `Bash` is allowed, restrict it to commands starting with one of these. */
   bashAllowlist?: string[];
+  /** Tools denied outright. Claude needs it for its sub-agent tool: `dontAsk` still runs a `Task`
+   *  that `allowedTools` leaves out (spec 2026-10-24-personas §7). Ignored by the other backends. */
+  disallowedTools?: string[];
   /** Extra directories the agent may read/write besides `cwd`. */
   additionalDirectories?: string[];
   /** Extra env vars for the agent process (merged over `process.env`) —

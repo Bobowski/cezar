@@ -164,6 +164,8 @@ describe('personas on workflow steps', () => {
     const opening = await spawnAt(0);
     await settled(record.id);
     expect(opening.spec.allowedTools).toEqual(['Read']);
+    // Left out of allowedTools, Task still runs under `dontAsk` — only a deny rule stops it.
+    expect(opening.spec.disallowedTools).toEqual(['Task', 'Agent']);
     const toolNotes = () =>
       store.readEvents(record.id)
         .filter((e) => e.type === 'note')
@@ -176,10 +178,19 @@ describe('personas on workflow steps', () => {
     expect(manager!.continueRun(record.id, { text: 'again', runner: 'claude' })).toEqual({ ok: true });
     const resumed = await spawnAt(1);
     expect(resumed.spec.allowedTools).toEqual(['Read']);
+    expect(resumed.spec.disallowedTools).toEqual(['Task', 'Agent']);
     expect(toolNotes()).toEqual([DROP_NOTE, TASK_NOTE, DROP_NOTE, TASK_NOTE]);
     await expect
       .poll(() => store.getRun(record.id)?.steps.find((s) => s.id === 'continue-1')?.status, { timeout: 15_000 })
       .toSatisfy((status) => ['done', 'failed', 'cancelled'].includes(String(status)));
+  });
+
+  it('a step without a persona denies nothing extra', async () => {
+    const plain: WorkflowDef = { name: 'plain', source: 'file', steps: [{ id: 'p', prompt: '{{task}}' }] };
+    const record = manager!.startRun(plain, { task: 'x', worktree: false, runner: 'claude' });
+    const spawn = await spawnAt(0);
+    await settled(record.id);
+    expect(spawn.spec.disallowedTools).toBeUndefined();
   });
 
   it('fails the step rather than run a persona-less agent when the persona is gone', async () => {

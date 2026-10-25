@@ -61,6 +61,7 @@ import {
 import type { AgentEvent, AgentRunResult, ContentBlock } from '../core/agent-runner.ts';
 import { discoverSkills, type Skill } from '../skills.ts';
 import {
+  PERSONA_DENIED_TOOLS,
   applyPersona,
   loadPersonas,
   PERSONA_LOCATIONS,
@@ -5007,6 +5008,7 @@ export class RunManager {
           cwd: state.cwd,
           allowedTools: state.readOnly ? READ_ONLY_TOOLS : sessionStepDef?.allowedTools ?? DEFAULT_ALLOWED_TOOLS,
           bashAllowlist: state.readOnly ? undefined : sessionStepDef?.bashAllowlist,
+          ...(continuePersona ? { disallowedTools: [...PERSONA_DENIED_TOOLS] } : {}),
             additionalDirectories: agentDirectories(
               join(this.dataDir, 'runs'),
               state.grantedAttachmentLibrary,
@@ -7159,6 +7161,7 @@ export class RunManager {
           cwd: state.cwd,
           allowedTools: state.readOnly ? READ_ONLY_TOOLS : step.allowedTools ?? DEFAULT_ALLOWED_TOOLS,
           bashAllowlist: state.readOnly ? undefined : step.bashAllowlist,
+          ...(persona ? { disallowedTools: [...PERSONA_DENIED_TOOLS] } : {}),
           // The handoff file lives outside the worktree — grant access.
           additionalDirectories: agentDirectories(
             join(this.dataDir, 'runs'),

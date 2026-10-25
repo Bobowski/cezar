@@ -82,6 +82,21 @@ describe('buildClaudeArgs output mode', () => {
   });
 });
 
+describe('buildClaudeArgs disallowedTools (spec 2026-10-24-personas §7)', () => {
+  const spec = { userPrompt: 'do it', cwd: '/tmp', allowedTools: ['Read'] };
+
+  it('denies the listed tools outright, beside the allowlist', () => {
+    const args = buildClaudeArgs({ ...spec, disallowedTools: ['Task', 'Agent'] }, {});
+    expect(args[args.indexOf('--disallowedTools') + 1]).toBe('Task,Agent');
+    expect(args[args.indexOf('--allowedTools') + 1]).toBe('Read');
+  });
+
+  it('passes no deny flag when there is nothing to deny', () => {
+    expect(buildClaudeArgs(spec, {})).not.toContain('--disallowedTools');
+    expect(buildClaudeArgs({ ...spec, disallowedTools: [] }, {})).not.toContain('--disallowedTools');
+  });
+});
+
 describe('buildClaudeArgs approval gate', () => {
   const spec = { userPrompt: 'do it', cwd: '/tmp' };
 

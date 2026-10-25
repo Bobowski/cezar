@@ -3,7 +3,8 @@ import type { RunRecord, RunStore } from '../runs/store.ts';
 import type { WorkflowDef } from '../workflows/types.ts';
 import { DATA_GITIGNORE_ENTRIES } from '../data-gitignore.ts';
 import { readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { cezarHomeDir } from '../paths.ts';
 import { CHAT_PROPOSALS_DIR, CHAT_WRITABLE, chatMayWrite, chatProposalRoot } from '@open-mercato/cezar-contract';
 
 /**
@@ -39,9 +40,18 @@ const CHAT_UNWRITABLE = [
   '**/.envrc', './.husky/**', '**/package.json',
 ] as const;
 
-/** Secrets a chat's file tools never read, wherever they sit: env files, cezar's per-user home and
- *  the agent's own settings (hooks, allow rules). `.ai/cezar/` beyond its five paths is added per tree. */
-const CHAT_UNREADABLE = ['./.env*', '**/.env*', '~/.cezar/**', './.claude/**', '**/.claude/**'] as const;
+/** Secrets a chat's file tools never read, wherever they sit: env files, cezar's per-user home, the
+ *  agent's own settings (hooks, allow rules), SSH keys and tool credentials. `.ai/cezar/` beyond its
+ *  five paths is added per tree, the resolved `CEZ_HOME` per launch. */
+const CHAT_UNREADABLE = [
+  './.env*', '**/.env*', '~/.cezar/**', './.claude/**', '**/.claude/**', '~/.claude/**', '~/.ssh/**', '~/.config/**',
+] as const;
+
+/** An absolute path as a Claude permission rule (`//` = filesystem root; Windows `C:\x` is `/c/x`). */
+function absoluteRule(path: string): string {
+  const posix = resolve(path).replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, drive: string) => `/${drive.toLowerCase()}`);
+  return `/${posix.replace(/\/+$/, '')}/**`;
+}
 
 /** What a chat's tool policy is built from: the entries beside the path to its proposals. */
 export interface ChatTreeListing {
@@ -99,6 +109,7 @@ export function chatToolPolicy(chatId: string, tree: ChatTreeListing): {
   // Everything in `.ai/cezar/` but its five paths and the proposals: config, run state, worktrees.
   const deniedReads = [
     ...CHAT_UNREADABLE,
+    absoluteRule(cezarHomeDir()),
     ...anchored('.ai/cezar/', [...new Set([...known, ...tree.cezar])].filter((entry) => !writable.includes(entry)), 'proposals/'),
   ];
   const deniedWrites = [...new Set([

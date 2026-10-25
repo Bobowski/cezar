@@ -104,6 +104,19 @@ describe('the chat\'s tool policy', () => {
     ]) expect(reads.some((rule) => covers(rule, path)), path).toBe(false);
   });
 
+  it('reads neither the resolved cezar home (CEZ_HOME) nor ~/.claude, ~/.ssh or ~/.config', () => {
+    const saved = process.env.CEZ_HOME;
+    process.env.CEZ_HOME = process.platform === 'win32' ? 'D:\\state\\cez-home' : '/srv/state/cez-home';
+    try {
+      const reads = chatToolPolicy('c1', { repo: [], ai: [], cezar: [], proposals: [] }).disallowedTools.filter((rule) => rule.startsWith('Read('));
+      expect(reads).toContain(process.platform === 'win32' ? 'Read(//d/state/cez-home/**)' : 'Read(//srv/state/cez-home/**)');
+      for (const rule of ['Read(~/.claude/**)', 'Read(~/.ssh/**)', 'Read(~/.config/**)', 'Read(~/.cezar/**)']) expect(reads).toContain(rule);
+    } finally {
+      if (saved === undefined) delete process.env.CEZ_HOME;
+      else process.env.CEZ_HOME = saved;
+    }
+  });
+
   it('lists the checkout it launches in', () => {
     const root = mkdtempSync(join(tmpdir(), 'cez-chat-tree-'));
     try {

@@ -262,7 +262,7 @@ describe('streams end with the session that opened them', () => {
     expect(wsUpgradeVerifier).toBeTypeOf('function');
     const req = (headers: Record<string, string>) => ({ headers: { host: HOST, ...headers } }) as IncomingMessage;
     expect(wsUpgradeVerifier!(auth, () => true)(req({}))).toBe(false);
-    // Auth off: the verdict is exactly verifyWsUpgrade's, with nothing to poll.
-    expect(wsUpgradeVerifier!(auth, () => false)(req({}))).toEqual({ trusted: true });
+    // Auth off: verifyWsUpgrade's verdict with nothing to poll — the one account is the owner (push presence).
+    expect(wsUpgradeVerifier!(auth, () => false)(req({}))).toEqual({ trusted: true, account: 'owner' });
   });
 });

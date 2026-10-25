@@ -6,7 +6,7 @@ import { queryKeys, useConfig, useHealth, useRepo, useRunGitStatus } from '@/api
 import type { ApiRun } from '@open-mercato/cezar-api-client'
 import { useReferenceStatus } from '@/components/reference-status'
 import { toast } from '@/components/ui/toaster'
-import { gitActionPolicy, trunkGitActionPolicy, type GitAction, type GitActionId } from '@/lib/git-actions'
+import { gitActionPolicy, isTrunkTask, trunkGitActionPolicy, type GitAction, type GitActionId } from '@/lib/git-actions'
 import { ownedTaskPr } from '@/lib/tasks-table'
 
 import { useAskAnswer } from '../task-thread/ask-answer'
@@ -111,12 +111,7 @@ export function useRunGitStep(run: ApiRun): RunGitStep {
   const config = useConfig()
   // An in-place task in an auto-land project: its step is Commit to the base branch (spec
   // 2026-10-20-trunk-based-projects).
-  const trunk =
-    !run.worktreePath &&
-    run.worktree === false &&
-    !run.readOnly &&
-    config.data?.landing === 'auto' &&
-    config.data.landingBlocked === null
+  const trunk = isTrunkTask(run, config.data)
   const trunkBase = config.data?.baseBranch ?? repo.data?.info?.branch ?? 'main'
   // A trunk task reads the shared checkout, which other tasks land from too: keep it live.
   const status = useRunGitStatus(run.id, (Boolean(run.worktreePath) || trunk) && !finished, isRunActive(run.status) || trunk)

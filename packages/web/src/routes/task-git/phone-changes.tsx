@@ -8,13 +8,9 @@ import {
   MessageSquareIcon,
   Trash2Icon,
 } from 'lucide-react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import type { ApiRun, ChangedFile } from '@open-mercato/cezar-api-client'
-import { landRun } from '@/api/client'
-import { queryKeys } from '@/api/queries'
-import { toast } from '@/components/ui/toaster'
 import { Diff } from '@/components/diff'
 import type { DiffNewLineComment } from '@/components/diff/types'
 import {
@@ -31,7 +27,7 @@ import { Button } from '@/components/ui/button'
 import { isHttpUrl } from '@/lib/utils'
 
 import type { DiffComments } from '../task-thread/diff-comments'
-import { isRunActive, runActionFlags } from '../task-thread/run-actions'
+import { runActionFlags } from '../task-thread/run-actions'
 import { useFinishRun } from '../task-thread/use-finish-run'
 import { useRunActions } from '../task-thread/use-run-actions'
 import { useRunGitStep } from './run-git-step'
@@ -195,18 +191,10 @@ export function PhoneReviewBar({ run, onRequestChanges }: { run: ApiRun; onReque
   const flags = runActionFlags(run)
   const inReview = run.status === 'review'
   const prOpen = isHttpUrl(run.pullRequestUrl)
-  const queryClient = useQueryClient()
-  // The same one request the trunk toolbar's Commit to <base> makes; the answer says what happened.
-  const land = useMutation({
-    mutationFn: () => landRun(run.id),
-    onSuccess: (answer) => {
-      const text = answer.message.charAt(0).toUpperCase() + answer.message.slice(1)
-      toast(text, answer.outcome === 'busy' || answer.outcome === 'unavailable' ? { tone: 'danger' } : undefined)
-      void queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
-    },
-    onError: (error: Error) => toast(error.message, { tone: 'danger' }),
-  })
-  const busy = git.pending !== null || land.isPending
+  const busy = git.pending !== null
+  // The desktop's own trunk step (isTrunkTask → trunkGitActionPolicy): an in-place task in an
+  // auto-land project with something to land, the agent not mid-turn. Anything else 409s.
+  const canLand = git.action?.id === 'land' && git.action.enabled
 
   return (
     <div
@@ -219,7 +207,7 @@ export function PhoneReviewBar({ run, onRequestChanges }: { run: ApiRun; onReque
       <Button type="button" size="sm" variant="outline" data-slot="phone-request-changes" onClick={onRequestChanges}>
         <CornerUpLeftIcon aria-hidden="true" /> Request changes
       </Button>
-      <Button type="button" size="sm" variant="outline" data-slot="phone-commit-base" disabled={!run.worktreePath || busy || isRunActive(run.status)} onClick={() => land.mutate()}>
+      <Button type="button" size="sm" variant="outline" data-slot="phone-commit-base" disabled={!canLand || busy} title={git.action?.id === 'land' ? git.action.reason : undefined} onClick={() => git.onAction('land')}>
         <GitMergeIcon aria-hidden="true" /> Commit to base
       </Button>
       {prOpen ? (

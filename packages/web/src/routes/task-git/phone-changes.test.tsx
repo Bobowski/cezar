@@ -39,13 +39,16 @@ const CHANGES: ChangesPayload = {
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 
-function stubFetch() {
+function stubFetch(run: ApiRun = RUN, config: Record<string, unknown> = {}) {
   const sent: Array<{ method: string; path: string }> = []
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const path = String(input)
     const method = init.method ?? 'GET'
     sent.push({ method, path })
-    if (method === 'GET' && path === '/api/v1/runs/r1') return json(RUN)
+    if (method === 'GET' && path === '/api/v1/runs/r1') return json(run)
+    if (method === 'GET' && path === '/api/v1/config') return json(config)
+    if (method === 'GET' && path === '/api/v1/runs/r1/git/status') return json({ uncommitted: 2, unpushed: 0, behind: 0 })
+    if (method === 'POST' && path === '/api/v1/runs/r1/land') return json({ outcome: 'landed', message: 'landed on main' })
     if (method === 'GET' && path === '/api/v1/runs/r1/changes') return json(CHANGES)
     if (method === 'POST' && path === '/api/v1/runs/r1/finish') return json({ ...RUN, status: 'done' })
     if (method === 'GET' && path === '/api/v1/runs') return json([])
@@ -159,5 +162,35 @@ describe('Changes at 375 px', () => {
     expect(composer()).toBeNull()
     fireEvent.click(request)
     await waitFor(() => expect(composer()).not.toBeNull())
+  })
+
+  // An in-place trunk task in an auto-land project: the desktop's Commit to <base> step.
+  const TRUNK: ApiRun = { ...RUN, status: 'waiting', worktree: false, worktreePath: undefined, branch: undefined }
+  const AUTO_LAND = { landing: 'auto', landingBlocked: null, baseBranch: 'main' }
+  const commitButton = () => document.querySelector<HTMLButtonElement>('[data-slot="phone-commit-base"]')
+  const statusRead = (sent: Array<{ path: string }>) => sent.some((r) => r.path === '/api/v1/runs/r1/git/status')
+
+  it('Commit to base is offered for an in-place trunk task resting in waiting, and lands it', async () => {
+    const sent = stubFetch(TRUNK, AUTO_LAND)
+    renderRoute()
+    await waitFor(() => expect(commitButton()?.disabled).toBe(false))
+    fireEvent.click(commitButton()!)
+    await waitFor(() => expect(sent.some((r) => r.method === 'POST' && r.path === '/api/v1/runs/r1/land')).toBe(true))
+  })
+
+  it('Commit to base stays off for a worktree task, which the server refuses to land', async () => {
+    const sent = stubFetch(RUN, AUTO_LAND)
+    renderRoute()
+    await waitFor(() => expect(statusRead(sent)).toBe(true))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(commitButton()!.disabled).toBe(true)
+  })
+
+  it('Commit to base stays off for a trunk task while the agent is still working', async () => {
+    const sent = stubFetch({ ...TRUNK, status: 'running' }, AUTO_LAND)
+    renderRoute()
+    await waitFor(() => expect(statusRead(sent)).toBe(true))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(commitButton()!.disabled).toBe(true)
   })
 })

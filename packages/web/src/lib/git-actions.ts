@@ -220,6 +220,24 @@ export function gitActionPolicy(state: GitActionState): GitAction | null {
   return null
 }
 
+/**
+ * Whether a task's git step is the trunk one, **Commit to <base>**: an in-place task in an
+ * auto-land project (spec 2026-10-20-trunk-based-projects). The server's land refuses anything
+ * else, so every surface that offers Commit asks this one question.
+ */
+export function isTrunkTask(
+  run: { worktreePath?: string; worktree?: boolean; readOnly?: boolean },
+  config: { landing?: string; landingBlocked?: string | null } | undefined,
+): boolean {
+  return (
+    !run.worktreePath &&
+    run.worktree === false &&
+    !run.readOnly &&
+    config?.landing === 'auto' &&
+    config.landingBlocked === null
+  )
+}
+
 /** An in-place task in an auto-land project (spec 2026-10-20-trunk-based-projects). */
 export interface TrunkGitActionState {
   status: RunStatus

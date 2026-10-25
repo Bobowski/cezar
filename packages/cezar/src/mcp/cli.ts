@@ -13,6 +13,8 @@ const USAGE = `cezar mcp — serve this cockpit's API to an MCP client over stdi
 
   cezar mcp [--tools <sets>]       --tools: a comma list of tool sets, or all
                                    (default: tasks,workflows,skills,projects)
+  cezar mcp --as-run               the cockpit chat's own connection: the task's address and
+                                   run token, never the host key (cezar starts it, not you)
   CEZ_TOKEN=<ceztok_…> cez --server https://<host> mcp    a hosted cockpit (or CEZ_SERVER; --token works,
                                    but shows in the process list)
 
@@ -33,11 +35,15 @@ export interface McpCliEnv {
  * chat needs (`--as-run`: the task's own address and token, never the host key — spec
  * 2026-10-24-cockpit-chat) is a branch here, not a second entry point.
  */
-export function bridgeTarget(env: McpCliEnv, tools: string | undefined): BridgeTarget {
+export function bridgeTarget(env: McpCliEnv, tools: string | undefined, asRun = false): BridgeTarget | { error: string } {
+  if (asRun && (!env.CEZ_TASK_ID || !env.CEZ_API_URL || !env.CEZ_API_TOKEN)) {
+    return { error: 'cezar mcp --as-run: only a cockpit chat launches this (CEZ_TASK_ID, CEZ_API_URL and its CEZ_API_TOKEN are missing) — stop and report it.' };
+  }
   const base = (env.CEZ_API_URL || DEFAULT_COCKPIT_URL).replace(/\/+$/, '');
   const endpoint = new URL(`${base}/api/v1/mcp`);
   if (tools) endpoint.searchParams.set('tools', tools);
-  const credential = cockpitCredential({ ...env, CEZ_API_URL: base });
+  // The run's own token and nothing else: a chat never falls back to the host key.
+  const credential = asRun ? env.CEZ_API_TOKEN : cockpitCredential({ ...env, CEZ_API_URL: base });
   return { endpoint: endpoint.toString(), ...(credential ? { credential } : {}) };
 }
 
@@ -46,9 +52,13 @@ export async function runMcpCommand(
   env: McpCliEnv = process.env,
   io: BridgeIo = { stdin: process.stdin, stdout: process.stdout, fetch, error: (line) => process.stderr.write(`${line}\n`) },
 ): Promise<number> {
-  let values: { tools?: string; help?: boolean };
+  let values: { tools?: string; help?: boolean; 'as-run'?: boolean };
   try {
-    ({ values } = parseArgs({ args, options: { tools: { type: 'string' }, help: { type: 'boolean', short: 'h' } }, allowPositionals: false }));
+    ({ values } = parseArgs({
+      args,
+      options: { tools: { type: 'string' }, 'as-run': { type: 'boolean' }, help: { type: 'boolean', short: 'h' } },
+      allowPositionals: false,
+    }));
   } catch (error) {
     io.error(`cezar mcp: ${(error as Error).message}\n\n${USAGE}`);
     return 2;
@@ -62,6 +72,11 @@ export async function runMcpCommand(
     io.error(missingCockpitMessage({ command: 'cezar mcp', example: 'cezar mcp', insideTask: 'this cockpit gave the task no address. Do not point it at one yourself: stop and report it.' }, env));
     return 2;
   }
-  await runMcpBridge(bridgeTarget(env, values.tools), io);
+  const target = bridgeTarget(env, values.tools, values['as-run'] === true);
+  if ('error' in target) {
+    io.error(target.error);
+    return 2;
+  }
+  await runMcpBridge(target, io);
   return 0;
 }

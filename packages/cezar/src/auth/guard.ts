@@ -17,7 +17,7 @@ import type { AuthService } from './service.ts';
 export type Principal =
   | { kind: 'user'; role: AuthUser['role']; user: AuthUser; sessionId: string }
   | { kind: 'token'; role: AuthUser['role']; user: AuthUser; tokenId: string; scopes: ApiTokenScope[] }
-  | { kind: 'run'; role: 'agent'; runId: string; projectId?: string }
+  | { kind: 'run'; role: 'agent'; runId: string; projectId?: string; scope?: 'author' }
   | { kind: 'host'; role: 'owner' };
 
 export type AuthEnv = { Variables: { principal: Principal | undefined } };
@@ -147,12 +147,15 @@ export function createAuthGuard(options: AuthGuardOptions): MiddlewareHandler<Au
       c.set('principal', { kind: 'token', role: token.user.role, user: token.user, tokenId: token.tokenId, scopes: token.scopes });
       return next();
     }
-    if (!options.enforced()) {
+    const runClaims = bearer !== undefined && isRunToken(bearer) ? verifyRunToken(bearer) : null;
+    // A chat's MCP token means its scope even where sign-in is off, like an API token (spec
+    // 2026-10-24-cockpit-chat §5); a task CLI's token exists only while auth is enforced.
+    if (!options.enforced() && !runClaims?.scope) {
       c.set('principal', { kind: 'host', role: 'owner' });
       return next();
     }
     if (bearer !== undefined && isRunToken(bearer)) {
-      const claims = verifyRunToken(bearer);
+      const claims = runClaims;
       if (!claims || !(await options.isRunLive(claims))) return unauthorized(c);
       if (!runTokenAllows(claims, c.req.method, c.req.path)) {
         return c.json({ error: 'forbidden: a task may not call this route' }, 403);

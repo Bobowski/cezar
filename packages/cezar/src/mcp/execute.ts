@@ -16,6 +16,9 @@ export interface CallContext {
   origin: string;
   /** The caller's credential and provenance, copied onto every internal request. */
   headers: Headers;
+  /** The project a scoped tool addresses when the call names none: a chat's own (spec
+   *  2026-10-24-cockpit-chat), else the boot project. */
+  projectId?: string;
 }
 
 type Content = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string };
@@ -53,7 +56,12 @@ export function isSafeSegment(value: string): boolean {
 }
 
 /** `/api/v1[/p/<id>]/runs/<id>?…` and the body, from one flat argument object. */
-export function requestFor(tool: CatalogTool, args: Record<string, unknown>, origin: string): { url: string; body?: string } | { error: string } {
+export function requestFor(
+  tool: CatalogTool,
+  args: Record<string, unknown>,
+  origin: string,
+  defaultProjectId?: string,
+): { url: string; body?: string } | { error: string } {
   let path = tool.path;
   for (const name of tool.params) {
     const value = args[name];
@@ -61,7 +69,8 @@ export function requestFor(tool: CatalogTool, args: Record<string, unknown>, ori
     if (!isSafeSegment(String(value))) return { error: `invalid ${name}: ${JSON.stringify(String(value))}` };
     path = path.replace(`:${name}`, encodeURIComponent(String(value)));
   }
-  const projectId = tool.scoped && typeof args.projectId === 'string' && args.projectId !== '' ? args.projectId : undefined;
+  const named = typeof args.projectId === 'string' && args.projectId !== '' ? args.projectId : defaultProjectId;
+  const projectId = tool.scoped ? named : undefined;
   if (projectId !== undefined && !isSafeSegment(projectId)) return { error: `invalid projectId: ${JSON.stringify(projectId)}` };
   const url = new URL(`/api/v1${projectId ? `/p/${encodeURIComponent(projectId)}` : ''}${path}`, origin);
   for (const name of tool.query) {
@@ -77,7 +86,7 @@ export function requestFor(tool: CatalogTool, args: Record<string, unknown>, ori
 }
 
 export async function callTool(tool: CatalogTool, args: Record<string, unknown>, context: CallContext): Promise<ToolResult> {
-  const built = requestFor(tool, args, context.origin);
+  const built = requestFor(tool, args, context.origin, context.projectId);
   if ('error' in built) return errorResult(`${tool.name}: ${built.error}`);
   const headers = new Headers(context.headers);
   headers.set('accept', 'application/json');

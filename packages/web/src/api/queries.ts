@@ -62,7 +62,7 @@ import {
   getSkills,
   getSkillsWhenReady,
   getTodos,
-  getTrackerAssociation, getTrackerConnection, getTrackerConnectionSources, getProjectSecrets, getWorkspaceSecrets, getEnvFiles, getServices, getE2eStatus,
+  getTrackerAssociation, getTrackerConnection, getTrackerConnectionSources, getMcpServers, getProjectSecrets, getWorkspaceSecrets, getEnvFiles, getServices, getE2eStatus,
   getTrackerCandidates,
   getTrackerItem,
   getTrackerItems,
@@ -186,6 +186,10 @@ export const queryKeys = {
   secrets: {
     allFor: (projectId: string) => ['secrets', projectId] as const,
     list: () => ['secrets', queryScope()] as const,
+  },
+  mcpServers: {
+    allFor: (projectId: string) => ['mcp-servers', projectId] as const,
+    list: () => ['mcp-servers', queryScope()] as const,
   },
   e2e: {
     allFor: (projectId: string) => ['e2e', projectId] as const,
@@ -334,6 +338,10 @@ export const TRACKER_STALE_TIME = 60_000
 /** The project's env files (spec 2026-10-12-project-env-files): paths and variable names, never values. */
 export function useEnvFiles() {
   return useQuery({ queryKey: queryKeys.envFiles.list(), queryFn: ({ signal }) => getEnvFiles({ signal }) })
+}
+/** The project's MCP servers, both files (spec 2026-10-24-easy-mcp). Literal env/header values are never in it. */
+export function useMcpServers() {
+  return useQuery({ queryKey: queryKeys.mcpServers.list(), queryFn: ({ signal }) => getMcpServers({ signal }) })
 }
 export function useProjectSecrets() {
   return useQuery({ queryKey: queryKeys.secrets.list(), queryFn: ({ signal }) => getProjectSecrets({ signal }) })

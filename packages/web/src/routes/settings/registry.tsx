@@ -19,6 +19,7 @@ import {
   FileKeyIcon,
   PanelLeftIcon,
   ArchiveRestoreIcon,
+  PlugIcon,
 } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 
@@ -29,6 +30,7 @@ import { AgentsSection } from './agents-section'
 import { AppearanceSection } from './appearance'
 import { BackupSection } from './backup-section'
 import { InstructionsSection } from './instructions-section'
+import { McpServersSection } from './mcp-servers-section'
 import { KeyboardSection } from './keyboard-section'
 import { BookmarkletsSection } from './bookmarklets-section'
 import { NotificationsSection } from './notifications-section'
@@ -57,7 +59,8 @@ import { IntegrationsSection } from './integrations-section'
  * tasks, worktrees, bookmarklets) or the person/machine (appearance, notifications, host
  * resources, the project registry)?
  *
- * `hidden` sections are declared but not routed and not listed: MCP now lives inside Agent
+ * `hidden` sections are declared but not routed and not listed. cezar's own MCP files have their own
+ * section (spec 2026-10-24-easy-mcp); the agents' native MCP files stay inside Agent
  * config as a per-agent subsection.
  */
 
@@ -68,6 +71,7 @@ export type SettingsSectionId =
   | 'accounts'
   | 'agents'
   | 'agent-config'
+  | 'mcp-servers'
   | 'instructions'
   | 'tasks'
   | 'resources'
@@ -157,6 +161,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description: 'Development model, landing, required checks, base branch, review, live titles.',
     icon: ListChecksIcon,
     component: TasksSection,
+    scope: 'project',
+  },
+  {
+    id: 'mcp-servers',
+    title: 'MCP servers',
+    description: 'Servers every agent of this project gets at launch — committed or private, from a catalog or by hand.',
+    icon: PlugIcon,
+    component: McpServersSection,
     scope: 'project',
   },
   {

@@ -80,6 +80,9 @@ const GithubRoute = lazyRoute('github', () =>
 const CodeRoute = lazyRoute('code', () =>
   import('./routes/code/code').then((m) => ({ default: m.CodeRoute })),
 )
+const ChatRoute = lazyRoute('chat', () =>
+  import('./routes/chat/chat').then((m) => ({ default: m.ChatRoute })),
+)
 const ServicesRoute = lazyRoute('services', () =>
   import('./routes/services/services').then((m) => ({ default: m.ServicesRoute })),
 )
@@ -534,6 +537,11 @@ export const AppRoutes = memo(function AppRoutes() {
             </Suspense>
           }
         />
+        {/* The cockpit chat (spec 2026-10-24-cockpit-chat): ONE element type across its three
+            paths, so moving between chats keeps the sidebar mounted. */}
+        <Route path="chat" element={<Suspense fallback={<ThreadLoading />}><ChatRoute /></Suspense>} />
+        <Route path="chat/new" element={<Suspense fallback={<ThreadLoading />}><ChatRoute fresh /></Suspense>} />
+        <Route path="chat/:id" element={<Suspense fallback={<ThreadLoading />}><ChatRoute /></Suspense>} />
         <Route path="code" element={<Suspense fallback={<ScopeResolving />}><CodeRoute /></Suspense>} />
         <Route path="code/*" element={<Suspense fallback={<ScopeResolving />}><CodeRoute /></Suspense>} />
         <Route

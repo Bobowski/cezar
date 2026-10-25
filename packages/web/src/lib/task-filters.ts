@@ -1,5 +1,6 @@
 import type { RunRecord } from '@open-mercato/cezar-api-client'
 
+import { isChatRun } from '@/lib/chat'
 import { automationIdOf, matchesOrigin, type TaskOrigin } from '@/lib/task-origin'
 import { workflowLabel } from '@/lib/tasks-table'
 
@@ -55,6 +56,8 @@ export function filterTaskTable(
   automations: ReadonlyMap<string, string | undefined>,
 ): RunRecord[] {
   return runs.filter((run) => {
+    // A chat lives under Chat, never in a task list (spec 2026-10-24-cockpit-chat).
+    if (isChatRun(run)) return false
     const automationId = automations.get(run.id)
     if (!matchesOrigin(automationId, origin)) return false
     if (!matchesFacet(filters.statuses, run.status)) return false
@@ -67,7 +70,7 @@ export function filterTaskTable(
 /** The origin split alone — what the sidebar's quick-lists apply, so the remembered Regular |
  *  Automations | All choice reads the same in the sidebar as in the tables. */
 export function filterRunsByOrigin(runs: readonly RunRecord[], origin: TaskOrigin): RunRecord[] {
-  return origin === 'all' ? [...runs] : filterTaskTable(runs, origin, NO_TASK_FILTERS, automationIndex(runs))
+  return origin === 'all' ? runs.filter((run) => !isChatRun(run)) : filterTaskTable(runs, origin, NO_TASK_FILTERS, automationIndex(runs))
 }
 
 /** How many rows each value of a facet would leave, counted against the list as every OTHER

@@ -2,6 +2,7 @@ import {
   GitBranchIcon,
   InboxIcon,
   ListChecksIcon,
+  MessagesSquareIcon,
   SettingsIcon,
   SparklesIcon,
   WorkflowIcon,
@@ -49,6 +50,8 @@ export type NavItem = {
  */
 export const NAV_ITEMS: NavItem[] = [
   { to: '/', label: 'Tasks', icon: ListChecksIcon, match: ['/', '/tasks', '/compare'], badge: 'tasks-unread' },
+  // The project's cockpit chat (spec 2026-10-24-cockpit-chat §6): there whenever the project is.
+  { to: '/chat', label: 'Chat', icon: MessagesSquareIcon, match: ['/chat'] },
   { to: '/inbox', label: 'Inbox', icon: InboxIcon, match: ['/inbox'], badge: 'inbox-count', inbox: true },
   { to: '/git', label: 'Git', icon: GitBranchIcon, match: ['/git'] },
   { to: '/code', label: 'Code', icon: Code2Icon, match: ['/code'] },

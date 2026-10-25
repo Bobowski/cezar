@@ -268,12 +268,12 @@ describe('Views group', () => {
 
     // The GitHub row waits on the health answer (forge gate) — settle before asserting.
     await waitFor(() =>
-      expect(document.querySelectorAll('[data-slot="palette-view"]')).toHaveLength(12),
+      expect(document.querySelectorAll('[data-slot="palette-view"]')).toHaveLength(13),
     )
     const views = [...document.querySelectorAll('[data-slot="palette-view"]')]
     // New task FIRST — an empty query pre-selects it, so ⌘K then Enter starts a task.
     expect(views.map((view) => view.getAttribute('data-nav-to'))).toEqual([
-      '/new', '/', '/inbox', '/git', '/code', '/scripts', '/docker', '/github', '/automations', '/skills', '/workflows', '/settings',
+      '/new', '/', '/chat', '/inbox', '/git', '/code', '/scripts', '/docker', '/github', '/automations', '/skills', '/workflows', '/settings',
     ])
     expect(views[0]?.textContent).toContain('New task')
     // The chip advertises `c` — ⌘N is browser-reserved and only fires in the desktop shell.
@@ -288,11 +288,11 @@ describe('Views group', () => {
     await screen.findByRole('dialog')
 
     await waitFor(() =>
-      expect(document.querySelectorAll('[data-slot="palette-view"]')).toHaveLength(11),
+      expect(document.querySelectorAll('[data-slot="palette-view"]')).toHaveLength(12),
     )
     const views = [...document.querySelectorAll('[data-slot="palette-view"]')]
     expect(views.map((view) => view.getAttribute('data-nav-to'))).toEqual([
-      '/new', '/', '/inbox', '/git', '/code', '/scripts', '/docker', '/github', '/skills', '/workflows', '/settings',
+      '/new', '/', '/chat', '/inbox', '/git', '/code', '/scripts', '/docker', '/github', '/skills', '/workflows', '/settings',
     ])
   })
 
@@ -301,7 +301,7 @@ describe('Views group', () => {
     openWith({ metaKey: true })
     await screen.findByRole('dialog')
     await waitFor(() =>
-      expect(document.querySelectorAll('[data-slot="palette-view"]')).toHaveLength(12),
+      expect(document.querySelectorAll('[data-slot="palette-view"]')).toHaveLength(13),
     )
 
     const newTaskRows = [...document.querySelectorAll('[data-nav-to="/new"]')]

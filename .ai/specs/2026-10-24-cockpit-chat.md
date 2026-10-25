@@ -78,7 +78,15 @@ No other routes: the chat is a run. `RunRecord.kind` is optional (old records pa
   remove-worktree, a pick) needs the run — or every run of the group — to carry
   `createdBy: chat:<its id>`, else `403` (the guard's `chatOwns`). Another chat and the chat
   itself carry none, so neither is ever a target; the bulk archive and read-all sweeps are refused.
-- Hosted: the chat is behind sign-in like every run.
+- **The boundary, honestly.** The token bounds what the chat's MCP bridge can do, and the bridge
+  is its only documented way to cezar: the agent's own environment carries no cockpit address
+  (`CEZ_API_URL`, `CEZ_API_TOKEN` and `CEZ_BIN` are `''`; the bridge's entry has its own). On a
+  hosted cockpit (sign-in enforced) that is the whole boundary — a tokenless loopback request is
+  `401` there, so nothing but the chat token gets in. On a LOCAL cockpit without sign-in a
+  request with no bearer is the owner, and a server-side fix would break every local CLI; there,
+  for a backend that ignores `allowedTools` (Codex, OpenCode, Cursor), the boundary is the
+  prompt — which tells the chat never to call the HTTP API itself — exactly as it is for any
+  task today. Claude honours the tool policy, which has no shell.
 
 ## 6. Zero config
 

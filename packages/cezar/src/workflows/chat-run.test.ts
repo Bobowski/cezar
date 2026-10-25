@@ -122,6 +122,20 @@ describe('the cockpit chat run', () => {
     expect(await settled(record.id)).toBe('done');
   });
 
+  it('hands the cockpit address to the MCP bridge only — the agent itself is not told where the cockpit is', async () => {
+    const record = manager!.startRun(CHAT_WORKFLOW, { task: 'hi', kind: 'chat', runner: 'claude' });
+    const opening = await specAt(0);
+    // `''`, not absent: runners spawn with `{ ...process.env, ...spec.env }`, and `serve` exports both.
+    expect(opening.env).toMatchObject({ CEZ_API_URL: '', CEZ_API_TOKEN: '', CEZ_BIN: '' });
+    expect(cezarServer(opening)?.env.CEZ_API_URL).toBe('http://127.0.0.1:4999');
+    expect(opening.systemPrompt).toContain('never call the cockpit\'s HTTP API yourself');
+    await settled(record.id);
+    // A task keeps its CLI address as before.
+    const task = manager!.startRun(QUICK_TASK_WORKFLOW, { task: 'fix it', worktree: false, runner: 'claude' });
+    expect((await specAt(1)).env?.CEZ_API_URL).toBe('http://127.0.0.1:4999');
+    await settled(task.id);
+  });
+
   it('a chat on a cockpit with no address still runs, without the server, and says why', async () => {
     delete process.env.CEZ_API_URL;
     const record = manager!.startRun(CHAT_WORKFLOW, { task: 'hello', kind: 'chat', runner: 'claude' });

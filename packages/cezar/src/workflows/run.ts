@@ -1572,6 +1572,16 @@ export class RunManager {
   }
 
   private agentEnv(runId: string, generateFollowups = true): Record<string, string> {
+    // A chat reaches cezar through its MCP bridge only, which carries its own address and token
+    // (spec 2026-10-24-cockpit-chat §5). Without sign-in a tokenless loopback call is the owner,
+    // so the agent is not told where the cockpit is — `''`, since `serve` exports both.
+    if (isChatRun(this.store.getRun(runId))) {
+      return { ...this.taskAgentEnv(runId, generateFollowups), CEZ_API_URL: '', CEZ_API_TOKEN: '', CEZ_BIN: '' };
+    }
+    return this.taskAgentEnv(runId, generateFollowups);
+  }
+
+  private taskAgentEnv(runId: string, generateFollowups: boolean): Record<string, string> {
     const dispatch = this.dispatchOf(runId);
     // The same ONE gate the dispatch prompt uses, so an agent is never told about a CLI whose
     // address it was not given (and never given an address it was not told about).

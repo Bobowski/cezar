@@ -15,7 +15,7 @@ import {
 } from '@open-mercato/cezar-contract';
 import { isPublicAuthPath, isPublicBrandingRequest, upgradeIsAuthenticated } from '../auth/guard.ts';
 import { ensureHostKey, readHostKey } from '../auth/host-key.ts';
-import { disableRunTokens, enableRunTokens, mintRunToken, runTokenAllows, verifyRunToken } from '../auth/run-tokens.ts';
+import { disableRunTokens, enableRunTokens, mintChatRunToken, mintRunToken, runTokenAllows, verifyRunToken } from '../auth/run-tokens.ts';
 import { AuthService } from '../auth/service.ts';
 import { issueSetupCode } from '../auth/store.ts';
 import { base32Decode, hotp, totpStep } from '../auth/totp.ts';
@@ -359,6 +359,19 @@ describe('cockpit authentication', () => {
     expect((await request('/api/v1/p/boot/runs/run-2/dispatch', { method: 'POST', headers: bearer })).status).toBe(403);
     expect((await request('/api/v1/auth/sessions', { headers: bearer })).status).toBe(403);
     expect((await request('/api/v1/p/boot/runs', { headers: { authorization: 'Bearer cezrun_forged.sig' } })).status).toBe(401);
+  });
+
+  it('a tokenless loopback request is no owner here: the chat token is the only way in (spec 2026-10-24-cockpit-chat §5)', async () => {
+    // On a cockpit without sign-in this same request is the owner — which is why a chat on a
+    // backend that ignores `allowedTools` is bounded by its prompt there, and by this here.
+    const loopback = { host: '127.0.0.1:4999' };
+    expect((await app.request('/api/v1/p/boot/runs', { headers: loopback })).status).toBe(401);
+    expect((await app.request('/api/v1/p/boot/runs', { method: 'POST', headers: { ...loopback, 'content-type': 'application/json' }, body: '{}' })).status).toBe(401);
+    const chat = store.createRun({ title: 'chat', workflow: 'chat', task: 'hi', kind: 'chat', worktree: false, steps: [] });
+    active.add(chat.id);
+    const bearer = { authorization: `Bearer ${mintChatRunToken(chat.id, 'boot')}` };
+    expect((await app.request('/api/v1/p/boot/runs', { headers: { ...loopback, ...bearer } })).status).toBe(200);
+    expect((await app.request('/api/v1/p/boot/config', { headers: { ...loopback, ...bearer } })).status).toBe(403);
   });
 
   it('a running task’s token reaches none of the Git page’s mutations (spec 2026-10-24-git-view §5)', async () => {

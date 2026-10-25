@@ -701,9 +701,13 @@ client was shown.
 The cockpit's own **Chat** (sidebar → Chat) is this server's second client: a
 run in the checkout that cezar starts with `cezar mcp --tools all --as-run` —
 the chat's own address and run token, scoped to `read`, `tasks` and `author` on
-its project, never `admin`, push or PRs. It writes only under `.ai/cezar/`
-(Claude enforces it; other agents are told), and starts a task for anything
-else; the tasks it starts link back to it and report their status there.
+its project, never `admin`, push, PRs or secrets. It writes only cezar's own
+configuration — `.ai/cezar/workflows/`, `skills/`, `agents/`, `automations.json`
+and `mcp.json` (Claude enforces it; other agents are told) — and starts a task
+for anything else, in its own worktree and never autonomous; it can change only
+the tasks it started, which link back to it and report their status there. On a
+local cockpit without sign-in, an agent that ignores tool rules (Codex, OpenCode,
+Cursor) is bounded by the chat's prompt there, as any task is.
 
 The same address points the shell CLIs at another machine:
 `CEZ_TOKEN=ceztok_… cez --server https://agents.example.dev task create "…"`

@@ -22,6 +22,12 @@ describe('the dispatch prompt', () => {
     expect(DISPATCH_PROMPT).toContain('--suggestions');
   });
 
+  it("says only Claude's sub-agent tools are denied to a persona, not every backend's", () => {
+    expect(DISPATCH_PROMPT).toContain(
+      "A persona never gets Claude's Task/Agent tools; other backends keep their own sub-agent tools. Dispatch is how a persona delegates.",
+    );
+  });
+
   it('tells the parent how to pick a runner and model for a child, and that omitted means inherited', () => {
     expect(DISPATCH_PROMPT).toContain('--runner and --model choose who runs the child; omitted, it inherits yours');
     expect(DISPATCH_PROMPT).toContain("If the user's instructions name a runner or model, use that");

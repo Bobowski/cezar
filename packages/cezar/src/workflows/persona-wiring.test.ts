@@ -185,6 +185,22 @@ describe('personas on workflow steps', () => {
       .toSatisfy((status) => ['done', 'failed', 'cancelled'].includes(String(status)));
   });
 
+  it.each(['opencode', 'copilot'] as const)('says a persona on %s keeps that backend\'s own sub-agent tools', async (runner) => {
+    writeFileSync(join(repoRoot, '.ai/cezar/agents/elsewhere.md'), `---\nrunner: ${runner}\n---\nYou work elsewhere.\n`);
+    const single: WorkflowDef = { name: 'elsewhere', source: 'file', steps: [{ id: 'e', prompt: '{{task}}', agent: 'elsewhere' }] };
+    const record = manager!.startRun(single, { task: 'x', worktree: false, runner: 'claude' });
+    const spawn = await spawnAt(0);
+    await settled(record.id);
+    expect(spawn.backend).toBe(runner);
+    const notes = store.readEvents(record.id)
+      .filter((e) => e.type === 'note')
+      .map((e) => String((e as { message?: unknown }).message))
+      .filter((m) => m.startsWith('persona "elsewhere"'));
+    expect(notes).toEqual([
+      `persona "elsewhere": ${runner} keeps its own sub-agent tools — only Claude's Task/Agent are denied to a persona; dispatch children with cez task create, which is budgeted and visible`,
+    ]);
+  });
+
   it('a step without a persona denies nothing extra', async () => {
     const plain: WorkflowDef = { name: 'plain', source: 'file', steps: [{ id: 'p', prompt: '{{task}}' }] };
     const record = manager!.startRun(plain, { task: 'x', worktree: false, runner: 'claude' });

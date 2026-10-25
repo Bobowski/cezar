@@ -213,6 +213,10 @@ const RESUMABLE_BACKENDS: ReadonlySet<RunnerId> = new Set<RunnerId>(['claude', '
  *  persona's tool list is a note everywhere else (spec 2026-10-24-personas §5). */
 const TOOL_ALLOWLIST_BACKENDS: ReadonlySet<RunnerId> = new Set<RunnerId>(['claude', 'pi']);
 
+/** Backends with sub-agent tools of their own, which cezar cannot deny a persona the way it denies
+ *  Claude's Task/Agent (`PERSONA_DENIED_TOOLS`). */
+const OWN_SUBAGENT_BACKENDS: ReadonlySet<RunnerId> = new Set<RunnerId>(['opencode', 'copilot']);
+
 /** What a persona's tools became on this backend, for the transcript — ONE helper for the spawn
  *  and the Continue, so a resumed session says the same thing the first one did. */
 function personaToolNotes(resolution: PersonaResolution, authored: WorkflowStepDef, backend: RunnerId): string[] {
@@ -228,6 +232,9 @@ function personaToolNotes(resolution: PersonaResolution, authored: WorkflowStepD
   }
   if (resolution.subagentToolRefused) {
     notes.push(`persona "${persona.name}": Task (sub-agents) is never granted to a persona — dispatch children with cez task create, which is budgeted and visible`);
+  }
+  if (OWN_SUBAGENT_BACKENDS.has(backend)) {
+    notes.push(`persona "${persona.name}": ${backend} keeps its own sub-agent tools — only Claude's Task/Agent are denied to a persona; dispatch children with cez task create, which is budgeted and visible`);
   }
   return notes;
 }

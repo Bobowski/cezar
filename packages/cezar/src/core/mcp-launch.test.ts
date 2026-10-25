@@ -107,6 +107,14 @@ describe('launch-time MCP: mcp.json + mcp.local.json', () => {
     expect(parseMcpValue('${{ secrets.OPEN')).toHaveProperty('error');
   });
 
+  it('marks a server that resolved secrets, and OpenCode does not reach it', async () => {
+    write(privateMcpPath(repo), { keyed: { command: 'x', env: { K: '${{ secrets.K }}' } }, plain: { command: 'y' } });
+    const launch = await loadLaunchMcp(repo, async () => ({ values: { K: 'resolved-value' }, notes: [] }));
+    expect(launch.servers.map((s) => [s.name, s.secretBearing === true])).toEqual([['keyed', true], ['plain', false]]);
+    expect(mcpReachOf('stdio', { secretBearing: true }).find((r) => r.runner === 'opencode')).toMatchObject({ reach: 'no' });
+    expect(mcpReachOf('stdio', { secretBearing: true }).find((r) => r.runner === 'claude')).toMatchObject({ reach: 'yes' });
+  });
+
   it('reach: every runner, with Codex refusing sse and the ACP agents depending on their capabilities', () => {
     const reach = (transport: 'stdio' | 'http' | 'sse') => Object.fromEntries(mcpReachOf(transport).map((r) => [r.runner, r.reach]));
     expect(reach('stdio')).toEqual({ claude: 'yes', codex: 'yes', opencode: 'yes', cursor: 'no', pi: 'no', junie: 'yes', copilot: 'yes' });

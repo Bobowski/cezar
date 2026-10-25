@@ -1632,7 +1632,7 @@ export class RunManager {
     if (fromProject.length) onEvent({ type: 'note', message: `MCP servers from .ai/cezar/${PROJECT_MCP_FILE}: ${fromProject.join(', ')}` });
     if (fromPrivate.length) onEvent({ type: 'note', message: `private MCP servers from .ai/cezar/${PRIVATE_MCP_FILE}: ${fromPrivate.join(', ')}` });
     for (const server of servers) {
-      const reach = mcpReachOf(server.transport).find((entry) => entry.runner === backend);
+      const reach = mcpReachOf(server.transport, { secretBearing: server.secretBearing }).find((entry) => entry.runner === backend);
       outcomes.push(
         reach?.reach === 'no'
           ? { scope: scopeOf(server.name), name: server.name, state: 'failed', reason: reach.note ?? `${backend} cannot attach it` }

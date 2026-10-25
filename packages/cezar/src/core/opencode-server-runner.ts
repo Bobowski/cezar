@@ -31,7 +31,7 @@ import {
   type OpencodeUiMapperState,
   type OpencodeUiMapping,
 } from './opencode-ui-mapper.ts';
-import { opencodeConfigContent } from './private-mcp.ts';
+import { OPENCODE_SECRETS_NOTE, opencodeConfigContent, skippedServersNote } from './private-mcp.ts';
 
 export interface OpencodeRunnerOptions {
   /** Override the binary name/path; defaults to `opencode` on PATH. */
@@ -192,6 +192,8 @@ class OpencodeSession implements AgentSession {
   private timedOut = false;
   /** One teardown per session — see `terminate()`. */
   private signalled = false;
+  /** The withheld-MCP note is said once, not per server respawn. */
+  private mcpNoted = false;
 
   constructor(
     private readonly bin: string,
@@ -345,9 +347,12 @@ class OpencodeSession implements AgentSession {
       const env = buildChildEnv({ backend: 'opencode', extraEnv: this.spec.env });
       // Private MCP servers (spec 2026-10-07-private-project-mcp): OpenCode loads
       // OPENCODE_CONFIG_CONTENT after the project config, so these are added and win on a clash.
-      if (this.spec.mcpServers?.length) {
-        env.OPENCODE_CONFIG_CONTENT = opencodeConfigContent(this.spec.mcpServers, env.OPENCODE_CONFIG_CONTENT);
-      }
+      // That variable reaches every shell the agent runs, so a server holding resolved secrets stays out.
+      const servers = (this.spec.mcpServers ?? []).filter((server) => !server.secretBearing);
+      const withheld = (this.spec.mcpServers ?? []).filter((server) => server.secretBearing).map((server) => server.name);
+      if (withheld.length && !this.mcpNoted) this.emit({ type: 'note', message: skippedServersNote('opencode', withheld, OPENCODE_SECRETS_NOTE) });
+      this.mcpNoted = true;
+      if (servers.length) env.OPENCODE_CONFIG_CONTENT = opencodeConfigContent(servers, env.OPENCODE_CONFIG_CONTENT);
       const [file, argv] = disclaimedCommand(
         ...scriptAwareCommand(this.bin, ['serve', '--hostname', '127.0.0.1', '--port', String(port)]),
         env,

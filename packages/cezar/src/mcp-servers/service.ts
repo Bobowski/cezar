@@ -74,7 +74,7 @@ export async function listMcpServers(repoRoot: string, deps: ListMcpServersDeps)
       secrets: referenced,
       missingSecrets: referenced.filter((name) => !available.has(name)),
       shadowed: scope === 'project' && privateNames.has(server.name),
-      reach: mcpReachOf(server.transport),
+      reach: mcpReachOf(server.transport, { secretBearing: referenced.length > 0 }),
       ...(status ? { status } : {}),
     };
   };

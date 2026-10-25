@@ -15,7 +15,8 @@ import { RUNNER_IDS, type RunnerId } from './agent-runner.ts';
  *
  *  - `claude`   — `--mcp-config <0600 temp file>` (additive to the repo's MCP config);
  *  - `codex`    — `thread/start|resume` `config` overrides, one `mcp_servers.<name>` key each;
- *  - `opencode` — `OPENCODE_CONFIG_CONTENT` (loaded after the project config, so it wins);
+ *  - `opencode` — `OPENCODE_CONFIG_CONTENT` (loaded after the project config, so it wins) — never a
+ *    server holding resolved secrets, since the agent shell inherits that variable;
  *  - `junie`, `copilot` — ACP `session/new|load` `mcpServers`.
  *
  * `cursor` and `pi` have no launch-time MCP channel; a run on them gets a note instead.
@@ -50,6 +51,8 @@ export interface PrivateMcpServer {
   /** http/sse only. */
   url?: string;
   headers: Record<string, string>;
+  /** Carries resolved `${{ secrets.X }}` values (set at launch) — kept out of any channel the agent's shell inherits. */
+  secretBearing?: boolean;
 }
 
 /** The runners that can take private MCP servers at launch. */
@@ -278,8 +281,9 @@ export async function loadLaunchMcp(repoRoot: string, resolveSecrets: McpSecretR
       problems.push({ scope, name: server.name, message: `MCP server "${server.name}" skipped: ${resolved.error}` });
       continue;
     }
-    for (const name of referencedSecrets(server)) used.add(name);
-    servers.push(resolved);
+    const referenced = referencedSecrets(server);
+    for (const name of referenced) used.add(name);
+    servers.push(referenced.length > 0 ? { ...resolved, secretBearing: true } : resolved);
     scopes.set(server.name, scope);
   }
   const secretValues = [...used].map((name) => values[name]).filter((value): value is string => typeof value === 'string');
@@ -287,11 +291,19 @@ export async function loadLaunchMcp(repoRoot: string, resolveSecrets: McpSecretR
 }
 
 /**
+ * OpenCode takes launch-time servers only through `OPENCODE_CONFIG_CONTENT`, which every shell
+ * the agent runs inherits: a server carrying a resolved secret is never given to it.
+ */
+export const OPENCODE_SECRETS_NOTE =
+  'OpenCode takes launch-time MCP servers only through an env var its shell inherits, so a server with secrets is not given to it';
+
+/**
  * Whether a server of `transport` reaches each runner at launch — the per-agent table of spec
  * 2026-10-07-private-project-mcp, as Settings shows it.
  */
-export function mcpReachOf(transport: PrivateMcpTransport): McpServerReach[] {
+export function mcpReachOf(transport: PrivateMcpTransport, options: { secretBearing?: boolean } = {}): McpServerReach[] {
   return RUNNER_IDS.map((runner): McpServerReach => {
+    if (runner === 'opencode' && options.secretBearing) return { runner, reach: 'no', note: OPENCODE_SECRETS_NOTE };
     if (runner === 'cursor') return { runner, reach: 'no', note: 'Cursor Agent CLI reads MCP only from .cursor/mcp.json — no launch-time channel' };
     if (runner === 'pi') return { runner, reach: 'no', note: 'pi has no MCP support' };
     if (runner === 'codex' && transport === 'sse') return { runner, reach: 'no', note: 'Codex speaks stdio and streamable HTTP only' };

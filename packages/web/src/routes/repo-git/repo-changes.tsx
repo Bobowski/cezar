@@ -10,6 +10,7 @@ import { canPreviewMarkdown, Diff, type DiffHandle, type DiffMode } from '@/comp
 import { PageBody, PageTitle, PageToolbar } from '@/components/page'
 import { Button } from '@/components/ui/button'
 import { SidebarContent, SidebarGroup, SidebarGroupAction, SidebarGroupContent, SidebarGroupLabel } from '@/components/ui/sidebar'
+import { ListSkeleton } from '@/components/list-view'
 import { Spinner } from '@/components/ui/spinner'
 import { toast } from '@/components/ui/toaster'
 import { useIsDesktop } from '@/lib/use-desktop'
@@ -225,9 +226,8 @@ function IndexSection({ header }: { header: ReactNode }) {
       </PageToolbar>
 
       {index.isPending ? (
-        <PageBody data-slot="changes-loading" className="flex items-center justify-center gap-2 py-16 text-[13px] text-muted-foreground">
-          <Spinner />
-          Loading changes…
+        <PageBody data-slot="changes-loading">
+          <ListSkeleton label="Loading changes…" rows={4} rowClassName="h-24" />
         </PageBody>
       ) : index.isError ? (
         <RepoEmpty

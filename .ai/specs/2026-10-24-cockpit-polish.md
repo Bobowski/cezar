@@ -131,6 +131,10 @@ Consistency (§3.4):
    Git, as this surface spells them (⌃⌘F for F11 on a Mac, ⌘T only in the desktop shell).
    Reconciled: closing a tab is `Alt+W` on every surface — a browser keeps Ctrl/⌘+W and the
    desktop shell's window menu closes the window on it, so `Mod+W` stays reserved.
+6. ~~Loading skeletons instead of spinners on the four list pages~~ — `ListSkeleton`
+   (`components/list-view.tsx`) on Automations, the tracker's Issues, the Git Graph and the Git
+   Changes diff; Tasks, All tasks and GitHub already had skeletons. Spinners stay where something
+   small is in flight beside content (a fetch of more, a button's own work).
 
 ## 8. Verification
 

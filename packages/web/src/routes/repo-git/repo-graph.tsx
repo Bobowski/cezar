@@ -26,6 +26,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from '@/components/ui/sidebar'
+import { ListSkeleton } from '@/components/list-view'
 import { Spinner } from '@/components/ui/spinner'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { toast } from '@/components/ui/toaster'
@@ -177,9 +178,8 @@ export function RepoGraphSection({ header }: { header: ReactNode }) {
       </PageToolbar>
 
       {graph.isPending ? (
-        <PageBody className="flex items-center justify-center gap-2 py-16 text-[13px] text-muted-foreground">
-          <Spinner />
-          Loading the graph…
+        <PageBody>
+          <ListSkeleton label="Loading the graph…" rows={8} rowClassName="h-7" />
         </PageBody>
       ) : graph.isError ? (
         <RepoEmpty icon={<TriangleAlertIcon />} tone="danger" title="Could not load the graph" description={graph.error.message} />

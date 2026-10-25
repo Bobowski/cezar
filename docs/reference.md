@@ -698,6 +698,13 @@ others. Project tools take an optional `projectId`. Resources:
 token's scope is checked on the route each tool calls, whatever tools the
 client was shown.
 
+The cockpit's own **Chat** (sidebar → Chat) is this server's second client: a
+run in the checkout that cezar starts with `cezar mcp --tools all --as-run` —
+the chat's own address and run token, scoped to `read`, `tasks` and `author` on
+its project, never `admin`, push or PRs. It writes only under `.ai/cezar/`
+(Claude enforces it; other agents are told), and starts a task for anything
+else; the tasks it starts link back to it and report their status there.
+
 The same address points the shell CLIs at another machine:
 `CEZ_TOKEN=ceztok_… cez --server https://agents.example.dev task create "…"`
 (or `CEZ_SERVER`) starts a top-level task there. Prefer `CEZ_TOKEN` to

@@ -1,6 +1,6 @@
 # The cockpit chat — a run without a worktree that knows cezar
 
-> Status: proposed (2026-10-24), not built. Branch: `brutus`.
+> Status: built (2026-10-25) — see §9. Branch: `brutus`.
 > Builds on: `2026-10-24-cezar-mcp-server.md` (the tools it uses), `2026-10-20-trunk-based-projects.md`
 > (`worktree: false` runs in the checkout), `2026-10-07-private-project-mcp.md` (how a run is
 > handed MCP servers at launch), `2026-10-11-code-page.md` (the agent pane, which this replaces
@@ -80,3 +80,46 @@ model are the project's.
   `.ai/cezar/workflows/`; "start a task…" → a run exists with `createdBy`.
 - VPS: ask the chat for a workflow for fancy-fence-panels, commit it, start a task with it from
   the chat, watch it reach review in the same thread.
+
+## 9. As built
+
+- **The run.** `src/chat/chat.ts` holds what a chat has that a task does not: `CHAT_WORKFLOW`
+  (one agent step on `{{task}}`), the prompt (the spec's `builtin/cezar-chat.md`, a TS module
+  because `tsc` ships nothing it does not compile), `CHAT_ALLOWED_TOOLS` and the MCP entry.
+  `startRun` forces a chat in place and alone (no worktree, branch, read-only, autonomy, dispatch,
+  fork ref or variants). `ActiveRun.chat` is set at BOTH construction sites; through it a chat
+  takes no repo-root lease, gets the chat tools from the one `sessionTools` helper both session
+  sites call, gets no dispatch/automations/services CLI prompt (its tools are MCP), never lands
+  (`landingPolicy`, `land`, `landBeforeSettle`), never rests at review, and an idle close settles
+  `done` instead of the inactivity failure — Continue reopens it.
+- **"Author" scope.** `author` alone cannot `runs_create` (that is `tasks`'), so the chat's token
+  carries `read`, `runs.transcript`, `tasks` and `author` (`CHAT_TOKEN_SCOPES`) — never `admin` —
+  on its own project only, minus push, PR, land, Finish (which lands an in-place task), a task's
+  file writes and `/workspace/*`. It is a run token with a third claim (`scope: 'author'`) minted
+  per session launch by `mintChatRunToken`, verified by the guard BEFORE the auth-off shortcut,
+  so a local chat is bounded too; a task CLI's token is still minted only under enforced auth.
+  `isRunLive` is the token's lifetime, so it dies with the session.
+- **MCP.** `privateMcpForLaunch` appends the `cezar` stdio server (`node $CEZ_BIN mcp --tools all
+  --as-run`, env `CEZ_API_URL`/`CEZ_API_TOKEN`/`CEZ_TASK_ID`/`CEZ_PROJECT_ID`) to the private
+  servers at both session sites, replacing a private server of the same name. `--as-run` refuses
+  to start without the run's token, and never sends the host key. Over `/api/v1/mcp` a chat
+  principal is listed only the tools its token reaches, and scoped tools default to its project.
+  Without `CEZ_API_URL` (headless) or on a backend with no launch-time channel the chat runs
+  without it and says so in a note and in its prompt.
+- **createdBy.** `POST /runs` stamps `createdBy: chat:<id>` from the caller's chat token, never
+  from the body; a chat cannot start a chat (`403`). The status relay (`relayChatStatusNotes`,
+  owned by the `RunManager`) appends a `note` with `taskId` to the chat when such a task reaches
+  `waiting`, `review`, `done`, `failed` or `cancelled`; the first sighting after a boot is its
+  baseline, so a restart replays nothing.
+- **Cockpit.** `/chat` opens the pinned chat — the newest unarchived one, so New chat moves the
+  pin without new state — `/chat/new` the first-message composer (project default agent, or one
+  picked there; the thread's Continue pills switch it later), `/chat/:id` a chat. The thread is
+  the task workspace's conversation column; the header carries the tasks' chips and Archive. The
+  Changes panel reads `GET /repo/status`, keeps `.ai/cezar/` files, and commits them on the
+  checked-out branch with `/repo/stage` + `/repo/commit` (disabled while anything else is
+  staged), or reverts them with `/repo/unstage` + `/repo/discard` after a confirm — the Git page's
+  routes, so no route was added. A chat parked `waiting` no longer counts as an in-place task
+  busy in the checkout. Chats are left out of the Tasks lists, counts and unread badge.
+- **Not done:** the dry-run and VPS checks of §8 need a real agent calling the tools (the bundled
+  mock never calls MCP); the unit suites cover the launch spec, the token's bound, `createdBy`,
+  the relay and the panel.

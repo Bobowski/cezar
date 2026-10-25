@@ -6,7 +6,7 @@ import {
   type McpServerDefinition,
   type McpServersList,
 } from '@open-mercato/cezar-contract';
-import { isPrivateMcpTracked, loadPrivateMcp, loadProjectMcp, mcpReachOf, PRIVATE_TRACKED_PROBLEM, type PrivateMcpServer } from '../core/private-mcp.ts';
+import { loadPrivateMcp, loadProjectMcp, mcpReachOf, PRIVATE_TRACKED_PROBLEM, privateMcpTrackedProblem, type PrivateMcpServer } from '../core/private-mcp.ts';
 import { MCP_CATALOG } from '../mcp-catalog/catalog.ts';
 import type { SecretStore } from '../workspace/secrets.ts';
 import { privateOverrideHash, projectApprovalView, readPrivateOverrides } from './approval.ts';
@@ -52,15 +52,18 @@ export interface ListMcpServersDeps {
 }
 
 export async function listMcpServers(repoRoot: string, deps: ListMcpServersDeps): Promise<McpServersList> {
-  const [project, priv, statuses, available, approval, overrides, tracked] = await Promise.all([
+  const [project, priv, statuses, available, approval, overrides, trackCheck] = await Promise.all([
     loadProjectMcp(repoRoot),
     loadPrivateMcp(repoRoot),
     readMcpStatus(repoRoot),
     cezarSecretNames(deps.secrets, deps.project),
     projectApprovalView(repoRoot, { raw: deps.raw === true }),
     readPrivateOverrides(repoRoot),
-    isPrivateMcpTracked(repoRoot),
+    privateMcpTrackedProblem(repoRoot),
   ]);
+  // A check that failed refuses the file, but only a file with servers has anything to refuse.
+  const trackedProblem = trackCheck === PRIVATE_TRACKED_PROBLEM || priv.servers.length > 0 ? trackCheck : null;
+  const tracked = trackedProblem !== null;
   // Only an approval of the current content binds anything (spec 2026-10-24-easy-mcp §5).
   const boundOf = (name: string) => (approval.state === 'approved' ? (approval.bindings[name] ?? []) : []);
   // A tracked private file is refused at launch, so it replaces nothing.
@@ -98,7 +101,7 @@ export async function listMcpServers(repoRoot: string, deps: ListMcpServersDeps)
   return {
     project: project.servers.map((server) => row(server, 'project')),
     private: priv.servers.map((server) => row(server, 'private')),
-    problems: { project: project.problems, private: tracked ? [...priv.problems, PRIVATE_TRACKED_PROBLEM] : priv.problems },
+    problems: { project: project.problems, private: trackedProblem ? [...priv.problems, trackedProblem] : priv.problems },
     catalog: [...MCP_CATALOG],
     editable: deps.editable,
     approval,

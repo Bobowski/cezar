@@ -173,13 +173,22 @@ export function loadPrivateMcp(repoRoot: string): Promise<PrivateMcpLoad> {
 /**
  * A git-tracked `mcp.local.json` is repo content under a private name: a force-added file arriving
  * by pull or auto-sync would run, with secrets, unapproved — refused like the worktree scripts of a
- * tracked `config.json` (`isLifecycleConfigTracked`).
+ * tracked `config.json` (`isLifecycleConfigTracked`). Null when it is untracked (or there is no
+ * repository); a failing check refuses the file too, with its reason — never run on doubt.
  */
-export async function isPrivateMcpTracked(repoRoot: string): Promise<boolean> {
-  return promisify(execFile)('git', ['ls-files', '--error-unmatch', '--', join('.ai', 'cezar', PRIVATE_MCP_FILE)], { cwd: repoRoot }).then(
-    () => true,
-    () => false,
-  );
+export async function privateMcpTrackedProblem(repoRoot: string): Promise<string | null> {
+  const args = ['ls-files', '--error-unmatch', '--', join('.ai', 'cezar', PRIVATE_MCP_FILE)];
+  try {
+    await promisify(execFile)('git', args, { cwd: repoRoot, env: { ...process.env, LC_ALL: 'C' } });
+    return PRIVATE_TRACKED_PROBLEM;
+  } catch (err) {
+    const failure = err as { code?: unknown; stderr?: unknown; message?: string };
+    const stderr = typeof failure.stderr === 'string' ? failure.stderr.trim() : '';
+    // Exit 1 is `--error-unmatch` saying "not tracked"; outside a repository nothing can be.
+    if (failure.code === 1 || stderr.includes('not a git repository')) return null;
+    const reason = stderr.split('\n')[0] || failure.message || String(err);
+    return `${PRIVATE_MCP_FILE} is not used: whether git tracks it could not be checked (${reason})`;
+  }
 }
 
 export const PRIVATE_TRACKED_PROBLEM = `${PRIVATE_MCP_FILE} is tracked by git, so none of its servers is used — private MCP servers come only from an untracked local file. Untrack it: git rm --cached .ai/cezar/${PRIVATE_MCP_FILE}`;
@@ -303,8 +312,8 @@ export async function loadLaunchMcp(repoRoot: string, resolveSecrets: McpSecretR
   // One read of the committed file: the text the gate approves is the text that is parsed.
   const [projectRead, loadedPriv] = await Promise.all([readMcpText(projectMcpPath(repoRoot), PROJECT_MCP_FILE), loadPrivateMcp(repoRoot)]);
   const project = 'problem' in projectRead ? { servers: [], problems: [projectRead.problem] } : parseMcpFile(projectRead.text ?? '', PROJECT_MCP_FILE);
-  const tracked = loadedPriv.servers.length > 0 && (await isPrivateMcpTracked(repoRoot));
-  const priv = tracked ? { servers: [], problems: [...loadedPriv.problems, PRIVATE_TRACKED_PROBLEM] } : loadedPriv;
+  const trackedProblem = loadedPriv.servers.length > 0 ? await privateMcpTrackedProblem(repoRoot) : null;
+  const priv = trackedProblem ? { servers: [], problems: [...loadedPriv.problems, trackedProblem] } : loadedPriv;
   const problems: LaunchMcpProblem[] = [
     ...project.problems.map((message) => ({ scope: 'project' as const, message })),
     ...priv.problems.map((message) => ({ scope: 'private' as const, message })),

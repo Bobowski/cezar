@@ -109,6 +109,10 @@ Workspace-level, behind sign-in; the manifest at `/manifest.webmanifest` and the
   names are refused. A trailing dot is stripped before the check.
 - **Redirects.** The server POSTs with `redirect: 'error'`: a push service never redirects, so a
   3xx is `failed` and its location is never contacted.
+- **Accepted limitation: DNS.** The check reads the name, not what it resolves to. A public
+  hostname whose DNS answer is a private address is not detected; pinning the resolved address
+  would need a resolver in the send path, and the POST carries only an encrypted payload the
+  target cannot read.
 
 ## 5. Security
 

@@ -121,6 +121,12 @@ carries the task's title and status only — never a prompt, path or diff. Turni
 that device out, removes the subscription. Nothing is sent from a cockpit where no device enabled
 it, and a local cockpit never offers it (push needs HTTPS).
 
+The server only ever POSTs to an `https:` endpoint on a public host, never follows a redirect,
+and judges the host after URL normalisation (no loopback, private, link-local or NAT64-wrapped
+address, however it is spelled). One gap is accepted: the check reads the name, not its DNS
+answer, so a public hostname that resolves to a private address is not detected (spec
+2026-10-24-mobile-cockpit §4). The body sent there is encrypted for the subscribing browser.
+
 ## Withdrawing
 
 `cezar telemetry disable` or the switch in Settings → Privacy stops sending immediately — a

@@ -1,5 +1,5 @@
 import {
-  detectedUrlsSchema, discoveredCommandsSchema, startAppSetSchema, startAppStateSchema,
+  detectedUrlsSchema, discoveredCommandsSchema, projectDetectedUrlsSchema, terminalHistorySchema, startAppSetSchema, startAppStateSchema,
   workspaceLayoutsResponseSchema, workspaceLayoutsSchema,
   terminalCreateSchema, terminalInputSchema, terminalOutputQuerySchema, terminalOutputSchema,
   terminalResizeSchema, terminalSessionParamsSchema, terminalSessionSchema, terminalStateSchema,
@@ -53,7 +53,8 @@ import { peekTaskSlot, taskSlotEnv } from '../task-slot.ts';
 import { discoverCommands, installCommand } from './terminal/commands.ts';
 import { effectiveStartApp, readStartApp, writeStartApp } from '../start-app.ts';
 import { DetectedUrls } from './terminal/detected-urls.ts';
-import { processSnapshot } from './terminal/foreground.ts';
+import { freshProcessSnapshot, processSnapshot, type ProcessRow } from './terminal/foreground.ts';
+import { TerminalHistory, readTerminalHistory } from './terminal/history.ts';
 import { loadPty } from './terminal/pty-module.ts';
 import { discoverShells } from './terminal/shells.ts';
 import { TerminalSessions, type TerminalSessionInfo } from './terminal/sessions.ts';
@@ -86,7 +87,7 @@ import { trackerTriggerSchema, trackerAutomationOptionsSchema, trackerAutomation
 import type { IncomingMessage } from 'node:http';
 import { access, constants as fsConstants, mkdir, readFile, realpath, stat, statfs, unlink, writeFile } from 'node:fs/promises';
 import { renameWithRetry } from '../fs-rename.ts';
-import { homedir } from 'node:os';
+import { homedir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Hono, type Context } from 'hono';
@@ -366,7 +367,7 @@ import { buildCatalog, type Catalog } from '../mcp/catalog.ts';
 import { mcpRoutes } from '../mcp/http.ts';
 import { ensureHostKey } from '../auth/host-key.ts';
 import { authRoutes } from '../auth/routes.ts';
-import { enableRunTokens } from '../auth/run-tokens.ts';
+import { enableRunTokens, isRunToken } from '../auth/run-tokens.ts';
 import { AuthService } from '../auth/service.ts';
 import { createSocketHub, type SocketHub, type WsUpgradeVerdict } from './ws.ts';
 import { applyKeepAlive } from './keep-alive.ts';
@@ -544,6 +545,12 @@ export interface ServerDeps {
   /** The workspace terminal's session registry. Injectable so route tests drive a fake PTY
    *  instead of forking a real shell; defaults to a real one per server. */
   terminalSessions?: TerminalSessions;
+  /** Addresses the terminals printed. Injected by tests that feed a fake PTY's output through it. */
+  detectedUrls?: DetectedUrls;
+  /** The terminals' per-project history (spec 2026-10-24-code-page-terminal §3.3). Injected by tests. */
+  terminalHistory?: TerminalHistory;
+  /** A fresh process table, for the history's "is the shell at its prompt" check. Injected by tests. */
+  freshProcesses?: () => Promise<ProcessRow[] | null>;
   /** The host-telemetry sampler behind the `host` topic and the `/workspace/host-usage` route.
    *  Defaults to the process-wide singleton; injectable so tests can drive a frame shape (a
    *  container object, for instance) that CI machines do not have. */
@@ -1724,9 +1731,50 @@ export function createApp(deps: ServerDeps) {
   // a project context — the cockpit may switch projects with a build still running.
   // Addresses this task's terminals printed. Fed by the registry as output arrives, so a dev
   // server announcing itself is noticed without anyone polling for it.
-  const detectedUrls = new DetectedUrls();
+  const detectedUrls = deps.detectedUrls ?? new DetectedUrls();
   const terminalSessions = deps.terminalSessions ?? new TerminalSessions(undefined, detectedUrls);
   deps.onDispose?.(() => terminalSessions.closeAll());
+  const terminalHistory = deps.terminalHistory ?? new TerminalHistory();
+  /** Sessions an API token (an MCP client) opened: an agent's shell, whose lines are nobody's history. */
+  const historyExempt = new Set<string>();
+  const releaseEnded = terminalSessions.onEnded((id) => {
+    terminalHistory.forget(id);
+    historyExempt.delete(id);
+  });
+  deps.onDispose?.(releaseEnded);
+  /** A task's or an API token's request. A run token resolves as the host on a local cockpit, so its prefix counts too. */
+  const fromAgent = (c: Context): boolean => {
+    const kind = principalOf(c)?.kind;
+    const bearer = bearerOf(c.req.header('authorization'));
+    return kind === 'run' || kind === 'token' || (bearer !== undefined && isRunToken(bearer));
+  };
+  /** Every terminal-opening route calls this with the session it just made. */
+  const noteTerminalOpener = (c: Context, sessionId: string): void => {
+    if (fromAgent(c)) historyExempt.add(sessionId);
+  };
+  /**
+   * Keystrokes into a terminal, fed to the project's history beside the write (spec
+   * 2026-10-24-code-page-terminal §9). An agent's typing is nobody's history, nor is anything in a cockpit booted inside a task.
+   */
+  const typeInto = (c: Context, project: ProjectContext, sessionId: string, data: string): boolean => {
+    if (!fromAgent(c) && !historyExempt.has(sessionId) && !process.env.CEZ_TASK_ID) {
+      terminalHistory.typed(project.dataDir, sessionId, data, async () => {
+        const rows = await (deps.freshProcesses ?? freshProcessSnapshot)();
+        terminalSessions.observe(rows);
+        return rows === null ? null : terminalSessions.childCommands(sessionId, rows);
+      }, () => historySecrets(project));
+    }
+    return terminalSessions.write(sessionId, data);
+  };
+  /** The account cezar runs as — a tunnel line's login (tunnel spec §3.3). A container with no
+   *  passwd entry for its uid has none to say. */
+  const serverAccount = (): string | null => {
+    try {
+      return userInfo().username || null;
+    } catch {
+      return null;
+    }
+  };
 
   /**
    * Stop everything a task's terminals own: the shells, their process trees (a `npm run dev` and
@@ -7265,6 +7313,7 @@ export function createApp(deps: ServerDeps) {
       });
       if (!created.ok) return c.json({ error: created.reason }, 409);
       registerTerminalTopic(created.session.id);
+      noteTerminalOpener(c, created.session.id);
       return c.json(terminalSessionSchema.parse(withTopic(created.session)), 201);
     })
     .get(
@@ -7297,7 +7346,7 @@ export function createApp(deps: ServerDeps) {
         if (refusal) return c.json({ error: refusal }, 409);
         // A write to a shell that has already exited is not an error: the client may not have
         // learned about the exit yet, and the exit code is in every output read anyway.
-        return c.json({ delivered: terminalSessions.write(session.id, c.req.valid('json').data) });
+        return c.json({ delivered: typeInto(c, c.get('project'), session.id, c.req.valid('json').data) });
       },
     )
     .post(
@@ -7367,6 +7416,7 @@ export function createApp(deps: ServerDeps) {
       const session = terminalFor(c.req.valid('param'));
       if (!session) return c.json({ error: 'terminal session not found' }, 404);
       terminalSessions.kill(session.id);
+      terminalHistory.forget(session.id);
       return c.json({ stopped: true });
     });
 
@@ -7842,6 +7892,15 @@ export function createApp(deps: ServerDeps) {
       ...projects.filter((entry) => entry.id !== 'default')
         .map((entry) => refreshStoredSecrets(`project:${entry.id}`, { kind: 'project', projectId: entry.id, root: entry.root })),
     ]);
+  };
+  /** What a terminal history line is scrubbed of (spec 2026-10-24-code-page-terminal §9): the run log's values plus this project's and the workspace's stored secrets. */
+  const historySecrets = async (project: ProjectContext): Promise<readonly string[]> => {
+    await Promise.all([
+      refreshStoredSecrets('workspace', { kind: 'workspace' }),
+      ...(project.id === 'default' ? [] : [refreshStoredSecrets(`project:${project.id}`, { kind: 'project', projectId: project.id, root: project.root })]),
+    ]);
+    const stored = [dockerLogStored.get('workspace'), dockerLogStored.get(`project:${project.id}`)].flatMap((entry) => entry?.values ?? []);
+    return [...new Set([...project.store.redactionSecrets(), ...stored])].sort((a, b) => b.length - a.length);
   };
   const dockerLogSecrets = (): readonly string[] => {
     const values = new Set<string>();
@@ -9476,6 +9535,39 @@ export function createApp(deps: ServerDeps) {
         ...(binding.available ? { shells: discoverShells() } : {}),
       }), 200);
     })
+    // The task drawer's two strips and the completion's history, for the project's own terminals
+    // (spec 2026-10-24-code-page-terminal §4). Same shapes as the run routes, same lack of a gate
+    // for the first two; the history is what the user typed, so it follows the terminal's policy.
+    .get('/repo/terminal/urls', async (c) => {
+      const urls = await detectedUrls.refresh(projectTerminalOwner(c.get('project').id));
+      // A hosted cockpit's strip may offer the tunnel line, which logs in as this account; its
+      // links know a gateway address by the pool's public ports.
+      const hosted = !capabilities().localHandoff;
+      const sshUser = hosted ? serverAccount() : null;
+      const gatewayPorts = hosted && previewGateways.enabled ? [...previewGateways.publicPortList] : null;
+      c.header('Cache-Control', 'no-store');
+      return c.json(
+        projectDetectedUrlsSchema.parse({ urls, ...(sshUser ? { sshUser } : {}), ...(gatewayPorts ? { gatewayPorts } : {}) }),
+        200,
+      );
+    })
+    .get('/repo/terminal/commands', async (c) => {
+      const { root, dataDir } = c.get('project');
+      // The main checkout has no setup scripts of its own to prepare it, so the install hint stands.
+      const [commands, install] = await Promise.all([discoverCommands(root), installCommand(root)]);
+      const recipe = effectiveStartApp(await readStartApp(dataDir, root));
+      return c.json(
+        discoveredCommandsSchema.parse({ commands, ...(install ? { install } : {}), ...(recipe ? { recipe } : {}) }),
+        200,
+      );
+    })
+    .get('/repo/terminal/history', async (c) => {
+      const refusal = terminalPolicyRefusal(capabilities());
+      if (refusal) return c.json({ error: refusal }, 409);
+      c.header('Cache-Control', 'no-store');
+      const project = c.get('project');
+      return c.json(terminalHistorySchema.parse({ lines: await readTerminalHistory(project.dataDir, await historySecrets(project)) }), 200);
+    })
     .post('/repo/terminal', jsonZodValidator(terminalCreateSchema), async (c) => {
       const project = c.get('project');
       const refusal = terminalPolicyRefusal(capabilities());
@@ -9488,6 +9580,7 @@ export function createApp(deps: ServerDeps) {
       });
       if (!created.ok) return c.json({ error: created.reason }, 409);
       registerTerminalTopic(created.session.id);
+      noteTerminalOpener(c, created.session.id);
       return c.json(terminalSessionSchema.parse(withTopic(created.session)), 201);
     })
     .get('/repo/terminal/:sessionId/output', queryZodValidator(terminalOutputQuerySchema), async (c) => {
@@ -9505,7 +9598,7 @@ export function createApp(deps: ServerDeps) {
       if (!session) return c.json({ error: 'terminal session not found' }, 404);
       const refusal = terminalPolicyRefusal(capabilities());
       if (refusal) return c.json({ error: refusal }, 409);
-      return c.json({ delivered: terminalSessions.write(session.id, c.req.valid('json').data) }, 200);
+      return c.json({ delivered: typeInto(c, c.get('project'), session.id, c.req.valid('json').data) }, 200);
     })
     .post('/repo/terminal/:sessionId/resize', jsonZodValidator(terminalResizeSchema), async (c) => {
       const session = projectTerminalFor(c.get('project'), c.req.param('sessionId'));
@@ -9520,6 +9613,7 @@ export function createApp(deps: ServerDeps) {
       const session = projectTerminalFor(c.get('project'), c.req.param('sessionId'));
       if (!session) return c.json({ error: 'terminal session not found' }, 404);
       terminalSessions.kill(session.id);
+      terminalHistory.forget(session.id);
       return c.json({ stopped: true }, 200);
     });
 
@@ -9945,6 +10039,8 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
   const automationsEnabled = () => resolveCapabilities(process.env, deps.bindHost).automations;
   let rescheduleAutomations = () => {};
   const appCleanups: Array<() => void> = [];
+  // Held here so shutdown can wait for the lines already typed to be written (spec 2026-10-24-code-page-terminal §9).
+  const terminalHistory = deps.terminalHistory ?? new TerminalHistory();
   // One instance for the route guard and the upgrade hook, so a session revoked through one is
   // gone for the other.
   const auth = deps.auth ?? new AuthService();
@@ -9971,6 +10067,7 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
     ...deps,
     auth,
     backup,
+    terminalHistory,
     onDispose: (cleanup) => { appCleanups.push(cleanup); deps.onDispose?.(cleanup); },
     contexts: sharedContexts,
     automationStore: bootAutomationStore,
@@ -10110,7 +10207,7 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
       coordinator.stop();
       automationScheduler.stop();
       shutdownPromise = (async () => {
-        const results = await Promise.allSettled([deps.manager.lifecycle.shutdown(), sharedContexts.shutdownAll()]);
+        const results = await Promise.allSettled([deps.manager.lifecycle.shutdown(), sharedContexts.shutdownAll(), terminalHistory.flushed()]);
         deps.manager.dispose();
         deps.store.flush({throwOnError: true});
         const failure = results.find(result => result.status === 'rejected');

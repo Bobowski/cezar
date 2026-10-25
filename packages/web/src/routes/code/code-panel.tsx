@@ -5,18 +5,22 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { queryScope, type TerminalSession } from '@open-mercato/cezar-api-client'
 import { serviceAction } from '@/api/client'
 import {
-  createCodeTerminal, getCodeTerminal, readCodeTerminal, resizeCodeTerminal, stopCodeTerminal, treeKey, writeCodeTerminal,
-  type CodeTree,
+  createCodeTerminal, getCodeTerminal, getProjectTerminalHistory, getProjectTerminalUrls, readCodeTerminal, resizeCodeTerminal, stopCodeTerminal, treeKey,
+  writeCodeTerminal, type CodeTree,
 } from '@/api/code'
 import { queryKeys } from '@/api/queries'
 import { useServices } from '@/api/services'
+import { promptStateOf } from '@/components/terminal/completion'
+import { DetectedUrlsStrip } from '@/components/terminal/detected-urls-strip'
+import { DiscoveredCommandsStrip } from '@/components/terminal/discovered-commands'
+import { terminalCommands, type TerminalScope } from '@/components/terminal/scope'
 import { Button } from '@/components/ui/button'
 import { IconTooltip } from '@/components/ui/icon-tooltip'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from '@/components/ui/toaster'
 import { cn } from '@/lib/utils'
 import { ServiceLog, ServiceRow } from '@/routes/services/services'
-import { TerminalPane, type TerminalIo } from '@/routes/task-workspace/terminal-pane'
+import { TerminalPane, type TerminalCompletion, type TerminalIo } from '@/routes/task-workspace/terminal-pane'
 
 import type { CodePanel } from './code-state'
 
@@ -26,13 +30,17 @@ import type { CodePanel } from './code-state'
  * scrolling while the other is looked at. Search lives in the sidebar (`code-sidebar.tsx`).
  */
 export function CodePanelView({
-  tree, panel, onPanel, initialTerminal = null,
+  tree, panel, onPanel, initialTerminal = null, paths = [], onOpenBrowser,
 }: {
   tree: CodeTree
   panel: CodePanel
   onPanel: (panel: CodePanel | null) => void
   /** The session to show first — one Docker's Exec opened (spec 2026-10-23-docker-management §3.5). */
   initialTerminal?: string | null
+  /** The checkout's paths, for path completion (spec 2026-10-24-code-page-terminal §3.3). */
+  paths?: readonly string[]
+  /** Opens an address in a Browser editor tab (spec 2026-10-24-code-page-terminal §3.1–§3.2). */
+  onOpenBrowser?: (url: string) => void
 }) {
   const [seen, setSeen] = useState<ReadonlySet<CodePanel>>(new Set([panel]))
   useEffect(() => setSeen((current) => (current.has(panel) ? current : new Set([...current, panel]))), [panel])
@@ -55,7 +63,9 @@ export function CodePanelView({
       <div className="relative min-h-0 flex-1">
         {tabs.map((tab) => (seen.has(tab) ? (
           <TabsContent key={tab} value={tab} forceMount className="absolute inset-0 data-[state=inactive]:invisible data-[state=inactive]:pointer-events-none">
-            {tab === 'terminal' ? <TerminalTab tree={tree} active={shown === 'terminal'} initial={initialTerminal} /> : <ServicesTab active={shown === 'services'} />}
+            {tab === 'terminal' ? (
+              <TerminalTab tree={tree} active={shown === 'terminal'} initial={initialTerminal} paths={paths} onOpenBrowser={onOpenBrowser} />
+            ) : <ServicesTab active={shown === 'services'} />}
           </TabsContent>
         ) : null))}
       </div>
@@ -63,10 +73,66 @@ export function CodePanelView({
   )
 }
 
-function TerminalTab({ tree, active, initial }: { tree: CodeTree; active: boolean; initial: string | null }) {
+function TerminalTab({
+  tree, active, initial, paths, onOpenBrowser,
+}: {
+  tree: CodeTree
+  active: boolean
+  initial: string | null
+  paths: readonly string[]
+  onOpenBrowser?: (url: string) => void
+}) {
   const queryClient = useQueryClient()
   const key = ['code', 'terminal', queryScope(), treeKey(tree)] as const
   const state = useQuery({ queryKey: key, queryFn: () => getCodeTerminal(tree) })
+  const scope = useMemo<TerminalScope>(() => (tree.kind === 'main' ? { kind: 'project' } : { kind: 'run', runId: tree.runId }), [tree])
+  // The completion's sources (spec 2026-10-24-code-page-terminal §3.3): read once the terminal is
+  // looked at, and the history again after each line the user submits.
+  const available = state.data?.available === true
+  const commands = useQuery({
+    queryKey: ['code', 'terminal-commands', queryScope(), treeKey(tree)],
+    queryFn: () => terminalCommands(scope),
+    enabled: active && available,
+    staleTime: 60_000,
+  })
+  // The gateway pool's public ports, for links (§3.2): server configuration, read once.
+  const gateway = useQuery({
+    queryKey: ['code', 'terminal-gateway-ports', queryScope()],
+    queryFn: async () => (await getProjectTerminalUrls()).gatewayPorts ?? [],
+    enabled: active && available,
+    staleTime: Infinity,
+  })
+  const historyKey = ['code', 'terminal-history', queryScope()] as const
+  const history = useQuery({ queryKey: historyKey, queryFn: getProjectTerminalHistory, enabled: active && available })
+  const historyRefresh = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (historyRefresh.current) clearTimeout(historyRefresh.current) }, [])
+  const completion = useMemo<TerminalCompletion>(() => ({
+    commands: (commands.data?.commands ?? []).map((entry) => entry.command),
+    history: history.data?.lines ?? [],
+    paths,
+    // The server decides whether a line is kept, once the shell had it; ask a moment later.
+    onSubmitted: () => {
+      if (historyRefresh.current) clearTimeout(historyRefresh.current)
+      historyRefresh.current = setTimeout(() => void queryClient.invalidateQueries({ queryKey: historyKey }), 800)
+    },
+    // The process table's word on the shell (`busy`, `promptStateOf`). `workdir` is where it
+    // is now, relative to where it opened — the tree's root.
+    atPrompt: async (sessionId) => {
+      const fresh = await queryClient.fetchQuery({ queryKey: key, queryFn: () => getCodeTerminal(tree), staleTime: 0 })
+      return promptStateOf(fresh.sessions.find((entry) => entry.id === sessionId))
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [commands.data, history.data, paths, queryClient, tree])
+  // A picked command runs in a NEW terminal (task-workspace spec §6), never the one in view.
+  const runCommand = (command: string) => {
+    void createCodeTerminal(tree, {})
+      .then(async (session) => {
+        setCurrent(session.id)
+        await queryClient.invalidateQueries({ queryKey: key })
+        await writeCodeTerminal(tree, session.id, `${command}\r`)
+      })
+      .catch((error: unknown) => toast(error instanceof Error ? error.message : String(error), { tone: 'danger' }))
+  }
   const [current, setCurrent] = useState<string | null>(initial)
   // A session handed in from outside is already open: no empty-panel shell on top of it.
   const opened = useRef(initial !== null)
@@ -94,8 +160,22 @@ function TerminalTab({ tree, active, initial }: { tree: CodeTree; active: boolea
   }
   return (
     <div className="flex h-full min-h-0">
-      <div className="relative min-w-0 flex-1">
-        {sessions.map((session) => <CheckoutTerminal key={session.id} tree={tree} session={session} active={active && shown?.id === session.id} />)}
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* Nothing opens on its own: the strip lists, the user clicks (§3.1). */}
+        {state.data ? <DetectedUrlsStrip scope={scope} onOpen={onOpenBrowser} active={active} /> : null}
+        <div className="relative min-h-0 flex-1">
+          {sessions.map((session) => (
+            <CheckoutTerminal
+              key={session.id}
+              tree={tree}
+              session={session}
+              active={active && shown?.id === session.id}
+              completion={completion}
+              onOpenBrowser={onOpenBrowser}
+              gatewayPorts={gateway.data}
+            />
+          ))}
+        </div>
       </div>
       <ul aria-label="Terminals" className="flex w-44 shrink-0 flex-col gap-0.5 overflow-y-auto border-l border-border p-1">
         {sessions.map((session) => (
@@ -118,18 +198,30 @@ function TerminalTab({ tree, active, initial }: { tree: CodeTree; active: boolea
             <PlusIcon aria-hidden="true" /> New terminal
           </Button>
         </li>
+        <li>
+          <DiscoveredCommandsStrip scope={scope} onRun={runCommand} />
+        </li>
       </ul>
     </div>
   )
 }
 
-function CheckoutTerminal({ tree, session, active }: { tree: CodeTree; session: TerminalSession; active: boolean }) {
+function CheckoutTerminal({
+  tree, session, active, completion, onOpenBrowser, gatewayPorts,
+}: {
+  tree: CodeTree
+  session: TerminalSession
+  active: boolean
+  completion: TerminalCompletion
+  onOpenBrowser?: (url: string) => void
+  gatewayPorts?: readonly number[]
+}) {
   const io = useMemo<TerminalIo>(() => ({
     read: (cursor) => readCodeTerminal(tree, session.id, cursor),
     write: (data) => writeCodeTerminal(tree, session.id, data),
     resize: (cols, rows) => resizeCodeTerminal(tree, session.id, cols, rows),
   }), [tree, session.id])
-  return <TerminalPane runId="" io={io} session={session} active={active} />
+  return <TerminalPane runId="" io={io} session={session} active={active} completion={completion} onOpenBrowser={onOpenBrowser} gatewayPorts={gatewayPorts} />
 }
 
 function ServicesTab({ active }: { active: boolean }) {

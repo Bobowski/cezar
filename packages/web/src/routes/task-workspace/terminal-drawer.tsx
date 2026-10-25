@@ -33,7 +33,8 @@ import {
   MIN_DRAWER_HEIGHT,
   clampDrawerHeight,
 } from './drawer-state'
-import { CommandPicker, DetectedUrlsStrip } from './terminal-extras'
+import { DetectedUrlsStrip } from '@/components/terminal/detected-urls-strip'
+import { DiscoveredCommandsStrip } from '@/components/terminal/discovered-commands'
 import { TerminalPane } from './terminal-pane'
 
 /**
@@ -250,7 +251,7 @@ export function TerminalDrawer({
     >
       {fill ? null : <DrawerResizeHandle height={height} onHeightChange={onHeightChange} />}
 
-      {unavailable ? null : <DetectedUrlsStrip runId={runId} onOpen={onOpenInBrowser} />}
+      {unavailable ? null : <DetectedUrlsStrip scope={{ kind: 'run', runId }} onPreview={onOpenInBrowser} />}
 
       <header className="flex h-10 shrink-0 items-center gap-1.5 pl-3 pr-2">
         <TerminalIcon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
@@ -334,7 +335,7 @@ export function TerminalDrawer({
             </span>
           </span>
         ) : null}
-        {unavailable ? null : <CommandPicker runId={runId} onRun={runCommand} />}
+        {unavailable ? null : <DiscoveredCommandsStrip scope={{ kind: 'run', runId }} onRun={runCommand} />}
         {active?.busy === true ? (
           <Button
             variant="ghost"

@@ -131,18 +131,100 @@ export function processSnapshot(now = Date.now()): Promise<ProcessRow[] | null> 
   return inFlight;
 }
 
+/** A fresh read slower than this is killed: the history's check has given up on it by then, and
+ *  a hung `ps` must not hold the one slot (spec 2026-10-24-code-page-terminal §9). */
+export const FRESH_SNAPSHOT_TIMEOUT_MS = 300;
+/** Killed reads whose child has not closed yet (a `ps` in D-state ignores SIGKILL); at this many, no `ps` is spawned. */
+export const MAX_STUCK_SNAPSHOT_READS = 3;
+
+/** One process-table read; it must stop (kill its child) when `signal` aborts, and call `exited`
+ *  once that child has closed — after a kill, possibly long after the read itself settled. */
+export type ProcessTableRead = (signal: AbortSignal, exited: () => void) => Promise<ProcessRow[] | null>;
+
+/**
+ * Fresh snapshots, at most one `ps` at a time per host. A caller never gets a table read begun
+ * before it asked: one arriving while a read runs shares the single read queued behind it, so a
+ * burst of lines costs two `ps`, not one each. A read past `timeoutMs` is aborted and answers null.
+ */
+export function freshSnapshotReader(
+  read: ProcessTableRead = readProcessTable,
+  timeoutMs = FRESH_SNAPSHOT_TIMEOUT_MS,
+  maxStuck = MAX_STUCK_SNAPSHOT_READS,
+): () => Promise<ProcessRow[] | null> {
+  let running: Promise<ProcessRow[] | null> | undefined;
+  let queued: Promise<ProcessRow[] | null> | undefined;
+  let stuck = 0;
+  const launch = (): Promise<ProcessRow[] | null> => {
+    // Unknown is the safe answer: the history then keeps nothing.
+    if (stuck >= maxStuck) return Promise.resolve(null);
+    const controller = new AbortController();
+    const at = Date.now();
+    let killed = false;
+    let closed = false;
+    // Stuck from the kill until the child closes: execFile answers an abort before the child exits.
+    const exited = () => {
+      if (closed) return;
+      closed = true;
+      if (killed) stuck -= 1;
+    };
+    const current = new Promise<ProcessRow[] | null>((resolve) => {
+      const timer = setTimeout(() => {
+        killed = true;
+        if (!closed) stuck += 1;
+        controller.abort();
+        resolve(null);
+      }, timeoutMs);
+      timer.unref?.();
+      read(controller.signal, exited).then(
+        (rows) => {
+          clearTimeout(timer);
+          if (rows !== null && !killed) snapshot = { at, rows };
+          resolve(rows);
+        },
+        () => {
+          clearTimeout(timer);
+          resolve(null);
+        },
+      );
+    });
+    running = current;
+    void current.then(() => {
+      if (running === current) running = undefined;
+    });
+    return current;
+  };
+  return () => {
+    if (!running) return launch();
+    queued ??= running.then(() => {
+      queued = undefined;
+      return launch();
+    });
+    return queued;
+  };
+}
+
+/**
+ * A snapshot taken NOW, never the cached one: the terminal history asks whether a shell sits at
+ * its prompt at the instant a line begins, and a second-old answer would let a password typed
+ * into a `sudo` started a moment ago pass for a command (spec 2026-10-24-code-page-terminal §5).
+ */
+export const freshProcessSnapshot = freshSnapshotReader();
+
 /** Test seam: forget the cached snapshot. */
 export function resetProcessSnapshot(): void {
   snapshot = undefined;
   inFlight = undefined;
 }
 
-function readProcessTable(): Promise<ProcessRow[] | null> {
+function readProcessTable(signal?: AbortSignal, exited?: () => void): Promise<ProcessRow[] | null> {
   return new Promise((resolve) => {
     // Windows has no `ps`, and a hardened container can hide the table; both land on `null`,
     // which says "unknown" rather than "nothing running".
-    execFile('ps', ['-axo', 'pid=,ppid=,command='], { maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+    const options = { maxBuffer: 8 * 1024 * 1024, killSignal: 'SIGKILL' as const, ...(signal ? { signal } : {}) };
+    const child = execFile('ps', ['-axo', 'pid=,ppid=,command='], options, (error, stdout) => {
       resolve(error ? null : parseProcessRows(stdout));
     });
+    // `close` follows a failed spawn too, so a missing `ps` is never counted stuck.
+    if (exited) child.once('close', exited);
   });
 }

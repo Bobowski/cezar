@@ -204,6 +204,11 @@ export class PreviewGateways {
     return this.ports.length > 0;
   }
 
+  /** The ports a browser reaches the pool at — what a gateway address can be on. */
+  get publicPortList(): readonly number[] {
+    return this.publicPorts;
+  }
+
   /** How many listeners are open — for tests and for nothing else. */
   get size(): number {
     return this.entries.size;

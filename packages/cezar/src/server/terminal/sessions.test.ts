@@ -319,6 +319,25 @@ describe('tab labels', () => {
     expect(sessions.get(session.id)?.label).toBe('npm test');
   });
 
+  it('says where the shell is now, relative to where it started, where the host can tell', async () => {
+    const spawn = vi.fn((): PtyProcess => new FakePty());
+    let dir: string | null = '/tmp/wt/src/lib';
+    const sessions = new TerminalSessions(async () => ({ available: true, module: { spawn } }), undefined, () => null, () => dir);
+    const session = await open(sessions);
+    sessions.observe([]);
+    expect(sessions.get(session.id)?.workdir).toBe('src/lib/');
+    dir = '/tmp/wt';
+    sessions.observe([]);
+    expect(sessions.get(session.id)?.workdir).toBe('');
+    // `cd /tmp/wtx` is not inside `/tmp/wt`; a tree path is no help there.
+    dir = '/tmp/wtx';
+    sessions.observe([]);
+    expect(sessions.get(session.id)?.workdir).toBeNull();
+    dir = null;
+    sessions.observe([]);
+    expect(sessions.get(session.id)).not.toHaveProperty('workdir');
+  });
+
   it('leaves an exited session last label alone', async () => {
     const { sessions, spawned } = harness();
     const session = await open(sessions);

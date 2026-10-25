@@ -29,6 +29,9 @@ export const terminalSessionSchema = z.object({
   /** `null` = this host cannot read its process table (no `ps`), so busy-ness is unknown. The
    *  cockpit treats anything but `false` as "something may be running". */
   busy: z.boolean().nullable(),
+  /** Where the shell is now, relative to `cwd`, slash-terminated (`''` = `cwd`); `null` once it
+   *  left `cwd`; absent where the host cannot say (no `/proc`). Spec 2026-10-24-code-page-terminal §3.3. */
+  workdir: z.string().nullable().optional(),
   /** The WebSocket topic that wakes on new output. Local cockpits subscribe; hosted ones poll,
    *  because a browser WebSocket cannot carry reverse-proxy credentials. */
   topic: z.string(),
@@ -140,3 +143,25 @@ export const terminalSessionParamsSchema = z.object({
   sessionId: z.string(),
 });
 export type TerminalSessionParams = z.infer<typeof terminalSessionParamsSchema>;
+
+/**
+ * The Code page's project terminals (spec `.ai/specs/2026-10-24-code-page-terminal.md` §4): the
+ * run route's address list, plus the account a tunnel line logs in as — sent by a hosted cockpit
+ * only, where the strip may offer the tunnel command (tunnel spec §3.3).
+ */
+export const projectDetectedUrlsSchema = detectedUrlsSchema.extend({
+  sshUser: z.string().optional(),
+  /** The preview gateway's public ports, on a hosted cockpit with a pool: the only ports on its
+   *  hostname that a link may treat as a gateway address (§3.2). */
+  gatewayPorts: z.array(z.number().int()).optional(),
+});
+export type ProjectDetectedUrlsResponse = z.infer<typeof projectDetectedUrlsSchema>;
+
+/** Lines kept per project (spec §3.3). */
+export const TERMINAL_HISTORY_CAP = 500;
+
+/** What the user typed at this project's shell prompts: newest first, deduped, capped. */
+export const terminalHistorySchema = z.object({
+  lines: z.array(z.string()).max(TERMINAL_HISTORY_CAP),
+});
+export type TerminalHistoryResponse = z.infer<typeof terminalHistorySchema>;

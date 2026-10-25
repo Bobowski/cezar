@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readlinkSync, realpathSync } from 'node:fs';
 
 import { SCAN_OVERLAP, type DetectedUrls } from './detected-urls.ts';
 import { foregroundCommand, hasForeground, type ProcessRow } from './foreground.ts';
@@ -43,6 +44,31 @@ export const projectTerminalOwner = (projectId: string): string => `project:${pr
 /** The owner key of one pinned service's session. */
 export const serviceTerminalOwner = (projectId: string, serviceId: string): string => `service:${projectId}:${serviceId}`;
 
+/** A shell's working directory, from Linux's `/proc`; null anywhere else, or once it is gone. */
+function procWorkdir(pid: number): string | null {
+  if (process.platform !== 'linux') return null;
+  try {
+    return readlinkSync(`/proc/${pid}/cwd`);
+  } catch {
+    return null;
+  }
+}
+
+function realCwd(cwd: string): string {
+  try {
+    return realpathSync(cwd);
+  } catch {
+    return cwd;
+  }
+}
+
+/** `now` relative to `start`, slash-terminated (`''` = `start`), or null when it lies outside. */
+export function relativeWorkdir(start: string, now: string): string | null {
+  const base = start.replace(/\/+$/, '');
+  if (now === base) return '';
+  return now.startsWith(`${base}/`) ? `${now.slice(base.length + 1).replace(/\/+$/, '')}/` : null;
+}
+
 /** How long a session that has EXITED is kept so its last output and exit code can still be read
  *  (a client that was mid-poll, or a drawer reopened a moment later). */
 const EXITED_RETENTION_MS = 60_000;
@@ -75,6 +101,12 @@ export interface TerminalSessionInfo {
    * anything but `false` as "ask first".
    */
   busy: boolean | null;
+  /**
+   * Where the shell is NOW, relative to `cwd` with a trailing slash (`''` = `cwd` itself) — path
+   * completion lists from here (spec 2026-10-24-code-page-terminal §3.3). `null`: it left `cwd`.
+   * Absent where the host cannot say (no `/proc`: macOS, Windows).
+   */
+  workdir?: string | null;
 }
 
 export interface TerminalRead {
@@ -102,6 +134,8 @@ interface Entry {
   /** The tail of the previous chunk, re-scanned with the next one so an address split across two
    *  PTY writes is still found whole. */
   scanTail: string;
+  /** `cwd` with its symlinks resolved — what `/proc/<pid>/cwd` is compared against. */
+  realCwd: string;
   /** Counted against `MAX_SERVICE_SESSIONS` rather than `MAX_SESSIONS`. */
   service: boolean;
   /** `label` was given at creation and is not the process table's to change. */
@@ -150,6 +184,26 @@ export function closeAllTerminals(): void {
 
 export class TerminalSessions {
   private entries = new Map<string, Entry>();
+  private readonly endedListeners = new Set<(id: string) => void>();
+
+  /** Fires when a session's shell exits and again when it is forgotten (killed, reaped, closed):
+   *  per-session state kept elsewhere — the history's line — goes then. */
+  onEnded(listener: (id: string) => void): () => void {
+    this.endedListeners.add(listener);
+    return () => {
+      this.endedListeners.delete(listener);
+    };
+  }
+
+  private ended(id: string): void {
+    for (const listener of [...this.endedListeners]) {
+      try {
+        listener(id);
+      } catch {
+        // A listener must not be able to break an exit or a shutdown.
+      }
+    }
+  }
 
   /** `binding` is injectable so tests drive a fake PTY and never fork a real shell. `urls`, when
    *  given, is fed every chunk of output so a task's printed addresses are collected as they
@@ -159,6 +213,7 @@ export class TerminalSessions {
     private readonly binding: typeof loadPty = loadPty,
     private readonly urls?: DetectedUrls,
     private readonly readTree: () => TreeRow[] | null = readProcessTreeSync,
+    private readonly readWorkdir: (pid: number) => string | null = procWorkdir,
   ) {
     registries.add(this);
   }
@@ -222,6 +277,7 @@ export class TerminalSessions {
       listeners: new Set(),
       disposers: [],
       scanTail: '',
+      realCwd: realCwd(input.cwd),
     };
     this.entries.set(entry.info.id, entry);
 
@@ -230,6 +286,7 @@ export class TerminalSessions {
       child.onExit(({ exitCode }) => {
         entry.info.exitCode = exitCode;
         this.notify(entry);
+        this.ended(entry.info.id);
         // Keep the corpse briefly so a client still polling sees the last line and the code.
         entry.reap = setTimeout(() => this.remove(entry.info.id), EXITED_RETENTION_MS);
         entry.reap.unref?.();
@@ -241,6 +298,14 @@ export class TerminalSessions {
 
   get(id: string): TerminalSessionInfo | null {
     return this.entries.get(id)?.info ?? null;
+  }
+
+  /** The commands of a live session's shell's direct children in `rows` — the history's prompt
+   *  check (spec 2026-10-24-code-page-terminal §5). Null for an unknown or exited session. */
+  childCommands(id: string, rows: readonly ProcessRow[]): string[] | null {
+    const entry = this.entries.get(id);
+    if (!entry || entry.info.exitCode !== null) return null;
+    return rows.filter((row) => row.ppid === entry.pty.pid).map((row) => row.command);
   }
 
   /**
@@ -258,6 +323,9 @@ export class TerminalSessions {
   observe(rows: readonly ProcessRow[] | null): void {
     for (const entry of this.entries.values()) {
       if (entry.info.exitCode !== null) continue;
+      const now = this.readWorkdir(entry.pty.pid);
+      if (now === null) delete entry.info.workdir;
+      else entry.info.workdir = relativeWorkdir(entry.realCwd, now);
       if (rows === null) {
         entry.info.busy = null;
         continue;
@@ -433,6 +501,7 @@ export class TerminalSessions {
       }
     }
     this.entries.delete(id);
+    this.ended(id);
     // Tell listeners the session is gone, AFTER it is: the WS topic disposes itself on exactly
     // this call, and without it every session ever opened left a topic behind (spec §6).
     for (const listener of [...entry.listeners]) {

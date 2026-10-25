@@ -42,10 +42,8 @@ vi.mock('./terminal-pane', () => ({
 }))
 
 // Both read the server on their own schedule; neither is under test here.
-vi.mock('./terminal-extras', () => ({
-  CommandPicker: () => null,
-  DetectedUrlsStrip: () => null,
-}))
+vi.mock('@/components/terminal/detected-urls-strip', () => ({ DetectedUrlsStrip: () => null }))
+vi.mock('@/components/terminal/discovered-commands', () => ({ DiscoveredCommandsStrip: () => null }))
 
 const { TerminalDrawer } = await import('./terminal-drawer')
 

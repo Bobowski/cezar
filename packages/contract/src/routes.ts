@@ -145,7 +145,15 @@ import { startAppStateSchema } from './start-app.ts';
 import { starCountSchema } from './star-count.ts';
 import { workspaceLayoutsResponseSchema } from './workspace-layouts.ts';
 import { telemetryConsentSchema } from './telemetry.ts';
-import { terminalOutputSchema, terminalSessionSchema, terminalStateSchema } from './terminal.ts';
+import {
+  detectedUrlsSchema,
+  discoveredCommandsSchema,
+  projectDetectedUrlsSchema,
+  terminalHistorySchema,
+  terminalOutputSchema,
+  terminalSessionSchema,
+  terminalStateSchema,
+} from './terminal.ts';
 import {
   trackerAssociationResponseSchema,
   trackerAssociationSavedResponseSchema,
@@ -281,8 +289,8 @@ export const routeContracts = {
   'POST /runs/:id/terminal/:sessionId/input': { summary: 'Type into a task terminal session.', destructive: true },
   'GET /runs/:id/terminal/:sessionId/output': { summary: 'Read a task terminal session\'s output since a cursor.', response: terminalOutputSchema },
   'POST /runs/:id/terminal/:sessionId/resize': { summary: 'Resize a task terminal session.', destructive: false },
-  'GET /runs/:id/terminal/commands': { summary: 'The commands a task\'s terminal offers (project scripts).' },
-  'GET /runs/:id/terminal/urls': { summary: 'The local URLs a task\'s terminal sessions printed.' },
+  'GET /runs/:id/terminal/commands': { summary: 'The commands a task\'s terminal offers (project scripts).', response: discoveredCommandsSchema },
+  'GET /runs/:id/terminal/urls': { summary: 'The local URLs a task\'s terminal sessions printed.', response: detectedUrlsSchema },
   'GET /runs/:id/tracker-issue': { summary: 'The tracker ticket linked to a task.', response: trackerRunIssueResponseSchema },
   'GET /runs/:id/tree': { summary: 'The file tree of a task\'s worktree.', response: repoTreeSchema },
   'POST /runs/:id/unread': { summary: 'Mark a task unread.', response: runRecordSchema, destructive: false },
@@ -348,6 +356,9 @@ export const routeContracts = {
   'POST /repo/terminal/:sessionId/input': { summary: 'Type into a checkout terminal session.', destructive: true },
   'GET /repo/terminal/:sessionId/output': { summary: 'Read a checkout terminal session\'s output since a cursor.', response: terminalOutputSchema },
   'POST /repo/terminal/:sessionId/resize': { summary: 'Resize a checkout terminal session.', destructive: false },
+  'GET /repo/terminal/commands': { summary: 'The commands the checkout\'s terminal offers (project scripts).', response: discoveredCommandsSchema },
+  'GET /repo/terminal/history': { summary: 'The command lines typed in this project\'s terminals, newest first.', response: terminalHistorySchema },
+  'GET /repo/terminal/urls': { summary: 'The local URLs the checkout\'s terminal sessions printed.', response: projectDetectedUrlsSchema },
   'GET /repo/tree': { summary: 'The checkout\'s file tree.', response: repoTreeSchema },
   'GET /repo/watch': { summary: 'Whether files in the checkout changed since a stamp.', response: codeWatchSchema },
   // The Git page (spec 2026-10-24-git-view): every git mutation of the checkout is destructive.

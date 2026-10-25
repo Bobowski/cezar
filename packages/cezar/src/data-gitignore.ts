@@ -43,6 +43,9 @@ export const DATA_GITIGNORE_ENTRIES = [
   'layouts/',
   'todos.json',
   'todos.json.tmp',
+  // What the user typed in this project's terminals (spec 2026-10-24-code-page-terminal §3.3).
+  'terminal-history.json',
+  'terminal-history.json.*.tmp',
   // Private, per-project MCP servers (spec 2026-10-07-private-project-mcp) — personal tokens.
   'mcp.local.json',
   'mcp.local.json.cez-tmp-*',

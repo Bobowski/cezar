@@ -3,19 +3,36 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { codeSearchResultSchema, codeWatchSchema, repoPullResponseSchema, repoSyncSchema,terminalSessionSchema, terminalStateSchema, worktreeEntrySchema } from '@open-mercato/cezar-contract';
+import {
+  codeSearchResultSchema, codeWatchSchema, discoveredCommandsSchema, projectDetectedUrlsSchema, repoPullResponseSchema, repoSyncSchema,
+  terminalHistorySchema, terminalSessionSchema, terminalStateSchema, worktreeEntrySchema,
+} from '@open-mercato/cezar-contract';
 import { RunStore } from '../runs/store.ts';
 import { fakeServiceBinding } from '../services/testkit.ts';
 import type { RunManager } from '../workflows/run.ts';
 import { registerProject } from '../workspace/projects.ts';
+import { SecretStore } from '../workspace/secrets.ts';
 import { apiRequest } from './loopback-request.testkit.ts';
+import { PreviewGateways } from './preview/gateway.ts';
 import { createApp } from './server.ts';
+import { DetectedUrls } from './terminal/detected-urls.ts';
+import { TerminalHistory } from './terminal/history.ts';
 import { TerminalSessions } from './terminal/sessions.ts';
 
 describe('Code page API (spec 2026-10-11-code-page)', () => {
   let root: string;
   let store: RunStore;
   let sessions: TerminalSessions;
+  let detected: DetectedUrls;
+  let history: TerminalHistory;
+  /** The process table the history's prompt check reads: the fake shell (pid 4242) with or without a child. */
+  let shellBusy = false;
+  /** How long that table takes to read. */
+  let psDelayMs = 0;
+  /** The history's clock, moved by hand where the time between lines matters. */
+  let now = 0;
+  /** A host whose process table cannot be read (no `ps`: Windows). */
+  let psUnreadable = false;
   let spawned: ReturnType<typeof fakeServiceBinding>['spawned'];
   const put = (rel: string, text: string) => {
     mkdirSync(dirname(join(root, rel)), { recursive: true });
@@ -40,7 +57,13 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
     store = RunStore.open(join(root, '.ai/cezar'));
     const fake = fakeServiceBinding();
     spawned = fake.spawned;
-    sessions = new TerminalSessions(fake.binding, undefined, () => null);
+    shellBusy = false;
+    psDelayMs = 0;
+    now = 0;
+    psUnreadable = false;
+    detected = new DetectedUrls();
+    history = new TerminalHistory(() => now);
+    sessions = new TerminalSessions(fake.binding, detected, () => null);
   });
   afterEach(() => {
     sessions.dispose();
@@ -49,11 +72,21 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  const app = async () => {
+  const app = async (extra: Partial<Parameters<typeof createApp>[0]> = {}) => {
     const project = await registerProject(root);
     return {
       id: project.id,
-      instance: createApp({ repoRoot: root, store, manager: {} as RunManager, version: 'test', bootProjectId: project.id, terminalSessions: sessions }),
+      instance: createApp({
+        repoRoot: root, store, manager: {} as RunManager, version: 'test', bootProjectId: project.id, terminalSessions: sessions,
+        detectedUrls: detected, terminalHistory: history, ...extra,
+        // The table as it stood when the check began; the answer arrives `psDelayMs` later.
+        freshProcesses: async () => {
+          const busy = shellBusy;
+          if (psUnreadable) return null;
+          await new Promise((resolve) => setTimeout(resolve, psDelayMs));
+          return [{ pid: 4242, ppid: 1, command: 'bash' }, ...(busy ? [{ pid: 5000, ppid: 4242, command: 'sudo apt update' }] : [])];
+        },
+      }),
     };
   };
   const send = (method: string, body?: unknown): RequestInit => ({
@@ -204,5 +237,163 @@ describe('Code page API (spec 2026-10-11-code-page)', () => {
     expect((await apiRequest(instance, `/api/v1/runs/some-run/terminal/${session.id}/output`)).status).toBe(404);
     expect((await apiRequest(instance, `/api/v1/repo/terminal/${session.id}`, send('DELETE'))).status).toBe(200);
     expect((await apiRequest(instance, `/api/v1/repo/terminal/${session.id}/output`)).status).toBe(404);
+  });
+
+  describe('the Code terminal\'s strips and history (spec 2026-10-24-code-page-terminal §4)', () => {
+    it('lists the addresses the project\'s own terminals printed, and no task\'s', async () => {
+      const { id, instance } = await app();
+      const session = terminalSessionSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal', send('POST', {}))).json());
+      spawned[0]?.emit('  ➜  Local:   http://localhost:5173/\r\n');
+      detected.record('some-run', 'http://localhost:9999');
+      const urls = projectDetectedUrlsSchema.parse(await (await apiRequest(instance, `/api/v1/p/${id}/repo/terminal/urls`)).json());
+      expect(urls.urls.map((entry) => entry.url)).toEqual(['http://localhost:5173']);
+      // A local cockpit has no tunnel to offer, so it names no account.
+      expect(urls.sshUser).toBeUndefined();
+      expect(session.id).toBeTruthy();
+    });
+
+    it('names the preview pool\'s public ports to a hosted cockpit, and to no other', async () => {
+      const previewGateways = new PreviewGateways({ ports: [8500, 8501], publicPorts: [9500, 9501] });
+      const local = await app({ previewGateways });
+      const read = async (instance: typeof local.instance) =>
+        projectDetectedUrlsSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal/urls')).json());
+      expect((await read(local.instance)).gatewayPorts).toBeUndefined();
+      vi.stubEnv('CEZ_REMOTE', '1');
+      vi.stubEnv('CEZ_AUTH', '0');
+      expect((await read(local.instance)).gatewayPorts).toEqual([9500, 9501]);
+      // No pool, no gateway: nothing on the cockpit's hostname is one.
+      const bare = await app({ previewGateways: new PreviewGateways({ ports: [] }) });
+      expect((await read(bare.instance)).gatewayPorts).toBeUndefined();
+    });
+
+    it('offers the main checkout\'s scripts', async () => {
+      put('package.json', JSON.stringify({ scripts: { dev: 'vite', test: 'vitest' } }));
+      const { instance } = await app();
+      const commands = discoveredCommandsSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal/commands')).json());
+      expect(commands.commands.map((entry) => entry.command)).toEqual(['npm run dev', 'npm run test']);
+    });
+
+    it('keeps what was typed at the prompt, never what a running program read', async () => {
+      const { instance } = await app();
+      const session = terminalSessionSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal', send('POST', {}))).json());
+      const type = (data: string) => apiRequest(instance, `/api/v1/repo/terminal/${session.id}/input`, send('POST', { data }));
+      await type('sudo apt update\r');
+      shellBusy = true;
+      await type('hunter2\r');
+      shellBusy = false;
+      now = 5_000;
+      await type('npm run dev\r');
+      await history.flushed();
+      const read = terminalHistorySchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal/history')).json());
+      expect(read.lines).toEqual(['npm run dev', 'sudo apt update']);
+      // The keystrokes still reached the shell, every one of them.
+      expect(spawned[0]?.written).toEqual(['sudo apt update\r', 'hunter2\r', 'npm run dev\r']);
+    });
+
+    it('keeps nothing where the process table cannot be read, and still delivers every keystroke', async () => {
+      const { instance } = await app();
+      const session = terminalSessionSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal', send('POST', {}))).json());
+      psUnreadable = true;
+      const answer = await apiRequest(instance, `/api/v1/repo/terminal/${session.id}/input`, send('POST', { data: 'ls\r' }));
+      expect(await answer.json()).toEqual({ delivered: true });
+      await history.flushed();
+      const read = terminalHistorySchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal/history')).json());
+      expect(read.lines).toEqual([]);
+      expect(spawned[0]?.written).toEqual(['ls\r']);
+    });
+
+    it('keeps a pasted command and never the password pasted after it', async () => {
+      const { instance } = await app();
+      const session = terminalSessionSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal', send('POST', {}))).json());
+      await apiRequest(instance, `/api/v1/repo/terminal/${session.id}/input`, send('POST', { data: 'ssh host\rpassw0rd\r' }));
+      await history.flushed();
+      const read = terminalHistorySchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal/history')).json());
+      expect(read.lines).toEqual(['ssh host']);
+    });
+
+    it('never lets a keystroke overtake the Enter whose prompt check is still running', async () => {
+      const { instance } = await app();
+      const session = terminalSessionSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal', send('POST', {}))).json());
+      const type = (data: string) => apiRequest(instance, `/api/v1/repo/terminal/${session.id}/input`, send('POST', { data }));
+      psDelayMs = 50;
+      await Promise.all([type('ls\r'), type('c'), type('d')]);
+      expect(spawned[0]?.written).toEqual(['ls\r', 'c', 'd']);
+    });
+
+    it('writes a keystroke at once, and keeps nothing whose prompt check outlived its timeout', async () => {
+      const { instance } = await app();
+      const session = terminalSessionSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal', send('POST', {}))).json());
+      const type = (data: string) => apiRequest(instance, `/api/v1/repo/terminal/${session.id}/input`, send('POST', { data }));
+      psDelayMs = 1_000;
+      const typing = type('ls\r');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      // The process table is still being read; the shell has the line anyway.
+      expect(spawned[0]?.written).toEqual(['ls\r']);
+      await typing;
+      const started = Date.now();
+      await history.flushed();
+      expect(Date.now() - started).toBeLessThan(900);
+      const read = terminalHistorySchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal/history')).json());
+      expect(read.lines).toEqual([]);
+    });
+
+    it('forgets a session\'s half-typed line when its shell exits, not only on DELETE', async () => {
+      const forget = vi.spyOn(history, 'forget');
+      const { instance } = await app();
+      const session = terminalSessionSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal', send('POST', {}))).json());
+      await apiRequest(instance, `/api/v1/repo/terminal/${session.id}/input`, send('POST', { data: 'git sta' }));
+      spawned[0]!.finish(0);
+      expect(forget).toHaveBeenCalledWith(session.id);
+    });
+
+    it('stores and serves no credential: token shapes, headers, the host\'s env values, the project\'s stored secrets', async () => {
+      vi.stubEnv('DEPLOY_HOOK_TOKEN', 'host-env-secret-0123456789');
+      const secrets = new SecretStore(process.env, { keychain: async () => null });
+      const { id, instance } = await app({ secrets });
+      await secrets.set({ kind: 'project', projectId: id, root }, 'SHOP_DB_PASSWORD', 'stored-value-0123456789', ['checks']);
+      const pat = 'ghp_' + 'e'.repeat(36);
+      // A line kept before redaction existed is served redacted too.
+      writeFileSync(join(root, '.ai/cezar/terminal-history.json'), JSON.stringify({ lines: ['psql postgres://app:stored-value-0123456789@db/app'] }));
+      const session = terminalSessionSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal', send('POST', {}))).json());
+      const type = (data: string) => apiRequest(instance, `/api/v1/repo/terminal/${session.id}/input`, send('POST', { data }));
+      await type(`curl -H "Authorization: Bearer ${pat}" https://api.github.com/user\r`);
+      await type(`gh auth login --with-token <<< ${pat}\r`);
+      await type('deploy host-env-secret-0123456789 stored-value-0123456789\r');
+      await history.flushed();
+      const served = JSON.stringify(await (await apiRequest(instance, '/api/v1/repo/terminal/history')).json());
+      const stored = readFileSync(join(root, '.ai/cezar/terminal-history.json'), 'utf8');
+      for (const text of [served, stored]) expect(text).not.toMatch(/ghp_e|host-env-secret|stored-value/);
+      expect(terminalHistorySchema.parse(JSON.parse(served)).lines).toEqual([
+        'deploy [REDACTED] [REDACTED]', 'gh auth login --with-token <<< ***',
+        'curl -H "Authorization: Bearer ***" https://api.github.com/user', 'psql postgres://***@db/app',
+      ]);
+    });
+
+    it('keeps no history of a task\'s typing on a local cockpit, where its run token resolves as the host', async () => {
+      const { instance } = await app();
+      const task = { authorization: 'Bearer cezrun_W1sicnVuLTEiXQ.c2ln' };
+      const open = async (headers: Record<string, string> = {}) =>
+        terminalSessionSchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal', { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: '{}' })).json()).id;
+      const type = (id: string, data: string, headers: Record<string, string> = {}) =>
+        apiRequest(instance, `/api/v1/repo/terminal/${id}/input`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify({ data }) });
+      const users = await open();
+      await type(users, 'ls\r', task);
+      const tasks = await open(task);
+      await type(tasks, 'pwd\r');
+      // A cockpit an agent booted inside its task: every shell it opens is the task's.
+      vi.stubEnv('CEZ_TASK_ID', 'run-1');
+      await type(users, 'make\r');
+      vi.stubEnv('CEZ_TASK_ID', '');
+      await type(users, 'git status\r');
+      await history.flushed();
+      expect(terminalHistorySchema.parse(await (await apiRequest(instance, '/api/v1/repo/terminal/history')).json()).lines).toEqual(['git status']);
+      expect(spawned[0]?.written).toEqual(['ls\r', 'make\r', 'git status\r']);
+    });
+
+    it('refuses the history where the terminal is off', async () => {
+      vi.stubEnv('CEZ_TERMINAL', '0');
+      const { instance } = await app();
+      expect((await apiRequest(instance, '/api/v1/repo/terminal/history')).status).toBe(409);
+    });
   });
 });

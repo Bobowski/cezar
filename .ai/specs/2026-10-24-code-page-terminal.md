@@ -1,6 +1,6 @@
 # The Code page terminal — detected addresses, project commands, clickable links, completion, and the gateway
 
-> Status: proposed (2026-10-24), not built. Branch: `brutus`.
+> Status: built (2026-10-24), see §9 for what the build settled. Branch: `brutus`.
 > Builds on: `2026-10-11-code-page.md` (the bottom panel's project terminal),
 > `2026-10-07-task-workspace.md` §6–§7 (the two strips the TASK terminal already has:
 > `task-workspace/terminal-extras.tsx`, `detectedUrlSchema`, `discoveredCommandSchema`),
@@ -108,3 +108,74 @@ gateway that `CEZ_PREVIEW_PORTS` already configures for the VPS image.
 - VPS: `npm run dev` from the Code terminal → the strip shows `:3570 → :8503` → Open in
   Browser shows the storefront; a printed `http://localhost:9000` in the output is a link to
   the same gateway port; `Tab` after `npm run ` lists the project's scripts.
+
+## 9. Settled while building
+
+- **History comes off the input routes**, `server/terminal/history.ts`: a line is kept only when
+  its text is certain (typing, backspace, paste — an arrow, a Tab or a Ctrl chord makes it
+  unknown) and the shell sat at its prompt when the line BEGAN: a FRESH process table, read when
+  its first word arrives, shows the shell with no child or only the line's own command (one
+  chunk can carry a whole line, and the shell forks it while `ps` starts). That is what keeps a
+  password a running `sudo`/`ssh` reads out of the file; a host with no readable process table
+  (Windows) therefore keeps no history. The check never holds a keystroke: it runs beside the
+  write, and keeps nothing when its own `ps` takes over 300 ms from its start, or the answer (a wait behind a running `ps` included) over 600 ms from the line's first word. A bare Enter, a Ctrl+C or a space-led
+  line asks nothing; one `ps` runs at a time per host, a burst shares the one read queued behind
+  it (never a read begun before it asked), and a `ps` past 300 ms is killed; while three killed ones have not closed (D-state; counted from the kill until the child's `close`, not until its read answers), none is spawned and nothing is kept. Each line of a chunk is judged alone, and
+  only a chunk's first line can have met a prompt: a pasted `ssh host⏎passw0rd⏎` keeps
+  `ssh host`, and nothing begun after an Enter, Ctrl+C or Ctrl+Z in the same chunk is checked —
+  `⏎hunter2⏎` finishing an earlier line keeps only that line. What the table cannot see is ruled by text: after `exec …` nothing is kept again
+  (the shell's own pid became the program), the line after `read -s` is never kept, and after
+  `ssh`/`sudo`/`su`/`doas`/`passwd`/`gpg`/`ssh-add`/`ssh-keygen` a line is kept only once a check
+  begun 500 ms or more later confirms the prompt (a line typed ahead may beat the fork). Echo-off
+  input is invisible from the keystrokes, so those rules are the whole account of it; a recalled
+  (arrow-key) `read -s` or `exec` line is unknown text and sets no rule. A line led by a space is not kept
+  (bash's `ignorespace`). A `NAME=value` (or `export NAME=value`) whose name looks like a
+  credential — the transcript redactor's `SECRET_NAME_RE`, plus `PASS`/`PWD`/`KEY`/`PIN` as a
+  name part — is stored as `NAME=***`, the whole shell word masked (`$(cat ~/t)`, `${…}`,
+  backticks and quotes included). The same `redactHistoryLine` also masks, as `***`: the value of
+  an `Authorization`/`Proxy-Authorization`/`Cookie`/`PRIVATE-TOKEN`/`Api-Key` header or any
+  `X-…token|key|secret|auth…` one; URL userinfo (`https://***@`, and any `user:pass@`); a
+  secret-named query parameter (`?access_token=`, `&token=`, `&key=`); a secret-named flag,
+  `=`-joined or (for names ending in password/passwd/token/secret/api-key) spaced; curl's
+  `-u user:pw` and `-uuser:pw` password; a secret-named `--from-literal` key's value; the spaced
+  short password of `sshpass -p`, `docker`/`podman`/`helm`… `login -p`, `redis-cli -a` and the
+  `mysql` family's `-p` (glued `-pX` too); whatever `echo`/`printf`/`<<<` feeds a `--…token|password…`
+  flag, `--stdin` or `sudo -S`; and a line that is only one 60+ character hex or base64 word (a
+  pasted token) as `***` whole. The values of the host's environment secrets, the live runs'
+  secrets and the stored project/workspace secrets, and the shared token shapes, become
+  `[REDACTED]`. Redaction runs again on every read, so a line stored before a rule existed is
+  served — and rewritten on the next write — under it. What the shell itself reads is kept as bash's own history
+  keeps it: a heredoc body, and the answer to a `read -s` run by a sourced script or a function
+  (no child shows and no typed line says `read -s`). Both the checkout's terminals and the
+  project's task terminals feed it; a task's own credential never does (its run token's prefix counts on a local cockpit, which resolves it as the host), nor a cockpit booted inside a task (`CEZ_TASK_ID`), nor an API token (an MCP
+  client), nor anyone typing into a session a token opened. A session's line state is dropped
+  when its shell exits or the session is closed.
+- **`/repo/terminal/urls` adds `sshUser`** (`projectDetectedUrlsSchema`), the account cezar runs
+  as, on a hosted cockpit only — the tunnel line's login (tunnel spec §3.3).
+- **Tab**: with the popover closed, Tab opens it when there is something to offer and is the
+  shell's otherwise; after `Esc`, Tab is the shell's until the line is submitted or abandoned.
+  `Esc` is taken only while the popover is open. Completion takes keys only at the shell's own
+  prompt: never on xterm's alternate screen (vim, less), and only while the last prompt check — the
+  terminal state's `busy`, asked at mount and 1.1 s after each Enter/Ctrl+C/D/Z, past the
+  server's one-second process-table reuse, then every 1.1 s while busy for up to 10 s, and after that once a second after typing pauses — found
+  nothing running; until it answers, a REPL or a program's prompt keeps Tab, Esc and `Ctrl+R`.
+  A host that cannot say (`busy: null`, Windows) counts as at its prompt for completion; it still
+  keeps no history. Path completion needs a non-empty token, and lists
+  from the shell's own directory: the session's `workdir` (relative to where it opened, read from
+  Linux's `/proc/<pid>/cwd` with the busy check). A shell that left the checkout gets no paths; a
+  host with no `/proc` (macOS, Windows) cannot say, and the checkout root stands in.
+- **The strip never opens a gateway port.** Opening one to learn its number would hold a listener
+  for every running address before any click, and could evict a user's Preview from a full pool.
+  A hosted strip says `→ gateway` (known without asking) and `Open in Browser` opens the loopback
+  address in a Browser tab, which asks the gateway for its port and fresh ticket on that click, as
+  the Preview column does — and shows the gateway's refusal itself. The tunnel line sits beside
+  every loopback address (preview-gateway §7).
+- A "gateway address" in the output is this cockpit's own hostname on one of the pool's public
+  ports (`CEZ_PREVIEW_PUBLIC_PORTS`, else `CEZ_PREVIEW_PORTS`), which `/repo/terminal/urls` names
+  to a hosted cockpit as `gatewayPorts`; another port on that hostname is another service and
+  opens in a new window.
+- The task drawer keeps its strips as they were (user's browser + Preview); links, completion and
+  the gateway mapping are the Code terminal's.
+- **The address strip polls only while it is looked at**: every 3 s while its pane is shown and
+  the page is in front, nothing while either is hidden, one read on coming back. The probe is a
+  TCP connect per address and has no event to wait on, so it stays a poll rather than a topic.

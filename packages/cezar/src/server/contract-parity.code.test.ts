@@ -4,6 +4,7 @@ import { expect, it } from 'vitest';
 import type {
   CodeSearchQuery, CodeSearchResult, CodeWatch, RepoFilePathQuery, RepoPullResponse, RepoSync, RepoSyncQuery, RepoTree, RunFileCreate, RunFileDeleteResponse, RunFileRename,
   RunFileWrite, RunFileWriteResponse, TerminalCreateInput, TerminalOutput, TerminalSession, TerminalState,
+  DiscoveredCommandsResponse, ProjectDetectedUrlsResponse, TerminalHistoryResponse,
 } from '@open-mercato/cezar-contract';
 import type { AppType } from './app-type.ts';
 
@@ -35,6 +36,10 @@ type Checks = [
   Assert<Mutual<TerminalSession, InferResponseType<typeof repo.terminal.$post, 201>>>,
   Assert<Mutual<TerminalCreateInput, InferRequestType<typeof repo.terminal.$post>['json']>>,
   Assert<Mutual<TerminalOutput, InferResponseType<typeof repo.terminal[':sessionId']['output']['$get'], 200>>>,
+  // spec 2026-10-24-code-page-terminal §4
+  Assert<Mutual<ProjectDetectedUrlsResponse, InferResponseType<typeof repo.terminal.urls.$get, 200>>>,
+  Assert<Mutual<DiscoveredCommandsResponse, InferResponseType<typeof unscoped.terminal.commands.$get, 200>>>,
+  Assert<Mutual<TerminalHistoryResponse, InferResponseType<typeof repo.terminal.history.$get, 200>>>,
 ];
 it('pins the Code page route types to the contract', () => {
   const checks: Checks | undefined = undefined;

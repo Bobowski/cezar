@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  mcpSecretNames,
   mcpServerDefinitionSchema,
   secretNameIssue,
   type McpRegistryEntry,
@@ -125,8 +126,26 @@ const LAUNCHERS: Record<string, (id: string, version?: string) => { command: str
   oci: (id, version) => ({ command: 'docker', args: ['run', '-i', '--rm', version && !id.includes(':') ? `${id}:${version}` : id] }),
 };
 
+/** Whether any string under `value` holds `${{` — registry text that would be read as a reference. */
+function holdsReference(value: unknown): boolean {
+  if (typeof value === 'string') return value.includes('${{');
+  if (Array.isArray(value)) return value.some(holdsReference);
+  if (value && typeof value === 'object') return Object.values(value).some(holdsReference);
+  return false;
+}
+
+/**
+ * Every reference in `definition` is one cezar declared as a key. Registry text is third-party: a
+ * `${{ secrets.X }}` it wrote itself would read a stored secret the operator never picked.
+ */
+function onlyDeclaredReferences(definition: McpServerDefinition, keys: readonly McpServerKey[]): boolean {
+  return mcpSecretNames(definition).every((name) => keys.some((key) => key.name === name));
+}
+
 /** A registry server as a definition cezar can launch, and the keys it needs — or null. */
 export function definitionOf(server: RegistryServer): { definition: McpServerDefinition; keys: McpServerKey[] } | null {
+  // A `${{` anywhere in what cezar would launch is refused outright, never escaped into meaning.
+  if (holdsReference(server.packages) || holdsReference(server.remotes)) return null;
   for (const pkg of server.packages ?? []) {
     const launch = pkg.registryType ? LAUNCHERS[pkg.registryType] : undefined;
     if (!launch || !pkg.identifier || (pkg.transport && pkg.transport.type !== 'stdio')) continue;
@@ -150,7 +169,7 @@ export function definitionOf(server: RegistryServer): { definition: McpServerDef
       }
     }
     const definition = { command, args, ...(Object.keys(env).length ? { env } : {}) };
-    if (mcpServerDefinitionSchema.safeParse(definition).success) return { definition, keys };
+    if (mcpServerDefinitionSchema.safeParse(definition).success && onlyDeclaredReferences(definition, keys)) return { definition, keys };
   }
   for (const remote of server.remotes ?? []) {
     const type = remote.type === 'streamable-http' ? 'http' : remote.type === 'sse' ? 'sse' : null;
@@ -162,7 +181,7 @@ export function definitionOf(server: RegistryServer): { definition: McpServerDef
       if (value !== null) headers[header.name] = value;
     }
     const definition = { type, url: remote.url, ...(Object.keys(headers).length ? { headers } : {}) } as McpServerDefinition;
-    if (mcpServerDefinitionSchema.safeParse(definition).success) return { definition, keys };
+    if (mcpServerDefinitionSchema.safeParse(definition).success && onlyDeclaredReferences(definition, keys)) return { definition, keys };
   }
   return null;
 }

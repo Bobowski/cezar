@@ -10,6 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { dayTime, statusLabel, statusTone, triggerLabel, usd, AUTOMATION_COST_VISIBLE } from '@/lib/automation-format'
 import { shortAge } from '@/lib/format'
 import { Link, useNavigate } from '@/lib/project-router'
+import { openOnEnter, ROW_FOCUS_CLASS } from '@/lib/row-focus'
 import { cn } from '@/lib/utils'
 
 import { RowActions } from './row-actions'
@@ -103,8 +104,9 @@ function AutomationRow({
       data-slot="automation-row"
       data-automation={automation.id}
       data-enabled={automation.enabled ? 'true' : 'false'}
-      className="cursor-pointer hover:bg-muted/50"
+      className={cn('cursor-pointer hover:bg-muted/50', ROW_FOCUS_CLASS)}
       onClick={() => navigate(`/automations/${encodeURIComponent(automation.id)}`)}
+      {...openOnEnter(() => navigate(`/automations/${encodeURIComponent(automation.id)}`))}
     >
       <TableCell className="max-w-0 min-w-[220px] py-2.5 pl-4">
         <div className={cn('flex min-w-0 items-start gap-3', !automation.enabled && 'opacity-60')}>

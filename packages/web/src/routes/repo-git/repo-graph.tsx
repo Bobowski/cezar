@@ -7,6 +7,7 @@ import { cherryPickCommit, useRepoGitAction, useRepoGraph } from '@/api/repo-git
 import type { RepoGraphCommit, RepoGraphFilter, RepoGraphRef } from '@open-mercato/cezar-api-client'
 
 import { PageBody, PageTitle, PageToolbar } from '@/components/page'
+import { ROW_FOCUS_WITHIN_CLASS } from '@/lib/row-focus'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -347,6 +348,7 @@ function GraphRow({
       style={{ height: ROW_HEIGHT }}
       className={cn(
         'group flex min-w-0 items-center gap-2 pr-2 hover:bg-muted/50 md:pr-4',
+        ROW_FOCUS_WITHIN_CLASS,
         focused && 'bg-muted',
         dim && 'opacity-35',
       )}

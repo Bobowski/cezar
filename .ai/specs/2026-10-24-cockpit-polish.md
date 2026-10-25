@@ -113,6 +113,10 @@ Consistency (§3.4):
 
 1. ~~One spacing scale for page headers~~ — `PageHeader` (whole page) / `PageTitle` (a
    master–detail main area, `pt-4`) / `PageItemTitle` (the one item shown), in `page.tsx`.
+2. ~~Focus rings on every clickable row, `Enter` to open~~ — `lib/row-focus.ts`: a row whose link
+   carries the keyboard lights up with it (task table and cards, Graph rows); a row with no link
+   (Automations) is a focus stop that opens on `Enter`; the Files tree's rows ring on focus. The
+   sidebar lists (branches, changed files) were already `SidebarMenuButton`s.
 
 ## 8. Verification
 

@@ -9202,6 +9202,10 @@ export function createApp(deps: ServerDeps) {
     })
     .post('/repo/proposals/:chatId/discard', paramZodValidator(chatProposalParamsSchema), jsonZodValidator(chatProposalsActionSchema, { absent: {} }), (c) => {
       if (principalOf(c)?.kind === 'run') return c.json({ error: 'a chat\'s proposals are the owner\'s to discard' }, 403);
+      // Apply's own bar (`mutateCheckout`): behind a proxy alone (`CEZ_AUTH=0`), nobody's.
+      if (!trustedOperator(process.env, bindHost)) {
+        return c.json({ error: 'a chat\'s proposals need cezar’s own sign-in on a hosted cockpit' }, 409);
+      }
       const { paths } = c.req.valid('json');
       return c.json({ discarded: discardProposals(c.get('project').dataDir, c.req.valid('param').chatId, paths) }, 200);
     })

@@ -335,6 +335,27 @@ describe('cockpit chat API', () => {
     expect(existsSync(join(repoRoot, '.ai/cezar/skills/review.md'))).toBe(false);
   });
 
+  it('Discard, like Apply, is a trusted operator\'s: a hosted cockpit without sign-in refuses it', async () => {
+    const chat = liveChat();
+    mkdirSync(join(repoRoot, '.ai/cezar/proposals', chat.id, 'skills'), { recursive: true });
+    const proposal = join(repoRoot, '.ai/cezar/proposals', chat.id, 'skills/review.md');
+    writeFileSync(proposal, '# review\n');
+    const saved = { remote: process.env.CEZ_REMOTE, auth: process.env.CEZ_AUTH };
+    process.env.CEZ_REMOTE = '1';
+    process.env.CEZ_AUTH = '0';
+    try {
+      expect((await post(`/api/v1/p/boot/repo/proposals/${chat.id}/discard`, {})).status).toBe(409);
+      expect(existsSync(proposal)).toBe(true);
+    } finally {
+      for (const [key, value] of [['CEZ_REMOTE', saved.remote], ['CEZ_AUTH', saved.auth]] as const) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+    expect((await post(`/api/v1/p/boot/repo/proposals/${chat.id}/discard`, {})).status).toBe(200);
+    expect(existsSync(proposal)).toBe(false);
+  });
+
   it('Apply refuses while other files are staged, so the commit carries nothing of the owner\'s', async () => {
     gitInit();
     const chat = liveChat();

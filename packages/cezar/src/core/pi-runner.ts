@@ -293,10 +293,14 @@ export function buildPiArgs(spec: AgentRunSpec): string[] {
   if (spec.systemPrompt) args.push('--append-system-prompt', spec.systemPrompt);
   if (spec.model) args.push('--model', spec.model);
   // No `--tools` means pi's whole default set and pi has no verified tool-less mode, so an explicit
-  // list that maps to nothing (`[]`, or only an unrepresentable Bash) refuses to spawn.
+  // list that maps to nothing (`[]`, or only an unrepresentable Bash) refuses to spawn — unless the
+  // caller is a tool-less helper, which pi runs on its defaults as it always did.
   if (spec.allowedTools === undefined) return args;
   const tools = piTools(spec.allowedTools, spec.bashAllowlist);
-  if (tools.length === 0) throw new Error(PI_NO_TOOLS);
+  if (tools.length === 0) {
+    if (spec.toolless) return args;
+    throw new Error(PI_NO_TOOLS);
+  }
   args.push('--tools', tools.join(','));
   return args;
 }

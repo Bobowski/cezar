@@ -142,6 +142,12 @@ describe('pi RPC argv', () => {
     expect(events).toEqual([{ type: 'error', message: expect.stringMatching(/leaves pi no tools/) }]);
     expect(() => buildPiArgs({ cwd: '/repo', userPrompt: 'task', ...tools })).toThrow(/leaves pi no tools/);
   });
+
+  it("runs an intentionally tool-less helper on pi's defaults, as before the refusal", () => {
+    // `toolless` is the helper's opt-in (planner, namer, commit subject); without it `[]` refuses.
+    expect(buildPiArgs({ cwd: '/repo', userPrompt: 'task', allowedTools: [], toolless: true })).toEqual(['--mode', 'rpc']);
+    expect(() => buildPiArgs({ cwd: '/repo', userPrompt: 'task', allowedTools: [] })).toThrow(/leaves pi no tools/);
+  });
 });
 
 describe('pi spawns under pi credentials, not another runner', () => {

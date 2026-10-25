@@ -85,6 +85,7 @@ export async function generateCommitMessage(
         userPrompt,
         cwd: repoRoot,
         allowedTools: [],
+        toolless: true,
         model: config.defaultRunner === 'claude' ? config.namerModel : undefined,
         timeoutMs: NAMER_TIMEOUT_MS,
         env: { ...env, CEZ_MOCK_ARGS_FILE: '' },

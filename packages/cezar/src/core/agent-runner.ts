@@ -52,6 +52,9 @@ export interface AgentRunSpec {
    *  unrestricted unless `bashAllowlist` is set, so treat the default as
    *  full shell access in `cwd`, not a sandboxed allowlist (#430). */
   allowedTools?: string[];
+  /** An intentional tool-less helper (planner, namer, commit subject): its `allowedTools: []` is
+   *  not a narrowing to nothing, so pi runs it rather than refusing. */
+  toolless?: boolean;
   /** When `Bash` is allowed, restrict it to commands starting with one of these. */
   bashAllowlist?: string[];
   /** Tools denied outright. Claude needs it for its sub-agent tool: `dontAsk` still runs a `Task`

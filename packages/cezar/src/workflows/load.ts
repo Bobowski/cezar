@@ -27,7 +27,7 @@ export function loadIssueLines(workflows: readonly WorkflowDef[], issues: readon
   return issues.map((issue) => `! ${loaded.has(issue.path) ? 'warning' : 'skipped'} ${issue.path}: ${issue.message}`);
 }
 
-const graphAgentNodes =(graph: Pick<WorkflowGraph, 'nodes'>) =>
+const graphAgentNodes = (graph: Pick<WorkflowGraph, 'nodes'>) =>
   graph.nodes.flatMap((n) =>
     n.type === 'agent' ? [{ id: n.id, agent: n.agent, runner: n.runner, allowedTools: n.allowedTools, bashAllowlist: n.bashAllowlist }] : [],
   );

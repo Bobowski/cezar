@@ -55,6 +55,21 @@ describe('launch-time MCP: mcp.json + mcp.local.json', () => {
     ]);
   });
 
+  it('a missing secret is reported by its own name, never by another secret\'s note', async () => {
+    write(projectMcpPath(repo), { mine: { command: 'x', env: { KEY: '${{ secrets.MINE }}' } }, other: { command: 'y', env: { K: '${{ secrets.OTHER }}' } } });
+    const launch = await loadLaunchMcp(repo, async () => ({ values: {}, notes: ['secret OTHER is not available to cezar (audiences: checks)'] }));
+    expect(launch.problems.map((p) => p.message)).toEqual([
+      'MCP server "mine" skipped: secret MINE is not stored for this project or workspace',
+      'MCP server "other" skipped: secret OTHER is not available to cezar (audiences: checks)',
+    ]);
+  });
+
+  it('a store-level note explains a missing secret only as what it is', async () => {
+    write(projectMcpPath(repo), { mine: { command: 'x', env: { KEY: '${{ secrets.MINE }}' } } });
+    const launch = await loadLaunchMcp(repo, async () => ({ values: {}, notes: ['project secrets skipped — the key file is unreadable'] }));
+    expect(launch.problems[0]?.message).toBe('MCP server "mine" skipped: secret MINE could not be read — project secrets skipped — the key file is unreadable');
+  });
+
   it('a resolver that throws, or withholds secrets, still leaves the servers without references', async () => {
     write(privateMcpPath(repo), { needs: { command: 'x', env: { KEY: '${{ secrets.K }}' } }, plain: { command: 'y', env: { TOKEN: 'literal' } } });
     const launch = await loadLaunchMcp(repo, async () => {

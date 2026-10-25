@@ -227,6 +227,19 @@ export interface LaunchMcp {
   secretValues: string[];
 }
 
+/**
+ * Why secret `name` did not resolve: the store's own line for that name, else a store-level line
+ * (an unreadable source) said as such — never another secret's line.
+ */
+export function missingSecretReason(notes: readonly string[], name: string): string {
+  const own = notes.find((note) => note.startsWith(`secret ${name} `));
+  if (own) return own;
+  const storeLevel = notes.filter((note) => !/^secret \S+ /.test(note));
+  return storeLevel.length
+    ? `secret ${name} could not be read — ${storeLevel.join('; ')}`
+    : `secret ${name} is not stored for this project or workspace`;
+}
+
 /** What the launch asks the secrets store: the named secrets, audience `cezar`. */
 export type McpSecretResolver = (names: string[]) => Promise<{ values: Record<string, string>; notes: string[] }>;
 
@@ -254,8 +267,7 @@ export async function loadLaunchMcp(repoRoot: string, resolveSecrets: McpSecretR
       notes = [`the secrets store could not be read: ${(err as Error).message}`];
     }
   }
-  const noteFor = (name: string) =>
-    notes.find((note) => note.startsWith(`secret ${name} `)) ?? notes[0] ?? `secret ${name} is not stored for this project or workspace`;
+  const noteFor = (name: string) => missingSecretReason(notes, name);
 
   const servers: PrivateMcpServer[] = [];
   const scopes = new Map<string, McpScope>();

@@ -25,7 +25,7 @@ import {
   mcpRegistryQuerySchema, mcpServerParamsSchema, mcpServerPutSchema, mcpSecretNames, type McpServerTestResponse,
 } from '@open-mercato/cezar-contract';
 import { SecretStore, SecretsError, type SecretScopeRef } from '../workspace/secrets.ts';
-import { loadPrivateMcp, loadProjectMcp, resolveMcpSecrets } from '../core/private-mcp.ts';
+import { loadPrivateMcp, loadProjectMcp, missingSecretReason, resolveMcpSecrets } from '../core/private-mcp.ts';
 import { McpRegistrySearch } from '../mcp-catalog/registry.ts';
 import { deleteMcpServer, putMcpServer } from '../mcp-servers/files.ts';
 import { probeMcpServer } from '../mcp-servers/probe.ts';
@@ -7488,8 +7488,7 @@ export function createApp(deps: ServerDeps) {
       if (!server) return c.json({ error: 'no MCP server with that name' }, 404);
       const names = mcpSecretNames(definitionOfServer(server));
       const resolved = names.length ? await secretStore.resolve(mcpSecretsProject(project), 'cezar', names) : { values: {}, notes: [] };
-      const ready = resolveMcpSecrets(server, resolved.values, (missing) =>
-        resolved.notes.find((note) => note.startsWith(`secret ${missing} `)) ?? `secret ${missing} is not stored for this project or workspace`);
+      const ready = resolveMcpSecrets(server, resolved.values, (missing) => missingSecretReason(resolved.notes, missing));
       const result: McpServerTestResponse = 'error' in ready
         ? { ok: false, reason: ready.error }
         : await probeMcpServer(ready, { secrets: Object.values(resolved.values) });

@@ -16,8 +16,8 @@ export const SECRET_VALUE_MAX_BYTES = 16 * 1024;
 /**
  * Who may read a secret.
  * - `checks`: a workflow's check steps (`command:`), as environment variables.
- * - `cezar`: cezar's own features (an LLM key for cezar-level actions). Reserved for consumers
- *   that read through the store's `cezar` audience; nothing ships one yet.
+ * - `cezar`: cezar's own features — today the `${{ secrets.X }}` references of the project's MCP
+ *   servers (spec 2026-10-24-easy-mcp), resolved at launch into that server's own env or headers.
  */
 export const SECRET_AUDIENCES = ['checks', 'cezar'] as const;
 export const secretAudienceSchema = z.enum(SECRET_AUDIENCES);

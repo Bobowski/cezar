@@ -35,6 +35,7 @@ export * from './worktree-lifecycle.ts';
 export * from './preview.ts';
 export * from './start-app.ts';
 export * from './secrets.ts';
+export * from './mcp-servers.ts';
 export * from './env-files.ts';
 export * from './services.ts';
 export * from './docker.ts';

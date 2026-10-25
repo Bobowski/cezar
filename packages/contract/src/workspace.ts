@@ -197,6 +197,46 @@ export const setBrandingImageInputSchema = z.object({
 }).strict();
 export type SetBrandingImageInput = z.infer<typeof setBrandingImageInputSchema>;
 
+// ---- Web Push (spec 2026-10-24-mobile-cockpit §3.5, §4) -------------------------------------
+
+/**
+ * `GET /api/v1/workspace/push` — whether this cockpit can push (a hosted origin; a local one cannot
+ * reach a browser's push service over HTTPS), the VAPID key a browser subscribes with, and whether
+ * THIS device (its sign-in session) holds a subscription. No free text: the cockpit says why.
+ */
+export const workspacePushStateSchema = z.object({
+  available: z.boolean(),
+  publicKey: z.string().nullable(),
+  subscribed: z.boolean(),
+});
+export type WorkspacePushState = z.infer<typeof workspacePushStateSchema>;
+
+const base64url = (min: number, max: number) => z.string().min(min).max(max).regex(/^[A-Za-z0-9_-]+=*$/, 'not base64url');
+
+/** `POST /api/v1/workspace/push/subscribe` — the browser's `PushSubscription.toJSON()`. */
+export const pushSubscribeInputSchema = z.object({
+  endpoint: z.string().max(2048).url().refine((value) => value.startsWith('https://'), 'a push endpoint is an https URL'),
+  expirationTime: z.number().nullable().optional(),
+  keys: z.object({ p256dh: base64url(80, 100), auth: base64url(16, 32) }),
+});
+export type PushSubscribeInput = z.infer<typeof pushSubscribeInputSchema>;
+
+/** `DELETE /api/v1/workspace/push/subscribe` — this device's subscription: the one with this
+ *  endpoint, or, without one, every subscription of this sign-in session. */
+export const pushUnsubscribeInputSchema = z.object({
+  endpoint: z.string().max(2048).optional(),
+}).strict();
+export type PushUnsubscribeInput = z.infer<typeof pushUnsubscribeInputSchema>;
+
+/** What a push message carries (§5): the task's title and its attention label, never a prompt. */
+export const pushPayloadSchema = z.object({
+  title: z.string(),
+  status: z.string(),
+  url: z.string(),
+  tag: z.string(),
+});
+export type PushPayload = z.infer<typeof pushPayloadSchema>;
+
 // ---- GUI prefs — the two open bags ----------------------------------------------------------
 
 /** Settings → Appearance: accent + density + reading width. ONE shape for both ui-state files. */

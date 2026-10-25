@@ -191,6 +191,7 @@ import {
   workspaceBrandingLogoResponseSchema,
   workspaceBrandingSchema,
   workspaceConfigResponseSchema,
+  workspacePushStateSchema,
 } from './workspace.ts';
 import {
   lifecycleDetailResponseSchema,
@@ -550,6 +551,9 @@ export const routeContracts = {
   'GET /workspace/dashboard/telemetry': { summary: 'The dashboard\'s usage telemetry.', response: dashboardTelemetrySchema },
   'GET /workspace/events': { summary: 'The workspace\'s live event stream (SSE).', notTool: 'stream' },
   'GET /workspace/host-usage': { summary: 'This machine\'s CPU and memory use.', response: hostUsageSchema },
+  'GET /workspace/push': { summary: 'Whether this device can get push notifications, and the key it subscribes with.', response: workspacePushStateSchema, notTool: 'browser' },
+  'POST /workspace/push/subscribe': { summary: 'Subscribe this device to push notifications.', response: workspacePushStateSchema, notTool: 'browser' },
+  'DELETE /workspace/push/subscribe': { summary: 'Stop push notifications on this device.', response: workspacePushStateSchema, notTool: 'browser' },
   'GET /workspace/runs-index': { summary: 'Every task across every project, in brief.', response: runsIndexResponseSchema },
   'GET /workspace/self-update': { summary: 'cezar\'s installed version and available updates.', response: selfUpdateStatusSchema },
   'POST /workspace/self-update/apply': { summary: 'Update cezar and restart it.', response: selfUpdateStatusSchema, destructive: true },

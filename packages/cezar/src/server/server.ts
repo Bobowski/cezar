@@ -39,7 +39,7 @@ import {
 import { DockerLogFollowers, dockerSpawn, type DockerSpawn } from '../services/docker-logs.ts';
 import { MIN_SECRET_LEN } from '../core/secret-redaction.ts';
 import { findIconCandidates, readProjectIcon, removeProjectIcons, saveProjectIcon } from '../workspace/project-icons.ts';
-import { brandingBody, brandingState, deriveBranding, readBrandingAsset, removeBranding, saveBranding, type BrandingState } from '../workspace/branding.ts';
+import { brandingBody, brandingState, deriveBranding, manifestIcons, readBrandingAsset, removeBranding, saveBranding, type BrandingState } from '../workspace/branding.ts';
 import { searchCheckout } from './code-search.ts';
 import { refreshRepoSync, watchRepoSync } from '../git-sync.ts';
 import { checkoutWatchSupported, watchCheckout } from './checkout-watch.ts';
@@ -360,13 +360,16 @@ import { reviewGateEnabled } from '../runs/review-gate.ts';
 import { readUiState, uiStatePath } from '../ui-state.ts';
 import { agentHomePaths, cezarHomeDir, expandTilde, isAbsolutePath } from '../paths.ts';
 import { authEnforced, fileEditRefusal, isLoopbackHostHeader, normalizeHostname, resolveCapabilities, trustedOperator } from './capabilities.ts';
-import { bearerOf, createAuthGuard, principalOf, upgradeIsAuthenticated, upgradeSessionId } from '../auth/guard.ts';
+import { bearerOf, createAuthGuard, principalOf, upgradeIsAuthenticated, upgradeSessionId, sessionTokenOf } from '../auth/guard.ts';
 import { isApiToken, principalSeesTranscript } from '../auth/api-tokens.ts';
 import { dispatchedTaskTitle, projectsRuns, projectTaskRow, redactRunForScope, runViewScopes, visibleTaskTitle } from '../auth/run-projection.ts';
 import { buildCatalog, type Catalog } from '../mcp/catalog.ts';
 import { mcpRoutes } from '../mcp/http.ts';
 import { ensureHostKey } from '../auth/host-key.ts';
 import { authRoutes } from '../auth/routes.ts';
+import { createPushNotifier, type PushNotifierDeps } from '../push/notifier.ts';
+import { PRESENCE_TOPIC, pushAccountOf, pushRoutes } from '../push/routes.ts';
+import { loadVapidKeys, PushSubscriptionStore } from '../push/state.ts';
 import { enableRunTokens, isRunToken } from '../auth/run-tokens.ts';
 import { AuthService } from '../auth/service.ts';
 import { createSocketHub, type SocketHub, type WsUpgradeVerdict } from './ws.ts';
@@ -422,8 +425,11 @@ import {
   isSafeAssetFilename,
   MANIFEST_PATH,
   renderManifest,
+  renderServiceWorker,
   renderShellHtml,
   resolveGetRequest,
+  SERVICE_WORKER_PATH,
+  shellAssetPaths,
 } from './static-ui.ts';
 
 export interface ServerDeps {
@@ -542,6 +548,10 @@ export interface ServerDeps {
    *  to the HTTP server it binds. Optional so legacy callers/tests change
    *  nothing: no hub, no topics, and the HTTP surface is byte-identical. */
   socketHub?: SocketHub;
+  /** Web Push subscriptions (spec 2026-10-24-mobile-cockpit); tests inject one under a temp dir. */
+  pushSubscriptions?: PushSubscriptionStore;
+  /** The Web Push sender; tests record instead of posting to a push service. */
+  pushSend?: PushNotifierDeps['send'];
   /** The workspace terminal's session registry. Injectable so route tests drive a fake PTY
    *  instead of forking a real shell; defaults to a real one per server. */
   terminalSessions?: TerminalSessions;
@@ -1988,6 +1998,36 @@ export function createApp(deps: ServerDeps) {
   const backup = deps.backup ?? new BackupService({ version: deps.version, runs: deps.semaphore });
   // A restore without a restart replaces auth.json and the sessions file under this service.
   backup.onRestored(() => auth.reloadSessions());
+
+  // ---- Web Push (spec 2026-10-24-mobile-cockpit §3.5) -------------------------------------------
+  // Hosted only: a local origin has no HTTPS for a browser's push service to trust. A tab is
+  // "visible" while it holds the `presence` topic, which it does only while the page is visible.
+  const pushAvailable = () => !capabilities().localHandoff;
+  const pushSubscriptions = deps.pushSubscriptions ?? new PushSubscriptionStore();
+  deps.socketHub?.registerTopic(PRESENCE_TOPIC, { snapshot: async () => null, start: () => () => undefined });
+  const pushNotifier = createPushNotifier({
+    subscriptions: pushSubscriptions,
+    keys: () => loadVapidKeys(),
+    enabled: pushAvailable,
+    visible: (account) => deps.socketHub?.holders(PRESENCE_TOPIC).has(account) ?? false,
+    sessionAlive: (sessionId) => !authIsEnforced() || auth.sessionAlive(sessionId),
+    ...(deps.pushSend ? { send: deps.pushSend } : {}),
+  });
+  {
+    const watched = new Set<RunStore>();
+    const watchPush = (ctx: Pick<ProjectContext, 'id' | 'store'>): void => {
+      if (watched.has(ctx.store)) return;
+      watched.add(ctx.store);
+      const detach = pushNotifier.watch(ctx.id, ctx.store);
+      deps.onDispose?.(detach);
+    };
+    watchPush(bootContext);
+    for (const id of contexts.ids()) {
+      const ctx = contexts.peek(id);
+      if (ctx) watchPush(ctx);
+    }
+    contexts.onContextBuilt(watchPush);
+  }
   app.use('/api/*', createAuthGuard({
     service: auth,
     enforced: authIsEnforced,
@@ -2131,6 +2171,19 @@ export function createApp(deps: ServerDeps) {
   app.get(MANIFEST_PATH, async () => new Response(renderManifest(await currentBranding()), {
     headers: { 'content-type': 'application/manifest+json; charset=utf-8', 'cache-control': SHELL_CACHE_CONTROL },
   }));
+  // The service worker (spec 2026-10-24-mobile-cockpit §3.5): public like the shell, versioned by
+  // the build it precaches, and never cached itself so a new build reaches every device.
+  app.get(SERVICE_WORKER_PATH, async () => {
+    const distIndex = join(distDir, 'index.html');
+    const html = existsSync(distIndex) ? readFileSync(distIndex, 'utf8') : '';
+    const icon = manifestIcons(await currentBranding()).find((entry) => entry.type === 'image/png')?.src ?? null;
+    const body = renderServiceWorker({
+      version: createHash('sha256').update(html).digest('hex').slice(0, 16),
+      assets: shellAssetPaths(html),
+      icon,
+    });
+    return new Response(body, { headers: { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': SHELL_CACHE_CONTROL } });
+  });
 
   // ---- meta ----------------------------------------------------------------
   // CORS — deliberately for /api/health ONLY (spec 011): the bookmarklets
@@ -9976,6 +10029,7 @@ export function createApp(deps: ServerDeps) {
     .route('/', runsIndexRoutes)
     .route('/', dashboardRoutes(dashboard, () => ({ tokens: capabilities().tokenUsageMetrics, cost: capabilities().costMetrics }), () => capabilities().automations))
     .route('/', workspaceEventsRoutes)
+    .route('/', pushRoutes({ subscriptions: pushSubscriptions, keys: () => loadVapidKeys(), available: pushAvailable }))
     .route('/', telemetryRoutes)
     // The catalog is read off the assembled app on first use: every route is registered by then.
     .route('/', mcpRoutes({ catalog: () => (mcpCatalog ??= buildCatalog(app.routes).catalog), dispatch: async (request, env) => app.fetch(request, env as object | undefined), version }));
@@ -10229,8 +10283,13 @@ export function wsUpgradeVerifier(auth: AuthService, enforced: () => boolean, bi
     if (!upgradeIsAuthenticated(req, options)) return false;
     const verdict = verifyWsUpgrade(req, bindHost);
     const sessionId = verdict ? upgradeSessionId(req, options) : undefined;
-    if (!verdict || sessionId === undefined) return verdict;
-    return { ...verdict, alive: () => !enforced() || auth.sessionAlive(sessionId) };
+    if (!verdict || sessionId === undefined) return verdict && { ...verdict, account: 'owner' };
+    const session = auth.authenticate(sessionTokenOf(req.headers.cookie, req.headers.host));
+    return {
+      ...verdict,
+      alive: () => !enforced() || auth.sessionAlive(sessionId),
+      account: pushAccountOf(session ? { kind: 'user', role: session.user.role, user: session.user, sessionId } : undefined)?.account ?? 'owner',
+    };
   };
 }
 

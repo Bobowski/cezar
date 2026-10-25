@@ -85,6 +85,8 @@ export const FAMILY_SCOPES: Record<string, Exclude<ApiTokenScope, 'read' | 'runs
   'workspace/dashboard': 'admin',
   'workspace/events': 'admin',
   'workspace/host-usage': 'admin',
+  // A device's push subscription is a browser's, made by a signed-in person.
+  'workspace/push': 'admin',
   'workspace/runs-index': 'admin',
   'workspace/secrets': 'admin',
   'workspace/self-update': 'admin',

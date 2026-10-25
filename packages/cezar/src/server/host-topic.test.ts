@@ -32,6 +32,7 @@ function stubHub() {
       };
     },
     attach: () => undefined,
+    holders: () => new Set(),
     close: () => undefined,
   };
   return { hub, topics };

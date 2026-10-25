@@ -375,6 +375,9 @@ export const runRecordSchema = z.object({
   /** `chat:<runId>` on a task the cockpit chat started (spec 2026-10-24-cockpit-chat §3), set
    *  server-side from the caller's run token. Absent for everything a person started. */
   createdBy: createdBySchema.optional(),
+  /** A chat's current session launch, which its MCP token names (spec 2026-10-24-cockpit-chat §5).
+   *  Not a credential: the token is signed with a key only the cockpit process holds. */
+  launchNonce: z.string().optional(),
   /** Absent for in-place runs and after an isolated worktree is removed. */
   worktreePath: z.string().optional(),
   worktreeLifecycle: worktreeLifecycleProjectionSchema.optional(),

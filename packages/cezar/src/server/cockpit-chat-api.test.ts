@@ -54,12 +54,32 @@ describe('cockpit chat API', () => {
   const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
     apiRequest(app, path, { method: 'POST', headers: { ...json, ...headers }, body: JSON.stringify(body) });
 
-  /** A chat record that is running, and its MCP token. */
+  /** A chat record that is running, and its MCP token for the launch the record names. */
   function liveChat(): { id: string; bearer: Record<string, string> } {
     const chat = store.createRun({ title: 'chat', workflow: 'chat', task: 'hi', kind: 'chat', worktree: false, steps: [] });
+    store.updateRun(chat.id, { launchNonce: 'launch-1' });
     active.add(chat.id);
-    return { id: chat.id, bearer: { authorization: `Bearer ${mintChatRunToken(chat.id, 'boot')}` } };
+    return { id: chat.id, bearer: { authorization: `Bearer ${mintChatRunToken(chat.id, 'boot', 'launch-1')}` } };
   }
+
+  it('the token is the launch\'s: a relaunch, an archive or a delete revokes it', async () => {
+    const runs = (headers: Record<string, string>) => apiRequest(app, '/api/v1/p/boot/runs', { headers });
+    const chat = liveChat();
+    expect((await runs(chat.bearer)).status).toBe(200);
+    // The next session's launch rotates the nonce; the previous token is dead though the chat runs.
+    store.updateRun(chat.id, { launchNonce: 'launch-2' });
+    expect((await runs(chat.bearer)).status).toBe(401);
+    const next = { authorization: `Bearer ${mintChatRunToken(chat.id, 'boot', 'launch-2')}` };
+    expect((await runs(next)).status).toBe(200);
+    expect((await post(`/api/v1/runs/${chat.id}/archive`, {})).status).toBe(200);
+    expect(store.getRun(chat.id)?.launchNonce).toBeUndefined();
+    expect((await runs(next)).status).toBe(401);
+
+    const other = liveChat();
+    expect((await runs(other.bearer)).status).toBe(200);
+    store.deleteRun(other.id);
+    expect((await runs(other.bearer)).status).toBe(401);
+  });
 
   it('starts a chat with its own workflow, and refuses one with a chain or variants', async () => {
     const res = await post('/api/v1/runs', { kind: 'chat', task: 'make me a workflow' });

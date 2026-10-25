@@ -37,6 +37,9 @@ export interface RunTokenClaims {
   /** `author`: the cockpit chat's MCP token (spec 2026-10-24-cockpit-chat §5) — the `read`, `tasks`
    *  and `author` scopes on its own project, never `admin`. Absent: a task CLI's allowlist. */
   scope?: 'author';
+  /** A chat token's launch (`RunRecord.launchNonce`): each session launch mints a new one, and
+   *  archive or delete clears it, so a token outlives neither its session nor its chat. */
+  nonce?: string;
 }
 
 function sign(payload: string, secret: Buffer): string {
@@ -45,9 +48,14 @@ function sign(payload: string, secret: Buffer): string {
 
 function mint(claims: RunTokenClaims, secret: Buffer): string {
   const fields: unknown[] = [claims.runId, claims.projectId ?? null];
-  if (claims.scope) fields.push(claims.scope);
+  if (claims.scope) fields.push(claims.scope, claims.nonce);
   const payload = Buffer.from(JSON.stringify(fields)).toString('base64url');
   return `${PREFIX}${payload}.${sign(payload, secret)}`;
+}
+
+/** A fresh launch nonce for {@link mintChatRunToken}. */
+export function newLaunchNonce(): string {
+  return randomBytes(16).toString('base64url');
 }
 
 /** Undefined while auth is off, so an agent's environment is byte-for-byte what it was. */
@@ -59,11 +67,12 @@ export function mintRunToken(runId: string, projectId?: string): string | undefi
 /**
  * The chat's MCP credential, minted whether or not sign-in is on: like an API token it means its
  * scope everywhere (the guard checks it before the auth-off shortcut), so a local chat is bounded
- * by `author` too. The key is this process's, so a restart kills it with the session it served.
+ * by `author` too. The key is this process's, so a restart kills it with the session it served;
+ * the launch `nonce` is the record's, so a relaunch, an archive or a delete does too.
  */
-export function mintChatRunToken(runId: string, projectId?: string): string {
+export function mintChatRunToken(runId: string, projectId: string | undefined, nonce: string): string {
   key ??= randomBytes(32);
-  return mint({ runId, projectId, scope: 'author' }, key);
+  return mint({ runId, projectId, scope: 'author', nonce }, key);
 }
 
 export function isRunToken(token: string): boolean {
@@ -78,10 +87,12 @@ export function verifyRunToken(token: string): RunTokenClaims | null {
   const given = Buffer.from(signature);
   if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null;
   try {
-    const [runId, projectId, scope, ...extra] = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as unknown[];
+    const [runId, projectId, scope, nonce, ...extra] = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as unknown[];
     if (typeof runId !== 'string' || runId === '' || extra.length > 0) return null;
-    if (scope !== undefined && scope !== 'author') return null;
-    return { runId, ...(typeof projectId === 'string' ? { projectId } : {}), ...(scope ? { scope } : {}) };
+    if (scope === undefined) return nonce === undefined ? { runId, ...(typeof projectId === 'string' ? { projectId } : {}) } : null;
+    // A chat token is its launch's, or nothing.
+    if (scope !== 'author' || typeof nonce !== 'string' || nonce === '') return null;
+    return { runId, ...(typeof projectId === 'string' ? { projectId } : {}), scope, nonce };
   } catch {
     return null;
   }

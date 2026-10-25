@@ -399,6 +399,9 @@ export const runRecordSchema = z.object({
   kind: runKindSchema.optional(),
   /** `chat:<runId>` — the chat that started this task (spec 2026-10-24-cockpit-chat §3). */
   createdBy: createdBySchema.optional(),
+  /** A chat's current session launch: its MCP token must name it (spec 2026-10-24-cockpit-chat §5).
+   *  Rotated per launch, cleared on archive. Not a credential: the token's key never leaves the process. */
+  launchNonce: z.string().optional(),
   /** Task worktree (spec 006) — absent for in-place runs and after explicit cleanup. */
   worktreePath: z.string().optional(),
   worktreeLifecycle: worktreeLifecycleProjectionSchema.optional(),
@@ -1329,6 +1332,8 @@ export class RunStore extends EventEmitter {
       clearPendingAutoResume(run);
       clearAwaitingAnswer(run);
       clearPin(run);
+      // An archived chat's MCP token opens nothing (spec 2026-10-24-cockpit-chat §5).
+      delete run.launchNonce;
     }
     this.touch(run);
     return run;

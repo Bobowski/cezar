@@ -67,13 +67,21 @@ describe('chat run tokens', () => {
   afterEach(disableRunTokens);
 
   it('is minted with sign-in off, carries its scope, and does not switch task tokens on', () => {
-    const token = mintChatRunToken('chat-1', 'proj');
-    expect(verifyRunToken(token)).toEqual({ runId: 'chat-1', projectId: 'proj', scope: 'author' });
+    const token = mintChatRunToken('chat-1', 'proj', 'n1');
+    expect(verifyRunToken(token)).toEqual({ runId: 'chat-1', projectId: 'proj', scope: 'author', nonce: 'n1' });
     // A task's environment stays byte-for-byte what it was while auth is off.
     expect(mintRunToken('run-1', 'proj')).toBeUndefined();
     const [payload] = token.slice('cezrun_'.length).split('.');
-    const forged = Buffer.from(JSON.stringify(['chat-1', 'proj', 'admin'])).toString('base64url');
+    const forged = Buffer.from(JSON.stringify(['chat-1', 'proj', 'admin', 'n1'])).toString('base64url');
     expect(verifyRunToken(token.replace(payload!, forged))).toBeNull();
+  });
+
+  it('is a different token per launch: the nonce is part of what is signed', () => {
+    const first = mintChatRunToken('chat-1', 'proj', 'n1');
+    const second = mintChatRunToken('chat-1', 'proj', 'n2');
+    expect(second).not.toBe(first);
+    expect(verifyRunToken(first)?.nonce).toBe('n1');
+    expect(verifyRunToken(second)?.nonce).toBe('n2');
   });
 
   const chat = { runId: 'chat-1', projectId: 'proj', scope: 'author' as const };

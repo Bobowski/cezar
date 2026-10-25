@@ -44,7 +44,7 @@ import {
   readHandoff,
   seedHandoffFile,
 } from '../handoff.ts';
-import { mintChatRunToken, mintRunToken } from '../auth/run-tokens.ts';
+import { mintChatRunToken, mintRunToken, newLaunchNonce } from '../auth/run-tokens.ts';
 import { CHAT_ALLOWED_TOOLS, CHAT_DENIED_TOOLS, CHAT_MCP_SERVER, cezarChatPrompt, chatMcpServer, isChatRun, relayChatStatusNotes } from '../chat/chat.ts';
 import { todosPath } from '../todos.ts';
 // Contract VALUES, like `workspaceUiStateSchema` in workspace/migrations.ts: the attachment
@@ -1649,10 +1649,13 @@ export class RunManager {
    */
   private chatMcpForLaunch(runId: string, backend: RunnerId, onEvent: (event: AgentEvent) => void): PrivateMcpServer | undefined {
     if (!isChatRun(this.store.getRun(runId))) return undefined;
+    // A new launch retires the previous session's token: the guard matches the record's nonce.
+    const nonce = newLaunchNonce();
+    this.store.updateRun(runId, { launchNonce: nonce });
     const server = chatMcpServer({
       runId,
       projectId: this.projectId,
-      token: mintChatRunToken(runId, this.projectId),
+      token: mintChatRunToken(runId, this.projectId, nonce),
       apiUrl: process.env.CEZ_API_URL,
       bin: process.env.CEZ_BIN,
       node: process.execPath,

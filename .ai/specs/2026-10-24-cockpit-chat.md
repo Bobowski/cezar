@@ -65,7 +65,11 @@ list's live SSE copies.
 
 ## 5. Security
 
-- The injected MCP token is the run's own, scoped to `author`, dies with the process.
+- The injected MCP token is the run's own, scoped to `author`, and its session launch's: each
+  launch (the opening and every Continue) draws a fresh nonce onto the record (`launchNonce`) and
+  signs it into the token, and the guard accepts the token only while the chat is running, not
+  archived, and still holds that nonce. A relaunch, an archive (which clears it) or a delete
+  revokes the previous token; a restart rotates the signing key and kills them all.
 - Writes are limited to `CHAT_WRITABLE` by tool policy and prompt; a chat cannot push, cannot
   open a PR, cannot change settings (`admin` scope is never granted to a run).
 - A task the chat starts goes through the review gate: `POST /runs` from a chat token is forced
@@ -126,10 +130,11 @@ model are the project's.
 - **"Author" scope.** `author` alone cannot `runs_create` (that is `tasks`'), so the chat's token
   carries `read`, `runs.transcript`, `tasks` and `author` (`CHAT_TOKEN_SCOPES`) — never `admin` —
   on its own project only, minus push, PR, land, Finish (which lands an in-place task), a task's
-  file writes and `/workspace/*`. It is a run token with a third claim (`scope: 'author'`) minted
+  file writes and `/workspace/*` (and the further refusals of §5). It is a run token with a third
+  and fourth claim (`scope: 'author'`, the launch nonce) minted
   per session launch by `mintChatRunToken`, verified by the guard BEFORE the auth-off shortcut,
   so a local chat is bounded too; a task CLI's token is still minted only under enforced auth.
-  `isRunLive` is the token's lifetime, so it dies with the session.
+  `isRunLive` (running, unarchived, the record's `launchNonce`) is the token's lifetime.
 - **MCP.** `privateMcpForLaunch` appends the `cezar` stdio server (`node $CEZ_BIN mcp --tools all
   --as-run`, env `CEZ_API_URL`/`CEZ_API_TOKEN`/`CEZ_TASK_ID`/`CEZ_PROJECT_ID`) to the private
   servers at both session sites, replacing a private server of the same name. `--as-run` refuses

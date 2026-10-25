@@ -1960,7 +1960,14 @@ export function createApp(deps: ServerDeps) {
   app.use('/api/*', createAuthGuard({
     service: auth,
     enforced: authIsEnforced,
-    isRunLive: async ({ runId, projectId }) => (await tokenProject(projectId))?.manager.isActive(runId) ?? false,
+    isRunLive: async ({ runId, projectId, scope, nonce }) => {
+      const project = await tokenProject(projectId);
+      if (!project?.manager.isActive(runId)) return false;
+      // A chat token is its session launch's: relaunched, archived or deleted, it opens nothing.
+      if (scope !== 'author') return true;
+      const run = project.store.getRun(runId);
+      return run !== undefined && !run.archived && run.launchNonce !== undefined && run.launchNonce === nonce;
+    },
     chatOwns: async ({ runId: chatId, projectId }, target) => {
       const store = (await tokenProject(projectId))?.store;
       if (!store) return false;

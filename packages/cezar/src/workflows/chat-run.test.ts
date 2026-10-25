@@ -106,7 +106,10 @@ describe('the cockpit chat run', () => {
     const server = cezarServer(opening)!;
     expect(server).toMatchObject({ transport: 'stdio', command: process.execPath, args: ['/opt/cezar/dist/index.js', 'mcp', '--tools', 'all', '--as-run'] });
     expect(server.env).toMatchObject({ CEZ_API_URL: 'http://127.0.0.1:4999', CEZ_TASK_ID: record.id, CEZ_PROJECT_ID: 'proj' });
-    expect(verifyRunToken(server.env.CEZ_API_TOKEN!)).toEqual({ runId: record.id, projectId: 'proj', scope: 'author' });
+    // Signed with this launch's nonce, which the record holds: the guard checks the two match.
+    const launch = store.getRun(record.id)?.launchNonce;
+    expect(launch).toMatch(/^[A-Za-z0-9_-]{16,}$/);
+    expect(verifyRunToken(server.env.CEZ_API_TOKEN!)).toEqual({ runId: record.id, projectId: 'proj', scope: 'author', nonce: launch });
 
     // No review gate and no landing: a chat's turn ending is just a finished conversation.
     expect(await settled(record.id)).toBe('done');
@@ -119,6 +122,10 @@ describe('the cockpit chat run', () => {
     expect(resumed.disallowedTools).toEqual(CHAT_DENIED_TOOLS);
     expect(resumed.systemPrompt).toContain('You are the cezar chat for this project');
     expect(cezarServer(resumed)?.args).toContain('--as-run');
+    // A Continue is a new launch: a new nonce, so the opening session's token no longer opens anything.
+    expect(store.getRun(record.id)?.launchNonce).not.toBe(launch);
+    expect(cezarServer(resumed)?.env.CEZ_API_TOKEN).not.toBe(server.env.CEZ_API_TOKEN);
+    expect(verifyRunToken(cezarServer(resumed)!.env.CEZ_API_TOKEN!)?.nonce).toBe(store.getRun(record.id)?.launchNonce);
     expect(await settled(record.id)).toBe('done');
   });
 

@@ -369,7 +369,8 @@ describe('cockpit authentication', () => {
     expect((await app.request('/api/v1/p/boot/runs', { method: 'POST', headers: { ...loopback, 'content-type': 'application/json' }, body: '{}' })).status).toBe(401);
     const chat = store.createRun({ title: 'chat', workflow: 'chat', task: 'hi', kind: 'chat', worktree: false, steps: [] });
     active.add(chat.id);
-    const bearer = { authorization: `Bearer ${mintChatRunToken(chat.id, 'boot')}` };
+    store.updateRun(chat.id, { launchNonce: 'launch-1' });
+    const bearer = { authorization: `Bearer ${mintChatRunToken(chat.id, 'boot', 'launch-1')}` };
     expect((await app.request('/api/v1/p/boot/runs', { headers: { ...loopback, ...bearer } })).status).toBe(200);
     expect((await app.request('/api/v1/p/boot/config', { headers: { ...loopback, ...bearer } })).status).toBe(403);
   });

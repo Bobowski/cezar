@@ -36,6 +36,9 @@ export const DATA_GITIGNORE_ENTRIES = [
   'config.local.json',
   'config.local.json.*.tmp',
   'tmp/', // per-run agent temp directories (#785)
+  // A cockpit chat's proposed configuration (spec 2026-10-24-cockpit-chat §3): nothing loads it,
+  // and the owner's Apply & commit is what makes it repo content.
+  'proposals/',
   'drafts/', // unsent composer text + pasted screenshots (#939) — never in git history
   // Per-task workspace layouts (spec `2026-10-07-task-workspace` §5.3). A screen preference —
   // which views sit side by side and how wide — belonging to whoever opened the task on this

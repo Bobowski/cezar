@@ -56,6 +56,7 @@ import {
   deleteRunFile,
   renameRunFile,
   getRunHandoff,
+  getChatRuns,
   getRuns,
   getRunsIndex,
   getImportableSkills,
@@ -234,6 +235,8 @@ export const queryKeys = {
       return [queryScope(), 'runs'] as const
     },
     list: () => [queryScope(), 'runs', 'list'] as const,
+    /** `GET /runs?kind=chat` — under `runs.all`, so a reconnect's refetch reaches it too. */
+    chats: () => [queryScope(), 'runs', 'chats'] as const,
     detail: (id: string) => [queryScope(), 'runs', 'detail', id] as const,
     diff: (id: string) => [queryScope(), 'runs', 'diff', id] as const,
     changes: (id: string) => [queryScope(), 'runs', 'changes', id] as const,
@@ -1089,6 +1092,14 @@ export function useRuns<TData = ApiRun[]>(select?: (runs: ApiRun[]) => TData) {
     queryKey: queryKeys.runs.list(),
     queryFn: ({ signal }) => getRuns({ signal }),
     select,
+  })
+}
+
+/** The project's cockpit chats; live changes reach the Chat view through the run list's SSE patches. */
+export function useChatRuns() {
+  return useQuery({
+    queryKey: queryKeys.runs.chats(),
+    queryFn: ({ signal }) => getChatRuns({ signal }),
   })
 }
 

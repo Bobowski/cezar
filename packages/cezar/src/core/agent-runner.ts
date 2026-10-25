@@ -68,6 +68,13 @@ export interface AgentRunSpec {
   /** The project's private MCP servers (`.ai/cezar/mcp.local.json`), injected at launch through
    *  each backend's own channel — never written into `cwd` (spec 2026-10-07-private-project-mcp). */
   mcpServers?: PrivateMcpServer[];
+  /** Only `mcpServers`: the repo's `.mcp.json` and the user's own servers stay out (Claude
+   *  `--strict-mcp-config`). The chat's (spec 2026-10-24-cockpit-chat §5). */
+  strictMcp?: boolean;
+  /** Pins Claude's `--permission-mode`, over `CEZ_APPROVAL_GATE` (the chat's). */
+  permissionMode?: 'dontAsk';
+  /** Claude `--settings`, inline: one more settings layer for this session (the chat's). */
+  settings?: Record<string, unknown>;
   model?: string;
   /** Wall-clock kill switch for the run (ms). */
   timeoutMs?: number;

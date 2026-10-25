@@ -445,7 +445,8 @@ export function unstagePaths(root: string, change: IndexChange): Promise<GitOk> 
   });
 }
 
-const nulList = (res: GitResult): Set<string> => new Set(res.ok ? res.stdout.split('\0').filter(Boolean) : []);
+const nulList = (res: GitResult, anyExit = false): Set<string> =>
+  new Set(res.ok || anyExit ? res.stdout.split('\0').filter(Boolean) : []);
 
 /** Throw away unstaged work: restore tracked files from the index, delete untracked ones, or
  *  reverse one hunk in the working tree. Only with the confirm's answer, and only for files
@@ -487,6 +488,13 @@ export function discardPaths(root: string, change: IndexChange & { confirm?: boo
     }
     return { ok: true };
   });
+}
+
+/** The paths git ignores and does not track (`git check-ignore`): a commit cannot carry them. */
+export async function ignoredPaths(root: string, paths: string[]): Promise<Set<string>> {
+  if (!paths.length) return new Set();
+  // Exit 1 is "none ignored"; check-ignore refuses the literal-pathspec env, and stdin needs none.
+  return nulList(await git(root, ['check-ignore', '-z', '--stdin'], { input: `${paths.join('\0')}\0` }), true);
 }
 
 /** Commit the index (never `-a`). Amend is refused once HEAD is on a remote. */

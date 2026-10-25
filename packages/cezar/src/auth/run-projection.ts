@@ -11,9 +11,19 @@ import type { Principal } from './guard.ts';
  * goes through {@link redactRunForScope}; the contract names the result (`apiRunSchema.projected`).
  */
 
+/** A cockpit chat sees the owner's tasks projected (spec 2026-10-24-cockpit-chat §5): status, not text. */
+const CHAT_VIEW_SCOPES: readonly ApiTokenScope[] = ['read', 'author'];
+
 /** The scopes a request's principal is bounded by; undefined for the owner (session, host, auth off). */
 export function runViewScopes(principal: Principal | undefined): readonly ApiTokenScope[] | undefined {
+  if (principal?.kind === 'run' && principal.scope === 'author') return CHAT_VIEW_SCOPES;
   return principal?.kind === 'token' ? principal.scopes : undefined;
+}
+
+/** {@link runViewScopes} for one run: a chat sees a task it started whole. */
+export function runViewScopesFor(principal: Principal | undefined, run: Pick<RunRecord, 'createdBy' | 'kind'>): readonly ApiTokenScope[] | undefined {
+  if (principal?.kind === 'run' && principal.scope === 'author' && run.kind !== 'chat' && run.createdBy === `chat:${principal.runId}`) return undefined;
+  return runViewScopes(principal);
 }
 
 /** Whether these scopes get the projected view of a task. */

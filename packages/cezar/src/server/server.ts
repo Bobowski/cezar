@@ -88,6 +88,7 @@ import {
   isTrackerAutomation,
   isScheduleAutomation,
   type AutomationDefinition,
+  automationDefinitionSchema,
 } from '../automations/types.ts';
 import { activityHeadsChanged } from '../automations/github-activity.ts';
 import { trackerTriggerSchema, trackerAutomationOptionsSchema, trackerAutomationOptionsQuerySchema, automationScheduleSchema, localTimeZone, nextOccurrence } from '@open-mercato/cezar-contract';
@@ -158,7 +159,18 @@ import {
 import { dispatchInputSchema, dispatchIntentSchema, dispatchReportSchema } from '@open-mercato/cezar-contract';
 import { HIDDEN_PERSONA_NAME, personaNameSchema, putPersonaSchema } from '@open-mercato/cezar-contract';
 import { globalPersonasDir, loadPersonas, parsePersona, personaStepChecks, PERSONAS_DIR, type Persona } from '../personas.ts';
-import { hasTaskOrAttachments, TASK_OR_ATTACHMENTS_ISSUE } from '@open-mercato/cezar-contract';
+import {
+  CHAT_IS_SINGLE_ISSUE,
+  chatIsSingle,
+  hasTaskOrAttachments,
+  runKindSchema,
+  runsListQuerySchema,
+  TASK_OR_ATTACHMENTS_ISSUE,
+  WORKFLOW_XOR_STEPS_ISSUE,
+  workflowXorSteps,
+} from '@open-mercato/cezar-contract';
+import { CHAT_WORKFLOW, chatCreatedBy, isChatRun } from '../chat/chat.ts';
+import { chatProposalParamsSchema, chatProposalsActionSchema, chatProposalsApplySchema } from '@open-mercato/cezar-contract';
 import { detectEnvironment } from '../core/backend-detect.ts';
 import type { HostUsage } from '@open-mercato/cezar-contract';
 import { resolveCursorAgentBin } from '../core/cursor-bin.ts';
@@ -371,7 +383,8 @@ import { agentHomePaths, cezarHomeDir, expandTilde, isAbsolutePath } from '../pa
 import { authEnforced, fileEditRefusal, isLoopbackHostHeader, normalizeHostname, resolveCapabilities, trustedOperator } from './capabilities.ts';
 import { bearerOf, createAuthGuard, principalOf, upgradeIsAuthenticated, upgradeSessionId, sessionTokenOf } from '../auth/guard.ts';
 import { isApiToken, principalSeesTranscript } from '../auth/api-tokens.ts';
-import { dispatchedTaskTitle, projectsRuns, projectTaskRow, redactRunForScope, runViewScopes, visibleTaskTitle } from '../auth/run-projection.ts';
+import { dispatchedTaskTitle, projectsRuns, projectTaskRow, redactRunForScope, runViewScopes, runViewScopesFor, visibleTaskTitle } from '../auth/run-projection.ts';
+import { applyProposals, discardProposals, listProposals, proposeAutomation, proposedAutomation } from '../chat/proposals.ts';
 import { buildCatalog, type Catalog } from '../mcp/catalog.ts';
 import { mcpRoutes } from '../mcp/http.ts';
 import { ensureHostKey } from '../auth/host-key.ts';
@@ -967,10 +980,12 @@ const startRunSchema = z
     // The tracker ticket this task was handed off from (spec 2026-10-11-tracker-ticket-context).
     // Only an id and the scope the client was looking at: the link itself is built server-side.
     tracker: trackerRunLinkInputSchema.optional(),
+    // The project's cockpit chat (spec 2026-10-24-cockpit-chat): its own one-step workflow, in
+    // the checkout, cezar's MCP injected. Omitted = an ordinary task.
+    kind: runKindSchema.optional(),
   })
-  .refine((b) => Boolean(b.workflow) !== Boolean(b.steps), {
-    message: 'provide either "workflow" or "steps", not both',
-  })
+  .refine(workflowXorSteps, WORKFLOW_XOR_STEPS_ISSUE)
+  .refine(chatIsSingle, CHAT_IS_SINGLE_ISSUE)
   .refine(hasTaskOrAttachments, TASK_OR_ATTACHMENTS_ISSUE);
 
 const pickSchema = z.object({
@@ -1572,6 +1587,39 @@ function selfUpdateFor(principal: ReturnType<typeof principalOf>, status: SelfUp
 // this function, and `AppType` (src/server/app-type.ts) is `ReturnType<typeof createApp>`.
 // Annotating it `Hono` here would erase every route from the type and leave the typed client
 // with nothing to offer. See the `routed` assembly at the end of the function.
+/** The cockpit chat a request comes from (spec 2026-10-24-cockpit-chat §5), or undefined. */
+function chatPrincipalId(c: Context): string | undefined {
+  const principal = principalOf(c);
+  return principal?.kind === 'run' && principal.scope === 'author' ? principal.runId : undefined;
+}
+
+/** A chat's brakes on the tasks it starts (spec 2026-10-24-cockpit-chat §5). */
+export const CHAT_TASKS_PER_HOUR = 5;
+export const CHAT_TASKS_IN_FLIGHT = 2;
+
+/** Why a chat may not start another task now, or undefined. */
+/** `pending`: starts the route has admitted but not yet created — each counts in flight and this hour. */
+export function chatTaskLimit(store: RunStore, chatId: string, now = Date.now(), pending = 0): string | undefined {
+  const mine = store.listRuns().filter((run) => run.createdBy === chatCreatedBy(chatId));
+  const inFlight = pending + mine.filter((run) => run.status === 'queued' || run.status === 'running' || run.status === 'waiting').length;
+  if (inFlight >= CHAT_TASKS_IN_FLIGHT) {
+    return `this chat already has ${inFlight} tasks in flight — at most ${CHAT_TASKS_IN_FLIGHT}; wait for one to reach review`;
+  }
+  // The chat's own durable count: a task the owner deleted still counts as started.
+  const lastHour = pending + recentChatStarts(store, chatId, now).length;
+  if (lastHour >= CHAT_TASKS_PER_HOUR) return `this chat started ${lastHour} tasks in the last hour — at most ${CHAT_TASKS_PER_HOUR}`;
+  return undefined;
+}
+
+function recentChatStarts(store: RunStore, chatId: string, now: number): string[] {
+  return (store.getRun(chatId)?.chatTaskStarts ?? []).filter((at) => now - Date.parse(at) < 3_600_000);
+}
+
+/** Record a task the chat started on its own record, where the hourly cap reads it. */
+export function recordChatTaskStart(store: RunStore, chatId: string, now = Date.now()): void {
+  store.updateRun(chatId, { chatTaskStarts: [...recentChatStarts(store, chatId, now), new Date(now).toISOString()] });
+}
+
 export function createApp(deps: ServerDeps) {
   const { version, update, bindHost, bootProjectId } = deps;
   // Boot singletons keep DELIBERATELY distinct names (`boot*`): every
@@ -2043,14 +2091,30 @@ export function createApp(deps: ServerDeps) {
     }
     contexts.onContextBuilt(watchPush);
   }
+  /** The project a run token names: the boot one, or an already-built context (never built here). */
+  const tokenProject = async (projectId: string | undefined): Promise<{ store: RunStore; manager: RunManager } | undefined> =>
+    projectId === undefined || projectId === 'default' || projectId === (await resolveBootProject())
+      ? { store: deps.store, manager: deps.manager }
+      : contexts.peek(projectId);
   app.use('/api/*', createAuthGuard({
     service: auth,
     enforced: authIsEnforced,
-    isRunLive: async ({ runId, projectId }) => {
-      if (projectId === undefined || projectId === 'default' || projectId === (await resolveBootProject())) {
-        return deps.manager.isActive(runId);
-      }
-      return contexts.peek(projectId)?.manager.isActive(runId) ?? false;
+    isRunLive: async ({ runId, projectId, scope, nonce }) => {
+      const project = await tokenProject(projectId);
+      if (!project?.manager.isActive(runId)) return false;
+      // A chat token is its session launch's: relaunched, archived or deleted, it opens nothing.
+      if (scope !== 'author') return true;
+      const run = project.store.getRun(runId);
+      return run !== undefined && !run.archived && run.launchNonce !== undefined && run.launchNonce === nonce;
+    },
+    chatOwns: async ({ runId: chatId, projectId }, target) => {
+      const store = (await tokenProject(projectId))?.store;
+      if (!store) return false;
+      // A chat never starts a chat, so `createdBy` alone rules out another chat and itself.
+      const owned = (run: RunRecord | undefined) => run !== undefined && !isChatRun(run) && run.createdBy === chatCreatedBy(chatId);
+      if ('run' in target) return owned(store.getRun(target.run));
+      const group = store.listRuns().filter((run) => run.groupId === target.group);
+      return group.length > 0 && group.every(owned);
     },
   }) as unknown as MiddlewareHandler);
   // An SSE stream is authenticated once, when it opens; each keepalive tick re-asks whether the
@@ -4530,7 +4594,8 @@ export function createApp(deps: ServerDeps) {
       const issue = stepsIssue(steps, await personaCheck(repoRoot, steps));
       if (issue) return c.json({ error: issue }, 400);
       const slug = slugify(parsed.data.name) || 'chain';
-      const dir = join(repoRoot, WORKFLOWS_DIR);
+      const chatId = chatPrincipalId(c);
+      const dir = chatId ? join(c.get('project').dataDir, 'proposals', chatId, 'workflows') : join(repoRoot, WORKFLOWS_DIR);
       const path = join(dir, `${slug}.yaml`);
       // Pure skill stacks are written in the portable compact form (spec 012) —
       // `name` + `skills:` — so the file imports cleanly in any repo.
@@ -4595,7 +4660,8 @@ export function createApp(deps: ServerDeps) {
       if (!issues.length) issues.push(...(await graphPersonaCheck(repoRoot, body.graph)));
       if (issues.length) return c.json({ error: issues.join('; ') }, 400);
       const slug = slugify(body.name) || 'workflow';
-      const dir = join(repoRoot, WORKFLOWS_DIR);
+      const chatId = chatPrincipalId(c);
+      const dir = chatId ? join(c.get('project').dataDir, 'proposals', chatId, 'workflows') : join(repoRoot, WORKFLOWS_DIR);
       const path = join(dir, `${slug}.yaml`);
       const { nodes, edges, layout } = body.graph;
       const doc = {
@@ -4943,6 +5009,16 @@ export function createApp(deps: ServerDeps) {
       const accountIssue = await automationAccountIssue(c.get('project').root, parsed.data.task);
       if (accountIssue) return c.json({ error: accountIssue }, 400);
       const { enable, ...input } = parsed.data;
+      const chatId = chatPrincipalId(c);
+      if (chatId) {
+        // Spec 2026-10-24-cockpit-chat §3: a chat proposes a paused automation; only the owner arms one.
+        if (enable === true) return c.json({ error: 'a chat proposes a paused automation — the owner enables it' }, 403);
+        const now = new Date().toISOString();
+        const parsedDef = automationDefinitionSchema.safeParse({ ...input, kind, enabled: false, id: randomUUID(), revision: 1, createdAt: now, updatedAt: now });
+        if (!parsedDef.success) return c.json({ error: parsedDef.error.issues.map((issue) => issue.message).join('; ') }, 400);
+        proposeAutomation(c.get('project').dataDir, chatId, parsedDef.data);
+        return c.json({ automation: parsedDef.data }, 201);
+      }
       try {
         const automation = automationStore.create(
           { ...input, kind, enabled: enable === true },
@@ -4973,8 +5049,17 @@ export function createApp(deps: ServerDeps) {
     .put('/automations/:id', jsonZodValidator(() => automationUpdateSchema), async (c) => {
       const { automationStore } = c.get('project');
       const parsed = { data: c.req.valid('json') };
-      const current = automationStore.get(c.req.param('id'));
+      const chatId = chatPrincipalId(c);
+      const live = automationStore.get(c.req.param('id'));
+      // A chat edits its own proposal of an automation when it has one (spec 2026-10-24-cockpit-chat §3).
+      const proposed = chatId ? automationDefinitionSchema.safeParse(proposedAutomation(c.get('project').dataDir, chatId, c.req.param('id'))) : undefined;
+      const current = proposed?.success ? proposed.data : live;
       if (!current) return c.json({ error: 'not found' }, 404);
+      // An enabled automation launches with nobody there: a chat proposes paused ones only, and never
+      // touches a live one that is on (spec 2026-10-24-cockpit-chat §5).
+      if (chatId && (parsed.data.enabled === true || live?.enabled === true)) {
+        return c.json({ error: 'a chat proposes a paused automation and never edits an enabled one — the owner enables it' }, 403);
+      }
       // The stored kind unless the body names one; a switch is refused — receipts and cursors
       // are kind-specific, and a silent swap would orphan them (spec 2026-09-14 § Edge cases).
       const kind = parsed.data.kind ?? current.kind;
@@ -4990,6 +5075,16 @@ export function createApp(deps: ServerDeps) {
       const accountIssue = await automationAccountIssue(c.get('project').root, parsed.data.task);
       if (accountIssue) return c.json({ error: accountIssue }, 400);
       const { expectedRevision, ...input } = parsed.data;
+      if (chatId) {
+        if (current.revision !== expectedRevision) return c.json({ error: 'automation revision conflict' }, 409);
+        const next = automationDefinitionSchema.safeParse({
+          ...current, ...input, kind, enabled: false, id: current.id, revision: current.revision + 1,
+          createdAt: current.createdAt, updatedAt: new Date().toISOString(),
+        });
+        if (!next.success) return c.json({ error: next.error.issues.map((issue) => issue.message).join('; ') }, 400);
+        proposeAutomation(c.get('project').dataDir, chatId, next.data);
+        return c.json({ automation: next.data });
+      }
       try {
         // Match the scanner's checkpoint identity: association and effective event selection.
         // Prompt and eligibility-filter edits keep progress so events since the last poll survive.
@@ -5348,11 +5443,19 @@ export function createApp(deps: ServerDeps) {
     }
   };
 
+  /** A chat's admitted `POST /runs` not yet created or refused, by chat id (`chatTaskLimit`). */
+  const chatTasksPending = new Map<string, number>();
+
   // ---- chained family: runs lifecycle + artifacts (project-scoped) ----
   const runsRoutes = new Hono<ProjectApiEnv>()
-    .get('/runs', (c) => {
+    .get('/runs', queryZodValidator(runsListQuerySchema), (c) => {
       const scopes = runViewScopes(principalOf(c));
-      return c.json(c.get('project').store.listRuns().map((run) => redactRunForScope(withUsage(run), scopes)));
+      // Tasks unless chats are asked for (spec 2026-10-24-cockpit-chat §4): `runs_list`, `cez task
+      // list` and every script see tasks; the cockpit, which mirrors every run event, asks `all`.
+      const { kind = 'task' } = c.req.valid('query');
+      const runs = c.get('project').store.listRuns().filter((run) => kind === 'all' || (kind === 'chat') === isChatRun(run));
+      const viewer = principalOf(c);
+      return c.json(runs.map((run) => redactRunForScope(withUsage(run), viewer?.kind === 'run' ? runViewScopesFor(viewer, run) : scopes)));
     })
 
     // Registered before the `/:id/...` routes so "archive-finished" and "read-all"
@@ -5429,7 +5532,24 @@ export function createApp(deps: ServerDeps) {
       return run ? c.json(run) : c.json({ error: 'not found' }, 404);
     })
 
-    .post('/runs', jsonZodValidator(startRunSchema), async (c) => {
+    .post('/runs', jsonZodValidator(startRunSchema), async (c, next) => {
+      // A chat's brakes (spec 2026-10-24-cockpit-chat §5) take the slot in this tick, before any
+      // await, and hold it until the handler has created the record or refused: parallel
+      // runs_create calls cannot all pass a check that counts records only.
+      const chatId = chatPrincipalId(c);
+      if (!chatId) return next();
+      const limit = chatTaskLimit(c.get('project').store, chatId, Date.now(), chatTasksPending.get(chatId) ?? 0);
+      if (limit) return c.json({ error: limit }, 409);
+      chatTasksPending.set(chatId, (chatTasksPending.get(chatId) ?? 0) + 1);
+      try {
+        await next();
+        if (c.res.status === 201) recordChatTaskStart(c.get('project').store, chatId);
+      } finally {
+        const left = (chatTasksPending.get(chatId) ?? 1) - 1;
+        if (left > 0) chatTasksPending.set(chatId, left);
+        else chatTasksPending.delete(chatId);
+      }
+    }, async (c) => {
       const { root: repoRoot, dataDir, manager, store } = c.get('project');
       // It would queue into an index the restore holds unwritten (`?.`: test managers are stubs).
       if (manager.restoreInProgress?.()) return c.json({ error: RESTORE_IN_PROGRESS_ERROR }, 409);
@@ -5437,11 +5557,33 @@ export function createApp(deps: ServerDeps) {
       if (agentModelsLocked(repoRoot) && parsed.data.model?.trim()) {
         return c.json({ error: AGENT_MODELS_LOCKED_ERROR }, 409);
       }
+      const chat = parsed.data.kind === 'chat';
+      // A task the cockpit chat starts carries its provenance (spec 2026-10-24-cockpit-chat §3),
+      // read off the caller's own token — never a body field anyone could set.
+      const principal = principalOf(c);
+      const caller = principal?.kind === 'run' && principal.scope ? store.getRun(principal.runId) : undefined;
+      // A chat is the owner's: a signed-in user or the host (auth off), never a token (spec §5).
+      if (chat && principal && principal.kind !== 'user' && principal.kind !== 'host') {
+        return c.json({ error: 'only the owner starts a chat — not a task, a chat or an API token' }, 403);
+      }
+      const createdBy = caller && isChatRun(caller) ? chatCreatedBy(caller.id) : undefined;
+      // A chat's task goes through the review gate (spec 2026-10-24-cockpit-chat §5): its own
+      // worktree, never autonomous — in place it would land, and push, on a `landing: auto` project.
+      const fromChat = principal?.kind === 'run' && principal.scope === 'author';
+      if (fromChat) {
+        const body = parsed.data;
+        if (body.worktree === false || body.autonomous === true || body.readOnly || body.newBranch || body.dispatch) {
+          return c.json({ error: 'a task the chat starts runs in its own worktree, is not autonomous and stops at review — drop worktree:false, autonomous, readOnly, newBranch and dispatch' }, 400);
+        }
+        // Only a workflow that is live (loaded, so the owner applied it): inline steps would run a
+        // chain nobody reviewed, check commands and pushes included (spec §5).
+        if (body.steps) return c.json({ error: 'a chat starts a task with a live workflow (workflows_list), never inline steps' }, 400);
+      }
       // Resolve the ticket link before anything is started: a scope that moved under the user is
       // refused like any tracker read, while a vendor that merely fails to answer costs the link
       // its title and snapshot, never the launch.
       let trackerLink: TrackerLink | undefined;
-      if (parsed.data.tracker) {
+      if (parsed.data.tracker && !chat) {
         const driver = await trackers.driver(repoRoot, dataDir);
         if ('available' in driver) return c.json({ error: driver.reason }, 409);
         if (parsed.data.tracker.expectedScope !== trackerReadScope(driver.association)) {
@@ -5453,7 +5595,9 @@ export function createApp(deps: ServerDeps) {
         trackerLink = buildTrackerLink(driver.association, parsed.data.tracker.itemId, 'handoff', read.available ? read.item : undefined);
       }
       let workflow: WorkflowDef | undefined;
-      if (parsed.data.steps) {
+      if (chat) {
+        workflow = CHAT_WORKFLOW;
+      } else if (parsed.data.steps) {
         // Inline chain (spec 008): an approved plan runs as an ad-hoc workflow.
         const issue = stepsIssue(parsed.data.steps, await personaCheck(repoRoot, parsed.data.steps));
         if (issue) return c.json({ error: issue }, 400);
@@ -5481,7 +5625,8 @@ export function createApp(deps: ServerDeps) {
         const account = await resolveWorkspaceProfile(fallback, parsed.data.agentProfile);
         if ('error' in account) return c.json({ error: account.error }, 400);
       }
-      const variants = parsed.data.variants ?? 1;
+      // A chat's task runs once (spec §5): its caps count tasks, and ×3 would triple each one.
+      const variants = fromChat ? 1 : parsed.data.variants ?? 1;
       if (variants > 1) {
         // Variants require git worktrees to isolate their changes.
         const repo = await getRepoInfo(repoRoot);
@@ -5504,11 +5649,12 @@ export function createApp(deps: ServerDeps) {
         agentProfile: parsed.data.agentProfile,
         images,
         systemPrompt: parsed.data.systemPrompt,
-        worktree: parsed.data.worktree,
+        // Explicit for a chat's task: an absent key would take an in-place project default.
+        worktree: fromChat ? true : parsed.data.worktree,
         newBranch: parsed.data.newBranch,
         branch: parsed.data.branch,
         ...(parsed.data.readOnly ? { readOnly: true } : {}),
-        autonomous: parsed.data.autonomous,
+        autonomous: fromChat ? false : parsed.data.autonomous,
         // Opt-in inbox (#471): the capability is the ceiling, so a client asking
         // for follow-ups on a server that has them off gets a plain `false`
         // rather than an error — the run is still perfectly valid without them.
@@ -5516,6 +5662,8 @@ export function createApp(deps: ServerDeps) {
         // CEZ_TODOS_FILE alike (RunManager.agentEnv).
         generateFollowups: capabilities().followups ? parsed.data.generateFollowups : false,
         ...(parsed.data.dispatch && capabilities().dispatch ? { dispatchIntent: parsed.data.dispatch } : {}),
+        ...(chat ? { kind: 'chat' as const } : {}),
+        ...(createdBy ? { createdBy } : {}),
         deviceSid: deviceSid(c.req.header('x-cezar-sid')),
       };
       if (variants > 1) {
@@ -5536,7 +5684,7 @@ export function createApp(deps: ServerDeps) {
     .get('/runs/:id', (c) => {
       const { store } = c.get('project');
       const run = store.getRun(c.req.param('id'));
-      return run ? c.json(redactRunForScope(withUsage(run), runViewScopes(principalOf(c)))) : c.json({ error: 'not found' }, 404);
+      return run ? c.json(redactRunForScope(withUsage(run), runViewScopesFor(principalOf(c), run))) : c.json({ error: 'not found' }, 404);
     })
 
     // The ticket a run is linked to, read NOW by the cockpit for that run's agent (spec
@@ -6242,10 +6390,12 @@ export function createApp(deps: ServerDeps) {
       if (result.kind === 'invalid' || result.kind === 'missing') {
         return c.json({ error: result.error }, 409);
       }
-      // A token reads only what the repository index reaches, as on /repo/files: a worktree-off
-      // run's directory IS the checkout, and a worktree carries the seeded gitignored layer.
+      // A token or a run (a chat, a task's CLI) reads only what the repository index reaches, as
+      // on /repo/files: a worktree-off run's directory IS the checkout, and a worktree carries the
+      // seeded gitignored layer. Only the owner browses ignored files.
       let indexed: string[] | undefined;
-      if (principalOf(c)?.kind === 'token') {
+      const caller = principalOf(c)?.kind;
+      if (caller === 'token' || caller === 'run') {
         const index = await listRepoPaths(workingDirectory, Number.MAX_SAFE_INTEGER);
         if (!index.ok) return c.json({ error: index.error }, 409);
         if (result.kind === 'file' && !index.paths.includes(result.path)) {
@@ -8900,7 +9050,8 @@ export function createApp(deps: ServerDeps) {
   // ---- the Git page (spec 2026-10-24-git-view) ----
   /** An in-place task's agent works in the checkout: nothing may move HEAD or the files under it. */
   const inPlaceTaskBusy = (project: ProjectContext): boolean =>
-    project.store.listRuns().some((r) => r.worktree === false && (r.status === 'running' || r.status === 'waiting'));
+    // A chat parked between messages is not touching the tree, and its Commit runs through here.
+    project.store.listRuns().some((r) => r.worktree === false && (r.status === 'running' || (r.status === 'waiting' && !isChatRun(r))));
   /** Branch → the run that owns it, for the graph's labels. An in-place run's checkout branch is
    *  the user's own unless the run created it. */
   const graphTasks = (store: ProjectContext['store'], projected: boolean): Map<string, GraphTask> => {
@@ -9351,6 +9502,31 @@ export function createApp(deps: ServerDeps) {
       const { n } = c.req.valid('param');
       const r = await mutateCheckout(c.get('project'), principalOf(c), (root) => stashPop(root, n), { movesTree: true });
       return 'error' in r ? c.json({ error: r.error }, 409) : c.json(r.value, 200);
+    })
+    // A cockpit chat's proposals (spec 2026-10-24-cockpit-chat §3): the owner reviews them as diffs
+    // against the live files, then applies (copy, stage, commit) or discards them. Never the chat's.
+    .get('/repo/proposals/:chatId', paramZodValidator(chatProposalParamsSchema), (c) => {
+      const { root, dataDir } = c.get('project');
+      return c.json({ proposals: listProposals(root, dataDir, c.req.valid('param').chatId) });
+    })
+    .post('/repo/proposals/:chatId/apply', paramZodValidator(chatProposalParamsSchema), jsonZodValidator(chatProposalsApplySchema, { absent: {} }), async (c) => {
+      const { chatId } = c.req.valid('param');
+      const project = c.get('project');
+      const r = await mutateCheckout(project, principalOf(c), (root) => applyProposals(root, project.dataDir, chatId, c.req.valid('json'), {
+        lockAutomations: (fn) => project.automationStore.withMutationLease(fn),
+      }), { movesTree: true });
+      if ('error' in r) return c.json({ error: r.error }, 409);
+      if (r.value.applied.includes('.ai/cezar/automations.json')) automationsChanged();
+      return c.json(r.value, 200);
+    })
+    .post('/repo/proposals/:chatId/discard', paramZodValidator(chatProposalParamsSchema), jsonZodValidator(chatProposalsActionSchema, { absent: {} }), (c) => {
+      if (principalOf(c)?.kind === 'run') return c.json({ error: 'a chat\'s proposals are the owner\'s to discard' }, 403);
+      // Apply's own bar (`mutateCheckout`): behind a proxy alone (`CEZ_AUTH=0`), nobody's.
+      if (!trustedOperator(process.env, bindHost)) {
+        return c.json({ error: 'a chat\'s proposals need cezar’s own sign-in on a hosted cockpit' }, 409);
+      }
+      const { paths } = c.req.valid('json');
+      return c.json({ discarded: discardProposals(c.get('project').dataDir, c.req.valid('param').chatId, paths) }, 200);
     })
     .post('/repo/remotes/:name/fetch', paramZodValidator(repoRemoteParamSchema), async (c) => {
       const { name } = c.req.valid('param');
@@ -10057,9 +10233,10 @@ export function createApp(deps: ServerDeps) {
         // `GET /runs`, which has always carried them, and excluding them here would mean a task
         // is findable while you stand in its project and vanishes the moment you leave — the
         // exact asymmetry a cross-project finder exists to remove.
+        // Tasks only: a chat is found under Chat (spec 2026-10-24-cockpit-chat §4).
         const recent = (
           owned ? owned.store.listRuns() : readRunIndexFromDisk(join(project.root, '.ai/cezar'))
-        ).sort(byLastActivityDesc);
+        ).filter((run) => !isChatRun(run)).sort(byLastActivityDesc);
         if (recent.length > RUNS_INDEX_PER_PROJECT) truncated.push(project.id);
         const mentioned: number[] = [];
         for (const run of recent.slice(0, RUNS_INDEX_PER_PROJECT)) {

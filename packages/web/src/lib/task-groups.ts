@@ -429,6 +429,8 @@ export function listCounts(runs: readonly RunRecord[]): {
   let archived = 0
   let waiting = 0
   for (const run of runs) {
+    // A chat is not a task (spec 2026-10-24-cockpit-chat): it is counted under Chat, not here.
+    if (run.kind === 'chat') continue
     if (run.archived) {
       archived += 1
       continue

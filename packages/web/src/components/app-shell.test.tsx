@@ -256,6 +256,7 @@ describe('AppShell', () => {
     // global settings are a different thing (a dialog in the cockpit menu).
     expect(links.map(nameOf)).toEqual([
       'Tasks',
+      'Chat',
       'Inbox',
       'Git',
       'Code',
@@ -270,6 +271,7 @@ describe('AppShell', () => {
     // Deep-linkable per Step 2.1: every nav row is an <a href>, not a button with an onClick.
     expect(links.map((a) => a.getAttribute('href'))).toEqual([
       '/',
+      '/chat',
       '/inbox',
       '/git',
       '/code',

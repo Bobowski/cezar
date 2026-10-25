@@ -32,7 +32,7 @@ import { commentFingerprint, githubTracesOf, mergeTraces, POSTED_BODIES_CAP, POS
 import { workflowDefSchema } from '../workflows/types.ts';
 // A contract VALUE, like `workspaceUiStateSchema` in `workspace/migrations.ts`: the persisted
 // `dispatch` object and its wire half are literally the same schema, so they cannot drift.
-import { dispatchSchema, trackerAssociationSchema, trackerAutomationEventSchema, trackerLinkSchema, worktreeLifecycleProjectionSchema } from '@open-mercato/cezar-contract';
+import { createdBySchema, dispatchSchema, runKindSchema, trackerAssociationSchema, trackerAutomationEventSchema, trackerLinkSchema, worktreeLifecycleProjectionSchema } from '@open-mercato/cezar-contract';
 
 import { RUNNER_IDS } from '../core/agent-runner.ts';
 
@@ -395,6 +395,16 @@ export const runRecordSchema = z.object({
   /** Explicit execution policy. `false` means the run intentionally uses the repo root;
    *  absent on older runs and for the default isolated-worktree mode. */
   worktree: z.literal(false).optional(),
+  /** `chat` = the project's cockpit chat (spec 2026-10-24-cockpit-chat); absent = a task. */
+  kind: runKindSchema.optional(),
+  /** `chat:<runId>` — the chat that started this task (spec 2026-10-24-cockpit-chat §3). */
+  createdBy: createdBySchema.optional(),
+  /** A chat's current session launch: its MCP token must name it (spec 2026-10-24-cockpit-chat §5).
+   *  Rotated per launch, cleared on archive. Not a credential: the token's key never leaves the process. */
+  launchNonce: z.string().optional(),
+  /** A chat's task starts in the last hour (spec 2026-10-24-cockpit-chat §5): the hourly cap counts
+   *  these, not task records, which the owner may delete or the retention sweep prune. */
+  chatTaskStarts: z.array(z.string()).optional(),
   /** Task worktree (spec 006) — absent for in-place runs and after explicit cleanup. */
   worktreePath: z.string().optional(),
   worktreeLifecycle: worktreeLifecycleProjectionSchema.optional(),
@@ -1118,6 +1128,9 @@ export class RunStore extends EventEmitter {
     worktree?: false;
     groupId?: string;
     variant?: string;
+    /** Only `chat` is ever written; a task leaves the key absent, as every older record has it. */
+    kind?: 'chat';
+    createdBy?: string;
     steps: Array<Pick<StepState, 'id' | 'name' | 'kind'>>;
   }): RunRecord {
     const run: RunRecord = {
@@ -1139,6 +1152,8 @@ export class RunStore extends EventEmitter {
       worktree: input.worktree,
       groupId: input.groupId,
       variant: input.variant,
+      ...(input.kind ? { kind: input.kind } : {}),
+      ...(input.createdBy ? { createdBy: input.createdBy } : {}),
       status: 'queued',
       createdAt: new Date().toISOString(),
       tokensUsed: 0,
@@ -1320,6 +1335,8 @@ export class RunStore extends EventEmitter {
       clearPendingAutoResume(run);
       clearAwaitingAnswer(run);
       clearPin(run);
+      // An archived chat's MCP token opens nothing (spec 2026-10-24-cockpit-chat §5).
+      delete run.launchNonce;
     }
     this.touch(run);
     return run;
@@ -1345,13 +1362,15 @@ export class RunStore extends EventEmitter {
     return run;
   }
 
-  /** Bulk-archive every finished run; returns how many were archived. */
+  /** Bulk-archive every finished task; returns how many were archived. */
   archiveFinished(): number {
     let count = 0;
     for (const run of this.runs.values()) {
       // An unanswered question is a gate, not an outcome — like `review`, the bulk sweep leaves it.
+      // A chat settles `done` between messages and is archived on its own (spec 2026-10-24-cockpit-chat).
       if (
         !run.archived &&
+        run.kind !== 'chat' &&
         ['done', 'failed', 'cancelled'].includes(run.status) &&
         run.awaitingAnswerSince === undefined
       ) {

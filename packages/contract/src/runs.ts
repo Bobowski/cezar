@@ -148,6 +148,112 @@ export const processUsageSchema = z.object({
 });
 export type ProcessUsage = z.infer<typeof processUsageSchema>;
 
+/** What a run is (spec 2026-10-24-cockpit-chat §4): a task, or the project's cockpit chat. */
+export const runKindSchema = z.enum(['task', 'chat']);
+export type RunKind = z.infer<typeof runKindSchema>;
+
+/** `chat:<runId>` — the chat that started a task. A closed shape, never free text. */
+export const createdBySchema = z.string().regex(/^chat:[A-Za-z0-9-]{1,64}$/);
+
+/**
+ * The live cezar configuration a chat may PROPOSE (spec 2026-10-24-cockpit-chat §3, §5) — never the
+ * owner settings, run state, private MCP or task worktrees beside it under `.ai/cezar/`. The chat
+ * writes a mirror of these under {@link chatProposalRoot}, which nothing loads; the owner's Apply
+ * makes it live. A trailing `/` is a directory.
+ */
+export const CHAT_WRITABLE = [
+  '.ai/cezar/workflows/',
+  '.ai/cezar/skills/',
+  '.ai/cezar/agents/',
+  '.ai/cezar/automations.json',
+  '.ai/cezar/mcp.json',
+] as const;
+
+/** Whether a repo-relative path is one of {@link CHAT_WRITABLE}. */
+export function chatMayWrite(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/');
+  if (normalized.split('/').some((segment) => segment === '..' || segment === '.')) return false;
+  return CHAT_WRITABLE.some((entry) =>
+    entry.endsWith('/') ? normalized.startsWith(entry) && normalized.length > entry.length : normalized === entry,
+  );
+}
+
+/** Where a chat's proposals sit (spec 2026-10-24-cockpit-chat §3): `.ai/cezar/proposals/<chatId>/`,
+ *  mirroring `.ai/cezar/`. Ignored state — the owner's Apply & commit makes them repo content. */
+export const CHAT_PROPOSALS_DIR = '.ai/cezar/proposals/';
+const CEZAR_DIR = '.ai/cezar/';
+
+export function chatProposalRoot(chatId: string): string {
+  return `${CHAT_PROPOSALS_DIR}${chatId}/`;
+}
+
+/** The proposal path that mirrors a live {@link CHAT_WRITABLE} path; undefined for any other path. */
+export function chatProposalPath(chatId: string, livePath: string): string | undefined {
+  const normalized = livePath.replace(/\\/g, '/');
+  return chatMayWrite(normalized) ? `${chatProposalRoot(chatId)}${normalized.slice(CEZAR_DIR.length)}` : undefined;
+}
+
+/** The live path a chat's proposal stands for; undefined unless it mirrors {@link CHAT_WRITABLE}. */
+export function chatLivePath(chatId: string, proposalPath: string): string | undefined {
+  const normalized = proposalPath.replace(/\\/g, '/');
+  const root = chatProposalRoot(chatId);
+  if (!normalized.startsWith(root)) return undefined;
+  const live = `${CEZAR_DIR}${normalized.slice(root.length)}`;
+  return chatMayWrite(live) ? live : undefined;
+}
+
+/** What applying a proposal lets run or leave the machine without the owner (spec
+ *  2026-10-24-cockpit-chat §3) — read by the server from the PARSED file, never from diff text. */
+export const chatProposalRiskSchema = z.object({
+  kind: z.enum(['command', 'push', 'pull-request', 'comment', 'webhook', 'child-tasks', 'automation', 'persona', 'mcp', 'unreadable']),
+  detail: z.string(),
+});
+export type ChatProposalRisk = z.infer<typeof chatProposalRiskSchema>;
+
+/** One proposed file, as the chat's Changes panel shows it: the live path and its diff. */
+export const chatProposalSchema = z.object({
+  /** The live path it would replace — one of {@link CHAT_WRITABLE}. */
+  path: z.string(),
+  status: z.enum(['added', 'modified', 'unchanged']),
+  /** A unified diff, live file → proposal (capped). */
+  diff: z.string(),
+  /** Every command, push, PR, comment, webhook, automation change, persona tool and MCP server of
+   *  the file as it would be applied — whatever the (capped) diff shows. */
+  risks: z.array(chatProposalRiskSchema),
+  /** Over the size a proposal may be: Apply refuses it, so the confirm offers Discard only. */
+  tooLarge: z.boolean(),
+  /** sha256 of the proposal file as read: Apply sends it back, and a proposal changed since is refused. */
+  hash: z.string(),
+});
+export type ChatProposal = z.infer<typeof chatProposalSchema>;
+export const chatProposalsResponseSchema = z.object({ proposals: z.array(chatProposalSchema) });
+export type ChatProposalsResponse = z.infer<typeof chatProposalsResponseSchema>;
+
+/** `/repo/proposals/:chatId` — a run id, which is also the proposals directory's name. */
+export const chatProposalParamsSchema = z.object({ chatId: z.string().regex(/^[A-Za-z0-9-]{1,64}$/) });
+
+/** Apply or discard: the live paths to act on (absent = every proposal of the chat). */
+export const chatProposalsActionSchema = z.object({
+  paths: z.array(z.string().min(1).max(1024)).max(500).optional(),
+  message: z.string().min(1).max(20_000).optional(),
+});
+export type ChatProposalsAction = z.infer<typeof chatProposalsActionSchema>;
+/** Apply: with `hashes` (live path → the {@link chatProposalSchema} `hash` the owner reviewed),
+ *  every applied proposal must still have that hash — a chat turn may have rewritten it since. */
+export const chatProposalsApplySchema = chatProposalsActionSchema.extend({
+  hashes: z.record(z.string().min(1).max(1024), z.string().regex(/^[0-9a-f]{64}$/)).optional(),
+});
+export type ChatProposalsApply = z.infer<typeof chatProposalsApplySchema>;
+/** `sha` is absent when nothing applied is repo content (`automations.json` is local state). */
+export const chatProposalsApplyResponseSchema = z.object({ applied: z.array(z.string()), sha: z.string().optional() });
+export type ChatProposalsApplyResponse = z.infer<typeof chatProposalsApplyResponseSchema>;
+export const chatProposalsDiscardResponseSchema = z.object({ discarded: z.array(z.string()) });
+export type ChatProposalsDiscardResponse = z.infer<typeof chatProposalsDiscardResponseSchema>;
+
+/** `GET /runs?kind=` — tasks by default (chats only when asked: `chat`, or `all` for both). */
+export const runsListQuerySchema = z.object({ kind: z.enum(['task', 'chat', 'all']).optional() });
+export type RunsListQuery = z.infer<typeof runsListQuerySchema>;
+
 /**
  * The stored run record, as `runs.json` holds it (`src/runs/store.ts`).
  *
@@ -336,6 +442,17 @@ export const runRecordSchema = z.object({
   /** Explicit execution policy. `false` means the run intentionally uses the repo root;
    *  absent on older runs and for the default isolated-worktree mode. */
   worktree: z.literal(false).optional(),
+  /** `chat` = the project's cockpit chat (spec 2026-10-24-cockpit-chat): in the checkout, no
+   *  review gate, no landing. Absent = an ordinary task, which every older record is. */
+  kind: runKindSchema.optional(),
+  /** `chat:<runId>` on a task the cockpit chat started (spec 2026-10-24-cockpit-chat §3), set
+   *  server-side from the caller's run token. Absent for everything a person started. */
+  createdBy: createdBySchema.optional(),
+  /** A chat's current session launch, which its MCP token names (spec 2026-10-24-cockpit-chat §5).
+   *  Not a credential: the token is signed with a key only the cockpit process holds. */
+  launchNonce: z.string().optional(),
+  /** A chat's task starts in the last hour, which its hourly cap counts (spec 2026-10-24-cockpit-chat §5). */
+  chatTaskStarts: z.array(z.string()).optional(),
   /** Absent for in-place runs and after an isolated worktree is removed. */
   worktreePath: z.string().optional(),
   worktreeLifecycle: worktreeLifecycleProjectionSchema.optional(),
@@ -1221,6 +1338,10 @@ export const createRunInputBaseSchema = z
     /** true → a read-only Ask task (spec 2026-10-20-trunk-based-projects): runs in the repo
      *  checkout with read-only tools, takes no lease and never lands. */
     readOnly: z.boolean().optional(),
+    /** `chat` → the project's cockpit chat (spec 2026-10-24-cockpit-chat): in the checkout with
+     *  cezar's own MCP server, no review gate, no PR. It takes no `workflow`, `steps` or variants;
+     *  the worktree, branch, read-only, autonomous, dispatch and tracker keys are ignored for it. */
+    kind: runKindSchema.optional(),
     /** true → autonomous run: never parks at "waiting"; auto-continues until done. */
     autonomous: z.boolean().optional(),
     /** false → keep the handoff journal but do not expose or request a follow-up todos file.
@@ -1259,6 +1380,18 @@ export const TASK_OR_ATTACHMENTS_ISSUE = {
   path: ['task'],
 };
 
+/** A task names exactly one of `workflow` / `steps`; a chat runs its own and names neither. */
+export function workflowXorSteps(b: { workflow?: string; steps?: readonly unknown[]; kind?: RunKind }): boolean {
+  return b.kind === 'chat' ? !b.workflow && !b.steps : Boolean(b.workflow) !== Boolean(b.steps);
+}
+export const WORKFLOW_XOR_STEPS_ISSUE = { message: 'provide either "workflow" or "steps", not both (a chat takes neither)' };
+
+/** A chat is one conversation: never ×2/×3. */
+export function chatIsSingle(b: { variants?: number; kind?: RunKind }): boolean {
+  return b.kind !== 'chat' || (b.variants ?? 1) === 1;
+}
+export const CHAT_IS_SINGLE_ISSUE = { message: 'a chat runs once — no variants', path: ['variants'] };
+
 /**
  * `POST /runs`. Exactly one of `workflow` / `steps` — the server rejects both or neither.
  *
@@ -1266,9 +1399,8 @@ export const TASK_OR_ATTACHMENTS_ISSUE = {
  * process, so a client that validates before sending gets the same answer the route would give.
  */
 export const createRunInputSchema = createRunInputBaseSchema
-  .refine((b) => Boolean(b.workflow) !== Boolean(b.steps), {
-    message: 'provide either "workflow" or "steps", not both',
-  })
+  .refine(workflowXorSteps, WORKFLOW_XOR_STEPS_ISSUE)
+  .refine(chatIsSingle, CHAT_IS_SINGLE_ISSUE)
   .refine(hasTaskOrAttachments, TASK_OR_ATTACHMENTS_ISSUE);
 export type CreateRunInput = z.input<typeof createRunInputSchema>;
 

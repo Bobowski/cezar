@@ -111,6 +111,7 @@ export function isReadDoneItem(run: ReadStateInput): boolean {
 
 /** How many done items are unread — the Tasks nav badge's number. Archived runs are already
  *  excluded by `isUnread`, so this counts exactly the rows that wear the unread marker. */
-export function unreadDoneCount(runs: readonly ReadStateInput[]): number {
-  return runs.reduce((total, run) => (isUnread(run) ? total + 1 : total), 0)
+export function unreadDoneCount(runs: readonly (ReadStateInput & Pick<RunRecord, 'kind'>)[]): number {
+  // The Tasks badge counts tasks: a chat that went quiet is not an unread finished task.
+  return runs.reduce((total, run) => (run.kind !== 'chat' && isUnread(run) ? total + 1 : total), 0)
 }

@@ -142,6 +142,9 @@ import {
   runRecordSchema,
   runsIndexResponseSchema,
   stagedUploadSchema,
+  chatProposalsApplyResponseSchema,
+  chatProposalsDiscardResponseSchema,
+  chatProposalsResponseSchema,
 } from './runs.ts';
 import { mcpRegistryResponseSchema, mcpServersListSchema, mcpServerTestResponseSchema } from './mcp-servers.ts';
 import { secretsListSchema } from './secrets.ts';
@@ -395,6 +398,10 @@ export const routeContracts = {
   'POST /repo/commit': { summary: 'Commit the staged changes, or amend an unpushed last commit.', response: repoCommitResponseSchema, destructive: true },
   'POST /repo/stash': { summary: 'Stash the checkout\'s changes.', response: repoMessageResponseSchema, destructive: true },
   'POST /repo/stash/:n/pop': { summary: 'Pop a stash into the checkout.', response: repoGitActionResponseSchema, destructive: true },
+  // A chat's proposals (spec 2026-10-24-cockpit-chat §3): the owner applies them, never the chat.
+  'GET /repo/proposals/:chatId': { summary: 'What a cockpit chat proposes to change in the cezar configuration, as diffs against the live files.', response: chatProposalsResponseSchema },
+  'POST /repo/proposals/:chatId/apply': { summary: 'Apply a cockpit chat\'s proposals: copy them into place, then stage and commit the repository files.', response: chatProposalsApplyResponseSchema, destructive: true },
+  'POST /repo/proposals/:chatId/discard': { summary: 'Throw a cockpit chat\'s proposals away.', response: chatProposalsDiscardResponseSchema, destructive: true },
   'POST /repo/remotes/:name/fetch': { summary: 'Fetch one remote.', response: repoMessageResponseSchema, destructive: false },
   'GET /worktrees': { summary: 'Task worktrees on disk and what they hold.', response: worktreesResponseSchema },
   'POST /worktrees/reclaim': { summary: 'Delete the worktrees of finished tasks.', response: reclaimWorktreesResponseSchema, destructive: true },

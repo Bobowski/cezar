@@ -117,6 +117,13 @@ describe('API tokens', () => {
     expect((await request('/api/v1/runs', { headers: bearer(created.value) })).status).toBe(401);
   });
 
+  it('an API token cannot start a cockpit chat — only the signed-in owner does (spec 2026-10-24-cockpit-chat §5)', async () => {
+    const tasks = await mint(['tasks']);
+    const refused = await json('POST', '/api/v1/runs', { kind: 'chat', task: 'hi' }, bearer(tasks.value));
+    expect(refused.status).toBe(403);
+    expect(((await refused.json()) as { error: string }).error).toMatch(/only the owner starts a chat/);
+  });
+
   it('minting needs a fresh authenticator code', async () => {
     const response = await json('POST', '/api/v1/auth/tokens', { name: 'x', scopes: ['read'], code: '000000' }, { cookie });
     expect(response.status).toBe(401);

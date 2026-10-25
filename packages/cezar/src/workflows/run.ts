@@ -48,7 +48,8 @@ import {
   readHandoff,
   seedHandoffFile,
 } from '../handoff.ts';
-import { mintRunToken } from '../auth/run-tokens.ts';
+import { mintChatRunToken, mintRunToken, newLaunchNonce } from '../auth/run-tokens.ts';
+import { CHAT_MCP_SERVER, cezarChatPrompt, chatMcpServer, chatToolPolicy, isChatRun, listChatTree, relayChatStatusNotes } from '../chat/chat.ts';
 import { todosPath } from '../todos.ts';
 // Contract VALUES, like `workspaceUiStateSchema` in workspace/migrations.ts: the attachment
 // vocabulary the routes validate with is the same one the engine stores and re-reads by, so the
@@ -62,7 +63,7 @@ import {
   sanitizeAttachmentName,
   storedAttachmentExtension,
 } from '@open-mercato/cezar-contract';
-import type { AgentEvent, AgentRunResult, ContentBlock } from '../core/agent-runner.ts';
+import type { AgentEvent, AgentRunResult, AgentRunSpec, ContentBlock } from '../core/agent-runner.ts';
 import { discoverSkills, type Skill } from '../skills.ts';
 import {
   PERSONA_DENIED_TOOLS,
@@ -682,6 +683,9 @@ interface ActiveRun {
   autoLand?: { checks: string[]; baseBranch?: string; baseLabel: string; attempts: number; inFlight?: Promise<LandResult> };
   /** A read-only Ask task: read-only tools, no repo-root lease. */
   readOnly?: boolean;
+  /** The cockpit chat (spec 2026-10-24-cockpit-chat): in the checkout, `.ai/cezar/`-only tools,
+   *  cezar's MCP, no repo-root lease, never lands or rests at review. Set at BOTH construction sites. */
+  chat?: boolean;
   /** An in-place run (`cwd === repoRoot`) that parked — on a question, or as a monitor waiting
    *  for its dispatched children — gives the exclusive working-tree lease back while it sits
    *  (`parkRepoRoot`), so other in-place tasks are not stuck behind a session that is not
@@ -919,6 +923,11 @@ export interface StartRunInput {
    * forces a worktree — testing a PR in the user's own checkout would test the wrong tree.
    */
   forkRef?: { sha: string; label: string; pr: RunRecord['prHead'] & object; prUrl: string; untrusted: boolean };
+  /** `chat` → the project's cockpit chat (spec 2026-10-24-cockpit-chat). Wins over `worktree`,
+   *  `newBranch`, `readOnly`, `autonomous`, dispatch and a fork ref: a chat always runs in place. */
+  kind?: 'chat';
+  /** `chat:<runId>` — the chat that asked for this task; persisted on the record. */
+  createdBy?: string;
 }
 
 /**
@@ -934,6 +943,28 @@ export function resolveExtraSystemPrompt(
   configDefault: string | undefined,
 ): string | undefined {
   return override?.trim() || configDefault?.trim() || undefined;
+}
+
+/** The tool policy of one agent session — ONE helper for `runAgentStep` and `runContinuation`,
+ *  so a read-only task or the chat (spec 2026-10-24-cockpit-chat) cannot get its tools at one
+ *  site and the workflow's at the other. */
+function sessionTools(
+  state: Pick<ActiveRun, 'readOnly' | 'chat' | 'cwd'>,
+  step: Pick<WorkflowStepDef, 'allowedTools' | 'bashAllowlist'> | undefined,
+  runId: string,
+  persona = false,
+): { allowedTools: string[]; bashAllowlist: string[] | undefined } & Pick<AgentRunSpec, 'disallowedTools' | 'strictMcp' | 'permissionMode' | 'settings'> {
+  // A persona denies the sub-agent tool on every path (spec 2026-10-24-personas §7).
+  const personaDeny = persona ? { disallowedTools: [...PERSONA_DENIED_TOOLS] } : {};
+  // Listed per launch: the deny rules name what is beside the chat's proposals right now. Its only
+  // MCP server is cezar's bridge (`privateMcpForLaunch`), so the repo's own config stays out too.
+  if (state.chat) {
+    const policy = chatToolPolicy(runId, listChatTree(state.cwd));
+    const disallowedTools = persona ? [...policy.disallowedTools, ...PERSONA_DENIED_TOOLS] : policy.disallowedTools;
+    return { ...policy, disallowedTools, bashAllowlist: undefined, strictMcp: true };
+  }
+  if (state.readOnly) return { allowedTools: READ_ONLY_TOOLS, bashAllowlist: undefined, ...personaDeny };
+  return { allowedTools: step?.allowedTools ?? DEFAULT_ALLOWED_TOOLS, bashAllowlist: step?.bashAllowlist, ...personaDeny };
 }
 
 /**
@@ -1332,6 +1363,8 @@ export class RunManager {
   /** Unsubscribe handle for the constructor's `onUsage` subscription — released
    *  by dispose() so a torn-down manager stops receiving sampler ticks. */
   private readonly offUsage: () => void;
+  /** The chat status relay (spec 2026-10-24-cockpit-chat §3), unsubscribed by dispose(). */
+  private readonly offChatNotes: () => void;
 
   /** The stalled-queue watchdog (see `rescueStalledQueue`). */
   private readonly queueWatchdog: ReturnType<typeof setInterval>;
@@ -1436,6 +1469,7 @@ export class RunManager {
     // Memory guard (#memory-guard): the shared process-tree sampler already ticks ~every 2 s for
     // the runs table; piggyback on it to enforce the per-task memory ceiling.
     this.offUsage = onUsage((snapshot) => void this.enforceMemoryLimit(snapshot));
+    this.offChatNotes = relayChatStatusNotes(store);
     this.queueWatchdog = setInterval(() => void this.rescueStalledQueue(), QUEUE_WATCHDOG_MS);
     this.queueWatchdog.unref?.();
   }
@@ -1454,6 +1488,7 @@ export class RunManager {
     this.disposed = true;
     this.lifecycle.dispose();
     this.offUsage();
+    this.offChatNotes();
     this.offSemaphore();
     clearInterval(this.queueWatchdog);
     for (const [runId, state] of this.active) {
@@ -1604,6 +1639,16 @@ export class RunManager {
   }
 
   private agentEnv(runId: string, generateFollowups = true): Record<string, string> {
+    // A chat reaches cezar through its MCP bridge only, which carries its own address and token
+    // (spec 2026-10-24-cockpit-chat §5). Without sign-in a tokenless loopback call is the owner,
+    // so the agent is not told where the cockpit is — `''`, since `serve` exports both.
+    if (isChatRun(this.store.getRun(runId))) {
+      return { ...this.taskAgentEnv(runId, generateFollowups), CEZ_API_URL: '', CEZ_API_TOKEN: '', CEZ_BIN: '' };
+    }
+    return this.taskAgentEnv(runId, generateFollowups);
+  }
+
+  private taskAgentEnv(runId: string, generateFollowups: boolean): Record<string, string> {
     const dispatch = this.dispatchOf(runId);
     // The same ONE gate the dispatch prompt uses, so an agent is never told about a CLI whose
     // address it was not given (and never given an address it was not told about).
@@ -1649,6 +1694,17 @@ export class RunManager {
     backend: RunnerId,
     onEvent: (event: AgentEvent) => void,
   ): Promise<PrivateMcpServer[] | undefined> {
+    // A chat gets cezar's own bridge and nothing else (spec 2026-10-24-cockpit-chat §5): a private
+    // server carries the owner's tokens and the network, which is how a prompt injection leaves.
+    if (isChatRun(this.store.getRun(runId))) {
+      const chat = this.chatMcpForLaunch(runId, backend, onEvent);
+      if (!chat) return undefined;
+      if (!supportsPrivateMcp(backend)) {
+        onEvent({ type: 'note', message: skippedServersNote(backend, [CHAT_MCP_SERVER], `${backend} has no launch-time MCP channel`) });
+        return undefined;
+      }
+      return [chat];
+    }
     // A fork's head is untrusted code (Phase 3): like its checks, its agent gets no stored secrets,
     // and none of the committed servers — approved or not (spec 2026-10-24-easy-mcp §5).
     const untrusted = this.store.getRun(runId)?.untrustedHead === true;
@@ -1707,6 +1763,31 @@ export class RunManager {
   }
 
   /**
+   * cezar's own MCP server for a chat session (spec 2026-10-24-cockpit-chat §3), with a fresh
+   * `author` token minted per launch; undefined for a task, and a note when it cannot attach.
+   */
+  private chatMcpForLaunch(runId: string, backend: RunnerId, onEvent: (event: AgentEvent) => void): PrivateMcpServer | undefined {
+    if (!isChatRun(this.store.getRun(runId))) return undefined;
+    // A new launch retires the previous session's token: the guard matches the record's nonce.
+    const nonce = newLaunchNonce();
+    this.store.updateRun(runId, { launchNonce: nonce });
+    const server = chatMcpServer({
+      runId,
+      projectId: this.projectId,
+      token: mintChatRunToken(runId, this.projectId, nonce),
+      apiUrl: process.env.CEZ_API_URL,
+      bin: process.env.CEZ_BIN,
+      node: process.execPath,
+    });
+    if (!server) {
+      onEvent({ type: 'note', message: 'cezar MCP: this cockpit gave the chat no address — it can read and answer, not act' });
+      return undefined;
+    }
+    if (supportsPrivateMcp(backend)) onEvent({ type: 'note', message: 'cezar MCP attached — the chat acts through the cockpit\'s own routes' });
+    return server;
+  }
+
+  /**
    * `agentEnv` plus the agent-account variable for the profile this STEP runs under (spec
    * 2026-07-29-agent-profiles), and the id it resolved to so the caller can record it.
    *
@@ -1753,7 +1834,14 @@ export class RunManager {
     input: StartRunInput,
     group?: { groupId: string; variant: string },
   ): RunRecord {
-    if (input.readOnly && !group) {
+    if (input.kind === 'chat') {
+      group = undefined;
+      input = {
+        ...input,
+        worktree: false, newBranch: undefined, branch: undefined, readOnly: undefined, autonomous: false,
+        dispatch: undefined, dispatchIntent: undefined, forkRef: undefined, createdBy: undefined,
+      };
+    } else if (input.readOnly && !group) {
       input = { ...input, worktree: false, newBranch: undefined, dispatchIntent: undefined, forkRef: undefined };
     }
     // Sanitize at the manager boundary so CLI runs, workflows, variants, and
@@ -1790,6 +1878,8 @@ export class RunManager {
       worktree: !group && !input.dispatchIntent && !input.forkRef && input.worktree === false ? false : undefined,
       groupId: group?.groupId,
       variant: group?.variant,
+      ...(input.kind === 'chat' ? { kind: 'chat' as const } : {}),
+      ...(input.createdBy ? { createdBy: input.createdBy } : {}),
       steps: workflow.graph
         ? graphRailSteps(workflow.graph)
         : workflow.steps.map((s) => ({ id: s.id, name: s.name ?? s.id, kind: stepKind(s) })),
@@ -2543,7 +2633,8 @@ export class RunManager {
    * gets no dispatch prompt and behaves exactly as it did before this feature existed.
    */
   private prepareDispatchSession(runId: string, state: ActiveRun): void {
-    if (!this.dispatchReachable()) return;
+    // A chat starts tasks with `runs_create` (spec 2026-10-24-cockpit-chat), never a dispatch tree.
+    if (!this.dispatchReachable() || state.chat) return;
     const dispatch = this.store.getRun(runId)?.dispatch;
     // The intent block belongs to the ROOT the user started; a child reads its order instead.
     state.dispatchPrompt = composeDispatchPrompt(dispatch?.kind, dispatch?.parentRunId ? undefined : dispatch?.intent);
@@ -2564,7 +2655,8 @@ export class RunManager {
    * nothing and behaves exactly as it did before the feature existed.
    */
   private prepareAutomationsSession(state: ActiveRun): void {
-    state.automationsPrompt = automationsReachable() ? AUTOMATIONS_PROMPT : undefined;
+    // A chat creates automations through its MCP tools, not the `cez automation` CLI.
+    state.automationsPrompt = !state.chat && automationsReachable() ? AUTOMATIONS_PROMPT : undefined;
   }
 
   /**
@@ -2580,7 +2672,7 @@ export class RunManager {
 
   /** The services twin: told only when there is something to read and a way to read it. */
   private prepareServicesSession(state: ActiveRun): void {
-    state.servicesPrompt = this.dispatchReachable() && process.env.CEZ_BIN && hasPinnedServices(this.dataDir) ? SERVICES_PROMPT : undefined;
+    state.servicesPrompt = !state.chat && this.dispatchReachable() && process.env.CEZ_BIN && hasPinnedServices(this.dataDir) ? SERVICES_PROMPT : undefined;
   }
 
   /**
@@ -4638,10 +4730,11 @@ export class RunManager {
     this.starting.delete(runId);
     if (record?.worktreePath && state.cwd !== this.repoRoot) state.releaseWorktree = await this.lifecycle.acquireAgentLease(runId);
     state.readOnly = record?.readOnly === true && state.cwd === this.repoRoot;
+    state.chat = isChatRun(record) && state.cwd === this.repoRoot;
     if (state.cwd === this.repoRoot) {
       state.autoLand = await this.landingPolicy(record, await loadConfig(this.repoRoot));
     }
-    if (state.cwd === this.repoRoot && !state.readOnly) {
+    if (state.cwd === this.repoRoot && !state.readOnly && !state.chat) {
       if (repositoryRootLockDisabled()) {
         this.store.appendEvent(runId, {
           type: 'note',
@@ -5088,9 +5181,7 @@ export class RunManager {
             : contextualOpeningPrompt,
           ...(openingImages.length ? { images: openingImages } : {}),
           cwd: state.cwd,
-          allowedTools: state.readOnly ? READ_ONLY_TOOLS : sessionStepDef?.allowedTools ?? DEFAULT_ALLOWED_TOOLS,
-          bashAllowlist: state.readOnly ? undefined : sessionStepDef?.bashAllowlist,
-          ...(continuePersona ? { disallowedTools: [...PERSONA_DENIED_TOOLS] } : {}),
+          ...sessionTools(state, sessionStepDef, runId, continuePersona !== undefined),
             additionalDirectories: agentDirectories(
               join(this.dataDir, 'runs'),
               state.grantedAttachmentLibrary,
@@ -5267,13 +5358,17 @@ export class RunManager {
       this.store.updateRun(runId, { worktree: false });
     }
     state.readOnly = input.readOnly === true && input.worktree === false;
+    state.chat = isChatRun(this.store.getRun(runId)) && input.worktree === false;
     state.autoLand = await this.landingPolicy(this.store.getRun(runId), config, (message) =>
       this.store.appendEvent(runId, { type: 'note', message }),
     );
     // Extra system prompt (R2 2.3): POST override > config default; echoed on
-    // the record so the UI/API can show what the run actually used. The landing permission or the
-    // read-only rule rides along, so a Continue (which reads the record) keeps it.
+    // the record so the UI/API can show what the run actually used. The landing permission, the
+    // read-only rule or the chat's own prompt rides along, so a Continue (which reads the record) keeps it.
     const extraSystemPrompt = composeSystemPrompt(
+      state.chat
+        ? cezarChatPrompt({ chatId: runId, projectId: this.projectId, mcp: Boolean(process.env.CEZ_API_URL && process.env.CEZ_BIN) && supportsPrivateMcp(taskBackend) })
+        : undefined,
       resolveExtraSystemPrompt(input.systemPrompt, config.systemPrompt),
       state.autoLand ? landingPromptPart(state.autoLand.baseLabel, state.autoLand.checks, state.autonomous === true) : undefined,
       state.readOnly ? READ_ONLY_PROMPT : undefined,
@@ -5433,6 +5528,9 @@ export class RunManager {
 
     if (state.cwd === this.repoRoot && state.readOnly) {
       emit({ type: 'note', message: 'read-only — answering from the repo working tree, alongside any running task' });
+    } else if (state.cwd === this.repoRoot && state.chat) {
+      // It writes only .ai/cezar/, so it never queues behind (or blocks) an in-place task.
+      emit({ type: 'note', message: 'chat — in the repo working tree, writing only under .ai/cezar/' });
     } else if (state.cwd === this.repoRoot) {
       if (repositoryRootLockDisabled()) {
         emit({
@@ -7244,9 +7342,7 @@ export class RunManager {
           userPrompt: prompt,
           images,
           cwd: state.cwd,
-          allowedTools: state.readOnly ? READ_ONLY_TOOLS : step.allowedTools ?? DEFAULT_ALLOWED_TOOLS,
-          bashAllowlist: state.readOnly ? undefined : step.bashAllowlist,
-          ...(persona ? { disallowedTools: [...PERSONA_DENIED_TOOLS] } : {}),
+          ...sessionTools(state, step, runId, persona !== undefined),
           // The handoff file lives outside the worktree — grant access.
           additionalDirectories: agentDirectories(
             join(this.dataDir, 'runs'),
@@ -7800,7 +7896,7 @@ export class RunManager {
     config: CezConfig,
     note?: (message: string) => void,
   ): Promise<ActiveRun['autoLand']> {
-    if (!run || run.worktree !== false || run.readOnly || run.inPlaceBranch || config.landing !== 'auto') return undefined;
+    if (!run || run.worktree !== false || run.readOnly || isChatRun(run) || run.inPlaceBranch || config.landing !== 'auto') return undefined;
     const repo = await getRepoInfo(this.repoRoot);
     if (!repo) return undefined;
     if (await isLifecycleConfigTracked(this.repoRoot).catch(() => true)) {
@@ -7952,7 +8048,7 @@ export class RunManager {
    */
   async land(runId: string): Promise<LandAnswer> {
     const run = this.store.getRun(runId);
-    if (!run || run.worktree !== false || run.readOnly) {
+    if (!run || run.worktree !== false || run.readOnly || isChatRun(run)) {
       return { outcome: 'unavailable', message: 'only a task that works in the checkout can commit to the base branch' };
     }
     const policy = await this.landingPolicy(run, await loadConfig(this.repoRoot));
@@ -8053,7 +8149,7 @@ export class RunManager {
    */
   private async landBeforeSettle(runId: string): Promise<string | 'review' | undefined> {
     const run = this.store.getRun(runId);
-    if (!run || run.worktree !== false || run.readOnly) return undefined;
+    if (!run || run.worktree !== false || run.readOnly || isChatRun(run)) return undefined;
     const policy = await this.landingPolicy(run, await loadConfig(this.repoRoot));
     if (!policy || !(await hasUnlanded(this.repoRoot))) return undefined;
     // Only an autonomous run or the user's Finish may land; anything else rests at review.
@@ -8077,7 +8173,8 @@ export class RunManager {
   /** Whether settling this run now would park it at the review gate (#489). */
   private async reviewGateApplies(runId: string): Promise<boolean> {
     const run = this.store.getRun(runId);
-    if (!run?.worktreePath || !existsSync(run.worktreePath)) return false;
+    // A chat never rests at review (spec 2026-10-24-cockpit-chat §3); its Changes panel is the review.
+    if (isChatRun(run) || !run?.worktreePath || !existsSync(run.worktreePath)) return false;
     const diff = await worktreeDiff(run.worktreePath, run.baseBranch ?? 'HEAD');
     const hasDiff = diff.trim().length > 0 && !diff.startsWith('(diff failed');
     const config = await loadConfig(this.repoRoot);
@@ -8091,7 +8188,8 @@ export class RunManager {
    * the only place the diff and the draft-PR action live.
    */
   private async idleClosedFails(runId: string, state: ActiveRun): Promise<boolean> {
-    if (state.idleClosed !== true) return false;
+    // A chat has no completion to declare: an idle close is its ordinary end, and Continue reopens it.
+    if (state.idleClosed !== true || state.chat) return false;
     const reviewGate = await this.reviewGateApplies(runId);
     // A Finish may land during that git await and clear the inactivity evidence (6a3cecee).
     return state.idleClosed === true && !reviewGate;

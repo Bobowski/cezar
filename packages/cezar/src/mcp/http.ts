@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { Hono, type Context } from 'hono';
 import { apiTokenAllows } from '../auth/api-tokens.ts';
+import { runTokenAllows } from '../auth/run-tokens.ts';
 import { principalOf, type Principal } from '../auth/guard.ts';
 import { selectTools, type Catalog, type CatalogTool } from './catalog.ts';
 import { forwardedHeaders } from './execute.ts';
@@ -24,12 +25,23 @@ export interface McpRoutesDeps {
   version: string;
 }
 
-/** A token lists the tools its scopes reach; every other caller the whole selection. */
+/** A token — an API token or a chat's — lists the tools it reaches; every other caller the whole selection. */
 export function toolsAllowedFor(principal: Principal | undefined): ((tool: CatalogTool) => boolean) | undefined {
+  // A template's `:params` stand in as one segment each; the scope check reads the route, not the value.
+  const pathOf = (tool: CatalogTool) => tool.path.replace(/:[^/]+/g, '_');
+  if (principal?.kind === 'run' && principal.scope) {
+    const claims = { runId: principal.runId, scope: principal.scope, ...(principal.projectId ? { projectId: principal.projectId } : {}) };
+    const prefix = principal.projectId ? `/api/v1/p/${encodeURIComponent(principal.projectId)}` : '/api/v1';
+    return (tool) => runTokenAllows(claims, tool.method, `${tool.scoped ? prefix : '/api/v1'}${pathOf(tool)}`);
+  }
   if (principal?.kind !== 'token') return undefined;
   const { scopes } = principal;
-  // A template's `:params` stand in as one segment each; the scope check reads the route, not the value.
-  return (tool) => apiTokenAllows(scopes, tool.method, `/api/v1${tool.path.replace(/:[^/]+/g, '_')}`);
+  return (tool) => apiTokenAllows(scopes, tool.method, `/api/v1${pathOf(tool)}`);
+}
+
+/** The project a caller's scoped tools address by default: a chat's own, else the boot project. */
+export function defaultProjectFor(principal: Principal | undefined): string | undefined {
+  return principal?.kind === 'run' ? principal.projectId : undefined;
 }
 
 export function mcpRoutes(deps: McpRoutesDeps) {
@@ -42,10 +54,16 @@ export function mcpRoutes(deps: McpRoutesDeps) {
       const catalog = deps.catalog();
       const selected = selectTools(catalog, url.searchParams.get('tools') ?? undefined);
       const allows = toolsAllowedFor(principal);
+      const projectId = defaultProjectFor(principal);
       return createCezarMcpServer({
         catalog,
         tools: 'tools' in selected ? selected.tools : [],
-        context: { dispatch: (inner) => deps.dispatch(inner, env), origin: url.origin, headers: forwardedHeaders(request?.headers ?? new Headers()) },
+        context: {
+          dispatch: (inner) => deps.dispatch(inner, env),
+          origin: url.origin,
+          headers: forwardedHeaders(request?.headers ?? new Headers()),
+          ...(projectId ? { projectId } : {}),
+        },
         version: deps.version,
         ...(allows ? { allows } : {}),
       });

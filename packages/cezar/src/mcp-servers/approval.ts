@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { readFile, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { z } from 'zod';
 import {
   maskMcpValue,
@@ -20,6 +20,7 @@ import {
 } from '../core/private-mcp.ts';
 import { renameWithRetry } from '../fs-rename.ts';
 import { assertCezarHomeWriteIsSandboxed, mcpApprovalsPath } from '../paths.ts';
+import { LifecycleConflictError, withLifecycleFileLock } from '../worktree-lifecycle/store.ts';
 import { redactMcpArgs, redactMcpUrl } from './redact.ts';
 
 /**
@@ -61,9 +62,9 @@ function projectKey(repoRoot: string): string {
   return process.platform === 'win32' ? path.toLowerCase() : path;
 }
 
-async function readAll(): Promise<ApprovalsFile> {
+async function readAll(path = mcpApprovalsPath()): Promise<ApprovalsFile> {
   try {
-    return fileSchema.parse(JSON.parse(await readFile(mcpApprovalsPath(), 'utf8')));
+    return fileSchema.parse(JSON.parse(await readFile(path, 'utf8')));
   } catch {
     return { projects: {} };
   }
@@ -76,17 +77,27 @@ export async function readProjectApproval(repoRoot: string): Promise<ApprovalRec
 
 let queue: Promise<unknown> = Promise.resolve();
 
-/** Read-modify-write of the approvals file, one at a time in this process; `0600`, atomic. */
-function mutateAll(change: (all: ApprovalsFile) => void): Promise<void> {
+/** Why a write was refused: another process holds the approvals lock past the wait. */
+export const APPROVALS_BUSY = 'another cezar process is writing MCP approvals — try again';
+
+/**
+ * Read-modify-write of the approvals file: one at a time in this process, and across processes
+ * under the mkdir + PID-owner lock (`withLifecycleFileLock`) — contention past its wait throws, so
+ * nothing is approved on a write that lost; `0600`, atomic. `change` returns false to write nothing.
+ */
+function mutateAll(change: (all: ApprovalsFile) => boolean | void): Promise<void> {
   const next = queue.then(async () => {
     const path = mcpApprovalsPath();
     assertCezarHomeWriteIsSandboxed(path);
-    const all = await readAll();
-    change(all);
-    await mkdir(dirname(path), { recursive: true });
-    const tmp = `${path}.${process.pid}-${randomUUID()}.tmp`;
-    await writeFile(tmp, `${JSON.stringify(all, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-    await renameWithRetry(tmp, path);
+    await withLifecycleFileLock(`${path}.lock`, async () => {
+      const all = await readAll(path);
+      if (change(all) === false) return;
+      const tmp = `${path}.${process.pid}-${randomUUID()}.tmp`;
+      await writeFile(tmp, `${JSON.stringify(all, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+      await renameWithRetry(tmp, path);
+    }).catch((error: unknown) => {
+      throw error instanceof LifecycleConflictError ? new Error(APPROVALS_BUSY) : error;
+    });
   });
   queue = next.catch(() => {});
   return next;
@@ -204,13 +215,17 @@ export type ApprovalCarry = { bind: string; names: string[] } | { unbind: string
  * awaiting review stays awaiting it — a write never approves content nobody looked at.
  */
 export async function carryProjectApproval(repoRoot: string, before: string | null, after: string, carry: ApprovalCarry): Promise<void> {
-  const record = await readProjectApproval(repoRoot);
   const wasEmpty = Object.keys(serversOf(before)).length === 0;
-  if (!wasEmpty && record?.hash !== mcpContentHash(before ?? '')) return;
-  const bindings: McpSecretBindings = { ...(wasEmpty ? {} : record?.bindings) };
-  if ('bind' in carry) bindings[carry.bind] = carry.names;
-  else delete bindings[carry.unbind];
-  await writeRecord(repoRoot, { hash: mcpContentHash(after), approvedAt: new Date().toISOString(), servers: serversOf(after), bindings: tidy(bindings) });
+  // Decided under the lock: another process's approval between read and write is seen, not lost.
+  await mutateAll((all) => {
+    const key = projectKey(repoRoot);
+    const record = all.projects[key];
+    if (!wasEmpty && record?.hash !== mcpContentHash(before ?? '')) return false;
+    const bindings: McpSecretBindings = { ...(wasEmpty ? {} : record?.bindings) };
+    if ('bind' in carry) bindings[carry.bind] = carry.names;
+    else delete bindings[carry.unbind];
+    all.projects[key] = { hash: mcpContentHash(after), approvedAt: new Date().toISOString(), servers: serversOf(after), bindings: tidy(bindings) };
+  });
 }
 
 // ---- the review: state and a redacted diff of the server entries ---------------------------

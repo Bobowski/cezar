@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -8,7 +8,7 @@ import { loadLaunchMcp, loadPrivateMcp, privateMcpPath, projectMcpPath } from '.
 import { pullFastForward } from '../git-sync.ts';
 import { mcpApprovalsPath } from '../paths.ts';
 import { removeTempDir } from '../test-fixtures/remove-temp-dir.testkit.ts';
-import { approveProjectMcp, confirmPrivateOverride, mcpContentHash, privateOverrideGate, privateOverrideHash, projectApprovalView, projectMcpGate, readProjectApproval } from './approval.ts';
+import { APPROVALS_BUSY, approveProjectMcp, confirmPrivateOverride, mcpContentHash, privateOverrideGate, privateOverrideHash, projectApprovalView, projectMcpGate, readProjectApproval } from './approval.ts';
 import { deleteMcpServer, putMcpServer } from './files.ts';
 
 const run = promisify(execFile);
@@ -91,6 +91,20 @@ describe('approval of the committed mcp.json', () => {
     expect(after).not.toContain('LITERALHALF');
     expect(after).toContain('***${{ secrets.Y }}');
     expect(after).toContain('Bearer ${{ secrets.Z }}');
+  });
+
+  it('a write waits for another process holding the approvals lock, and fails closed when it never lets go', async () => {
+    const hash = writeProject({ tool: { command: 'tool-mcp' } });
+    // A live process other than this one holds the lease (the mkdir + PID-owner lock).
+    const lock = `${mcpApprovalsPath()}.lock`;
+    mkdirSync(lock, { recursive: true });
+    writeFileSync(join(lock, `${process.ppid}-00000000-0000-4000-8000-000000000000`), '');
+    expect(await approveProjectMcp(repo, hash, {})).toEqual({ ok: false, status: 409, error: `the approval could not be saved: ${APPROVALS_BUSY}` });
+    expect(existsSync(mcpApprovalsPath())).toBe(false);
+    expect((await launch()).servers).toEqual([]);
+    rmSync(lock, { recursive: true, force: true });
+    expect(await approveProjectMcp(repo, hash, {})).toEqual({ ok: true });
+    expect(existsSync(lock)).toBe(false);
   });
 
   it('approves only the content that was reviewed, and only bindings the file references', async () => {

@@ -132,3 +132,30 @@ export type CodePagesTree = z.infer<typeof codePagesTreeSchema>;
 /** Most recently written checkout first. */
 export const codePagesSchema = z.array(codePagesTreeSchema).max(MAX_CODE_PAGE_TREES);
 export type CodePages = z.infer<typeof codePagesSchema>;
+
+/**
+ * The Git page's sidebar (spec `.ai/specs/2026-10-24-cockpit-polish.md` §3.1, §4): its width in
+ * CSS pixels and whether it is folded to icons. Per project, under `repo` in the per-repo
+ * ui-state, beside the Code page's `codePages` — the same "layout of a project screen" family.
+ */
+export const MIN_REPO_SIDEBAR_WIDTH = 220;
+export const MAX_REPO_SIDEBAR_WIDTH = 560;
+/** The shell's own contextual column (18rem). */
+export const DEFAULT_REPO_SIDEBAR_WIDTH = 288;
+export const repoLayoutSchema = z.object({
+  width: z.number().int().min(MIN_REPO_SIDEBAR_WIDTH).max(MAX_REPO_SIDEBAR_WIDTH),
+  collapsed: z.boolean(),
+});
+export type RepoLayout = z.infer<typeof repoLayoutSchema>;
+
+/**
+ * A task's Browser column's share of the workspace row, in percent (§3.2): what a NEW Browser
+ * column opens at, remembered per project from the last divider drag. Absent → 45.
+ */
+export const DEFAULT_BROWSER_COLUMN_WIDTH = 45;
+export const MIN_BROWSER_COLUMN_WIDTH = 20;
+export const MAX_BROWSER_COLUMN_WIDTH = 80;
+export const browserColumnLayoutSchema = z.object({
+  width: z.number().finite().min(MIN_BROWSER_COLUMN_WIDTH).max(MAX_BROWSER_COLUMN_WIDTH),
+});
+export type BrowserColumnLayout = z.infer<typeof browserColumnLayoutSchema>;

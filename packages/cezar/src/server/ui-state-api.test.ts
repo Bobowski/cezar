@@ -242,4 +242,22 @@ describe('the ui-state API — skillUsage (#408)', () => {
       expect((await put({ codePages: [{ tree: 'main', pages: [{ id: 'b1', url: 'http://localhost:3000/', group: 4 }] }] })).status).toBe(400);
     });
   });
+
+  // ---- repo / browserColumn: per-project layout (spec 2026-10-24-cockpit-polish §4) ----------
+  describe('repo and browserColumn keep the Git sidebar and a new Browser column', () => {
+    it('round-trip beside unrelated keys', async () => {
+      await put({ githubView: 'prs' });
+      expect((await put({ repo: { width: 320, collapsed: true }, browserColumn: { width: 45 } })).status).toBe(200);
+      expect(rawFile()).toEqual({ githubView: 'prs', repo: { width: 320, collapsed: true }, browserColumn: { width: 45 } });
+      expect(await (await get()).json()).toEqual({ githubView: 'prs', repo: { width: 320, collapsed: true }, browserColumn: { width: 45 } });
+    });
+
+    it('refuses a width outside the bounds or a partial block', async () => {
+      expect((await put({ repo: { width: 10, collapsed: false } })).status).toBe(400);
+      expect((await put({ repo: { width: 9_000, collapsed: false } })).status).toBe(400);
+      expect((await put({ repo: { width: 300 } })).status).toBe(400);
+      expect((await put({ browserColumn: { width: 99 } })).status).toBe(400);
+      expect(() => readFileSync(uiStatePath(), 'utf8')).toThrow();
+    });
+  });
 });

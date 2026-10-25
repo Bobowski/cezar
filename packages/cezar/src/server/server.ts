@@ -21,7 +21,7 @@ import {
   githubReposQuerySchema, type GithubReposResponse,
   serviceLogsQuerySchema, serviceParamsSchema, servicePatchSchema, servicePinInputSchema, type ServiceLogs, type ServicesState,
   e2eSetupInputSchema, type E2eStatus, taskActionSurfaceSchema,
-  codePagesSchema,
+  codePagesSchema, repoLayoutSchema, browserColumnLayoutSchema,
 } from '@open-mercato/cezar-contract';
 import { SecretStore, SecretsError, type SecretScopeRef } from '../workspace/secrets.ts';
 import { listEnvFiles, previewEnvFile, readEnvFile, removeEnvFile, writeEnvFile } from '../env-files.ts';
@@ -1113,6 +1113,10 @@ const uiStateSchema = z
     // loopback addresses only, bounded so the whole value fits the body limit. The cockpit PUTs
     // the whole list because the merge below is shallow.
     codePages: codePagesSchema.optional(),
+    // The Git sidebar's width/fold and a new Browser column's share (spec
+    // 2026-10-24-cockpit-polish §4). Whole objects, for the same shallow-merge reason.
+    repo: repoLayoutSchema.optional(),
+    browserColumn: browserColumnLayoutSchema.optional(),
   })
   .passthrough();
 

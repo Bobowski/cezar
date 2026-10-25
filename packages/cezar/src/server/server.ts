@@ -2016,6 +2016,7 @@ export function createApp(deps: ServerDeps) {
     sessionAlive: (sessionId) => !authIsEnforced() || auth.sessionAlive(sessionId),
     ...(deps.pushSend ? { send: deps.pushSend } : {}),
   });
+  deps.onDispose?.(() => pushNotifier.close());
   {
     const watched = new Set<RunStore>();
     const watchPush = (ctx: Pick<ProjectContext, 'id' | 'store'>): void => {

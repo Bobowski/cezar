@@ -100,6 +100,65 @@ describe('createPushNotifier', () => {
     expect(sent.filter((e) => e.endsWith('/a'))).toHaveLength(61);
   });
 
+  describe('while a tab of the account is visible', () => {
+    function heldNotifier(rows: StoredPushSubscription[]) {
+      const { store } = fakeStore(rows);
+      const sent: Array<{ endpoint: string; tag: string }> = [];
+      const gate = { visible: true };
+      const notifier = createPushNotifier({
+        subscriptions: store, keys: () => keys, enabled: () => true, visible: () => gate.visible, sessionAlive: () => true,
+        presenceCheckMs: 5,
+        send: async (target, payload) => { sent.push({ endpoint: target.endpoint, tag: payload.tag }); return 'sent'; },
+      });
+      return { notifier, sent, gate };
+    }
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
+
+    it('holds the push and sends it once presence ends — a frozen page that still looks visible loses nothing', async () => {
+      const { notifier, sent, gate } = heldNotifier([row('a', 'owner')]);
+      const run = { ...base } as RunRecord;
+      const source = new FakeSource([run]);
+      notifier.watch('proj', source);
+      source.emitRun({ ...run, status: 'review' } as RunRecord);
+      await settle();
+      expect(sent).toEqual([]);
+      gate.visible = false;
+      await settle();
+      await notifier.idle();
+      expect(sent).toEqual([{ endpoint: 'https://push.example.net/a', tag: 'cezar-run-r1' }]);
+      await settle();
+      expect(sent).toHaveLength(1);
+    });
+
+    it('drops the held push when the run moved on before presence ended', async () => {
+      const { notifier, sent, gate } = heldNotifier([row('a', 'owner')]);
+      const run = { ...base } as RunRecord;
+      const source = new FakeSource([run]);
+      notifier.watch('proj', source);
+      source.emitRun({ ...run, status: 'review' } as RunRecord);
+      source.emitRun({ ...run, status: 'running' } as RunRecord);
+      gate.visible = false;
+      await settle();
+      await notifier.idle();
+      expect(sent).toEqual([]);
+    });
+
+    it('holds at most twenty per account, one per run', async () => {
+      const { notifier, sent, gate } = heldNotifier([row('a', 'owner')]);
+      const runs = Array.from({ length: 25 }, (_, i) => ({ ...base, id: `r${i}` }) as RunRecord);
+      const source = new FakeSource(runs);
+      notifier.watch('proj', source);
+      for (const run of runs) source.emitRun({ ...run, status: 'review' } as RunRecord);
+      source.emitRun({ ...runs[24]!, status: 'waiting' } as RunRecord);
+      gate.visible = false;
+      await settle();
+      await notifier.idle();
+      expect(sent).toHaveLength(20);
+      expect(new Set(sent.map((s) => s.tag)).size).toBe(20);
+      expect(sent.map((s) => s.tag)).not.toContain('cezar-run-r0');
+    });
+  });
+
   it('sends nothing while disabled (a local cockpit)', async () => {
     const { store } = fakeStore([row('a', 'owner')]);
     const sent: string[] = [];

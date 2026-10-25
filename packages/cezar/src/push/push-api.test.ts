@@ -78,7 +78,14 @@ describe('the push API', () => {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
-    for (const dir of [home, repoRoot]) rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    // Windows can still hold a file the app's background work opened; a leaked temp dir is harmless.
+    for (const dir of [home, repoRoot]) {
+      try {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+      } catch {
+        // left for the OS to clean
+      }
+    }
   });
 
   const json = (method: string, path: string, body?: unknown) =>

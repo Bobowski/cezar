@@ -64,6 +64,12 @@ No other routes: the chat is a run. `RunRecord.kind` is optional (old records pa
 - The injected MCP token is the run's own, scoped to `author`, dies with the process.
 - Writes are limited to `CHAT_WRITABLE` by tool policy and prompt; a chat cannot push, cannot
   open a PR, cannot change settings (`admin` scope is never granted to a run).
+- A task the chat starts goes through the review gate: `POST /runs` from a chat token is forced
+  to its own worktree and `autonomous: false` (an in-place task lands, and pushes, on a
+  `landing: auto` project), and a body asking for `worktree: false`, `autonomous`, `readOnly`,
+  `newBranch` or `dispatch` is a `400`. The other launches are refused to it (`403`): an inbox
+  start, an automation run, check, retry or enable, and a `PUT` that leaves an automation
+  enabled — the chat drafts a paused automation and the owner switches it on.
 - Hosted: the chat is behind sign-in like every run.
 
 ## 6. Zero config

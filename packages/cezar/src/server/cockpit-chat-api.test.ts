@@ -97,6 +97,44 @@ describe('cockpit chat API', () => {
     expect((await post('/api/v1/p/boot/runs', { kind: 'chat', task: 'again' }, chat.bearer)).status).toBe(403);
   });
 
+  it('a task the chat starts runs in its own worktree, not autonomous, and stops at review — whatever the body asks', async () => {
+    const chat = liveChat();
+    expect((await post('/api/v1/p/boot/runs', { workflow: 'quick-task', task: 'plain' }, chat.bearer)).status).toBe(201);
+    expect(started[0]?.input).toMatchObject({ worktree: true, autonomous: false });
+    // In place (which lands, and pushes, on a `landing: auto` project) or autonomous: refused.
+    for (const body of [{ worktree: false }, { autonomous: true }, { readOnly: true }, { worktree: false, autonomous: true }, { newBranch: true }, { dispatch: {} }]) {
+      const res = await post('/api/v1/p/boot/runs', { workflow: 'quick-task', task: 'in place', ...body }, chat.bearer);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+    }
+    expect(started).toHaveLength(1);
+    // The owner's own POST is untouched.
+    expect((await post('/api/v1/runs', { workflow: 'quick-task', task: 'mine', worktree: false, autonomous: true })).status).toBe(201);
+    expect(started[1]?.input).toMatchObject({ worktree: false, autonomous: true });
+  });
+
+  it('the chat starts tasks through runs_create only: no inbox start, no automation launch or enable', async () => {
+    const chat = liveChat();
+    for (const path of ['/todos/t1/start', '/automations/a1/run', '/automations/a1/enable', '/automations/a1/check', '/automation-log/r1/retry']) {
+      expect((await post(`/api/v1/p/boot${path}`, {}, chat.bearer)).status, path).toBe(403);
+    }
+  });
+
+  it('the chat edits a paused automation, never switches one on or edits a live one', async () => {
+    const chat = liveChat();
+    const put = (id: string, body: unknown, headers: Record<string, string> = {}) =>
+      apiRequest(app, `/api/v1/p/boot/automations/${id}`, { method: 'PUT', headers: { ...json, ...headers }, body: JSON.stringify(body) });
+    const input = { name: 'Review issues', events: ['issue.opened'], intervalSeconds: 300, filters: { lookbackDays: 7, maxRecords: 25 }, task: { prompt: 'Review {{github.url}}' } };
+    const created = await post('/api/v1/p/boot/automations', input, chat.bearer);
+    expect(created.status).toBe(201);
+    const { id, revision } = ((await created.json()) as { automation: { id: string; revision: number } }).automation;
+    expect((await put(id, { ...input, enabled: true, expectedRevision: revision }, chat.bearer)).status).toBe(403);
+    expect((await put(id, { ...input, name: 'Renamed', expectedRevision: revision }, chat.bearer)).status).toBe(200);
+    // The owner switches it on; from then on the chat may only pause it.
+    expect((await put(id, { ...input, enabled: true, expectedRevision: revision + 1 })).status).toBe(200);
+    expect((await put(id, { ...input, name: 'Again', expectedRevision: revision + 2 }, chat.bearer)).status).toBe(403);
+    expect((await put(id, { ...input, enabled: false, expectedRevision: revision + 2 }, chat.bearer)).status).toBe(200);
+  });
+
   it('the chat token is author on its own project even with sign-in off — never admin, never another project', async () => {
     const chat = liveChat();
     expect((await apiRequest(app, '/api/v1/p/boot/runs', { headers: chat.bearer })).status).toBe(200);

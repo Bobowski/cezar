@@ -4781,6 +4781,13 @@ export function createApp(deps: ServerDeps) {
       const parsed = { data: c.req.valid('json') };
       const current = automationStore.get(c.req.param('id'));
       if (!current) return c.json({ error: 'not found' }, 404);
+      // An enabled automation launches with nobody there: the chat drafts a paused one, and the
+      // owner switches it on (spec 2026-10-24-cockpit-chat §5). Pausing stays the chat's.
+      const viewer = principalOf(c);
+      const stayingOn = parsed.data.enabled ?? current.enabled;
+      if (viewer?.kind === 'run' && viewer.scope === 'author' && stayingOn) {
+        return c.json({ error: 'the chat edits a paused automation only — the owner enables it' }, 403);
+      }
       // The stored kind unless the body names one; a switch is refused — receipts and cursors
       // are kind-specific, and a silent swap would orphan them (spec 2026-09-14 § Edge cases).
       const kind = parsed.data.kind ?? current.kind;
@@ -5241,6 +5248,15 @@ export function createApp(deps: ServerDeps) {
       const caller = principal?.kind === 'run' && principal.scope ? store.getRun(principal.runId) : undefined;
       if (chat && principal?.kind === 'run') return c.json({ error: 'a task or chat cannot start a chat' }, 403);
       const createdBy = caller && isChatRun(caller) ? chatCreatedBy(caller.id) : undefined;
+      // A chat's task goes through the review gate (spec 2026-10-24-cockpit-chat §5): its own
+      // worktree, never autonomous — in place it would land, and push, on a `landing: auto` project.
+      const fromChat = principal?.kind === 'run' && principal.scope === 'author';
+      if (fromChat) {
+        const body = parsed.data;
+        if (body.worktree === false || body.autonomous === true || body.readOnly || body.newBranch || body.dispatch) {
+          return c.json({ error: 'a task the chat starts runs in its own worktree, is not autonomous and stops at review — drop worktree:false, autonomous, readOnly, newBranch and dispatch' }, 400);
+        }
+      }
       // Resolve the ticket link before anything is started: a scope that moved under the user is
       // refused like any tracker read, while a vendor that merely fails to answer costs the link
       // its title and snapshot, never the launch.
@@ -5310,11 +5326,12 @@ export function createApp(deps: ServerDeps) {
         agentProfile: parsed.data.agentProfile,
         images,
         systemPrompt: parsed.data.systemPrompt,
-        worktree: parsed.data.worktree,
+        // Explicit for a chat's task: an absent key would take an in-place project default.
+        worktree: fromChat ? true : parsed.data.worktree,
         newBranch: parsed.data.newBranch,
         branch: parsed.data.branch,
         ...(parsed.data.readOnly ? { readOnly: true } : {}),
-        autonomous: parsed.data.autonomous,
+        autonomous: fromChat ? false : parsed.data.autonomous,
         // Opt-in inbox (#471): the capability is the ceiling, so a client asking
         // for follow-ups on a server that has them off gets a plain `false`
         // rather than an error — the run is still perfectly valid without them.

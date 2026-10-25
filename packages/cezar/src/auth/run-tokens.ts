@@ -156,6 +156,11 @@ const CHAT_DENIED: ReadonlyArray<readonly [method: string, RegExp]> = [
   ['*', /^\/runs\/[^/]+\/(?:git\/push|pr(?:\/|$)|land$|finish$|open-in)/],
   ['WRITE', /^\/runs\/[^/]+\/files(?:\/|$)/],
   ['*', /^\/workspace\//],
+  // Launches that bypass `POST /runs`'s chat override (worktree, never autonomous): an inbox start,
+  // and an automation run, check, retry or enable — an enabled automation launches with nobody there.
+  ['WRITE', /^\/todos\/[^/]+\/start$/],
+  ['WRITE', /^\/automations\/[^/]+\/(?:enable|run|check)$/],
+  ['WRITE', /^\/automation-log\/[^/]+\/retry$/],
 ];
 
 /** Workspace-level reads a chat may make with a project: discovery, and an automation check's poll. */

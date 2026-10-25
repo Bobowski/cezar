@@ -316,12 +316,17 @@ describe('the dispatch engine (spec 2026-09-10-dispatch)', () => {
       reboot({ maxParallel: 1, maxMonitoringSessions: 0 });
       const parent = await parkedRoot(20);
       const state = (manager as unknown as { active: Map<string, { personaDispatch?: unknown }> }).active.get(parent.id)!;
-      state.personaDispatch = { name: 'reviewer', dispatch: { maxSubtasks: 0 } };
+      // A child an earlier, persona-less step dispatched does not count against the persona's cap.
+      const earlier = dispatchOk(parent.id, order('from another step', { max_cost: 1 }));
+      expect(store.getRun(earlier.id)?.dispatch).not.toHaveProperty('personaStepId');
+      store.updateRun(earlier.id, { status: 'done' });
+      state.personaDispatch = { name: 'reviewer', dispatch: { maxSubtasks: 0 }, stepId: 'review' };
       expect(refusal(parent.id, order('a helper'))).toContain('the "reviewer" persona this task runs as allows no subtasks');
-      state.personaDispatch = { name: 'lead', dispatch: { maxSubtasks: 1, runner: 'codex', budgetUsd: 2 } };
+      state.personaDispatch = { name: 'lead', dispatch: { maxSubtasks: 1, runner: 'codex', budgetUsd: 2 }, stepId: 'lead' };
       const first = dispatchOk(parent.id, order('one helper'));
       expect(store.getRun(first.id)?.runner).toBe('codex');
       expect(store.getRun(first.id)?.dispatch?.budgetUsd).toBe(2);
+      expect(store.getRun(first.id)?.dispatch?.personaStepId).toBe('lead');
       store.updateRun(first.id, { status: 'done' });
       expect(refusal(parent.id, order('a second helper'))).toContain('allows at most 1 subtask');
     }, 40_000);

@@ -351,4 +351,31 @@ describe('ClaudeCliRunner private MCP (spec 2026-10-07-private-project-mcp)', ()
       rmSync(cwd, { force: true, recursive: true });
     }
   });
+
+  it('removes the --mcp-config file once the CLI reports init, while the session is still open', async () => {
+    const mockBin = fileURLToPath(new URL('../../scripts/mock-claude.mjs', import.meta.url));
+    const runner = new ClaudeCliRunner({ bin: mockBin, timeoutMs: 60_000 });
+    const cwd = mkdtempSync(join(tmpdir(), 'cez-claude-private-mcp-open-'));
+    const argsFile = join(cwd, 'args.ndjson');
+    try {
+      let turnEnded!: () => void;
+      const firstTurn = new Promise<void>((resolve) => { turnEnded = resolve; });
+      const session = runner.startSession(
+        {
+          userPrompt: 'do it',
+          cwd,
+          env: { CEZ_HANDOFF_FILE: '', CEZ_MOCK_ARGS_FILE: argsFile, CEZ_TODOS_FILE: '' },
+          mcpServers: [{ name: 'tracker', transport: 'stdio', command: 'tracker-mcp', args: [], env: { TOKEN: 's3cret' }, headers: {} }],
+        },
+        (event) => { if (event.type === 'turn-end') turnEnded(); },
+      );
+      await firstTurn;
+      const argv = JSON.parse(readFileSync(argsFile, 'utf8').trim().split('\n')[0]!) as string[];
+      expect(existsSync(argv[argv.indexOf('--mcp-config') + 1]!)).toBe(false);
+      session.end();
+      await session.result;
+    } finally {
+      rmSync(cwd, { force: true, recursive: true });
+    }
+  });
 });

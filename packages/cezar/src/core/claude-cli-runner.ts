@@ -285,6 +285,10 @@ export class ClaudeCliRunner implements AgentRunner {
           // describes the intentional stop rather than an agent failure.
           // Normalize only this precise wire shape so genuine result errors
           // (authentication, limits, malformed sessions) stay authoritative.
+          // `init` comes after the CLI read `--mcp-config`: the 0600 file (resolved secrets) goes now,
+          // not at stdout close. The MCP children's env stays readable to the agent — best-effort.
+          if (mcpConfig && msg.type === 'system' && msg.subtype === 'init') mcpConfig.cleanup();
+
           const mappedMessage = normalizeIntentionalTeardownResult(msg, terminatedByCezar);
           emitUi((state) => mapClaudeMessage(mappedMessage, state));
 
@@ -323,7 +327,7 @@ export class ClaudeCliRunner implements AgentRunner {
         if (hardKillTimer) clearTimeout(hardKillTimer);
         if (autoEndTimer) clearTimeout(autoEndTimer);
         stdinOpen = false;
-        // stdout closed: the CLI read `--mcp-config` at startup long ago, so the file can go.
+        // A stream that never reached `init` still leaves no file behind.
         mcpConfig?.cleanup();
       }
 
@@ -446,7 +450,9 @@ export function buildClaudeArgs(
 /**
  * Write the private MCP servers to a `0600` temp file for `--mcp-config` — a file, not an inline
  * JSON argument, because argv is world-readable through `ps` and these entries carry tokens.
- * Removed when the session's process exits. Undefined when there is nothing to attach or the
+ * Removed as soon as the CLI reports `init` (it has read the file), else when stdout closes. This
+ * is best-effort: the spawned MCP servers' env still holds the resolved values, readable to the
+ * agent through the process table of its own user. Undefined when there is nothing to attach or the
  * temp dir is unwritable (the run then simply starts without them).
  */
 export function writeClaudeMcpConfig(

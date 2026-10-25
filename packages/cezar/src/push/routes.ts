@@ -32,12 +32,41 @@ export const PRESENCE_TOPIC = 'presence';
 const UNAVAILABLE ='push notifications need a hosted cockpit served over HTTPS';
 const NOT_A_PERSON = 'push subscriptions belong to a signed-in person';
 
+/** Beats one tab may send a minute: its 30 s beat plus a few visibility flips. */
+export const PRESENCE_BEATS_PER_MINUTE = 4;
+/** Tabs one caller (its sign-in session, or the account without one) may beat for in a minute. */
+export const PRESENCE_TABS_PER_CALLER = 8;
+const PRESENCE_WINDOW_MS = 60_000;
+
+/** A refused beat only means push may hold a little longer; it is never queued. */
+function presenceLimiter(now: () => number) {
+  const byCaller = new Map<string, Map<string, number[]>>();
+  return (caller: string, tab: string): boolean => {
+    const at = now();
+    const tabs = byCaller.get(caller) ?? new Map<string, number[]>();
+    for (const [id, times] of tabs) {
+      const recent = times.filter((t) => at - t < PRESENCE_WINDOW_MS);
+      if (recent.length > 0) tabs.set(id, recent);
+      else tabs.delete(id);
+    }
+    const times = tabs.get(tab);
+    const allowed = times !== undefined ? times.length < PRESENCE_BEATS_PER_MINUTE : tabs.size < PRESENCE_TABS_PER_CALLER;
+    if (allowed) tabs.set(tab, [...(times ?? []), at]);
+    if (tabs.size > 0) byCaller.set(caller, tabs);
+    else byCaller.delete(caller);
+    return allowed;
+  };
+}
+
 export function pushRoutes(deps: {
   subscriptions: PushSubscriptionStore;
   keys: () => VapidKeys;
   available: () => boolean;
   beats: PresenceBeats;
+  /** The presence rate limit's clock (tests). */
+  now?: () => number;
 }) {
+  const presenceAllowed = presenceLimiter(deps.now ?? Date.now);
   // `device` (a subscription id) narrows the answer to one browser; without it a sign-in session
   // still names the device, but owner mode cannot, so it reports no stale hint (#review 4).
   const stateFor = (c: Context, device?: string): WorkspacePushState => {
@@ -75,6 +104,10 @@ export function pushRoutes(deps: {
       const who = pushAccountOf(principalOf(c));
       if (who === null) return c.json({ error: NOT_A_PERSON }, 409);
       const { visible, tab } = c.req.valid('json');
+      if (!presenceAllowed(`${who.account}\0${who.sessionId ?? ''}`, tab)) {
+        c.header('retry-after', '60');
+        return c.json({ error: 'too many presence beats — try again in a minute' }, 429);
+      }
       deps.beats.beat(who.account, tab, visible);
       return c.json({ ok: true as const });
     })

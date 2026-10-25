@@ -336,7 +336,7 @@ export type PushUnsubscribeInput = z.infer<typeof pushUnsubscribeInputSchema>;
  *  now. `tab` tells one tab of an account from another. */
 export const pushPresenceInputSchema = z.object({
   visible: z.boolean(),
-  tab: z.string().min(1).max(64),
+  tab: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, 'a tab id is a token of at most 64 letters, digits, - or _'),
 }).strict();
 export type PushPresenceInput = z.infer<typeof pushPresenceInputSchema>;
 export const pushPresenceResponseSchema = z.object({ ok: z.literal(true) });

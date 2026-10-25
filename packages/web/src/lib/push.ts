@@ -105,3 +105,20 @@ export async function disableDevicePush(): Promise<string | undefined> {
   }
   return endpoint
 }
+
+/** The server's id for a subscription (`subscriptionIdOf` in packages/cezar/src/push/state.ts: the
+ *  first 24 hex of the endpoint's sha-256) — how `GET /workspace/push?device=` names this browser. */
+export async function pushSubscriptionId(endpoint: string): Promise<string | undefined> {
+  try {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(endpoint))
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('').slice(0, 24)
+  } catch {
+    return undefined
+  }
+}
+
+/** This browser's subscription id, or undefined when it holds none. Never throws. */
+export async function currentPushDeviceId(): Promise<string | undefined> {
+  const subscription = await currentPushSubscription()
+  return subscription ? pushSubscriptionId(subscription.endpoint) : undefined
+}

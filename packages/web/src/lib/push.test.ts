@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { base64UrlToBytes, enableDevicePush, pushDeviceSupport } from './push'
+import { base64UrlToBytes, enableDevicePush, pushDeviceSupport, pushSubscriptionId } from './push'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -84,5 +84,12 @@ describe('enableDevicePush after the server key rotated', () => {
     const device = stubPushDevice({ key: null })
     await enableDevicePush(NEW_KEY)
     expect(device.subscribe).toHaveBeenCalledOnce()
+  })
+})
+
+describe('pushSubscriptionId', () => {
+  it('is the server\'s subscriptionIdOf: the first 24 hex of the endpoint\'s sha-256', async () => {
+    // sha256('https://push.example.net/send/abc'), computed independently with node:crypto.
+    expect(await pushSubscriptionId('https://push.example.net/send/abc')).toBe('9d96ff1923c4a7d30d7aa60e')
   })
 })

@@ -98,7 +98,8 @@ export class PushSubscriptionStore {
   }
 
   /** One row per endpoint: re-subscribing a device moves it to the account that asked last, and
-   *  replaces the stale rows this device (its account and sign-in session) left behind. */
+   *  replaces the stale rows its sign-in session left behind. Without a session nothing tells
+   *  devices apart, so only the endpoint itself is replaced — the cockpit drops the old one. */
   upsert(input: { account: string; sessionId?: string; target: PushTarget; now?: Date }): StoredPushSubscription {
     const row: StoredPushSubscription = {
       id: subscriptionIdOf(input.target.endpoint),
@@ -108,7 +109,7 @@ export class PushSubscriptionStore {
       keys: { p256dh: input.target.keys.p256dh, auth: input.target.keys.auth },
       createdAt: (input.now ?? new Date()).toISOString(),
     };
-    const sameDevice = (existing: StoredPushSubscription) =>
+    const sameDevice = (existing: StoredPushSubscription) => row.sessionId !== undefined &&
       existing.stale === true && existing.account === row.account && existing.sessionId === row.sessionId;
     this.mutate((rows) => {
       const kept = rows.filter((existing) => existing.endpoint !== row.endpoint && !sameDevice(existing));

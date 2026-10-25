@@ -1,9 +1,15 @@
 import { Hono, type Context } from 'hono';
-import { pushPresenceInputSchema, pushSubscribeInputSchema, pushUnsubscribeInputSchema, type WorkspacePushState } from '@open-mercato/cezar-contract';
+import {
+  pushPresenceInputSchema,
+  pushSubscribeInputSchema,
+  pushUnsubscribeInputSchema,
+  workspacePushQuerySchema,
+  type WorkspacePushState,
+} from '@open-mercato/cezar-contract';
 import { principalOf, type AuthEnv, type Principal } from '../auth/guard.ts';
-import { jsonZodValidator } from '../server/validators.ts';
+import { jsonZodValidator, queryZodValidator } from '../server/validators.ts';
 import type { PresenceBeats } from './presence.ts';
-import type { PushSubscriptionStore } from './state.ts';
+import { subscriptionIdOf, type PushSubscriptionStore } from './state.ts';
 import type { VapidKeys } from './web-push.ts';
 
 /**
@@ -32,22 +38,26 @@ export function pushRoutes(deps: {
   available: () => boolean;
   beats: PresenceBeats;
 }) {
-  const stateFor = (c: Context): WorkspacePushState => {
+  // `device` (a subscription id) narrows the answer to one browser; without it a sign-in session
+  // still names the device, but owner mode cannot, so it reports no stale hint (#review 4).
+  const stateFor = (c: Context, device?: string): WorkspacePushState => {
     const available = deps.available();
     const who = pushAccountOf(principalOf(c));
     const mine = available && who !== null
       ? deps.subscriptions.list().filter((row) =>
-        row.account === who.account && (who.sessionId === undefined || row.sessionId === who.sessionId))
+        row.account === who.account && (who.sessionId === undefined || row.sessionId === who.sessionId) &&
+        (device === undefined || row.id === device))
       : [];
     const subscribed = mine.some((row) => row.stale !== true);
-    const stale = !subscribed && mine.some((row) => row.stale === true);
+    const perDevice = device !== undefined || who?.sessionId !== undefined;
+    const stale = perDevice && !subscribed && mine.some((row) => row.stale === true);
     return { available, publicKey: available ? deps.keys().publicKey : null, subscribed, stale };
   };
 
   return new Hono<AuthEnv>()
-    .get('/workspace/push', (c) => {
+    .get('/workspace/push', queryZodValidator(workspacePushQuerySchema), (c) => {
       c.header('cache-control', 'no-store');
-      return c.json(stateFor(c));
+      return c.json(stateFor(c, c.req.valid('query').device));
     })
     .post('/workspace/push/subscribe', jsonZodValidator(pushSubscribeInputSchema), (c) => {
       if (!deps.available()) return c.json({ error: UNAVAILABLE }, 409);
@@ -59,7 +69,7 @@ export function pushRoutes(deps: {
       } catch {
         return c.json({ error: 'could not save the subscription — the cezar home is not writable' }, 409);
       }
-      return c.json(stateFor(c));
+      return c.json(stateFor(c, subscriptionIdOf(body.endpoint)));
     })
     .post('/workspace/push/presence', jsonZodValidator(pushPresenceInputSchema), (c) => {
       const who = pushAccountOf(principalOf(c));
@@ -80,6 +90,6 @@ export function pushRoutes(deps: {
       } catch {
         return c.json({ error: 'could not remove the subscription — the cezar home is not writable' }, 409);
       }
-      return c.json(stateFor(c));
+      return c.json(stateFor(c, endpoint !== undefined ? subscriptionIdOf(endpoint) : undefined));
     });
 }

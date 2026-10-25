@@ -10,7 +10,7 @@ import { apiRequest } from '../server/loopback-request.testkit.ts';
 import { createApp } from '../server/server.ts';
 import type { SocketHub } from '../server/ws.ts';
 import type { RunManager } from '../workflows/run.ts';
-import { resetPushStateCache, PushSubscriptionStore } from './state.ts';
+import { resetPushStateCache, PushSubscriptionStore, subscriptionIdOf } from './state.ts';
 import type { PushOutcome, PushTarget } from './web-push.ts';
 
 /** `/api/v1/workspace/push*` and the run-transition push (spec 2026-10-24-mobile-cockpit §3.5, §4). */
@@ -198,7 +198,7 @@ describe('the push API', () => {
     store.updateRun(run.id, { status: 'review' });
     await flushed();
     expect(sent).toHaveLength(1);
-    expect(await state(json('GET', '/api/v1/workspace/push'))).toMatchObject({ subscribed: false, stale: true });
+    expect(await state(json('GET', `/api/v1/workspace/push?device=${subscriptionIdOf(SUBSCRIPTION.endpoint)}`))).toMatchObject({ subscribed: false, stale: true });
 
     store.updateRun(run.id, { status: 'running' });
     store.updateRun(run.id, { status: 'waiting' });
@@ -206,6 +206,41 @@ describe('the push API', () => {
     expect(sent).toHaveLength(1);
 
     expect(await state(json('POST', '/api/v1/workspace/push/subscribe', SUBSCRIPTION))).toMatchObject({ subscribed: true, stale: false });
+  });
+
+  describe('two devices without sign-in (owner mode, no session to tell them apart)', () => {
+    const phone = { ...SUBSCRIPTION, endpoint: 'https://push.example.net/send/phone' };
+    const laptop = { ...SUBSCRIPTION, endpoint: 'https://push.example.net/send/laptop' };
+    const deviceState = (endpoint: string) => state(json('GET', `/api/v1/workspace/push?device=${subscriptionIdOf(endpoint)}`));
+    const markStale = (...endpoints: string[]) =>
+      new PushSubscriptionStore(pushSubscriptionsPath()).markStale(new Set(endpoints.map(subscriptionIdOf)));
+
+    it('re-enabling one device leaves the other device\'s stale row — and its hint — alone', async () => {
+      await json('POST', '/api/v1/workspace/push/subscribe', phone);
+      await json('POST', '/api/v1/workspace/push/subscribe', laptop);
+      markStale(phone.endpoint, laptop.endpoint);
+      await json('DELETE', '/api/v1/workspace/push/subscribe', { endpoint: phone.endpoint });
+      await json('POST', '/api/v1/workspace/push/subscribe', { ...phone, endpoint: 'https://push.example.net/send/phone-2' });
+      const rows = new PushSubscriptionStore(pushSubscriptionsPath()).list();
+      expect(rows.map((row) => [row.endpoint, row.stale === true]).sort()).toEqual([
+        ['https://push.example.net/send/laptop', true], ['https://push.example.net/send/phone-2', false],
+      ]);
+      expect(await deviceState(laptop.endpoint)).toMatchObject({ subscribed: false, stale: true });
+    });
+
+    it('a live row on one device does not hide the other device\'s stale hint', async () => {
+      await json('POST', '/api/v1/workspace/push/subscribe', phone);
+      await json('POST', '/api/v1/workspace/push/subscribe', laptop);
+      markStale(laptop.endpoint);
+      expect(await deviceState(laptop.endpoint)).toMatchObject({ subscribed: false, stale: true });
+      expect(await deviceState(phone.endpoint)).toMatchObject({ subscribed: true, stale: false });
+      // A device that holds no subscription has nothing to re-enable.
+      expect(await state(json('GET', '/api/v1/workspace/push'))).toMatchObject({ stale: false });
+    });
+
+    it('refuses a device that is not a subscription id', async () => {
+      expect((await json('GET', '/api/v1/workspace/push?device=not-an-id')).status).toBe(400);
+    });
   });
 
   it('an HTTP presence beat holds push while the tab is visible, and its end lets it through (no socket: CEZ_AUTH=0)', async () => {

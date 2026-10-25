@@ -166,7 +166,7 @@ describe('This device: enable push (spec 2026-10-24-mobile-cockpit §3.5)', () =
         const method = init?.method ?? 'GET'
         requests.push({ method, url })
         if (url === '/api/v1/workspace/ui-state') return json({})
-        if (url === '/api/v1/workspace/push' && method === 'GET') return json(push)
+        if (url.split('?')[0] === '/api/v1/workspace/push' && method === 'GET') return json(push)
         return new Promise<never>(() => {})
       }),
     )
@@ -202,6 +202,20 @@ describe('This device: enable push (spec 2026-10-24-mobile-cockpit §3.5)', () =
     renderSection()
     await waitFor(() => expect(document.querySelector('[data-slot="push-stale"]')?.textContent).toContain('re-enable push on this device'))
     expect(pushToggle().getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('asks about this browser\'s own subscription, so another device\'s rows cannot answer for it', async () => {
+    servePush({ available: true, publicKey: 'BAAA', subscribed: false, stale: true })
+    stubNotification('granted')
+    vi.stubGlobal('isSecureContext', true)
+    vi.stubGlobal('PushManager', function PushManager() {})
+    const registration = { pushManager: { getSubscription: async () => ({ endpoint: 'https://push.example.net/send/abc', options: {} }) } }
+    Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { getRegistration: async () => registration } })
+    onTestFinished(() => {
+      delete (navigator as { serviceWorker?: unknown }).serviceWorker
+    })
+    renderSection()
+    await waitFor(() => expect(requests.map((r) => r.url)).toContain('/api/v1/workspace/push?device=9d96ff1923c4a7d30d7aa60e'))
   })
 
   it('names every blocker in words', async () => {

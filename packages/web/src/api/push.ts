@@ -1,14 +1,19 @@
 import { useQuery } from '@tanstack/react-query'
 
 import type { PushSubscribeInput, WorkspacePushState } from '@open-mercato/cezar-api-client'
-import { disableDevicePush } from '@/lib/push'
+import { currentPushDeviceId, disableDevicePush } from '@/lib/push'
 import { cez, unwrap } from './client'
 
 /** Web Push (spec 2026-10-24-mobile-cockpit §4). Workspace-level: never project-scoped. */
 export const pushQueryKeys = { state: ['workspace', 'push'] as const }
 
+/** Names this browser's own subscription, so `subscribed`/`stale` answer for this device alone. */
 export async function fetchPushState(signal?: AbortSignal): Promise<WorkspacePushState> {
-  return unwrap(await cez.api.v1.workspace.push.$get({}, { init: { signal } }), '/workspace/push')
+  const device = await currentPushDeviceId()
+  return unwrap(
+    await cez.api.v1.workspace.push.$get({ query: device !== undefined ? { device } : {} }, { init: { signal } }),
+    '/workspace/push',
+  )
 }
 
 export async function subscribePush(subscription: PushSubscribeInput): Promise<WorkspacePushState> {

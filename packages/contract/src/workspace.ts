@@ -214,6 +214,14 @@ export const workspacePushStateSchema = z.object({
 });
 export type WorkspacePushState = z.infer<typeof workspacePushStateSchema>;
 
+/** `GET /api/v1/workspace/push?device=` — the subscription id (sha-256 of the endpoint, 24 hex) of
+ *  the browser's own subscription: `subscribed` and `stale` then answer for that device alone,
+ *  which is the only way to tell two devices apart on a cockpit without sign-in. */
+export const workspacePushQuerySchema = z.object({
+  device: z.string().regex(/^[0-9a-f]{24}$/, 'not a subscription id').optional(),
+});
+export type WorkspacePushQuery = z.infer<typeof workspacePushQuerySchema>;
+
 const base64url = (min: number, max: number) => z.string().min(min).max(max).regex(/^[A-Za-z0-9_-]+=*$/, 'not base64url');
 
 const ipv4Parts = (host: string): number[] | null => {

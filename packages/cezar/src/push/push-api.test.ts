@@ -33,6 +33,7 @@ describe('the push API', () => {
   let sent: Array<{ target: PushTarget; payload: PushPayload }>;
   let sendOutcome: () => PushOutcome;
   let app: Hono;
+  let cleanups: Array<() => void>;
 
   const hub: SocketHub = {
     registerTopic: () => () => undefined,
@@ -53,12 +54,14 @@ describe('the push API', () => {
     visible = new Set();
     sent = [];
     sendOutcome = () => 'sent';
+    cleanups = [];
     app = createApp({
       repoRoot,
       store,
       manager: {} as RunManager,
       version: '0.0.0-test',
       socketHub: hub,
+      onDispose: (cleanup) => cleanups.push(cleanup),
       pushSubscriptions: new PushSubscriptionStore(pushSubscriptionsPath()),
       pushSend: async (target, payload) => {
         sent.push({ target, payload });
@@ -68,13 +71,14 @@ describe('the push API', () => {
   });
 
   afterEach(() => {
+    for (const cleanup of cleanups) cleanup();
     store.flush();
     resetPushStateCache();
     for (const [key, value] of [['CEZ_HOME', saved.home], ['CEZ_REMOTE', saved.remote], ['CEZ_AUTH', saved.auth]] as const) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
-    for (const dir of [home, repoRoot]) rmSync(dir, { recursive: true, force: true });
+    for (const dir of [home, repoRoot]) rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
   });
 
   const json = (method: string, path: string, body?: unknown) =>
@@ -175,6 +179,22 @@ describe('the push API', () => {
     expect(sent).toHaveLength(1);
 
     expect(await state(json('POST', '/api/v1/workspace/push/subscribe', SUBSCRIPTION))).toMatchObject({ subscribed: true, stale: false });
+  });
+
+  it('an HTTP presence beat holds push while the tab is visible, and its end lets it through (no socket: CEZ_AUTH=0)', async () => {
+    await json('POST', '/api/v1/workspace/push/subscribe', SUBSCRIPTION);
+    expect((await json('POST', '/api/v1/workspace/push/presence', { visible: true, tab: 'tab-1' })).status).toBe(200);
+    const run = store.createRun({ title: 't', workflow: 'quick-task', task: 't', steps: [] });
+    store.updateRun(run.id, { status: 'running' });
+    store.updateRun(run.id, { status: 'waiting' });
+    await flushed();
+    expect(sent).toEqual([]);
+
+    expect((await json('POST', '/api/v1/workspace/push/presence', { visible: false, tab: 'tab-1' })).status).toBe(200);
+    store.updateRun(run.id, { status: 'running' });
+    store.updateRun(run.id, { status: 'review' });
+    await flushed();
+    expect(sent).toHaveLength(1);
   });
 
   it('pushes nothing without a subscription, and nothing for a status that does not want you', async () => {

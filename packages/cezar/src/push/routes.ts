@@ -1,7 +1,8 @@
 import { Hono, type Context } from 'hono';
-import { pushSubscribeInputSchema, pushUnsubscribeInputSchema, type WorkspacePushState } from '@open-mercato/cezar-contract';
+import { pushPresenceInputSchema, pushSubscribeInputSchema, pushUnsubscribeInputSchema, type WorkspacePushState } from '@open-mercato/cezar-contract';
 import { principalOf, type AuthEnv, type Principal } from '../auth/guard.ts';
 import { jsonZodValidator } from '../server/validators.ts';
+import type { PresenceBeats } from './presence.ts';
 import type { PushSubscriptionStore } from './state.ts';
 import type { VapidKeys } from './web-push.ts';
 
@@ -29,6 +30,7 @@ export function pushRoutes(deps: {
   subscriptions: PushSubscriptionStore;
   keys: () => VapidKeys;
   available: () => boolean;
+  beats: PresenceBeats;
 }) {
   const stateFor = (c: Context): WorkspacePushState => {
     const available = deps.available();
@@ -58,6 +60,13 @@ export function pushRoutes(deps: {
         return c.json({ error: 'could not save the subscription — the cezar home is not writable' }, 409);
       }
       return c.json(stateFor(c));
+    })
+    .post('/workspace/push/presence', jsonZodValidator(pushPresenceInputSchema), (c) => {
+      const who = pushAccountOf(principalOf(c));
+      if (who === null) return c.json({ error: NOT_A_PERSON }, 409);
+      const { visible, tab } = c.req.valid('json');
+      deps.beats.beat(who.account, tab, visible);
+      return c.json({ ok: true as const });
     })
     .delete('/workspace/push/subscribe', jsonZodValidator(pushUnsubscribeInputSchema), (c) => {
       const who = pushAccountOf(principalOf(c));

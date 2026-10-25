@@ -303,6 +303,16 @@ export const pushUnsubscribeInputSchema = z.object({
 }).strict();
 export type PushUnsubscribeInput = z.infer<typeof pushUnsubscribeInputSchema>;
 
+/** `POST /api/v1/workspace/push/presence` — a socket-less cockpit tab's beat: still visible, or hidden
+ *  now. `tab` tells one tab of an account from another. */
+export const pushPresenceInputSchema = z.object({
+  visible: z.boolean(),
+  tab: z.string().min(1).max(64),
+}).strict();
+export type PushPresenceInput = z.infer<typeof pushPresenceInputSchema>;
+export const pushPresenceResponseSchema = z.object({ ok: z.literal(true) });
+export type PushPresenceResponse = z.infer<typeof pushPresenceResponseSchema>;
+
 /** What a push message carries (§5): the task's title and its attention label, never a prompt. */
 export const pushPayloadSchema = z.object({
   title: z.string(),

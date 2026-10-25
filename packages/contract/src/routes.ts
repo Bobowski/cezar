@@ -192,6 +192,7 @@ import {
   workspaceBrandingSchema,
   workspaceConfigResponseSchema,
   workspacePushStateSchema,
+  pushPresenceResponseSchema,
 } from './workspace.ts';
 import {
   lifecycleDetailResponseSchema,
@@ -554,6 +555,7 @@ export const routeContracts = {
   'GET /workspace/push': { summary: 'Whether this device can get push notifications, and the key it subscribes with.', response: workspacePushStateSchema, notTool: 'browser' },
   'POST /workspace/push/subscribe': { summary: 'Subscribe this device to push notifications.', response: workspacePushStateSchema, notTool: 'browser' },
   'DELETE /workspace/push/subscribe': { summary: 'Stop push notifications on this device.', response: workspacePushStateSchema, notTool: 'browser' },
+  'POST /workspace/push/presence': { summary: 'Say a cockpit tab is on screen, so push stays quiet.', response: pushPresenceResponseSchema, notTool: 'browser' },
   'GET /workspace/runs-index': { summary: 'Every task across every project, in brief.', response: runsIndexResponseSchema },
   'GET /workspace/self-update': { summary: 'cezar\'s installed version and available updates.', response: selfUpdateStatusSchema },
   'POST /workspace/self-update/apply': { summary: 'Update cezar and restart it.', response: selfUpdateStatusSchema, destructive: true },

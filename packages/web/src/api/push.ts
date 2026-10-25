@@ -22,6 +22,15 @@ export async function unsubscribePush(endpoint?: string): Promise<WorkspacePushS
   )
 }
 
+/** One beat of a socket-less tab's presence (`components/push-presence.tsx`). Never throws. */
+export async function beatPushPresence(visible: boolean, tab: string): Promise<void> {
+  try {
+    await cez.api.v1.workspace.push.presence.$post({ json: { visible, tab } }, { init: { keepalive: !visible } })
+  } catch {
+    // A missed beat only means a push may arrive while the tab is open.
+  }
+}
+
 /** Signing a device out ends its push (spec §5): the browser's subscription and the server row,
  *  while the session that owns the row still exists. Bounded, so sign-out never waits on it. */
 export async function dropDevicePush(timeoutMs = 2_000): Promise<void> {

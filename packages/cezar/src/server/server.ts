@@ -370,6 +370,7 @@ import { authRoutes } from '../auth/routes.ts';
 import { createPushNotifier, type PushNotifierDeps } from '../push/notifier.ts';
 import { PRESENCE_TOPIC, pushAccountOf, pushRoutes } from '../push/routes.ts';
 import { loadVapidKeys, PushSubscriptionStore } from '../push/state.ts';
+import { createPresenceBeats } from '../push/presence.ts';
 import { enableRunTokens, isRunToken } from '../auth/run-tokens.ts';
 import { AuthService } from '../auth/service.ts';
 import { createSocketHub, type SocketHub, type WsUpgradeVerdict } from './ws.ts';
@@ -2001,15 +2002,17 @@ export function createApp(deps: ServerDeps) {
 
   // ---- Web Push (spec 2026-10-24-mobile-cockpit §3.5) -------------------------------------------
   // Hosted only: a local origin has no HTTPS for a browser's push service to trust. A tab is
-  // "visible" while it holds the `presence` topic, which it does only while the page is visible.
+  // "visible" while it holds the `presence` topic, which it does only while the page is visible —
+  // or, with no socket (hosted without sign-in), while it beats `POST /workspace/push/presence`.
   const pushAvailable = () => !capabilities().localHandoff;
+  const presenceBeats = createPresenceBeats();
   const pushSubscriptions = deps.pushSubscriptions ?? new PushSubscriptionStore();
   deps.socketHub?.registerTopic(PRESENCE_TOPIC, { snapshot: async () => null, start: () => () => undefined });
   const pushNotifier = createPushNotifier({
     subscriptions: pushSubscriptions,
     keys: () => loadVapidKeys(),
     enabled: pushAvailable,
-    visible: (account) => deps.socketHub?.holders(PRESENCE_TOPIC).has(account) ?? false,
+    visible: (account) => (deps.socketHub?.holders(PRESENCE_TOPIC).has(account) ?? false) || presenceBeats.visible(account),
     sessionAlive: (sessionId) => !authIsEnforced() || auth.sessionAlive(sessionId),
     ...(deps.pushSend ? { send: deps.pushSend } : {}),
   });
@@ -10029,7 +10032,7 @@ export function createApp(deps: ServerDeps) {
     .route('/', runsIndexRoutes)
     .route('/', dashboardRoutes(dashboard, () => ({ tokens: capabilities().tokenUsageMetrics, cost: capabilities().costMetrics }), () => capabilities().automations))
     .route('/', workspaceEventsRoutes)
-    .route('/', pushRoutes({ subscriptions: pushSubscriptions, keys: () => loadVapidKeys(), available: pushAvailable }))
+    .route('/', pushRoutes({ subscriptions: pushSubscriptions, keys: () => loadVapidKeys(), available: pushAvailable, beats: presenceBeats }))
     .route('/', telemetryRoutes)
     // The catalog is read off the assembled app on first use: every route is registered by then.
     .route('/', mcpRoutes({ catalog: () => (mcpCatalog ??= buildCatalog(app.routes).catalog), dispatch: async (request, env) => app.fetch(request, env as object | undefined), version }));

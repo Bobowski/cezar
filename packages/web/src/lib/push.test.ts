@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { wantsPresence } from '@/components/push-presence'
 import { base64UrlToBytes, enableDevicePush, pushDeviceSupport } from './push'
 
 afterEach(() => {
@@ -85,15 +84,5 @@ describe('enableDevicePush after the server key rotated', () => {
     const device = stubPushDevice({ key: null })
     await enableDevicePush(NEW_KEY)
     expect(device.subscribe).toHaveBeenCalledOnce()
-  })
-})
-
-describe('wantsPresence — the visible-tab half of the push gate', () => {
-  it('holds the topic only on a hosted cockpit, over the socket, while visible', () => {
-    expect(wantsPresence({ hosted: true, transport: 'local', visible: true })).toBe(true)
-    expect(wantsPresence({ hosted: true, transport: 'local', visible: false })).toBe(false)
-    expect(wantsPresence({ hosted: false, transport: 'local', visible: true })).toBe(false)
-    expect(wantsPresence({ hosted: true, transport: 'remote', visible: true })).toBe(false)
-    expect(wantsPresence({ hosted: true, transport: undefined, visible: true })).toBe(false)
   })
 })

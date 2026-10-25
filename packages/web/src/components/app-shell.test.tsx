@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ProjectListEntry } from '@open-mercato/cezar-api-client'
 import { ShellProviders } from '@/test/shell-providers'
 import { AppShell, routeOwnsScrollArrival, type AppShellProps } from './app-shell'
-import { ContextSidebar } from './context-sidebar'
+import { ContextSidebar, type ContextSidebarFrame } from './context-sidebar'
 import { useGlobalSettings } from './global-settings'
 import { NAV_ITEMS, visibleNavItems } from './nav-items'
 import { ThemeProvider } from './theme-provider'
@@ -994,6 +994,54 @@ describe('AppShell', () => {
       expect(wrapper.style.getPropertyValue('--sidebar-width')).toBe('18rem')
       expect(slot('sidebar-resize-handle')).toBeNull()
       expect(screen.queryByRole('separator', { name: 'Resize the sidebar' })).toBeNull()
+    })
+
+    describe('with a screen’s own frame (cockpit-polish §3.1)', () => {
+      const frame = (over: Partial<ContextSidebarFrame> = {}): ContextSidebarFrame => ({
+        width: 320, minWidth: 220, maxWidth: 560, defaultWidth: 288, collapsed: false,
+        onWidthChange: vi.fn(), onCollapsedChange: vi.fn(), ...over,
+      })
+
+      it('takes the screen’s width, folds to icons and carries the resize handle', () => {
+        const given = frame()
+        renderShell('/', {}, <ContextSidebar frame={given}><p>the file tree</p></ContextSidebar>)
+        const wrapper = contextSidebar().closest('[data-slot="sidebar-wrapper"]') as HTMLElement
+        expect(wrapper.style.getPropertyValue('--sidebar-width')).toBe('320px')
+        const handle = screen.getByRole('separator', { name: 'Resize the sidebar' })
+        expect(handle.getAttribute('aria-valuemin')).toBe('220')
+        fireEvent.keyDown(handle, { key: 'End' })
+        expect(given.onWidthChange).toHaveBeenCalledWith(560)
+        fireEvent.doubleClick(handle)
+        expect(given.onWidthChange).toHaveBeenLastCalledWith(288)
+      })
+
+      it('reads its fold from the frame and hands Ctrl/Cmd+B back to it', () => {
+        const given = frame({ collapsed: true })
+        renderShell('/', {}, <ContextSidebar frame={given}><p>the file tree</p></ContextSidebar>)
+        expect(contextSidebar().getAttribute('data-state')).toBe('collapsed')
+        expect(contextSidebar().getAttribute('data-collapsible')).toBe('icon')
+        expect(slot('sidebar-resize-handle')).toBeNull()
+        fireEvent.keyDown(window, { key: 'b', ctrlKey: true })
+        expect(given.onCollapsedChange).toHaveBeenCalledWith(false)
+        // The shell's own remembered state is not the frame's to write.
+        expect(localStorage.getItem(STORAGE_KEY)).toBeNull()
+      })
+
+      it('gives the column back when the screen leaves', () => {
+        const { rerender } = renderShell('/', {}, <ContextSidebar frame={frame()}><p>git</p></ContextSidebar>)
+        rerender(
+          <ThemeProvider>
+            <MemoryRouter initialEntries={['/']}>
+              <ShellProviders>
+                <AppShell>{filled}</AppShell>
+              </ShellProviders>
+            </MemoryRouter>
+          </ThemeProvider>,
+        )
+        const wrapper = contextSidebar().closest('[data-slot="sidebar-wrapper"]') as HTMLElement
+        expect(wrapper.style.getPropertyValue('--sidebar-width')).toBe('18rem')
+        expect(slot('sidebar-resize-handle')).toBeNull()
+      })
     })
 
     it('lives inside the panel, not pinned to the window', () => {

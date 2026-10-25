@@ -1,10 +1,11 @@
 import { CherryIcon, GitBranchIcon, GitCommitHorizontalIcon, MoreHorizontalIcon, TriangleAlertIcon } from 'lucide-react'
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useSearchParams } from 'react-router'
 import { Virtualizer } from 'virtua'
 
 import { cherryPickCommit, useRepoGitAction, useRepoGraph } from '@/api/repo-git'
 import type { RepoGraphCommit, RepoGraphFilter, RepoGraphRef } from '@open-mercato/cezar-api-client'
-import { ContextSidebar } from '@/components/context-sidebar'
+
 import { PageBody, PageToolbar } from '@/components/page'
 import { Button } from '@/components/ui/button'
 import {
@@ -33,7 +34,7 @@ import { cn } from '@/lib/utils'
 import { BranchActionsMenu, useAnnounce } from './branch-actions'
 import { assignLanes, type LaneEdge, type LaneRow } from './graph-lanes'
 import { RepoEmpty } from './repo-empty'
-import { useCloseSidebarSheet } from './repo-sidebar'
+import { RepoContextSidebar, useCloseSidebarSheet, withParam } from './repo-sidebar'
 
 const ROW_HEIGHT = 30
 const LANE_WIDTH = 14
@@ -91,10 +92,20 @@ export function RepoGraphSection({ header }: { header: ReactNode }) {
     !needle || commit.subject.toLowerCase().includes(needle) || commit.sha.startsWith(needle)
   const matchCount = needle ? commits.filter(matches).length : commits.length
 
-  const [focused, setFocused] = useState<string | null>(null)
+  // `?ref=<sha>` (cockpit-polish §3.1): the revealed commit survives a refresh and a shared link.
+  const [params, setParams] = useSearchParams()
+  const focused = params.get('ref')
   const rowEls = useRef(new Map<string, HTMLElement>())
+  const arrivedAt = useRef(focused)
+  const loaded = commits.length > 0
+  useEffect(() => {
+    const sha = arrivedAt.current
+    if (sha === null || !loaded) return
+    arrivedAt.current = null
+    rowEls.current.get(sha)?.scrollIntoView?.({ block: 'center' })
+  }, [loaded])
   const reveal = (sha: string) => {
-    setFocused(sha)
+    setParams((current) => withParam(current, 'ref', sha), { replace: true })
     rowEls.current.get(sha)?.scrollIntoView({ block: 'center' })
   }
 
@@ -106,7 +117,7 @@ export function RepoGraphSection({ header }: { header: ReactNode }) {
 
   return (
     <section data-slot="repo-graph" className="flex min-h-0 flex-1 flex-col">
-      <ContextSidebar>
+      <RepoContextSidebar tab="graph">
         {header}
         <SidebarContent>
           {(
@@ -128,7 +139,7 @@ export function RepoGraphSection({ header }: { header: ReactNode }) {
             ) : null,
           )}
         </SidebarContent>
-      </ContextSidebar>
+      </RepoContextSidebar>
 
       <PageToolbar data-slot="repo-graph-toolbar" className="gap-x-3 pt-4">
         <h1 className="text-[15px] font-semibold text-foreground">Graph</h1>

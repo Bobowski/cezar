@@ -28,7 +28,8 @@ import { Link as RouterLink, matchPath, useLocation, useNavigate } from 'react-r
 import type { ProjectListEntry, TrackerKind } from '@open-mercato/cezar-api-client'
 import { AddProjectDialog } from '@/components/add-project-dialog'
 import { BrandMark } from '@/components/brand-mark'
-import { ContextSidebarContext } from '@/components/context-sidebar'
+import { ContextSidebarContext, type ContextSidebarFrame } from '@/components/context-sidebar'
+import { SidebarResizeHandle } from '@/components/sidebar-frame'
 import { useGlobalSettings } from '@/components/global-settings'
 import { CloneProjectDialog } from '@/components/clone-project-dialog'
 import { CreateProjectDialog } from '@/components/create-project-dialog'
@@ -225,8 +226,20 @@ export const AppShell = React.memo(function AppShell({ children, banner, footerB
     setFillers((count) => count + 1)
     return () => setFillers((count) => count - 1)
   }, [])
-  const contextSidebar = React.useMemo(() => ({ node, register }), [node, register])
+  // A screen's own frame for the column (cockpit-polish §3.1): its width, resize and fold.
+  const [frame, setFrameState] = React.useState<ContextSidebarFrame | null>(null)
+  const setFrame = React.useCallback((next: ContextSidebarFrame) => {
+    setFrameState(next)
+    return () => setFrameState((current) => (current === next ? null : current))
+  }, [])
+  const contextSidebar = React.useMemo(() => ({ node, register, setFrame }), [node, register, setFrame])
   const hasContext = fillers > 0
+  const framed = hasContext && frame !== null
+  const sidebarOpen = framed && roomy ? !frame.collapsed : open
+  const onSidebarOpenChange = React.useCallback(
+    (next: boolean) => (frame && roomy ? frame.onCollapsedChange(!next) : onOpenChange(next)),
+    [frame, onOpenChange, roomy],
+  )
 
   return (
     <SidebarProvider
@@ -252,14 +265,14 @@ export const AppShell = React.memo(function AppShell({ children, banner, footerB
         className="relative m-0 flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background md:my-2 md:mr-2 md:rounded-xl md:border md:border-border/70 md:shadow-xs"
       >
         <SidebarProvider
-          open={open && hasContext}
-          onOpenChange={onOpenChange}
+          open={sidebarOpen && hasContext}
+          onOpenChange={onSidebarOpenChange}
           className="relative h-full min-h-0"
-          style={{ '--sidebar-width': '18rem' } as React.CSSProperties}
+          style={{ '--sidebar-width': framed ? `${frame.width}px` : '18rem' } as React.CSSProperties}
         >
           <ContextSidebarContext.Provider value={contextSidebar}>
             <Sidebar
-              collapsible="offcanvas"
+              collapsible={framed ? 'icon' : 'offcanvas'}
               data-slot="context-sidebar"
               // Inside the panel, not pinned to the window: the stock container is `fixed` and
               // viewport-tall, so both are overridden and the panel's own clipping hides it when
@@ -268,7 +281,17 @@ export const AppShell = React.memo(function AppShell({ children, banner, footerB
             >
               <MobileAreas {...props} />
               <div ref={setNode} data-slot="context-sidebar-body" className="flex min-h-0 flex-1 flex-col" />
-              {hasContext ? <SidebarRail /> : null}
+              {framed && sidebarOpen ? (
+                <SidebarResizeHandle
+                  width={frame.width}
+                  onWidthChange={frame.onWidthChange}
+                  min={frame.minWidth}
+                  max={frame.maxWidth}
+                  initial={frame.defaultWidth}
+                />
+              ) : hasContext ? (
+                <SidebarRail />
+              ) : null}
             </Sidebar>
             <SidebarInset className="min-h-0 min-w-0 overflow-hidden">
               <TopBar crumbs={props.crumbs ?? []} toolsMenu={props.toolsMenu} hasContext={hasContext} />

@@ -7,7 +7,7 @@ import { Link } from '@/lib/project-router'
 import { ApiError } from '@/api/client'
 import { useRepoCommit, useRepoSync } from '@/api/queries'
 import type { LogEntry } from '@open-mercato/cezar-api-client'
-import { ContextSidebar } from '@/components/context-sidebar'
+
 import { Diff, type DiffMode } from '@/components/diff'
 import { DiffStatLabel } from '@/components/diff-stat'
 import { PageBody, PageToolbar } from '@/components/page'
@@ -28,7 +28,7 @@ import { cn } from '@/lib/utils'
 
 import { DiffViewToggles } from '../task-git/diff-controls'
 import { RepoEmpty } from './repo-empty'
-import { OpenSidebarButton } from './repo-sidebar'
+import { OpenSidebarButton, RepoContextSidebar } from './repo-sidebar'
 
 /**
  * The repo view's Commits segment (R5 Step 1.7): the recent-commit log the existing
@@ -50,7 +50,7 @@ export function RepoCommitsSection({ log, header }: { log: LogEntry[]; header: R
 
   return (
     <>
-      <ContextSidebar>
+      <RepoContextSidebar tab="commits">
         {header}
         <SidebarContent>
           {incoming.length > 0 ? (
@@ -93,7 +93,7 @@ export function RepoCommitsSection({ log, header }: { log: LogEntry[]; header: R
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
-      </ContextSidebar>
+      </RepoContextSidebar>
 
       {sha ? (
         <CommitDiffView sha={sha} />

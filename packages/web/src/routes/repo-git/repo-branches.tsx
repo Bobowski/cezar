@@ -9,13 +9,14 @@ import {
   PlusIcon,
   SearchIcon,
 } from 'lucide-react'
-import { useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useSearchParams } from 'react-router'
 
 import { createRepoBranch, putConfig } from '@/api/client'
 import { queryKeys, useGithub, useHealth, useRepoSync } from '@/api/queries'
 import { BranchTrackingBadge } from './repo-sync-bar'
 import type { GithubItem, HealthResponse, RepoInfo, RepoResponse } from '@open-mercato/cezar-api-client'
-import { ContextSidebar } from '@/components/context-sidebar'
+
 import { PageBody, PageSection, PageToolbar } from '@/components/page'
 import { StatusDot } from '@/components/status-dot'
 import { Badge } from '@/components/ui/badge'
@@ -46,7 +47,7 @@ import { useRepoRemotes } from '@/api/repo-git'
 
 import { BranchActionsMenu } from './branch-actions'
 import { RemotesBlock, remotesHaving } from './repo-remotes'
-import { useCloseSidebarSheet } from './repo-sidebar'
+import { RepoContextSidebar, useCloseSidebarSheet, withParam } from './repo-sidebar'
 
 /** Radix Select has no empty-string item: this stands for "no base branch configured". */
 const FOLLOW_CHECKED_OUT = '__follow__'
@@ -142,20 +143,30 @@ export function RepoBranchesSection({
       },
     })
   }
-  // The branch picked in the sidebar: its table row is scrolled to and marked.
-  const [focused, setFocused] = useState<string | null>(null)
+  // The branch picked in the sidebar: its table row is scrolled to and marked. It is the URL's
+  // `?ref=` (cockpit-polish §3.1), so a refresh or a pasted link lands on the same row.
+  const [params, setParams] = useSearchParams()
+  const focused = params.get('ref')
   const rows = useRef(new Map<string, HTMLTableRowElement>())
   const focusBranch = (name: string) => {
-    setFocused(name)
+    setParams((current) => withParam(current, 'ref', name), { replace: true })
     rows.current.get(name)?.scrollIntoView({ block: 'center' })
   }
+  // Arriving with a `?ref=`: bring its row into view once the table is there.
+  const arrivedAt = useRef(focused)
+  useEffect(() => {
+    const name = arrivedAt.current
+    if (name === null) return
+    arrivedAt.current = null
+    rows.current.get(name)?.scrollIntoView?.({ block: 'center' })
+  }, [])
   const copyName = (name: string) => {
     void navigator.clipboard?.writeText(name).then(() => toast(`Copied ${name}`))
   }
 
   return (
     <section data-slot="repo-branches" className="flex flex-1 flex-col">
-      <ContextSidebar>
+      <RepoContextSidebar tab="branches">
         {header(
           <SidebarInput
             aria-label="Filter branches"
@@ -180,7 +191,7 @@ export function RepoBranchesSection({
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
-      </ContextSidebar>
+      </RepoContextSidebar>
 
       <PageToolbar className="gap-x-3 pt-4">
         <h1 className="text-[15px] font-semibold text-foreground">Branches</h1>

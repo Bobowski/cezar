@@ -1,11 +1,11 @@
 import { FileDiffIcon, GitCompareIcon, MinusIcon, PlusIcon, TriangleAlertIcon, Undo2Icon, XIcon } from 'lucide-react'
-import { useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router'
 
 import { ApiError } from '@/api/client'
 import { useRepoCompare, useRepoIndex } from '@/api/repo-git'
 import type { RepoDiscard, RepoIndexChange, RepoIndexFile } from '@open-mercato/cezar-api-client'
-import { ContextSidebar } from '@/components/context-sidebar'
+
 import { canPreviewMarkdown, Diff, type DiffHandle, type DiffMode } from '@/components/diff'
 import { PageBody, PageToolbar } from '@/components/page'
 import { Button } from '@/components/ui/button'
@@ -19,7 +19,7 @@ import { DiffViewToggles } from '../task-git/diff-controls'
 import { buildFileTree } from '../task-git/file-tree'
 import { AnimatedDiffStat } from '../task-git/git-toolbar'
 import { RepoEmpty } from './repo-empty'
-import { useCloseSidebarSheet } from './repo-sidebar'
+import { RepoContextSidebar, useCloseSidebarSheet, withParam } from './repo-sidebar'
 import { CommitBox, DiscardDialog, IndexFileList, OperationBanner, StashMenu, useIndexChange } from './repo-staging'
 
 /**
@@ -59,11 +59,34 @@ function useDiffView() {
 
 const onError = (error: Error) => toast(error.message, { tone: 'danger' })
 
+/** The picked file as the URL's `?file=` (cockpit-polish §3.1). Replaces history: arrowing down
+ *  a list must not bury the previous page under every file it passed. */
+function useFileParam(): [string | null, (file: string) => void] {
+  const [params, setParams] = useSearchParams()
+  const set = useCallback((file: string) => setParams((current) => withParam(current, 'file', file), { replace: true }), [setParams])
+  return [params.get('file'), set]
+}
+
+/** Once, when the list first has rows: bring the file the URL arrived with into view. */
+function useArrivalScroll(selected: string | null, ready: boolean, scroll: (selected: string) => void) {
+  const arrivedAt = useRef(selected)
+  const scrollRef = useRef(scroll)
+  scrollRef.current = scroll
+  useEffect(() => {
+    const target = arrivedAt.current
+    if (target === null || !ready) return
+    arrivedAt.current = null
+    // After paint: the diff registers its files as it renders.
+    const frame = requestAnimationFrame(() => scrollRef.current(target))
+    return () => cancelAnimationFrame(frame)
+  }, [ready])
+}
+
 function IndexSection({ header }: { header: ReactNode }) {
   const index = useRepoIndex()
   const view = useDiffView()
   const change = useIndexChange()
-  const [selected, setSelected] = useState<string | null>(null)
+  const [selected, setSelected] = useFileParam()
   const [discarding, setDiscarding] = useState<{ change: RepoDiscard; label: string } | null>(null)
   const stagedRef = useRef<DiffHandle | null>(null)
   const unstagedRef = useRef<DiffHandle | null>(null)
@@ -85,6 +108,11 @@ function IndexSection({ header }: { header: ReactNode }) {
     setSelected(`${side}:${path}`)
     ;(side === 'staged' ? stagedRef : unstagedRef).current?.scrollToPath(path)
   }
+  // Arriving with `?file=`: scroll its diff into view once the index is there.
+  useArrivalScroll(selected, all.length > 0, (key) => {
+    const [side, ...rest] = key.split(':')
+    ;(side === 'staged' ? stagedRef : unstagedRef).current?.scrollToPath(rest.join(':'))
+  })
   const discard = (pending: RepoDiscard, label: string) => setDiscarding({ change: pending, label })
   const run = (step: 'stage' | 'unstage', body: RepoIndexChange) => change.mutate({ step, change: body }, { onError })
 
@@ -115,7 +143,7 @@ function IndexSection({ header }: { header: ReactNode }) {
 
   return (
     <section data-slot="repo-changes" className="flex min-h-0 flex-1 flex-col">
-      <ContextSidebar>
+      <RepoContextSidebar tab="changes">
         {header}
         <SidebarContent>
           {index.data ? (
@@ -175,7 +203,7 @@ function IndexSection({ header }: { header: ReactNode }) {
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
-      </ContextSidebar>
+      </RepoContextSidebar>
 
       <PageToolbar data-slot="repo-changes-toolbar" className="gap-x-3 pt-4">
         <h1 className="text-[15px] font-semibold text-foreground">Uncommitted changes</h1>
@@ -261,14 +289,15 @@ function sum(files: RepoIndexFile[], key: 'adds' | 'dels'): number {
 function CompareSection({ header, target, onClose }: { header: ReactNode; target: string; onClose: () => void }) {
   const compare = useRepoCompare(target)
   const view = useDiffView()
-  const [selected, setSelected] = useState<string | null>(null)
+  const [selected, setSelected] = useFileParam()
   const diffRef = useRef<DiffHandle | null>(null)
   const files = compare.data?.files ?? []
   const tree = useMemo(() => buildFileTree(files), [files])
   const hasMarkdown = useMemo(() => files.some(canPreviewMarkdown), [files])
+  useArrivalScroll(selected, files.length > 0, (path) => diffRef.current?.scrollToPath(path))
   return (
     <section data-slot="repo-compare" className="flex min-h-0 flex-1 flex-col">
-      <ContextSidebar>
+      <RepoContextSidebar tab="changes">
         {header}
         <SidebarContent>
           <SidebarGroup className="pt-0">
@@ -292,7 +321,7 @@ function CompareSection({ header, target, onClose }: { header: ReactNode; target
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
-      </ContextSidebar>
+      </RepoContextSidebar>
       <PageToolbar data-slot="repo-compare-toolbar" className="gap-x-3 pt-4">
         <GitCompareIcon aria-hidden="true" className="size-4 text-muted-foreground" />
         <h1 className="min-w-0 truncate text-[15px] font-semibold text-foreground">

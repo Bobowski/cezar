@@ -34,6 +34,7 @@ import {
   settingsSectionPath,
 } from './routes/settings/settings-shell'
 import { useGlobalSettings } from './components/global-settings'
+import { PhoneGate } from './components/larger-screen-card'
 import { TasksAreaLayout } from './components/tasks-sidebar'
 import { TasksOverviewRoute } from './routes/tasks-overview'
 import { GlobalTasksRoute } from './routes/global-tasks'
@@ -534,8 +535,10 @@ export const AppRoutes = memo(function AppRoutes() {
             </Suspense>
           }
         />
-        <Route path="code" element={<Suspense fallback={<ScopeResolving />}><CodeRoute /></Suspense>} />
-        <Route path="code/*" element={<Suspense fallback={<ScopeResolving />}><CodeRoute /></Suspense>} />
+        {/* No phone version (spec 2026-10-24-mobile-cockpit §3.1): a phone gets the card, and never
+            pays for the editor chunk. */}
+        <Route path="code" element={<PhoneGate page="Code"><Suspense fallback={<ScopeResolving />}><CodeRoute /></Suspense></PhoneGate>} />
+        <Route path="code/*" element={<PhoneGate page="Code"><Suspense fallback={<ScopeResolving />}><CodeRoute /></Suspense></PhoneGate>} />
         <Route
           path="scripts"
           element={<Suspense fallback={<ScopeResolving />}><ServicesRoute /></Suspense>}
@@ -543,7 +546,7 @@ export const AppRoutes = memo(function AppRoutes() {
         <Route path="services" element={<ServicesRedirect />} />
         <Route
           path="docker"
-          element={<Suspense fallback={<ScopeResolving />}><DockerRoute /></Suspense>}
+          element={<PhoneGate page="Docker"><Suspense fallback={<ScopeResolving />}><DockerRoute /></Suspense></PhoneGate>}
         />
         <Route
           path="tracker"

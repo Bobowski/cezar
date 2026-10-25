@@ -33,6 +33,7 @@ import {
 } from '@/components/list-view'
 import { Page, PageBody, PageHeader, PageToolbar } from '@/components/page'
 import { PinToggle } from '@/components/pin-toggle'
+import { PhoneTaskMenu, useRowGestures } from '@/components/phone-task-row'
 import { TaskReferenceChip } from '@/components/reference-conflict-action'
 import { ReferenceStatusProvider } from '@/components/reference-status'
 import { FacetMenu } from '@/components/facet-filter'
@@ -1111,6 +1112,11 @@ function TaskCard({
   const cost = formatCost(run.costUsd)
   const subtasks = subtaskLabel(childCount)
   const hasDirectionalUsage = run.inputTokens !== undefined || run.outputTokens !== undefined
+  const [menuOpen, setMenuOpen] = React.useState(false)
+  const openThread = React.useCallback(() => navigate(to), [navigate, to])
+  const openMenu = React.useCallback(() => setMenuOpen(true), [])
+  // Swipe right opens the thread, a long press the row menu (spec 2026-10-24-mobile-cockpit §3.2).
+  const gestures = useRowGestures({ onSwipeRight: openThread, onLongPress: openMenu })
 
   return (
     <div
@@ -1118,12 +1124,22 @@ function TaskCard({
       data-run-id={run.id}
       data-depth={depth}
       style={depth > 0 ? { paddingLeft: `${16 + depth * 14}px` } : undefined}
+      onTouchStart={gestures.onTouchStart}
+      onTouchMove={gestures.onTouchMove}
+      onTouchEnd={gestures.onTouchEnd}
+      onContextMenu={(event) => {
+        // A long press on a phone browser is also a context menu: ours, not the browser's.
+        if ((event.target as Element).closest('a')) return
+        event.preventDefault()
+        openMenu()
+      }}
       onClick={(event) => {
+        if (gestures.consumeClick()) return
         // A control inside the card owns its own click.
         if ((event.target as Element).closest('a, button')) return
         navigate(to)
       }}
-      className="cursor-pointer px-4 py-3.5 active:bg-muted/50"
+      className="cursor-pointer px-4 py-3.5 select-none active:bg-muted/50"
     >
       <div className="flex items-start gap-2">
         <Link to={to} className={cn('min-w-0 flex-1 text-sm leading-snug', titleTone(run))}>
@@ -1141,6 +1157,7 @@ function TaskCard({
             className="-mt-1 -mr-1.5 size-7"
           />
         ) : null}
+        <PhoneTaskMenu run={run} open={menuOpen} onOpenChange={setMenuOpen} onContinue={openThread} />
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5">
         <TaskStatusBadge attention={attention} title={scheduled?.title}>

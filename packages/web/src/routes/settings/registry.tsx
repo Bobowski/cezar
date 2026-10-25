@@ -25,6 +25,7 @@ import type { ComponentType, SVGProps } from 'react'
 import type { Capabilities } from '@open-mercato/cezar-api-client'
 import { AccountsSection } from './accounts-section'
 import { AgentConfigSection } from './agent-config-section'
+import { PhoneGate } from '@/components/larger-screen-card'
 import { AgentsSection } from './agents-section'
 import { AppearanceSection } from './appearance'
 import { BackupSection } from './backup-section'
@@ -84,6 +85,15 @@ export type SettingsSectionId =
   | 'security'
   | 'privacy'
   | 'backup'
+
+/** Raw config-file editing has no phone version (spec 2026-10-24-mobile-cockpit §3.1). */
+function AgentConfigOnLargerScreens() {
+  return (
+    <PhoneGate page="Agent config" back={false}>
+      <AgentConfigSection />
+    </PhoneGate>
+  )
+}
 
 /** Which settings area a section belongs to — and therefore which store it writes. */
 export type SettingsScope = 'project' | 'global'
@@ -164,7 +174,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     title: 'Agent config',
     description: 'Edit the coding agents’ own config files, per scope.',
     icon: FileCogIcon,
-    component: AgentConfigSection,
+    component: AgentConfigOnLargerScreens,
     scope: 'project',
   },
   {

@@ -58,16 +58,6 @@ export function supportsLlmProvider(
   return ['pi', 'opencode', 'junie', 'copilot'].includes(runner);
 }
 
-export const NATIVE_LLM_LABELS: Record<string, string> = {
-  claude: 'Anthropic · native account',
-  codex: 'OpenAI · native account',
-  copilot: 'GitHub Copilot · native account',
-  junie: 'JetBrains · native account',
-  pi: 'Pi · native configuration',
-  opencode: 'OpenCode · native configuration',
-  cursor: 'Cursor · native account',
-};
-
 /** Copyable handoffs contain references only, never credentials or shell-active model text. */
 export function llmProviderCommand(
   id: string,

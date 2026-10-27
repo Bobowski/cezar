@@ -97,6 +97,7 @@ function serve(
       const method = init.method ?? 'GET'
       const body = init.body ? (JSON.parse(String(init.body)) as unknown) : undefined
       requests.push({ method, url, body })
+      if (url === '/api/v1/llm-providers') return json({ providers: [], keyBackend: 'file' })
       if (url === '/api/v1/health') return json(health)
       if (url === '/api/v1/providers/status') return json(providerStatus, providerStatusCode)
       if (url === '/api/v1/models?runner=codex') return json({ runner: 'codex', models: [{ id: 'gpt-future', label: 'gpt-future', description: 'Newest' }], source: 'live', stale: false })
@@ -559,6 +560,7 @@ describe('the follow-up runner pill carries the account', () => {
     renderAction(makeRun())
     await screen.findByRole('button', { name: 'Model' })
     expect(runnerPill()).toBeNull()
+    expect(screen.queryByRole('button', { name: 'LLM provider' })).toBeNull()
   })
 })
 
@@ -575,7 +577,8 @@ it('continues with an explicitly selected API connection and its own model catal
     return nativeFetch(input, init)
   })
   renderAction(makeRun())
-  fireEvent.pointerDown(await screen.findByRole('button', { name: 'LLM provider' }))
+  expect((await screen.findByRole('button', { name: 'LLM provider' })).textContent).toBe('Default')
+  fireEvent.pointerDown(screen.getByRole('button', { name: 'LLM provider' }))
   fireEvent.click(await screen.findByRole('menuitemradio', { name: /Gateway/ }))
   fireEvent.pointerDown(await screen.findByRole('button', { name: 'Model' }))
   fireEvent.click(await screen.findByRole('menuitemradio', { name: /Gateway Model/ }))

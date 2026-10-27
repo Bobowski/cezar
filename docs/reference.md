@@ -1170,7 +1170,8 @@ explicitly select an API connection. Adding a connection does not switch an
 existing subscription to API billing. Models are read from the selected
 connection's `/models` endpoint; custom gateways must expose that endpoint and
 the selected API format. Claude Code needs Anthropic Messages, Codex needs
-OpenAI Responses, and Cursor uses native configuration only.
+OpenAI Responses, and Cursor uses native configuration only. Tasks using an
+API connection can only start immediately; scheduling requires the default setup.
 
 API keys are write-only and encrypted with the existing secret vault. Its
 workspace `cezar` audience does not expose these keys to workflow check steps.

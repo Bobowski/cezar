@@ -44,9 +44,9 @@ export function LlmProviderSettings() {
         LLM providers
       </h3>
       <p className="text-sm text-muted-foreground">
-        Keep native agent accounts as the default, or select an API provider for
-        a task. Connections are shared across projects. Adding one does not
-        change any subscription login.
+        Use your agent’s existing setup, or add an API provider to choose for
+        individual tasks. Connections are shared across projects. Adding one
+        keeps your current setup unchanged.
       </p>
       {query.isError ? (
         <p role="alert">

@@ -1,5 +1,5 @@
 import { useLlmProviders, useLlmProviderModels } from '@/api/llm-providers'
-import { NATIVE_LLM_LABELS, supportsLlmProvider } from '@open-mercato/cezar-api-client'
+import { supportsLlmProvider } from '@open-mercato/cezar-api-client'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, type ReactNode } from 'react'
 
@@ -65,6 +65,7 @@ export function useContinueAction(run: ApiRun): ContinueAction {
   const llmProviderId = pickedConnection === null ? (pickedRunner && pickedRunner !== run.runner ? undefined : run.llmProviderId) : pickedConnection || undefined
   const continuation = useContinuationProvider(run, pickedRunner, llmProviderId ?? null)
   const { runners, canContinue, currentRunner, runner } = continuation
+  const availableConnections = (connections.data?.providers ?? []).filter(provider => provider.hasApiKey && supportsLlmProvider(runner, provider))
   // The catalog belongs to the runner this continuation would use (#794), so switching the
   // runner pill re-reads that backend's own models. Only a run that can actually be continued
   // fetches at all — every other thread (running, queued, closed with no session) would be
@@ -167,11 +168,11 @@ export function useContinueAction(run: ApiRun): ContinueAction {
             }}
           />
         ) : null}
-        {!modelsLocked ? <PickerPill slot="follow-up-provider-pill" ariaLabel="LLM provider"
-          label={connections.data?.providers.find(provider => provider.id === llmProviderId)?.name ?? (llmProviderId ? 'Removed provider' : NATIVE_LLM_LABELS[runner] ?? 'Native account')}
+        {!modelsLocked && (llmProviderId || availableConnections.length > 0) ? <PickerPill slot="follow-up-provider-pill" ariaLabel="LLM provider"
+          label={connections.data?.providers.find(provider => provider.id === llmProviderId)?.name ?? (llmProviderId ? 'Removed provider' : 'Default')}
           value={llmProviderId ?? ''}
           onPick={id => { setPickedConnection(id); setPickedModel('') }}
-          options={[{ value: '', label: NATIVE_LLM_LABELS[runner] ?? 'Native account' }, ...(connections.data?.providers ?? []).filter(provider => provider.hasApiKey && supportsLlmProvider(runner, provider)).map(provider => ({ value: provider.id, label: provider.name, desc: 'API key · billed by this provider' }))]}
+          options={[{ value: '', label: 'Default' }, ...availableConnections.map(provider => ({ value: provider.id, label: provider.name, desc: 'API key · billed by this provider' }))]}
         /> : null}
         <PickerPill
           slot="follow-up-model-pill"

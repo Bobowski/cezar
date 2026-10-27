@@ -6,8 +6,9 @@ An agent runner and an LLM provider are separate choices. Existing native agent
 configuration remains the default, including subscription/OAuth accounts and
 externally managed native configuration. Saving an API key never changes that
 choice. New task and Continue offer an explicit provider connection and models
-from that provider. Native configuration is labelled as such, because Cezar
-cannot infer that every native account is a subscription.
+from that provider. The existing agent setup is labelled “Default”. The provider picker is hidden
+when no usable connection exists for the chosen agent, unless the task already
+references a connection (including one that was removed).
 
 Connections have immutable UUIDs, names, API base URLs and wire protocols.
 OpenRouter is a preset; custom endpoints implement OpenAI Chat Completions,
@@ -62,3 +63,6 @@ Cover encrypted persistence and audience separation, selected-provider discovery
 protocol compatibility, native defaults, model-ID preservation, provider-bound
 session continuation and safe terminal commands. Use fake keys and local test
 endpoints; real provider inference requires separately supplied credentials.
+
+API-bound tasks can only start immediately until deferred execution pins provider
+ownership. Scheduling rejects them instead of dropping the selected connection.

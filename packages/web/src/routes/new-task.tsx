@@ -1,4 +1,4 @@
-import { supportsLlmProvider, NATIVE_LLM_LABELS } from '@open-mercato/cezar-api-client'
+import { supportsLlmProvider } from '@open-mercato/cezar-api-client'
 import { useLlmProviders, useLlmProviderModels } from '@/api/llm-providers'
 import { previewSettingsKey, StartTimePicker, type StartChoice } from '@/components/start-time-picker'
 import { ApiError, createDeferredStart } from '@/api/client'
@@ -291,6 +291,7 @@ export function NewTaskRoute() {
   const runner = runners.length > 0 ? resolveRunner(draft.runner, runners, preferredRunner) : null
   const displayRunner = runner ?? preferredRunner
   const providersReady = providers.isSuccess && runners.length > 0
+  const availableConnections = (llmProviders.data?.providers ?? []).filter(provider => provider.hasApiKey && supportsLlmProvider(displayRunner, provider))
   const selectedConnection = llmProviders.data?.providers.find(provider => provider.id === connectionId && supportsLlmProvider(displayRunner, provider))
   const llmProviderId = connectionId
   const nativeCatalog = useRunnerModels(displayRunner, !llmProviderId)
@@ -616,7 +617,7 @@ export function NewTaskRoute() {
         inPlaceByDefault,
       }), ...(llmProviderId ? { llmProviderId } : {}) }
   }
-  const schedulingDisabledReason = images.length ? 'Remove attachments to schedule this task.' : deepLink.todo ? 'Tasks linked to a todo can only start now.' : health.data?.capabilities?.automations !== true ? 'Scheduling is disabled on this server.' : undefined
+  const schedulingDisabledReason = llmProviderId ? 'Tasks using an API provider can only start now.' : images.length ? 'Remove attachments to schedule this task.' : deepLink.todo ? 'Tasks linked to a todo can only start now.' : health.data?.capabilities?.automations !== true ? 'Scheduling is disabled on this server.' : undefined
   const previewTask = taskBody(draft.text, images)
   const scheduleReady = !schedulingDisabledReason && !!startChoice?.preview && Date.parse(startChoice.preview.notBefore) > Date.now() && startChoice.settingsKey === previewSettingsKey(previewTask)
   const submit = async (text: string, submitted: AttachmentEntry[]) => {
@@ -831,13 +832,13 @@ export function NewTaskRoute() {
                   disabled={!providersReady}
                 />
               ) : null}
-              {!modelsLocked ? <PickerPill
+              {!modelsLocked && (llmProviderId || availableConnections.length > 0) ? <PickerPill
                 slot="llm-provider-pill"
                 ariaLabel="LLM provider"
-                label={selectedConnection?.name ?? (llmProviderId ? 'Unavailable provider' : NATIVE_LLM_LABELS[displayRunner] ?? 'Native account')}
+                label={selectedConnection?.name ?? (llmProviderId ? 'Unavailable provider' : 'Default')}
                 value={llmProviderId ?? ''}
                 onPick={id => { setConnectionId(id || undefined); update({ model: null }) }}
-                options={[{ value: '', label: NATIVE_LLM_LABELS[displayRunner] ?? 'Native account', desc: 'Use the agent’s existing login and configuration' }, ...(llmProviders.data?.providers ?? []).filter(provider => provider.hasApiKey && supportsLlmProvider(displayRunner, provider)).map(provider => ({ value: provider.id, label: provider.name, desc: 'API key · billed by this provider' }))]}
+                options={[{ value: '', label: 'Default', desc: 'Use the agent’s existing login and configuration' }, ...availableConnections.map(provider => ({ value: provider.id, label: provider.name, desc: 'API key · billed by this provider' }))]}
               /> : null}
               <PickerPill
                 slot="model-pill"

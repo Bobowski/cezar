@@ -1,5 +1,4 @@
 import { useLlmProviders } from '@/api/llm-providers'
-import { NATIVE_LLM_LABELS } from '@open-mercato/cezar-api-client'
 import { useAgentProfiles, useConfig, useRunnerModels } from '@/api/queries'
 import { DEFAULT_AGENT_ACCOUNT_ID, type ApiRun } from '@open-mercato/cezar-api-client'
 import { PickerPill } from '@/components/picker-pill'
@@ -71,7 +70,7 @@ export function RunEnginePills({ run }: { run: ApiRun }) {
         readOnly
         hint={hint}
       />
-      <PickerPill slot="run-engine-provider" ariaLabel="LLM provider" label={engine.connection ? `${engine.connection} · API key` : NATIVE_LLM_LABELS[engine.runner] ?? 'Native account'} value={run.llmProviderId ?? ''} options={[]} onPick={() => {}} readOnly />
+      {engine.connection ? <PickerPill slot="run-engine-provider" ariaLabel="LLM provider" label={`${engine.connection} · API key`} value={run.llmProviderId ?? ''} options={[]} onPick={() => {}} readOnly /> : null}
       <PickerPill
         slot="run-engine-model"
         ariaLabel="Model"

@@ -801,8 +801,9 @@ winner
     mkdirSync(home, { recursive: true });
     writeFileSync(join(home, 'source.lock'), `${process.ppid}\n${threeHoursAgo()}\n${processStartTicks(process.ppid)}\nx\n`);
     expect(sourceLockHolder(env)).toBe(process.ppid);
+    rmSync(join(home, 'source.lock'));
     const release = service().source.lock(BRANCH);
-    const mine = readFileSync(join(home, 'source.lock'), 'utf8').split('\n');
+    const mine =readFileSync(join(home, 'source.lock'), 'utf8').split('\n');
     writeFileSync(join(home, 'source.lock'), [mine[0], threeHoursAgo(), ...mine.slice(2)].join('\n'));
     expect(sourceLockHolder(env)).toBe(process.pid);
     release();

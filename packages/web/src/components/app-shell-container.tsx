@@ -15,6 +15,11 @@ import { TaskQuickListContainer } from '@/components/task-quick-list'
 import { ToolsMenu } from '@/components/tools-menu'
 import { useDocumentTitle } from '@/lib/use-document-title'
 import { useActiveProjectId } from '@/lib/project-router'
+<<<<<<< HEAD
+=======
+import { withServedBootProject } from '@/lib/served-boot-project'
+import { useActiveForge } from '@/lib/active-forge'
+>>>>>>> a5e5bc7 (fix(serve): open the project cezar was started in (#1712))
 import { unreadDoneCount } from '@/lib/read-state'
 import { runTitle } from '@/lib/task-groups'
 import { pageTitleContext } from '@/routes'
@@ -77,7 +82,11 @@ export const AppShellContainer = memo(function AppShellContainer({ children }: {
   // mobile drawer, and grouped sidebar). Routes reuse this TanStack Query cache entry.
   const skillsUpdate = useSkillsUpdate(projectId ?? '', projectId !== null)
   const skillsUpdateAvailable = skillsUpdateMarkerOf(skillsUpdate.data)
-  const registry = useProjects().data
+  const projectsData = useProjects().data
+  const registry = useMemo(
+    () => withServedBootProject(projectsData, projectId, health.data),
+    [projectsData, projectId, health.data],
+  )
   const titleContext = pageTitleContext(pathname)
   const bootProjectId = registry?.bootProject ?? health.data?.bootProject ?? null
   // Unread done items (#unread-done-items) for the Tasks badge. This shell sits ABOVE the routed

@@ -53,7 +53,6 @@ import { NAV_ITEMS } from '@/components/nav-items'
 import {
   agentSetupRows,
   announcementsSince,
-  awayLabel,
   currentAnnouncement,
   hasSignedInAgent,
   navOwnsPath,
@@ -64,6 +63,7 @@ import {
   visitPatch,
   welcomeBackSince,
   whatsNewHasUnseen,
+  welcomeBackSentence,
   type Announcement,
   type FeaturePreviewId,
   type SetupStep,
@@ -208,6 +208,25 @@ const quiet = 'inline-flex items-center gap-1.5 text-[13px] text-muted-foregroun
 const chip =
   'inline-flex h-[30px] items-center gap-1.5 rounded-full border border-border px-3 text-[12.5px] text-muted-foreground transition-colors hover:border-muted-foreground hover:text-foreground'
 
+/**
+ * Half the desktop sidebar's width: an onboarding dialog belongs to the page it opened from, so it
+ * centres over the content column, not the whole window. Zero below `md`, where the sidebar is a
+ * drawer and the content is the window.
+ */
+function useContentCenterOffset(): number {
+  const [offset, setOffset] = React.useState(0)
+  React.useLayoutEffect(() => {
+    const measure = () => {
+      const sidebar = document.querySelector<HTMLElement>('aside[data-slot="sidebar"]')
+      setOffset(sidebar ? Math.max(0, sidebar.getBoundingClientRect().right) / 2 : 0)
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [])
+  return offset
+}
+
 /** Every onboarding dialog: a header band (title, one line), a body, a footer band with the buttons. */
 function OnboardingDialog({
   title,
@@ -228,11 +247,13 @@ function OnboardingDialog({
   footer: React.ReactNode
   children: React.ReactNode
 }) {
+  const contentOffset = useContentCenterOffset()
   return (
     <Dialog open onOpenChange={onOpenChange}>
       <DialogContent
         data-onboarding=""
         className={cn('gap-0 p-0', wide ? 'sm:max-w-lg' : 'sm:max-w-md')}
+        style={contentOffset ? { left: `calc(50% + ${contentOffset}px)` } : undefined}
         onKeyDown={(event) => {
           if (onSubmit && event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
             event.preventDefault()
@@ -1419,47 +1440,42 @@ export function WelcomeBack({ runs }: { runs: readonly RunRecord[] }) {
     automations: health.data?.capabilities.automations,
   })
   const month = new Date(since).toLocaleString('en', { month: 'long' })
+  const first = waiting[0]
+  const sentence = welcomeBackSentence(waiting, news.length)
+  if (!sentence) return null
   return (
     <section
       data-onboarding=""
       data-slot="welcome-back"
       aria-label="Welcome back"
-      className="onboarding-announcement relative mb-4 flex flex-col items-start gap-3 rounded-xl border py-4 pr-12 pl-5 sm:flex-row sm:items-center sm:gap-6"
+      className="onboarding-announcement relative mb-4 flex flex-col gap-4 rounded-xl border py-5 pr-14 pl-6 sm:flex-row sm:items-center sm:gap-8 sm:pr-20"
     >
       <div className="min-w-0 sm:flex-1">
         <h2 className="text-xl font-light tracking-tight text-foreground">Welcome back</h2>
-        <p className="mt-0.5 text-[13px] text-muted-foreground">
-          Last here {awayLabel(since, now)}.
-          {waiting[0] ? (
-            <>
-              {' '}
-              <Link to={`/tasks/${waiting[0].id}`} data-slot="welcome-back-waiting" className="text-violet hover:underline">
-                {waiting.length === 1 ? '1 task needs you' : `${waiting.length} tasks need you`}
-              </Link>
-              .
-            </>
-          ) : null}
-        </p>
+        <p className="mt-1 text-[14px] text-muted-foreground">{sentence}</p>
       </div>
-      {news.length > 0 ? (
-        <button
-          type="button"
-          data-slot="welcome-back-news"
-          onClick={() => setShowNews(true)}
-          className="inline-flex h-8 items-center gap-2 rounded-full border border-border bg-background px-3 text-[13px] text-foreground transition-colors hover:border-muted-foreground"
-        >
-          <span className="size-1.5 rounded-full bg-violet" aria-hidden="true" />
-          {news.length} new since {month}
-          <ArrowRightIcon className="size-3.5 text-soft-foreground" aria-hidden="true" />
-        </button>
-      ) : null}
+      {/* One column per button, all as wide as the widest: the pair reads as one choice. */}
+      <div className="grid shrink-0 auto-cols-fr grid-flow-col gap-2">
+        {first ? (
+          <Button asChild size="sm" className="w-full font-normal">
+            <Link to={`/tasks/${first.id}`} data-slot="welcome-back-waiting">
+              {waiting.length > 1 ? 'Open tasks' : first.status === 'review' ? 'Review task' : 'Open task'}
+            </Link>
+          </Button>
+        ) : null}
+        {news.length > 0 ? (
+          <Button variant="outline" size="sm" className="w-full font-normal" data-slot="welcome-back-news" onClick={() => setShowNews(true)}>
+            See what’s new
+          </Button>
+        ) : null}
+      </div>
       <button
         type="button"
         onClick={() => write({ welcomeBackClosedAt: new Date().toISOString() })}
         aria-label="Close welcome back"
-        className="absolute top-3 right-3 grid size-7 place-items-center rounded-full text-soft-foreground hover:text-foreground"
+        className="absolute top-3 right-3 grid size-8 place-items-center rounded-full text-soft-foreground transition-colors hover:bg-muted hover:text-foreground"
       >
-        <XIcon className="size-3.5" aria-hidden="true" />
+        <XIcon className="size-4" aria-hidden="true" />
       </button>
       {showNews ? (
         <WhatsNewDialog

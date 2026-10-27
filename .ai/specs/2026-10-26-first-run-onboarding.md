@@ -96,7 +96,8 @@ returns in every new project, so it carries neither. No Next buttons: the rail i
 wizard.
 
 **Layout.** Centered and minimal: a large light title, one primary control, quiet links
-or chips under it. Hierarchy comes from size; nothing is bold. (A two-column "new project" page
+or chips under it. Onboarding dialogs centre over the content column (half the desktop sidebar's
+width to the right), so they line up with the page they opened from. Hierarchy comes from size; nothing is bold. (A two-column "new project" page
 was tried and dropped as heavier.)
 
 **Palette.** Onboarding surfaces (`[data-onboarding]`) use the violet `--primary` family whatever
@@ -171,11 +172,14 @@ patterns come from Mobbin: a greeting line on the home page (Gumloop, Causal, Go
 new" row in the sidebar footer (Linear, Riverside).
 
 - **Greeting line.** A visit after `RETURNING_AFTER_DAYS` (14) records `returnedFrom` (the
-  previous `lastVisitAt`) and `returnedAt`. For three days, or until closed, one line sits above
-  the setup pill: "Welcome back", "Last here 5 weeks ago." and, when tasks wait on the user, "1 task
-  needs you" linking to the latest of them. The table and the sidebar already list the work, so
-  the line does not repeat it. A pill on the right, "5 new since September", opens "What's new"
-  with what shipped after `returnedFrom`. Closing writes `welcomeBackClosedAt`.
+  previous `lastVisitAt`) and `returnedAt`. For three days, or until closed, one card sits above
+  the setup pill: "Welcome back", one sentence of good news, and at most two plain buttons. The
+  sentence says what is ready and what is new ("One task is ready for your review, and there are 5
+  new features to try."), never how long the user was gone. Review task (or Open task / Open tasks)
+  opens the latest waiting task; See what's new opens "What's new" with what shipped after
+  `returnedFrom`. With nothing waiting and nothing new, no card shows. No status dots, counters or
+  inline links: the table and the sidebar already carry that detail. Closing writes
+  `welcomeBackClosedAt`.
 - **What's new.** One change per page: a miniature of the feature drawn with the cockpit's own
   surfaces, a "New" label with the date, the title, one sentence, and a link to the feature when
   it has a place ("Open Workflows", "Set up scripts", "Try it"). The footer carries page dots and

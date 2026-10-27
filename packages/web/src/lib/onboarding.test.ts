@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest'
 import {
   agentSetupRows,
   announcementsSince,
-  awayLabel,
   currentAnnouncement,
   hasSignedInAgent,
   navOwnsPath,
@@ -16,6 +15,7 @@ import {
   tasksNeedingYou,
   welcomeBackSince,
   whatsNewHasUnseen,
+  welcomeBackSentence,
 } from './onboarding'
 
 const status = (...rows: ProviderStatusResponse['providers']): ProviderStatusResponse => ({ providers: rows })
@@ -89,13 +89,6 @@ describe('coming back after a while (spec 2026-10-26-first-run-onboarding, "Comi
     expect(welcomeBackSince({ ...back, welcomeBackClosedAt: '2026-08-01T00:00:00.000Z' }, now)).toBe('2026-09-20T09:00:00.000Z')
   })
 
-  it('says how long the user was away in plain words', () => {
-    expect(awayLabel('2026-10-26T09:00:00.000Z', now)).toBe('yesterday')
-    expect(awayLabel('2026-10-20T09:00:00.000Z', now)).toBe('7 days ago')
-    expect(awayLabel('2026-09-20T09:00:00.000Z', now)).toBe('5 weeks ago')
-    expect(awayLabel('2026-06-01T09:00:00.000Z', now)).toBe('4 months ago')
-  })
-
   it('lists only what shipped after the last visit, and only what this cockpit can do', () => {
     const ids = (since: string, designMode: boolean) => announcementsSince(since, { designMode, automations: true }).map((entry) => entry.id)
     expect(ids('2026-10-17T12:00:00.000Z', true)).toEqual(['task-tabs-2026-10', 'task-palette-2026-10'])
@@ -130,6 +123,16 @@ describe('coming back after a while (spec 2026-10-26-first-run-onboarding, "Comi
       run('archived', { status: 'review', archived: true }),
     ]
     expect(tasksNeedingYou(runs).map((picked) => picked.id)).toEqual(['newer-review', 'older-review'])
+  })
+
+  it('greets with what is ready and what is new, never with how long the user was away', () => {
+    const review = { status: 'review' } as const
+    const waiting = { status: 'waiting' } as const
+    expect(welcomeBackSentence([review], 5)).toBe('One task is ready for your review, and there are 5 new features to try.')
+    expect(welcomeBackSentence([waiting], 0)).toBe('One task is waiting for your answer.')
+    expect(welcomeBackSentence([review, waiting, review], 1)).toBe('3 tasks are waiting for you, and there is a new feature to try.')
+    expect(welcomeBackSentence([], 2)).toBe('There are 2 new features to try.')
+    expect(welcomeBackSentence([], 0)).toBeNull()
   })
 
   it('keeps "What\u2019s new" to the last three months, and dots it only for what shipped since it was opened', () => {

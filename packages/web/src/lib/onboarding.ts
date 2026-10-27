@@ -1,6 +1,6 @@
 import type { HealthResponse, ProviderId, ProviderStatusResponse, RunRecord, WorkspaceUiState } from '@open-mercato/cezar-api-client'
 
-import { isNeedsYouStatus } from '@/lib/attention'
+import { isAwaitingAnswer, isNeedsYouStatus } from '@/lib/attention'
 import { PROVIDER_LABELS } from '@/lib/provider-auth-alert'
 
 /**
@@ -217,14 +217,6 @@ export function welcomeBackSince(onboarding: Onboarding | undefined, now: number
   return closed !== null && closed >= returnedAt ? null : from
 }
 
-/** "3 days ago", "5 weeks ago", "4 months ago". */
-export function awayLabel(from: string, now: number): string {
-  const days = Math.max(1, Math.floor((now - (time(from) ?? now)) / DAY_MS))
-  if (days < 14) return days === 1 ? 'yesterday' : `${days} days ago`
-  if (days < 60) return `${Math.floor(days / 7)} weeks ago`
-  return `${Math.floor(days / 30)} months ago`
-}
-
 /** Features that shipped after `since`, newest first. */
 export function announcementsSince(since: string, capabilities: Capabilities): Announcement[] {
   const from = time(since) ?? Number.POSITIVE_INFINITY
@@ -256,6 +248,31 @@ export function navOwnsPath(navTo: string, path: string): boolean {
 export function tasksNeedingYou(runs: readonly RunRecord[]): RunRecord[] {
   const touched = (run: RunRecord) => time(run.finishedAt) ?? time(run.startedAt) ?? time(run.createdAt) ?? 0
   return runs.filter((run) => !run.archived && isNeedsYouStatus(run)).sort((a, b) => touched(b) - touched(a))
+}
+
+/**
+ * The one sentence under "Welcome back": what is ready for the user and what is new, said as good
+ * news — never how long they were gone. Null when there is nothing to say, and then no card shows.
+ */
+export function welcomeBackSentence(
+  waiting: ReadonlyArray<Pick<RunRecord, 'status' | 'awaitingAnswerSince' | 'worktreeLifecycle'>>,
+  newFeatures: number,
+): string | null {
+  const first = waiting[0]
+  const tasks = !first
+    ? null
+    : waiting.length > 1
+      ? `${waiting.length} tasks are waiting for you`
+      : first.status === 'review'
+        ? 'One task is ready for your review'
+        : first.status === 'waiting' || isAwaitingAnswer(first)
+          ? 'One task is waiting for your answer'
+          : 'One task needs a look'
+  const news = newFeatures === 0 ? null : newFeatures === 1 ? 'there is a new feature to try' : `there are ${newFeatures} new features to try`
+  if (tasks && news) return `${tasks}, and ${news}.`
+  if (tasks) return `${tasks}.`
+  if (news) return `${news.charAt(0).toUpperCase()}${news.slice(1)}.`
+  return null
 }
 
 /** How far back the sidebar's "What's new" reaches. */

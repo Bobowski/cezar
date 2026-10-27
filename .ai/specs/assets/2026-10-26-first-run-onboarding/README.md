@@ -1,6 +1,6 @@
 # First-run onboarding — screens
 
-Screenshots of the running cockpit (branch `feat/first-run-onboarding`). Every screen comes as
+Screenshots of the running cockpit (branch `feat/first-run-onboarding`). Dialogs sit centred over the content column, not the whole window. Every screen comes as
 `NN-name.png` (1440 px, dark), `NN-name-light.png` (1440 px, light) and, where the layout changes,
 `NN-name-mobile.png` (390 px, dark). Spec: `../../2026-10-26-first-run-onboarding.md`.
 
@@ -24,5 +24,5 @@ Screenshots of the running cockpit (branch `feat/first-run-onboarding`). Every s
 | 17 | Publish to GitHub, after sign-in | The owner and repository name, right after the code was approved. | dark, light |
 | 18 | New project (existing dialog) | Reached from "New project" on the pick-a-project screen. Unchanged by this work. | dark, light |
 | 19 | Clone from GitHub (existing dialog) | Reached from "Clone from GitHub". Unchanged by this work. | dark, light |
-| 20 | Welcome back | Two weeks or more away: one greeting line above the table, "1 task needs you" as a link, and a pill with what shipped since. "New" dots on Automations, Workflows and Settings; "What's new" in the sidebar footer. | dark, light, mobile |
+| 20 | Welcome back | Two weeks or more away: a card above the table with "Welcome back", one sentence of good news ("One task is ready for your review, and there are 5 new features to try.") and two buttons, Review task and See what's new. "New" dots on Automations, Workflows and Settings; "What's new" in the sidebar footer. | dark, light, mobile |
 | 21 | What's new | One change per page with a miniature of it, the date, one sentence and a way to the feature. Dots and Back/Next in the footer; the dialog keeps its size from page to page. Pages 1 to 5: task tabs, task palette, Design Mode, worktree scripts, workflow editor. | dark, light, mobile |

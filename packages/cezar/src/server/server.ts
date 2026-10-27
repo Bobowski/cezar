@@ -206,6 +206,7 @@ import {
 } from '../workflows/queued-bounds.ts';
 import { checkoutGitStatus } from '../workflows/landing.ts';
 import { deleteUpload, readUpload, writeUpload } from '../uploads.ts';
+import { diskHealth } from './disk-health.ts';
 import { branchesCheckedOutElsewhere, removeWorktree, worktreeDiff, worktreeDiffStat, worktreeSizeBytes } from '../git-worktree.ts';
 import { isReclaimable, reclaimWorktrees } from '../runs/retention.ts';
 import { worktreeLifecycleRoutes, lifecycleError } from './worktree-lifecycle.ts';
@@ -1918,6 +1919,7 @@ export function createApp(deps: ServerDeps) {
       projects: workspace.projects,
       bootProject: workspace.bootProject,
       ...(process.env.CEZ_INSTANCE_ID ? { instanceId: process.env.CEZ_INSTANCE_ID } : {}),
+      ...diskHealth(bootRoot),
     };
   };
   // ---- server-side health cache (stale-while-revalidate) -------------------

@@ -29,6 +29,9 @@ import {
 import { onUsage, registerRunProcess, unregisterRunProcess, type ProcessUsage } from '../core/process-usage.ts';
 import { describeReaped, reapTaskProcesses, taskProcessReapEnabled } from '../core/task-processes.ts';
 import { parseUsageLimit } from '../core/usage-limit.ts';
+import { diskFullAgentErrorText } from '../disk-space.ts';
+import { accountStateHint, classifyAgentFailure, MAX_TRANSIENT_RETRIES, transientRetryDelayMs } from '../core/agent-failure-class.ts';
+import { reportAgentError } from '../runs/agent-error-telemetry.ts';
 import { createRunner } from '../core/runner-factory.ts';
 import type { RunnerId } from '../core/agent-runner.ts';
 import { modelConflictsWithRunner, modelNativeToRunner } from '../core/model-presets.ts';
@@ -813,6 +816,19 @@ function deferredBindingActive(run: Pick<RunRecord, 'id' | 'deferredBinding' | '
 
 const AUTO_RESUME_PROMPT =
   'The provider usage limit that interrupted this task has reset. Read the handoff file (CEZ_HANDOFF_FILE) to recover context, then continue the task from where you left off.';
+type AutoResumeReason = NonNullable<RunRecord['autoResumeReason']>;
+const TRANSIENT_RETRY_PROMPT =
+  'Your previous turn stopped on a temporary provider error (overloaded, unreachable or a login refresh race), not on anything in the task. Read the handoff file (CEZ_HANDOFF_FILE) to recover context, then continue the task from where you left off.';
+
+/** Which automatic resume a failure earns: a usage limit's reset window or a transient retry. */
+function autoResumeReasonFor(error: string | undefined): AutoResumeReason | undefined {
+  if (parseUsageLimit(error)) return 'usage_limit';
+  return classifyAgentFailure(error) === 'transient' ? 'transient' : undefined;
+}
+
+function autoResumeCap(reason: AutoResumeReason | undefined): number {
+  return reason === 'transient' ? MAX_TRANSIENT_RETRIES : MAX_AUTO_RESUMES;
+}
 /**
  * The wake instant as a human reads it — local, to the SECOND, with the zone named. The
  * transcript line is what someone scanning a stalled task actually reads, and "18:41" is not
@@ -3129,6 +3145,61 @@ export class RunManager {
     if (this.autoResumeTimers.has(runId)) return; // already promised
     const run = this.store.getRun(runId);
     if (!run || run.status !== 'failed') return;
+    const failure = classifyAgentFailure(run.error);
+    if (failure === 'transient') {
+      this.scheduleTransientRetry(run);
+      return;
+    }
+    this.armUsageLimitResume(run);
+    // Account and conversation state is the user's to fix: say how, instead of a bare failure.
+    const hint = failure === 'disk_full'
+      ? diskFullAgentErrorText(run.error ?? '', run.worktreePath ?? this.repoRoot) ?? undefined
+      : accountStateHint(failure, this.failedBackend(run), { resetKnown: parseUsageLimit(run.error) !== null });
+    if (hint) this.store.appendEvent(runId, { type: 'lifecycle', message: hint });
+  }
+
+  /** The backend whose session failed — a per-step runner or a Continue override, else the run's. */
+  private failedBackend(run: RunRecord): string | undefined {
+    return [...run.steps].reverse().find((step) => step.status === 'failed' && step.backend)?.backend ?? run.runner;
+  }
+
+  /**
+   * A transient provider failure (an overload, no response, the OAuth refresh race between two of
+   * cezar's own Claude processes): resume the same session after a short backoff, at most
+   * `MAX_TRANSIENT_RETRIES` times per streak, through the usage-limit resume's timer and exits.
+   */
+  private scheduleTransientRetry(run: RunRecord): void {
+    // Same refusals as a usage-limit resume: an archived task, the switch off, no session.
+    if (run.archived || !this.semaphore.autoResumeOnUsageLimit() || !run.steps.some((step) => step.sessionId)) {
+      this.reportUnretriedTransient(run, 'not_retried');
+      return;
+    }
+    const attempts = run.autoResumeAttempts ?? 0;
+    if (attempts >= MAX_TRANSIENT_RETRIES) {
+      this.store.appendEvent(run.id, {
+        type: 'note',
+        message: `the provider is still failing after ${MAX_TRANSIENT_RETRIES} automatic retries — continue this task manually`,
+      });
+      this.reportUnretriedTransient(run, 'retries_exhausted');
+      return;
+    }
+    const wakeAt = new Date(Date.now() + transientRetryDelayMs(attempts + 1, run.error));
+    this.armAutoResume(run.id, wakeAt.getTime(), 'transient');
+    this.store.appendEvent(run.id, {
+      type: 'lifecycle',
+      message: `temporary provider failure — retrying automatically at ${formatWakeInstant(wakeAt)} (${attempts + 1}/${MAX_TRANSIENT_RETRIES})`,
+    });
+  }
+
+  /** A transient failure cezar will not retry carries signal again: report it as the agent error
+   *  `reportAgentError` held back when the event arrived. */
+  private reportUnretriedTransient(run: RunRecord, outcome: 'not_retried' | 'retries_exhausted' | 'resume_refused'): void {
+    if (!run.error) return;
+    reportAgentError(this.failedBackend(run), { type: 'error', message: run.error }, { transientOutcome: outcome });
+  }
+
+  private armUsageLimitResume(run: RunRecord): void {
+    const runId = run.id;
     // Archiving IS resigning from a task. Reviving one because a window happened to reopen would
     // be the feature working against the clearest signal the user can give it.
     if (run.archived) return;
@@ -3146,7 +3217,7 @@ export class RunManager {
       return;
     }
     const wakeAt = new Date(limit.resetAt.getTime() + AUTO_RESUME_GRACE_MS);
-    this.armAutoResume(runId, wakeAt.getTime());
+    this.armAutoResume(runId, wakeAt.getTime(), 'usage_limit');
     this.store.appendEvent(runId, {
       type: 'lifecycle',
       message: `usage limit reached — resuming automatically at ${formatWakeInstant(wakeAt)}`,
@@ -3154,8 +3225,8 @@ export class RunManager {
   }
 
   /** Publish the deadline on the record (the cockpit's only source) and arm the timer for it. */
-  private armAutoResume(runId: string, deadline: number): void {
-    this.store.updateRun(runId, { autoResumeAt: new Date(deadline).toISOString() });
+  private armAutoResume(runId: string, deadline: number, reason: AutoResumeReason): void {
+    this.store.updateRun(runId, { autoResumeAt: new Date(deadline).toISOString(), autoResumeReason: reason });
     const timer = setTimeout(() => this.fireAutoResume(runId), Math.max(0, deadline - Date.now()));
     timer.unref?.();
     this.autoResumeTimers.set(runId, timer);
@@ -3177,6 +3248,7 @@ export class RunManager {
       return;
     }
     const attempts = (run.autoResumeAttempts ?? 0) + 1;
+    const reason = run.autoResumeReason ?? 'usage_limit';
     // #1300: a workflow interruption must return to its executor after the resumed session.
     // The saved workflow and failed step/session already supply the recovery checkpoint,
     // including when the queued run is reconstructed after a restart.
@@ -3196,7 +3268,7 @@ export class RunManager {
     } else {
       // Legacy records without a recoverable definition and standalone continuations retain
       // their existing session recovery. Manual Continue also keeps its existing semantics.
-      resumed = this.continueRun(runId, { text: AUTO_RESUME_PROMPT }, true);
+      resumed = this.continueRun(runId, { text: reason === 'transient' ? TRANSIENT_RETRY_PROMPT : AUTO_RESUME_PROMPT }, true);
     }
     if (!resumed.ok) {
       // Refusals happen before `continueRun` retires anything, so the deadline is still on the
@@ -3207,12 +3279,17 @@ export class RunManager {
         type: 'note',
         message: `automatic resume could not start — ${resumed.error ?? 'unknown'}`,
       });
+      if (reason === 'transient') this.reportUnretriedTransient(run, 'resume_refused');
       return;
     }
-    this.store.updateRun(runId, { autoResumeAttempts: attempts });
+    // `clearAutoResume` above retired the reason with the deadline; the resume in flight keeps it,
+    // so `accountHolds` knows a transient retry holds no account.
+    this.store.updateRun(runId, { autoResumeAttempts: attempts, autoResumeReason: reason });
     this.store.appendEvent(runId, {
       type: 'lifecycle',
-      message: `usage limit reset — resuming automatically (${attempts}/${MAX_AUTO_RESUMES})`,
+      message: reason === 'transient'
+        ? `retrying after a temporary provider failure (${attempts}/${MAX_TRANSIENT_RETRIES})`
+        : `usage limit reset — resuming automatically (${attempts}/${MAX_AUTO_RESUMES})`,
     });
     // A deferred continuation only ENQUEUES itself; the queue moves when something pumps it, and
     // `recover()` — the other deferring caller — pumps once after its whole bulk sweep. A timer
@@ -3226,7 +3303,7 @@ export class RunManager {
     // Later steps can retain old session ids when a check loops back to an earlier agent.
     // Only the failed agent is the interruption; a pending retry is not a newer session.
     const step = [...run.steps].reverse().find((candidate) => candidate.kind === 'agent' && candidate.status === 'failed');
-    if (!step?.sessionId || !parseUsageLimit(step.error)) return undefined;
+    if (!step?.sessionId || !autoResumeReasonFor(step.error)) return undefined;
     return run.workflowDef?.steps.some((definition) => definition.id === step.id && stepKind(definition) === 'agent')
       ? { ...step }
       : undefined;
@@ -3309,7 +3386,7 @@ export class RunManager {
       if (
         run.archived
         || !Number.isFinite(deadline)
-        || (run.autoResumeAttempts ?? 0) >= MAX_AUTO_RESUMES
+        || (run.autoResumeAttempts ?? 0) >= autoResumeCap(run.autoResumeReason)
       ) {
         this.store.updateRun(run.id, { autoResumeAt: undefined });
         continue;
@@ -3325,7 +3402,7 @@ export class RunManager {
         });
         continue;
       }
-      this.armAutoResume(run.id, deadline);
+      this.armAutoResume(run.id, deadline, run.autoResumeReason ?? 'usage_limit');
     }
   }
 
@@ -3448,7 +3525,7 @@ export class RunManager {
    *  notification re-derives every participant's queue reasons, so only hold inputs notify (#1340). */
   private readonly holdInputs = new Map<string, string>();
   private readonly onRunHoldInputs = (run: RunRecord) => {
-    const inputs = JSON.stringify([run.status, run.autoResumeAt, run.autoResumeAttempts, run.runner, run.agentProfile]);
+    const inputs = JSON.stringify([run.status, run.autoResumeAt, run.autoResumeAttempts, run.autoResumeReason, run.runner, run.agentProfile]);
     if (this.holdInputs.get(run.id) === inputs) return;
     this.holdInputs.set(run.id, inputs);
     this.onQueueHoldChange();
@@ -3493,6 +3570,8 @@ export class RunManager {
       // A holding run always carries the runner it actually ran on, so the fallback is unused
       // here — it is spelled out rather than `!` so a future record shape degrades, not throws.
       const key = () => runAccountKey(run, run.runner ?? 'claude');
+      // A transient retry says nothing about the account's window, so it holds nothing.
+      if (run.autoResumeReason === 'transient') continue;
       if (run.status === 'failed' && run.autoResumeAt) {
         const at = Date.parse(run.autoResumeAt);
         if (Number.isFinite(at) && at > now) { deadline.add(key()); deadlines.set(key(), Math.min(at, deadlines.get(key()) ?? Infinity)); }
@@ -3537,8 +3616,8 @@ export class RunManager {
     this.autoResumeTimers.delete(runId);
     const run = this.store.getRun(runId);
     if (!run) return;
-    if (run.autoResumeAt !== undefined || run.autoResumeAttempts !== undefined) {
-      this.store.updateRun(runId, { autoResumeAt: undefined, autoResumeAttempts: undefined });
+    if (run.autoResumeAt !== undefined || run.autoResumeAttempts !== undefined || run.autoResumeReason !== undefined) {
+      this.store.updateRun(runId, { autoResumeAt: undefined, autoResumeAttempts: undefined, autoResumeReason: undefined });
     }
   }
 
@@ -3750,7 +3829,13 @@ export class RunManager {
     if (!state) {
       // Dequeued but not yet registered: a continuation awaits its lifecycle gate first (#1495).
       // Refusing here let the run start right after the user cancelled it.
-      if (!this.starting.has(runId)) return false;
+      if (!this.starting.has(runId)) {
+        // A failed run with a resume booked is the one idle run Cancel still has work on: the
+        // resume (a usage-limit wait or a transient retry), so it — and a cancelled parent — stops it.
+        const run = this.store.getRun(runId);
+        if (run?.status !== 'failed' || (run.autoResumeAt === undefined && !this.autoResumeTimers.has(runId))) return false;
+        return this.cancelAutoResume(runId);
+      }
       this.cancelledStarting.add(runId);
       this.store.updateRun(runId, { status: 'cancelled', finishedAt: new Date().toISOString(), currentStepId: undefined });
       this.store.appendEvent(runId, { type: 'lifecycle', message: 'run cancelled' });
@@ -4863,7 +4948,7 @@ export class RunManager {
         // 2026-08-03-auto-resume-after-usage-limit). `settleSuccess` does the same for a run that
         // finishes outright; this covers the far more common "parked for the user" ending.
         if (this.store.getRun(runId)?.autoResumeAttempts !== undefined) {
-          this.store.updateRun(runId, { autoResumeAttempts: undefined });
+          this.store.updateRun(runId, { autoResumeAttempts: undefined, autoResumeReason: undefined });
         }
         // A nudged turn did NOT park, so it must not report that it did: the handoff file is
         // the rolling context the agent reads back on resume (spec 007), not a log, and an
@@ -5736,7 +5821,8 @@ export class RunManager {
       ? { kind: 'node', node: resumeNode, transitions: [] }
       : enterGraph(graph, loopCounts);
     if (resumeNode) {
-      const why = ctx.usageLimitResume?.id === resumeNode.id ? 'a usage limit' : 'a restart';
+      const why = ctx.usageLimitResume?.id !== resumeNode.id ? 'a restart'
+        : autoResumeReasonFor(ctx.usageLimitResume.error) === 'transient' ? 'a temporary provider failure' : 'a usage limit';
       emit({ type: 'note', message: `resuming the workflow at "${resumeNode.name ?? resumeNode.id}" after ${why}` });
     }
     else record(step.transitions);
@@ -6810,7 +6896,10 @@ export class RunManager {
     // `execute`. Expand before the chain/check/attachment prefixes so the leading slash still
     // matches; a leading `/name` that is not a known skill passes through byte-for-byte.
     userPrompt = expandRegistrySlashSkillText(userPrompt, state.skills ?? []);
-    if (resumeStep) userPrompt = `${AUTO_RESUME_PROMPT}\n\nCurrent task and queued updates:\n\n${userPrompt}`;
+    if (resumeStep) {
+      const resumePrompt = autoResumeReasonFor(resumeStep.error) === 'transient' ? TRANSIENT_RETRY_PROMPT : AUTO_RESUME_PROMPT;
+      userPrompt = `${resumePrompt}\n\nCurrent task and queued updates:\n\n${userPrompt}`;
+    }
     if (chainNote) userPrompt = `${chainNote}\n\n---\n\n${userPrompt}`;
     // A commander recovered after a restart opens its first session holding whatever its children
     // reported while it was gone (spec Q7). Prepended and cleared here, after the slash expansion
@@ -7085,7 +7174,7 @@ export class RunManager {
         }
         // The window is proven open — see the twin in `runContinuation`.
         if (this.store.getRun(runId)?.autoResumeAttempts !== undefined) {
-          this.store.updateRun(runId, { autoResumeAttempts: undefined });
+          this.store.updateRun(runId, { autoResumeAttempts: undefined, autoResumeReason: undefined });
         }
         // Cez's own heartbeat — the handoff stays current even when the
         // agent forgets to write (spec 007).
@@ -7640,6 +7729,7 @@ export class RunManager {
         finishedAt: new Date().toISOString(),
         currentStepId: undefined,
         autoResumeAttempts: undefined,
+        autoResumeReason: undefined,
       });
       this.store.appendEvent(runId, {
         type: 'lifecycle',
@@ -7666,6 +7756,7 @@ export class RunManager {
       // counter starts over — otherwise a task that legitimately met the limit once a week would
       // creep toward the cap forever and stop resuming for no reason anyone could see.
       autoResumeAttempts: undefined,
+      autoResumeReason: undefined,
     });
     this.store.appendEvent(runId, {
       type: 'lifecycle',

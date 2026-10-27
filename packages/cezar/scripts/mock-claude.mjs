@@ -279,6 +279,24 @@ async function respond(userText, imageCount) {
     return;
   }
 
+  // `mock:overloaded` / `mock:credit` → a transient provider failure (76aa46a9) and an account
+  // state one (7d0a1d6d), in the same `is_error` result envelope (core/agent-failure-class.ts).
+  const accountOrProviderError = userText.includes('mock:overloaded')
+    ? 'API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment.'
+    : userText.includes('mock:credit') ? 'Credit balance is too low'
+    : userText.includes('mock:enospc') ? 'ENOSPC: no space left on device, write' : undefined;
+  if (accountOrProviderError) {
+    emit({
+      type: 'result',
+      subtype: 'success',
+      is_error: true,
+      result: accountOrProviderError,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      total_cost_usd: 0,
+    });
+    return;
+  }
+
   // `mock:limit` → the envelope Claude Code emits when the subscription window is
   // exhausted: an `is_error` result whose text is the machine-readable
   // `Claude AI usage limit reached|<epoch seconds>` marker. Makes the auto-resume path

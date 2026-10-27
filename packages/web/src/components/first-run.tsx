@@ -83,7 +83,8 @@ import { cn } from '@/lib/utils'
  * Layout follows a "new project" page: a large light title, one wide input, then sections split
  * by hairlines. Hierarchy comes from size, never from weight.
  */
-export function FirstRun({ gitRepo }: { gitRepo: boolean }) {
+/** `gitRepo` is `undefined` while the project's git state is unknown. */
+export function FirstRun({ gitRepo }: { gitRepo: boolean | undefined }) {
   const providers = useProviderStatus()
   const uiState = useWorkspaceUiState()
   // Provider detection can miss a login that works, so the sign-in page is skippable for good.
@@ -92,6 +93,9 @@ export function FirstRun({ gitRepo }: { gitRepo: boolean }) {
   // than a short blank.
   if (providers.data === undefined && !skipped) return null
   if (hasSignedInAgent(providers.data) === false && !skipped) return <SignInToAgent />
+  // The same for git: a welcome that flips to "pick a project" once `/repo` answers is a flash of
+  // the wrong page.
+  if (gitRepo === undefined) return null
   if (!gitRepo) return <PickProject />
   return <Welcome />
 }
@@ -257,17 +261,19 @@ const GH_INSTALL_URL = 'https://cli.github.com'
 /**
  * Signing the GitHub CLI in, done by cezar (spec 2026-10-26-first-run-onboarding, "Sign in does
  * the work"): the dialog starts `gh auth login` the moment it needs a login, shows the one-time
- * code GitHub asks for, and the browser is already on the page that takes it. GitHub Desktop and
- * the device flow it mirrors — one action, no terminal. `onDone` fires once GitHub approves, so
- * the dialog that owns the sign-in can close itself or carry on.
+ * code GitHub asks for, and — on the machine the user is at — the browser is already on the page
+ * that takes it. GitHub Desktop and the device flow it mirrors: one action, no terminal. `onDone`
+ * fires once GitHub approves, so the dialog that owns the sign-in can close itself or carry on.
  */
-function useGithubSignIn(enabled: boolean, onDone: () => void) {
+function useGithubSignIn(enabled: boolean, onDone: (login: string | undefined) => void) {
   const login = useGithubLogin(onDone)
+  const health = useHealth()
   const begin = login.start.mutate
   React.useEffect(() => {
     if (enabled) begin()
   }, [enabled, begin])
-  return login
+  // A remote cockpit opens nothing on the user's machine: the page is theirs to open.
+  return { ...login, opensBrowser: health.data?.capabilities.localHandoff !== false }
 }
 
 type GithubSignIn = ReturnType<typeof useGithubSignIn>
@@ -275,13 +281,36 @@ type GithubSignIn = ReturnType<typeof useGithubSignIn>
 function githubSignInLine(signIn: GithubSignIn): string {
   const state = signIn.state
   if (signIn.start.error) return signInErrorMissing(signIn.start.error) ? 'The GitHub CLI is not installed.' : 'Sign-in did not finish.'
-  if (state?.status === 'pending') return 'Enter this code on GitHub. It opened in your browser.'
+  if (state?.status === 'pending') return signIn.opensBrowser ? 'Enter this code on GitHub. It opened in your browser.' : 'Open GitHub and enter this code.'
   if (state?.status === 'failed') return 'Sign-in did not finish.'
-  return 'Signing in through your browser.'
+  if (state?.status === 'done') return 'Signed in.'
+  return signIn.opensBrowser ? 'Signing in through your browser.' : 'Getting a code from GitHub.'
 }
 
 function signInErrorMissing(error: Error): boolean {
   return error instanceof ApiError && error.status === 503
+}
+
+/** Copying can fail (no clipboard permission, a remote cockpit over plain http): say what to do. */
+function copyText(text: string, fallback: string) {
+  const write = navigator.clipboard?.writeText(text)
+  if (!write) {
+    toast(fallback)
+    return
+  }
+  void write.then(
+    () => toast('Copied'),
+    () => toast(fallback),
+  )
+}
+
+function SignInProgress({ children }: { children: React.ReactNode }) {
+  return (
+    <p role="status" className="flex items-center gap-2 text-[13px] text-muted-foreground">
+      <LoaderCircleIcon className="size-3.5 animate-spin" aria-hidden="true" />
+      {children}
+    </p>
+  )
 }
 
 function GithubSignInBody({ signIn }: { signIn: GithubSignIn }) {
@@ -300,23 +329,24 @@ function GithubSignInBody({ signIn }: { signIn: GithubSignIn }) {
       )
     }
     return (
-      <p role="alert" className="text-[13px] text-danger">
+      <p role="alert" className="text-[13px] whitespace-pre-line text-danger">
         {signIn.start.error.message}
       </p>
     )
   }
   if (state?.status === 'failed') {
     return (
-      <p role="alert" className="text-[13px] text-danger">
+      <p role="alert" className="text-[13px] whitespace-pre-line text-danger">
         {state.error}
       </p>
     )
   }
+  if (state?.status === 'done') return <SignInProgress>{state.login ? `Signed in as ${state.login}.` : 'Signed in.'}</SignInProgress>
   if (state?.status === 'pending') {
     return (
       <div className="flex flex-col gap-4">
         <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background py-3 pr-2 pl-5">
-          <span data-testid="github-login-code" className="font-mono text-2xl tracking-widest text-foreground">
+          <span data-testid="github-login-code" aria-label="One-time code" className="font-mono text-2xl tracking-widest text-foreground select-all">
             {state.code}
           </span>
           <Button
@@ -324,26 +354,16 @@ function GithubSignInBody({ signIn }: { signIn: GithubSignIn }) {
             size="icon"
             className="size-8 shrink-0"
             aria-label="Copy code"
-            onClick={() => {
-              void navigator.clipboard.writeText(state.code).then(() => toast('Copied'))
-            }}
+            onClick={() => copyText(state.code, 'Select the code and copy it')}
           >
             <CopyIcon aria-hidden="true" />
           </Button>
         </div>
-        <p className="flex items-center gap-2 text-[13px] text-muted-foreground">
-          <LoaderCircleIcon className="size-3.5 animate-spin" aria-hidden="true" />
-          Waiting for GitHub…
-        </p>
+        <SignInProgress>Waiting for GitHub…</SignInProgress>
       </div>
     )
   }
-  return (
-    <p className="flex items-center gap-2 text-[13px] text-muted-foreground">
-      <LoaderCircleIcon className="size-3.5 animate-spin" aria-hidden="true" />
-      Starting…
-    </p>
-  )
+  return <SignInProgress>Starting…</SignInProgress>
 }
 
 /** Cancel while waiting (kills the login), Try again after a failure, and the GitHub page as the
@@ -369,11 +389,11 @@ function GithubSignInFooter({ signIn, onClose }: { signIn: GithubSignIn; onClose
         variant="outline"
         className="font-normal"
         onClick={() => {
-          signIn.cancel.mutate()
+          if (state?.status !== 'done') signIn.cancel.mutate()
           onClose()
         }}
       >
-        Cancel
+        {state?.status === 'done' ? 'Close' : 'Cancel'}
       </Button>
       {state?.status === 'pending' ? (
         <Button asChild className="font-normal">
@@ -390,8 +410,8 @@ function GithubSignInFooter({ signIn, onClose }: { signIn: GithubSignIn; onClose
 function CommandBox({ command }: { command: string }) {
   return (
     <div className="flex items-center gap-3 rounded-lg border border-border bg-background px-3 py-2.5">
-      <code className="min-w-0 flex-1 truncate font-mono text-[13px] text-foreground">
-        <span className="text-soft-foreground">$ </span>
+      <code className="min-w-0 flex-1 truncate font-mono text-[13px] text-foreground select-all">
+        <span className="text-soft-foreground select-none">$ </span>
         {command}
       </code>
       <Button
@@ -399,9 +419,7 @@ function CommandBox({ command }: { command: string }) {
         size="icon"
         className="size-7 shrink-0"
         aria-label={`Copy ${command}`}
-        onClick={() => {
-          void navigator.clipboard.writeText(command).then(() => toast('Copied'))
-        }}
+        onClick={() => copyText(command, 'Select the command and copy it')}
       >
         <CopyIcon aria-hidden="true" />
       </Button>
@@ -743,7 +761,7 @@ function pickSkills<T extends { name: string; source: string }>(skills: readonly
 }
 
 /** Publish a local repository to a new PRIVATE GitHub repository. */
-function PublishGithubDialog({ folder, onOpenChange }: { folder: string; onOpenChange: (open: boolean) => void }) {
+export function PublishGithubDialog({ folder, onOpenChange }: { folder: string; onOpenChange: (open: boolean) => void }) {
   const { projectId } = useProjectScope()
   const owners = useGithubOwners()
   const publish = usePublishProjectGithub()
@@ -766,14 +784,29 @@ function PublishGithubDialog({ folder, onOpenChange }: { folder: string; onOpenC
   const connected = available !== null
   const needsSignIn = !owners.isPending && !connected
   const signIn = useGithubSignIn(needsSignIn, () => void owners.refetch())
+  // `gh` signed in, yet it still lists no account (a token without the scope, GitHub down):
+  // say why instead of spinning on "Signed in." forever.
+  const noOwnersReason =
+    signIn.state?.status === 'done' && !owners.isFetching && owners.data?.available === false ? owners.data.reason : null
   return (
     <OnboardingDialog
       title="Publish to GitHub"
-      description={connected ? 'A new private repository. You can make it public on GitHub later.' : githubSignInLine(signIn)}
+      description={
+        connected ? 'A new private repository. You can make it public on GitHub later.' : noOwnersReason ? 'Signed in, but GitHub listed no accounts.' : githubSignInLine(signIn)
+      }
       onOpenChange={onOpenChange}
       onSubmit={connected ? submit : undefined}
       footer={
-        connected ? (
+        noOwnersReason ? (
+          <>
+            <Button variant="outline" className="font-normal" onClick={() => onOpenChange(false)}>
+              Close
+            </Button>
+            <Button className="font-normal" onClick={() => void owners.refetch()}>
+              Check again
+            </Button>
+          </>
+        ) : connected ? (
           <>
             <Button variant="outline" className="font-normal" onClick={() => onOpenChange(false)}>
               Cancel
@@ -789,6 +822,10 @@ function PublishGithubDialog({ folder, onOpenChange }: { folder: string; onOpenC
     >
       {owners.isPending ? (
         <p className="text-[13px] text-soft-foreground">Checking GitHub…</p>
+      ) : noOwnersReason ? (
+        <p role="alert" className="text-[13px] text-danger">
+          {noOwnersReason}
+        </p>
       ) : !connected ? (
         <GithubSignInBody signIn={signIn} />
       ) : (
@@ -1251,10 +1288,10 @@ function ChoiceTile({
 }
 
 /** Cloning needs a signed-in `gh`. cezar signs it in; the dialog closes itself when GitHub approves. */
-function ConnectGithubDialog({ onOpenChange }: { onOpenChange: (open: boolean) => void }) {
+export function ConnectGithubDialog({ onOpenChange }: { onOpenChange: (open: boolean) => void }) {
   const close = React.useCallback(() => onOpenChange(false), [onOpenChange])
-  const signIn = useGithubSignIn(true, () => {
-    toast('GitHub connected')
+  const signIn = useGithubSignIn(true, (login) => {
+    toast(login ? `GitHub connected as ${login}` : 'GitHub connected')
     close()
   })
   return (
@@ -1285,7 +1322,7 @@ function InitGitDialog({ folder, onOpenChange }: { folder: string; onOpenChange:
   return (
     <OnboardingDialog
       title={`Initialize git in ${folder}`}
-      description="Git keeps a history of your files. cezar runs this for you; nothing is uploaded."
+      description="Git keeps a history of your files. cezar runs this for you and uploads nothing. node_modules and .env files stay out."
       onOpenChange={onOpenChange}
       onSubmit={initialize}
       footer={
@@ -1303,7 +1340,7 @@ function InitGitDialog({ folder, onOpenChange }: { folder: string; onOpenChange:
         {'$ git init -b main\n$ git add -A\n$ git commit -m "Initial commit"'}
       </pre>
       {init.error ? (
-        <p role="alert" className="mt-3 text-xs text-danger">
+        <p role="alert" className="mt-3 text-xs whitespace-pre-line text-danger">
           {init.error.message}
         </p>
       ) : null}

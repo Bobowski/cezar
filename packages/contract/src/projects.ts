@@ -288,7 +288,8 @@ export const githubLoginStateSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('idle') }),
   z.object({ status: z.literal('starting') }),
   z.object({ status: z.literal('pending'), code: z.string(), url: z.string() }),
-  z.object({ status: z.literal('done') }),
+  /** `login` is the GitHub account `gh` reported, when it printed one. */
+  z.object({ status: z.literal('done'), login: z.string().optional() }),
   z.object({ status: z.literal('failed'), error: z.string(), notFound: z.boolean().optional() }),
 ]);
 export type GithubLoginState = z.infer<typeof githubLoginStateSchema>;

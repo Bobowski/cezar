@@ -3869,7 +3869,7 @@ export function createApp(deps: ServerDeps) {
         if (state.notFound) return c.json({ error: GH_LOGIN_MISSING, notFound: true }, 503);
         return c.json({ error: state.error }, 500);
       }
-      if (state.status === 'pending' && githubLoginOpenedFor !== state.code && capabilities().localHandoff) {
+      if (state.status === 'pending' && githubLoginOpenedFor !== state.code && capabilities().localHandoff && process.env.CEZ_DRY_RUN !== '1') {
         githubLoginOpenedFor = state.code;
         void openUrl(state.url);
       }

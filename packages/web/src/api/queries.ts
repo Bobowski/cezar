@@ -129,6 +129,7 @@ import type {
   OpenAgentAccountFileInput,
   ProjectListEntry,
   ProjectsResponse,
+  GithubLoginState,
   GithubRefStatusData,
   ProviderStatusResponse,
   ReferenceStatus,
@@ -955,13 +956,35 @@ export function usePublishProjectGithub() {
  * reads the signed-in state — owners, the GitHub tab, the registry's forge flags, health — and
  * is reported through `onDone` exactly once, so the dialog can close itself.
  */
-export function useGithubLogin(onDone?: () => void) {
+export function useGithubLogin(onDone?: (login: string | undefined) => void) {
   const queryClient = useQueryClient()
   const doneRef = useRef(onDone)
   doneRef.current = onDone
+  // A login THIS hook started. Until it starts, nothing is read: the server keeps answering the
+  // previous login's `done` or `failed`, and a dialog must not close or fail on that before its
+  // own login has even begun. The cache is reset to `starting` the moment it does.
+  const watched = useRef(false)
+  const start = useMutation({
+    mutationFn: startGithubLogin,
+    retry: false,
+    onMutate: () => {
+      watched.current = true
+      queryClient.setQueryData<GithubLoginState>(workspaceQueryKeys.githubLogin, { status: 'starting' })
+    },
+    onSuccess: (state) => queryClient.setQueryData(workspaceQueryKeys.githubLogin, state),
+  })
+  const cancel = useMutation({
+    mutationFn: cancelGithubLogin,
+    retry: false,
+    onMutate: () => {
+      watched.current = false
+    },
+    onSuccess: (state) => queryClient.setQueryData(workspaceQueryKeys.githubLogin, state),
+  })
   const query = useQuery({
     queryKey: workspaceQueryKeys.githubLogin,
     queryFn: ({ signal }) => getGithubLogin({ signal }),
+    enabled: start.isSuccess,
     refetchInterval: (state) => {
       const status = state.state.data?.status
       return status === 'pending' || status === 'starting' ? 2_000 : false
@@ -969,22 +992,10 @@ export function useGithubLogin(onDone?: () => void) {
     staleTime: 0,
     retry: false,
   })
-  const start = useMutation({
-    mutationFn: startGithubLogin,
-    retry: false,
-    onSuccess: (state) => queryClient.setQueryData(workspaceQueryKeys.githubLogin, state),
-  })
-  const cancel = useMutation({
-    mutationFn: cancelGithubLogin,
-    retry: false,
-    onSuccess: (state) => queryClient.setQueryData(workspaceQueryKeys.githubLogin, state),
-  })
-  const status = query.data?.status
-  // Only a login THIS hook watched counts: the server keeps answering `done` after a sign-in, and
-  // a dialog opened later must not close on that stale answer before it even started.
-  const watched = useRef(false)
+  const state = watched.current || start.isPending || start.isSuccess ? query.data : undefined
+  const status = state?.status
+  const login = state?.status === 'done' ? state.login : undefined
   useEffect(() => {
-    if (status === 'pending' || status === 'starting') watched.current = true
     if (status !== 'done' || !watched.current) return
     watched.current = false
     void Promise.all([
@@ -994,9 +1005,9 @@ export function useGithubLogin(onDone?: () => void) {
       queryClient.invalidateQueries({ queryKey: queryKeys.repo }),
       queryClient.invalidateQueries({ queryKey: queryKeys.health }),
     ])
-    doneRef.current?.()
-  }, [status, queryClient])
-  return { state: query.data, start, cancel }
+    doneRef.current?.(login)
+  }, [status, login, queryClient])
+  return { state, start, cancel }
 }
 
 /** The GitHub accounts (login + orgs) a new repo may belong to. Cached for the session: org

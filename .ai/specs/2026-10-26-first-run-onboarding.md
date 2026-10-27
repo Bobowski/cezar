@@ -120,8 +120,13 @@ under `CEZ_SINGLE_PROJECT=1`, like `fs/browse`.
 are committed rather than left untracked because a task worktree branches from HEAD: an empty
 initial commit would hand every agent an empty tree. No remote, nothing pushed. 409 when the
 folder already has `.git`; when the commit fails (typically no git identity) the `.git` this call
-created is removed, so a retry starts clean. The cockpit's dialog shows the three commands before
-running them.
+created is removed, so a retry starts clean. A folder with no `.gitignore` gets a short one first
+(`node_modules/`, `.env`, `.env.*` except `.env.example`, `.DS_Store`, `*.log`): the first commit
+takes every file, and on the way to Publish to GitHub installed dependencies and secrets must not
+be among them. A missing git identity is answered with the two `git config` commands to run. A
+home folder, a guarded folder directly in it (Documents, Desktop…), a parent of home and a disk
+root are refused with 409, because `git add -A` there would sweep up everything the user owns.
+The cockpit's dialog shows the three commands before running them.
 
 The next task picks the repository up without a restart: run start re-reads `getRepoInfo`, and
 the cockpit invalidates the registry, `repo` and `health` queries on success.
@@ -136,16 +141,25 @@ opened in the host's default browser once per code, in local mode only. `GET` is
 dialog polls: `idle`, `starting`, `pending`, `done` (exit 0; the GitHub list and project-probe
 caches are dropped so the next read sees the sign-in), `failed {error, notFound?}` (`gh`'s last
 line). `DELETE` kills the process. A second `POST` while one is pending answers the same code; a
-`POST` after `done` or `failed` starts a new login. Without `gh`: `503 {error, notFound: true}`;
-no code within 20 s: `500`. `CEZ_DRY_RUN=1` gets a fake code that approves itself after 6 s.
+`POST` after `done` or `failed` starts a new login, unless `gh auth status` already reports
+github.com signed in, which answers `done` at once. `done` carries the `login` `gh` printed.
+Without `gh`: `503 {error, notFound: true}`; no code within 20 s: `500`. Failures are put in
+plain words: an expired code, a refusal on GitHub, no network, and a `GH_TOKEN` in cezar's
+environment (which `gh` always prefers, so a login cannot replace it). A cancel while the start
+is still waiting for its code ends that request too, and a login left waiting is killed when
+cezar exits. In a remote cockpit nothing is opened on the host and the dialog says to open
+GitHub. `CEZ_DRY_RUN=1` gets a fake code that approves itself after 6 s and opens no browser.
 
 ### `POST /api/v1/projects/:projectId/publish-github`
 
 Body `{owner, name}`. Requires a committed repository with no remote (409 otherwise).
 `gh repo create <owner>/<name> --private`, then the HTTPS `origin` and the persisted `gh`
 credential helper exactly as `projects/create` (#968), then `git push -u origin <branch>`. Always
-private — no visibility field, and one must never be added. 503 without `gh`; a failure after the
-GitHub repository exists says so and never deletes it.
+private — no visibility field, and one must never be added. 503 without `gh`; 409 with "<owner>/<name>
+already exists on GitHub. Pick another name." when the name is taken; a failure after the GitHub
+repository exists says so and never deletes it. When `gh` is not signed in, the Publish dialog runs
+the same device-flow sign-in first; if `gh` signs in yet lists no account, it shows why and offers
+Check again instead of waiting forever.
 
 ## Coming back
 

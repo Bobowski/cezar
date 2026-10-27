@@ -1660,7 +1660,9 @@ export function TasksOverviewRoute() {
         onOriginChange={setOrigin}
         gitRepo={gitRepo}
         automationNames={automationNames}
-        firstRun={view === 'active' ? <FirstRun gitRepo={gitRepo} /> : undefined}
+        // The first run waits for the git answer (a failed read falls back to "git", like the
+        // table does) instead of guessing, so it never shows the welcome page to a plain folder.
+        firstRun={view === 'active' ? <FirstRun gitRepo={repo.data ? repo.data.info !== null : repo.isError ? true : undefined} /> : undefined}
         setupPill={view === 'active' ? <SetupPill /> : undefined}
         welcomeBack={view === 'active' ? <WelcomeBack runs={runs.data ?? NO_RUNS} /> : undefined}
       />

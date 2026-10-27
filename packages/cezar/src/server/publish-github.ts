@@ -39,7 +39,8 @@ export async function publishToGithub(opts: {
 
   const slug = `${owner}/${name}`;
   const run = opts.run ?? (process.env.CEZ_DRY_RUN === '1' ? dryRunCommandRunner : spawnCommandRunner);
-  const exec = async (cmd: 'git' | 'gh', args: string[]): Promise<CommandResult> => {
+  // Every call goes through the shared runner, which gives `gh` its `ghEnv` environment.
+  const exec = async (cmd: Parameters<CommandRunner>[0], args: string[]): Promise<CommandResult> => {
     try {
       return await run(cmd, args, { cwd: info.root, signal: opts.signal });
     } catch (err) {
@@ -55,6 +56,9 @@ export async function publishToGithub(opts: {
   const repo = await exec('gh', ['repo', 'create', slug, '--private']);
   if (!repo.ok) {
     if (repo.notFound) return { ok: false, status: 503, error: GH_MISSING };
+    if (/already exists/i.test(repo.error)) {
+      return { ok: false, status: 409, error: `${slug} already exists on GitHub. Pick another name.` };
+    }
     return { ok: false, status: 500, error: firstLine(repo.error) };
   }
   const remoteUrl = `https://github.com/${slug}.git`;

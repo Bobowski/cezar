@@ -69,6 +69,17 @@ describe('publishToGithub', () => {
     expect(result).toEqual({ ok: false, status: 500, error: 'remote rejected\n(the private repository zielivia/app was created on GitHub)' });
   });
 
+  it('says plainly when the name is taken on GitHub, and adds no remote', async () => {
+    const result = await publishToGithub({
+      root,
+      owner: 'zielivia',
+      name: 'app',
+      run: runner((cmd) => (cmd === 'gh' ? { ok: false, error: 'GraphQL: Name already exists on this account (createRepository)' } : undefined)),
+    });
+    expect(result).toEqual({ ok: false, status: 409, error: 'zielivia/app already exists on GitHub. Pick another name.' });
+    expect(execFileSync('git', ['remote'], { cwd: root, encoding: 'utf8' }).trim()).toBe('');
+  });
+
   it('validates the owner before running anything', async () => {
     expect(await publishToGithub({ root, owner: '-bad', name: 'app', run: runner() })).toMatchObject({ ok: false, status: 400 });
     expect(calls).toEqual([]);

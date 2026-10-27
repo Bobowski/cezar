@@ -7,6 +7,12 @@ import { mergeRun } from './events'
 import {
   ApiError,
   browseFs,
+  cancelGithubLogin,
+  getGithubLogin,
+  getRepoSuggestions,
+  initProjectGit,
+  publishProjectGithub,
+  startGithubLogin,
   checkoutProject,
   createProject,
   getGithubOwners,
@@ -425,6 +431,10 @@ export const workspaceQueryKeys = {
   projects: ['workspace', 'projects'] as const,
   /** `GET /api/projects/github-owners` — the new-project dialog's owner picker. */
   githubOwners: ['workspace', 'github-owners'] as const,
+  /** `POST/GET/DELETE /api/v1/github/login` — the device flow cezar runs for the user. */
+  githubLogin: ['workspace', 'github-login'] as const,
+  /** `GET /api/v1/fs/repos` — the first-run "Pick a project" list. */
+  repoSuggestions: ['workspace', 'repo-suggestions'] as const,
   /** The cross-project task index behind ⌘K. Workspace-led for the same reason the registry is:
    *  it answers for every project at once, so no scope owns it. */
   runsIndex: ['workspace', 'runs-index'] as const,
@@ -889,6 +899,104 @@ export function useCreateProject() {
     retry: false,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.projects }),
   })
+}
+
+/** Repositories the first-run "Pick a project" list offers (spec 2026-10-26-first-run-onboarding).
+ *  Asked only while that screen is up; the list does not change while it is open. */
+export function useRepoSuggestions(enabled = true) {
+  return useQuery({
+    queryKey: workspaceQueryKeys.repoSuggestions,
+    queryFn: ({ signal }) => getRepoSuggestions({ signal }),
+    enabled,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+/** "Initialize git here". A git init changes what the project IS, so every reader of its git
+ *  state — the registry status, the scoped repo info, health — is refetched. No retry: a second
+ *  attempt would only meet the 409 the first one caused. */
+export function useInitProjectGit() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (projectId: string) => initProjectGit(projectId),
+    retry: false,
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.projects }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.repo }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.health }),
+      ]),
+  })
+}
+
+/** "Publish to GitHub". The project gains a GitHub remote, so the registry (forge), the scoped repo
+ *  info (remote) and health (forge availability) are refetched. No retry: a second attempt would
+ *  try to create the GitHub repository twice. */
+export function usePublishProjectGithub() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ projectId, owner, name }: { projectId: string; owner: string; name: string }) =>
+      publishProjectGithub(projectId, { owner, name }),
+    retry: false,
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.projects }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.repo }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.health }),
+      ]),
+  })
+}
+
+/**
+ * The GitHub sign-in cezar runs (spec 2026-10-26-first-run-onboarding, "Sign in does the work").
+ * `start` resolves with the one-time code; the query then polls every two seconds while `gh`
+ * waits for GitHub, and stops on `done`, `failed` or `idle`. `done` refetches everything that
+ * reads the signed-in state — owners, the GitHub tab, the registry's forge flags, health — and
+ * is reported through `onDone` exactly once, so the dialog can close itself.
+ */
+export function useGithubLogin(onDone?: () => void) {
+  const queryClient = useQueryClient()
+  const doneRef = useRef(onDone)
+  doneRef.current = onDone
+  const query = useQuery({
+    queryKey: workspaceQueryKeys.githubLogin,
+    queryFn: ({ signal }) => getGithubLogin({ signal }),
+    refetchInterval: (state) => {
+      const status = state.state.data?.status
+      return status === 'pending' || status === 'starting' ? 2_000 : false
+    },
+    staleTime: 0,
+    retry: false,
+  })
+  const start = useMutation({
+    mutationFn: startGithubLogin,
+    retry: false,
+    onSuccess: (state) => queryClient.setQueryData(workspaceQueryKeys.githubLogin, state),
+  })
+  const cancel = useMutation({
+    mutationFn: cancelGithubLogin,
+    retry: false,
+    onSuccess: (state) => queryClient.setQueryData(workspaceQueryKeys.githubLogin, state),
+  })
+  const status = query.data?.status
+  // Only a login THIS hook watched counts: the server keeps answering `done` after a sign-in, and
+  // a dialog opened later must not close on that stale answer before it even started.
+  const watched = useRef(false)
+  useEffect(() => {
+    if (status === 'pending' || status === 'starting') watched.current = true
+    if (status !== 'done' || !watched.current) return
+    watched.current = false
+    void Promise.all([
+      queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.githubOwners }),
+      queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.projects }),
+      queryClient.invalidateQueries({ queryKey: [queryScope(), 'github'] }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.repo }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.health }),
+    ])
+    doneRef.current?.()
+  }, [status, queryClient])
+  return { state: query.data, start, cancel }
 }
 
 /** The GitHub accounts (login + orgs) a new repo may belong to. Cached for the session: org

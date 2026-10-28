@@ -1,8 +1,9 @@
 import { constants, closeSync, fstatSync, linkSync, openSync, readFileSync, renameSync, unlinkSync } from 'node:fs';
 import { open, readdir, rm } from 'node:fs/promises';
+import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { isProcessIdentityAlive, ownHostedProcessIdentity } from './process-identity.ts';
+import { bootIsStableId, ownProcessIdentity, processStarts } from './process-identity.ts';
 import { statePath, syncDirectory } from './storage.ts';
 
 const identitySchema = z.strictObject({
@@ -17,9 +18,9 @@ const identitySchema = z.strictObject({
 const MAX_OWNER_BYTES = 32 * 1024;
 export type OwnershipIdentity = z.infer<typeof identitySchema>;
 async function ownIdentity(directory: string): Promise<Identity> {
-  const own = await ownHostedProcessIdentity();
+  const own = await ownProcessIdentity();
   const namespace = own.pidNamespace === undefined ? {} : { pidNamespace: own.pidNamespace };
-  const fields = { token: randomUUID(), directory, pid: own.pid, start: own.start, boot: own.boot, host: own.host };
+  const fields = { token: randomUUID(), directory, pid: own.pid, start: own.start, boot: own.boot, host: hostname() };
   return identitySchema.parse({ ...fields, ...namespace });
 }
 type Identity = OwnershipIdentity;
@@ -50,8 +51,29 @@ function readIdentity(directory: string, name: string, unpublished = false): Ide
 export function readOwnershipIdentity(directory: string): OwnershipIdentity | undefined {
   return readIdentity(directory, 'owner.lock');
 }
+/** An owner whose pid this process cannot see; it is never declared dead, only left alone. */
+class ForeignOwnerError extends Error {
+  constructor() { super('Cannot verify foreign owner identity'); }
+}
 async function alive(identity: Identity, own: Identity): Promise<boolean> {
-  return isProcessIdentityAlive(identity, own);
+  if (identity.host !== own.host) throw new ForeignOwnerError();
+  // Only two random boot IDs prove a reboot. The Windows token is a boot INSTANT that moves when the
+  // clock is set, so there a mismatch falls through to pid + start: its start ticks are absolute
+  // creation times, valid across boots. A Linux start token counts jiffies since boot, so it must not
+  // be compared across boots — and Linux always has a stable boot ID, so it never gets that far.
+  if (identity.boot !== own.boot && bootIsStableId(identity.boot) && bootIsStableId(own.boot)) return false;
+  // Same kernel, so /proc answers only for our own PID namespace (a `--network host` container shares
+  // the hostname and boot_id): a foreign namespace's pid reads ENOENT while its owner lives.
+  if (identity.pidNamespace !== own.pidNamespace) {
+    // An identity written before the field existed (or by a namespace-less platform under the same
+    // hostname) may live anywhere. Its exact pid+start showing up here is a positive sighting and keeps
+    // it alive; anything else is unverifiable, never absent. A live legacy owner keeps the fence, a dead
+    // one waits for a reboot or a manual owner.lock removal — the price of never stealing a live lock.
+    if (identity.pidNamespace === undefined && (await processStarts([identity.pid])).get(identity.pid) === identity.start) return true;
+    throw new ForeignOwnerError();
+  }
+  // A probe failure throws (fail closed): an unverifiable owner is never declared dead.
+  return (await processStarts([identity.pid])).get(identity.pid) === identity.start;
 }
 export interface WebhookOwnership {
   valid(): boolean;

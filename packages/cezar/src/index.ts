@@ -312,6 +312,16 @@ async function serveCommand(
         await joinRunningCockpit(discovered.runtime);
         return;
       }
+      // A published record means this exact installed-service slot has an owner. If that owner is
+      // live but its endpoint cannot be authenticated, silently falling through would start a
+      // second cockpit with the same schedulers and registry. Only a missing record (older/stopped
+      // service) or a provably dead exact process identity is safe to ignore here.
+      if (discovered.kind === 'unavailable') {
+        throw new Error(
+          `the default installed cockpit is running, but it cannot be safely reached (${discovered.reason}). ` +
+          'Stop or restart that service; cezar will not launch a duplicate.',
+        );
+      }
     }
   }
 

@@ -44,7 +44,7 @@ Make a normal `cezar serve` invocation reuse a verified compatible cockpit, regi
 - [x] 10. Pin default, flag, remote, installed, supervisor, and named-slot modes.
 - [x] 11. Document the new recommended default and disposable runtime state.
 - [x] 12. Add cross-process/package integration coverage.
-- [ ] 13. Run the full validation gate and record platform limits.
+- [x] 13. Run the full validation gate and record platform limits.
 
 ## Verification
 
@@ -55,4 +55,8 @@ Make a normal `cezar serve` invocation reuse a verified compatible cockpit, regi
 - `npm run test:unit`
 - `npm run build`
 - `npm run test:package`
+
+All five commands passed on Linux. The shared process-identity suite pins the macOS and Windows
+parsers and fail-closed decisions without claiming an end-to-end launch on those hosts; native
+cross-process singleton coverage in this run is Linux-only.
 

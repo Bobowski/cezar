@@ -32,17 +32,17 @@ Make a normal `cezar serve` invocation reuse a verified compatible cockpit, regi
 
 ## Progress
 
-- [ ] 1. Generalize OS process identity into a neutral runtime module.
-- [ ] 2. Add bounded cockpit runtime paths, records, and atomic storage.
-- [ ] 3. Generalize and verify the recoverable slot lease.
-- [ ] 4. Expose a stable `runtimeId` through the health contract and topic.
-- [ ] 5. Acquire ownership before boot and publish/clean runtime state.
-- [ ] 6. Add serve-specific unconditional launch-project registration.
-- [ ] 7. Implement verified incumbent discovery with bounded health checks.
-- [ ] 8. Implement idempotent project handoff and scoped URL output.
-- [ ] 9. Route `serveCommand` before all server-only initialization.
+- [x] 1. Generalize OS process identity into a neutral runtime module.
+- [x] 2. Add bounded cockpit runtime paths, records, and atomic storage.
+- [x] 3. Generalize and verify the recoverable slot lease.
+- [x] 4. Expose a stable `runtimeId` through the health contract and topic.
+- [x] 5. Acquire ownership before boot and publish/clean runtime state.
+- [x] 6. Add serve-specific unconditional launch-project registration.
+- [x] 7. Implement verified incumbent discovery with bounded health checks.
+- [x] 8. Implement idempotent project handoff and scoped URL output.
+- [x] 9. Route `serveCommand` before all server-only initialization.
 - [ ] 10. Pin default, flag, remote, installed, supervisor, and named-slot modes.
-- [ ] 11. Document the new recommended default and disposable runtime state.
+- [x] 11. Document the new recommended default and disposable runtime state.
 - [ ] 12. Add cross-process/package integration coverage.
 - [ ] 13. Run the full validation gate and record platform limits.
 

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 
 import {
   AI_GATEWAY_MAX_RECORDS,
@@ -20,7 +21,9 @@ import {
   type CreateAiGateway,
   type UpdateAiGateway,
 } from '@open-mercato/cezar-contract';
+import { cezarHomeDir } from '../paths.ts';
 import { loadWorkspaceConfig, mergeWriteWorkspaceConfig, type WorkspaceConfig } from './config.ts';
+import { FILE_LOCK_TIMEOUT_MS, withFileLock } from './file-lock.ts';
 import { SecretStore } from './secrets.ts';
 
 const WORKSPACE = { kind: 'workspace' } as const;
@@ -115,14 +118,35 @@ function sameRecord(left: AiGateway, right: AiGateway): boolean {
  * a key update that did not land in both places.
  */
 export class AiGateways {
-  constructor(private readonly secrets = new SecretStore()) {}
+  constructor(
+    private readonly secrets = new SecretStore(),
+    private readonly lockTimeoutMs = FILE_LOCK_TIMEOUT_MS,
+  ) {}
 
   async list(): Promise<AiGatewaysResponse> {
-    await this.ensureSeed();
-    return this.read();
+    return this.exclusive(async () => {
+      await this.ensureSeed();
+      return this.read();
+    });
   }
 
   async create(input: unknown): Promise<AiGatewayView> {
+    return this.exclusive(() => this.createUnlocked(input));
+  }
+
+  async update(id: string, input: unknown): Promise<AiGatewayView> {
+    return this.exclusive(() => this.updateUnlocked(id, input));
+  }
+
+  async remove(id: string): Promise<void> {
+    return this.exclusive(() => this.removeUnlocked(id));
+  }
+
+  private exclusive<T>(action: () => Promise<T>): Promise<T> {
+    return withFileLock(join(cezarHomeDir(), 'ai-gateways.lock'), action, this.lockTimeoutMs);
+  }
+
+  private async createUnlocked(input: unknown): Promise<AiGatewayView> {
     const parsed = createAiGatewaySchema.safeParse(normalizeBody(input));
     if (!parsed.success) throw invalidInput('Gateway settings are invalid. Check the name, API base URL, protocols and key.');
     await this.ensureSeed();
@@ -145,7 +169,7 @@ export class AiGateways {
     return toView(record, parsed.data.apiKey !== undefined);
   }
 
-  async update(id: string, input: unknown): Promise<AiGatewayView> {
+  private async updateUnlocked(id: string, input: unknown): Promise<AiGatewayView> {
     if (!zUuid(id)) throw new AiGatewayError('That AI gateway was not found.', 'not_found');
     const parsed = updateAiGatewaySchema.safeParse(normalizeBody(input));
     if (!parsed.success) throw invalidInput('Gateway settings are invalid. Check the name, API base URL, protocols and key.');
@@ -182,7 +206,7 @@ export class AiGateways {
     return toView(next, keyChanges.readable);
   }
 
-  async remove(id: string): Promise<void> {
+  private async removeUnlocked(id: string): Promise<void> {
     if (!zUuid(id)) throw new AiGatewayError('That AI gateway was not found.', 'not_found');
     let removed = false;
     await mergeWriteWorkspaceConfig((config) => {

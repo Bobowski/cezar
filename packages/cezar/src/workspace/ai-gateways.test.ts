@@ -1,10 +1,12 @@
-import { rm, readFile, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AI_GATEWAY_SEED_KEY, aiGatewaySecretName } from '@open-mercato/cezar-contract';
 import { cezarHomeDir, workspaceConfigPath } from '../paths.ts';
 import { loadWorkspaceConfig, mergeWriteWorkspaceConfig, workspaceConfigBackupPath } from './config.ts';
 import { AiGatewayError, AiGateways } from './ai-gateways.ts';
+import { FileLockTimeoutError } from './file-lock.ts';
 import { SecretStore } from './secrets.ts';
 
 const auth = {
@@ -24,11 +26,19 @@ function gateways(): AiGateways {
   return new AiGateways(new SecretStore(process.env, { keychain: async () => null }));
 }
 
+const children: Array<{ kill: (signal?: NodeJS.Signals) => boolean }> = [];
+
 describe('AI gateways store', () => {
   beforeEach(async () => {
     await rm(workspaceConfigPath(), { force: true });
     await rm(workspaceConfigBackupPath(), { force: true });
+    await rm(`${workspaceConfigPath()}.lock`, { recursive: true, force: true });
+    await rm(join(cezarHomeDir(), 'ai-gateways.lock'), { recursive: true, force: true });
     await rm(join(cezarHomeDir(), 'secrets'), { recursive: true, force: true });
+  });
+
+  afterEach(() => {
+    for (const child of children.splice(0)) child.kill('SIGKILL');
   });
 
   it('seeds one disabled OpenRouter and does not recreate it after deletion', async () => {
@@ -144,6 +154,17 @@ describe('AI gateways store', () => {
       .rejects.toMatchObject({ code: 'unavailable' });
     await store.remove('550e8400-e29b-41d4-a716-446655440001');
     expect((await store.list()).unavailable).toEqual([]);
+  });
+
+  it('waits on the gateway lock instead of seeding under another owner', async () => {
+    const lock = join(cezarHomeDir(), 'ai-gateways.lock');
+    const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30_000)'], { stdio: 'ignore' });
+    children.push(child);
+    await mkdir(lock, { mode: 0o700 });
+    await writeFile(join(lock, String(child.pid)), '');
+    const store = new AiGateways(new SecretStore(process.env, { keychain: async () => null }), 80);
+    await expect(store.list()).rejects.toBeInstanceOf(FileLockTimeoutError);
+    expect((await loadWorkspaceConfig()).aiGatewaysSeeded).toBeUndefined();
   });
 
   it('refuses to enable a gateway that has no key', async () => {

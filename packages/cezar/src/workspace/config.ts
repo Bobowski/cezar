@@ -9,6 +9,7 @@ import { readFileWithRetry, renameSyncWithRetry, renameWithRetry } from '../fs-r
 import { PROJECT_TAGS_MAX, PROJECT_TAG_MAX_LENGTH } from '@open-mercato/cezar-contract';
 import { PROVIDER_IDS, type ProviderId } from '../core/provider-auth.ts';
 import { assertCezarHomeWriteIsSandboxed, isAbsolutePath, workspaceConfigPath } from '../paths.ts';
+import { withFileLock } from './file-lock.ts';
 
 /**
  * `~/.cezar/config.json` — the per-user workspace config + project registry
@@ -545,9 +546,11 @@ export function serializedByPath<T>(path: string, task: () => Promise<T>): Promi
  */
 export async function mergeWriteWorkspaceConfig(
   mutator: (config: WorkspaceConfig) => WorkspaceConfig | void,
+  options?: { lockTimeoutMs?: number },
 ): Promise<WorkspaceConfig> {
   const path = workspaceConfigPath();
-  return serializedByPath(path, async () => {
+  // Readers stay lock-free so a read-only home can still boot. Writers wait, then throw.
+  return serializedByPath(path, () => withFileLock(`${path}.lock`, async () => {
     const current = await readWorkspaceConfig(path, true);
     const next = mutator(current) ?? current;
     await atomicWriteJson(path, next);
@@ -564,5 +567,5 @@ export async function mergeWriteWorkspaceConfig(
       // failed snapshot must never turn a successful write into an error.
     }
     return next;
-  });
+  }, options?.lockTimeoutMs));
 }

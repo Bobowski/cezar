@@ -58,7 +58,7 @@ An operator can configure AI gateways once, pick a per-agent default, and start 
 
 ### Phase 3: Defaults and task binding
 
-- [ ] 3.1 Add per-runner default gateway choice and the shared resolver
+- [x] 3.1 Add per-runner default gateway choice and the shared resolver — 2bccc428251a0eb0f9780bf6d7c91b7e93368c8d
 - [ ] 3.2 Persist resolved bindings and reject unsafe launches before any agent process
 - [ ] 3.3 Show Default AI gateway in agent settings and the New Task / Continue choices
 - [ ] 3.4 Keep continue, recovery, dispatch, naming and terminal on the saved binding

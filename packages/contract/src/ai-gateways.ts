@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import type { Runner } from './health.ts';
-import { secretNameIssue, secretValueIssue } from './secrets.ts';
+import { secretKeyBackendSchema, secretNameIssue, secretValueIssue } from './secrets.ts';
 
 /**
  * AI gateways (spec `.ai/specs/2026-10-28-app-spec-ai-gateways.md`).
@@ -92,6 +92,15 @@ export const aiGatewayViewSchema = aiGatewaySchema.extend({
   hasApiKey: z.boolean(),
 });
 export type AiGatewayView = z.infer<typeof aiGatewayViewSchema>;
+
+export const aiGatewaysResponseSchema = z.object({
+  gateways: z.array(aiGatewayViewSchema),
+  unavailable: z.array(z.object({ id: z.string().uuid() }).strict()),
+  keyBackend: secretKeyBackendSchema,
+  secretsSkipped: z.string().optional(),
+  registryError: z.string().optional(),
+});
+export type AiGatewaysResponse = z.infer<typeof aiGatewaysResponseSchema>;
 
 export const createAiGatewaySchema = z
   .object({

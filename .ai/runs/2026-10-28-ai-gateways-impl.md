@@ -49,7 +49,7 @@ An operator can configure AI gateways once, pick a per-agent default, and start 
 - [x] 1.2 Persist gateways in workspace config with one-time OpenRouter seed and SecretStore keys — 0c5a206b6c485788d2121c87b579f4bf2ff6bcf4
 - [x] 1.3 Add cross-process workspace-file lock and gateway coordinator — 9abe5d8be24e0696cd06da3c3778f209b3eab576
 - [x] 1.4 Add pendingWrite checkpoint, secret barrier, and coherent snapshots on every mutation — 5bc966ee30ae05a40c0888cb61842d57e4f85c2c
-- [ ] 1.5 Add chained HTTP routes for list/create/update/enable/remove with contract parity
+- [x] 1.5 Add chained HTTP routes for list/create/update/enable/remove with contract parity — 05f264969f438a9a8f075972a9864e70f70c696e
 
 ### Phase 2: Settings UI
 

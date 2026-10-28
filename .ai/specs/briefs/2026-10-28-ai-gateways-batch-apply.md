@@ -16,11 +16,11 @@ Sandbox provisioning should configure several AI gateways with one explicit oper
 
 Extend the existing specification's provisioning workflow, contracts, work breakdown and acceptance criteria. Keep this within the AI Gateways feature; do not create a duplicate feature specification or start implementation from this brief.
 
-Provide an explicit, server-independent batch apply operation using the same workspace and secret storage as cockpit configuration. Both a JSON file and stdin are required. Proposed command spelling, to finalize in the specification:
+Provide an explicit, server-independent batch apply operation using the same workspace and secret storage as cockpit configuration. Both a JSON file and stdin are required. Canonical public command spelling, confirmed by the owner:
 
 ```sh
-cezar llm-providers apply --file gateways.json
-./generate-gateways-config | cezar llm-providers apply --file -
+cezar ai-gateways apply --file gateways.json
+./generate-gateways-config | cezar ai-gateways apply --file -
 ```
 
 Both sources use one input schema and identical validation and update semantics. Stdin requires no intermediate input file. Read and validate the complete document before beginning mutations; do not echo the document or credentials in output or validation errors.
@@ -36,6 +36,7 @@ Alternatives considered: automatic import at server startup, and building nothin
 | Question | Answer (from the conversation) |
 |----------|--------------------------------|
 | When is configuration applied? | Explicit CLI invocation during sandbox provisioning, not automatic startup import. |
+| What is the public CLI name? | `ai-gateways`; no `llm-providers` or singular compatibility aliases. The owner confirmed the feature is not implemented. |
 | Is an input file mandatory? | No. Support both a JSON file and JSON through stdin. |
 | What is the batch scope? | Gateway configuration only, including credentials and ON/OFF. No per-agent default assignment. |
 | What concrete use case must work? | Update the seeded OpenRouter URL and add a second provider in one invocation. |
@@ -58,6 +59,7 @@ Alternatives considered: automatic import at server startup, and building nothin
 - Automatic configuration import or reconciliation on server startup.
 - Removing gateways omitted from the input, pruning, or a new deletion interface.
 - A required config file, a new secret vault, cloud deployment manifests, proxying or provider failover.
+- Compatibility aliases, input adapters or legacy-provider migrations for the unshipped reference design.
 - Live provider validation or billable requests during apply.
 - Implementing code, publishing changes or editing PR #1730 during this brainstorm.
 

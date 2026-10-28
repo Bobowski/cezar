@@ -16,7 +16,7 @@ Source: reference implementation `544d0c76` and AGENTS.md; `.ai/agentic.config.j
 | Surface | Global settings shell / provider form | Reuse components; move provider form to dedicated page | `packages/web/src/routes/settings/settings-shell.tsx`, `llm-provider-settings.tsx` in same directory |
 | UI components | Input, Label, Select, Button, Switch | Existing house components, no new UI library | `packages/web/src/components/ui/` |
 | Composition | New Task and Continue connection/model pickers | Extend inherited/native/explicit semantics | `packages/web/src/routes/new-task.tsx`, `packages/web/src/routes/task-thread/follow-up-engine.tsx` |
-| CLI | llm-providers list/add/remove/models/exec | Server-independent reference store; add file/stdin batch apply and results/retry; keep separate update/default assignment | `packages/cezar/src/workspace/llm-providers-cli.ts` |
+| CLI | Reference list/add/remove/models/exec operations | Implement public `ai-gateways` only, with file/stdin batch apply and results/retry; separate update/default assignment; no old-name alias | `packages/cezar/src/workspace/llm-providers-cli.ts` |
 | Events/cache | Existing run events and TanStack Query invalidation | Reuse; no new global polling/notification mechanism | `packages/web/src/api/llm-providers.ts`, `packages/cezar/src/runs/store.ts` |
 | Restriction | Gateway tasks cannot defer start | Preserve after inheritance resolves | `packages/cezar/src/automations/deferred-start.ts` |
 
@@ -38,3 +38,5 @@ Baseline behavior: `.ai/specs/2026-10-27-llm-provider-connections.md`, `docs/ref
 Read local `config.ts` (`serializedByPath`, `mergeWriteWorkspaceConfig`), `secrets.ts` (`set`, `update`, `locked`) and migrations. Workspace writes serialize within a process and atomically replace one file; SecretStore separately uses a cross-process lock. Neither supplies a transaction over both stores. The amendment chooses a durable pending marker plus coordinated snapshots, preserving the existing vault format. Cross-process workspace coordination is required for unrelated writers too.
 
 Reference `544d0c76` source confirms protocol spellings, the 100-provider cap, UUID-derived secret slot names and standalone CLI/stdin handling. These remain reference evidence, not features shipped on this checkout. [kubectl apply](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_apply/) and [Terraform apply errors](https://developer.hashicorp.com/terraform/tutorials/cli/apply) informed explicit stdin and partial-progress/retry conventions only. No live gateway calls or runtime tests were performed for this catalog update.
+
+Naming decision: the owner confirmed the feature has no implementation to preserve. `llm-providers` file paths and earlier source names above identify reference material only; the planned public CLI is `ai-gateways`, with no compatibility alias, old-input serializer or legacy-provider migration.

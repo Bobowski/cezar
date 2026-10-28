@@ -2,12 +2,12 @@
 
 Date: 2026-10-28
 Status: Draft for owner review; documentation only, not authorization to implement.
-Scope: evolution of Cezar's existing LLM provider connections, not a new application.
+Scope: AI Gateways in the existing Cezar application; the earlier LLM provider design is unshipped reference material.
 Reference design: [LLM provider connections from the earlier proposal](https://github.com/open-mercato/cezar/blob/544d0c76/.ai/specs/2026-10-27-llm-provider-connections.md).
 
 ## TLDR — sandbox provisioning amendment
 
-Add explicit, server-independent `llm-providers apply --file <path|->` for a JSON batch of gateway configurations. One invocation updates the ordinary OpenRouter seed and creates another gateway; repeated invocations preserve their identities. File and stdin use the same contract, with no intermediate file required for stdin. Agent-default assignments remain separate.
+Add explicit, server-independent `ai-gateways apply --file <path|->` for a JSON batch of gateway configurations. One invocation updates the ordinary OpenRouter seed and creates another gateway; repeated invocations preserve their identities. File and stdin use the same contract, with no intermediate file required for stdin. Agent-default assignments remain separate.
 
 The owner accepted **preserve progress and retry**: validate the entire input before writes; after a persistence failure, retain completed records, stop at the failing record, report partial progress and allow retry of the whole document. This is a proposed extension of WF4/G4/US6, grounded in the [accepted brief](briefs/2026-10-28-ai-gateways-batch-apply.md), not implemented runtime behavior. Detailed rules are in §4.6; the amendment's failure-policy question is resolved.
 
@@ -29,7 +29,7 @@ The operator of a local or VPS-hosted Cezar should configure API connections onc
 
 **Explicit user requirements:**
 
-- Rename the feature to **AI Gateways** and give it a separate section in **General Settings**.
+- Name the feature **AI Gateways**, with the canonical CLI group **`ai-gateways`**, and give it a separate section in **General Settings**. No `llm-providers` compatibility alias: the owner confirmed that this feature has no shipped implementation.
 - List gateways with an ON/OFF switch; support adding and editing gateways.
 - Supply OpenRouter as an initial, editable seed record, not a privileged built-in provider type.
 - Keep the existing secret-storage/keychain pattern.
@@ -101,7 +101,7 @@ flowchart LR
 
 One gateway can expose multiple protocols. The runner adapter selects a supported format deterministically; Claude Code requires Messages, Codex requires Responses, Cursor remains native-only. Multi-protocol runners retain documented native preferences. The selected protocol is pinned in each resolved gateway binding; a later adapter-preference change cannot reinterpret it. If that protocol is removed or unsupported, reject launch until an explicit compatible selection is made.
 
-OpenRouter seed values must reproduce the current supported runner behavior through ordinary protocol/auth data. Remove routing decisions based on `kind === 'openrouter'`, including compatibility, Claude auth and catalog auth. Preserve omission of models explicitly declaring no tool support through generic catalog metadata handling; absent tool metadata is not an automatic rejection. Seed endpoint/protocol behavior needs fixture evidence before release; this spec does not claim live vendor verification.
+OpenRouter seed values must reproduce the current supported runner behavior through ordinary protocol/auth data. Do not carry over reference-only routing decisions based on `kind === 'openrouter'`, including compatibility, Claude auth and catalog auth. Preserve omission of models explicitly declaring no tool support through generic catalog metadata handling; absent tool metadata is not an automatic rejection. Seed endpoint/protocol behavior needs fixture evidence before release; this spec does not claim live vendor verification.
 
 All config writes use existing workspace merge-write/atomic-file discipline. The UI never grants a stronger capability than the server. Missing/deleted/disabled gateways, incompatible protocols and unreadable secrets reject the launch; they never select another account or gateway.
 
@@ -129,7 +129,7 @@ Edge cases: missing key permits disabled draft but rejects enable; invalid URL r
 |---|---|---|
 | View/create/remove | `LlmProviders`, contract, current settings form | Move/rename surface; add editing and state |
 | Save secret | `SecretStore` | Reuse; define preserve/replace semantics |
-| Initialize OpenRouter | Workspace migrations | One-time, keyless disabled seed; deduplicate existing OpenRouter connections |
+| Initialize OpenRouter | Workspace initialization | One-time, keyless disabled seed; concurrent initialization produces one keyed record |
 | Use connection | Runner routing adapter | Replace kind-based branches with protocol/auth data |
 
 ### WF2 — Choose an agent default and start a task
@@ -170,10 +170,10 @@ Edge cases: validate all entries before persistence; malformed or conflicting in
 
 | Step | Existing capability | Gap |
 |---|---|---|
-| Bootstrap/list/create/update | Reference `llm-providers` CLI and ID-backed store | Preserve individual commands; add shared batch validation and stable provisioning identity |
+| Bootstrap/list/create/update | Earlier CLI/store design as reference | Implement the canonical `ai-gateways` command group, shared batch validation and stable provisioning identity; no old-name alias |
 | Read one document | CLI stdin pattern and Node file reads | Bounded file/stdin JSON with one schema; no argv JSON or separate stdin key stream |
 | Apply/retry | Workspace writer and SecretStore | Coherent single-gateway writes, cross-process coordination, safe partial progress and structured results |
-| Select default/use | Parent feature's WF2 | Remains outside apply; existing separate default operations remain supported |
+| Select default/use | Parent feature's WF2 | Remains outside apply; separate default operations remain outside apply |
 
 Reality check: WF4 completes at persisted, inspectable gateway configuration. Integration tests subsequently use it through WF2 to prove the configuration reaches runner launch; that test does not make launching a side effect of apply.
 
@@ -212,7 +212,7 @@ Deduplicated estimate: 11–17 commits. These packages are implementation bounda
 
 ## 4.5 Module Architecture and Resolution Rules
 
-Reuse `packages/contract` for Zod definitions; extend `workspace/llm-providers.ts` and `workspace/config.ts` for gateway/default state; keep secrets in `workspace/secrets.ts`; keep CLI translation in `core/llm-provider-routing.ts` and process entry in `core/runner-factory.ts`. Extend the existing server family, API client, settings and composer. Internal filenames/legacy fields need not be renamed just to match the UI label.
+Reuse `packages/contract` for Zod definitions; extend `workspace/llm-providers.ts` and `workspace/config.ts` for gateway/default state; keep secrets in `workspace/secrets.ts`; keep CLI translation in `core/llm-provider-routing.ts` and process entry in `core/runner-factory.ts`. Extend the existing server family, API client, settings and composer. The internal paths above locate reusable reference code, not shipped public contracts. They need not be renamed solely for presentation. Public CLI help, examples, generated commands and documentation must use `ai-gateways`; reference-only command names, request fields and routes do not require aliases or compatibility serializers.
 
 Resolution order for a new task: explicit native/gateway override → selected runner's workspace default → native if no default is configured. An unavailable configured default is an error, not an absent default. Apply server-side, including direct API callers and supported headless launch paths; never depend on the browser having pre-resolved the choice.
 
@@ -220,7 +220,7 @@ Resolve and persist all statically known workflow-runner choices when the task i
 
 Before any agent process or paid naming turn, preflight all statically known workflow steps: each gateway-bound step needs an explicit compatible model. Use the task model for its selected runner and existing workflow `step.model` for secondary runners. If one is missing, reject the entire start with step ID, runner and gateway, and direct the author to set that step model in the existing workflow editor or inline API step definition. Do not run earlier paid steps first. A different-runner dispatched child likewise requires its own explicit gateway model and is rejected before child launch if absent. No default-model feature or new multi-runner composer is implied.
 
-Task creation pins native explicitly as well as gateway selection. Legacy records without gateway metadata continue as native; new global defaults must not reinterpret old records. New input must distinguish inherit/native/explicit gateway; keep the existing `llmProviderId` input as a supported explicit selection and reject contradictory old/new fields.
+Task creation pins native explicitly as well as gateway selection. Legacy records without gateway metadata continue as native; new global defaults must not reinterpret old records. New input must distinguish inherit/native/explicit gateway through one canonical gateway-selection contract. Do not add a compatibility input alias for the reference-only `llmProviderId` proposal.
 
 At launch: validate binding + enabled state + runner compatibility + readable key + explicit gateway model. Resolve one coherent routing snapshot and key for the launch. A disable prevents launches validated after the disable has committed; already-authorized launches and running processes may finish. Do not promise upstream cancellation or credential revocation from this switch.
 
@@ -230,7 +230,7 @@ Mutation effects are bounded: gateway edit invalidates gateway/model queries; de
 
 Secret update retains the existing key when omitted. Reject malformed input before writes. Metadata/key writes span separate stores: never advertise an update as successful until both are usable. On failure restore the previous usable pair, or persist a repair-required/unavailable condition enforced after restart and offer a specific repair action. Concurrent same-gateway edits and launch reads must not expose a key/settings pair belonging to neither completed update. Use the bounded locking and durable `pendingWrite` mechanism in §4.6 for all gateway mutation/launch paths; it does not claim a filesystem transaction across the stores. URL/protocol edits and credential updates invalidate cached model catalogs.
 
-Seed runs once through existing workspace initialization/migration, atomically with its own completion marker in the same workspace merge-write. The current migration runner writes its general schema version separately, so that version alone is not sufficient for this guarantee; a seed-specific optional marker is required. On upgrade, keep existing connections/IDs/secrets, translate OpenRouter behavior into generic data and treat existing usable connections as enabled. Do not add a duplicate seed when an existing OpenRouter connection already covers it. Assign the seed its stable `openrouter` provisioning key in that same write, following §4.6. After initial completion, later deletion or renaming never triggers automatic reseeding; a complete explicit apply entry may create a replacement with a new UUID. Read-only/corrupt homes retain existing graceful boot behavior.
+Seed runs once through existing workspace initialization/migration, atomically with its own completion marker in the same workspace merge-write. The current migration runner writes its general schema version separately, so that version alone is not sufficient for this guarantee; a seed-specific optional marker is required. When initialized gateway state already exists, preserve its IDs, keys and enabled flags. This first implementation requires no migration from reference-only `kind: openrouter` records or old provider input formats. Assign the seed its stable `openrouter` provisioning key in that same write, following §4.6. After initial completion, later deletion or renaming never triggers automatic reseeding; a complete explicit apply entry may create a replacement with a new UUID. Read-only/corrupt homes retain existing graceful boot behavior.
 
 Scheduling restrictions remain: resolve defaults before deferred-start validation; a gateway selected explicitly or through a default is still rejected for deferred API execution. Existing automation launches must use the same resolver/validation and cannot bypass this restriction. Hosting model locks remain authoritative. A deleted default reference stays unavailable until repaired or explicitly changed to native.
 
@@ -240,7 +240,7 @@ Scheduling restrictions remain: resolve defaults before deferred-start validatio
 
 The manifest's `key` is a workspace-unique provisioning identity matching `^[a-z][a-z0-9-]{0,63}$`. Persist it as optional `Gateway.provisioningKey`; resolve it to the existing immutable UUID on every invocation. It is not the display name, endpoint, protocol or secret name. UI rename/URL edits and individual update operations preserve it. Read/list responses expose it when present; normal create/update request bodies cannot reassign it. Apply introduces no UUID-selection or key-renaming option.
 
-The reserved key `openrouter` identifies the ordinary seed record, with no special routing behavior. Fresh initialization writes UUID, `provisioningKey: openrouter` and seed-completion marker together. During legacy migration, choose an existing record whose legacy kind is `openrouter` before removing kind-based behavior; if several exist, select the lexicographically smallest UUID once and leave the others intact. This deterministic tie-break does not alter task/default references. Never infer seed identity from the mutable label or URL. Duplicate persisted provisioning keys are an explicit state conflict; do not choose an arbitrary match or treat a corrupted registry as empty.
+The reserved key `openrouter` identifies the ordinary seed record, with no special routing behavior. Fresh initialization writes UUID, `provisioningKey: openrouter` and seed-completion marker together. There is no legacy provider migration or adoption heuristic: the owner confirmed that the earlier provider implementation has not shipped. On subsequent invocations, find the seed by its persisted provisioning key. Never infer seed identity from the mutable label or URL. Duplicate persisted provisioning keys are an explicit state conflict; do not choose an arbitrary match or treat a corrupted registry as empty.
 
 Custom records created by apply receive a UUID and their key together. Pre-existing unkeyed custom connections remain managed by the individual ID-based operations; matching a manifest key to their name does not adopt them. Applying a previously unused key creates a separate connection. Automatic adoption and reassignment are outside this change.
 
@@ -251,12 +251,12 @@ Each supplied field replaces that field; each omitted field retains its current 
 ### 4.6.2 Input and credential delivery
 
 ```
-cezar llm-providers apply --file <path|->
+cezar ai-gateways apply --file <path|->
 ```
 
-`--file` is required exactly once. A path reads one local UTF-8 JSON document; `-` reads one document from non-TTY stdin through EOF. Reject a TTY immediately with usage guidance. No automatic stdin detection, URLs, globs, directories, YAML, argv JSON, environment interpolation or executable templates. Reject `--key-stdin` with apply: stdin already carries the complete document. Individual legacy commands retain their input and exit behavior.
+`--file` is required exactly once. A path reads one local UTF-8 JSON document; `-` reads one document from non-TTY stdin through EOF. Reject a TTY immediately with usage guidance. No automatic stdin detection, URLs, globs, directories, YAML, argv JSON, environment interpolation or executable templates. Reject `--key-stdin` with apply: stdin already carries the complete document. All gateway operations belong to `ai-gateways` (including `list`, `add`, `update`, `remove`, `models`, `exec` and `apply`, plus the separately specified default operation). Do not register `llm-providers` as an alias or deprecated spelling, and do not introduce an `ai-gateway` singular alias. The existing application-wide `cezar`/`cez` binary names remain unchanged.
 
-The input has exactly `{ "version": 1, "gateways": [...] }`, with 1–100 entries and at most 1 MiB of UTF-8 bytes from either source. Each entry accepts only `key`, `name`, `baseUrl`, `protocols`, `auth`, `enabled`, `apiKey`. `key` is required and unique in the batch; the other fields follow §4.6.1. Protocol values are the existing `openai-completions`, `openai-responses`, `anthropic-messages` enum. Validate the merged record: auth must describe every selected protocol and catalog, and enabled records require a readable nonempty key. Enforce the existing 100-record workspace cap against the complete prospective result, including seed initialization and new entries.
+The input has exactly `{ "version": 1, "gateways": [...] }`, with 1–100 entries and at most 1 MiB of UTF-8 bytes from either source. Each entry accepts only `key`, `name`, `baseUrl`, `protocols`, `auth`, `enabled`, `apiKey`. `key` is required and unique in the batch; the other fields follow §4.6.1. Protocol values are the existing `openai-completions`, `openai-responses`, `anthropic-messages` enum. Validate the merged record: auth must describe every selected protocol and catalog, and enabled records require a readable nonempty key. Enforce the 100-record workspace cap from the reference design against the complete prospective result, including seed initialization and new entries.
 
 Define manifest, result and shared gateway schemas in `packages/contract` with inferred types, not parallel CLI interfaces. Persisted state remains additive/tolerant under existing workspace rules; command input is strict. No HTTP batch route is needed: offline CLI calls the same gateway service as the existing routes. If read responses gain the new optional fields, update the contract, API client re-exports and parity checks together. A malformed persisted identity/pending marker must fail closed for the affected gateway; do not salvage it into a usable unkeyed/ready entry.
 
@@ -381,6 +381,7 @@ Business acceptance:
 - [ ] Add/edit/disable/enable/remove work end-to-end; blank replacement key preserves current key.
 - [ ] Default/native/explicit gateway choices are visibly distinct and resolve identically from UI and API/CLI.
 - [ ] Models come from the selected connection; missing/incompatible selection has an actionable error.
+- [ ] CLI help, documentation and generated command handoffs use `ai-gateways`; no `llm-providers` command alias is registered.
 - [ ] One file or stdin JSON updates OpenRouter and adds another gateway; repeat preserves IDs and omitted fields without duplicate records or credential output. Apply does not change agent defaults. Separate default assignment remains repeatable.
 
 Domain acceptance, authored by the independent challenger and evaluated by the PM:
@@ -410,11 +411,11 @@ This is one provisioning capability with two input sources, built on the parent 
 | Phase / step | Change and dependency | Observable result and verification |
 |---|---|---|
 | A1 — G1 shared persistence | Add cross-process workspace writer coordination and gateway coordinator; retain existing sandbox, backup and error behavior | Concurrent subprocesses changing unrelated workspace fields preserve both changes; live-owner timeout/dead-owner recovery and read-only-home boot checks pass |
-| A2 — G1 identity/recovery | Add optional provisioning key and pending marker, seed assignment/migration, guarded metadata/key writes and coherent snapshots across all callers | Fresh/upgrade/renamed/deleted seed scenarios preserve expected UUIDs; faults before marker, backup checkpoint, vault write and final commit cannot launch a mixed pair, including after config-backup restoration; UI/individual CLI can repair/remove pending records |
+| A2 — G1 identity/recovery | Add optional provisioning key and pending marker, seed assignment/initialization, guarded metadata/key writes and coherent snapshots across all callers | Fresh/upgrade/renamed/deleted seed scenarios preserve expected UUIDs; faults before marker, backup checkpoint, vault write and final commit cannot launch a mixed pair, including after config-backup restoration; UI/individual CLI can repair/remove pending records |
 | B1 — G4 contract and service | Define strict manifest/result Zod schemas and shared preflight/sequential apply on A2 | Validate last entry before first mutation, reject duplicate/conflicting identities and capacity overflow; first successful entry survives a later storage failure; retry/lost-response scenarios retain UUIDs |
 | B2 — G4 CLI inputs/results | Wire `apply --file <path\|->` through existing CLI parser to B1; add no HTTP batch endpoint | File and piped-generator tests produce equivalent results; TTY, EOF/read failures, size bounds, unknown flags and fake-secret redaction pass; every exit/result matches §4.6.4 |
 | C1 — G4 integration/docs | Document file/stdin, plaintext-file handling, partial failure, retry, keyless state and separate agent-default selection; update compatibility reference | Temporary-home smoke configures two gateways, repeats, injects failure and recovers; no provider requests during apply. Separately launch a mock-bound task to prove WF2 consumes the result; defaults remain unchanged by apply |
-| C2 — release gate | Run parent feature checks and affected contract/client parity, lifecycle and packaging tests | All supported creation/continuation/recovery paths reject pending records and preserve the old native defaults; existing individual CLI commands retain behavior |
+| C2 — release gate | Run parent feature checks and affected contract/client parity, lifecycle and packaging tests | All supported creation/continuation/recovery paths reject pending records and preserve the old native defaults; CLI help and generated handoffs use only `ai-gateways`; `llm-providers` is not registered |
 
 Planned runtime checks belong to the implementation, not this document's authoring evidence. No new `CEZ_*` variables are needed. If implementation adds one anyway, the repository's same-commit env documentation rule still applies.
 
@@ -423,14 +424,14 @@ Planned runtime checks belong to the implementation, not this document's authori
 | Existing contract | Change / resolution |
 |---|---|
 | `2026-10-27-llm-provider-connections.md`: native labelled Default | New tasks distinguish inherited Default from explicit Native; old tasks remain native if no saved gateway |
-| Existing OpenRouter type and single protocol | Translate to generic protocol/auth settings while preserving IDs, secrets and runner behavior; new UI exposes no privileged type |
-| Current create/remove CLI/API | Extend additively; old command/routes remain accepted; do not rename persisted state for presentation alone |
-| Provisioning and gateway persistence | Add `apply`, optional provisioning identity and pending-write state; preserve old UUIDs and individual commands. Downgrade cannot safely read a pending update; resolve/remove pending records and stop gateway tasks before downgrade |
+| Reference-only OpenRouter type and single protocol | Design generic protocol/auth settings directly; no old-format adapter or privileged type is required |
+| Reference-only provider CLI/API | First public CLI is `ai-gateways`; do not ship `llm-providers` aliases, deprecated spellings, or adapters for reference-only request shapes |
+| Provisioning and gateway persistence | New `ai-gateways apply` preserves UUIDs across subsequent edits/retries; no legacy-provider migration is required. A binary unaware of pending-write state cannot safely enforce its availability guard |
 | Provider affinity on UUID | Add routing revision for endpoint/auth/protocol edits; preserve portable context on new sessions |
 | Zero-config / no default cost widening | Seed disabled, native initial defaults, no requests until an authorized use; no new required config/env |
 | Existing deferred execution and hosting model policy | Enforce after default resolution; no bypass by omitting explicit provider input |
 
-Compatibility serializer must define how old create inputs map to generic settings. New functionality remains accessible through existing routes or additive versioned routes; chained route builders and shared Zod middleware remain mandatory. Legacy Continue's explicit native behavior must be preserved. Downgrade is not a supported way to enforce OFF or per-agent defaults: older binaries do not understand those guarantees; stop gateway tasks before downgrade and document that limit. Never rewrite historical NDJSON or migrate task histories destructively.
+Do not implement a compatibility serializer for the unshipped provider proposal. Define one canonical gateway contract and versioned HTTP route family using chained builders and shared Zod middleware; this CLI naming decision does not require mechanical renaming of internal files or persisted fields. Genuine pre-existing Cezar behavior remains protected. Legacy Continue's explicit native behavior must be preserved. Downgrade is not a supported way to enforce OFF or per-agent defaults: older binaries do not understand those guarantees; stop gateway tasks before downgrade and document that limit. Never rewrite historical NDJSON or migrate task histories destructively.
 
 ## 9. Quality Gate
 
@@ -441,6 +442,7 @@ Not a reference app: no demo identities, portal, new modules or business analyti
 | Item | Status / consequence |
 |---|---|
 | Name, location, ON/OFF, editable seed, secret pattern, per-agent default | Explicit user requirements; §1.1 |
+| Public CLI naming | Owner selected `ai-gateways` without compatibility aliases because no gateway implementation has shipped; applies to help, docs, examples and generated handoffs |
 | Seed OFF, no auto-selection, no kill on disable, stable bindings | Proposed operating rules from conversation; owner review needed before implementation |
 | Business payer/flywheel/financial target | Not provided; deliberately not invented. No claim of commercial validation; outside this request to record existing feature decisions |
 | Default model per gateway/agent | Not requested; initial scope requires a valid model at task creation, no automatic native model fallback |
@@ -461,8 +463,10 @@ Not a reference app: no demo identities, portal, new modules or business analyti
 - Documentation validation: Markdown local links, balanced code fences, whitespace and required numbered sections checked. No runtime tests or live provider calls; no production or credential changes.
 
 - 2026-10-28: Prepared a specification-only initial commit for an independent implementation PR based on main; qualified reference-branch evidence and estimates, with no dependency on merging PR #1726.
-- 2026-10-28: Extended WF4/G4/US6 from the accepted sandbox-provisioning brief: JSON file/stdin apply, stable provisioning keys, partial progress with retry (owner answer to Q1), and explicit per-gateway write recovery. Added the CLI/result contract, shared-writer coordination requirements, data-model diagram and phased verification plan. Prior review notes remain historical; the amendment received the fresh scope review recorded below. No implementation or publication is part of this authoring task.
+- 2026-10-28: Extended WF4/G4/US6 from the accepted sandbox-provisioning brief: JSON file/stdin apply, stable provisioning keys, partial progress with retry (owner answer to Q1), and explicit per-gateway write recovery. Added the CLI/result contract, shared-writer coordination requirements, data-model diagram and phased verification plan. Prior review notes remain historical; the amendment received the fresh scope review recorded below. That authoring step made no implementation or publication changes.
 
 - Amendment validation: `git diff --check`, local Markdown links, balanced code fences and JSON-example parsing checked. Attempted the required repository gate in order: typecheck/build lack `tsc`, `npm test` lacks `vitest`, and unit/package suites cannot load `tsx`. These are environment failures, not passing runtime tests; no dependencies were installed for this documentation change.
 
 - Amendment scope review: cezar task `3595ff63-e94b-420b-bae4-e9d08d047cd6`, branch `cez/3595ff63`, reviewed the specification at `440dd61b` and returned **approve**, with no blocking findings. Evidence: WF4 and §7.1 preserve gateway-only provisioning scope; §4.6.1 defines identity/deletion, §4.6.2 file/stdin parity, and §4.6.3–4 coherent partial-write recovery and retry. The parent verified the cited sections and the child’s empty branch diff. This is a specification scope/cohesion verdict, not implementation or runtime approval.
+
+- 2026-10-28: Owner chose `ai-gateways` as the sole public CLI group and explicitly rejected compatibility aliases because the feature is not implemented. Updated command examples, help/handoff acceptance, brief and planning notes; removed reference-only legacy input/seed migration requirements. Existing native-task, workspace and secret-safety guarantees remain. The owner also authorized publishing these documentation changes to the existing PR. The earlier scope-review verdict predates this naming refinement.

@@ -10,6 +10,7 @@ import {
   createAiGatewaySchema,
   normalizeAiGatewayBaseUrl,
   preferredGatewayProtocol,
+  resolveAiGatewaySelection,
   updateAiGatewaySchema,
 } from '@open-mercato/cezar-contract';
 
@@ -109,5 +110,30 @@ describe('AI gateway contract', () => {
       id: '550e8400-e29b-41d4-a716-446655440000',
       routingRevision: 'seed',
     }).name).toBe('OpenRouter');
+  });
+
+  it('resolves explicit choice, then the runner default, and never a substitute', () => {
+    const id = '550e8400-e29b-41d4-a716-446655440000';
+    const gateway = {
+      id,
+      enabled: true,
+      hasApiKey: true,
+      protocols: ['openai-responses' as const, 'anthropic-messages' as const],
+      routingRevision: 'rev',
+    };
+    const gateways = [gateway];
+    expect(resolveAiGatewaySelection({ runner: 'claude', defaults: undefined, gateways }).status).toBe('native');
+    expect(resolveAiGatewaySelection({ runner: 'claude', explicit: 'native', defaults: { claude: id }, gateways })).toEqual({ status: 'native' });
+    expect(resolveAiGatewaySelection({ runner: 'claude-cli', defaults: { claude: id }, gateways })).toEqual({
+      status: 'gateway', gatewayId: id, protocol: 'anthropic-messages', routingRevision: 'rev',
+    });
+    expect(resolveAiGatewaySelection({ runner: 'codex', defaults: { codex: id }, gateways })).toMatchObject({ protocol: 'openai-responses' });
+    expect(resolveAiGatewaySelection({ runner: 'cursor', defaults: { cursor: id }, gateways }).status).toBe('unavailable');
+    expect(resolveAiGatewaySelection({ runner: 'claude', defaults: { claude: id }, gateways: [{ ...gateway, enabled: false }] })).toMatchObject({
+      status: 'unavailable', message: 'This gateway is off.',
+    });
+    expect(resolveAiGatewaySelection({ runner: 'claude', defaults: { claude: id }, gateways: [{ ...gateway, pendingWrite: true }] }).status).toBe('unavailable');
+    expect(resolveAiGatewaySelection({ runner: 'pi', explicit: id, defaults: undefined, gateways: [] })).toMatchObject({ status: 'unavailable' });
+    expect(resolveAiGatewaySelection({ runner: 'claude', defaults: { claude: 'not-a-choice' }, gateways }).status).toBe('unavailable');
   });
 });

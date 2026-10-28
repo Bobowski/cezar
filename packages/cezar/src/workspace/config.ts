@@ -271,6 +271,8 @@ const workspaceConfigSchema = z
      */
     aiGateways: z.unknown().optional(),
     aiGatewaysSeeded: z.unknown().optional(),
+    /** Per-runner gateway choice (`native` or a gateway id). Not `agentDefaults` — that map is runner and model. */
+    aiGatewayDefaults: z.unknown().optional(),
     /** Per-entry salvage: a corrupt entry is dropped, the rest of the registry
      *  survives (a whole-array `.catch([])` would evict every project over one
      *  bad row). */

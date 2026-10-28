@@ -142,6 +142,11 @@ export class AiGateways {
     return this.exclusive(() => this.removeUnlocked(id));
   }
 
+  /** `null` clears the runner's choice back to native. Does not read or write `agentDefaults`. */
+  async setDefault(runner: string, choice: 'native' | string | null): Promise<void> {
+    return this.exclusive(() => this.setDefaultUnlocked(runner, choice));
+  }
+
   private exclusive<T>(action: () => Promise<T>): Promise<T> {
     return withFileLock(join(cezarHomeDir(), 'ai-gateways.lock'), action, this.lockTimeoutMs);
   }
@@ -191,6 +196,24 @@ export class AiGateways {
     delete cleared.pendingWrite;
     await this.commitSecret(secret, apiKey, (rows) => rows.map((row) => row.id === id ? { ...row, pendingWrite: true } : row), (rows) => this.replaceRow(rows, id, cleared));
     return toView(cleared, true);
+  }
+
+  private async setDefaultUnlocked(runner: string, choice: 'native' | string | null): Promise<void> {
+    const key = runner === 'claude-cli' ? 'claude' : runner;
+    if (!['claude', 'codex', 'opencode', 'cursor', 'pi', 'junie', 'copilot'].includes(key)) {
+      throw invalidInput('That agent does not exist.');
+    }
+    if (choice !== null && choice !== 'native' && !zUuid(choice)) throw invalidInput('Choose Native or a saved gateway.');
+    await mergeWriteWorkspaceConfig((config) => {
+      const current = config.aiGatewayDefaults;
+      if (current !== undefined && (typeof current !== 'object' || current === null || Array.isArray(current))) {
+        throw new AiGatewayError('The saved defaults could not be read.', 'unavailable');
+      }
+      const defaults = { ...(current as Record<string, unknown> | undefined) };
+      if (choice === null) delete defaults[key];
+      else defaults[key] = choice;
+      config.aiGatewayDefaults = defaults;
+    });
   }
 
   private async removeUnlocked(id: string): Promise<void> {

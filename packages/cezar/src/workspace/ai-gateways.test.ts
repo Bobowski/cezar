@@ -226,6 +226,21 @@ describe('AI gateways store', () => {
     const listed = await store.list();
     expect(listed.gateways.some((gateway) => gateway.name === 'Sandbox')).toBe(false);
   });
+
+  it('stores a runner default without touching agent defaults', async () => {
+    const store = gateways();
+    await mergeWriteWorkspaceConfig((config) => { config.agentDefaults = { runner: 'codex' }; });
+    const created = await store.create(custom);
+    await store.setDefault('claude', created.id);
+    const saved = await loadWorkspaceConfig();
+    expect(saved.agentDefaults).toMatchObject({ runner: 'codex' });
+    expect(saved.aiGatewayDefaults).toEqual({ claude: created.id });
+    await store.setDefault('claude', null);
+    expect((await loadWorkspaceConfig()).aiGatewayDefaults).toEqual({});
+    await writeFile(workspaceConfigPath(), JSON.stringify({ aiGatewayDefaults: 'nope', agentDefaults: { runner: 'codex' } }));
+    await expect(store.setDefault('claude', 'native')).rejects.toMatchObject({ code: 'unavailable' });
+    expect(JSON.parse(await readFile(workspaceConfigPath(), 'utf8')).aiGatewayDefaults).toBe('nope');
+  });
 });
 
 class WatchingSecrets extends SecretStore {

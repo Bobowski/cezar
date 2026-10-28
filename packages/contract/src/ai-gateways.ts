@@ -269,6 +269,64 @@ export function preferredGatewayProtocol(runner: string, protocols: readonly AiG
   return order.find((protocol) => protocols.includes(protocol)) ?? null;
 }
 
+export const AI_GATEWAY_UNSUPPORTED = 'AI gateways are not supported by this agent.';
+
+export type AiGatewayResolution =
+  | { status: 'native' }
+  | { status: 'gateway'; gatewayId: string; protocol: AiGatewayProtocol; routingRevision: string }
+  | { status: 'unavailable'; message: string; gatewayId?: string };
+
+type ResolvableGateway = Pick<AiGatewayView, 'id' | 'enabled' | 'hasApiKey' | 'pendingWrite' | 'protocols' | 'routingRevision'>;
+
+/**
+ * Explicit choice, then the runner's saved default, then native.
+ * A missing, off, pending, or incompatible gateway is an error. Nothing else is substituted.
+ */
+export function resolveAiGatewaySelection(input: {
+  runner: string;
+  explicit?: 'native' | string;
+  defaults: unknown;
+  gateways: readonly ResolvableGateway[];
+}): AiGatewayResolution {
+  if (input.explicit === 'native') return { status: 'native' };
+  if (input.explicit !== undefined) return resolveChosen(input.runner, input.explicit, input.gateways);
+  const choice = savedDefault(input.defaults, input.runner);
+  if (choice === 'absent' || choice === 'native') return { status: 'native' };
+  if (choice === 'bad') return { status: 'unavailable', message: 'The saved default for this agent could not be read.' };
+  return resolveChosen(input.runner, choice, input.gateways);
+}
+
+function savedDefault(defaults: unknown, runner: string): 'absent' | 'native' | 'bad' | string {
+  const key = runner === 'claude-cli' ? 'claude' : runner;
+  if (defaults === undefined || defaults === null) return 'absent';
+  if (typeof defaults !== 'object' || Array.isArray(defaults)) return 'bad';
+  const record = defaults as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(record, key) || record[key] === undefined) return 'absent';
+  const value = record[key];
+  if (value === 'native') return 'native';
+  if (typeof value === 'string' && z.string().uuid().safeParse(value).success) return value;
+  return 'bad';
+}
+
+function resolveChosen(runner: string, id: string, gateways: readonly ResolvableGateway[]): AiGatewayResolution {
+  if (!z.string().uuid().safeParse(id).success) {
+    return { status: 'unavailable', message: 'That AI gateway is unavailable.' };
+  }
+  const gateway = gateways.find((candidate) => candidate.id === id);
+  if (!gateway) return { status: 'unavailable', message: 'That AI gateway is unavailable.', gatewayId: id };
+  if (runner === 'cursor' || preferredGatewayProtocol(runner, AI_GATEWAY_PROTOCOLS) === null) {
+    return { status: 'unavailable', message: AI_GATEWAY_UNSUPPORTED, gatewayId: id };
+  }
+  if (gateway.pendingWrite) {
+    return { status: 'unavailable', message: 'Update interrupted — save the API key again or remove this gateway.', gatewayId: id };
+  }
+  if (!gateway.enabled) return { status: 'unavailable', message: 'This gateway is off.', gatewayId: id };
+  if (!gateway.hasApiKey) return { status: 'unavailable', message: 'An enabled gateway needs an API key.', gatewayId: id };
+  const protocol = preferredGatewayProtocol(runner, gateway.protocols);
+  if (!protocol) return { status: 'unavailable', message: 'This gateway does not support this agent.', gatewayId: id };
+  return { status: 'gateway', gatewayId: id, protocol, routingRevision: gateway.routingRevision };
+}
+
 const HANDOFF_MODEL = /^[a-zA-Z0-9][a-zA-Z0-9_./:@+~-]*$/;
 
 /** Copyable handoff. References only — never a credential. `null` when the pieces are not safe to interpolate. */

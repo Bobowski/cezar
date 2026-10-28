@@ -4,10 +4,10 @@ Source: reference implementation `544d0c76` and AGENTS.md; `.ai/agentic.config.j
 
 | Kind | Capability | Reuse / gap | Source file |
 |---|---|---|---|
-| Contract | Zod gateway/runner compatibility | Existing single protocol + special OpenRouter kind need generalization | `packages/contract/src/llm-providers.ts` |
-| Service | LlmProviders | List/add/remove/resolve/models; lacks edit/enable/defaults | `packages/cezar/src/workspace/llm-providers.ts` |
-| Persistence | Optional workspace config and atomic merge writer | Reuse state ownership, salvage, home isolation | `packages/cezar/src/workspace/config.ts` |
-| Seed/init | Numbered workspace migrations | Reuse one-time migration; no standalone gateway seed command exists | `packages/cezar/src/workspace/migrations.ts` |
+| Contract | Zod gateway/runner compatibility | Generalize protocols/auth; add optional provisioning identity/pending state and strict apply manifest/results | `packages/contract/src/llm-providers.ts` |
+| Service | LlmProviders | List/add/remove/resolve/models; add edit/enable/defaults, shared batch preflight and coherent write/recovery | `packages/cezar/src/workspace/llm-providers.ts` |
+| Persistence | Optional workspace config and atomic merge writer | Reuse salvage/home isolation; existing per-process queue needs cross-process writer coordination | `packages/cezar/src/workspace/config.ts` |
+| Seed/init | Numbered workspace migrations | Atomic seed identity/completion; share gateway coordinator with apply; no standalone seed command | `packages/cezar/src/workspace/migrations.ts` |
 | Secrets | Encrypted SecretStore + OS keychain/file data-key fallback | Reuse workspace scope, cezar audience, write-only API | `packages/cezar/src/workspace/secrets.ts`, `secret-keyring.ts` in same directory |
 | Routing | routeLlmProvider | Existing per-agent env/native files; special OpenRouter behavior must be data | `packages/cezar/src/core/llm-provider-routing.ts` |
 | Process boundary | createRunner, buildChildEnv | Reuse launch translation and curated env | `packages/cezar/src/core/runner-factory.ts`, `agent-env.ts` in same directory |
@@ -16,7 +16,7 @@ Source: reference implementation `544d0c76` and AGENTS.md; `.ai/agentic.config.j
 | Surface | Global settings shell / provider form | Reuse components; move provider form to dedicated page | `packages/web/src/routes/settings/settings-shell.tsx`, `llm-provider-settings.tsx` in same directory |
 | UI components | Input, Label, Select, Button, Switch | Existing house components, no new UI library | `packages/web/src/components/ui/` |
 | Composition | New Task and Continue connection/model pickers | Extend inherited/native/explicit semantics | `packages/web/src/routes/new-task.tsx`, `packages/web/src/routes/task-thread/follow-up-engine.tsx` |
-| CLI | llm-providers list/add/remove/models/exec | Server-independent existing store; needs update/default assignment | `packages/cezar/src/workspace/llm-providers-cli.ts` |
+| CLI | llm-providers list/add/remove/models/exec | Server-independent reference store; add file/stdin batch apply and results/retry; keep separate update/default assignment | `packages/cezar/src/workspace/llm-providers-cli.ts` |
 | Events/cache | Existing run events and TanStack Query invalidation | Reuse; no new global polling/notification mechanism | `packages/web/src/api/llm-providers.ts`, `packages/cezar/src/runs/store.ts` |
 | Restriction | Gateway tasks cannot defer start | Preserve after inheritance resolves | `packages/cezar/src/automations/deferred-start.ts` |
 
@@ -32,3 +32,9 @@ Baseline behavior: `.ai/specs/2026-10-27-llm-provider-connections.md`, `docs/ref
 - `packages/cezar/src/workspace/secrets.ts`: present on base; planned gateway changes still need verification.
 - `packages/cezar/src/workspace/config.ts`: present on base; planned gateway changes still need verification.
 - `packages/cezar/src/core/runner-factory.ts`: present on base; planned gateway changes still need verification.
+
+## Provisioning amendment evidence (2026-10-28)
+
+Read local `config.ts` (`serializedByPath`, `mergeWriteWorkspaceConfig`), `secrets.ts` (`set`, `update`, `locked`) and migrations. Workspace writes serialize within a process and atomically replace one file; SecretStore separately uses a cross-process lock. Neither supplies a transaction over both stores. The amendment chooses a durable pending marker plus coordinated snapshots, preserving the existing vault format. Cross-process workspace coordination is required for unrelated writers too.
+
+Reference `544d0c76` source confirms protocol spellings, the 100-provider cap, UUID-derived secret slot names and standalone CLI/stdin handling. These remain reference evidence, not features shipped on this checkout. [kubectl apply](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_apply/) and [Terraform apply errors](https://developer.hashicorp.com/terraform/tutorials/cli/apply) informed explicit stdin and partial-progress/retry conventions only. No live gateway calls or runtime tests were performed for this catalog update.

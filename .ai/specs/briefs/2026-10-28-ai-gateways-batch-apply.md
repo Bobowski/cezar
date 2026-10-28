@@ -42,6 +42,7 @@ Alternatives considered: automatic import at server startup, and building nothin
 | What happens on repetition? | Update the same records without duplicates; retain unlisted connections and omitted values. |
 | Where does this work belong? | Extend the existing AI Gateways specification from PR #1730, principally WF4/G4/US6. |
 | Is the brief authorized? | After refining scope and explicitly adding stdin support, the user requested: “okej zapisz brief”. |
+| What if a later gateway fails to persist? | During spec writing the owner chose: “Zachowaj postęp i pozwól ponowić”. Retain completed entries, stop on failure, return partial results and safely retry the complete document; no all-or-nothing batch requirement. |
 
 ## Design work for the specification
 
@@ -71,4 +72,4 @@ Alternatives considered: automatic import at server startup, and building nothin
 
 A fresh-context challenger approved extending the existing specification, with no critical routing blockers. It identified identity/seed adoption, field ownership and retry semantics as design work; these remain explicit above. File and stdin support was added afterward at the user's request and uses the same proposed behavior.
 
-Repository/spec inspection and read-only tracker searches informed this brief. No implementation, runtime tests or live provider calls were performed. The brief remains uncommitted; the next skill owns incorporating it into the existing design and making it durable.
+Repository/spec inspection and read-only tracker searches informed this brief. No implementation, runtime tests or live provider calls were performed during the brainstorm. The brief was subsequently saved in the task branch by cockpit autosave; it accompanies the existing specification amendment, including the later owner-confirmed failure policy above.

@@ -181,6 +181,64 @@ describe('RunStore — directional usage persistence', () => {
   });
 });
 
+describe('RunStore — workflow retry accounting (#1300)', () => {
+  let dataDir: string;
+  const legacyCheck = {
+    id: 'verify',
+    name: 'Verify the task',
+    kind: 'check',
+    status: 'failed',
+    iterations: 1,
+    tokensUsed: 0,
+  };
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'cez-store-'));
+  });
+
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('round-trips a consumed check retry through runs.json', () => {
+    const store = RunStore.open(dataDir);
+    const run = store.createRun({
+      title: 'bounded retry',
+      workflow: 'checked-task',
+      task: 'verify the task',
+      steps: [{ id: 'verify', name: 'Verify the task', kind: 'check' }],
+    });
+    store.updateStep(run.id, 'verify', { retriesUsed: 1 });
+    store.flush();
+
+    const reopened = RunStore.open(dataDir).getRun(run.id);
+    expect(reopened).toBeDefined();
+    expect(reopened?.steps[0]?.retriesUsed).toBe(1);
+  });
+
+  it('keeps legacy checks readable without materializing retry accounting', () => {
+    writeFileSync(join(dataDir, 'runs.json'), JSON.stringify([{ ...LEGACY_RUN, steps: [legacyCheck] }]), 'utf8');
+
+    const reopened = RunStore.open(dataDir).getRun(LEGACY_RUN.id);
+    expect(reopened).toBeDefined();
+    expect(reopened?.steps[0]?.iterations).toBe(1);
+    expect(reopened?.steps[0]?.retriesUsed).toBeUndefined();
+  });
+
+  it.each([-1, 1.5, '1'])('salvages invalid retry accounting %j without evicting records', (retriesUsed) => {
+    writeFileSync(join(dataDir, 'runs.json'), JSON.stringify([
+      { ...LEGACY_RUN, id: 'invalid-retries', steps: [{ ...legacyCheck, retriesUsed }] },
+      { ...LEGACY_RUN, id: 'valid-retries', steps: [{ ...legacyCheck, retriesUsed: 1 }] },
+    ]), 'utf8');
+
+    const reopened = RunStore.open(dataDir);
+    expect(reopened.getRun('invalid-retries')).toBeDefined();
+    expect(reopened.getRun('invalid-retries')?.steps[0]?.iterations).toBe(1);
+    expect(reopened.getRun('invalid-retries')?.steps[0]?.retriesUsed).toBeUndefined();
+    expect(reopened.getRun('valid-retries')?.steps[0]?.retriesUsed).toBe(1);
+  });
+});
+
 describe('RunStore — titleSummary + diffStat (#389)', () => {
   let dataDir: string;
 
@@ -2590,6 +2648,23 @@ describe('RunStore — pruning spares live runs (telemetry 73c6e796)', () => {
     expect(store.getRun(stale.id)).toBeUndefined();
     // The dispatch path's next write after creating a child: it threw `unknown run` before.
     expect(() => store.appendEvent(parent.id, { type: 'note', message: 'dispatched' })).not.toThrow();
+  });
+
+  it('CEZ_RUNS_KEEP lowers how many settled runs the index keeps', () => {
+    process.env.CEZ_RUNS_KEEP = '5';
+    try {
+      const store = RunStore.open(dataDir);
+      let clock = Date.parse('2026-01-01T00:00:00.000Z');
+      for (let i = 0; i < 20; i++) {
+        vi.setSystemTime((clock += 1_000));
+        store.updateRun(store.createRun({ title: `r${i}`, workflow: 'quick-task', task: 't', steps: [] }).id, {
+          status: 'done',
+        });
+      }
+      expect(store.listRuns().length).toBe(5);
+    } finally {
+      delete process.env.CEZ_RUNS_KEEP;
+    }
   });
 });
 

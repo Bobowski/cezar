@@ -347,11 +347,14 @@ describe('automatic agent fallback', () => {
     const id = await failedRun({ status: 'done', runner: 'codex', error: undefined, usageLimitHolds: [{ account: 'claude:default', until: new Date(untilAt).toISOString() }] });
     manager = new RunManager(store, repoRoot);
     expect(manager.accountHolds().deadline.has('claude:default')).toBe(true);
+    expect(manager.accountHolds().deadlines?.get('claude:default')).toBe(untilAt);
     store.deleteRun(id);
     expect(manager.accountHolds().deadline.has('claude:default')).toBe(true);
+    expect(manager.accountHolds().deadlines?.get('claude:default')).toBe(untilAt);
     manager.dispose();
     manager = new RunManager(store, repoRoot);
     expect(manager.accountHolds().deadline.has('claude:default')).toBe(true);
+    expect(manager.accountHolds().deadlines?.get('claude:default')).toBe(untilAt);
     expect(manager.accountHolds(untilAt + 1).deadline.has('claude:default')).toBe(false);
   });
 

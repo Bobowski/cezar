@@ -74,7 +74,7 @@ The slot has an explicit two-state lifecycle. `owner.lock` (plus the immutable c
 1. Resolve the slot and attempt lease acquisition before calling `initWorkspace` or constructing server services.
 2. If acquired, this invocation is primary: register the launch root under the serve-specific rule, then continue normal boot. Publish `runtime.json` only after the server listens and health can answer.
 3. If another owner holds the slot, wait up to five seconds for its ready record and health endpoint. Verify the recorded OS identity is still live, fetch `GET /api/v1/health` with a short timeout, validate the contract, and require `health.runtimeId === runtime.runtimeId`.
-4. For a verified owner, call `POST /api/v1/projects` with `{root: repoRoot}`. Both `200` (new) and the existing structured `409` (already registered) yield the canonical project id. Open `${origin}/p/${id}/` unless `--no-open`; always print the scoped URL and exit 0 without starting stores, agents, schedulers, or another listener.
+4. For a verified owner, call `POST /api/v1/projects` with `{root: repoRoot}` and the private owner token from the `0600` lease record in `x-cezar-runtime-handoff`. Both `200` (new) and the existing structured `409` (already registered) yield the canonical project id. The token authorizes this same-user handoff to bypass hosted browse containment without weakening the remote browser/API boundary; it is never exposed by health. Open `${origin}/p/${id}/` unless `--no-open`; always print the scoped URL and exit 0 without starting stores, agents, schedulers, or another listener.
 5. Reclaim only when the exact owner identity is provably dead. A health failure or runtime-id mismatch never authorizes eviction while that owner remains live: it exits non-zero with a recovery message instead of multiplying cockpits. Once death is proven, stale/mismatched HTTP state is discarded and the new owner may boot on a verified port.
 
 Health version equality is deliberately not required. A current server with the additive `runtimeId` and project-registration route is compatible. A legacy health payload without `runtimeId` is not a verified slot owner; because it cannot have written the new lease protocol, it does not block a new-version primary after the lease is safely acquired.
@@ -156,7 +156,7 @@ This feature changes no project-registry schema and needs no migration. The proc
 `GET /api/v1/health` gains one additive field:
 
 ```ts
-runtimeId: string // UUID-shaped identity of this exact server process
+runtimeId: string // UUID-shaped identity of this exact server process; never authorization
 ```
 
 It is present on every current server and byte-identical on the health WebSocket snapshot because both use `healthSnapshot()`. It is safe on the CORS-open route: it grants no authority and exists only to compare an already local `runtime.json` record with the process answering its recorded origin. `packages/contract` defines the Zod field first; contract parity, health fixtures and backward-compatibility documentation update in the same change.
@@ -169,6 +169,11 @@ content-type: application/json
 
 {"root":"/absolute/realpath-or-input-root"}
 ```
+
+The singleton CLI also sends `x-cezar-runtime-handoff: <owner token>`. A matching private lease
+token permits same-host project delivery outside a hosted service's browser `browseRoot`; absent or
+wrong tokens retain the existing containment checks. The token is disposable process state, is
+never returned by HTTP, and grants no other API capability.
 
 - `200 {project}` means newly registered and emits `project-added`.
 - `409 {project,error}` means already registered and is a successful handoff result.

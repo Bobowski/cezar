@@ -38,6 +38,7 @@ describe('cockpit project handoff', () => {
     const log = vi.fn();
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       expect(JSON.parse(String(init?.body))).toEqual({ root: '/work/my-project' });
+      expect(new Headers(init?.headers).get('x-cezar-runtime-handoff')).toBe(runtime.owner.token);
       return new Response(JSON.stringify({ project, ...(status === 409 ? { error: 'already registered' } : {}) }), { status });
     });
     const result = await handoffProject(runtime, '/work/my-project', { fetcher, open, log });

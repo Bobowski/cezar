@@ -29,7 +29,11 @@ export async function handoffProject(
     const response = await (opts.fetcher ?? fetch)(`${runtime.origin}/api/v1/projects`, {
       method: 'POST',
       signal: controller.signal,
-      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json',
+        'x-cezar-runtime-handoff': runtime.owner.token,
+      },
       body: JSON.stringify(input),
     });
     const parsed = registerProjectResponseSchema.safeParse(await response.json().catch(() => null));

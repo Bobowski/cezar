@@ -561,11 +561,14 @@ and opens (or, with `--no-open`, prints) its canonical `/p/<project>/` URL. If n
 exists, the command starts the server normally. `--port` chooses the preferred port only for that
 new-server path; it does not request a second interactive cockpit.
 
-The disposable ownership records live under `~/.cezar/runtime/cockpits/`. A PID is never trusted by
+The disposable ownership records live under `~/.cezar/runtime/cockpits/` with user-only
+permissions. A PID is never trusted by
 itself: cezar checks the process's OS start/boot identity and a random identity echoed by health.
 Stale records are reclaimed only after the exact owner is proven dead; an alive but unreachable or
-mismatched owner fails closed rather than starting duplicate schedulers. Deleting the runtime
-directory is safe only while all cockpits are stopped.
+mismatched owner fails closed rather than starting duplicate schedulers. The private lease token
+authorizes only the same-user CLI's project-registration handoff (including to a hosted service);
+the public health `runtimeId` grants no authority. Deleting the runtime directory is safe only
+while all cockpits are stopped.
 
 Installed and strict remote services keep role-specific singleton slots, so named installs may
 coexist and a service manager never abandons its configured endpoint. A human launch automatically

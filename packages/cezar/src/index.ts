@@ -500,6 +500,7 @@ async function serveCommand(
     manager,
     version,
     runtimeId,
+    runtimeHandoffToken: cockpitLease?.ownership.identity.token,
     update,
     bootProjectId,
     semaphore,

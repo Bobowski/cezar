@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -72,5 +72,30 @@ describe('initGitInFolder', () => {
     expect(existsSync(join(home, '.git'))).toBe(false);
     mkdirSync(join(home, 'Documents/app'));
     expect(await initGitInFolder({ root: join(home, 'Documents/app'), home, run: dryRunCommandRunner })).toEqual({ ok: true, branch: 'main' });
+  });
+
+  it('keeps .env out even when the folder has its own .gitignore that forgets it', async () => {
+    writeFileSync(join(root, '.gitignore'), 'dist/\n');
+    writeFileSync(join(root, 'app.js'), '1\n');
+    writeFileSync(join(root, '.env'), 'SECRET=1\n');
+    writeFileSync(join(root, '.env.local'), 'SECRET=2\n');
+    writeFileSync(join(root, '.env.example'), 'SECRET=\n');
+    mkdirSync(join(root, 'node_modules/left-pad'), { recursive: true });
+    writeFileSync(join(root, 'node_modules/left-pad/index.js'), '\n');
+
+    expect(await initGitInFolder({ root, run: dryRunCommandRunner })).toEqual({ ok: true, branch: 'main' });
+    const tracked = execFileSync('git', ['ls-files'], { cwd: root, encoding: 'utf8' }).trim().split('\n');
+    expect(tracked.sort()).toEqual(['.env.example', '.gitignore', 'app.js']);
+    expect(readFileSync(join(root, '.gitignore'), 'utf8')).toBe('dist/\n');
+    expect(readFileSync(join(root, '.git/info/exclude'), 'utf8')).toContain('.env.*');
+  });
+
+  it('sees through a symlink: a project registered as a link to home is still home', async () => {
+    const home = join(root, 'home');
+    mkdirSync(home);
+    const link = join(root, 'looks-like-a-project');
+    symlinkSync(home, link);
+    expect(await initGitInFolder({ root: link, home, run: dryRunCommandRunner })).toMatchObject({ ok: false, status: 409 });
+    expect(existsSync(join(home, '.git'))).toBe(false);
   });
 });

@@ -282,19 +282,17 @@ const GH_INSTALL_URL = 'https://cli.github.com'
 /**
  * Signing the GitHub CLI in, done by cezar (spec 2026-10-26-first-run-onboarding, "Sign in does
  * the work"): the dialog starts `gh auth login` the moment it needs a login, shows the one-time
- * code GitHub asks for, and — on the machine the user is at — the browser is already on the page
- * that takes it. GitHub Desktop and the device flow it mirrors: one action, no terminal. `onDone`
+ * code GitHub asks for, and the browser is already on the page that takes it (the server refuses
+ * a hosted cockpit, whose host is not the user's machine). GitHub Desktop and the device flow it mirrors: one action, no terminal. `onDone`
  * fires once GitHub approves, so the dialog that owns the sign-in can close itself or carry on.
  */
 function useGithubSignIn(enabled: boolean, onDone: (login: string | undefined) => void) {
   const login = useGithubLogin(onDone)
-  const health = useHealth()
   const begin = login.start.mutate
   React.useEffect(() => {
     if (enabled) begin()
   }, [enabled, begin])
-  // A remote cockpit opens nothing on the user's machine: the page is theirs to open.
-  return { ...login, opensBrowser: health.data?.capabilities.localHandoff !== false }
+  return login
 }
 
 type GithubSignIn = ReturnType<typeof useGithubSignIn>
@@ -302,10 +300,10 @@ type GithubSignIn = ReturnType<typeof useGithubSignIn>
 function githubSignInLine(signIn: GithubSignIn): string {
   const state = signIn.state
   if (signIn.start.error) return signInErrorMissing(signIn.start.error) ? 'The GitHub CLI is not installed.' : 'Sign-in did not finish.'
-  if (state?.status === 'pending') return signIn.opensBrowser ? 'Enter this code on GitHub. It opened in your browser.' : 'Open GitHub and enter this code.'
+  if (state?.status === 'pending') return 'Enter this code on GitHub. It opened in your browser.'
   if (state?.status === 'failed') return 'Sign-in did not finish.'
   if (state?.status === 'done') return 'Signed in.'
-  return signIn.opensBrowser ? 'Signing in through your browser.' : 'Getting a code from GitHub.'
+  return 'Signing in through your browser.'
 }
 
 function signInErrorMissing(error: Error): boolean {
@@ -604,7 +602,8 @@ export function useOnboardingSetup() {
   })
   const info = repo.data?.info
   // A committed repository with no remote at all: GitHub never comes up unless we offer it.
-  const unpublished = info !== undefined && info !== null && !info.remote
+  // Publishing is refused in a single-project workspace, so the pill never offers it there.
+  const unpublished = info !== undefined && info !== null && !info.remote && health.data?.capabilities.singleProject !== true
   const dismissed = uiState.data?.onboarding?.setupDismissed === true
   const dismiss = React.useCallback(() => write({ setupDismissed: true }), [write])
   return { steps, unpublished, folder: info ? folderName(info.root) : '', dismissed: dismissed || !uiState.data, dismiss }
@@ -1079,10 +1078,16 @@ function PickProject() {
       why="Tasks run inside a git repository, each in its own worktree."
       subtitle={
         <>
-          <span className="font-mono">{folder}</span> isn’t a git repository.{' '}
-          <button type="button" onClick={() => setInitOpen(true)} className="text-violet hover:underline">
-            Initialize git here
-          </button>
+          <span className="font-mono">{folder}</span> isn’t a git repository.
+          {/* A single-project workspace changes no project, so the server refuses git-init. */}
+          {singleProject ? null : (
+            <>
+              {' '}
+              <button type="button" onClick={() => setInitOpen(true)} className="text-violet hover:underline">
+                Initialize git here
+              </button>
+            </>
+          )}
         </>
       }
     >

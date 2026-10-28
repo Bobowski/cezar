@@ -134,11 +134,10 @@ describe('Connect GitHub', () => {
     await waitFor(() => expect(calls).toContain('DELETE /api/v1/github/login'))
   })
 
-  it('in a remote cockpit says to open GitHub, because nothing opened on this machine', async () => {
-    serve({ localHandoff: false })
+  it('in a hosted cockpit shows why the server will not sign its own gh in', async () => {
+    serve({ start: () => json({ error: 'Sign in to GitHub on the machine hosting cezar: run gh auth login there.' }, 409) })
     renderConnect()
-    await screen.findByTestId('github-login-code')
-    await waitFor(() => expect(screen.getByText('Open GitHub and enter this code.')).toBeTruthy())
+    expect((await screen.findByRole('alert')).textContent).toBe('Sign in to GitHub on the machine hosting cezar: run gh auth login there.')
   })
 
   it('still says what to do when copying is not allowed', async () => {

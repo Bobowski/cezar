@@ -17,6 +17,7 @@ describe('/api/v1/github/login', () => {
   const savedHome = process.env.HOME;
   const savedCezHome = process.env.CEZ_HOME;
   const savedRemote = process.env.CEZ_REMOTE;
+  const savedSingleProject = process.env.CEZ_SINGLE_PROJECT;
   let home: string;
   let store: RunStore;
 
@@ -50,10 +51,11 @@ describe('/api/v1/github/login', () => {
     process.env.HOME = home;
     process.env.CEZ_HOME = join(home, '.cezar');
     delete process.env.CEZ_REMOTE;
+    delete process.env.CEZ_SINGLE_PROJECT;
   });
   afterEach(() => {
     store.flush();
-    for (const [key, value] of [['HOME', savedHome], ['CEZ_HOME', savedCezHome], ['CEZ_REMOTE', savedRemote]] as const) {
+    for (const [key, value] of [['HOME', savedHome], ['CEZ_HOME', savedCezHome], ['CEZ_REMOTE', savedRemote], ['CEZ_SINGLE_PROJECT', savedSingleProject]] as const) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
@@ -77,11 +79,31 @@ describe('/api/v1/github/login', () => {
     expect(await read.json()).toEqual({ status: 'done' });
   });
 
-  it('never opens a browser on the host in remote mode — the user is not there', async () => {
+  it('refuses to sign the host in from a hosted cockpit — POST and DELETE start and cancel nothing', async () => {
     process.env.CEZ_REMOTE = '1';
-    const { app, openUrl } = build(fakeLogin([{ status: 'pending', code: 'AAAA-1111', url: 'https://github.com/login/device' }]));
-    expect((await apiRequest(app, '/api/v1/github/login', { method: 'POST' })).status).toBe(200);
+    const login = fakeLogin([{ status: 'pending', code: 'AAAA-1111', url: 'https://github.com/login/device' }]);
+    const start = vi.spyOn(login, 'start');
+    const { app, openUrl } = build(login);
+    const started = await apiRequest(app, '/api/v1/github/login', { method: 'POST' });
+    expect(started.status).toBe(409);
+    expect(((await started.json()) as { error: string }).error).toMatch(/machine hosting cezar/);
+    expect((await apiRequest(app, '/api/v1/github/login', { method: 'DELETE' })).status).toBe(409);
+    expect(start).not.toHaveBeenCalled();
+    expect(login.cancelled).toBe(0);
     expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it('refuses in a single-project workspace, like every other mutating workspace route', async () => {
+    process.env.CEZ_SINGLE_PROJECT = '1';
+    const login = fakeLogin([{ status: 'pending', code: 'AAAA-1111', url: 'https://github.com/login/device' }]);
+    const start = vi.spyOn(login, 'start');
+    const { app } = build(login);
+    const started = await apiRequest(app, '/api/v1/github/login', { method: 'POST' });
+    expect(started.status).toBe(409);
+    expect(await started.json()).toEqual({ error: 'single-project mode is enabled; signing in to GitHub is disabled' });
+    expect((await apiRequest(app, '/api/v1/github/login', { method: 'DELETE' })).status).toBe(409);
+    expect(start).not.toHaveBeenCalled();
+    expect(login.cancelled).toBe(0);
   });
 
   it('answers 503 with the install hint without gh, 500 with gh’s own line otherwise', async () => {

@@ -124,9 +124,13 @@ folder already has `.git`; when the commit fails (typically no git identity) the
 created is removed, so a retry starts clean. A folder with no `.gitignore` gets a short one first
 (`node_modules/`, `.env`, `.env.*` except `.env.example`, `.DS_Store`, `*.log`): the first commit
 takes every file, and on the way to Publish to GitHub installed dependencies and secrets must not
-be among them. A missing git identity is answered with the two `git config` commands to run. A
-home folder, a guarded folder directly in it (Documents, Desktop…), a parent of home and a disk
-root are refused with 409, because `git add -A` there would sweep up everything the user owns.
+be among them. The same patterns always go into the new repository's `.git/info/exclude`, so a
+project whose own `.gitignore` forgets `.env` still does not commit it; that file is local to the
+clone and shared by its task worktrees. A missing git identity is answered with the two `git
+config` commands to run. A home folder, a guarded folder directly in it (Documents, Desktop…), a
+parent of home and a disk root are refused with 409, compared after resolving symlinks, because
+`git add -A` there would sweep up everything the user owns. Single-project mode refuses the route
+with 409, like every other registry mutator, and the page does not offer it there.
 The cockpit's dialog shows the three commands before running them.
 
 The next task picks the repository up without a restart: run start re-reads `getRepoInfo`, and
@@ -148,16 +152,20 @@ Without `gh`: `503 {error, notFound: true}`; no code within 20 s: `500`. Failure
 plain words: an expired code, a refusal on GitHub, no network, and a `GH_TOKEN` in cezar's
 environment (which `gh` always prefers, so a login cannot replace it). A cancel while the start
 is still waiting for its code ends that request too, and a login left waiting is killed when
-cezar exits. In a remote cockpit nothing is opened on the host and the dialog says to open
-GitHub. `CEZ_DRY_RUN=1` gets a fake code that approves itself after 6 s and opens no browser.
+cezar exits. `POST` and `DELETE` refuse with 409 in single-project mode and in a hosted cockpit:
+signing the host's `gh` in changes credentials on the server, so it follows the provider login,
+which a hosted cockpit also refuses. `CEZ_DRY_RUN=1` gets a fake code that approves itself after
+6 s and opens no browser.
 
 ### `POST /api/v1/projects/:projectId/publish-github`
 
 Body `{owner, name}`. Requires a committed repository with no remote (409 otherwise).
 `gh repo create <owner>/<name> --private`, then the HTTPS `origin` and the persisted `gh`
 credential helper exactly as `projects/create` (#968), then `git push -u origin <branch>`. Always
-private — no visibility field, and one must never be added. 503 without `gh`; 409 with "<owner>/<name>
-already exists on GitHub. Pick another name." when the name is taken; a failure after the GitHub
+private — no visibility field, and one must never be added. `owner` must be an account `gh`
+lists (the `github-owners` list the dialog shows), else 403; 503 without `gh` or when it cannot
+list accounts; 409 with "<owner>/<name> already exists on GitHub. Pick another name." when the
+name is taken, and in single-project mode, where the setup pill does not offer it; a failure after the GitHub
 repository exists says so and never deletes it. When `gh` is not signed in, the Publish dialog runs
 the same device-flow sign-in first; if `gh` signs in yet lists no account, it shows why and offers
 Check again instead of waiting forever.

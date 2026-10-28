@@ -1,6 +1,6 @@
 import { GITHUB_REPO_NAME_PATTERN } from '@open-mercato/cezar-contract';
 import { GH_CREDENTIAL_HELPER_CONFIG } from './checkout.ts';
-import { dryRunCommandRunner, spawnCommandRunner, type CommandResult, type CommandRunner } from './create-project.ts';
+import { dryRunCommandRunner, listGithubOwners, spawnCommandRunner, type CommandResult, type CommandRunner } from './create-project.ts';
 import { getRepoInfo } from './git.ts';
 
 /**
@@ -16,7 +16,7 @@ const GH_MISSING = 'gh CLI not found — install it and run `gh auth login`';
 
 export type PublishGithubResult =
   | { ok: true; slug: string; url: string }
-  | { ok: false; status: 400 | 409 | 500 | 503; error: string };
+  | { ok: false; status: 400 | 403 | 409 | 500 | 503; error: string };
 
 export async function publishToGithub(opts: {
   root: string;
@@ -36,6 +36,14 @@ export async function publishToGithub(opts: {
   const info = await getRepoInfo(opts.root);
   if (!info) return { ok: false, status: 409, error: 'not a git repository with a commit yet' };
   if (info.remote) return { ok: false, status: 409, error: `already has a remote: ${info.remote}` };
+
+  // Only an account `gh` lists — the same list the dialog offers. GitHub would refuse another
+  // owner anyway; asking first keeps a crafted request from even trying.
+  const owners = await listGithubOwners(opts.run);
+  if (!owners.available) return { ok: false, status: 503, error: owners.reason };
+  if (!owners.owners.some((entry) => entry.login.toLowerCase() === owner.toLowerCase())) {
+    return { ok: false, status: 403, error: `${owner} is not one of your GitHub accounts` };
+  }
 
   const slug = `${owner}/${name}`;
   const run = opts.run ?? (process.env.CEZ_DRY_RUN === '1' ? dryRunCommandRunner : spawnCommandRunner);

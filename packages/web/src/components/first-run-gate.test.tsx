@@ -16,6 +16,7 @@ vi.mock('@/api/global-events', () => ({ onWorkspaceEvent: () => () => undefined 
 vi.mock('@/components/ui/toaster', () => ({ toast: vi.fn() }))
 
 const fetchMock = vi.fn<typeof fetch>()
+let singleProject = false
 
 beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock)
@@ -30,12 +31,15 @@ beforeEach(() => {
             ? { repos: [], truncated: false }
             : url.pathname === '/api/v1/projects/github-owners'
               ? { available: false, reason: 'gh is not authenticated' }
-              : { error: 'not stubbed' }
+              : url.pathname === '/api/v1/health'
+                ? { repoRoot: '/work/plans', capabilities: { singleProject } }
+                : { error: 'not stubbed' }
     return new Response(JSON.stringify(body), { status: 'error' in body ? 404 : 200, headers: { 'content-type': 'application/json' } })
   })
 })
 
 afterEach(() => {
+  singleProject = false
   cleanup()
   fetchMock.mockReset()
   vi.unstubAllGlobals()
@@ -65,5 +69,14 @@ describe('FirstRun', () => {
     renderFirstRun(false)
     await waitFor(() => expect(page()).toBe('pick-project'))
     expect(screen.getByRole('button', { name: 'Initialize git here' })).toBeTruthy()
+  })
+
+  it('offers no git init in a single-project workspace, where the server refuses it', async () => {
+    singleProject = true
+    renderFirstRun(false)
+    await waitFor(() => expect(page()).toBe('pick-project'))
+    await waitFor(() => expect(screen.getByText('isn’t a git repository.', { exact: false })).toBeTruthy())
+    await new Promise((resolveSoon) => setTimeout(resolveSoon, 50))
+    expect(screen.queryByRole('button', { name: 'Initialize git here' })).toBeNull()
   })
 })

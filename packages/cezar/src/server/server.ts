@@ -1580,7 +1580,14 @@ export function createApp(deps: ServerDeps) {
     detectedUrls.forget(runId);
   };
   const singleProjectRefusal = (
-    action: 'adding projects' | 'editing projects' | 'removing projects' | 'folder browsing',
+    action:
+      | 'adding projects'
+      | 'editing projects'
+      | 'removing projects'
+      | 'folder browsing'
+      | 'initializing git'
+      | 'publishing to GitHub'
+      | 'signing in to GitHub',
   ) => ({ error: `single-project mode is enabled; ${action} is disabled` });
   // Inbox live updates (spec 007). Opt-in (#471): no capability, no watcher —
   // and since step 2.3 the per-dataDir watch is created lazily by the first
@@ -3008,6 +3015,8 @@ export function createApp(deps: ServerDeps) {
     // "Initialize git here" (spec 2026-10-26-first-run-onboarding): a `not-git` project becomes a
     // repository with its files committed, so the next task gets a real worktree.
     .post('/projects/:projectId/git-init', async (c) => {
+      // Gated like every other registry mutator: a constrained workspace changes no project.
+      if (capabilities().singleProject) return c.json(singleProjectRefusal('initializing git'), 409);
       const { id, root } = await registryProjectRoot(c.req.param('projectId'));
       if (root === undefined) return c.json({ error: `unknown project: ${id}` }, 404);
       const result = await initGitInFolder({
@@ -3024,6 +3033,7 @@ export function createApp(deps: ServerDeps) {
     // "Publish to GitHub" (spec 2026-10-26-first-run-onboarding): a local repository with no
     // remote becomes a new private GitHub repository, pushed. Always private, like `create`.
     .post('/projects/:projectId/publish-github', jsonZodValidator(publishProjectGithubInputSchema), async (c) => {
+      if (capabilities().singleProject) return c.json(singleProjectRefusal('publishing to GitHub'), 409);
       const { id, root } = await registryProjectRoot(c.req.param('projectId'));
       if (root === undefined) return c.json({ error: `unknown project: ${id}` }, 404);
       const { owner, name } = c.req.valid('json');
@@ -3862,14 +3872,24 @@ export function createApp(deps: ServerDeps) {
   // Through a function so the answer keeps the whole union: a narrowed `state` (or an `idle`
   // literal) would make Hono infer a narrower 200 than the contract schema promises.
   const loginBody = (state: GithubLoginState): GithubLoginState => state;
+  // Signing the server's `gh` in changes credentials on the host, so it follows the provider
+  // login: never from a hosted cockpit, and never in a constrained single-project workspace.
+  const githubLoginRefusal = () =>
+    capabilities().singleProject
+      ? singleProjectRefusal('signing in to GitHub')
+      : !capabilities().localHandoff
+        ? { error: 'Sign in to GitHub on the machine hosting cezar: run gh auth login there.' }
+        : null;
   const githubLoginRoutes = new Hono()
     .post('/github/login', async (c) => {
+      const refusal = githubLoginRefusal();
+      if (refusal) return c.json(refusal, 409);
       const state = await githubLogin.start();
       if (state.status === 'failed') {
         if (state.notFound) return c.json({ error: GH_LOGIN_MISSING, notFound: true }, 503);
         return c.json({ error: state.error }, 500);
       }
-      if (state.status === 'pending' && githubLoginOpenedFor !== state.code && capabilities().localHandoff && process.env.CEZ_DRY_RUN !== '1') {
+      if (state.status === 'pending' && githubLoginOpenedFor !== state.code && process.env.CEZ_DRY_RUN !== '1') {
         githubLoginOpenedFor = state.code;
         void openUrl(state.url);
       }
@@ -3884,6 +3904,8 @@ export function createApp(deps: ServerDeps) {
       return c.json(loginBody(state), 200);
     })
     .delete('/github/login', (c) => {
+      const refusal = githubLoginRefusal();
+      if (refusal) return c.json(refusal, 409);
       githubLogin.cancel();
       return c.json(loginBody({ status: 'idle' }), 200);
     });

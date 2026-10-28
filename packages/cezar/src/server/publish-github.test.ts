@@ -17,6 +17,9 @@ describe('publishToGithub', () => {
       calls.push({ cmd, args });
       const forced = override(cmd, args);
       if (forced) return forced;
+      // The accounts `gh` lists: the user and one org.
+      if (cmd === 'gh' && args[0] === 'api' && args[1] === 'user') return { ok: true, stdout: 'zielivia\t\n' };
+      if (cmd === 'gh' && args[0] === 'api' && args[1] === 'user/orgs') return { ok: true, stdout: 'acme\t\t\n' };
       if (cmd === 'gh' || args[0] === 'push') return { ok: true, stdout: '' };
       return spawnCommandRunner(cmd, args, opts);
     };
@@ -36,7 +39,7 @@ describe('publishToGithub', () => {
     const result = await publishToGithub({ root, owner: 'zielivia', name: 'app', run: runner() });
 
     expect(result).toEqual({ ok: true, slug: 'zielivia/app', url: 'https://github.com/zielivia/app' });
-    expect(calls[0]).toEqual({ cmd: 'gh', args: ['repo', 'create', 'zielivia/app', '--private'] });
+    expect(calls.filter((call) => call.args[0] === 'repo')).toEqual([{ cmd: 'gh', args: ['repo', 'create', 'zielivia/app', '--private'] }]);
     expect(execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: root, encoding: 'utf8' }).trim()).toBe('https://github.com/zielivia/app.git');
     expect(execFileSync('git', ['config', '--local', '--get-all', 'credential.https://github.com.helper'], { cwd: root, encoding: 'utf8' })).toContain('!gh auth git-credential');
     expect(calls.at(-1)).toEqual({ cmd: 'git', args: ['push', '-u', 'origin', 'main'] });
@@ -74,10 +77,20 @@ describe('publishToGithub', () => {
       root,
       owner: 'zielivia',
       name: 'app',
-      run: runner((cmd) => (cmd === 'gh' ? { ok: false, error: 'GraphQL: Name already exists on this account (createRepository)' } : undefined)),
+      run: runner((cmd, args) => (cmd === 'gh' && args[0] === 'repo' ? { ok: false, error: 'GraphQL: Name already exists on this account (createRepository)' } : undefined)),
     });
     expect(result).toEqual({ ok: false, status: 409, error: 'zielivia/app already exists on GitHub. Pick another name.' });
     expect(execFileSync('git', ['remote'], { cwd: root, encoding: 'utf8' }).trim()).toBe('');
+  });
+
+  it('publishes only under an account gh lists, and creates nothing for another owner', async () => {
+    expect(await publishToGithub({ root, owner: 'acme', name: 'app', run: runner() })).toMatchObject({ ok: true, slug: 'acme/app' });
+    calls = [];
+    execFileSync('git', ['remote', 'remove', 'origin'], { cwd: root });
+
+    const result = await publishToGithub({ root, owner: 'someone-else', name: 'app', run: runner() });
+    expect(result).toEqual({ ok: false, status: 403, error: 'someone-else is not one of your GitHub accounts' });
+    expect(calls.some((call) => call.args[0] === 'repo')).toBe(false);
   });
 
   it('validates the owner before running anything', async () => {

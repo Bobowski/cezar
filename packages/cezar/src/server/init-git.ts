@@ -1,4 +1,4 @@
-import { rm, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, parse, resolve } from 'node:path';
 import { dryRunCommandRunner, spawnCommandRunner, type CommandResult, type CommandRunner } from './create-project.ts';
@@ -20,6 +20,14 @@ const INITIAL_BRANCH = 'main';
  */
 export const DEFAULT_GITIGNORE = ['node_modules/', '.env', '.env.*', '!.env.example', '.DS_Store', '*.log', ''].join('\n');
 
+/**
+ * Also written to `.git/info/exclude` of every repository this route creates, whatever
+ * `.gitignore` the folder already has: a project's own `.gitignore` that forgets `.env` must not
+ * let `git add -A` commit secrets (and "Publish to GitHub" push them). Local to this clone, shared
+ * by its task worktrees, never committed.
+ */
+export const LOCAL_EXCLUDES = ['', '# cezar: keep secrets and installed dependencies out of the first commit', 'node_modules/', '.env', '.env.*', '!.env.example', ''].join('\n');
+
 /** Plain words for the one commit failure a first-time user meets: git does not know them yet. */
 export const GIT_IDENTITY_MISSING =
   'Git needs your name and email before the first commit. Run these two commands in Terminal, then try again:\n' +
@@ -37,7 +45,7 @@ export async function initGitInFolder(opts: {
   /** The user's home folder; tests pass their own. */
   home?: string;
 }): Promise<InitGitResult> {
-  const refusal = unsafeRoot(opts.root, opts.home ?? homedir());
+  const refusal = unsafeRoot(await realOrSame(opts.root), await realOrSame(opts.home ?? homedir()));
   if (refusal) return { ok: false, status: 409, error: refusal };
   const gitDir = join(opts.root, '.git');
   if (await exists(gitDir)) return { ok: false, status: 409, error: `already a git repository: ${opts.root}` };
@@ -60,6 +68,12 @@ export async function initGitInFolder(opts: {
     await rm(gitDir, { recursive: true, force: true }).catch(() => undefined);
     return { ok: false, status: 500, error };
   };
+  try {
+    await mkdir(join(gitDir, 'info'), { recursive: true });
+    await appendFile(join(gitDir, 'info', 'exclude'), LOCAL_EXCLUDES, 'utf8');
+  } catch (err) {
+    return undo(`could not write .git/info/exclude: ${err instanceof Error ? err.message : String(err)}`);
+  }
   const gitignore = join(opts.root, '.gitignore');
   if (!(await exists(gitignore))) {
     try {
@@ -93,6 +107,16 @@ function unsafeRoot(root: string, home: string): string | null {
     return `cezar will not make your ${target.slice(homeDir.length + 1)} folder a git repository. Pick a project folder inside it instead.`;
   }
   return null;
+}
+
+/** The path with every symlink resolved — a project registered through a link to `$HOME` is
+ *  still `$HOME`. A path that cannot be resolved is compared as given. */
+async function realOrSame(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch {
+    return path;
+  }
 }
 
 async function exists(path: string): Promise<boolean> {

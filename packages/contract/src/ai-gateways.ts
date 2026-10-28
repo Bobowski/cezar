@@ -134,6 +134,9 @@ export type UpdateAiGateway = z.infer<typeof updateAiGatewaySchema>;
 
 export const aiGatewayParamsSchema = z.object({ id: z.string().uuid() }).strict();
 
+export const removeAiGatewayResponseSchema = z.object({ removed: z.literal(true) }).strict();
+export type RemoveAiGatewayResponse = z.infer<typeof removeAiGatewayResponseSchema>;
+
 const applyEntrySchema = z
   .object({
     key: aiGatewayProvisioningKeySchema,

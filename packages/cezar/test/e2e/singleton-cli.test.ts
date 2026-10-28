@@ -50,7 +50,10 @@ const stop = async (child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'): Pr
 };
 
 test('the packaged CLI reuses one cockpit, registers a second CWD, and recovers a crash', { timeout: 90_000 }, async () => {
-  const root = await mkdtemp(join(tmpdir(), 'cezar-singleton-e2e-'));
+  // macOS exposes /var as a symlink to /private/var. Runtime ownership deliberately rejects
+  // symlink ancestors, so exercise the singleton with the canonical temporary root a real
+  // CEZ_HOME installation would use rather than silently taking the degraded fallback path.
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'cezar-singleton-e2e-')));
   const home = join(root, 'home');
   const repoA = join(root, 'repo-a');
   const repoB = join(root, 'repo-b');

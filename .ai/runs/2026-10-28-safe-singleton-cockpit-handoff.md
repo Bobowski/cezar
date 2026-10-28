@@ -41,9 +41,9 @@ Make a normal `cezar serve` invocation reuse a verified compatible cockpit, regi
 - [x] 7. Implement verified incumbent discovery with bounded health checks.
 - [x] 8. Implement idempotent project handoff and scoped URL output.
 - [x] 9. Route `serveCommand` before all server-only initialization.
-- [ ] 10. Pin default, flag, remote, installed, supervisor, and named-slot modes.
+- [x] 10. Pin default, flag, remote, installed, supervisor, and named-slot modes.
 - [x] 11. Document the new recommended default and disposable runtime state.
-- [ ] 12. Add cross-process/package integration coverage.
+- [x] 12. Add cross-process/package integration coverage.
 - [ ] 13. Run the full validation gate and record platform limits.
 
 ## Verification

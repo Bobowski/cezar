@@ -208,9 +208,12 @@ export const aiGatewayApplyResultSchema = z
   .strict();
 export type AiGatewayApplyResult = z.infer<typeof aiGatewayApplyResultSchema>;
 
-/** Strip a trailing slash. Does not trim credential bytes and is not applied to API keys. */
+/** Strip trailing slashes with a scan. A `/\/+$/` regex is polynomial on a long run of slashes, and this is not applied to API keys. */
 export function normalizeAiGatewayBaseUrl(value: string): string {
-  return value.trim().replace(/\/+$/, '');
+  const trimmed = value.trim();
+  let end = trimmed.length;
+  while (end > 0 && trimmed.charCodeAt(end - 1) === 47) end -= 1;
+  return end === trimmed.length ? trimmed : trimmed.slice(0, end);
 }
 
 export function normalizeAiGatewayName(value: string): string {

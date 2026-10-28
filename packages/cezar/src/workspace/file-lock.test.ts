@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { cezarHomeDir, workspaceConfigPath } from '../paths.ts';
 import { loadWorkspaceConfig, mergeWriteWorkspaceConfig } from './config.ts';
@@ -37,6 +37,12 @@ describe('workspace file lock', () => {
       config.branding = { name: 'after' };
     });
     expect((await loadWorkspaceConfig()).branding.name).toBe('after');
+  });
+
+  it('creates a missing parent directory before taking the lock', async () => {
+    const lock = join(cezarHomeDir(), 'fresh-home', 'config.json.lock');
+    await rm(dirname(lock), { recursive: true, force: true });
+    await expect(withFileLock(lock, async () => 'written', 50)).resolves.toBe('written');
   });
 
   it('re-enters a lock this call already holds', async () => {

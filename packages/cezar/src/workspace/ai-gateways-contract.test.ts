@@ -28,6 +28,7 @@ const createBody = {
 describe('AI gateway contract', () => {
   it('accepts a strict create and rejects unknown fields, a trailing slash, and an enable without a key', () => {
     expect(normalizeAiGatewayBaseUrl(' https://gateway.example/v1/ ')).toBe('https://gateway.example/v1');
+    expect(normalizeAiGatewayBaseUrl('https://gateway.example/v1///')).toBe('https://gateway.example/v1');
     expect(createAiGatewaySchema.parse(createBody)).not.toHaveProperty('enabled');
     expect(createAiGatewaySchema.safeParse({ ...createBody, kind: 'openrouter' }).success).toBe(false);
     expect(createAiGatewaySchema.safeParse({ ...createBody, baseUrl: 'https://gateway.example/v1/' }).success).toBe(false);

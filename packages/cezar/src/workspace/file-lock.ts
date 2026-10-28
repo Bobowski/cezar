@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { promises as fs } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { assertCezarHomeWriteIsSandboxed } from '../paths.ts';
 
@@ -41,8 +41,12 @@ export async function withFileLock<T>(
 
 async function acquire(lockDir: string, timeoutMs: number): Promise<void> {
   const owner = join(lockDir, String(process.pid));
+  const parent = dirname(lockDir);
   const started = Date.now();
   for (;;) {
+    // Exclusive mkdir is the lock, so it cannot be recursive. A fresh CEZ_HOME
+    // has no directory yet — create the parent or the first write dies ENOENT.
+    await fs.mkdir(parent, { recursive: true, mode: 0o700 });
     try {
       await fs.mkdir(lockDir, { mode: 0o700 });
       try {

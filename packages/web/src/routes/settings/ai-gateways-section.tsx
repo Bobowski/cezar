@@ -37,6 +37,7 @@ const AUTH_LABELS: Record<AiGatewayAuthMode, string> = {
 }
 
 const INTERRUPTED = 'Update interrupted — save the API key again or remove this gateway.'
+const selectStyle = 'h-9 w-full rounded-md border border-input bg-card px-3 py-1 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50'
 
 interface Draft {
   id?: string
@@ -282,6 +283,7 @@ function GatewayEditor({
           <label key={protocol} className="flex flex-col gap-1 text-[13px]">
             {PROTOCOL_LABELS[protocol]} auth
             <select
+              className={selectStyle}
               aria-label={`${PROTOCOL_LABELS[protocol]} auth`}
               value={draft.authProtocols[protocol] ?? 'bearer'}
               onChange={(event) => onChange({ ...draft, authProtocols: { ...draft.authProtocols, [protocol]: event.target.value as AiGatewayAuthMode } })}
@@ -292,7 +294,7 @@ function GatewayEditor({
         ))}
         <label className="flex flex-col gap-1 text-[13px]">
           Catalog auth
-          <select aria-label="Catalog auth" value={draft.catalog} onChange={(event) => onChange({ ...draft, catalog: event.target.value as AiGatewayAuthMode })}>
+          <select className={selectStyle} aria-label="Catalog auth" value={draft.catalog} onChange={(event) => onChange({ ...draft, catalog: event.target.value as AiGatewayAuthMode })}>
             {AI_GATEWAY_AUTH_MODES.map((mode) => <option key={mode} value={mode}>{AUTH_LABELS[mode]}</option>)}
           </select>
         </label>

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, mkdir, rm } from 'node:fs/promises';
+import { chmod, mkdir, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { healthResponseSchema } from '@open-mercato/cezar-contract';
 import { z } from 'zod';
@@ -11,7 +11,11 @@ import {
   type WebhookOwnership,
 } from '../webhooks/ownership.ts';
 import { assertNoSymlink, atomicWrite, readState, statePath } from '../webhooks/storage.ts';
-import { isProcessIdentityAlive } from './process-identity.ts';
+import {
+  isProcessIdentityAlive,
+  PROCESS_IDENTITY_UNSUPPORTED_PLATFORM_MESSAGE,
+  processIdentityPlatformSupported,
+} from './process-identity.ts';
 
 const slotSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/);
 const ownerSchema = z.object({
@@ -91,6 +95,9 @@ export async function claimCockpitSlot(
   slot: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<CockpitSlotClaim> {
+  if (!processIdentityPlatformSupported()) {
+    return { kind: 'degraded', slot, reason: PROCESS_IDENTITY_UNSUPPORTED_PLATFORM_MESSAGE };
+  }
   let directory: string;
   try {
     directory = await prepareRuntimeDirectory(slot, env);
@@ -103,7 +110,18 @@ export async function claimCockpitSlot(
       ? { kind: 'primary', lease: { slot, directory, ownership } }
       : { kind: 'secondary', slot, directory };
   } catch (error) {
-    return { kind: 'blocked', slot, reason: error instanceof Error ? error.message : String(error) };
+    const reason = error instanceof Error ? error.message : String(error);
+    // Keep the old startup available when identity probing failed before anybody established
+    // ownership. An authoritative owner or in-flight candidate is ambiguous and remains protected.
+    try {
+      const owner = readOwnershipIdentity(directory);
+      const candidates = (await readdir(directory)).some((name) => /^owner-(?:record|next|publication)-/.test(name));
+      return owner || candidates
+        ? { kind: 'blocked', slot, reason }
+        : { kind: 'degraded', slot, reason };
+    } catch {
+      return { kind: 'blocked', slot, reason };
+    }
   }
 }
 
@@ -163,7 +181,7 @@ export async function releaseCockpitRuntime(lease: CockpitLease): Promise<void> 
 export type RuntimeInspection =
   | { kind: 'verified'; runtime: CockpitRuntimeRecord }
   | { kind: 'absent' }
-  | { kind: 'dead'; runtime: CockpitRuntimeRecord }
+  | { kind: 'dead'; runtime?: CockpitRuntimeRecord }
   | { kind: 'unavailable'; runtime?: CockpitRuntimeRecord; reason: string };
 
 export async function inspectCockpitRuntime(
@@ -175,32 +193,39 @@ export async function inspectCockpitRuntime(
   } = {},
 ): Promise<RuntimeInspection> {
   const env = opts.env ?? process.env;
+  const directory = cockpitRuntimeDirectory(slot, env);
   let runtime: CockpitRuntimeRecord | undefined;
+  let runtimeError: string | undefined;
   try {
     runtime = await readCockpitRuntime(slot, env);
   } catch (error) {
-    return { kind: 'unavailable', reason: error instanceof Error ? error.message : String(error) };
+    runtimeError = error instanceof Error ? error.message : String(error);
   }
-  if (!runtime) return { kind: 'absent' };
   let publishedOwner: ReturnType<typeof readOwnershipIdentity>;
   try {
-    publishedOwner = readOwnershipIdentity(cockpitRuntimeDirectory(slot, env));
+    publishedOwner = readOwnershipIdentity(directory);
   } catch (error) {
     return { kind: 'unavailable', runtime, reason: error instanceof Error ? error.message : String(error) };
   }
-  if (!publishedOwner
-    || publishedOwner.token !== runtime.owner.token
+  // `owner.lock` is authoritative. A runtime projection without it is stale disposable state;
+  // a live owner without a ready projection remains protected below.
+  if (!publishedOwner) return { kind: 'absent' };
+  try {
+    if (!(await isProcessIdentityAlive(publishedOwner))) {
+      return runtime === undefined ? { kind: 'dead' } : { kind: 'dead', runtime };
+    }
+  } catch (error) {
+    return { kind: 'unavailable', runtime, reason: error instanceof Error ? error.message : String(error) };
+  }
+  if (runtimeError) return { kind: 'unavailable', reason: runtimeError };
+  if (!runtime) return { kind: 'unavailable', reason: 'the live owner has not published runtime state yet' };
+  if (publishedOwner.token !== runtime.owner.token
     || publishedOwner.pid !== runtime.owner.pid
     || publishedOwner.start !== runtime.owner.start
     || publishedOwner.boot !== runtime.owner.boot
     || publishedOwner.host !== runtime.owner.host
     || publishedOwner.pidNamespace !== runtime.owner.pidNamespace) {
     return { kind: 'unavailable', runtime, reason: 'runtime record does not match the published owner lease' };
-  }
-  try {
-    if (!(await isProcessIdentityAlive(publishedOwner))) return { kind: 'dead', runtime };
-  } catch (error) {
-    return { kind: 'unavailable', runtime, reason: error instanceof Error ? error.message : String(error) };
   }
 
   const controller = new AbortController();

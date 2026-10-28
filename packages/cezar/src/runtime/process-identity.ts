@@ -13,7 +13,13 @@ import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, readlinkSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
-import { webhookPlatformSupported, WEBHOOK_UNSUPPORTED_PLATFORM_MESSAGE } from '../webhooks/platform.ts';
+
+export const PROCESS_IDENTITY_UNSUPPORTED_PLATFORM_MESSAGE =
+  'Verified process identity is unavailable on this platform (requires Linux /proc, macOS ps/sysctl or Windows PowerShell).';
+
+export function processIdentityPlatformSupported(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === 'linux' || platform === 'darwin' || platform === 'win32';
+}
 
 // A cold Windows PowerShell + CIM spawn can exceed 10s on a loaded or emulated host. Timing out
 // still fails closed, but the bound must leave enough room for a valid probe to complete.
@@ -150,7 +156,7 @@ export async function processStarts(pids: number[]): Promise<Map<number, string>
   const ceiling = maxProbePid();
   const candidates = [...new Set(pids)].filter(pid => Number.isInteger(pid) && pid > 0 && pid <= ceiling);
   if (!candidates.length) return new Map();
-  if (!webhookPlatformSupported()) throw new Error(WEBHOOK_UNSUPPORTED_PLATFORM_MESSAGE);
+  if (!processIdentityPlatformSupported()) throw new Error(PROCESS_IDENTITY_UNSUPPORTED_PLATFORM_MESSAGE);
   if (process.platform === 'linux') {
     const starts = new Map<number, string>();
     for (const pid of candidates) { const start = linuxProcessStart(pid); if (start !== undefined) starts.set(pid, start); }
@@ -173,7 +179,7 @@ async function bootIdentity(): Promise<string> {
   // which the kernel shifts whenever system time is SET (NTP step, manual change), so a Windows boot
   // mismatch never authorizes a takeover on its own (`bootIsStableId`) and only pid+start decide.
   else if (process.platform === 'win32') bootCache = (await probe(powershellCommand(), ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_BOOT_SCRIPT])).trim();
-  else throw new Error(WEBHOOK_UNSUPPORTED_PLATFORM_MESSAGE);
+  else throw new Error(PROCESS_IDENTITY_UNSUPPORTED_PLATFORM_MESSAGE);
   if (!bootCache) throw new Error(VERIFY_ERROR);
   return bootCache;
 }

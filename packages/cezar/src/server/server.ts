@@ -32,7 +32,7 @@ import { processSnapshot } from './terminal/foreground.ts';
 import { loadPty } from './terminal/pty-module.ts';
 import { discoverShells } from './terminal/shells.ts';
 import { TerminalSessions, type TerminalSessionInfo } from './terminal/sessions.ts';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { AutomationStore } from '../automations/store.ts';
 import { AutomationCoordinator } from '../automations/coordinator.ts';
 import { GithubPoller } from '../automations/github-poller.ts';
@@ -465,6 +465,13 @@ export interface ServerDeps {
   hostSampler?: HostSampler;
   /** Re-arm the workspace automation timer after definition mutations. */
   automationsChanged?: () => void;
+}
+
+function matchesPrivateToken(received: string | undefined, expected: string | undefined): boolean {
+  if (received === undefined || expected === undefined) return false;
+  const receivedBytes = Buffer.from(received);
+  const expectedBytes = Buffer.from(expected);
+  return receivedBytes.length === expectedBytes.length && timingSafeEqual(receivedBytes, expectedBytes);
 }
 
 /** Legacy destructive callers must opt into the recoverable operation API before mutation. */
@@ -2930,21 +2937,18 @@ export function createApp(deps: ServerDeps) {
       }
       const bootProject = await resolveBootProject(projects);
       // The folder this server was started in, when the registry does not hold
-      // it — listed ONLY while the registry is empty, which is the same "seed
-      // once" rule `shouldAutoRegisterProject` applies to the registry write
-      // (#774 follow-up). With no projects the launch folder IS the cockpit's
+      // it — listed ONLY while the registry is empty (#774 follow-up). With no
+      // projects the launch folder IS the cockpit's
       // project, and a cockpit showing the one folder it can definitely serve
       // beats an empty sidebar — that also covers the unreadable workspace,
       // where nothing is registered as far as this process can tell.
       //
-      // Once the user HAS projects, starting cezar somewhere else is opening
-      // the cockpit from a folder, not adding it: listing that folder put a row
-      // in the sidebar, the ⌘K palette and Settings that the user never asked
-      // for and has to clean up. The folder is still served — the boot context
-      // answers `/p/<bootProject>/…` and the unscoped alias, and the scope gate
-      // treats `bootProject` as known — so a legacy bookmark still resolves; it
-      // simply is not a project. Saving it stays the explicit gesture it is
-      // everywhere else: Settings → Add project, or `cezar projects add`.
+      // Once the registry HAS projects, an unregistered boot root can still
+      // exist for guarded roots, registry failures, and legacy/non-serve app
+      // constructors. Omitting that synthetic row keeps an internal worktree
+      // out of the sidebar, ⌘K palette and Settings. The folder remains served:
+      // the boot context answers `/p/<bootProject>/…` and the unscoped alias,
+      // and the scope gate treats `bootProject` as known.
       //
       // It is marked `unregistered` rather than merged in silently, so Settings
       // offers to add it instead of offering Remove/Max parallel it cannot
@@ -2975,8 +2979,10 @@ export function createApp(deps: ServerDeps) {
     .post('/projects', jsonZodValidator(() => registerProjectSchema, { message: 'root must be a non-empty path' }), async (c) => {
       const parsed = { data: c.req.valid('json') };
       const registered = await registerFolder(parsed.data.root, 'local', {
-        trustedLocalHandoff: deps.runtimeHandoffToken !== undefined
-          && c.req.header('x-cezar-runtime-handoff') === deps.runtimeHandoffToken,
+        trustedLocalHandoff: matchesPrivateToken(
+          c.req.header('x-cezar-runtime-handoff'),
+          deps.runtimeHandoffToken,
+        ),
       });
       if (registered.status !== 200) return c.json(registered.body, registered.status);
       // Only a genuinely new project: a re-add answers 409 above and is not an event.

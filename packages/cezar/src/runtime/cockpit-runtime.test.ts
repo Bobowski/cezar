@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -106,5 +106,33 @@ describe('cockpit runtime lease', () => {
     const raw = JSON.parse(readFileSync(join(cockpitRuntimeDirectory('interactive'), 'runtime.json'), 'utf8'));
     expect(raw.owner.pid).toBe(process.pid);
     await releaseCockpitRuntime(claimed.lease);
+  });
+
+  it('recovers a corrupt runtime projection after its exact owner is provably dead', async () => {
+    const claimed = await claimCockpitSlot('interactive');
+    expect(claimed.kind).toBe('primary');
+    if (claimed.kind !== 'primary') return;
+    const identity = claimed.lease.ownership.identity;
+    await releaseCockpitRuntime(claimed.lease);
+
+    writeFileSync(join(cockpitRuntimeDirectory('interactive'), 'owner.lock'), JSON.stringify({
+      ...identity,
+      token: '00000000-0000-4000-8000-000000000004',
+      // Larger than every supported platform's PID ceiling, so absence is OS-provable.
+      pid: 0x1_0000_0000,
+    }));
+    writeFileSync(join(cockpitRuntimeDirectory('interactive'), 'runtime.json'), '{broken');
+
+    expect(await inspectCockpitRuntime('interactive')).toEqual({ kind: 'dead' });
+    const replacement = await claimCockpitSlot('interactive');
+    expect(replacement.kind).toBe('primary');
+    if (replacement.kind === 'primary') {
+      await publishCockpitRuntime(replacement.lease, {
+        runtimeId: '00000000-0000-4000-8000-000000000005',
+        port: 4321,
+        version: '0.0.0-test',
+      });
+      await releaseCockpitRuntime(replacement.lease);
+    }
   });
 });

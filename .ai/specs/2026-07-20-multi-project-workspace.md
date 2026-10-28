@@ -191,8 +191,8 @@ already exist. Headless `cezar run`, single-project `projects list`, and other
 `initWorkspace` callers keep the seed-once rule. Guarded roots (the user's home
 and cezar task worktrees) remain unregistered and use the fallback boot slug.
 
-Because that state is now ORDINARY rather than an edge case, two things follow
-and are load-bearing:
+Guarded roots, registry failures and legacy/non-serve constructors can still
+produce that unregistered state, so two load-bearing rules remain:
 
 - **`GET /api/projects` lists the boot folder while the registry is EMPTY**,
   flagged `unregistered: true` (see API Contracts). With nothing registered the
@@ -202,11 +202,10 @@ and are load-bearing:
   **Add project** instead of Remove and the per-project cap, the sidebar marks
   it "not saved", and everything else treats it as a project.
 
-  Once the registry holds ANY project the row is **not listed**: the same
-  "seed once" rule, applied to the read. Listing it put a row the user never
-  asked for in their sidebar, their ⌘K palette and their Settings table on
-  every launch from a worktree or a scratch checkout — the sidebar noise #774
-  set out to end, arriving through the other door. The folder is still SERVED:
+  Once the registry holds ANY project the row is **not listed**. Listing a
+  guarded worktree put a row the user never asked for in their sidebar, their
+  ⌘K palette and their Settings table — the sidebar noise #774 set out to end,
+  arriving through the other door. The folder is still SERVED:
   `bootProject` names it, `/p/<slug>/` and the unscoped alias answer for it (the
   cockpit's scope gate treats `bootProject` as known whether or not the registry
   lists it), so legacy flat URLs and pasted deep links still resolve. A bare `/`

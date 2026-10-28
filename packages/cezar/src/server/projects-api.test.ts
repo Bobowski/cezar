@@ -570,6 +570,15 @@ describe('workspace projects API', () => {
         body: JSON.stringify({ root: otherRoot }),
       });
       expect(wrong.status).toBe(400);
+      const wrongSameLength = await apiRequest(app, '/api/v1/projects', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-cezar-runtime-handoff': '00000000-0000-4000-8000-000000000002',
+        },
+        body: JSON.stringify({ root: otherRoot }),
+      });
+      expect(wrongSameLength.status).toBe(400);
 
       const trusted = await apiRequest(app, '/api/v1/projects', {
         method: 'POST',

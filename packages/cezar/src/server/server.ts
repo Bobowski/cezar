@@ -101,6 +101,7 @@ import {
   uploadIdParamSchema,
   modelDiscoveryRunnerSchema,
   openProjectInSchema,
+  registerProjectInputSchema,
   updateProjectInputSchema,
 } from '@open-mercato/cezar-contract';
 import { dispatchInputSchema, dispatchIntentSchema, dispatchReportSchema } from '@open-mercato/cezar-contract';
@@ -360,6 +361,8 @@ export interface ServerDeps {
   store: RunStore;
   manager: RunManager;
   version: string;
+  /** Random identity of this exact server process, used by safe CLI handoff. */
+  runtimeId?: string;
   /** Mutable holder for the async npm-registry update check (#368) —
    *  `latest` appears once the registry answers with a newer version. */
   update?: { latest?: string };
@@ -1381,6 +1384,7 @@ async function probeWritableDir(dir: string, create: boolean): Promise<string | 
 // with nothing to offer. See the `routed` assembly at the end of the function.
 export function createApp(deps: ServerDeps) {
   const { version, update, bindHost, bootProjectId } = deps;
+  const runtimeId = deps.runtimeId ?? randomUUID();
   // Boot singletons keep DELIBERATELY distinct names (`boot*`): every
   // project-scoped handler must resolve its `{store, manager, root, dataDir,
   // launchKey}` from `c.get('project')` — a bare `store`/`repoRoot` in a
@@ -1475,13 +1479,12 @@ export function createApp(deps: ServerDeps) {
   const starCount = deps.starCount ?? new StarCountReader();
 
   // ---- workspace boot-project identity (multi-project spec) ----------------
-  // The boot flow (`initWorkspace` in src/index.ts) registers the boot repo
+  // The serve boot flow (`initServeWorkspace` in src/index.ts) registers the boot repo
   // and plumbs its registry id in via `deps.bootProjectId`. Legacy callers and
   // tests construct the app without one — then it is derived lazily from the
   // registry by realpath and cached on a hit. A boot repo that is not in the
-  // registry — a task worktree, `$HOME`, an unreadable workspace, or (since
-  // boot registration became seed-once) any folder started in while the user
-  // already has projects — falls back to its would-be slug, so `bootProject`
+  // registry — a task worktree, `$HOME`, an unreadable workspace, or a legacy
+  // caller that did not supply the id — falls back to its would-be slug, so `bootProject`
   // always names the repo this server was started in. Strictly non-fatal,
   // zero-config: every failure path degrades to the slug fallback, never an
   // error.
@@ -1920,6 +1923,7 @@ export function createApp(deps: ServerDeps) {
     const caps = capabilities();
     return {
       version,
+      runtimeId,
       // Spread rather than `latestVersion: update?.latest`: an `undefined` VALUE is dropped by
       // JSON.stringify, so the key is absent on the wire — but writing it unconditionally types
       // the key as always-present, which is a shape no client ever receives. The contract schema
@@ -3220,9 +3224,7 @@ export function createApp(deps: ServerDeps) {
   // folder-browser dialog's commit step, step 4.2). Workspace-level like its
   // GET twin. Everything here is a guard; the registry write itself is one
   // idempotent `registerProject` call.
-  const registerProjectSchema = z.object({
-    root: z.string().trim().min(1).max(4096),
-  });
+  const registerProjectSchema = registerProjectInputSchema;
 
   /**
    * The register-a-folder half of `POST /api/projects`, factored out so the
@@ -8061,8 +8063,8 @@ export function startServer(deps: ServerDeps, port: number): ServerType & { shut
   // createApp registers the topics, the `upgrade` hook below owns the socket.
   const socketHub = deps.socketHub ?? createSocketHub();
   const bootProjectId = deps.bootProjectId ?? 'default';
-  // `pinned`: the boot project is served whether or not the registry holds it,
-  // and since boot registration became seed-once it usually does NOT — then
+  // `pinned`: the boot project is served whether or not the registry holds it.
+  // Guarded roots and legacy callers may still leave it unregistered — then
   // `bootProjectId` is the `'default'` alias, which `listProjects()` can never
   // name, so the coordinator's own refresh sweep would evict the store opened
   // one line below and the boot folder's automations would silently stop being

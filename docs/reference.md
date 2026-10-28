@@ -553,6 +553,26 @@ platform.
 
 ---
 
+## Starting or reusing the cockpit
+
+A plain `cezar` / `npx cezar-run` is an add-and-open gesture. It reuses the verified compatible
+cockpit already running for this user, registers the current project there when it is not known,
+and opens (or, with `--no-open`, prints) its canonical `/p/<project>/` URL. If no compatible owner
+exists, the command starts the server normally. `--port` chooses the preferred port only for that
+new-server path; it does not request a second interactive cockpit.
+
+The disposable ownership records live under `~/.cezar/runtime/cockpits/`. A PID is never trusted by
+itself: cezar checks the process's OS start/boot identity and a random identity echoed by health.
+Stale records are reclaimed only after the exact owner is proven dead; an alive but unreachable or
+mismatched owner fails closed rather than starting duplicate schedulers. Deleting the runtime
+directory is safe only while all cockpits are stopped.
+
+Installed and strict remote services keep role-specific singleton slots, so named installs may
+coexist and a service manager never abandons its configured endpoint. A human launch automatically
+prefers the verified default installed service, then the ordinary interactive slot.
+
+---
+
 ## Talking to a running cockpit
 
 The cockpit is a local HTTP server; three CLIs and any script can talk to it

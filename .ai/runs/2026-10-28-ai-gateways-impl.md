@@ -46,7 +46,7 @@ An operator can configure AI gateways once, pick a per-agent default, and start 
 ### Phase 1: Gateway contract and shared persistence
 
 - [x] 1.1 Add AI gateway Zod contract (record, auth, responses, apply manifest/result, command spelling helpers) — 84396db5cdeb2a1f320de8b28c1c715b818a0dd4
-- [ ] 1.2 Persist gateways in workspace config with one-time OpenRouter seed and SecretStore keys
+- [x] 1.2 Persist gateways in workspace config with one-time OpenRouter seed and SecretStore keys — 0c5a206b6c485788d2121c87b579f4bf2ff6bcf4
 - [ ] 1.3 Add cross-process workspace-file lock and gateway coordinator
 - [ ] 1.4 Add pendingWrite checkpoint, secret barrier, and coherent snapshots on every mutation
 - [ ] 1.5 Add chained HTTP routes for list/create/update/enable/remove with contract parity

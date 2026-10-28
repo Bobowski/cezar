@@ -53,8 +53,8 @@ An operator can configure AI gateways once, pick a per-agent default, and start 
 
 ### Phase 2: Settings UI
 
-- [ ] 2.1 Add General Settings → AI Gateways list with ON/OFF, add, edit, remove
-- [ ] 2.2 Cover editor edge states: blank key preserve, pending repair, errors, keyboard
+- [x] 2.1 Add General Settings → AI Gateways list with ON/OFF, add, edit, remove — 9db10f9b3aafd61dc99268afe1d097572745f1f0
+- [x] 2.2 Cover editor edge states: blank key preserve, pending repair, errors, keyboard — 9db10f9b3aafd61dc99268afe1d097572745f1f0
 
 ### Phase 3: Defaults and task binding
 

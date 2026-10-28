@@ -114,8 +114,8 @@ function sameRecord(left: AiGateway, right: AiGateway): boolean {
 
 /**
  * Workspace AI gateways. Secrets stay in the vault under `LLM_PROVIDER_<UUID>`.
- * The pending-write barrier lands with the shared lock; this store still refuses to report
- * a key update that did not land in both places.
+ * A changed key is pending in both config copies before the vault write, and ready only
+ * after the final metadata commit. A failed vault write leaves the row pending.
  */
 export class AiGateways {
   constructor(
@@ -151,22 +151,19 @@ export class AiGateways {
     if (!parsed.success) throw invalidInput('Gateway settings are invalid. Check the name, API base URL, protocols and key.');
     await this.ensureSeed();
     const record = this.newRecord(parsed.data);
-    const secret = aiGatewaySecretName(record.id);
-    if (parsed.data.apiKey !== undefined) await this.secrets.set(WORKSPACE, secret, parsed.data.apiKey, ['cezar']);
-    try {
-      await mergeWriteWorkspaceConfig((config) => {
-        const rows = rowsOf(config);
-        if (rows === 'invalid') throw new AiGatewayError('AI gateway settings could not be read.', 'unavailable');
-        if (rows.length >= AI_GATEWAY_MAX_RECORDS) {
-          throw new AiGatewayError(`At most ${AI_GATEWAY_MAX_RECORDS} AI gateways can be saved.`, 'capacity');
-        }
-        config.aiGateways = [...rows, record];
-      });
-    } catch (error) {
-      if (parsed.data.apiKey !== undefined) await this.secrets.unset(WORKSPACE, secret).catch(() => {});
-      throw error;
+    if (parsed.data.apiKey === undefined) {
+      await this.rewriteRows((rows) => {
+        if (rows.length >= AI_GATEWAY_MAX_RECORDS) throw new AiGatewayError(`At most ${AI_GATEWAY_MAX_RECORDS} AI gateways can be saved.`, 'capacity');
+        return [...rows, record];
+      }, false);
+      return toView(record, false);
     }
-    return toView(record, parsed.data.apiKey !== undefined);
+    const pending = { ...record, pendingWrite: true as const };
+    await this.commitSecret(aiGatewaySecretName(record.id), parsed.data.apiKey, (rows) => {
+      if (rows.length >= AI_GATEWAY_MAX_RECORDS) throw new AiGatewayError(`At most ${AI_GATEWAY_MAX_RECORDS} AI gateways can be saved.`, 'capacity');
+      return [...rows, pending];
+    }, (rows) => rows.map((row) => row.id === record.id ? record : row));
+    return toView(record, true);
   }
 
   private async updateUnlocked(id: string, input: unknown): Promise<AiGatewayView> {
@@ -177,33 +174,23 @@ export class AiGateways {
     const next = this.merge(current, parsed.data);
     const secret = aiGatewaySecretName(id);
     const keyChanges = await this.keyChanges(secret, parsed.data.apiKey);
-    if (next.enabled && !keyChanges.readable) {
+    if (next.enabled && !keyChanges.readable && parsed.data.apiKey === undefined) {
       throw invalidInput('An enabled gateway needs an API key.');
     }
-    if (sameRecord(current, next) && !keyChanges.write) return toView(current, keyChanges.readable);
-    if (keyChanges.write && parsed.data.apiKey !== undefined) {
-      await this.secrets.set(WORKSPACE, secret, parsed.data.apiKey, ['cezar']);
+    if (current.pendingWrite && parsed.data.apiKey === undefined) {
+      throw new AiGatewayError('Update interrupted — save the API key again or remove this gateway.', 'unavailable');
     }
-    try {
-      await mergeWriteWorkspaceConfig((config) => {
-        const rows = rowsOf(config);
-        if (rows === 'invalid') throw new AiGatewayError('AI gateway settings could not be read.', 'unavailable');
-        const index = rows.findIndex((row) => row.id === id);
-        if (index < 0) throw new AiGatewayError('That AI gateway was removed.', 'not_found');
-        const stored = [...rows];
-        const previous = stored[index];
-        if (!previous) throw new AiGatewayError('That AI gateway was removed.', 'not_found');
-        stored[index] = { ...previous, ...next };
-        config.aiGateways = stored;
-      });
-    } catch (error) {
-      if (keyChanges.write) {
-        if (keyChanges.previous !== undefined) await this.secrets.set(WORKSPACE, secret, keyChanges.previous, ['cezar']).catch(() => {});
-        else await this.secrets.unset(WORKSPACE, secret).catch(() => {});
-      }
-      throw error;
+    if (!current.pendingWrite && !keyChanges.write) {
+      if (sameRecord(current, next)) return toView(current, keyChanges.readable);
+      await this.rewriteRows((rows) => this.replaceRow(rows, id, next), false);
+      return toView(next, keyChanges.readable);
     }
-    return toView(next, keyChanges.readable);
+    const apiKey = parsed.data.apiKey;
+    if (apiKey === undefined) throw new AiGatewayError('Update interrupted — save the API key again or remove this gateway.', 'unavailable');
+    const cleared = { ...next };
+    delete cleared.pendingWrite;
+    await this.commitSecret(secret, apiKey, (rows) => rows.map((row) => row.id === id ? { ...row, pendingWrite: true } : row), (rows) => this.replaceRow(rows, id, cleared));
+    return toView(cleared, true);
   }
 
   private async removeUnlocked(id: string): Promise<void> {
@@ -218,6 +205,59 @@ export class AiGateways {
       removed = true;
     });
     if (removed) await this.secrets.unset(WORKSPACE, aiGatewaySecretName(id));
+  }
+
+  private replaceRow(rows: Record<string, unknown>[], id: string, next: AiGateway): Record<string, unknown>[] {
+    const index = rows.findIndex((row) => row.id === id);
+    const previous = index < 0 ? undefined : rows[index];
+    if (!previous) throw new AiGatewayError('That AI gateway was removed.', 'not_found');
+    const stored = [...rows];
+    const written: Record<string, unknown> = { ...previous, ...next };
+    delete written.pendingWrite;
+    stored[index] = written;
+    return stored;
+  }
+
+  /** Pending marker in both config copies, then the vault, then the ready record. A failed vault leaves the marker. */
+  private async commitSecret(
+    secret: string,
+    apiKey: string,
+    markPending: (rows: Record<string, unknown>[]) => Record<string, unknown>[],
+    commit: (rows: Record<string, unknown>[]) => Record<string, unknown>[],
+  ): Promise<void> {
+    await this.rewriteRows(markPending, true);
+    try {
+      await this.secrets.set(WORKSPACE, secret, apiKey, ['cezar']);
+    } catch {
+      throw new AiGatewayError('The API key could not be saved. Save it again or remove this gateway.', 'unavailable');
+    }
+    try {
+      await this.rewriteRows(commit, true);
+    } catch (error) {
+      if (error instanceof AiGatewayError) throw error;
+      throw new AiGatewayError('The API key could not be saved. Save it again or remove this gateway.', 'unavailable');
+    }
+  }
+
+  private async rewriteRows(
+    mutate: (rows: Record<string, unknown>[]) => Record<string, unknown>[],
+    requireBackup: boolean,
+  ): Promise<void> {
+    let snapshot: WorkspaceConfig | undefined;
+    try {
+      await mergeWriteWorkspaceConfig((config) => {
+        snapshot = structuredClone(config);
+        const rows = rowsOf(config);
+        if (rows === 'invalid') throw new AiGatewayError('AI gateway settings could not be read.', 'unavailable');
+        config.aiGateways = mutate(rows);
+      }, { requireBackup });
+    } catch (error) {
+      if (requireBackup && snapshot && !(error instanceof AiGatewayError)) {
+        const restore = snapshot;
+        await mergeWriteWorkspaceConfig(() => restore).catch(() => {});
+      }
+      throw error;
+    }
   }
 
   private async ensureSeed(): Promise<void> {

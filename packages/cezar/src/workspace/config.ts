@@ -546,7 +546,7 @@ export function serializedByPath<T>(path: string, task: () => Promise<T>): Promi
  */
 export async function mergeWriteWorkspaceConfig(
   mutator: (config: WorkspaceConfig) => WorkspaceConfig | void,
-  options?: { lockTimeoutMs?: number },
+  options?: { lockTimeoutMs?: number; requireBackup?: boolean },
 ): Promise<WorkspaceConfig> {
   const path = workspaceConfigPath();
   // Readers stay lock-free so a read-only home can still boot. Writers wait, then throw.
@@ -562,9 +562,10 @@ export async function mergeWriteWorkspaceConfig(
     // registry the user intended rather than the old projects.
     try {
       await atomicWriteJson(workspaceConfigBackupPath(path), next);
-    } catch {
-      // Best-effort: the registry itself is already safely on disk, and a
-      // failed snapshot must never turn a successful write into an error.
+    } catch (error) {
+      // Ordinary saves keep the previous best-effort snapshot. A gateway secret
+      // barrier needs both copies before the vault is touched (spec §4.6.3).
+      if (options?.requireBackup) throw error;
     }
     return next;
   }, options?.lockTimeoutMs));

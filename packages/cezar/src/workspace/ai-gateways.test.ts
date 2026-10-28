@@ -31,7 +31,7 @@ const children: Array<{ kill: (signal?: NodeJS.Signals) => boolean }> = [];
 describe('AI gateways store', () => {
   beforeEach(async () => {
     await rm(workspaceConfigPath(), { force: true });
-    await rm(workspaceConfigBackupPath(), { force: true });
+    await rm(workspaceConfigBackupPath(), { recursive: true, force: true });
     await rm(`${workspaceConfigPath()}.lock`, { recursive: true, force: true });
     await rm(join(cezarHomeDir(), 'ai-gateways.lock'), { recursive: true, force: true });
     await rm(join(cezarHomeDir(), 'secrets'), { recursive: true, force: true });
@@ -172,5 +172,85 @@ describe('AI gateways store', () => {
     const created = await store.create({ ...custom, apiKey: undefined, enabled: false });
     await expect(store.update(created.id, { enabled: true })).rejects.toThrow(/API key/);
     expect((await store.list()).gateways.find((gateway) => gateway.id === created.id)?.enabled).toBe(false);
+    expect(created.pendingWrite).toBeUndefined();
+  });
+
+  it('marks a key write pending in both copies before the vault, then clears it', async () => {
+    const secrets = new WatchingSecrets();
+    const store = new AiGateways(secrets);
+    const created = await store.create(custom);
+    expect(secrets.primaryPending).toBe(true);
+    expect(secrets.backupPending).toBe(true);
+    expect(created.pendingWrite).toBeUndefined();
+    expect(created.hasApiKey).toBe(true);
+    expect(secrets.calls).toBe(1);
+
+    await store.update(created.id, { apiKey: 'sk-sandbox' });
+    expect(secrets.calls).toBe(1);
+
+    secrets.fail = true;
+    const secret = 'sk-do-not-echo';
+    await expect(store.update(created.id, { apiKey: secret })).rejects.toThrow(/could not be saved/);
+    try {
+      await store.update(created.id, { apiKey: secret });
+    } catch (error) {
+      expect(String(error)).not.toContain(secret);
+    }
+    const pending = (await store.list()).gateways.find((gateway) => gateway.id === created.id);
+    expect(pending).toMatchObject({ pendingWrite: true, hasApiKey: true, name: 'Sandbox' });
+    await expect(store.update(created.id, { name: 'Still pending' })).rejects.toThrow(/interrupted/);
+    expect((await store.list()).gateways.find((gateway) => gateway.id === created.id)?.name).toBe('Sandbox');
+
+    secrets.fail = false;
+    const repaired = await store.update(created.id, { apiKey: 'sk-repaired', name: 'Repaired' });
+    expect(repaired).toMatchObject({ name: 'Repaired', hasApiKey: true });
+    expect(repaired.pendingWrite).toBeUndefined();
+
+    secrets.fail = true;
+    await expect(store.create({ ...custom, name: 'Other', apiKey: 'sk-do-not-echo' })).rejects.toThrow(/could not be saved/);
+    expect((await store.list()).gateways.find((gateway) => gateway.name === 'Other'))
+      .toMatchObject({ pendingWrite: true, hasApiKey: false });
+  });
+
+  it('restores the ready record when the backup copy cannot be written', async () => {
+    const store = gateways();
+    await store.list();
+    await rm(workspaceConfigBackupPath(), { force: true });
+    await mkdir(workspaceConfigBackupPath());
+    const secrets = new WatchingSecrets();
+    await expect(new AiGateways(secrets).create(custom)).rejects.toThrow();
+    expect(secrets.calls).toBe(0);
+    const saved = await loadWorkspaceConfig();
+    const rows = Array.isArray(saved.aiGateways) ? saved.aiGateways : [];
+    expect(rows.some((row) => isRecord(row) && row.name === 'Sandbox')).toBe(false);
+    const listed = await store.list();
+    expect(listed.gateways.some((gateway) => gateway.name === 'Sandbox')).toBe(false);
   });
 });
+
+class WatchingSecrets extends SecretStore {
+  calls = 0;
+  primaryPending = false;
+  backupPending = false;
+  fail = false;
+
+  constructor() {
+    super(process.env, { keychain: async () => null });
+  }
+
+  override async set(...args: Parameters<SecretStore['set']>): Promise<void> {
+    const pending = (raw: string): boolean => {
+      const parsed = JSON.parse(raw) as { aiGateways?: unknown };
+      return Array.isArray(parsed.aiGateways) && parsed.aiGateways.some((row) => isRecord(row) && row.pendingWrite === true && row.name === 'Sandbox');
+    };
+    this.primaryPending = pending(await readFile(workspaceConfigPath(), 'utf8'));
+    this.backupPending = pending(await readFile(workspaceConfigBackupPath(), 'utf8'));
+    this.calls += 1;
+    if (this.fail) throw new Error('vault failed');
+    return super.set(...args);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  AI_GATEWAY_OPENROUTER_SEED,
   aiGatewayApplyManifestSchema,
   aiGatewayCommand,
   aiGatewaySchema,
@@ -28,6 +27,7 @@ const createBody = {
 
 describe('AI gateway contract', () => {
   it('accepts a strict create and rejects unknown fields, a trailing slash, and an enable without a key', () => {
+    expect(normalizeAiGatewayBaseUrl(' https://gateway.example/v1/ ')).toBe('https://gateway.example/v1');
     expect(createAiGatewaySchema.parse(createBody)).not.toHaveProperty('enabled');
     expect(createAiGatewaySchema.safeParse({ ...createBody, kind: 'openrouter' }).success).toBe(false);
     expect(createAiGatewaySchema.safeParse({ ...createBody, baseUrl: 'https://gateway.example/v1/' }).success).toBe(false);
@@ -99,17 +99,6 @@ describe('AI gateway contract', () => {
     expect(aiGatewayCommand(id, 'claude', 'bad model', 'claude')).toBeNull();
     expect(aiGatewaySecretNameIssue(id)).toBeNull();
     expect(aiGatewaySecretName(id)).toBe('LLM_PROVIDER_550E8400_E29B_41D4_A716_446655440000');
-  });
-
-  it('describes the OpenRouter seed as an ordinary disabled record', () => {
-    expect(AI_GATEWAY_OPENROUTER_SEED.enabled).toBe(false);
-    expect(AI_GATEWAY_OPENROUTER_SEED.provisioningKey).toBe('openrouter');
-    expect(normalizeAiGatewayBaseUrl(` ${AI_GATEWAY_OPENROUTER_SEED.baseUrl}/ `)).toBe(AI_GATEWAY_OPENROUTER_SEED.baseUrl);
-    expect(aiGatewaySchema.parse({
-      ...AI_GATEWAY_OPENROUTER_SEED,
-      id: '550e8400-e29b-41d4-a716-446655440000',
-      routingRevision: 'seed',
-    }).name).toBe('OpenRouter');
   });
 
   it('resolves explicit choice, then the runner default, and never a substitute', () => {

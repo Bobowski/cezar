@@ -79,6 +79,13 @@ describe('General settings → AI Gateways', () => {
     vi.unstubAllGlobals()
   })
 
+  it('shows an empty list when nothing is saved', async () => {
+    serve({ gateways: [], unavailable: [], keyBackend: 'file' })
+    renderSection()
+    expect(await screen.findByText('No AI gateways yet.')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Add gateway' })).toBeTruthy()
+  })
+
   it('lists gateways and turns one off without sending the key', async () => {
     serve({
       gateways: [

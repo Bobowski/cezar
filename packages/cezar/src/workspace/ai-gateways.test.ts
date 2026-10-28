@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { AI_GATEWAY_SEED_KEY, aiGatewaySecretName } from '@open-mercato/cezar-contract';
+import { aiGatewaySecretName } from '@open-mercato/cezar-contract';
 import { cezarHomeDir, workspaceConfigPath } from '../paths.ts';
 import { loadWorkspaceConfig, mergeWriteWorkspaceConfig, workspaceConfigBackupPath } from './config.ts';
 import { AiGatewayError, AiGateways } from './ai-gateways.ts';
@@ -41,43 +41,65 @@ describe('AI gateways store', () => {
     for (const child of children.splice(0)) child.kill('SIGKILL');
   });
 
-  it('seeds one disabled OpenRouter and does not recreate it after deletion', async () => {
-    const store = gateways();
-    const first = await store.list();
-    const seed = first.gateways.find((gateway) => gateway.provisioningKey === AI_GATEWAY_SEED_KEY);
-    expect(seed).toMatchObject({ name: 'OpenRouter', enabled: false, hasApiKey: false, baseUrl: 'https://openrouter.ai/api/v1' });
+  const formerOpenRouterDefault = {
+    id: '550e8400-e29b-41d4-a716-446655440000',
+    provisioningKey: 'openrouter',
+    name: 'OpenRouter',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    protocols: ['openai-completions', 'openai-responses', 'anthropic-messages'],
+    auth: {
+      protocols: {
+        'openai-completions': 'bearer',
+        'openai-responses': 'bearer',
+        'anthropic-messages': 'bearer',
+      },
+      catalog: 'bearer',
+    },
+    enabled: false,
+    routingRevision: 'rev',
+  };
+
+  it('starts empty and does not invent a provider', async () => {
+    const first = await gateways().list();
+    expect(first.gateways).toEqual([]);
+    expect(first.unavailable).toEqual([]);
     expect(first.secretsSkipped).toBeUndefined();
+    expect((await loadWorkspaceConfig()).aiGateways).toBeUndefined();
 
-    const again = await new AiGateways(new SecretStore(process.env, { keychain: async () => null })).list();
-    expect(again.gateways.map((gateway) => gateway.id)).toEqual([seed?.id]);
-
-    await store.remove(seed!.id);
-    const after = await store.list();
-    expect(after.gateways).toEqual([]);
-    expect((await loadWorkspaceConfig()).aiGatewaysSeeded).toBe(true);
+    const again = await gateways().list();
+    expect(again.gateways).toEqual([]);
   });
 
-  it('keeps an existing registry and a corrupt seed marker from gaining another OpenRouter', async () => {
-    const store = gateways();
+  it('drops an untouched OpenRouter default and keeps a gateway the operator saved', async () => {
+    const kept = {
+      id: '550e8400-e29b-41d4-a716-446655440001',
+      name: 'Already',
+      baseUrl: 'https://gateway.example/v1',
+      protocols: ['openai-responses'],
+      auth,
+      enabled: false,
+      routingRevision: 'rev',
+    };
+    const renamed = { ...formerOpenRouterDefault, id: '550e8400-e29b-41d4-a716-446655440002', name: 'My router' };
     await writeFile(workspaceConfigPath(), JSON.stringify({
-      aiGateways: [{
-        id: '550e8400-e29b-41d4-a716-446655440000',
-        name: 'Already',
-        baseUrl: 'https://gateway.example/v1',
-        protocols: ['openai-responses'],
-        auth,
-        enabled: false,
-        routingRevision: 'rev',
-      }],
+      aiGatewaysSeeded: true,
+      aiGateways: [formerOpenRouterDefault, kept, renamed],
     }));
-    const listed = await store.list();
-    expect(listed.gateways.map((gateway) => gateway.name)).toEqual(['Already']);
-    expect((await loadWorkspaceConfig()).aiGatewaysSeeded).toBe(true);
+    const listed = await gateways().list();
+    expect(listed.gateways.map((gateway) => gateway.name).sort()).toEqual(['Already', 'My router']);
+    expect(listed.gateways.some((gateway) => gateway.provisioningKey === 'openrouter' && gateway.name === 'OpenRouter')).toBe(false);
 
-    await writeFile(workspaceConfigPath(), JSON.stringify({ aiGatewaysSeeded: 'nope', aiGateways: [] }));
-    const blocked = await gateways().list();
-    expect(blocked.gateways).toEqual([]);
-    expect((await loadWorkspaceConfig()).aiGatewaysSeeded).toBe('nope');
+    const withKey = { ...formerOpenRouterDefault, id: '550e8400-e29b-41d4-a716-446655440003' };
+    await writeFile(workspaceConfigPath(), JSON.stringify({ aiGateways: [withKey] }));
+    const secrets = new SecretStore(process.env, { keychain: async () => null });
+    await secrets.set({ kind: 'workspace' }, aiGatewaySecretName(withKey.id), 'sk-kept', ['cezar']);
+    const preserved = await gateways().list();
+    expect(preserved.gateways.map((gateway) => gateway.id)).toEqual([withKey.id]);
+    expect(preserved.gateways[0]?.hasApiKey).toBe(true);
+
+    await writeFile(workspaceConfigPath(), JSON.stringify({ aiGateways: [formerOpenRouterDefault] }));
+    const created = await gateways().create({ ...custom, apiKey: undefined, enabled: false });
+    expect((await gateways().list()).gateways.map((gateway) => gateway.id)).toEqual([created.id]);
   });
 
   it('rejects an unreadable registry instead of showing an empty saved list', async () => {
@@ -138,7 +160,7 @@ describe('AI gateways store', () => {
 
   it('stops at 100 records and keeps a malformed row unavailable', async () => {
     const store = gateways();
-    await store.list();
+    const kept = await store.create({ ...custom, apiKey: undefined, enabled: false });
     await mergeWriteWorkspaceConfig((config) => {
       const rows = Array.isArray(config.aiGateways) ? [...config.aiGateways] : [];
       const broken = '550e8400-e29b-41d4-a716-446655440001';
@@ -148,7 +170,7 @@ describe('AI gateways store', () => {
     });
     await expect(store.create(custom)).rejects.toMatchObject({ code: 'capacity' });
     const listed = await store.list();
-    expect(listed.gateways).toHaveLength(1);
+    expect(listed.gateways.map((gateway) => gateway.id)).toEqual([kept.id]);
     expect(listed.unavailable.map((row) => row.id)).toEqual(['550e8400-e29b-41d4-a716-446655440001']);
     await expect(store.update('550e8400-e29b-41d4-a716-446655440001', { name: 'Nope' }))
       .rejects.toMatchObject({ code: 'unavailable' });
@@ -156,7 +178,7 @@ describe('AI gateways store', () => {
     expect((await store.list()).unavailable).toEqual([]);
   });
 
-  it('waits on the gateway lock instead of seeding under another owner', async () => {
+  it('waits on the gateway lock and does not write a gateway list', async () => {
     const lock = join(cezarHomeDir(), 'ai-gateways.lock');
     const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30_000)'], { stdio: 'ignore' });
     children.push(child);
@@ -164,7 +186,7 @@ describe('AI gateways store', () => {
     await writeFile(join(lock, String(child.pid)), '');
     const store = new AiGateways(new SecretStore(process.env, { keychain: async () => null }), 80);
     await expect(store.list()).rejects.toBeInstanceOf(FileLockTimeoutError);
-    expect((await loadWorkspaceConfig()).aiGatewaysSeeded).toBeUndefined();
+    expect((await loadWorkspaceConfig()).aiGateways).toBeUndefined();
   });
 
   it('refuses to enable a gateway that has no key', async () => {

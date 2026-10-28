@@ -8,7 +8,7 @@ Engine: om-auto-create-pr (steps: 15, --loop: no)
 
 ## Goal
 
-An operator can configure AI gateways once, pick a per-agent default, and start tasks on that connection, and a sandbox can apply the same configuration from a JSON file or stdin. OpenRouter starts as one ordinary disabled seed. Nothing selects another account when the chosen gateway is missing, disabled, or unreadable.
+An operator can configure AI gateways once, pick a per-agent default, and start tasks on that connection, and a sandbox can apply the same configuration from a JSON file or stdin. The gateway list starts empty. Nothing selects another account when the chosen gateway is missing, disabled, or unreadable.
 
 ## Scope
 
@@ -31,7 +31,7 @@ An operator can configure AI gateways once, pick a per-agent default, and start 
 - Dispatching this implementation is the authorization to build the behavior in the spec, including the operating rules the spec marks as proposed: seed stays off, ON means available rather than selected, native remains the unset default, tasks can override, there is no silent fallback, bindings stay stable, and disable does not kill a running process.
 - `agentDefaults` in workspace config stays the existing runner/model default. Gateway choices use a new optional field so the two cannot overwrite each other.
 - Cursor stays native-only. Claude requires Anthropic Messages. Codex requires OpenAI Responses. Other supported runners pick one documented protocol and the task pins it.
-- The OpenRouter seed uses `https://openrouter.ai/api/v1`, provisioning key `openrouter`, bearer auth, and the protocols those runners need. Catalog filtering drops a model only when it explicitly declares no tool support.
+- There is no default gateway. A fresh workspace lists no providers. An untouched copy of the former disabled keyless OpenRouter row is removed on the next list; a row with a key or any changed field stays. Catalog filtering drops a model only when it explicitly declares no tool support.
 
 ## Risks
 

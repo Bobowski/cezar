@@ -3,8 +3,6 @@ import { join } from 'node:path';
 
 import {
   AI_GATEWAY_MAX_RECORDS,
-  AI_GATEWAY_OPENROUTER_SEED,
-  AI_GATEWAY_SEED_KEY,
   aiGatewaySchema,
   aiGatewaySecretName,
   aiGatewaysResponseSchema,
@@ -48,11 +46,18 @@ function rowsOf(config: WorkspaceConfig): Record<string, unknown>[] | 'invalid' 
   return config.aiGateways.filter(isRow);
 }
 
-/** `true` once seed initialization finished. Anything else present is corrupt and must not reseed. */
-function seedMarker(value: unknown): 'done' | 'absent' | 'invalid' {
-  if (value === undefined || value === false) return 'absent';
-  if (value === true) return 'done';
-  return 'invalid';
+const FORMER_OPENROUTER_DEFAULT_PROTOCOLS = ['anthropic-messages', 'openai-completions', 'openai-responses'] as const;
+
+/** The unshipped default row, not a gateway the operator saved. Any edit or stored key keeps the row. */
+function isUntouchedOpenRouterDefault(gateway: AiGateway): boolean {
+  if (gateway.pendingWrite || gateway.enabled) return false;
+  if (gateway.provisioningKey !== 'openrouter') return false;
+  if (gateway.name !== 'OpenRouter' || gateway.baseUrl !== 'https://openrouter.ai/api/v1') return false;
+  const protocols = [...gateway.protocols].sort();
+  if (protocols.length !== FORMER_OPENROUTER_DEFAULT_PROTOCOLS.length) return false;
+  if (protocols.some((protocol, index) => protocol !== FORMER_OPENROUTER_DEFAULT_PROTOCOLS[index])) return false;
+  if (gateway.auth.catalog !== 'bearer') return false;
+  return FORMER_OPENROUTER_DEFAULT_PROTOCOLS.every((protocol) => gateway.auth.protocols[protocol] === 'bearer');
 }
 
 function invalidInput(prefix: string): AiGatewayError {
@@ -125,7 +130,7 @@ export class AiGateways {
 
   async list(): Promise<AiGatewaysResponse> {
     return this.exclusive(async () => {
-      await this.ensureSeed();
+      await this.removeUntouchedOpenRouterDefaults();
       return this.read();
     });
   }
@@ -154,7 +159,7 @@ export class AiGateways {
   private async createUnlocked(input: unknown): Promise<AiGatewayView> {
     const parsed = createAiGatewaySchema.safeParse(normalizeBody(input));
     if (!parsed.success) throw invalidInput('Gateway settings are invalid. Check the name, API base URL, protocols and key.');
-    await this.ensureSeed();
+    await this.removeUntouchedOpenRouterDefaults();
     const record = this.newRecord(parsed.data);
     if (parsed.data.apiKey === undefined) {
       await this.rewriteRows((rows) => {
@@ -283,35 +288,27 @@ export class AiGateways {
     }
   }
 
-  private async ensureSeed(): Promise<void> {
-    const current = await loadWorkspaceConfig();
-    if (seedMarker(current.aiGatewaysSeeded) !== 'absent') return;
-    if (rowsOf(current) === 'invalid') return;
-    await mergeWriteWorkspaceConfig((config) => {
-      if (seedMarker(config.aiGatewaysSeeded) !== 'absent') return;
-      const rows = rowsOf(config);
-      if (rows === 'invalid') return;
-      const hasSeed = rows.some((row) => {
-        const classified = classifyPersistedGateway(row);
-        return classified.kind === 'gateway' && classified.gateway.provisioningKey === AI_GATEWAY_SEED_KEY;
-      });
-      if (!hasSeed && rows.length === 0) config.aiGateways = [this.seedRecord()];
-      config.aiGatewaysSeeded = true;
+  /** Drop only the former keyless OpenRouter default. Skip the write when secrets cannot be read. */
+  private async removeUntouchedOpenRouterDefaults(): Promise<void> {
+    const config = await loadWorkspaceConfig();
+    const rows = rowsOf(config);
+    if (rows === 'invalid' || rows.length === 0) return;
+    const listed = await this.secrets.list(WORKSPACE);
+    if (listed.skipped) return;
+    const names = new Set(listed.secrets.map((entry) => entry.name));
+    const drop = new Set<string>();
+    for (const row of rows) {
+      const classified = classifyPersistedGateway(row);
+      if (classified.kind !== 'gateway' || !isUntouchedOpenRouterDefault(classified.gateway)) continue;
+      if (names.has(aiGatewaySecretName(classified.gateway.id))) continue;
+      drop.add(classified.gateway.id);
+    }
+    if (drop.size === 0) return;
+    await mergeWriteWorkspaceConfig((current) => {
+      const currentRows = rowsOf(current);
+      if (currentRows === 'invalid') return;
+      current.aiGateways = currentRows.filter((row) => typeof row.id !== 'string' || !drop.has(row.id));
     });
-  }
-
-  private seedRecord(): AiGateway {
-    const { protocols, auth, baseUrl, name, provisioningKey, enabled } = AI_GATEWAY_OPENROUTER_SEED;
-    return {
-      id: randomUUID(),
-      provisioningKey,
-      name,
-      baseUrl,
-      protocols: [...protocols],
-      auth: { catalog: auth.catalog, protocols: { ...auth.protocols } },
-      enabled,
-      routingRevision: aiGatewayRoutingRevision({ baseUrl, protocols, auth }),
-    };
   }
 
   private newRecord(input: CreateAiGateway): AiGateway {

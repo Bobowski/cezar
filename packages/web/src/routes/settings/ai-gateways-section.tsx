@@ -159,6 +159,9 @@ export function AiGatewaysSection() {
       ) : null}
       {data.secretsSkipped ? <p className="text-[13px] text-muted-foreground">{data.secretsSkipped}</p> : null}
       {rowError ? <p role="alert" className="text-[13px] text-destructive">{rowError}</p> : null}
+      {data.gateways.length === 0 && data.unavailable.length === 0 && !data.registryError ? (
+        <p className="text-[13px] text-muted-foreground">No AI gateways yet.</p>
+      ) : null}
       <ul className="flex flex-col gap-2">
         {data.gateways.map((gateway) => (
           <li key={gateway.id} className="flex flex-col gap-2 rounded-md border border-border px-3 py-2">

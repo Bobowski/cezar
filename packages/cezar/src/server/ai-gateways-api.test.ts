@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { AI_GATEWAY_SEED_KEY, aiGatewaysResponseSchema, aiGatewayViewSchema } from '@open-mercato/cezar-contract';
+import { aiGatewaysResponseSchema, aiGatewayViewSchema } from '@open-mercato/cezar-contract';
 import { RunStore } from '../runs/store.ts';
 import type { RunManager } from '../workflows/run.ts';
 import { SecretStore } from '../workspace/secrets.ts';
@@ -46,10 +46,9 @@ describe('AI gateways HTTP API', () => {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
-  it('lists the seed, creates, enables, and removes without echoing the key', async () => {
+  it('starts with an empty list, then creates, enables, and removes without echoing the key', async () => {
     const listed = aiGatewaysResponseSchema.parse(await (await request('/api/v1/ai-gateways', 'GET')).json());
-    const seed = listed.gateways.find((gateway) => gateway.provisioningKey === AI_GATEWAY_SEED_KEY);
-    expect(seed).toMatchObject({ name: 'OpenRouter', enabled: false, hasApiKey: false });
+    expect(listed.gateways).toEqual([]);
 
     const secret = 'sk-route-do-not-echo';
     const createdRes = await request('/api/v1/ai-gateways', 'POST', {
@@ -101,11 +100,11 @@ describe('AI gateways HTTP API', () => {
     expect((await request('/api/v1/ai-gateways/not-a-uuid', 'DELETE')).status).toBe(400);
     expect((await request('/api/v1/ai-gateways/550e8400-e29b-41d4-a716-446655440000', 'DELETE')).status).toBe(404);
 
-    const removed = await request(`/api/v1/ai-gateways/${seed!.id}`, 'DELETE');
+    const removed = await request(`/api/v1/ai-gateways/${created.id}`, 'DELETE');
     expect(removed.status).toBe(200);
     expect(await removed.json()).toEqual({ removed: true });
     const after = aiGatewaysResponseSchema.parse(await (await request('/api/v1/ai-gateways', 'GET')).json());
-    expect(after.gateways.some((gateway) => gateway.provisioningKey === AI_GATEWAY_SEED_KEY)).toBe(false);
+    expect(after.gateways).toEqual([]);
     expect((await request('/api/v1/p/default/ai-gateways', 'GET')).status).toBe(404);
   });
 });

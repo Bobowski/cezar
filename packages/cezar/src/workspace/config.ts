@@ -265,11 +265,12 @@ const workspaceConfigSchema = z
     /** Machine-wide agent/model defaults for repos that set none of their own. */
     agentDefaults: agentDefaultsSchema.default(() => ({})).catch(() => ({})),
     /**
-     * AI gateway rows and the one-time seed marker (spec 2026-10-28-app-spec-ai-gateways).
-     * Left unparsed so a corrupt value is not replaced with "empty" on the next save — that
-     * would reseed OpenRouter. The gateway service interprets both fields.
+     * AI gateway rows (spec 2026-10-28-app-spec-ai-gateways).
+     * Left unparsed so a corrupt value is not replaced with an empty list on the next save.
+     * Nothing inserts a default gateway.
      */
     aiGateways: z.unknown().optional(),
+    /** Ignored leftover from a removed seed marker. Listing does not read it to create a gateway. */
     aiGatewaysSeeded: z.unknown().optional(),
     /** Per-runner gateway choice (`native` or a gateway id). Not `agentDefaults` — that map is runner and model. */
     aiGatewayDefaults: z.unknown().optional(),

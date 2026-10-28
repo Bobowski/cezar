@@ -11,7 +11,6 @@ import { secretKeyBackendSchema, secretNameIssue, secretValueIssue } from './sec
 
 export const AI_GATEWAY_MAX_RECORDS = 100;
 export const AI_GATEWAY_APPLY_MAX_BYTES = 1024 * 1024;
-export const AI_GATEWAY_SEED_KEY = 'openrouter';
 
 export const AI_GATEWAY_PROTOCOLS = ['openai-completions', 'openai-responses', 'anthropic-messages'] as const;
 export const aiGatewayProtocolSchema = z.enum(AI_GATEWAY_PROTOCOLS);
@@ -208,26 +207,6 @@ export const aiGatewayApplyResultSchema = z
   })
   .strict();
 export type AiGatewayApplyResult = z.infer<typeof aiGatewayApplyResultSchema>;
-
-/**
- * Ordinary OpenRouter seed: disabled, keyless, bearer on every protocol it advertises.
- * Anthropic uses bearer here so Claude sends `ANTHROPIC_AUTH_TOKEN` from auth data, not from a provider kind.
- */
-export const AI_GATEWAY_OPENROUTER_SEED = {
-  provisioningKey: AI_GATEWAY_SEED_KEY,
-  name: 'OpenRouter',
-  baseUrl: 'https://openrouter.ai/api/v1',
-  protocols: ['openai-completions', 'openai-responses', 'anthropic-messages'],
-  auth: {
-    protocols: {
-      'openai-completions': 'bearer',
-      'openai-responses': 'bearer',
-      'anthropic-messages': 'bearer',
-    },
-    catalog: 'bearer',
-  },
-  enabled: false,
-} as const;
 
 /** Strip a trailing slash. Does not trim credential bytes and is not applied to API keys. */
 export function normalizeAiGatewayBaseUrl(value: string): string {

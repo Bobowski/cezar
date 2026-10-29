@@ -43,6 +43,72 @@ class Delivery:
     completed_at: int = 0
     event_type: str = ""
     reason: str = ""
+    delivery_id: str = ""
+    receiver_id: str = ""
+    event_id: str = ""
+    url: str = ""
+    format: str = ""
+    receiver_name: str = ""
+    delivery_revision: int = 0
+    task_id: str = ""
+    created_at: int = 0
+    http_status: int = 0
+    response: str = ""
+
+    def to_json(self) -> dict[str, object]:
+        row: dict[str, object] = {
+            "sequence": self.sequence,
+            "body": self.body,
+            "attempts": self.attempts,
+            "status": self.status,
+            "nextAttemptAt": self.next_attempt_at,
+            "expiresAt": self.expires_at,
+            "completedAt": self.completed_at,
+            "eventType": self.event_type,
+            "reason": self.reason,
+        }
+        if self.delivery_id:
+            row.update(
+                {
+                    "deliveryId": self.delivery_id,
+                    "receiverId": self.receiver_id,
+                    "eventId": self.event_id,
+                    "url": self.url,
+                    "format": self.format,
+                    "receiverName": self.receiver_name,
+                    "deliveryRevision": self.delivery_revision,
+                    "taskId": self.task_id,
+                    "createdAt": self.created_at,
+                    "httpStatus": self.http_status,
+                    "response": self.response,
+                }
+            )
+        return row
+
+    @classmethod
+    def from_json(cls, loaded: dict, sequence: int) -> Delivery:
+        return cls(
+            sequence=sequence,
+            body=str(loaded.get("body", "")),
+            attempts=_int(loaded.get("attempts")),
+            status=str(loaded.get("status", "pending")),
+            next_attempt_at=str(loaded.get("nextAttemptAt", "")),
+            expires_at=_int(loaded.get("expiresAt")),
+            completed_at=_int(loaded.get("completedAt")),
+            event_type=str(loaded.get("eventType", "")),
+            reason=str(loaded.get("reason", "")),
+            delivery_id=str(loaded.get("deliveryId", "")),
+            receiver_id=str(loaded.get("receiverId", "")),
+            event_id=str(loaded.get("eventId", "")),
+            url=str(loaded.get("url", "")),
+            format=str(loaded.get("format", "")),
+            receiver_name=str(loaded.get("receiverName", "")),
+            delivery_revision=_int(loaded.get("deliveryRevision")),
+            task_id=str(loaded.get("taskId", "")),
+            created_at=_int(loaded.get("createdAt")),
+            http_status=_int(loaded.get("httpStatus")),
+            response=str(loaded.get("response", "")),
+        )
 
 
 class Outbox:
@@ -83,25 +149,23 @@ class Outbox:
                 raise OutboxError("Invalid webhook outbox order")
             previous = sequence
             self.high_water = max(self.high_water, sequence)
-            rows.append(
-                Delivery(
-                    sequence=sequence,
-                    body=str(loaded.get("body", "")),
-                    attempts=int(loaded.get("attempts", 0)),
-                    status=str(loaded.get("status", "pending")),
-                    next_attempt_at=str(loaded.get("nextAttemptAt", "")),
-                    expires_at=_int(loaded.get("expiresAt")),
-                    completed_at=_int(loaded.get("completedAt")),
-                    event_type=str(loaded.get("eventType", "")),
-                    reason=str(loaded.get("reason", "")),
-                )
-            )
+            rows.append(Delivery.from_json(loaded, sequence))
         self._rows = rows
         self._offset = self._read_cursor()
 
-    def append(self, body: str, *, event_type: str = "", expires_at: int = 0) -> Delivery:
+    def append(
+        self,
+        body: str,
+        *,
+        event_type: str = "",
+        expires_at: int = 0,
+        **fields: object,
+    ) -> Delivery:
         sequence = self.high_water + 1
         row = Delivery(sequence=sequence, body=body, event_type=event_type, expires_at=expires_at)
+        for key, value in fields.items():
+            if hasattr(row, key):
+                setattr(row, key, value)
         self._rows.append(row)
         self.high_water = sequence
         self._rewrite()
@@ -114,6 +178,31 @@ class Outbox:
             if row.status == "pending":
                 return row
         return None
+
+    def due(self, now_ms: int) -> Delivery | None:
+        """The next row the service may send: pending/retrying and not deferred."""
+        for row in self._rows:
+            if row.status not in ("pending", "retrying", "blocked_policy"):
+                continue
+            try:
+                deferred = int(row.next_attempt_at or "0")
+            except ValueError:
+                deferred = 0
+            if deferred <= now_ms:
+                return row
+        return None
+
+    def find_delivery(self, delivery_id: str) -> Delivery | None:
+        for row in self._rows:
+            if row.delivery_id and row.delivery_id == delivery_id:
+                return row
+        return None
+
+    def rows(self) -> list[Delivery]:
+        return list(self._rows)
+
+    def save(self) -> None:
+        self._rewrite()
 
     def find(self, sequence: int) -> Delivery | None:
         for row in self._rows:
@@ -167,23 +256,10 @@ class Outbox:
         return 0
 
     def _rewrite(self) -> None:
+        self.directory.mkdir(parents=True, exist_ok=True)
         lines = [self._header(self.high_water).rstrip("\n")]
         for row in self._rows:
-            lines.append(
-                json.dumps(
-                    {
-                        "sequence": row.sequence,
-                        "body": row.body,
-                        "attempts": row.attempts,
-                        "status": row.status,
-                        "nextAttemptAt": row.next_attempt_at,
-                        "expiresAt": row.expires_at,
-                        "completedAt": row.completed_at,
-                        "eventType": row.event_type,
-                        "reason": row.reason,
-                    }
-                )
-            )
+            lines.append(json.dumps(row.to_json()))
         self.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _header(self, high_water: int) -> str:

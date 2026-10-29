@@ -58,47 +58,65 @@ def new_secret() -> str:
     return "whsec_" + b64encode(token_bytes(32)).decode()
 
 
+def _legacy_view(row: dict[str, object]) -> dict[str, object]:
+    """The pre-formats receiver shape the settings page and tests consume."""
+    return {
+        "id": row.get("id", ""),
+        "name": row.get("name", ""),
+        "url": row.get("url", ""),
+        "secret": row.get("secret", ""),
+        "revision": row.get("revision", 1),
+        "deliveryRevision": row.get("deliveryRevision", 1),
+        "state": row.get("state", "active"),
+    }
+
+
+def _registry(directory: Path):
+    from app.integrations.registry import EndpointRegistry
+
+    return EndpointRegistry.open(directory)
+
+
 def load_receivers(directory: Path) -> list[dict[str, object]]:
-    path = directory / _RECEIVERS
-    try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except OSError, UnicodeError, json.JSONDecodeError:
-        return []
-    if not isinstance(loaded, list):
-        return []
-    return [item for item in loaded if isinstance(item, dict)]
+    """Receivers in the legacy shape, backed by `webhooks/endpoints.json`."""
+    return [_legacy_view(row) for row in _registry(directory).state["receivers"]]
 
 
 def save_receiver(
     directory: Path, name: str, url: str
 ) -> tuple[dict[str, object] | None, str | None]:
+    """Settings-page create: active immediately, Slack-rendered as before."""
     issue = delivery_url_issue(url, allow_loopback=True)
     if issue:
         return None, issue
-    if not name.strip() or len(name) > 80:
+    clean = name.strip()
+    if not clean or len(clean) > 80:
         return None, "name must be 1 to 80 characters"
-    rows = load_receivers(directory)
-    secret = new_secret()
-    row: dict[str, object] = {
-        "id": uuid.uuid4().hex,
-        "name": name.strip(),
-        "url": url,
-        "secret": secret,
-        "revision": 1,
-        "deliveryRevision": 1,
-        "state": "active",
-    }
-    rows.append(row)
-    _write_json(directory / _RECEIVERS, rows)
-    return row, None
+    registry = _registry(directory)
+    receiver = registry.create(
+        {
+            "name": clean,
+            "url": url,
+            "format": "slack.v1",
+            "profile": "minimal",
+            "preset": "all",
+            "events": [],
+            "includeScheduledFailures": True,
+            "scope": "main_and_questions",
+            "graceSeconds": 180,
+            "allowLocalNetwork": False,
+        },
+        source="cockpit/settings",
+    )
+    registry.mark_active(str(receiver["id"]))
+    return _legacy_view(registry.private(str(receiver["id"])) or receiver), None
 
 
 def delete_receiver(directory: Path, receiver_id: str) -> bool:
-    rows = load_receivers(directory)
-    kept = [row for row in rows if row.get("id") != receiver_id]
-    if len(kept) == len(rows):
+    registry = _registry(directory)
+    if registry.private(receiver_id) is None:
         return False
-    _write_json(directory / _RECEIVERS, kept)
+    registry.delete(receiver_id)
     return True
 
 
@@ -111,27 +129,41 @@ def update_receiver(
     expected_revision: int,
 ) -> tuple[dict[str, object] | None, str | None]:
     """A rename keeps the revision. A new URL bumps it and returns the receiver to inactive."""
-    rows = load_receivers(directory)
-    row = next((item for item in rows if item.get("id") == receiver_id), None)
+    registry = _registry(directory)
+    row = registry.private(receiver_id)
     if row is None:
         return None, "not found"
     current = row.get("revision", 1)
     if not isinstance(current, int) or current != expected_revision:
         return None, "revision"
-    if not name.strip() or len(name) > 80:
+    clean = name.strip()
+    if not clean or len(clean) > 80:
         return None, "name must be 1 to 80 characters"
     issue = delivery_url_issue(url, allow_loopback=True)
     if issue:
         return None, issue
-    row["name"] = name.strip()
     if url != row.get("url"):
-        row["url"] = url
-        row["revision"] = current + 1
-        delivery = row.get("deliveryRevision", 1)
-        row["deliveryRevision"] = delivery + 1 if isinstance(delivery, int) else 2
-        row["state"] = "inactive"
-    _write_json(directory / _RECEIVERS, rows)
-    return row, None
+        settings = {
+            key: row.get(key)
+            for key in (
+                "name",
+                "url",
+                "format",
+                "profile",
+                "preset",
+                "events",
+                "includeScheduledFailures",
+                "scope",
+                "graceSeconds",
+                "allowLocalNetwork",
+            )
+        }
+        settings["name"] = clean
+        settings["url"] = url
+        row = registry.update(receiver_id, settings, expected_revision)
+    elif clean != row.get("name"):
+        row = registry.rename(receiver_id, clean)
+    return _legacy_view(row), None
 
 
 def public_receiver(row: dict[str, object]) -> dict[str, object]:

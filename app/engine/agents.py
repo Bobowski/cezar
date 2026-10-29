@@ -37,6 +37,8 @@ class AgentSpec:
     images: tuple[dict[str, str], ...] = ()
     mcp_servers: tuple[dict[str, object], ...] = ()
     codex_thread: str = ""
+    # A Claude or Codex profile home. Empty keeps the user's default login.
+    profile_home: str = ""
 
 
 @dataclass(frozen=True, slots=True)

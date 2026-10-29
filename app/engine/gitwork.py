@@ -83,14 +83,16 @@ def fork_sha(repo: Path, base: str, *, fetch: bool) -> str:
     ok, _out, err = git(repo, ["check-ref-format", "--branch", base])
     if not ok:
         raise WorktreeError(err.strip() or f"refusing base ref: {base}")
-    if fetch:
+    from app.engine.git_diff_base import freshest_base_ref
+    from app.engine.git_remotes import resolve_task_remotes
+
+    remote_name = resolve_task_remotes(repo).base or "origin"
+    if fetch and is_safe_git_ref(remote_name):
         # Best effort. A missing remote or an offline machine leaves the local ref.
-        git(repo, ["fetch", "--quiet", "--no-tags", "origin", base], timeout=8)
-    remote = f"origin/{base}"
-    if not is_safe_git_ref(remote):
-        raise WorktreeError(f"refusing option-like base ref: {remote}")
-    ok, _out, _err = git(repo, ["rev-parse", "--verify", "--quiet", remote])
-    start = remote if ok else base
+        git(repo, ["fetch", "--quiet", "--no-tags", remote_name, base], timeout=8)
+    start = freshest_base_ref(_git_ok(repo), base)
+    if not is_safe_git_ref(start):
+        raise WorktreeError(f"refusing option-like base ref: {start}")
     ok, sha, err = git(repo, ["rev-parse", "--verify", start])
     if not ok:
         raise WorktreeError(err.strip() or f"unknown base {base}")
@@ -159,9 +161,34 @@ def prune_orphans(repo: Path, known_ids: set[str]) -> list[str]:
     return removed
 
 
+def task_diff(
+    cwd: Path,
+    *,
+    base_branch: str,
+    task_branch: str,
+    started_at: str,
+    fallback_sha: str,
+) -> Diff:
+    """Diff against the freshest anchor. A broken resolution uses the stored fork SHA."""
+    from app.engine.git_diff_base import resolve_task_diff_base
+
+    anchor = resolve_task_diff_base(
+        _git_ok(cwd),
+        base_branch or fallback_sha,
+        task_branch=task_branch,
+        run_started_at=started_at,
+    )
+    diff = diff_against(cwd, anchor.base or fallback_sha)
+    if diff.text == "missing base" and fallback_sha and fallback_sha != anchor.base:
+        return diff_against(cwd, fallback_sha)
+    return diff
+
+
 def diff_against(cwd: Path, base_sha: str, cap: int = DIFF_CAP) -> Diff:
-    if not _SHA.fullmatch(base_sha):
+    pinned = _pin_ref(cwd, base_sha)
+    if pinned is None:
         return Diff("missing base", 0, 0, 0, False)
+    base_sha = pinned
     _ok, patch, _err = git(cwd, ["diff", "--find-renames", base_sha])
     _ok, numstat, _err = git(cwd, ["diff", "--numstat", base_sha])
     adds = dels = files = 0
@@ -194,6 +221,24 @@ def diff_against(cwd: Path, base_sha: str, cap: int = DIFF_CAP) -> Diff:
     if truncated:
         body = body[:cap] + "\n… diff truncated\n"
     return Diff(body, files, adds, dels, truncated)
+
+
+def _git_ok(cwd: Path):
+    def run(args: list[str]) -> tuple[bool, str]:
+        ok, out, _err = git(cwd, args)
+        return ok, out
+
+    return run
+
+
+def _pin_ref(cwd: Path, ref: str) -> str | None:
+    if not ref or not is_safe_git_ref(ref):
+        return None
+    ok, sha, _err = git(cwd, ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"])
+    pinned = sha.strip() if ok else ""
+    if not _SHA.fullmatch(pinned):
+        return None
+    return pinned
 
 
 def log_count(repo: Path) -> int:

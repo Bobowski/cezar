@@ -9,14 +9,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.engine.git_actions import commit_all
 from app.engine.gitwork import git
 
 _UNMERGED = frozenset({"UU", "AA", "DD", "AU", "UA", "DU", "UD"})
 
 
 def autosave_commit(cwd: Path, reason: str) -> str:
-    """`committed`, `nothing`, `refused`, or `skipped` when git cannot run."""
+    """`committed`, `nothing`, `refused`, or `skipped` when git cannot run.
+
+    Signing is off. A janitor commit must not wait on `ssh-keygen -Y sign`.
+    """
     ok, status, _err = git(cwd, ["status", "--porcelain"])
     if not ok:
         return "skipped"
@@ -25,9 +27,14 @@ def autosave_commit(cwd: Path, reason: str) -> str:
     for line in status.splitlines():
         if line[:2] in _UNMERGED:
             return "refused"
-    result = commit_all(cwd, f"cezar autosave ({reason})")
-    if result.get("ok") != "true":
+    git(cwd, ["add", "-A"])
+    args = ["-c", "commit.gpgsign=false", "commit", "-m", f"cezar autosave ({reason})"]
+    named, name, _err = git(cwd, ["config", "user.name"])
+    if not named or not name.strip():
+        args = ["-c", "user.name=cezar", "-c", "user.email=cezar@localhost", *args]
+    ok, _out, err = git(cwd, args)
+    if not ok:
         return "skipped"
-    if result.get("result") == "nothing":
+    if "nothing" in err.lower():
         return "nothing"
     return "committed"

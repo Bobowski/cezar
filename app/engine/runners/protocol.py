@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import shutil
 import socket
 import time
@@ -345,6 +344,15 @@ class ProtocolRunner:
         self._opencode.clear()
         for proc, _port in servers:
             await _escalate(proc)
+
+
+def _child_env(spec: AgentSpec) -> dict[str, str]:
+    from app.engine.agent_env import build_child_env, profile_env
+
+    env = build_child_env(spec.runner, extra=profile_env(spec.runner, spec.profile_home))
+    if spec.session_id:
+        env["CEZ_TASK_ID"] = spec.session_id
+    return env
 
 
 async def _process_turn(
@@ -939,13 +947,6 @@ def _reply_permission(port: int, permission_id: str) -> None:
         )
     except URLError, TimeoutError, OSError:
         return
-
-
-def _child_env(spec: AgentSpec) -> dict[str, str]:
-    env = dict(os.environ)
-    if spec.session_id:
-        env["CEZ_TASK_ID"] = spec.session_id
-    return env
 
 
 async def _write(proc: asyncio.subprocess.Process, messages: list[dict[str, Any]]) -> None:

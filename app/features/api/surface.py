@@ -40,6 +40,7 @@ from app.integrations.hooks import (
     save_receiver,
     shared_secret_ok,
 )
+from app.integrations.tracker import TrackerWatches
 from app.store.db import get_project, get_run, list_enabled_automations
 
 _NO_WORKTREE = "no worktree"
@@ -51,6 +52,7 @@ class SurfaceApi:
         self.engine = engine
         self.config = config
         self._proxies: dict[str, object] = {}
+        self.watches = TrackerWatches()
 
     def register(self, app: App) -> None:
         routes = (
@@ -91,6 +93,10 @@ class SurfaceApi:
         app.add(Route("POST /api/v1/preview/design-proxy"), self.preview)
         app.add(Route("GET /api/v1/webhooks"), self.webhooks)
         app.add(Route("POST /api/v1/webhooks"), self.create_webhook)
+        app.add(Route("PUT /api/v1/webhooks/{receiver_id}"), self.update_webhook)
+        app.add(Route("GET /api/v1/github"), self.github_tab)
+        app.add(Route("GET /api/v1/jira/search"), self.jira_search)
+        app.add(Route("GET /api/v1/linear/search"), self.linear_search)
         app.add(Route("DELETE /api/v1/webhooks/{receiver_id}"), self.delete_webhook)
         app.add(Route("POST /api/v1/webhooks/{receiver_id}/test"), self.test_webhook)
         app.add(Route("GET /api/v1/webhooks/{receiver_id}/deliveries"), self.deliveries)
@@ -112,6 +118,40 @@ class SurfaceApi:
         app.add(Route("GET /api/v1/events"), self.project_events)
         app.add(Route("GET /api/v1/p/{project_id}/events"), self.project_events)
         app.add(Route("GET /api/v1/workspace/events"), self.workspace_events)
+        for method, path, handler in (
+            ("GET", "/github/checks", self.github_checks),
+            ("GET", "/github/search", self.github_search),
+            ("GET", "/github/ref-status", self.github_ref_status),
+            ("GET", "/github/comments/{kind}/{number}", self.github_comments),
+            ("GET", "/github/prs/{number}/changes", self.github_pr_changes),
+            ("GET", "/repo", self.repo),
+            ("GET", "/repo/diff", self.repo_diff),
+            ("GET", "/repo/changes", self.repo_changes),
+            ("GET", "/repo/tree", self.repo_tree),
+            ("GET", "/repo/files", self.repo_file),
+            ("GET", "/repo/commit/{sha}", self.repo_commit),
+            ("POST", "/repo/branch", self.repo_branch),
+            ("GET", "/repo/sync", self.repo_sync),
+            ("POST", "/repo/fetch", self.repo_fetch),
+            ("POST", "/repo/pull", self.repo_pull),
+            ("POST", "/repo/push", self.repo_push),
+            ("POST", "/repo/sync", self.repo_sync_now),
+            ("GET", "/tracker/connection", self.tracker_connection),
+            ("PUT", "/tracker/connection", self.tracker_save_connection),
+            ("DELETE", "/tracker/connection", self.tracker_delete_connection),
+            ("GET", "/tracker/association", self.tracker_association),
+            ("PUT", "/tracker/association", self.tracker_save_association),
+            ("DELETE", "/tracker/association", self.tracker_clear_association),
+            ("GET", "/tracker/candidates", self.tracker_candidates),
+            ("GET", "/tracker", self.tracker_list),
+            ("GET", "/tracker/search", self.tracker_search),
+            ("GET", "/tracker/{item_id}", self.tracker_item),
+            ("POST", "/tracker/watch", self.tracker_watch),
+            ("GET", "/tracker/watch/{watch_id}", self.tracker_watch_read),
+            ("POST", "/tracker/watch/{watch_id}", self.tracker_watch_refresh),
+        ):
+            app.add(Route(f"{method} /api/v1{path}"), handler)
+            app.add(Route(f"{method} /api/v1/p/{{project_id}}{path}"), handler)
 
     async def project_events(self, c: Context, w: Writer) -> None:
         project = self._project(c, w)
@@ -272,9 +312,15 @@ class SurfaceApi:
         if not run.worktree_path or not run.base_sha:
             w.json({"error": _NO_WORKTREE}, status=409)
             return
-        from app.engine.gitwork import diff_against
+        from app.engine.gitwork import task_diff
 
-        diff = diff_against(Path(run.worktree_path), run.base_sha)
+        diff = task_diff(
+            Path(run.worktree_path),
+            base_branch=run.base_branch,
+            task_branch=run.branch,
+            started_at=run.started_at,
+            fallback_sha=run.base_sha,
+        )
         w.text(diff.text, 200)
 
     async def git_status(self, c: Context, w: Writer) -> None:
@@ -560,6 +606,54 @@ class SurfaceApi:
             status=201,
         )
 
+    async def update_webhook(self, c: Context, w: Writer) -> None:
+        from app.integrations.hooks import update_receiver
+
+        body = await _json(c, w)
+        if body is None:
+            return
+        name = body.get("name", "")
+        url = body.get("url", "")
+        revision = body.get("expectedRevision")
+        if not isinstance(name, str) or not isinstance(url, str) or not isinstance(revision, int):
+            w.json({"error": "name, url, and expectedRevision are required"}, status=400)
+            return
+        row, reason = update_receiver(
+            self.config.data_dir,
+            c.match.params.get("receiver_id", ""),
+            name=name,
+            url=url,
+            expected_revision=revision,
+        )
+        if reason == "not found":
+            w.json({"error": reason}, status=404)
+            return
+        if reason or row is None:
+            status = 409 if reason == "revision" else 400
+            w.json({"error": reason or "rejected"}, status=status)
+            return
+        w.json(cast(JsonValue, {"receiver": public_receiver(row)}))
+
+    async def github_tab(self, _c: Context, w: Writer) -> None:
+        from app.integrations.github_read import github_overview
+
+        w.json(
+            cast(
+                JsonValue,
+                github_overview(self.config.repo_root, dry_run=self.config.dry_run),
+            )
+        )
+
+    async def jira_search(self, c: Context, w: Writer) -> None:
+        from app.integrations.clients import jira_search
+
+        w.json(cast(JsonValue, jira_search(self.config, c.req.query.get("q", ""))))
+
+    async def linear_search(self, c: Context, w: Writer) -> None:
+        from app.integrations.clients import linear_search
+
+        w.json(cast(JsonValue, linear_search(self.config, c.req.query.get("q", ""))))
+
     async def delete_webhook(self, c: Context, w: Writer) -> None:
         if not delete_receiver(self.config.data_dir, c.match.params.get("receiver_id", "")):
             w.json({"error": "not found"}, status=404)
@@ -659,16 +753,23 @@ class SurfaceApi:
                 w.json({"error": "invalid pull request number"}, status=400)
             return
         method = body.get("method", "squash")
+        expected = body.get("expectedHeadSha", "")
         result = merge_pr(
             number,
             method if isinstance(method, str) else "",
             dry_run=self.config.dry_run,
             cwd=self.config.repo_root,
+            expected_head=expected if isinstance(expected, str) else "",
         )
         if not result.get("ok"):
             status = result.get("status")
             code = status if isinstance(status, int) else 409
-            w.json({"error": str(result.get("error", "merge failed"))}, status=code)
+            payload: dict[str, object] = {"error": str(result.get("error", "merge failed"))}
+            if result.get("code"):
+                payload["code"] = result["code"]
+            if result.get("current"):
+                payload["current"] = result["current"]
+            w.json(cast(JsonValue, payload), status=code)
             return
         w.json(cast(JsonValue, {key: value for key, value in result.items() if key != "ok"}))
 
@@ -783,10 +884,448 @@ class SurfaceApi:
 
         w.json(cast(JsonValue, public_run(updated or run, full=False)))
 
+    async def github_checks(self, c: Context, w: Writer) -> None:
+        from app.integrations.github_read import GH_CHECKS_MAX, github_checks, parse_number_list
+
+        raw = c.req.query.get("prs")
+        if raw is None or raw == "":
+            w.json({"error": "missing prs query"}, status=400)
+            return
+        numbers = parse_number_list(raw, cap=GH_CHECKS_MAX)
+        if numbers is None or not numbers:
+            w.json({"error": "invalid prs query"}, status=400)
+            return
+        root = self._root(c, w)
+        if root is None:
+            return
+        w.json(cast(JsonValue, github_checks(root, numbers, dry_run=self.config.dry_run)))
+
+    async def github_search(self, c: Context, w: Writer) -> None:
+        from app.integrations.github_read import GH_SEARCH_MAX, github_search
+
+        kind = c.req.query.get("kind", "")
+        query = c.req.query.get("q") or ""
+        if kind not in ("issue", "pr") or not query.strip() or len(query.strip()) > 256:
+            w.json({"error": "invalid search query"}, status=400)
+            return
+        limit_raw = c.req.query.get("limit")
+        limit = GH_SEARCH_MAX
+        if limit_raw is not None:
+            if not limit_raw.isdigit() or not 1 <= int(limit_raw) <= GH_SEARCH_MAX:
+                w.json({"error": "invalid search query"}, status=400)
+                return
+            limit = int(limit_raw)
+        root = self._root(c, w)
+        if root is None:
+            return
+        w.json(
+            cast(
+                JsonValue,
+                github_search(root, kind, query, limit=limit, dry_run=self.config.dry_run),
+            )
+        )
+
+    async def github_ref_status(self, c: Context, w: Writer) -> None:
+        from app.integrations.github_read import (
+            GH_REF_STATUS_MAX,
+            github_ref_status,
+            parse_number_list,
+        )
+
+        prs = parse_number_list(c.req.query.get("prs"), cap=GH_REF_STATUS_MAX)
+        issues = parse_number_list(c.req.query.get("issues"), cap=GH_REF_STATUS_MAX)
+        if prs is None or issues is None:
+            w.json({"error": "invalid ref-status query"}, status=400)
+            return
+        if not prs and not issues:
+            w.json({"error": "missing prs or issues query"}, status=400)
+            return
+        root = self._root(c, w)
+        if root is None:
+            return
+        w.json(cast(JsonValue, github_ref_status(root, prs, issues, dry_run=self.config.dry_run)))
+
+    async def github_comments(self, c: Context, w: Writer) -> None:
+        from app.integrations.github_read import github_comments
+
+        kind = c.match.params.get("kind", "")
+        raw = c.match.params.get("number", "")
+        if kind not in ("issue", "pr") or not raw.isdigit() or int(raw) <= 0:
+            w.json({"error": "invalid comment request"}, status=400)
+            return
+        root = self._root(c, w)
+        if root is None:
+            return
+        w.json(
+            cast(
+                JsonValue,
+                github_comments(kind, int(raw), dry_run=self.config.dry_run, cwd=root),
+            )
+        )
+
+    async def github_pr_changes(self, c: Context, w: Writer) -> None:
+        from app.integrations.github_read import PrNotFound, github_pr_changes
+
+        raw = c.match.params.get("number", "")
+        refresh = c.req.query.get("refresh")
+        if not raw.isdigit() or int(raw) <= 0 or (refresh is not None and refresh != "1"):
+            w.json({"error": "invalid pull request number or refresh flag"}, status=400)
+            return
+        root = self._root(c, w)
+        if root is None:
+            return
+        try:
+            w.json(cast(JsonValue, github_pr_changes(root, int(raw), dry_run=self.config.dry_run)))
+        except PrNotFound as exc:
+            w.json({"error": str(exc)}, status=404)
+
+    async def repo(self, c: Context, w: Writer) -> None:
+        from app.engine.repo_read import snapshot
+        from app.store.db import list_runs
+
+        root = self._root(c, w)
+        if root is None:
+            return
+        project = self._project(c, w)
+        hide = set()
+        if project is not None:
+            hide = {
+                run.branch
+                for run in list_runs(self.db, project.id, None)
+                if run.branch and not run.in_place
+            }
+        w.json(cast(JsonValue, snapshot(root, hide)))
+
+    async def repo_diff(self, c: Context, w: Writer) -> None:
+        from app.engine.repo_read import diff_text
+
+        root = self._root(c, w)
+        if root is None:
+            return
+        text = diff_text(root)
+        w.text(text if text is not None else "not a git repository")
+
+    async def repo_changes(self, c: Context, w: Writer) -> None:
+        from app.engine.repo_read import changes
+
+        root = self._root(c, w)
+        if root is None:
+            return
+        result = changes(root)
+        if isinstance(result, str):
+            w.json({"error": result}, status=409)
+            return
+        w.json(cast(JsonValue, result))
+
+    async def repo_tree(self, c: Context, w: Writer) -> None:
+        from app.engine.repo_read import tree
+
+        root = self._root(c, w)
+        if root is None:
+            return
+        result = tree(root)
+        if isinstance(result, str):
+            w.json({"error": result}, status=409)
+            return
+        w.json(cast(JsonValue, result))
+
+    async def repo_file(self, c: Context, w: Writer) -> None:
+        from app.engine.repo_read import file_text
+
+        rel = c.req.query.get("path", "")
+        raw = c.req.query.get("raw")
+        if not rel or (raw is not None and raw not in ("0", "1")):
+            w.json({"error": "invalid file query"}, status=400)
+            return
+        root = self._root(c, w)
+        if root is None:
+            return
+        text, reason = file_text(root, rel)
+        if text is None:
+            w.json({"error": reason}, status=404)
+            return
+        if raw == "1":
+            w.text(text)
+            return
+        w.json({"path": rel, "content": text})
+
+    async def repo_commit(self, c: Context, w: Writer) -> None:
+        from app.engine.repo_read import commit_structured, commit_text
+
+        sha = c.match.params.get("sha", "")
+        structured = c.req.query.get("structured")
+        wants_json = structured == "1" or (
+            structured is None and "application/json" in c.req.headers.get("accept", "")
+        )
+        root = self._root(c, w)
+        if root is None:
+            return
+        if wants_json:
+            result = commit_structured(root, sha)
+            if isinstance(result, str):
+                w.json({"error": result}, status=409)
+                return
+            w.json(cast(JsonValue, result))
+            return
+        w.text(commit_text(root, sha))
+
+    async def repo_branch(self, c: Context, w: Writer) -> None:
+        from app.engine.repo_read import switch_branch
+
+        body = await _json(c, w)
+        if body is None:
+            return
+        name = body.get("name")
+        start = body.get("from", "")
+        if not isinstance(name, str) or not isinstance(start, str):
+            w.json({"error": "invalid branch"}, status=400)
+            return
+        root = self._root(c, w)
+        if root is None:
+            return
+        result = switch_branch(root, name, start)
+        if isinstance(result, str):
+            w.json({"error": result}, status=409)
+            return
+        w.json(cast(JsonValue, result))
+
+    async def repo_sync(self, c: Context, w: Writer) -> None:
+        await self._repo_action(c, w, "status")
+
+    async def repo_fetch(self, c: Context, w: Writer) -> None:
+        await self._repo_action(c, w, "fetch")
+
+    async def repo_pull(self, c: Context, w: Writer) -> None:
+        await self._repo_action(c, w, "pull")
+
+    async def repo_push(self, c: Context, w: Writer) -> None:
+        await self._repo_action(c, w, "push")
+
+    async def repo_sync_now(self, c: Context, w: Writer) -> None:
+        await self._repo_action(c, w, "sync")
+
+    async def _repo_action(self, c: Context, w: Writer, action: str) -> None:
+        from app.engine.repo_read import (
+            fetch_remote,
+            pull_remote,
+            push_remote,
+            sync_remote,
+            sync_status,
+        )
+
+        root = self._root(c, w)
+        if root is None:
+            return
+        if action == "status":
+            result = sync_status(root)
+        elif action == "fetch":
+            result = fetch_remote(root)
+        elif action == "pull":
+            result = pull_remote(root)
+        elif action == "push":
+            result = push_remote(root)
+        else:
+            result = sync_remote(root)
+        if isinstance(result, str):
+            w.json({"error": result}, status=409)
+            return
+        w.json(cast(JsonValue, result))
+
+    async def tracker_connection(self, c: Context, w: Writer) -> None:
+        from app.integrations.tracker import connection_view
+
+        root = self._root(c, w)
+        if root is None:
+            return
+        w.json(cast(JsonValue, connection_view(self.config, root)))
+
+    async def tracker_save_connection(self, c: Context, w: Writer) -> None:
+        from app.integrations.tracker import _credential_issue, save_connection
+
+        body = await _json(c, w)
+        if body is None:
+            return
+        if _credential_issue(body):
+            w.json({"error": "Invalid tracker credentials. Check the required fields."}, status=400)
+            return
+        root = self._root(c, w)
+        if root is None:
+            return
+        saved = save_connection(self.config, root, body)
+        if saved is None:
+            w.json(
+                {"error": "Could not save project credentials. Demo mode cannot save credentials."},
+                status=409,
+            )
+            return
+        w.json(cast(JsonValue, saved))
+
+    async def tracker_delete_connection(self, c: Context, w: Writer) -> None:
+        from app.integrations.tracker import delete_connection
+
+        root = self._root(c, w)
+        if root is None:
+            return
+        if not delete_connection(self.config, root):
+            w.json({"error": "Could not remove project credentials."}, status=409)
+            return
+        w.json({"cleared": True})
+
+    async def tracker_association(self, c: Context, w: Writer) -> None:
+        from app.integrations.tracker import read_association
+
+        root = self._root(c, w)
+        if root is None:
+            return
+        w.json({"association": read_association(root)})
+
+    async def tracker_save_association(self, c: Context, w: Writer) -> None:
+        from app.integrations.tracker import resolve_association, write_association
+
+        body = await _json(c, w)
+        if body is None:
+            return
+        root = self._root(c, w)
+        if root is None:
+            return
+        result = resolve_association(self.config, root, body)
+        if not result.get("available"):
+            status = 404 if result.get("code") == "not_found" else 409
+            w.json({"error": result.get("reason", "tracker is not configured")}, status=status)
+            return
+        association = result["association"]
+        if not isinstance(association, dict) or not write_association(root, association):
+            w.json({"error": "Could not save the tracker connection."}, status=409)
+            return
+        w.json(cast(JsonValue, {"association": association}))
+
+    async def tracker_clear_association(self, c: Context, w: Writer) -> None:
+        from app.integrations.tracker import clear_association
+
+        root = self._root(c, w)
+        if root is None:
+            return
+        if not clear_association(root):
+            w.json({"error": "Could not disconnect the tracker."}, status=409)
+            return
+        w.json({"cleared": True})
+
+    async def tracker_candidates(self, c: Context, w: Writer) -> None:
+        from app.integrations.tracker import candidates
+
+        root = self._root(c, w)
+        if root is None:
+            return
+        w.json(cast(JsonValue, candidates(self.config, root)))
+
+    async def tracker_list(self, c: Context, w: Writer) -> None:
+        from app.integrations.tracker import list_issues
+
+        root = self._root(c, w)
+        if root is None:
+            return
+        state = c.req.query.get("state", "active")
+        w.json(cast(JsonValue, list_issues(self.config, root, state=state)))
+
+    async def tracker_search(self, c: Context, w: Writer) -> None:
+        from app.integrations.tracker import list_issues
+
+        query = c.req.query.get("q", "")
+        if not query.strip() or len(query.strip()) > 256:
+            w.json({"error": "invalid search query"}, status=400)
+            return
+        root = self._root(c, w)
+        if root is None:
+            return
+        w.json(
+            cast(
+                JsonValue,
+                list_issues(self.config, root, query=query, state=c.req.query.get("state", "all")),
+            )
+        )
+
+    async def tracker_item(self, c: Context, w: Writer) -> None:
+        from app.integrations.tracker import list_issues
+
+        item_id = c.match.params.get("item_id", "")
+        if item_id in ("association", "candidates", "search", "connection", "watch"):
+            w.json({"error": "not found"}, status=404)
+            return
+        root = self._root(c, w)
+        if root is None:
+            return
+        listed = list_issues(self.config, root, state="all")
+        if not listed.get("available"):
+            w.json(cast(JsonValue, listed))
+            return
+        items = listed.get("items")
+        rows = items if isinstance(items, list) else []
+        for item in rows:
+            if isinstance(item, dict) and item.get("id") == item_id:
+                w.json(cast(JsonValue, {"available": True, "item": item}))
+                return
+        w.json({"available": False, "code": "not_found", "reason": "not found"}, status=404)
+
+    async def tracker_watch(self, c: Context, w: Writer) -> None:
+        from app.integrations.tracker import list_issues, read_association
+
+        body = await _json(c, w)
+        if body is None:
+            return
+        root = self._root(c, w)
+        if root is None:
+            return
+        stored = read_association(root)
+        sent = body.get("association")
+        if stored is None or sent != stored:
+            w.json({"error": "Tracker connection changed. Reload this view."}, status=409)
+            return
+        result = list_issues(self.config, root, query=str(body.get("query", "")))
+        opened = self.watches.open(str(root), body, result)
+        if isinstance(opened, str):
+            w.json({"error": opened}, status=400)
+            return
+        w.json(cast(JsonValue, opened))
+
+    async def tracker_watch_read(self, c: Context, w: Writer) -> None:
+        root = self._root(c, w)
+        if root is None:
+            return
+        snap = self.watches.snapshot(str(root), c.match.params.get("watch_id", ""))
+        if snap is None:
+            w.json({"error": "Tracker observation expired. Reopen the view."}, status=404)
+            return
+        w.json(cast(JsonValue, snap))
+
+    async def tracker_watch_refresh(self, c: Context, w: Writer) -> None:
+        from app.integrations.tracker import list_issues
+
+        root = self._root(c, w)
+        if root is None:
+            return
+        watch_id = c.match.params.get("watch_id", "")
+        current = self.watches.snapshot(str(root), watch_id)
+        if current is None:
+            w.json({"error": "Tracker observation expired. Reopen the view."}, status=404)
+            return
+        result = list_issues(self.config, root)
+        snap = self.watches.refresh(str(root), watch_id, result)
+        if snap is None:
+            w.json({"error": "Tracker observation expired. Reopen the view."}, status=404)
+            return
+        w.json(cast(JsonValue, snap))
+
+    def _root(self, c: Context, w: Writer) -> Path | None:
+        project = self._project(c, w)
+        if project is None:
+            return None
+        return Path(project.root)
+
     def _project(self, c: Context, w: Writer):
         from app.store.db import get_project as load
 
-        project_id = c.match.params.get("project_id", "") or self.engine.boot_project_id
+        raw = c.match.params.get("project_id", "")
+        project_id = self.engine.boot_project_id if raw in ("", "default") else raw
         project = load(self.db, project_id)
         if project is None:
             w.json({"error": "not found"}, status=404)
@@ -799,6 +1338,8 @@ class SurfaceApi:
             w.json({"error": "not found"}, status=404)
             return None
         project_id = c.match.params.get("project_id", "")
+        if project_id == "default":
+            project_id = self.engine.boot_project_id
         if project_id and project_id != run.project_id:
             w.json({"error": "not found"}, status=404)
             return None

@@ -3,3 +3,4 @@
 !static
 !pyproject.toml
 !uv.lock
+!MIGRATION.md

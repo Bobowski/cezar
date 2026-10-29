@@ -11,7 +11,7 @@ WORKDIR /app
 # The project is a package, so the source has to be present before `uv sync`
 # installs it. Static files stay beside `app/` because the cockpit resolves
 # them from that layout.
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock MIGRATION.md ./
 COPY app ./app
 COPY static ./static
 RUN uv sync --frozen --no-dev

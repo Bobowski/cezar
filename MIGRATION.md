@@ -81,32 +81,30 @@ is 33,553 bytes and is not application code. The TypeScript tree is still in the
 | --- | ---: | ---: |
 | TypeScript application (no `*test*` / `*spec*` files) | 800 | 145,968 |
 | TypeScript tests | 817 | 157,487 |
-| Python application (`app/`) | 90 | 12,330 |
-| Python tests, including protocol fakes and `e2e/` | 29 | 3,523 |
-| Python CSS | 1 | 221 |
+| Python application (`app/`) | 129 | 23,399 |
+| Python tests, including protocol fakes and `e2e/` | 42 | 8,410 |
+| Python CSS | 1 | 253 |
 
-The Python application is about 8% of the TypeScript application by code lines.
-The HTTP slice covers the run lifecycle plus git actions, receipts, uploads,
-UI state, a pipe terminal, a loopback preview proxy, webhook receivers, and
-tracker hook intake. Most of `server.ts` is still absent.
+The Python application is about 16% of the TypeScript application by code lines.
+Vendored `static/js/mermaid.min.js` is not in that count.
 
 ## Checks
 
 `uv run ruff check`, `uv run ruff format --check`, `uv run pyright`, and
-`uv run pytest -q` were run on this branch. **138 tests passed.**
-`uv run --group e2e pytest e2e -q` passed two Chromium walks: New task → done, and review → commit → push → fake-`gh` draft PR, then the instructions editor.
+`uv run pytest -q` were run on this branch. **283 tests passed.**
+`uv run --group e2e pytest e2e -q` passed **9** Chromium walks.
 
-A manual `CEZ_DRY_RUN=1 uv run python -m app.main` answered `/health`,
-`POST /api/v1/runs` returned 201, and the run reached `review` with a worktree
-on `cez/<id8>`. Headless Chrome screenshots of `/tasks` and the task page showed
-the dark shell, the lime "New task" button, the review row, and the transcript.
-Clicking Finish in the browser was not repeated; the button is in the HTML and
-`POST` finish is covered by pytest (it does not create a merge commit).
+`docker compose up --build` on this commit became healthy. `GET /health` was 200
+with no credentials. `/tasks` and `/api/v1/health` were 401. HTTP Basic against
+the generated password in the `cezar-data` volume authorized `/api/v1/health`,
+and `POST /api/v1/runs` reached `done` on `cez/<id8>`. The password is not recorded here.
 
 ## Checklist
 
-Status is `done`, `partial`, or `not done`. "Verified" is the check that was
+Status is `done`, `partial`, `not done`, or `intentionally not ported`. "Verified" is the check that was
 actually run, not a claim that the TypeScript behavior matches line for line.
+This pass: **185 done**, **3 partial**, **0 not done**, **14 intentionally not ported** (202 rows).
+Every row is in one of those four states.
 
 ### Persistence and model
 
@@ -115,7 +113,7 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | SQLite for projects, runs, events, settings, automations | done | `tests/test_engine.py`, `tests/test_cockpit.py` |
 | Import of `.ai/cezar/runs.json` and NDJSON | done | `tests/test_import_runs.py` keeps id, task, status, workflow, runner, and timestamps, skips a bad row, and reads `runs/<id>.ndjson`. `tests/test_stream_b.py` runs `import-runs` and finds the dashed UUID's event text in SQLite. A second import skips the same id. |
 | Workflow and skill files remain the authored source | done | `tests/test_workflows.py`, cockpit workflow/skill test |
-| Workspace settings: parallel (default 2), runner, theme, accent | done | settings stream test |
+| Workspace settings: parallel (default 2), runner, theme, accent | partial | `test_settings_save_repaints_the_stream` in `tests/test_cockpit.py` saves parallel, runner, theme, and accent, and the stream repaints. Nothing asserts that the unset default is 2. |
 | Per-project base branch stored at registration | done | The project card and Settings → Tasks save it through `Engine.set_base_branch`. A task started after that forks from the saved branch (`tests/test_screens.py`). |
 | Secrets vault | done | `tests/test_secrets.py` and the check injection test. AES-256-GCM, audiences `checks` and `cezar`, project root binding, list API omits values. Stored under `$PROJECT_DATA_DIR/secrets`, not `~/.cezar/secrets`. The data key is the keychain row. |
 | Agent accounts / profiles | done | `/settings/accounts` stores `{id, name, runner, home}` in `$PROJECT_DATA_DIR/agent-accounts.json`. Claude gets `CLAUDE_CONFIG_DIR` and Codex gets `CODEX_HOME`; OpenCode, Cursor, pi, Junie, and Copilot stay on the default login. A turn whose run names the account is spawned with that home (`tests/test_agent_env.py`). `POST /runs` accepts `accountId`. Hosted mode is the `CEZ_REMOTE_AGENT_ACCOUNTS` row. |
@@ -126,10 +124,10 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | Item | Status | Verified |
 | --- | --- | --- |
 | `steps` XOR `skills` | done | `tests/test_workflows.py` |
-| Agent step XOR check step | done | same |
-| `onFail.retry` must name an earlier step; `max` defaults to 2 | done | same |
-| `retryOn` rejects 0; empty list retries any failure | done | parser test and engine test |
-| `{{task}}` substitution | done | chain-step engine test |
+| Agent step XOR check step | done | `test_agent_and_check_are_exclusive` in `tests/test_workflows.py` |
+| `onFail.retry` must name an earlier step; `max` defaults to 2 | done | `test_retry_must_name_an_earlier_step`, `test_on_fail_max_defaults_to_two` in `tests/test_workflows.py` |
+| `retryOn` rejects 0; empty list retries any failure | done | `test_retry_on_rejects_zero_and_any_failure_retries_without_a_list` in `tests/test_workflows.py` |
+| `{{task}}` substitution | done | `test_cez_done_does_not_skip_the_next_agent_step` in `tests/test_engine.py` asserts the task text in the prompt |
 | Chain note when there are 2+ agent steps; `CEZ:DONE` does not skip | done | `test_cez_done_does_not_skip_the_next_agent_step` |
 | Built-in `quick-task`; a valid file overrides it; a bad file does not | done | `tests/test_workflows.py` |
 | Queued file snapshot is not replaced by the built-in when the file disappears | done | `test_a_deleted_file_does_not_replace_a_queued_snapshot_with_the_builtin` |
@@ -143,9 +141,9 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | Item | Status | Verified |
 | --- | --- | --- |
 | Queue, `max_parallel` (default 2) | done | `test_only_one_run_occupies_a_slot_when_max_parallel_is_one` |
-| Statuses `queued` `running` `waiting` `review` `done` `failed` `cancelled` | done | engine and cockpit tests |
-| Success stops at `review`; finish does not merge | done | `test_success_stops_at_review_and_finish_does_not_merge`, cockpit test |
-| `CEZ:ASK` parks in `waiting`; an answer continues | done | engine test and cockpit test |
+| Statuses `queued` `running` `waiting` `review` `done` `failed` `cancelled` | done | `test_only_one_run_occupies_a_slot_when_max_parallel_is_one` (queued, running), `test_an_ask_waits_and_the_answer_continues` (waiting), `test_the_review_gate_offers_finish` (review), `test_success_is_done_until_the_review_gate_is_on` (done), `test_a_restart_fails_a_running_agent_and_leaves_the_queue` (failed), `test_cancel_stops_a_check_without_waiting_for_it` (cancelled) |
+| Success is `done` unless the review gate is on; finish does not merge | done | `test_success_is_done_until_the_review_gate_is_on` and `test_creating_a_task_reaches_review_and_finish_does_not_merge` (the name is older than the assertion: the page shows `status-done` and finish is 409). `test_the_review_gate_offers_finish` parks at `review` only when `CEZ_REVIEW_GATE=1`, then finish does not add a commit. |
+| `CEZ:ASK` parks in `waiting`; an answer continues | done | `test_an_ask_waits_and_the_answer_continues` in `tests/test_engine.py`, `test_an_ask_can_be_answered` in `tests/test_cockpit.py` |
 | Follow-up from `review` is one more agent turn | done | `deliver` from `review` queues one agent turn with `resume` set and that message as the prompt. `tests/test_stream_a.py`. |
 | Cancel, including killing a check | done | `test_cancel_stops_a_check_without_waiting_for_it`, API cancel test |
 | Restart marks `running` failed and leaves `queued` | done | `test_a_restart_fails_a_running_agent_and_leaves_the_queue` |
@@ -165,7 +163,7 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 
 | Item | Status | Verified |
 | --- | --- | --- |
-| Worktree per task at `.ai/cezar/worktrees/<id>`, branch `cez/<id8>` | done | engine success test, manual run |
+| Worktree per task at `.ai/cezar/worktrees/<id>`, branch `cez/<id8>` | done | `test_success_is_done_until_the_review_gate_is_on` asserts `cez/<id8>` and the dry-run file under that worktree |
 | Option-like refs refused before git sees them | done | `test_option_like_refs_are_refused`, bad-base test |
 | A failed worktree create does not run in the main tree | done | `test_a_bad_base_does_not_run_in_the_main_tree` |
 | Diff includes untracked files and is capped | done | untracked file asserted; a body over the cap is truncated (`tests/test_git_base.py`) |
@@ -179,7 +177,7 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 
 | Item | Status | Verified |
 | --- | --- | --- |
-| Dry-run mock (`mock:fail`, `mock:ask`, `mock:write`) | done | engine and cockpit tests. Not `scripts/mock-claude.mjs` |
+| Dry-run mock (`mock:fail`, `mock:ask`, `mock:write`) | partial | `mock:fail` fails the headless run (`test_headless_run_treats_review_as_success`). `mock:ask` parks and continues (`test_an_ask_waits_and_the_answer_continues`). `mock:write` is implemented on `DryRunAgent` and no test calls it. Not `scripts/mock-claude.mjs`. |
 | Claude stream-json session | done | `tests/test_runners.py` fake binary. Argv matches `buildClaudeArgs`. Stdin is one user message; image blocks lead the text. `.ai/cezar/mcp.json` becomes a `0600` `--mcp-config` plus `mcp__<name>` allow rules. A silent process is killed after 15 minutes (8× that is the hard ceiling). `stream_event` text deltas are live-only. Cancel and the inactivity kill are SIGTERM, then SIGKILL after 4s (`tests/test_runner_gaps.py`). A process that is still alive after the turn is reused for the next follow-up; if it has exited, the next turn is a new process with `--resume`. `system/init` stores the session, a thinking block is `reasoning`, and a tool error is prefixed `error:` (`tests/test_runners.py`). |
 | Codex app-server | done | fake binary. `thread/start` on the first turn; a stored thread id is `thread/resume` on a later turn (`tests/test_runners.py`). A resume that reports `already has an active writer` is retried, then `thread/fork` (`tests/test_runner_gaps.py`). Stdio MCP servers ride `config` overrides. `item/updated`, `fileChange`, and `contextCompaction` are parsed. `reasoning` and `plan` stay non-tool events, `thread/tokenUsage/updated` is recorded, and a child thread's `turn/completed` does not end the parent (`tests/test_runners.py`). A real process that emits compaction is continued on the same thread (`tests/test_stream_a_close.py`). The engine still stops after 3 compaction continues (`tests/test_stream_a.py`). |
 | OpenCode serve | done | Fake binary. `opencode serve --hostname 127.0.0.1 --port N`, then `POST /session` and `POST /session/:id/message`. A `text/event-stream` body surfaces assistant parts and skips the user's echo; `permission.asked` becomes `permission.requested`. A second turn reuses the stored session id and does not create another session. `tests/test_runners.py`. A JSON body is still accepted. |
@@ -200,7 +198,7 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | --- | --- | --- |
 | Create paused, enable, pause, run now, delete | done | The automations page posts create, enable, pause, run now, and delete (`tests/test_screens.py`). The backlog rule stays `test_a_stale_schedule_does_not_launch_a_backlog`. |
 | Stale schedule does not launch a backlog | done | `test_a_stale_schedule_does_not_launch_a_backlog` |
-| Due interval launches one run | done | same test |
+| Due interval launches one run | done | `test_a_stale_schedule_does_not_launch_a_backlog` asserts exactly one run for a due interval |
 | Calendar UI | done | `/automations` renders a month grid. A new automation's name is in the cell for its `next_at` day (`tests/test_screens.py`). |
 | GitHub / Jira / Linear reads | done | Unset credentials answer `{available: false}` and do not call out. A recorded server returns one GitHub issue, one Jira issue, one Linear issue, a Jira search hit, and a Linear search hit. `GET /github` returns the dry-run catalog (issues plus a draft PR). Base URLs must be the vendor https host or loopback (`tests/test_integrations.py`, `tests/test_stream_d_close.py`). |
 
@@ -210,8 +208,8 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | --- | --- | --- |
 | `serve` (default) | done | `tests/test_cli.py`. No arguments and `serve` both call `serve` on `127.0.0.1`. `--port 9` is the port passed through. An omitted port uses the first free port from 4321, so an explicit port is never rewritten (`tests/test_stream_b_close.py`). |
 | `run` — `review` is exit 0, failure is exit 1 | done | `tests/test_cli.py` |
-| `init` | done | same |
-| `projects list` / `add` | done | same |
+| `init` | done | `test_init_does_not_overwrite` in `tests/test_cli.py` |
+| `projects list` / `add` | done | `test_projects_list_and_add` in `tests/test_cli.py` |
 | `projects remove` | done | `tests/test_cli.py`. Removes an added id, then a second remove is "not found". `CEZ_SINGLE_PROJECT=1` refuses add and remove. |
 | `import-runs <path>` | done | `tests/test_stream_b.py`. The command copies the record and the dashed `runs/<uuid>.ndjson` event into SQLite. |
 | `task`, `automation`, `runs`, `secrets`, `telemetry` | done | `tests/test_cli.py`. `task create` posts dispatch. `runs list --json` prints the records. `automation schema`, `create`, `cron`, and `tracker` post the schedule API (`cron` defaults `kind` to `schedule`, `tracker` to `tracker`). `automation check <id>` posts `…/check`. `secrets set` reads stdin, `list` prints the name and audience, never the value, and `unset` removes it. `telemetry status` says it does not send; `telemetry enable` exits 1. |
@@ -227,15 +225,15 @@ is the boot project.
 
 | Route | Status | Verified |
 | --- | --- | --- |
-| `GET /health` | done | cockpit test. Plain `ok`. |
+| `GET /health` | done | `test_health_and_the_task_list` asserts the body is `ok` |
 | `GET /api/v1/health` | done | `tests/test_api.py` and `tests/test_stream_b.py`. Required discovery keys, CORS `*`, no `root` on `projects[]`. A found binary includes its `--version` line (`git` in the test). `disk` has `freeBytes`, `totalBytes`, and `level`. `instanceId` is sent when `CEZ_INSTANCE_ID` is set. `terminal` follows `CEZ_TERMINAL` on a local bind. `designMode` follows the local design-mode flag. `forge` is `{kind: github}` when `origin` is a GitHub host, and null otherwise. Health does not shell out to `gh`, so `available` stays absent. |
 | `GET /api/v1/runs` | done | JSON array of records. `workflowDef` omitted unless `full=1`. While a check is running the record includes `usage` (`cpuPct`, `rssBytes`, `procCount`) from that process tree (`tests/test_stream_b_close.py`). |
 | `POST /api/v1/runs` | done | 201 stored record, or `{runs}` for `variants` 2 or 3 (letters A/B/C, one `groupId`). Inline steps run as `(planned)`. Image attachments are stored, and the dry-run prompt contains `The user attached:` (`tests/test_stream_b_close.py`). An attachment-only task is stored as `(see attachments)`. |
 | `GET /api/v1/runs/{id}` | done | Required record keys (`id`, `title`, `workflow`, `task`, `status`, `createdAt`, `tokensUsed`, `archived`, `steps`). `tests/test_api.py`. `autoResumeAt` is present only while a retry is scheduled. |
 | `GET /api/v1/runs/{id}/events` | done | `text/event-stream`. Replay then a live tail (`tests/test_api.py`). Dotted types are `ui-event`; everything else is `run-event`; the record is `run`. `item.delta` is live-only and coalesced at about 40 ms (`tests/test_runner_gaps.py`). A delta-only turn persists one `item.completed`. `plan.updated`, `usage.updated`, `permission.requested`, and `item.updated` are written and read back (`tests/test_stream_a.py`). `afterSeq` and `Last-Event-ID` skip older rows. |
-| `POST /api/v1/runs/{id}/cancel` | done | 200 `{cancelled: true\|false}`. A settled run is false. 404 unknown. `tests/test_api.py`. |
+| `POST /api/v1/runs/{id}/cancel` | partial | A settled run returns 200 `{cancelled: false}` (`test_cancel_finish_delete_and_messages_use_the_contract_statuses`). `{cancelled: true}` for a live run, and 404 for an unknown id, are not asserted. The engine cancel that sets `cancelled` is `test_cancel_stops_a_check_without_waiting_for_it`. |
 | `POST /api/v1/runs/{id}/finish` | done | 200 from `review` (accept), from `waiting` (the ask is abandoned), and from `running` (the step is stopped and the run becomes `done`). A settled run is 409 `no open session`. An in-place git checkout is committed on success and is not pushed (`tests/test_api.py`, `tests/test_stream_b_close.py`). |
-| `DELETE /api/v1/runs/{id}` | done | 200 `{deleted: true}`. 409 while queued, running, or waiting. 404 unknown. |
+| `DELETE /api/v1/runs/{id}` | done | `test_cancel_finish_delete_and_messages_use_the_contract_statuses`: 409 while queued, 200 `{deleted: true}` after finish, and the next GET is 404. Running and waiting use that same guard and are not separate cases. |
 | `POST /api/v1/runs/{id}/messages` | done | `{queued, message}` while the run is still `queued`; the stack is composed into the prompt and not written back onto `task`. `{delivered: true}` for `waiting` and `review`. `{deferred: true}` while `running`. Images on a review message are written into the worktree and the next prompt contains `The user attached:` (`tests/test_api.py`, `tests/test_stream_b_close.py`). |
 | `POST /api/v1/runs/{id}/archive`, `POST …/pin`, `POST /runs/archive-finished`, `POST /runs/read-all`, `POST …/read`, `POST …/unread` | done | Archive and pin flags. Archiving clears a pin and cancels queued, running, or waiting work. The bulk sweep and read receipts match the TypeScript rules (`tests/test_surface.py`). |
 | `PATCH/DELETE …/queued-messages/{msgId}` | done | Edit and delete while the run is still queued. After it starts, patch is 409. `tests/test_stream_b.py`. |
@@ -272,10 +270,10 @@ It is not a pixel copy of the React component.
 | React route | Python | Status | Verified |
 | --- | --- | --- | --- |
 | `/p/:projectId` tasks overview | `/tasks` | done | List, filter, and create. `tests/test_cockpit.py`. Archive and mark-read are buttons; the store rules are in `tests/test_surface.py`. The buttons are not posted. |
-| `/p/:projectId/new` | `/tasks/new` | done | The page shows the task field, Start, and `quick-task`. Create is the cockpit test. |
-| `/tasks` global index | `/tasks` | done | One list for the boot project. There is no second workspace index. |
+| `/p/:projectId/new` | `/tasks/new` | done | `tests/test_parity.py` asserts New task, Start, and `quick-task`. Create is `test_creating_a_task_reaches_review_and_finish_does_not_merge`. |
+| `/tasks` global index | `/tasks` | done | `test_health_and_the_task_list` loads the one boot-project list. There is no second workspace index in this port. |
 | `/p/:projectId/tasks/:id` session | `/tasks/{id}?pane=session` | done | Finish is posted and the page shows Cancel (`tests/test_cockpit.py`). The transcript contains `Dry run finished`, and Delete navigates away (`tests/test_screens.py`). |
-| `…/changes` | `?pane=diff` | done | `CEZAR_DRY_RUN.txt` is on the diff pane. |
+| `…/changes` | `?pane=diff` | done | `test_creating_a_task_reaches_review_and_finish_does_not_merge` asserts `CEZAR_DRY_RUN.txt` on `?pane=diff` |
 | `…/files` | `?pane=files` | done | A staged upload's name is on the pane (`tests/test_finish.py`). |
 | `…/commits` | `?pane=commits` | done | After a commit, the pane lists `save the dry run` (`tests/test_surface.py`). |
 | `…/graph` | `?pane=graph` | done | A quick-task shows the step "Do the task" (`tests/test_parity.py`). |
@@ -291,7 +289,7 @@ It is not a pixel copy of the React component.
 | `/p/:projectId/workflows` | `/workflows` | done | Create and list. `tests/test_cockpit.py`. |
 | `/workflows/:name` | `/workflows/{name}` | done | The page lists the steps (`Do the task` on quick-task) and Start a task opens `/tasks/new?workflow=` (`tests/test_screens.py`). The node editor remains stream A's row. |
 | `/p/:projectId/inbox` | `/inbox` | done | A finished run is listed. Mark read leaves `Nothing unread.` (`tests/test_screens.py`). |
-| `/p/:projectId/settings` appearance | `/settings` | done | Parallel, runner, theme, accent. Settings stream test. |
+| `/p/:projectId/settings` appearance | `/settings` | done | `test_settings_save_repaints_the_stream` |
 | settings `secrets`, `workspace-secrets` | `/secrets` | done | The form saves a project secret. The next page shows the name and not the value (`tests/test_screens.py`). One list for the boot project; there is no second workspace vault. |
 | settings `privacy` | `/settings/privacy` | done | The page says telemetry is intentionally not ported. `tests/test_finish.py`. |
 | settings `agents` | `/settings/agents` | done | A binary on disk is `installed` and a missing path is `missing` (`tests/test_screens.py`). |
@@ -300,13 +298,13 @@ It is not a pixel copy of the React component.
 | settings `instructions` | `/settings/instructions` | done | The editor saves both fields, the prompt is prepended on the run, and a `start with` rule renames the branch (`tests/test_engine.py`, `tests/test_parity.py`). Free-text naming still does not call a model. |
 | settings `agent-config` | `/settings/agent-config` | done | Posting the editor writes `AGENTS.md`. A hosted cockpit answers 409 `agent config writes are local-only` (`tests/test_screens.py`). Catalog is those three files, not `catalog.ts`. |
 | settings `accounts` | `/settings/accounts` | done | The form saves a name and a runner and lists them (`tests/test_screens.py`). Profile homes stay on stream D's accounts row. |
-| settings `notifications` | `/settings/notifications` | done | The browser toggle saves and the page says it is on. |
-| settings `keyboard` | `/settings/keyboard` | done | `enter` is stored and rendered. The other two shortcuts are the same field. |
+| settings `notifications` | `/settings/notifications` | done | `tests/test_parity.py` posts the toggle and asserts `Browser notifications are on.` |
+| settings `keyboard` | `/settings/keyboard` | done | `tests/test_parity.py` posts `submit: enter` and the next page contains `enter` |
 | settings `bookmarklets` | `/settings/bookmarklets` | done | The launch-key file is mode `0600`. `?launch=` with that key opens New task; a wrong key is 403 (`tests/test_screens.py`). |
 | settings `integrations` | `/settings/integrations` | done | Set up e2e queues a task titled Tester Army, stores an optional model key as a project secret, and writes `e2e.config.ts` (`127.0.0.1:0`) plus `.ai/cezar/workflows/implement-and-e2e.yaml` when those files are absent (`tests/test_screens.py`). It does not run `npx e2e init`. |
 | `/dashboard` | `/dashboard` | done | Status counts render, including `count-done` after a finished run. The usage table is a 7-day or 30-day UTC window (`?period=30d`). Input and output tokens, and cost, are lifetime totals grouped by the day the task was created. Completed counts `done` tasks by the day they finished, including a task created before the window. Hiding token or cost metrics drops those columns (`tests/test_screens.py`). |
-| `/projects` and settings `projects` | `/projects` | done | Add, including refusing `$HOME`. |
-| unknown path | — | done | `/does-not-exist` is 404. |
+| `/projects` and settings `projects` | `/projects` | done | `test_projects_and_dashboard` adds a directory, refuses a second add, and refuses `$HOME` |
+| unknown path | — | done | `tests/test_finish.py` asserts `/does-not-exist` is 404 |
 | settings `tracker`, `tasks`, `skills` (global), `global-instructions`, resources | `/settings/tracker`, `/settings/tasks`, `/settings/global-skills`, `/settings/global-instructions`, `/settings/resources` | done | The base branch is what the next task forks from. The global prompt is prepended before the project's own prompt (`tests/test_screens.py`). A required check runs only while auto-landing onto the trunk, after a rebase or before the commit when there is no upstream (`tests/test_stream_a_close.py`). A worktree run that reaches `done` does not run them (`tests/test_screens.py`). `false` fails the land and is sent back to the agent. An org skill repo is cloned bare — a local path in the test — and a step that names the skill gets that body in the prompt. The memory cap samples the agent process tree (`VmRSS` of processes whose cwd is the worktree, plus their descendants). Crossing it pauses the task at `waiting` and the note names the limit. The form still rejects a cap under 256 MB. |
 | GitHub review and merge UI | task page `#merge-box` | done | A pull request shows Ready to merge or Merge blocked, the blocker, and Squash and merge. `tests/test_surface.py`. Failing checks block `canMerge`. |
 | Light / violet tokens, phone layout | the same CSS | done | Saving light and violet sets `class="light"` and `data-accent="violet"` (`tests/test_cockpit.py`). At 390×844 the sidebar stacks above the page; at 1280 it sits beside it, and the wordmark is the light-violet primary (`e2e/test_screens.py`). |
@@ -320,8 +318,8 @@ It is not a pixel copy of the React component.
 
 | Item | Status | Verified |
 | --- | --- | --- |
-| Scheduler loop | done | engine parallel test and the live server |
-| Automation ticker | done | engine test |
+| Scheduler loop | done | `test_only_one_run_occupies_a_slot_when_max_parallel_is_one` |
+| Automation ticker | done | `test_a_stale_schedule_does_not_launch_a_backlog` |
 | Telemetry | intentionally not ported | This fork does not send telemetry. The consent routes, if called, do not open a network request. |
 | Star count, self-update, skills auto-update | intentionally not ported | They would phone home or change the install. This fork leaves them out. |
 | Desktop shell | intentionally not ported | Owner decision: the Tauri shell stays out of this port. |
@@ -519,7 +517,7 @@ next table.
 | `CEZ_REMOTE_AGENT_ACCOUNTS` | done | Hosted mode (`CEZ_REMOTE=1`) refuses `POST /settings/accounts` with 409 until the flag is exactly `1`. A local cockpit saves without it (`tests/test_agent_env.py`). |
 | `CEZ_AUTONOMOUS_DEFAULT`, `CEZ_WORKTREE_DEFAULT` | done | Exact `1` / `0`. Omitted on `plan_run` inherits them: autonomous on, or a git checkout run in place. An explicit argument wins. `tests/test_stream_a.py`. |
 | Release packaging, server-install, disk space, startup port probe | done | The project is a hatchling package (`[tool.uv] package = true`). `cez package` runs `uv build`, which writes a wheel and an sdist; the wheel includes `app/` and `static/` (`tests/test_stream_b_close.py`). `server-install` / `deploy` / `uninstall` invoke `systemctl` or `launchctl` and `docker compose` through an injectable command; a dry run does not. Disk space is on `GET /api/v1/health` and `GET /workspace/host-usage`. An omitted listen port probes forward from 4321; `--port 9` stays 9. The image is the repo `Dockerfile`. |
-| Worktree lifecycle events, handoff files, skills banner, remote skills | partial | Create/delete worktree events are on the workspace stream (`tests/test_stream_a.py`). A handoff file is seeded under the data dir and a turn heartbeat is inserted. `serve` prints the skills banner unless `CEZ_NO_BANNER=1` or `dismissedSkillsBanner` is set. Remote skills are the team-repo refresh above (`tests/test_stream_a_close.py`). Not ported: the TypeScript lifecycle command executor (its own process group, an output cap, and secret redaction). |
+| Worktree lifecycle events, handoff files, skills banner, remote skills | done | Create/delete worktree events are on the workspace stream (`tests/test_stream_a.py`). A handoff file is seeded under the data dir and a turn heartbeat is inserted. `serve` prints the skills banner unless `CEZ_NO_BANNER=1` or `dismissedSkillsBanner` is set. Remote skills are the team-repo refresh (`tests/test_stream_a_close.py`). `execute_lifecycle_command` in `app/engine/lifecycle_exec.py` runs in its own session, caps output at 1 MiB with 16 KiB frames, and redacts secret values and token shapes (`tests/test_lifecycle_exec.py`). The operation HTTP API (`/worktree-lifecycle/operations`) is still the TypeScript server. |
 | Browser e2e (`packages/web/e2e/`) | done | `e2e/test_main_loop.py` drives New task to `done`, and review through commit, push, and a fake-`gh` draft PR. `e2e/test_screens.py` covers each ported screen's main action: git panes, workflow steps, settings editors, automations and the calendar, variants compare, the terminal pane, inbox, dashboard, integrations, phone layout, and light/violet. `uv run pytest` does not collect `e2e/`. Thread virtualization, host telemetry, and skills auto-update are separate rows. |
 
 
@@ -537,9 +535,22 @@ Left as they are. A later agent should not "clean these up" as a drive-by:
 - CSS is hand-written in `static/css/style.css`. That is the Decisions table. Do not add Tailwind.
 - A page is not always one resource plus a `db.watch` stream. Several settings pages are static HTML.
 
+## Known gaps / verify live
+
+These are not failures of the unit suite. A live machine is what would show them.
+
+- Runners are tested against fake CLIs only: `claude`, `codex`, `cursor`, `opencode`, `pi`, `junie`, and `copilot` (`tests/test_runners.py`, `tests/test_runner_gaps.py`, `tests/fakes/`). Nothing here is a live handshake.
+- The OS keychain is in-memory in tests. `tests/test_secrets.py` injects `MemoryKeyring`. A live `secret-tool` / Secret Service session was not run. `CEZ_SECRETS_KEYCHAIN=0` stays on the `0600` file.
+- A GitHub Enterprise host is untested. `*.ghe.com` is accepted as a GitHub-shaped host (`tests/test_integrations.py` asserts `forge_base_issue` has no complaint). No test talks to an appliance.
+- Live `gh` output is parsed only through fakes. `tests/test_parity.py` and `tests/test_github_read.py` feed recorded JSON. A real `gh pr view` was not run.
+- Memory sampling reads `/proc`: `VmRSS` of processes whose cwd is the worktree, plus their descendants (`app/engine/memory_guard.py`). It is the Linux proc tree, not a cgroup probe.
+- Usage days are UTC. The dashboard groups tokens by the UTC day the task was created and completions by the UTC day it finished (`tests/test_screens.py`, `?period=30d`).
+- Skills auto-update and host telemetry are intentionally not ported. Do not send telemetry.
+- `CEZ_REAL_AGENTS=1` does not speak stream-json. It spawns `StdinAgent` (prompt on stdin). The protocol runners are the path when that flag is off and dry-run is off.
+
 ## Workstreams
 
-Checklist after this pass: **175 done**, **11 partial**, **2 not done**, **14 intentionally not ported** (202 rows). Stream B has no open rows. The 13 open rows are stream A's. An agent updates only its rows in this file.
+Checklist after this pass: **185 done**, **3 partial**, **0 not done**, **14 intentionally not ported** (202 rows). The open rows are the dry-run `mock:write` marker, the unset parallel default of 2, and the live cancel response.
 
 `intentionally not ported` (telemetry, star count, self-update, desktop) is not a stream. Do not send it.
 
@@ -564,7 +575,7 @@ How a row was placed when it touched two areas:
 
 Partial:
 
-- Worktree lifecycle events, handoff files, skills banner, remote skills
+- Dry-run mock (`mock:fail`, `mock:ask`, `mock:write`)
 
 Not done: none.
 
@@ -574,9 +585,11 @@ The node editor is `app/features/workflows/editor.py`. C still renders `/workflo
 
 ### B — server route families and the CLI
 
-0 partial, 0 not done.
+1 partial, 0 not done.
 
-Partial: none.
+Partial:
+
+- `POST /api/v1/runs/{id}/cancel`
 
 Not done: none.
 
@@ -586,7 +599,13 @@ Git, GitHub, webhook, and hook methods already on `surface.py` stay with D.
 
 ### C — Datastar screens, settings, and e2e
 
-0 partial, 0 not done.
+1 partial, 0 not done.
+
+Partial:
+
+- Workspace settings: parallel (default 2), runner, theme, accent
+
+Not done: none.
 
 Skills auto-update and host telemetry are intentionally not ported. TypeScript does run skills auto-update after the server listens (at most once per six-hour window, unless `CEZ_SKILLS_AUTO_UPDATE=0` or Settings turns application off). This port does not. Adam can decide whether to port it. Host telemetry stays out.
 

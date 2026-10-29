@@ -81,8 +81,8 @@ is 33,553 bytes and is not application code. The TypeScript tree is still in the
 | --- | ---: | ---: |
 | TypeScript application (no `*test*` / `*spec*` files) | 807 | 146,242 |
 | TypeScript tests | 810 | 157,213 |
-| Python application (`app/`) | 53 | 6,574 |
-| Python tests, including protocol fakes | 15 | 1,756 |
+| Python application (`app/`) | 55 | 7,090 |
+| Python tests, including protocol fakes | 17 | 1,952 |
 | Python CSS | 1 | 221 |
 
 The Python application is about 4% of the TypeScript application by code lines.

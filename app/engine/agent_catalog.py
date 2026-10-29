@@ -481,6 +481,32 @@ def read_bytes(path: Path) -> tuple[str, str | None]:
     return raw.decode("utf-8", errors="replace"), hashlib.sha256(raw).hexdigest()
 
 
+def user_mcp(path: Path) -> dict[str, object]:
+    """Server names from Claude's user state file. The file body is not returned.
+
+    A missing file is an empty readable list. A file over 1 MiB, or one that
+    does not parse, is not readable.
+    """
+    shown = str(path)
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return {"path": shown, "servers": [], "readable": True}
+    if size > 1_048_576:
+        return {"path": shown, "servers": [], "readable": False}
+    try:
+        import json
+
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except OSError, ValueError:
+        return {"path": shown, "servers": [], "readable": False}
+    servers = loaded.get("mcpServers") if isinstance(loaded, dict) else None
+    names: list[str] = []
+    if isinstance(servers, dict):
+        names = sorted(key for key in servers if isinstance(key, str))
+    return {"path": shown, "servers": names, "readable": True}
+
+
 def describe(item: ConfigFile, repo: Path, *, editable: bool) -> dict[str, object]:
     content, version = read_bytes(resolve_path(item, repo))
     body: dict[str, object] = {

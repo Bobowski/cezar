@@ -44,12 +44,19 @@ def basic_auth(config: Config) -> Middleware:
             if c.req.path == "/health":
                 await handler(c, w)
                 return
-            presented = c.req.cookies.get(_COOKIE, "")
-            if presented and hmac.compare_digest(presented, token):
+            if _accepts(c.req.headers.get("authorization"), user, password):
+                set_cookie(
+                    w,
+                    _COOKIE,
+                    token,
+                    httponly=True,
+                    samesite="lax",
+                    secure=_https(c),
+                )
                 await handler(c, w)
                 return
-            if _accepts(c.req.headers.get("authorization"), user, password):
-                set_cookie(w, _COOKIE, token, httponly=True, samesite="lax", secure=False)
+            presented = c.req.cookies.get(_COOKIE, "")
+            if presented and hmac.compare_digest(presented, token):
                 await handler(c, w)
                 return
             w.headers.set("www-authenticate", _REALM)
@@ -90,6 +97,12 @@ def _credentials(config: Config) -> tuple[str, str]:
         file=sys.stderr,
     )
     return user, generated
+
+
+def _https(c: Context) -> bool:
+    """Secure when a proxy says the browser used https. A plain loopback cockpit stays unset."""
+    forwarded = c.req.headers.get("x-forwarded-proto", "")
+    return forwarded.split(",")[0].strip().lower() == "https"
 
 
 def _accepts(header: str | None, user: str, password: str) -> bool:

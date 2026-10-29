@@ -7,12 +7,15 @@ import base64
 import os
 import socket
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
 from stario.testing import TestClient
 
 from app.cli import main
+from app.engine.autosave import autosave_commit
+from app.engine.landing import land_inplace
 from app.engine.project_forge import checkout, create_repo, owners
 from app.engine.providers import connect_provider
 from app.engine.server_install import first_free_port
@@ -114,6 +117,7 @@ async def test_an_in_place_checkout_is_committed(client, repo: Path):
         ["git", "ls-tree", "-r", "--name-only", "HEAD"], cwd=repo, text=True
     )
     assert "CEZAR_DRY_RUN.txt" in committed
+    assert ".ai/cezar/config.json" not in committed
     (repo / "after.txt").write_text("later\n", encoding="utf-8")
     landed = await client.post(f"/api/v1/runs/{run_id}/land")
     assert landed.json()["result"] == "landed"
@@ -157,18 +161,22 @@ async def test_a_usage_limit_failure_is_requeued(client):
         },
     )
     run_id = created.json()["id"]
-    resumed = await _until(client, run_id, lambda row: _attempts(row) >= 1)
-    assert _attempts(resumed) >= 1
-    ready = await _until(
-        client,
-        run_id,
-        lambda row: bool(row.get("autoResumeAt")) or row.get("status") == "queued",
-    )
-    assert ready.get("autoResumeAt") or ready.get("status") == "queued"
+    armed = await _until(client, run_id, lambda row: bool(row.get("autoResumeAt")))
+    assert armed["status"] == "failed"
     started = await client.post(f"/api/v1/runs/{run_id}/start-now")
     assert started.status_code == 200
     assert started.json()["started"] is True
-    await client.delete(f"/api/v1/runs/{run_id}/auto-resume")
+    cleared = (await client.get(f"/api/v1/runs/{run_id}")).json()
+    assert "autoResumeAt" not in cleared
+    other = await client.post(
+        "/api/v1/runs",
+        json={
+            "task": "limited again",
+            "steps": [{"id": "limit", "command": "echo usage limit; exit 1"}],
+        },
+    )
+    resumed = await _until(client, other.json()["id"], lambda row: _attempts(row) >= 1)
+    assert _attempts(resumed) >= 1
 
 
 async def test_github_automation_filters_and_stats(client):
@@ -269,54 +277,100 @@ def test_a_live_checkout_calls_the_injected_gh(tmp_path: Path):
     assert len(calls) == 1
 
 
-def test_provider_connect_in_a_dry_run_does_not_probe(tmp_path: Path):
-    def probe(_args: list[str]) -> tuple[int, str]:
-        raise AssertionError("probed")
+def test_land_after_autosave_keeps_the_task_file_and_skips_cezar_state(tmp_path: Path):
+    from tests.conftest import init_repo
 
-    row, reason = connect_provider(
-        tmp_path / "providers.json",
-        "claude",
-        {"claude": "claude"},
-        dry_run=True,
-        probe=probe,
+    root = tmp_path / "repo"
+    init_repo(root)
+    (root / ".ai" / "cezar").mkdir(parents=True)
+    (root / ".ai" / "cezar" / "config.json").write_text("{}\n", encoding="utf-8")
+    (root / "note.txt").write_text("task\n", encoding="utf-8")
+    assert autosave_commit(root, "turn end") == "committed"
+    names = subprocess.check_output(
+        ["git", "ls-tree", "-r", "--name-only", "HEAD"], cwd=root, text=True
     )
+    assert "note.txt" in names
+    assert ".ai/cezar/config.json" not in names
+    assert land_inplace(root)["result"] == "nothing"
+    (root / "later.txt").write_text("x\n", encoding="utf-8")
+    landed = land_inplace(root)
+    assert landed["result"] == "landed"
+    assert "later.txt" in landed["files"]
+    latest = subprocess.check_output(
+        ["git", "show", "--name-only", "--format=", "HEAD"], cwd=root, text=True
+    )
+    assert "later.txt" in latest
+    assert ".ai/cezar" not in latest
+
+
+def test_provider_connect_in_a_dry_run_does_not_spawn():
+    def runner(_args: list[str]) -> tuple[int, str]:
+        raise AssertionError("spawned")
+
+    row, reason = connect_provider("claude", {"claude": "claude"}, dry_run=True, runner=runner)
     assert reason is None
     assert row is not None
-    assert row["version"] == "dry-run"
-    assert row["connected"] is True
+    assert row["dryRun"] is True
+    assert row["opened"] is False
+    assert row["command"] == "claude auth login"
 
 
-async def test_closeout_routes(client, repo: Path):
-    skill = repo / ".agents" / "skills" / "demo" / "SKILL.md"
+def test_provider_connect_spawns_the_login_command():
+    seen: list[list[str]] = []
+
+    def runner(args: list[str]) -> tuple[int, str]:
+        seen.append(args)
+        return 0, "ok"
+
+    row, reason = connect_provider("claude", {"claude": "claude"}, dry_run=False, runner=runner)
+    assert reason is None
+    assert row is not None
+    assert seen == [["claude", "auth", "login"]]
+    assert row["opened"] is True
+
+
+async def test_closeout_routes(client, repo: Path, monkeypatch):
+    from tests.conftest import init_repo
+
+    from app.features.settings.store import SkillRepo, write_skill_repos
+
+    remote = repo.parent / "skills-remote"
+    init_repo(remote)
+    skill = remote / "skills" / "demo" / "SKILL.md"
     skill.parent.mkdir(parents=True)
     skill.write_text(
-        "---\nname: demo\ndescription: local only\n---\n\nDo the thing.\n",
+        "---\nname: demo\ndescription: from git\n---\n\nDo the thing.\n",
         encoding="utf-8",
     )
+    subprocess.run(["git", "add", "skills"], cwd=remote, check=True)
+    subprocess.run(["git", "commit", "-m", "skill"], cwd=remote, check=True)
+    write_skill_repos(repo.parent / "data", [SkillRepo(str(remote), "main")])
     (repo / "e2e.config.ts").write_text("export default {}\n", encoding="utf-8")
     (repo / "e2e.credentials.json").write_text('{"ada": {"password": "nope"}}\n', encoding="utf-8")
     bad = repo / ".ai" / "cezar" / "workflows" / "bad.yaml"
     bad.parent.mkdir(parents=True, exist_ok=True)
     bad.write_text(":\n  - [\n", encoding="utf-8")
 
-    imported = (await client.get("/api/v1/skills/importable")).json()
-    assert imported["network"] is False
-    assert any(row["name"] == "demo" for row in imported["skills"])
+    empty = (await client.get("/api/v1/skills/importable")).json()
+    assert empty["skills"] == []
+
+    def refuse_spawn(*_args, **_kwargs):
+        raise AssertionError("planner spawned a binary")
+
+    monkeypatch.setattr("app.engine.planner._spawn", refuse_spawn)
     refreshed = await client.post("/api/v1/skills/refresh")
-    assert refreshed.json()["copied"] == ["demo"]
     assert refreshed.json()["network"] is False
-    copied = repo / ".ai" / "cezar" / "skills" / "demo.md"
-    assert copied.read_bytes() == skill.read_bytes()
-    updated = await client.post("/api/v1/skills/update")
-    assert updated.json()["network"] is False
-    assert updated.json()["updated"] == []
-    again = (await client.get("/api/v1/skills/importable")).json()
-    assert all(row["name"] != "demo" for row in again["skills"])
+    assert any(row["name"] == "demo" for row in refreshed.json()["skills"])
+    imported = (await client.get("/api/v1/skills/importable")).json()
+    assert any(row["name"] == "demo" for row in imported["skills"])
 
     planned = await client.post("/api/v1/plan", json={"task": "outline the change"})
-    assert planned.status_code == 201
-    assert planned.json()["callsModel"] is False
-    assert planned.json()["run"]["workflow"] == "(plan)"
+    assert planned.status_code == 200
+    assert planned.json()["fallback"] is False
+    assert planned.json()["name"] == "implement-verify-review"
+    review = next(step for step in planned.json()["steps"] if step["name"] == "Review")
+    assert "skill" not in review
+    assert review["prompt"]
 
     status = (await client.get("/api/v1/e2e")).json()
     assert status["configFile"] == "e2e.config.ts"
@@ -326,9 +380,20 @@ async def test_closeout_routes(client, repo: Path):
     assert setup.status_code == 201
     assert (await client.get("/api/v1/e2e")).json()["latestRunId"] == setup.json()["runId"]
 
-    saved = await client.put("/api/v1/start-app", json={"command": "echo hi"})
-    assert saved.json()["command"] == "echo hi"
-    assert (await client.get("/api/v1/start-app")).json()["command"] == "echo hi"
+    saved = await client.put(
+        "/api/v1/start-app",
+        json={
+            "scope": "project",
+            "recipe": {"services": ["npm run dev"], "url": "http://127.0.0.1:5173"},
+        },
+    )
+    assert saved.json()["project"]["services"] == ["npm run dev"]
+    assert saved.json()["personal"] is None
+    stored = (repo / ".ai" / "cezar" / "config.json").read_text(encoding="utf-8")
+    assert "npm run dev" in stored
+    assert (await client.get("/api/v1/start-app")).json()["project"][
+        "url"
+    ] == "http://127.0.0.1:5173"
 
     draft = await client.post("/api/v1/drafts", json={"text": "remember this"})
     assert draft.status_code == 201
@@ -353,16 +418,21 @@ async def test_closeout_routes(client, repo: Path):
     usage = (await client.get("/api/v1/workspace/host-usage")).json()
     assert usage["disk"]["level"] in ("ok", "low", "critical")
 
+    def refuse_login(_args: list[str]) -> tuple[int, str]:
+        raise AssertionError("login spawned")
+
+    monkeypatch.setattr("app.engine.providers.command_runner", refuse_login)
     connected = await client.post("/api/v1/providers/claude/connect")
-    assert connected.json()["version"] == "dry-run"
+    assert connected.json()["dryRun"] is True
+    assert connected.json()["command"] == "claude auth login"
     disabled = await client.put("/api/v1/providers/claude/enabled", json={"enabled": False})
     assert disabled.json()["enabled"] is False
     rows = (await client.get("/api/v1/providers/status")).json()["providers"]
     claude = next(row for row in rows if row["provider"] == "claude")
-    assert claude["connected"] is True
     assert claude["enabled"] is False
     retried = await client.post("/api/v1/providers/claude/retry")
-    assert retried.json()["connected"] is True
+    assert retried.json()["dryRun"] is True
+    assert "auth status" in retried.json()["command"]
 
     workflows = (await client.get("/api/v1/workflows")).json()
     assert workflows["issues"]
@@ -393,6 +463,27 @@ async def test_closeout_routes(client, repo: Path):
         assert pictured.status_code == 200
         assert pictured.json()["paths"]
         assert Path(pictured.json()["paths"][0]).is_file()
+
+
+async def test_plan_spawns_the_configured_runner(repo, monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("CEZ_DRY_RUN", "0")
+    binary = tmp_path / "claude"
+    binary.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        "text = sys.stdin.read()\n"
+        "assert '[cez-planner]' in text\n"
+        'print(\'{"title":"from-binary","steps":[{"name":"Implement",'
+        '"prompt":"{{task}}"}],"rationale":"binary"}\')\n',
+        encoding="utf-8",
+    )
+    binary.chmod(0o755)
+    monkeypatch.setenv("CEZ_CLAUDE_BIN", str(binary))
+    async with TestClient(bootstrap, request_timeout=30, base_url="http://127.0.0.1:4321") as live:
+        planned = await live.post("/api/v1/plan", json={"task": "outline the change"})
+        assert planned.status_code == 200
+        assert planned.json()["fallback"] is False
+        assert planned.json()["name"] == "from-binary"
 
 
 async def test_open_in_spawns_when_the_cockpit_is_not_a_dry_run(repo, monkeypatch, tmp_path: Path):
@@ -432,28 +523,49 @@ async def test_hosted_basic_auth_sets_a_session_cookie(repo, monkeypatch):
         allowed = await hosted.get("/api/v1/projects", headers={"authorization": f"Basic {token}"})
         assert allowed.status_code == 200
         assert "cezar_session" in allowed.cookies
+        assert "secure" not in (allowed.headers.get("set-cookie") or "").lower()
+        secure = await hosted.get(
+            "/api/v1/projects",
+            headers={"authorization": f"Basic {token}", "x-forwarded-proto": "https"},
+        )
+        assert "secure" in (secure.headers.get("set-cookie") or "").lower()
         again = await hosted.get("/api/v1/workspace/config")
         assert again.status_code == 200
 
 
-def test_server_install_writes_files_and_package_builds_a_wheel(tmp_path: Path, monkeypatch):
+def test_server_install_invokes_the_service_manager(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("PROJECT_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("CEZ_REPO", str(tmp_path))
+    monkeypatch.delenv("CEZ_DRY_RUN", raising=False)
+    calls: list[list[str]] = []
+
+    def fake(args: list[str]) -> tuple[int, str]:
+        calls.append(list(args))
+        return 0, ""
+
+    monkeypatch.setattr("app.engine.server_install.command_runner", fake)
     dest = tmp_path / "unit"
     assert main(["server-install", "--dest", str(dest), "--port", "4321"]) == 0
     unit = (dest / "cezar.service").read_text(encoding="utf-8")
     assert "ExecStart=python -m app.main" in unit
-    assert "systemctl" not in unit
     assert "node" not in unit.lower()
+    assert any(command[0] == "systemctl" for command in calls)
     compose = (dest / "compose.yaml").read_text(encoding="utf-8")
     assert "cezar:" in compose
     deploy = tmp_path / "deploy"
     assert main(["deploy", "--dest", str(deploy)]) == 0
     assert (deploy / "compose.yaml").is_file()
     assert not (deploy / "cezar.service").exists()
+    assert any(command[:2] == ["docker", "compose"] for command in calls)
     assert main(["uninstall", "--dest", str(dest)]) == 0
     assert not (dest / "cezar.service").exists()
     assert not (dest / "compose.yaml").exists()
+    calls.clear()
+    monkeypatch.setenv("CEZ_DRY_RUN", "1")
+    quiet = tmp_path / "quiet"
+    assert main(["server-install", "--dest", str(quiet)]) == 0
+    assert calls == []
+    assert not (quiet / "cezar.service").exists()
     assert main(["package", "--dest", str(tmp_path / "dist")]) == 0
     wheels = list((tmp_path / "dist").glob("*.whl"))
     assert len(wheels) == 1

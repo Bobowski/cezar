@@ -565,7 +565,9 @@ class SurfaceApi:
         w.json(
             cast(
                 JsonValue,
-                provider_status(self.config.runner_bins, self.config.data_dir / "providers.json"),
+                provider_status(
+                    self.config.runner_bins, self.config.data_dir / "disabled-providers.json"
+                ),
             )
         )
 

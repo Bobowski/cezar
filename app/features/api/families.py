@@ -25,11 +25,12 @@ from app.config import (
     RUNNERS,
     Config,
     automations_enabled,
+    claude_state_file,
     followups_enabled,
     single_project,
     todos_path,
 )
-from app.engine.agent_catalog import FILES, describe, find_file, read_bytes, resolve_path
+from app.engine.agent_catalog import FILES, describe, find_file, read_bytes, resolve_path, user_mcp
 from app.engine.catalog import load_workflows
 from app.engine.deferred_start import (
     load_creations,
@@ -367,7 +368,11 @@ class RouteFamilies:
         w.json(
             cast(
                 JsonValue,
-                {"editable": editable, "files": files, "userMcp": {"servers": []}},
+                {
+                    "editable": editable,
+                    "files": files,
+                    "userMcp": None if not editable else user_mcp(claude_state_file()),
+                },
             )
         )
 

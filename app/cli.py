@@ -31,10 +31,10 @@ from app.engine.import_runs import events_near, load_runs_file
 from app.engine.packaging import build_wheel
 from app.engine.scaffold import init_project
 from app.engine.server_install import (
-    deploy_compose,
+    deploy_service,
     first_free_port,
-    install_files,
-    uninstall_files,
+    install_service,
+    uninstall_service,
 )
 from app.main import bootstrap
 from app.store.db import (
@@ -246,23 +246,41 @@ async def projects_command(action: str, value: str | None) -> int:
 
 
 def _files_command(command: str, args: argparse.Namespace) -> int:
-    """Write unit files or a wheel. Nothing is registered with systemd or a registry."""
+    """Install or remove the cockpit. A dry run prints the commands and stops."""
+    config = Config.from_env()
     dest = Path(args.dest)
     host = args.host or "127.0.0.1"
     port = args.port or 4321
     if command == "server-install":
-        names = install_files(dest, host=host, port=port, repo=str(Config.from_env().repo_root))
-        print(" ".join(names))
+        result = install_service(
+            dest, host=host, port=port, repo=str(config.repo_root), dry_run=config.dry_run
+        )
+    elif command == "deploy":
+        result = deploy_service(dest, host=host, port=port, dry_run=config.dry_run)
+    elif command == "uninstall":
+        result = uninstall_service(dest, dry_run=config.dry_run)
+    else:
+        source = Path(__file__).resolve().parents[1]
+        print(build_wheel(source, dest))
         return 0
-    if command == "deploy":
-        print(deploy_compose(dest, host=host, port=port))
+    return _print_service(result)
+
+
+def _print_service(result: dict[str, object]) -> int:
+    if result.get("ok") is not True:
+        print(str(result.get("error") or "the service command failed"), file=sys.stderr)
+        return 1
+    if result.get("dryRun") is True:
+        print("dry-run")
+        commands = result.get("commands")
+        if isinstance(commands, list):
+            for command in commands:
+                if isinstance(command, list):
+                    print(" ".join(str(part) for part in command))
         return 0
-    if command == "uninstall":
-        removed = uninstall_files(dest)
-        print(" ".join(removed) if removed else "nothing")
-        return 0
-    source = Path(__file__).resolve().parents[1]
-    print(build_wheel(source, dest))
+    files = result.get("files")
+    if isinstance(files, list):
+        print(" ".join(str(name) for name in files))
     return 0
 
 

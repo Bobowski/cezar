@@ -23,10 +23,15 @@ from app.engine.disk_health import disk_health
 from app.engine.engine import Engine
 from app.engine.landing import land_inplace
 from app.engine.model import Project, Run
-from app.engine.providers import connect_provider, set_provider_enabled
-from app.engine.skills_import import importable_skills, refresh_local_skills
+from app.engine.planner import plan_chain
+from app.engine.providers import (
+    connect_provider,
+    retry_provider,
+    set_provider_enabled,
+    update_provider,
+)
+from app.engine.team_skills import cached_sources, refresh_sources
 from app.engine.uploads import materialize
-from app.engine.workflows import parse_workflow
 from app.engine.workspace_files import (
     add_draft,
     add_profile,
@@ -34,15 +39,15 @@ from app.engine.workspace_files import (
     drafts,
     layouts,
     profiles,
-    start_app,
+    read_start_state,
     templates,
     write_branding,
     write_layouts,
-    write_start_app,
+    write_start_state,
     write_templates,
 )
 from app.features.api.handlers import _images
-from app.features.api.records import public_run
+from app.features.settings.store import read_skill_repos
 from app.store.db import get_project, get_run, list_events, list_runs
 
 _TEMPLATES: tuple[dict[str, object], ...] = (
@@ -117,6 +122,7 @@ class CloseoutApi:
         app.add(Route("GET /api/v1/github/owners"), self.owners)
         app.add(Route("POST /api/v1/providers/{name}/connect"), self.connect)
         app.add(Route("POST /api/v1/providers/{name}/retry"), self.retry_provider)
+        app.add(Route("POST /api/v1/providers/{name}/update"), self.update)
         app.add(Route("PUT /api/v1/providers/{name}/enabled"), self.enable_provider)
 
     async def plan(self, c: Context, w: Writer) -> None:
@@ -130,59 +136,54 @@ class CloseoutApi:
         if not isinstance(task, str) or not task.strip():
             _send(w, {"error": "task is required"}, status=400)
             return
-        parsed, issue = parse_workflow(
-            {
-                "name": "(plan)",
-                "description": "One step. This port does not call a model.",
-                "steps": [{"id": "plan", "prompt": task.strip()}],
-            },
-            source="built-in",
+        import asyncio
+
+        binary = self.config.runner_bins.get(_runner(body, self.db), "claude")
+        result = await asyncio.to_thread(
+            plan_chain,
+            project.root,
+            task.strip(),
+            binary=binary,
+            dry_run=self.config.dry_run,
         )
-        if parsed is None:
-            _send(w, {"error": issue or "invalid plan"}, status=400)
-            return
-        run, reason = self.engine.plan_run(
-            project=project,
-            task=task.strip(),
-            workflow_name=parsed.name,
-            runner=_runner(body, self.db),
-            workflow=parsed,
-        )
-        if run is None:
-            _send(w, {"error": reason or "invalid task"}, status=400)
-            return
-        _send(
-            w,
-            cast(JsonValue, {"run": public_run(run, full=True), "callsModel": False}),
-            status=201,
-        )
-        await self.engine.enqueue(run)
+        _send(w, result)
 
     async def importable(self, c: Context, w: Writer) -> None:
         project = self._project(c, w)
         if project is None:
             return
-        _send(w, {"skills": importable_skills(Path(project.root)), "network": False})
+        _send(
+            w,
+            {"skills": cached_sources(self.config.data_dir, self._skill_repos()), "network": False},
+        )
 
     async def refresh_skills(self, c: Context, w: Writer) -> None:
-        project = self._project(c, w)
-        if project is None:
-            return
-        copied = refresh_local_skills(Path(project.root))
-        _send(w, {"copied": copied, "network": False})
+        await self._refresh(c, w)
 
     async def update_skills(self, c: Context, w: Writer) -> None:
-        project = self._project(c, w)
-        if project is None:
+        await self._refresh(c, w)
+
+    async def _refresh(self, c: Context, w: Writer) -> None:
+        if self._project(c, w) is None:
             return
-        copied = refresh_local_skills(Path(project.root))
-        _send(w, {"updated": copied, "network": False, "source": "local"})
+        import asyncio
+
+        result = await asyncio.to_thread(
+            refresh_sources,
+            self.config.data_dir,
+            self._skill_repos(),
+            dry_run=self.config.dry_run,
+        )
+        _send(w, result)
+
+    def _skill_repos(self) -> list[tuple[str, str]]:
+        return [(row.repo, row.ref) for row in read_skill_repos(self.config.data_dir)]
 
     async def get_start_app(self, c: Context, w: Writer) -> None:
         project = self._project(c, w)
         if project is None:
             return
-        _send(w, start_app(self._path("start-app.json"), project.root))
+        _send(w, read_start_state(Path(project.root), self.config.data_dir, project.id))
 
     async def put_start_app(self, c: Context, w: Writer) -> None:
         project = self._project(c, w)
@@ -191,11 +192,17 @@ class CloseoutApi:
         body = await _object(c, w)
         if body is None:
             return
-        command = body.get("command")
-        if not isinstance(command, str) or len(command) > 500:
-            _send(w, {"error": "command must be a string of at most 500 characters"}, status=400)
+        scope = body.get("scope")
+        if not isinstance(scope, str):
+            _send(w, {"error": "scope must be project or personal"}, status=400)
             return
-        _send(w, write_start_app(self._path("start-app.json"), command, project.root))
+        stored = write_start_state(
+            Path(project.root), self.config.data_dir, project.id, scope, body.get("recipe")
+        )
+        if isinstance(stored, str):
+            _send(w, {"error": stored}, status=400)
+            return
+        _send(w, stored)
 
     async def e2e_status(self, c: Context, w: Writer) -> None:
         project = self._project(c, w)
@@ -491,10 +498,13 @@ class CloseoutApi:
         )
 
     async def connect(self, c: Context, w: Writer) -> None:
-        await self._connect(c, w)
+        await self._provider_command(c, w, connect_provider)
 
     async def retry_provider(self, c: Context, w: Writer) -> None:
-        await self._connect(c, w)
+        await self._provider_command(c, w, retry_provider)
+
+    async def update(self, c: Context, w: Writer) -> None:
+        await self._provider_command(c, w, update_provider)
 
     async def enable_provider(self, c: Context, w: Writer) -> None:
         body = await _object(c, w)
@@ -515,9 +525,8 @@ class CloseoutApi:
             return
         _send(w, cast(JsonValue, row))
 
-    async def _connect(self, c: Context, w: Writer) -> None:
-        row, reason = connect_provider(
-            self._provider_store(),
+    async def _provider_command(self, c: Context, w: Writer, command) -> None:
+        row, reason = command(
             c.match.params.get("name", ""),
             self.config.runner_bins,
             dry_run=self.config.dry_run,
@@ -575,7 +584,7 @@ class CloseoutApi:
         return self.config.data_dir / name
 
     def _provider_store(self) -> Path:
-        return self.config.data_dir / "providers.json"
+        return self.config.data_dir / "disabled-providers.json"
 
 
 def _send(w: Writer, body: object, status: int = 200) -> None:

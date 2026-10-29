@@ -25,7 +25,9 @@ def autosave_commit(cwd: Path, reason: str) -> str:
     `cezar <cezar@local>` when `user.name` is unset. `--no-verify` matches
     that function.
     """
-    ok, status, _err = git(cwd, ["status", "--porcelain"])
+    # Same exclusion as in-place landing: `.ai/cezar` is cockpit state, not the task.
+    spec = ["--", ".", ":(exclude).ai/cezar"]
+    ok, status, _err = git(cwd, ["status", "--porcelain", *spec])
     if not ok:
         return "skipped"
     if not status.strip():
@@ -33,7 +35,7 @@ def autosave_commit(cwd: Path, reason: str) -> str:
     for line in status.splitlines():
         if line[:2] in _UNMERGED:
             return "refused"
-    git(cwd, ["add", "-A"])
+    git(cwd, ["add", "-A", *spec])
     args = ["commit", "--no-verify", "-m", f"cezar autosave ({reason})"]
     named, name, _err = git(cwd, ["config", "user.name"])
     if not named or not name.strip():

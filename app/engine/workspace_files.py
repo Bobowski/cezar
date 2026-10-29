@@ -133,19 +133,65 @@ def write_templates(path: Path, rows: list[dict[str, str]]) -> None:
     write_json(path, cast(JsonValue, rows))
 
 
-def start_app(path: Path, cwd: str) -> dict[str, str]:
-    loaded = read_json(path, {"command": "", "cwd": cwd})
+def read_start_state(repo: Path, data_dir: Path, project_id: str) -> dict[str, object]:
+    """The team's recipe in `.ai/cezar/config.json`, and this project's personal one.
+
+    TypeScript stores the recipe and does not start a process on this route.
+    """
+    project = _recipe(_object_file(repo / ".ai" / "cezar" / "config.json").get("startApp"))
+    personal = _recipe(_object_file(data_dir / "start-app.json").get(project_id))
+    return {"project": project, "personal": personal, "personalAvailable": True}
+
+
+def write_start_state(
+    repo: Path, data_dir: Path, project_id: str, scope: str, recipe: object
+) -> dict[str, object] | str:
+    if scope not in ("project", "personal"):
+        return "scope must be project or personal"
+    parsed = None if recipe is None else _recipe(recipe)
+    if recipe is not None and parsed is None:
+        return "recipe needs 1 to 5 services and an optional http(s) url"
+    if scope == "project":
+        path = repo / ".ai" / "cezar" / "config.json"
+        document = _object_file(path)
+        if parsed is None:
+            document.pop("startApp", None)
+        else:
+            document["startApp"] = parsed
+        write_json(path, document)
+    else:
+        path = data_dir / "start-app.json"
+        document = _object_file(path)
+        if parsed is None:
+            document.pop(project_id, None)
+        else:
+            document[project_id] = parsed
+        write_json(path, document)
+    return read_start_state(repo, data_dir, project_id)
+
+
+def _object_file(path: Path) -> dict[str, object]:
+    loaded = read_json(path, {})
     if not isinstance(loaded, dict):
-        return {"command": "", "cwd": cwd}
-    command = loaded.get("command")
-    stored_cwd = loaded.get("cwd")
-    return {
-        "command": command if isinstance(command, str) else "",
-        "cwd": stored_cwd if isinstance(stored_cwd, str) and stored_cwd else cwd,
-    }
+        return {}
+    return cast(dict[str, object], loaded)
 
 
-def write_start_app(path: Path, command: str, cwd: str) -> dict[str, str]:
-    body = {"command": command, "cwd": cwd}
-    write_json(path, body)
+def _recipe(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    services = value.get("services")
+    if not isinstance(services, list) or not 1 <= len(services) <= 5:
+        return None
+    cleaned: list[str] = []
+    for item in services:
+        if not isinstance(item, str) or not item.strip() or len(item) > 500:
+            return None
+        cleaned.append(item.strip())
+    body: dict[str, object] = {"services": cleaned}
+    url = value.get("url")
+    if isinstance(url, str) and url:
+        if not (url.startswith("http://") or url.startswith("https://")) or len(url) > 2048:
+            return None
+        body["url"] = url.strip()
     return body

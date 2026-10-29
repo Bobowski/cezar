@@ -5,6 +5,7 @@ from stario.markup import HtmlElement
 from app.common.shell import Chrome, frame, status_chip
 from app.engine.gitwork import Diff
 from app.engine.model import Event, Run
+from app.features.places.urls import COMPARE
 from app.features.task.data import list_commits, list_worktree_files
 from app.features.task.urls import (
     TASK,
@@ -127,8 +128,11 @@ def render(
                     run.workflow,
                     " · ",
                     run.runner,
+                    f" · variant {run.variant}" if run.variant else "",
                     f" · {run.branch}" if run.branch else "",
                     f" · {run.pull_request_url}" if run.pull_request_url else "",
+                    " · " if run.group_id else "",
+                    h.A({"href": COMPARE.href(run.id)}, "Compare") if run.group_id else None,
                 ),
             ),
             h.Div({"class": "actions"}, *actions) if actions else None,
@@ -205,6 +209,7 @@ def render(
             "objective": "",
             "notes": run.notes,
             "command": "",
+            "_shell": "",
             "_error": "",
         },
         h.Main({"id": "task"}, *blocks),
@@ -252,9 +257,13 @@ def _pane(run: Run, view: TaskView, diff: Diff | None, transcript: list) -> list
             h.Form(
                 {"class": "composer"},
                 data.on("submit", at.post(TASK_SHELL.href(run.id)), prevent=True),
-                h.Input({"required": True, "maxlength": "400"}, data.bind("command")),
+                h.Input(
+                    {"required": True, "maxlength": "400", "aria-label": "Command"},
+                    data.bind("command"),
+                ),
                 h.Button({"class": "btn", "type": "submit"}, "Run"),
             ),
+            h.Pre({"id": "shell-output", "class": "diff"}, data.text("$_shell")),
         ]
     if view.pane == "browser":
         return [

@@ -200,15 +200,18 @@ class TaskPage:
         try:
             await self.engine._terminals.write(session_id, command + "\n")
             text = ""
-            for _ in range(30):
+            marker = command.split()[0]
+            seen = False
+            for _ in range(40):
                 text = self.engine._terminals.output(session_id) or ""
-                if command.split()[0] in text and len(text) > len(command):
+                if seen and marker in text:
                     break
+                if marker in text and len(text) > len(command):
+                    seen = True
                 await asyncio.sleep(0.05)
         finally:
             await self.engine._terminals.close(session_id)
-        self.relay.publish(f"tab.{tab}", {"_error": text[-500:]})
-        w.empty()
+        SSE(w).patch_signals({"_shell": text[-2000:], "command": "", "_error": ""})
 
     async def _command(self, c: Context, w: Writer, fn) -> None:
         run_id, tab, _signals = await self._input(c, w)

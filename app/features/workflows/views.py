@@ -5,6 +5,7 @@ from stario.markup import HtmlElement
 from app.common.shell import Chrome, frame
 from app.engine.catalog import LoadIssue
 from app.engine.model import Workflow
+from app.features.places.urls import WORKFLOW
 from app.features.workflows.urls import (
     WORKFLOWS_CREATE,
     WORKFLOWS_DELETE,
@@ -35,7 +36,7 @@ def render(
         rows.append(
             h.Div(
                 {"class": "task-row"},
-                h.Strong(item.name),
+                h.A({"href": WORKFLOW.href(item.name)}, h.Strong(item.name)),
                 h.Span({"class": "meta grow"}, item.description or f"{len(item.steps)} steps"),
                 tail,
             )
@@ -90,6 +91,10 @@ def render(
                     "Save workflow",
                 ),
             ),
-            h.P({"class": "muted"}, "The node-graph editor is still the TypeScript app."),
+            h.P(
+                {"class": "muted"},
+                "Open a name to read its steps and start a task. "
+                "The node-graph editor is separate.",
+            ),
         ),
     )

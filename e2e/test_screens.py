@@ -1,0 +1,282 @@
+"""One browser walk of each cockpit screen's main action.
+
+Not part of `uv run pytest`. See `e2e/test_main_loop.py` for how to run it.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import socket
+import subprocess
+import sys
+import time
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+from playwright.sync_api import Page, expect
+from tests.conftest import init_repo
+
+
+class Cockpit:
+    def __init__(self, base: str, repo: Path, data: Path, process: subprocess.Popen[str]) -> None:
+        self.base = base
+        self.repo = repo
+        self.data = data
+        self.process = process
+
+    def url(self, path: str) -> str:
+        return self.base + path
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _wait_healthy(port: int) -> None:
+    import urllib.request
+
+    deadline = time.time() + 20
+    last = ""
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1) as response:
+                if response.status == 200:
+                    return
+        except OSError as exc:
+            last = str(exc)
+        time.sleep(0.1)
+    raise AssertionError(last or "cockpit did not listen")
+
+
+@pytest.fixture(scope="module")
+def cockpit(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Cockpit]:
+    root = tmp_path_factory.mktemp("screens")
+    repo = root / "repo"
+    init_repo(repo)
+    port = _free_port()
+    env = os.environ.copy()
+    env.update(
+        {
+            "CEZ_DRY_RUN": "1",
+            "CEZ_REPO": str(repo),
+            "PROJECT_DATA_DIR": str(root / "data"),
+            "STARIO_HOST": "127.0.0.1",
+            "STARIO_PORT": str(port),
+            "CEZ_HIDE_TOKEN_USAGE": "0",
+            "CEZ_HIDE_COST": "0",
+            "CEZ_HIDE_TOKEN_METRICS": "0",
+        }
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-m", "app.main"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        _wait_healthy(port)
+    except Exception:
+        process.kill()
+        raise
+    try:
+        yield Cockpit(f"http://127.0.0.1:{port}", repo, root / "data", process)
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+
+@pytest.fixture
+def page(cockpit: Cockpit) -> Iterator[Page]:
+    del cockpit
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        tab = browser.new_page()
+        yield tab
+        browser.close()
+
+
+def _click(page: Page, name: str) -> None:
+    with page.expect_response(lambda response: response.request.method == "POST") as caught:
+        page.get_by_role("button", name=name).click()
+    assert caught.value.status in (200, 204, 303)
+
+
+def _boxes(page: Page) -> tuple[dict[str, float], dict[str, float]]:
+    side = page.locator(".sidebar").bounding_box()
+    main = page.locator(".main").bounding_box()
+    assert side is not None and main is not None
+    return side, main
+
+
+def test_phone_layout_stacks_and_desktop_sits_beside(page: Page, cockpit: Cockpit) -> None:
+    page.set_viewport_size({"width": 1280, "height": 800})
+    page.goto(cockpit.url("/tasks"), wait_until="domcontentloaded")
+    side, main = _boxes(page)
+    assert side["x"] + side["width"] <= main["x"] + 2
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.goto(cockpit.url("/tasks"), wait_until="domcontentloaded")
+    side, main = _boxes(page)
+    assert side["y"] + side["height"] <= main["y"] + 2
+    assert side["width"] > 300
+
+
+def test_repository_commits_and_workflow_steps(page: Page, cockpit: Cockpit) -> None:
+    page.goto(cockpit.url("/git?pane=commits"), wait_until="domcontentloaded")
+    expect(page.locator("#git-rows")).to_contain_text("init")
+    page.get_by_role("link", name="files").click()
+    expect(page.locator("#git-rows")).to_contain_text("README.md")
+    page.goto(cockpit.url("/github"), wait_until="domcontentloaded")
+    page.get_by_label("Owner").fill("acme")
+    page.get_by_label("Repository").fill("app")
+    page.get_by_role("button", name="List open issues").click()
+    expect(page.locator("#github-notice")).to_contain_text("gh is not authenticated")
+    page.goto(cockpit.url("/tracker"), wait_until="domcontentloaded")
+    page.get_by_label("Issue key").fill("CEZ-1")
+    page.get_by_role("button", name="Look up").click()
+    expect(page.locator("#tracker-result")).to_contain_text("jira is not configured")
+
+    page.goto(cockpit.url("/workflows/quick-task"), wait_until="domcontentloaded")
+    expect(page.get_by_role("heading", name="quick-task")).to_be_visible()
+    expect(page.get_by_text("Do the task")).to_be_visible()
+    page.get_by_role("link", name="Start a task").click()
+    expect(page).to_have_url(re.compile(r"/tasks/new"))
+
+
+def test_settings_editors_save(page: Page, cockpit: Cockpit) -> None:
+    page.goto(cockpit.url("/settings/tasks"), wait_until="domcontentloaded")
+    page.get_by_label("Base branch").fill("main")
+    page.get_by_label("Required checks").fill("lint")
+    _click(page, "Save")
+    page.goto(cockpit.url("/settings/tasks"), wait_until="domcontentloaded")
+    expect(page.locator("#required-checks")).to_contain_text("lint")
+
+    page.goto(cockpit.url("/settings/global-instructions"), wait_until="domcontentloaded")
+    page.locator("#global-prompt-input").fill("be brief in the browser")
+    _click(page, "Save")
+    page.goto(cockpit.url("/settings/global-instructions"), wait_until="domcontentloaded")
+    expect(page.locator("#global-prompt")).to_contain_text("be brief in the browser")
+
+    page.goto(cockpit.url("/settings/resources"), wait_until="domcontentloaded")
+    page.get_by_label("Memory cap").fill("512")
+    _click(page, "Save")
+    page.goto(cockpit.url("/settings/resources"), wait_until="domcontentloaded")
+    expect(page.locator("#memory-cap")).to_contain_text("512")
+
+    page.goto(cockpit.url("/settings/global-skills"), wait_until="domcontentloaded")
+    page.get_by_label("Repository").fill("https://github.com/acme/skills")
+    page.get_by_label("Ref").fill("main")
+    _click(page, "Add repo")
+    page.goto(cockpit.url("/settings/global-skills"), wait_until="domcontentloaded")
+    expect(page.locator("#skill-repos")).to_contain_text("acme/skills")
+
+    page.goto(cockpit.url("/settings/tracker"), wait_until="domcontentloaded")
+    page.get_by_label("Site").fill("https://acme.atlassian.net")
+    page.get_by_label("Email").fill("a@b.co")
+    page.get_by_label("Token").fill("secretsecretsecret")
+    _click(page, "Save connection")
+    page.goto(cockpit.url("/settings/tracker"), wait_until="domcontentloaded")
+    expect(page.locator("#tracker-saved")).to_contain_text("A token is saved.")
+    expect(page.locator("body")).not_to_contain_text("secretsecretsecret")
+
+    page.goto(cockpit.url("/settings/agents"), wait_until="domcontentloaded")
+    expect(page.locator("#agent-bins")).to_contain_text("claude:")
+    page.goto(cockpit.url("/settings/worktrees"), wait_until="domcontentloaded")
+    expect(page.locator("#worktree-keep")).to_have_text("10")
+    page.goto(cockpit.url("/settings/bookmarklets"), wait_until="domcontentloaded")
+    expect(page.locator("#bookmarklet")).to_have_attribute(
+        "href",
+        re.compile(r"^javascript:void\(window\.open\('/tasks/new\?launch=[0-9a-f]+'\)\)$"),
+    )
+
+    page.goto(cockpit.url("/secrets"), wait_until="domcontentloaded")
+    page.get_by_label("Name").fill("BUILD_TOKEN")
+    page.get_by_label("Value").fill("super-secret-value")
+    page.get_by_role("button", name="Save secret").click()
+    expect(page.locator("#secrets")).to_contain_text("BUILD_TOKEN")
+    expect(page.locator("#secrets")).not_to_contain_text("super-secret-value")
+
+    page.goto(cockpit.url("/settings/webhooks"), wait_until="domcontentloaded")
+    page.get_by_label("Name").fill("Ship")
+    page.get_by_label("URL").fill("http://127.0.0.1:9/hook")
+    page.get_by_role("button", name="Save receiver").click()
+    expect(page.locator("#receivers")).to_contain_text("Ship")
+
+    page.goto(cockpit.url("/settings/accounts"), wait_until="domcontentloaded")
+    page.get_by_label("Name").fill("Ada")
+    page.get_by_label("Runner").select_option("codex")
+    _click(page, "Add account")
+    page.goto(cockpit.url("/settings/accounts"), wait_until="domcontentloaded")
+    expect(page.locator("#account-list")).to_contain_text("Ada · codex")
+
+    page.goto(cockpit.url("/settings/agent-config/agents-md"), wait_until="domcontentloaded")
+    page.locator("#agent-file-input").fill("# from the browser\n")
+    _click(page, "Save")
+    page.goto(cockpit.url("/settings/agent-config/agents-md"), wait_until="domcontentloaded")
+    expect(page.locator("#agent-file-input")).to_have_value("# from the browser\n")
+
+
+def test_automations_task_inbox_and_theme(page: Page, cockpit: Cockpit) -> None:
+    page.goto(cockpit.url("/automations"), wait_until="domcontentloaded")
+    page.get_by_label("Name").fill("Nightly")
+    page.get_by_role("textbox", name="Task", exact=True).fill("sweep the logs")
+    page.get_by_role("button", name="Add paused automation").click()
+    expect(page.locator("#calendar")).to_contain_text("Nightly")
+    expect(page.get_by_role("strong").filter(has_text="Nightly")).to_be_visible()
+    page.get_by_role("button", name="Enable").click()
+    expect(page.get_by_text("enabled")).to_be_visible()
+
+    page.goto(cockpit.url("/tasks/new"), wait_until="domcontentloaded")
+    page.get_by_label("Variants").select_option("2")
+    page.locator("textarea").fill("compare two notes")
+    page.get_by_role("button", name="Start").click()
+    page.wait_for_url("**/compare", timeout=15_000)
+    expect(page.get_by_text("A", exact=True)).to_be_visible()
+    expect(page.get_by_text("B", exact=True)).to_be_visible()
+
+    page.goto(cockpit.url("/tasks/new"), wait_until="domcontentloaded")
+    page.locator("textarea").fill("write a note from the browser screens")
+    page.get_by_role("button", name="Start").click()
+    page.wait_for_url("**/tasks/*", timeout=15_000)
+    page.get_by_text("done", exact=True).wait_for(timeout=15_000)
+    expect(page.locator("#transcript")).to_contain_text("Dry run finished")
+    page.get_by_role("link", name="Terminal").click()
+    page.get_by_label("Command").fill("echo cezar-pane-ok")
+    page.get_by_role("button", name="Run").click()
+    expect(page.locator("#shell-output")).to_contain_text("cezar-pane-ok", timeout=10_000)
+
+    page.goto(cockpit.url("/inbox"), wait_until="domcontentloaded")
+    expect(page.get_by_text("write a note from the browser screens")).to_be_visible()
+    _click(page, "Mark read")
+    page.goto(cockpit.url("/inbox"), wait_until="domcontentloaded")
+    expect(page.get_by_text("Nothing unread.")).to_be_visible()
+
+    page.goto(cockpit.url("/dashboard"), wait_until="domcontentloaded")
+    expect(page.locator("#count-done")).to_be_visible()
+    expect(page.locator("#token-total")).to_be_visible()
+
+    page.goto(cockpit.url("/settings/integrations"), wait_until="domcontentloaded")
+    _click(page, "Set up e2e")
+    page.goto(cockpit.url("/tasks"), wait_until="domcontentloaded")
+    expect(page.get_by_text("Tester Army")).to_be_visible()
+
+    page.goto(cockpit.url("/settings"), wait_until="domcontentloaded")
+    page.get_by_label("Theme").select_option("light")
+    page.get_by_label("Accent").select_option("violet")
+    _click(page, "Save")
+    page.goto(cockpit.url("/tasks"), wait_until="domcontentloaded")
+    expect(page.locator("html")).to_have_class("light")
+    expect(page.locator("html")).to_have_attribute("data-accent", "violet")
+    color = page.evaluate("getComputedStyle(document.querySelector('.wordmark span')).color")
+    assert color == "rgb(109, 40, 217)"

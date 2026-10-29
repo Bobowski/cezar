@@ -13,7 +13,7 @@ from stario.datastar import at, data, read_signals
 from stario.exceptions import RequestBodyError
 
 from app.common.shell import frame, load_chrome
-from app.config import Config
+from app.config import RUNNERS, Config
 from app.engine.engine import Engine
 from app.engine.ui_state import merge_state, read_state
 from app.features.editors import store
@@ -33,6 +33,8 @@ from app.features.editors.urls import (
     NOTIFICATIONS,
     NOTIFICATIONS_SAVE,
 )
+from app.features.settings.nav import settings_nav
+from app.secrets.store import SecretsError, SecretStore
 from app.store.db import get_project
 
 
@@ -100,7 +102,21 @@ class EditorsPage:
             self._main(
                 "Agent config",
                 "agent-config",
-                h.Pre({"id": "agent-file"}, text or relative),
+                h.Form(
+                    {"id": "agent-file-form"},
+                    data.on(
+                        "submit",
+                        at.post(AGENT_CONFIG_SAVE.href(c.match.params.get("file_id", ""))),
+                        prevent=True,
+                    ),
+                    h.Label(
+                        {"class": "field"},
+                        h.Span(relative),
+                        h.Textarea({"id": "agent-file-input"}, data.bind("text"), text),
+                    ),
+                    h.Button({"type": "submit"}, "Save"),
+                ),
+                signals={"text": text},
             )
         )
 
@@ -127,7 +143,35 @@ class EditorsPage:
         items = [h.Li(f"{row['name']} · {row['runner']}") for row in rows] or [
             h.Li({"class": "muted"}, "No extra accounts.")
         ]
-        w.html(self._main("Agent accounts", "accounts", h.Ul(*items)))
+        w.html(
+            self._main(
+                "Agent accounts",
+                "accounts",
+                h.Form(
+                    data.on("submit", at.post(ACCOUNTS_SAVE.href()), prevent=True),
+                    h.Label(
+                        {"class": "field"},
+                        h.Span("Name"),
+                        h.Input(
+                            {"required": True, "maxlength": "80", "aria-label": "Name"},
+                            data.bind("name"),
+                        ),
+                    ),
+                    h.Label(
+                        {"class": "field"},
+                        h.Span("Runner"),
+                        h.Select(
+                            {"aria-label": "Runner"},
+                            data.bind("runner"),
+                            *[h.Option({"value": runner}, runner) for runner in RUNNERS],
+                        ),
+                    ),
+                    h.Button({"class": "btn btn-primary", "type": "submit"}, "Add account"),
+                ),
+                h.Ul({"id": "account-list"}, *items),
+                signals={"name": "", "runner": "claude"},
+            )
+        )
 
     async def save_account(self, c: Context, w: Writer) -> None:
         signals = await _signals(c, w)
@@ -191,14 +235,48 @@ class EditorsPage:
                 "External integrations",
                 "integrations",
                 h.P("Test frameworks. Queuing setup starts a task you review before it lands."),
+                h.A({"href": "https://github.com/tester-army/e2e"}, "Tester Army"),
+                h.Form(
+                    data.on("submit", at.post(INTEGRATIONS_QUEUE.href()), prevent=True),
+                    h.Label(
+                        {"class": "field"},
+                        h.Span("Model key (optional, checks only)"),
+                        h.Input(
+                            {
+                                "type": "password",
+                                "minlength": "12",
+                                "autocomplete": "off",
+                                "aria-label": "Model key",
+                            },
+                            data.bind("credential"),
+                        ),
+                    ),
+                    h.Button({"class": "btn btn-primary", "type": "submit"}, "Set up e2e"),
+                ),
+                signals={"credential": ""},
             )
         )
 
     async def queue_integration(self, c: Context, w: Writer) -> None:
+        signals = await _signals(c, w)
+        if signals is None:
+            return
         project = get_project(self.db, self.engine.boot_project_id)
         if project is None:
             w.text("unknown project", 404)
             return
+        key = str(signals.get("credential", "")).strip()
+        if key:
+            if len(key) < 12:
+                w.text("a model key is at least 12 characters", 400)
+                return
+            try:
+                SecretStore(self.config.data_dir / "secrets").set(
+                    project.id, "AI_GATEWAY_API_KEY", key, root=project.root
+                )
+            except SecretsError as exc:
+                w.text(str(exc), 400)
+                return
         run, reason = self.engine.plan_run(
             project=project,
             task="Set up the e2e test framework (Tester Army).",
@@ -255,7 +333,7 @@ class EditorsPage:
             chrome,
             None,
             payload,
-            h.Main({"id": element_id}, h.H1(title), *children),
+            h.Main({"id": element_id}, settings_nav(), h.H1(title), *children),
         )
 
 

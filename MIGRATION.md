@@ -116,7 +116,7 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | Import of `.ai/cezar/runs.json` and NDJSON | partial | `tests/test_import_runs.py` keeps id, task, status, workflow, runner, and timestamps, skips a bad row, and reads `runs/<id>.ndjson` through `events_near`. The `import-runs` command writes those events into SQLite; that command is not called by a test. |
 | Workflow and skill files remain the authored source | done | `tests/test_workflows.py`, cockpit workflow/skill test |
 | Workspace settings: parallel (default 2), runner, theme, accent | done | settings stream test |
-| Per-project base branch stored at registration | partial | used by the engine; no editor in the UI |
+| Per-project base branch stored at registration | done | The project card and Settings → Tasks save it through `Engine.set_base_branch`. A task started after that forks from the saved branch (`tests/test_screens.py`). |
 | Secrets vault | partial | `tests/test_secrets.py` and the check injection test. AES-256-GCM, file key only (no OS keychain), audiences `checks` and `cezar`, project root binding, list API omits values. Stored under `$PROJECT_DATA_DIR/secrets`, not `~/.cezar/secrets`. |
 | Agent accounts / profiles | partial | `/settings/accounts` stores `{id, name, runner}` in `$PROJECT_DATA_DIR/agent-accounts.json` (`tests/test_parity.py`). Not the TypeScript profile homes, second logins, or `CEZ_REMOTE_AGENT_ACCOUNTS`. |
 | UI state, attachments, layouts | partial | `tests/test_surface.py`. Project `.ai/cezar/ui-state.json` and `$PROJECT_DATA_DIR/ui-state.json` merge shallowly and cap a write at 200 keys. Uploads store base64 under the data directory (text, images, pdf, octet-stream) and delete by id. No layouts, drafts, or prompt-template editor. |
@@ -158,7 +158,7 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | Child dispatch cap 4, budget carve, settle report | done | `tests/test_dispatch.py`, `test_dispatch_caps_children_and_reports_when_one_settles` |
 | Report injected into the parent's live session | not done | the report is stored and prepended on a later prompt |
 | `cez task` CLI inside the worktree | not done | — |
-| Variants (×2 / ×3) and compare | partial | `POST /api/v1/runs` with `variants` 2 returns `{runs}` (`tests/test_api.py`). `/tasks/{id}/compare` is implemented and no test requests it. |
+| Variants (×2 / ×3) and compare | done | The new-task form posts `variants` 2 and 3 and lands on `/tasks/{id}/compare`, which renders A/B and A/B/C (`tests/test_screens.py`). `POST /api/v1/runs` still returns `{runs}` (`tests/test_api.py`). |
 | In-place / trunk landing | partial | a non-git directory runs in place; no auto-land |
 
 ### Git
@@ -198,10 +198,10 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 
 | Item | Status | Verified |
 | --- | --- | --- |
-| Create paused, enable, pause, run now, delete | partial | create/enable/pause/delete handlers exist; the backlog rule is what the test locks |
+| Create paused, enable, pause, run now, delete | done | The automations page posts create, enable, pause, run now, and delete (`tests/test_screens.py`). The backlog rule stays `test_a_stale_schedule_does_not_launch_a_backlog`. |
 | Stale schedule does not launch a backlog | done | `test_a_stale_schedule_does_not_launch_a_backlog` |
 | Due interval launches one run | done | same test |
-| Calendar UI | not done | a list and a form |
+| Calendar UI | done | `/automations` renders a month grid. A new automation's name is in the cell for its `next_at` day (`tests/test_screens.py`). |
 | GitHub / Jira / Linear reads | partial | `tests/test_integrations.py`. Unset credentials answer `{available: false}` and do not call out. A recorded local server returns one GitHub issue, one Jira issue, and one Linear issue. Base URLs must be the vendor https host or loopback; private and non-vendor hosts are refused before a request. Inbound hooks are separate: they check a signature and can start a run for an enabled automation with a matching tracker. |
 
 ### CLI
@@ -274,42 +274,42 @@ It is not a pixel copy of the React component.
 | `/p/:projectId` tasks overview | `/tasks` | done | List, filter, and create. `tests/test_cockpit.py`. Archive and mark-read are buttons; the store rules are in `tests/test_surface.py`. The buttons are not posted. |
 | `/p/:projectId/new` | `/tasks/new` | done | The page shows the task field, Start, and `quick-task`. Create is the cockpit test. |
 | `/tasks` global index | `/tasks` | done | One list for the boot project. There is no second workspace index. |
-| `/p/:projectId/tasks/:id` session | `/tasks/{id}?pane=session` | partial | Finish is posted and the page shows Cancel (`tests/test_cockpit.py`). Delete is not posted. The transcript text is not asserted. |
+| `/p/:projectId/tasks/:id` session | `/tasks/{id}?pane=session` | done | Finish is posted and the page shows Cancel (`tests/test_cockpit.py`). The transcript contains `Dry run finished`, and Delete navigates away (`tests/test_screens.py`). |
 | `…/changes` | `?pane=diff` | done | `CEZAR_DRY_RUN.txt` is on the diff pane. |
 | `…/files` | `?pane=files` | done | A staged upload's name is on the pane (`tests/test_finish.py`). |
 | `…/commits` | `?pane=commits` | done | After a commit, the pane lists `save the dry run` (`tests/test_surface.py`). |
 | `…/graph` | `?pane=graph` | done | A quick-task shows the step "Do the task" (`tests/test_parity.py`). |
 | `…/notes` | `?pane=notes` | done | A posted note is on the next render (`tests/test_parity.py`). |
-| `…/terminal` | `?pane=terminal` | partial | The PTY hub is tested. The pane's one-shot shell is not. |
+| `…/terminal` | `?pane=terminal` | done | The pane runs one command in the worktree PTY and returns the output (`tests/test_screens.py`). `e2e/test_screens.py` types it. The HTTP terminal routes stay stream B. |
 | `…/browser` | `?pane=browser` | done | The pane states the loopback design-mode rule (`tests/test_parity.py`). |
 | `…/compare` | `/tasks/{id}/compare` | done | Variant letters A and B render (`tests/test_parity.py`). |
-| `/p/:projectId/git` | `/git` | partial | The page renders "Repository" (`tests/test_finish.py`). Changes, commits, branches, and files are not separate panes, and no test checks a commit list. |
-| `/p/:projectId/github` | `/github` | partial | The page renders "GitHub". Open issues are the HTTP route in `tests/test_integrations.py`, not this page. |
-| `/p/:projectId/tracker` | `/tracker` | partial | The page renders "Tracker". It does not run a lookup. |
-| `/p/:projectId/automations` | `/automations` | partial | The engine ticker is tested. No test posts the page's create, enable, pause, run, or delete. |
+| `/p/:projectId/git` | `/git` | done | `?pane=` is commits, changes, branches, or files. Commits include `init`, files include `README.md`, branches include `main` (`tests/test_screens.py`). |
+| `/p/:projectId/github` | `/github` | done | The page asks for owner and repo. Without a token it says `gh is not authenticated`. A stubbed read renders the issue title (`tests/test_screens.py`). |
+| `/p/:projectId/tracker` | `/tracker` | done | Look up posts a key. Unset credentials say `jira is not configured`. A stubbed read renders the summary. A saved connection is used when it has a token (`tests/test_screens.py`). |
+| `/p/:projectId/automations` | `/automations` | done | The page posts create, enable, pause, run now, and delete, and the month grid names the row (`tests/test_screens.py`). |
 | `/p/:projectId/skills` | `/skills` | done | List and create. `tests/test_cockpit.py`. |
 | `/p/:projectId/workflows` | `/workflows` | done | Create and list. `tests/test_cockpit.py`. |
-| `/workflows/:name` | `/workflows/{name}` | partial | `/workflows/quick-task` renders the name. Node editing is not on the page. |
-| `/p/:projectId/inbox` | `/inbox` | partial | The page renders "Inbox". Unread rows and Mark read are not exercised. |
+| `/workflows/:name` | `/workflows/{name}` | done | The page lists the steps (`Do the task` on quick-task) and Start a task opens `/tasks/new?workflow=` (`tests/test_screens.py`). The node editor remains stream A's row. |
+| `/p/:projectId/inbox` | `/inbox` | done | A finished run is listed. Mark read leaves `Nothing unread.` (`tests/test_screens.py`). |
 | `/p/:projectId/settings` appearance | `/settings` | done | Parallel, runner, theme, accent. Settings stream test. |
-| settings `secrets`, `workspace-secrets` | `/secrets` | partial | The page renders "Secrets". The vault tests do not post this form. Values are omitted by the list API. |
+| settings `secrets`, `workspace-secrets` | `/secrets` | done | The form saves a project secret. The next page shows the name and not the value (`tests/test_screens.py`). One list for the boot project; there is no second workspace vault. |
 | settings `privacy` | `/settings/privacy` | done | The page says telemetry is intentionally not ported. `tests/test_finish.py`. |
-| settings `agents` | `/settings/agents` | partial | The page includes "claude". It does not prove which binaries are missing. |
-| settings `webhooks` | `/settings/webhooks` | partial | The page renders "Webhooks". A saved receiver name is not asserted there. |
-| settings `worktrees` | `/settings/worktrees` | partial | The page contains "worktree". The retention number is not asserted. |
+| settings `agents` | `/settings/agents` | done | A binary on disk is `installed` and a missing path is `missing` (`tests/test_screens.py`). |
+| settings `webhooks` | `/settings/webhooks` | done | Saving a loopback receiver puts its name on the page. An http non-loopback URL is refused (`tests/test_screens.py`). |
+| settings `worktrees` | `/settings/worktrees` | done | The page states the count the engine keeps: 10 by default, and 3 when `CEZ_WORKTREE_RETENTION=3` (`tests/test_screens.py`). |
 | settings `instructions` | `/settings/instructions` | done | The editor saves both fields, the prompt is prepended on the run, and a `start with` rule renames the branch (`tests/test_engine.py`, `tests/test_parity.py`). Free-text naming still does not call a model. |
-| settings `agent-config` | `/settings/agent-config` | partial | Catalog is `AGENTS.md`, `.claude/settings.json`, and `.claude/settings.local.json`. A hosted write returns "agent config writes are local-only". The HTTP save is not posted. Not `catalog.ts`. |
-| settings `accounts` | `/settings/accounts` | partial | A name and runner round-trip. Not profile homes. |
+| settings `agent-config` | `/settings/agent-config` | done | Posting the editor writes `AGENTS.md`. A hosted cockpit answers 409 `agent config writes are local-only` (`tests/test_screens.py`). Catalog is those three files, not `catalog.ts`. |
+| settings `accounts` | `/settings/accounts` | done | The form saves a name and a runner and lists them (`tests/test_screens.py`). Profile homes stay on stream D's accounts row. |
 | settings `notifications` | `/settings/notifications` | done | The browser toggle saves and the page says it is on. |
 | settings `keyboard` | `/settings/keyboard` | done | `enter` is stored and rendered. The other two shortcuts are the same field. |
-| settings `bookmarklets` | `/settings/bookmarklets` | partial | The page contains a `javascript:` href. The launch-key file mode and `?launch=` are not asserted. |
-| settings `integrations` | `/settings/integrations` | partial | Queues a task titled "Tester Army" and redirects (`tests/test_parity.py`). Not the Tester Army installer. |
-| `/dashboard` | `/dashboard` | partial | The page has `id="dashboard"`. Counts are not asserted. |
+| settings `bookmarklets` | `/settings/bookmarklets` | done | The launch-key file is mode `0600`. `?launch=` with that key opens New task; a wrong key is 403 (`tests/test_screens.py`). |
+| settings `integrations` | `/settings/integrations` | done | Set up e2e queues a task titled Tester Army and can store the model key as a project secret that the page does not echo (`tests/test_screens.py`). The task does not write an e2e config into the repo. |
+| `/dashboard` | `/dashboard` | done | Status counts render, including `count-done` after a finished run (`tests/test_screens.py`). Token and cost totals are the run sums, not a daily chart. |
 | `/projects` and settings `projects` | `/projects` | done | Add, including refusing `$HOME`. |
 | unknown path | — | done | `/does-not-exist` is 404. |
-| settings `tracker`, `tasks`, `skills` (global), `global-instructions`, resources | — | not done | No editor for tracker connection, landing branch, required checks, the global prompt, or the memory cap. |
+| settings `tracker`, `tasks`, `skills` (global), `global-instructions`, resources | `/settings/tracker`, `/settings/tasks`, `/settings/global-skills`, `/settings/global-instructions`, `/settings/resources` | done | Each editor saves and renders its value (`tests/test_screens.py`). The base branch is what the next task forks from. Required checks, the global prompt, org skill repos, and the memory cap are stored only; the run loop does not enforce them. |
 | GitHub review and merge UI | task page `#merge-box` | done | A pull request shows Ready to merge or Merge blocked, the blocker, and Squash and merge. `tests/test_surface.py`. Failing checks block `canMerge`. |
-| Light / violet tokens, phone layout | the same CSS | partial | Tokens exist. Not compared in a phone browser. |
+| Light / violet tokens, phone layout | the same CSS | done | Saving light and violet sets `class="light"` and `data-accent="violet"` (`tests/test_cockpit.py`). At 390×844 the sidebar stacks above the page; at 1280 it sits beside it, and the wordmark is the light-violet primary (`e2e/test_screens.py`). |
 
 ### Background work and integrations
 
@@ -500,7 +500,7 @@ next table.
 | `CEZ_TERMINAL` | done | `0` makes `POST /runs/{id}/terminal` answer 409 `terminal is disabled`. `tests/test_routes.py`. |
 | `CEZ_AUTOSAVE`, `CEZ_TITLE_UPDATES`, `CEZ_AUTONAME` | not done | No periodic commit and no model title. |
 | `CEZ_TASK_PROCESS_REAP`, `CEZ_DISABLE_REPO_LOCK`, `CEZ_WORKFLOW_WEBHOOKS` | not done | — |
-| `CEZ_HIDE_TOKEN_USAGE`, `CEZ_HIDE_COST`, `CEZ_HIDE_TOKEN_METRICS` | partial | The health document's capability flags follow them. The dashboard does not chart tokens, and no test sets the flags. |
+| `CEZ_HIDE_TOKEN_USAGE`, `CEZ_HIDE_COST`, `CEZ_HIDE_TOKEN_METRICS` | done | Each flag is set in `tests/test_screens.py`. The health capabilities follow it, and the dashboard hides the token total, the cost total, or both. There is no daily usage chart. |
 | `CEZ_NO_BANNER`, `CEZ_UPDATE_CHANNEL`, `CEZ_SUPERVISED` | intentionally not ported | Star count, self-update, and the desktop supervisor. |
 | `CEZ_DESKTOP`, `CEZ_DESKTOP_*`, `CEZ_DISCLAIM_EXEC` | intentionally not ported | The Tauri shell is out of scope. |
 | `CEZ_SKILLS_AUTO_UPDATE` | intentionally not ported | — |
@@ -508,7 +508,7 @@ next table.
 | `CEZ_AUTONOMOUS_DEFAULT`, `CEZ_WORKTREE_DEFAULT` | not done | — |
 | Release packaging, server-install, disk space, startup port probe | not done | Compose is the container. The listen port does not auto-increment. |
 | Worktree lifecycle events, handoff files, skills banner, remote skills | not done | — |
-| Browser e2e (`packages/web/e2e/`) | partial | `e2e/test_main_loop.py` drives Chromium from New task to `done`, and from review through commit, push, and a fake-`gh` draft PR, then saves the instructions editor. The other React specs are not ported. `uv run pytest` does not collect `e2e/`. |
+| Browser e2e (`packages/web/e2e/`) | done | `e2e/test_main_loop.py` drives New task to `done`, and review through commit, push, and a fake-`gh` draft PR. `e2e/test_screens.py` covers each ported screen's main action: git panes, workflow steps, settings editors, automations and the calendar, variants compare, the terminal pane, inbox, dashboard, integrations, phone layout, and light/violet. `uv run pytest` does not collect `e2e/`. Specs that need features this port does not have — thread virtualization, mermaid, host telemetry, skills auto-update, the command palette — are not ported. |
 
 
 ## Deviations from the Stario skills
@@ -650,38 +650,7 @@ Git, GitHub, webhook, and hook methods already on `surface.py` stay with D.
 
 ### C — Datastar screens, settings, and e2e
 
-23 partial, 2 not done.
-
-Partial:
-
-- Per-project base branch stored at registration
-- Variants (×2 / ×3) and compare
-- Create paused, enable, pause, run now, delete
-- `/p/:projectId/tasks/:id` session
-- `…/terminal`
-- `/p/:projectId/git`
-- `/p/:projectId/github`
-- `/p/:projectId/tracker`
-- `/p/:projectId/automations`
-- `/workflows/:name`
-- `/p/:projectId/inbox`
-- settings `secrets`, `workspace-secrets`
-- settings `agents`
-- settings `webhooks`
-- settings `worktrees`
-- settings `agent-config`
-- settings `accounts`
-- settings `bookmarklets`
-- settings `integrations`
-- `/dashboard`
-- Light / violet tokens, phone layout
-- `CEZ_HIDE_TOKEN_USAGE`, `CEZ_HIDE_COST`, `CEZ_HIDE_TOKEN_METRICS`
-- Browser e2e (`packages/web/e2e/`)
-
-Not done:
-
-- Calendar UI
-- settings `tracker`, `tasks`, `skills` (global), `global-instructions`, resources
+0 partial, 0 not done.
 
 Owns: `app/features/tasks/`, `app/features/dashboard/`, `app/features/editors/`, `app/features/places/`, `app/features/projects/`, `app/features/settings/`, `app/features/skills/`, `app/features/automations/` (the page, not the JSON API), `app/features/workflows/views.py` and `handlers.py` for the page that already exists, `app/common/shell.py`, `static/css/style.css`, `e2e/test_main_loop.py`, `tests/test_cockpit.py`.
 

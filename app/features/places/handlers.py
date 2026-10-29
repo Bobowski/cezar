@@ -1,5 +1,5 @@
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from litewriter import LiteWriter
@@ -22,12 +22,14 @@ from app.features.places.urls import (
     SETTINGS_AGENTS,
     SETTINGS_PRIVACY,
     SETTINGS_WEBHOOKS,
+    SETTINGS_WEBHOOKS_SAVE,
     SETTINGS_WORKTREES,
     TRACKER,
     WORKFLOW,
 )
-from app.integrations.clients import github_issues
-from app.integrations.hooks import load_receivers
+from app.features.settings.store import tracker_overrides
+from app.integrations.clients import github_issues, jira_issue, linear_issue
+from app.integrations.hooks import load_receivers, save_receiver
 from app.store.db import get_project, get_run, list_runs
 
 
@@ -48,6 +50,7 @@ class PlacesPage:
         app.add(SETTINGS_PRIVACY, self.privacy)
         app.add(SETTINGS_AGENTS, self.agents)
         app.add(SETTINGS_WEBHOOKS, self.webhooks)
+        app.add(SETTINGS_WEBHOOKS_SAVE, self.save_webhook)
         app.add(SETTINGS_WORKTREES, self.worktrees)
 
     async def inbox(self, c: Context, w: Writer) -> None:
@@ -62,28 +65,61 @@ class PlacesPage:
     async def github(self, c: Context, w: Writer) -> None:
         owner = c.req.query.get("owner", "")
         repo = c.req.query.get("repo", "")
+        notice = ""
+        titles: list[str] = []
         if not owner or not repo:
-            text = (
-                "Add ?owner=&repo= to list open issues. Without a token the answer is unavailable."
-            )
+            notice = "Name an owner and a repository to list open issues."
         else:
             loaded = github_issues(self.config, owner, repo)
             if loaded.get("available") is not True:
-                text = str(loaded.get("reason", "unavailable"))
+                notice = str(loaded.get("reason", "unavailable"))
             else:
                 issues = loaded.get("issues")
                 rows = issues if isinstance(issues, list) else []
-                titles = [str(item.get("title", "")) for item in rows if isinstance(item, dict)]
-                text = ", ".join(titles) if titles else "No open issues."
-        w.html(views.github(text, self._chrome("GitHub", "github"), uuid.uuid7().hex))
+                titles = [
+                    f"#{item.get('number')} {item.get('title', '')}"
+                    for item in rows
+                    if isinstance(item, dict)
+                ]
+                notice = "No open issues." if not titles else f"{len(titles)} open"
+        w.html(
+            views.github(
+                owner, repo, titles, notice, self._chrome("GitHub", "github"), uuid.uuid7().hex
+            )
+        )
 
     async def tracker(self, c: Context, w: Writer) -> None:
-        w.html(views.tracker(self._chrome("Tracker", "tracker"), uuid.uuid7().hex))
+        kind = c.req.query.get("kind", "jira")
+        if kind not in ("jira", "linear"):
+            kind = "jira"
+        key = c.req.query.get("key", "").strip()
+        notice = "Enter an issue key."
+        if key:
+            cfg = replace(self.config, **tracker_overrides(self.config.data_dir))
+            loaded = linear_issue(cfg, key) if kind == "linear" else jira_issue(cfg, key)
+            if loaded.get("available") is not True:
+                notice = str(loaded.get("reason", "unavailable"))
+            elif kind == "linear":
+                notice = f"{loaded.get('identifier', key)} {loaded.get('title', '')}".strip()
+            else:
+                notice = f"{loaded.get('key', key)} {loaded.get('summary', '')}".strip()
+        w.html(
+            views.tracker(kind, key, notice, self._chrome("Tracker", "tracker"), uuid.uuid7().hex)
+        )
 
     async def repo(self, c: Context, w: Writer) -> None:
-        ok, out, _err = git(self.config.repo_root, ["log", "--oneline", "-n", "20"])
+        pane = c.req.query.get("pane", "commits")
+        if pane not in ("commits", "changes", "branches", "files"):
+            pane = "commits"
+        args = {
+            "commits": ["log", "--oneline", "-n", "20"],
+            "changes": ["status", "--short"],
+            "branches": ["branch", "--format=%(refname:short)"],
+            "files": ["ls-files"],
+        }[pane]
+        ok, out, _err = git(self.config.repo_root, args)
         lines = out.splitlines() if ok else []
-        w.html(views.repo(lines, self._chrome("Repository", "git"), uuid.uuid7().hex))
+        w.html(views.repo(pane, lines, self._chrome("Repository", "git"), uuid.uuid7().hex))
 
     async def workflow(self, c: Context, w: Writer) -> None:
         name = c.match.params.get("name", "")
@@ -122,8 +158,38 @@ class PlacesPage:
         w.html(views.agents(lines, self._chrome("Agents", "settings"), uuid.uuid7().hex))
 
     async def webhooks(self, c: Context, w: Writer) -> None:
-        names = [str(row.get("name", "")) for row in load_receivers(self.config.data_dir)]
-        w.html(views.webhooks(names, self._chrome("Webhooks", "settings"), uuid.uuid7().hex))
+        w.html(
+            views.webhooks(
+                self._receiver_names(), self._chrome("Webhooks", "settings"), uuid.uuid7().hex
+            )
+        )
+
+    async def save_webhook(self, c: Context, w: Writer) -> None:
+        from stario.datastar import SSE, read_signals
+        from stario.exceptions import RequestBodyError
+
+        try:
+            signals = await read_signals(c.req)
+        except RequestBodyError:
+            w.text("invalid input", 400)
+            return
+        tab = str(signals.get("tab", ""))
+        if not (tab.isalnum() and len(tab) <= 32):
+            w.text("tab must be a short id", 400)
+            return
+        _row, reason = save_receiver(
+            self.config.data_dir, str(signals.get("name", "")), str(signals.get("url", ""))
+        )
+        if reason:
+            SSE(w).patch_signals({"_error": reason})
+            return
+        SSE(w).patch_signals({"name": "", "url": "", "_error": ""})
+        SSE(w).patch_elements(
+            views.webhooks(self._receiver_names(), self._chrome("Webhooks", "settings"), tab)
+        )
+
+    def _receiver_names(self) -> list[str]:
+        return [str(row.get("name", "")) for row in load_receivers(self.config.data_dir)]
 
     async def worktrees(self, c: Context, w: Writer) -> None:
         w.html(

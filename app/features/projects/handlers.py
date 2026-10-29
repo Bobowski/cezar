@@ -11,8 +11,14 @@ from stario.exceptions import RequestBodyError
 from app.common.shell import load_chrome
 from app.config import Config
 from app.engine.engine import CHANGED, Engine
-from app.features.projects.urls import PROJECTS, PROJECTS_ADD, PROJECTS_LIVE, PROJECTS_REMOVE
-from app.features.projects.views import render
+from app.features.projects.urls import (
+    PROJECTS,
+    PROJECTS_ADD,
+    PROJECTS_BASE,
+    PROJECTS_LIVE,
+    PROJECTS_REMOVE,
+)
+from app.features.projects.views import branch_signal, render
 from app.store.db import list_projects
 
 
@@ -27,6 +33,7 @@ class ProjectsPage:
         app.add(PROJECTS, self.show)
         app.add(PROJECTS_LIVE, self.live)
         app.add(PROJECTS_ADD, self.add)
+        app.add(PROJECTS_BASE, self.base)
         app.add(PROJECTS_REMOVE, self.remove)
 
     async def show(self, c: Context, w: Writer) -> None:
@@ -62,6 +69,25 @@ class ProjectsPage:
             SSE(w).patch_signals({"_error": reason or "could not add"})
             return
         SSE(w).patch_signals({"path": "", "_error": ""})
+
+    async def base(self, c: Context, w: Writer) -> None:
+        signals, tab = await _form(c, w)
+        if signals is None or tab is None:
+            return
+        project_id = c.match.params["project_id"]
+        if not project_id.replace("-", "").isalnum():
+            w.text("not found", 404)
+            return
+        branch = str(signals.get(branch_signal(project_id), "")).strip()
+        reason = await self.engine.set_base_branch(project_id, branch)
+        if reason == "not found":
+            w.text(reason, 404)
+            return
+        if reason:
+            self.relay.publish(f"tab.{tab}", {"_error": reason})
+            SSE(w).patch_signals({"_error": reason})
+            return
+        SSE(w).patch_signals({"_error": ""})
 
     async def remove(self, c: Context, w: Writer) -> None:
         from app.store.db import delete_project, get_project

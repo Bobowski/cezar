@@ -48,10 +48,13 @@ class DashboardPage:
                     sse.patch_signals(payload)
 
     def _render(self, tab: str):
+        hide_all = self.config.hide_token_metrics
         return render(
             list_runs(self.db, None, None),
             load_chrome(
                 self.db, self.config, "Dashboard", "dashboard", self.engine.boot_project_id
             ),
             tab,
+            show_tokens=not hide_all and not self.config.hide_token_usage,
+            show_cost=not hide_all and not self.config.hide_cost,
         )

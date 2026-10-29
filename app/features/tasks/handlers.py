@@ -10,6 +10,7 @@ from app.common.shell import load_chrome
 from app.config import RUNNERS, Config
 from app.engine.catalog import load_workflows
 from app.engine.engine import CHANGED, Engine
+from app.features.places.urls import COMPARE
 from app.features.task.urls import TASK
 from app.features.tasks.urls import (
     HOME,
@@ -62,6 +63,19 @@ class TasksPage:
         project = get_project(self.db, view.project)
         workflows = load_workflows(project_root(project))[0] if project else []
         settings = get_settings(self.db)
+        launch = c.req.query.get("launch", "")
+        if launch:
+            from app.features.editors.store import launch_key
+
+            if launch != launch_key(self.config.data_dir):
+                w.text("unknown launch key", 403)
+                return
+        chosen = c.req.query.get("workflow", "quick-task")
+        names = [item.name for item in workflows]
+        if chosen not in names:
+            chosen = (
+                "quick-task" if "quick-task" in names else (names[0] if names else "quick-task")
+            )
         w.html(
             render_new(
                 workflows,
@@ -69,6 +83,8 @@ class TasksPage:
                 self._chrome(view.project),
                 uuid.uuid7().hex,
                 settings.default_runner,
+                chosen,
+                launched=bool(launch),
             )
         )
 
@@ -119,6 +135,10 @@ class TasksPage:
         if len(model) > 120:
             w.text("model is too long", 400)
             return
+        count = _variant_count(signals.get("variants", 1))
+        if isinstance(count, str):
+            w.text(count, 400)
+            return
         project = get_project(self.db, view.project)
         if project is None:
             w.text("unknown project", 400)
@@ -135,8 +155,29 @@ class TasksPage:
             self.relay.publish(f"tab.{tab}", {"_error": reason or "could not start"})
             SSE(w).patch_signals({"_error": reason or "could not start"})
             return
-        SSE(w).navigate(TASK.href(run.id))
-        await self.engine.enqueue(run)
+        made = [run]
+        if count > 1:
+            run.group_id = run.id
+            run.variant = "A"
+            for letter in "BC"[: count - 1]:
+                sibling, sibling_reason = self.engine.plan_run(
+                    project=project,
+                    task=task,
+                    workflow_name=workflow,
+                    runner=runner,
+                    model=model,
+                    autonomous=autonomous,
+                )
+                if sibling is None:
+                    w.text(sibling_reason or "could not start", 400)
+                    return
+                sibling.group_id = run.id
+                sibling.variant = letter
+                made.append(sibling)
+        for item in made:
+            await self.engine.enqueue(item)
+        target = COMPARE.href(run.id) if count > 1 else TASK.href(run.id)
+        SSE(w).navigate(target)
 
     async def archive_finished(self, c: Context, w: Writer) -> None:
         view = self._view(c.req.query)
@@ -160,6 +201,16 @@ class TasksPage:
 
     def _chrome(self, project_id: str):
         return load_chrome(self.db, self.config, "Tasks", "tasks", project_id)
+
+
+def _variant_count(raw: object) -> int | str:
+    if raw in (None, ""):
+        return 1
+    if isinstance(raw, str) and raw.isdecimal():
+        raw = int(raw)
+    if isinstance(raw, bool) or not isinstance(raw, int) or not 1 <= raw <= 3:
+        return "variants must be 1, 2, or 3"
+    return raw
 
 
 def project_root(project: object):

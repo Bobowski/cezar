@@ -75,6 +75,9 @@ def render_new(
     chrome: Chrome,
     tab: str,
     default_runner: str,
+    workflow: str,
+    *,
+    launched: bool,
 ) -> HtmlElement:
     return frame(
         chrome,
@@ -82,9 +85,10 @@ def render_new(
         {
             "tab": tab,
             "task": "",
-            "workflow": "quick-task",
+            "workflow": workflow,
             "runner": default_runner,
             "model": "",
+            "variants": "1",
             "autonomous": False,
             "_error": "",
         },
@@ -92,6 +96,7 @@ def render_new(
             {"id": "new-task"},
             h.H1("New task"),
             h.P({"class": "sub"}, project_name(chrome.projects, view.project)),
+            h.P({"id": "bookmarklet-launch"}, "Opened from the bookmarklet.") if launched else None,
             h.Form(
                 {"id": "new-task-form"},
                 data.on(
@@ -128,6 +133,17 @@ def render_new(
                     {"class": "field"},
                     h.Span("Model (optional)"),
                     h.Input({"type": "text", "maxlength": "120"}, data.bind("model")),
+                ),
+                h.Label(
+                    {"class": "field"},
+                    h.Span("Variants"),
+                    h.Select(
+                        {"aria-label": "Variants"},
+                        data.bind("variants"),
+                        h.Option({"value": "1"}, "One"),
+                        h.Option({"value": "2"}, "×2"),
+                        h.Option({"value": "3"}, "×3"),
+                    ),
                 ),
                 h.Label(
                     {"class": "inline"},

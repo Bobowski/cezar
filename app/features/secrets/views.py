@@ -4,6 +4,7 @@ from stario.markup import HtmlElement
 
 from app.common.shell import Chrome, frame
 from app.features.secrets.urls import SECRETS_SAVE
+from app.features.settings.nav import settings_nav
 from app.secrets.store import SecretMeta
 
 
@@ -20,6 +21,7 @@ def render(rows: list[SecretMeta], chrome: Chrome, tab: str, error: str) -> Html
         {"tab": tab, "name": "", "value": "", "_error": error},
         h.Main(
             {"id": "secrets"},
+            settings_nav(),
             h.H1("Secrets"),
             h.P(
                 {"class": "sub"},

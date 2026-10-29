@@ -24,12 +24,14 @@ Phase 2 — write the per-workstream implementation plans.
 
 ## Progress
 
+PR: #1747
+
 > Convention: `- [ ]` pending, `- [x]` done. Append ` — <commit sha>` when a step lands. Do not rename step titles.
 
 ### Phase 1: Triage
 
-- [ ] 1.1 Verify current state and write the human/agent triage
+- [x] 1.1 Verify current state and write the human/agent triage — 8588c2f2b
 
 ### Phase 2: Plans
 
-- [ ] 2.1 Write per-workstream implementation plans
+- [x] 2.1 Write per-workstream implementation plans — 7696b5f03

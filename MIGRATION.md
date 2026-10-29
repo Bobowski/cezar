@@ -274,7 +274,7 @@ HTML routes that are live (Datastar SSE, not the old NDJSON event stream):
 | Telemetry | not done | nothing is sent. There is no opt-in client |
 | Star count, skills auto-update | not done | — |
 | Desktop shell | not done | — |
-| `gh` issues and draft PRs | not done | — |
+| `gh` issues and draft PRs | partial | open issues are read when `CEZ_GITHUB_TOKEN` is set. Draft PRs are not created. |
 | Webhooks | not done | — |
 
 ## What is still TypeScript

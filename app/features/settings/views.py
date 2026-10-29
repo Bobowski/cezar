@@ -5,6 +5,15 @@ from stario.markup import HtmlElement
 from app.common.shell import Chrome, frame
 from app.config import RUNNERS
 from app.engine.model import Settings
+from app.features.editors.urls import (
+    ACCOUNTS,
+    AGENT_CONFIG,
+    BOOKMARKLETS,
+    INSTRUCTIONS,
+    INTEGRATIONS,
+    KEYBOARD,
+    NOTIFICATIONS,
+)
 from app.features.settings.urls import SETTINGS_LIVE, SETTINGS_SAVE
 
 
@@ -27,6 +36,22 @@ def render(settings: Settings, chrome: Chrome, tab: str) -> HtmlElement:
                 {"class": "sub"},
                 "Workspace-wide. Parallelism defaults to 2, same as the TypeScript cockpit. "
                 "Telemetry is intentionally not ported and is not sent.",
+            ),
+            h.Nav(
+                {"class": "sub"},
+                h.A({"href": INSTRUCTIONS.href()}, "Instructions"),
+                " · ",
+                h.A({"href": AGENT_CONFIG.href()}, "Agent config"),
+                " · ",
+                h.A({"href": ACCOUNTS.href()}, "Accounts"),
+                " · ",
+                h.A({"href": NOTIFICATIONS.href()}, "Notifications"),
+                " · ",
+                h.A({"href": KEYBOARD.href()}, "Keyboard"),
+                " · ",
+                h.A({"href": BOOKMARKLETS.href()}, "Bookmarklets"),
+                " · ",
+                h.A({"href": INTEGRATIONS.href()}, "Integrations"),
             ),
             h.Form(
                 {"class": "composer"},

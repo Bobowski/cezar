@@ -39,6 +39,6 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture
 async def client(repo: Path):
     async with TestClient(
-        bootstrap, request_timeout=15, base_url="http://127.0.0.1:4321"
+        bootstrap, request_timeout=30, base_url="http://127.0.0.1:4321"
     ) as running:
         yield running

@@ -120,6 +120,7 @@ async def test_a_staged_upload_is_written_into_the_worktree(client):
     )
     assert created.status_code == 201
     run_id = created.json()["id"]
+    status = "queued"
     for _ in range(40):
         status = (await client.get(f"/api/v1/runs/{run_id}")).json()["status"]
         if status in ("review", "failed", "done"):

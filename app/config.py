@@ -74,6 +74,14 @@ class Config:
     worktree_keep: int = 10
     runs_keep: int = 300
 
+    @property
+    def hosted(self) -> bool:
+        return os.environ.get("CEZ_REMOTE") == "1" or self.listen_host not in (
+            "127.0.0.1",
+            "localhost",
+            "::1",
+        )
+
     @classmethod
     def from_env(cls) -> Config:
         # Yard sets PROJECT_DATA_DIR=/data, a host directory that survives every deploy.
@@ -83,6 +91,9 @@ class Config:
         bins = {
             runner: os.environ.get(_BIN_ENV[runner], _DEFAULT_BIN[runner]) for runner in RUNNERS
         }
+        # TypeScript names this CEZ_CURSOR_AGENT_BIN. CEZ_CURSOR_BIN still works.
+        cursor = os.environ.get("CEZ_CURSOR_AGENT_BIN") or bins["cursor"]
+        bins["cursor"] = cursor
         listen_host = os.environ.get("STARIO_HOST", "127.0.0.1")
         return cls(
             app_name=os.environ.get("APP_NAME", "cezar"),

@@ -57,7 +57,7 @@ class PlacesPage:
 
     async def inbox_read(self, c: Context, w: Writer) -> None:
         await self.engine.mark_all_read(self.engine.boot_project_id)
-        w.redirect(INBOX.href())
+        w.redirect(INBOX.href(), 303)
 
     async def github(self, c: Context, w: Writer) -> None:
         owner = c.req.query.get("owner", "")

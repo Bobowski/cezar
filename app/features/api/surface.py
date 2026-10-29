@@ -91,6 +91,9 @@ class SurfaceApi:
         app.add(Route("POST /api/v1/hooks/linear"), self.linear_hook)
         app.add(Route("GET /api/v1/hooks/receipts"), self.receipts)
         app.add(Route("GET /api/v1/fs/browse"), self.browse)
+        app.add(Route("GET /api/v1/github/prs/{number}/merge-state"), self.merge_state)
+        app.add(Route("POST /api/v1/github/prs/{number}/merge"), self.merge_pr)
+        app.add(Route("POST /api/v1/github/prs/{number}/reviews"), self.review_pr)
 
     async def archive_finished(self, c: Context, w: Writer) -> None:
         project = self._project(c, w)
@@ -449,6 +452,68 @@ class SurfaceApi:
     async def linear_hook(self, c: Context, w: Writer) -> None:
         await self._shared_hook(c, w, "linear", self.config.linear_webhook_secret)
 
+    async def merge_state(self, c: Context, w: Writer) -> None:
+        from app.integrations.github_review import merge_state
+
+        number = _pr_number(c.match.params.get("number", ""))
+        if number is None:
+            w.json({"error": "invalid pull request number"}, status=400)
+            return
+        w.json(
+            cast(
+                JsonValue,
+                merge_state(number, dry_run=self.config.dry_run, cwd=self.config.repo_root),
+            )
+        )
+
+    async def merge_pr(self, c: Context, w: Writer) -> None:
+        from app.integrations.github_review import merge_pr
+
+        number = _pr_number(c.match.params.get("number", ""))
+        body = await _json(c, w)
+        if number is None or body is None:
+            if number is None:
+                w.json({"error": "invalid pull request number"}, status=400)
+            return
+        method = body.get("method", "squash")
+        result = merge_pr(
+            number,
+            method if isinstance(method, str) else "",
+            dry_run=self.config.dry_run,
+            cwd=self.config.repo_root,
+        )
+        if not result.get("ok"):
+            status = result.get("status")
+            code = status if isinstance(status, int) else 409
+            w.json({"error": str(result.get("error", "merge failed"))}, status=code)
+            return
+        w.json(cast(JsonValue, {key: value for key, value in result.items() if key != "ok"}))
+
+    async def review_pr(self, c: Context, w: Writer) -> None:
+        from app.integrations.github_review import review_pr
+
+        number = _pr_number(c.match.params.get("number", ""))
+        body = await _json(c, w)
+        if number is None or body is None:
+            if number is None:
+                w.json({"error": "invalid pull request number"}, status=400)
+            return
+        event = body.get("event", "")
+        text = body.get("body", "")
+        result = review_pr(
+            number,
+            event if isinstance(event, str) else "",
+            text if isinstance(text, str) else "",
+            dry_run=self.config.dry_run,
+            cwd=self.config.repo_root,
+        )
+        if not result.get("ok"):
+            status = result.get("status")
+            code = status if isinstance(status, int) else 409
+            w.json({"error": str(result.get("error", "review failed"))}, status=code)
+            return
+        w.json(cast(JsonValue, {key: value for key, value in result.items() if key != "ok"}))
+
     async def browse(self, c: Context, w: Writer) -> None:
         from pathlib import Path
 
@@ -555,6 +620,13 @@ class SurfaceApi:
             w.json({"error": "not found"}, status=404)
             return None
         return run
+
+
+def _pr_number(raw: str) -> int | None:
+    if not raw.isdigit():
+        return None
+    number = int(raw)
+    return number if number > 0 else None
 
 
 def _ui_path(root: Path) -> Path:

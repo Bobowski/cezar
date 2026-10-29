@@ -11,6 +11,7 @@ from app.features.api.handlers import ApiPage
 from app.features.api.surface import SurfaceApi
 from app.features.automations.handlers import AutomationsPage
 from app.features.dashboard.handlers import DashboardPage
+from app.features.editors.handlers import EditorsPage
 from app.features.health.handlers import HealthPage
 from app.features.places.handlers import PlacesPage
 from app.features.projects.handlers import ProjectsPage
@@ -46,6 +47,7 @@ async def bootstrap(app: App, span: Span):
         SettingsPage(db, relay, engine, config).register(app)
         SecretsPage(db, engine, config).register(app)
         PlacesPage(db, engine, config).register(app)
+        EditorsPage(db, engine, config).register(app)
         HealthPage(db, engine, config).register(app)
         ApiPage(db, engine, config).register(app)
         SurfaceApi(db, engine, config).register(app)

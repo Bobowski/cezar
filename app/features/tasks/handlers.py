@@ -48,7 +48,10 @@ class TasksPage:
         return view
 
     async def home(self, c: Context, w: Writer) -> None:
-        w.redirect(TASKS.href(query={"project": self.engine.boot_project_id, "status": "all"}))
+        w.redirect(
+            TASKS.href(query={"project": self.engine.boot_project_id, "status": "all"}),
+            303,
+        )
 
     async def show(self, c: Context, w: Writer) -> None:
         view = self._view(c.req.query)

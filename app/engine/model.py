@@ -262,6 +262,7 @@ class Run:
     worktree_reclaimed_at: str = ""
     notes: str = ""
     attachment_paths: list[str] = field(default_factory=list)
+    account_id: str = ""
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -315,6 +316,7 @@ class Run:
             "worktree_reclaimed_at": self.worktree_reclaimed_at,
             "notes": self.notes,
             "attachment_paths": self.attachment_paths,
+            "account_id": self.account_id,
         }
 
     @classmethod
@@ -381,6 +383,7 @@ class Run:
             worktree_reclaimed_at=_text(data.get("worktree_reclaimed_at")),
             notes=_text(data.get("notes")),
             attachment_paths=_strings(data.get("attachment_paths")),
+            account_id=_text(data.get("account_id")),
         )
 
     def definition(self) -> Workflow:

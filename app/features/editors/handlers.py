@@ -137,7 +137,8 @@ class EditorsPage:
             self.config, str(signals.get("name", "")), str(signals.get("runner", "claude"))
         )
         if reason:
-            w.text(reason, 400)
+            status = 409 if reason.startswith("agent accounts are disabled") else 400
+            w.text(reason, status)
             return
         w.redirect(ACCOUNTS.href(), 303)
 

@@ -92,7 +92,7 @@ of `server.ts`.
 ## Checks
 
 `uv run ruff check`, `uv run ruff format --check`, `uv run pyright`, and
-`uv run pytest -q` were run on this branch. **71 tests passed.**
+`uv run pytest -q` were run on this branch. **77 tests passed.**
 
 A manual `CEZ_DRY_RUN=1 uv run python -m app.main` answered `/health`,
 `POST /api/v1/runs` returned 201, and the run reached `review` with a worktree
@@ -177,8 +177,8 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | Item | Status | Verified |
 | --- | --- | --- |
 | Dry-run mock (`mock:fail`, `mock:ask`, `mock:write`) | done | engine and cockpit tests. Not `scripts/mock-claude.mjs` |
-| Claude stream-json session | partial | `tests/test_runners.py` fake binary. Argv matches `buildClaudeArgs`: `--print`, stream-json in and out, `--verbose`, `--include-partial-messages`, `--permission-mode dontAsk` (`acceptEdits` when `CEZ_APPROVAL_GATE=1`), `--append-system-prompt` including the headless guidance, `--session-id` or `--resume`, `--allowedTools`, `--model`. Stdin is one user NDJSON message. Assistant text and `tool_use`, user `tool_result`, and the `result` frame are parsed. Only `result.usage` counts. The turn ends on `result`. A later step or follow-up spawns a new process with `--resume <run id>` rather than keeping one process open. Not ported: `stream_event` token deltas, `--mcp-config`, images, the inactivity SIGTERM→SIGKILL watchdog, the v2 `UiEvent` stream. |
-| Codex app-server | partial | fake binary. Spawns `codex app-server`. Handshake is `initialize`, `thread/start` (`danger-full-access`, or `workspace-write` when `CEZ_CODEX_NETWORK=0`, `approvalPolicy: never`), then `turn/start`. A notification whose `threadId` is not this thread does not end the turn. `turn/completed` does. The system prompt is prepended into the user text. Not ported: resuming an existing Codex thread, compaction, the rest of the item types, v2 events. |
+| Claude stream-json session | partial | `tests/test_runners.py` fake binary. Argv matches `buildClaudeArgs`. Stdin is one user message; image blocks lead the text. `.ai/cezar/mcp.json` becomes a `0600` `--mcp-config` plus `mcp__<name>` allow rules. A silent process is killed after 15 minutes (8× that is the hard ceiling). A later step still spawns a new process with `--resume <run id>`. Not ported: `stream_event` token deltas, the SIGTERM-then-SIGKILL eof grace, a process that stays open for the next turn. |
+| Codex app-server | partial | fake binary. `thread/start` on the first turn; a stored thread id is `thread/resume` on a later turn (`tests/test_runners.py`). Stdio MCP servers ride `config` overrides. Not ported: the writer-lock retry and `thread/fork` fallback, compaction, the rest of the item types. |
 | OpenCode serve | partial | fake binary. `opencode serve --hostname 127.0.0.1 --port N`, then `POST /session` and `POST /session/:id/message` with `{parts:[{type:text}]}`. The Python client reads one JSON body. TypeScript reads the SSE part stream while that POST stays open and only surfaces assistant parts. No session resume. |
 | Cursor agent | partial | fake binary. Argv is `-p --force --trust --output-format stream-json` and the prompt as the last positional (system prompt prepended). Same stream-json parser as Claude. One shot: the prompt is argv, not a stdin session. |
 | pi RPC | partial | fake binary. `pi --mode rpc`, then `{type:get_state}` and `{type:prompt, streamingBehavior:steer}`. `message_update` / `text_delta`, tool start/end, and `agent_settled` ends the turn. `--session` versus `--session-id`. A non-empty bash allowlist drops Bash. Not the rest of the pi event set. |
@@ -225,13 +225,15 @@ is the boot project.
 | `GET /health` | done | cockpit test. Plain `ok`. |
 | `GET /api/v1/health` | partial | `tests/test_api.py`. Required discovery keys, CORS `*`, no `root` on `projects[]`. `checks` is `shutil.which` with no version string. `forge` is null (health does not shell out to `gh`). `terminal` and `designMode` are false because those features are not ported. `disk` and `instanceId` are absent. |
 | `GET /api/v1/runs` | partial | JSON array of records. `workflowDef` omitted unless `full=1`. No live `usage` sample. |
-| `POST /api/v1/runs` | partial | 201 stored record. Workflow XOR steps, empty task, unknown runner, and a non-`default` `agentProfile` are 400. Unknown workflow is 404. Inline steps run as `(planned)`. `variants` above 1 is 400 (not a group). Attachments are 400. |
+| `POST /api/v1/runs` | partial | 201 stored record, or `{runs}` for `variants` 2 or 3 (letters A/B/C, one `groupId`). Inline steps run as `(planned)`. Image attachments are stored and sent to Claude. An attachment-only task is stored as `(see attachments)`. |
 | `GET /api/v1/runs/{id}` | partial | Required record keys (`id`, `title`, `workflow`, `task`, `status`, `createdAt`, `tokensUsed`, `archived`, `steps`). |
-| `GET /api/v1/runs/{id}/events` | partial | JSON snapshot. TypeScript answers `text/event-stream` (`run-event` / protocol v2). |
+| `GET /api/v1/runs/{id}/events` | partial | `text/event-stream`. Replay then a live tail. Dotted types are `ui-event`; everything else is `run-event`; the record is `run`. `item.delta` is live-only. Persisted v2 lines are `item.started`, `item.completed`, and `turn.completed` snapshots, not the full UiEvent union. `afterSeq` and `Last-Event-ID` skip older rows. |
 | `POST /api/v1/runs/{id}/cancel` | partial | 200 `{cancelled: true\|false}`. A settled run is false. 404 unknown. |
-| `POST /api/v1/runs/{id}/finish` | partial | 200 `{finished: true}` from `review` only. Anything else is 409 `no open session`. TypeScript also finishes a waiting session through this route. |
+| `POST /api/v1/runs/{id}/finish` | partial | 200 from `review` (accept), from `waiting` (the ask is abandoned), and from `running` (the step is stopped and the run becomes `done`). A settled run is 409 `no open session`. It does not land an in-place branch. |
 | `DELETE /api/v1/runs/{id}` | done | 200 `{deleted: true}`. 409 while queued, running, or waiting. 404 unknown. |
-| `POST /api/v1/runs/{id}/messages` | partial | `{delivered: true}` for `waiting` and `review`. No queued-message stack and no `deferred` buffer. Attachments are 400. |
+| `POST /api/v1/runs/{id}/messages` | partial | `{queued, message}` while the run is still `queued`; the stack is composed into the prompt and not written back onto `task`. `{delivered: true}` for `waiting` and `review`. No `deferred` buffer. Attachments on a message are 400. |
+| `POST /api/v1/runs/{id}/archive`, `POST …/pin` | partial | Archive and pin flags. Archiving clears a pin and cancels queued, running, or waiting work. Not the bulk archive/read sweeps. |
+| `PATCH/DELETE …/queued-messages/{msgId}` | partial | Edit or remove a stacked message while the run is still queued. 409 `run already started` after that. |
 | `DELETE /api/v1/runs/{id}/auto-resume` | partial | 200 `{cancelled: true}` because nothing schedules a resume. 404 unknown. |
 | `GET /api/v1/workflows` | partial | `{workflows, issues}`. |
 | `GET /api/v1/projects` | partial | `id`, `name`, `root`, `addedAt`, `lastOpenedAt`, `source: local`, `status`, `branch` when it is a git checkout. No forge, tags, or `maxParallel`. `projectsDir` is the Python data directory, not the TypeScript checkouts directory. |
@@ -300,9 +302,9 @@ TypeScript tree would drop the product.
   if the cockpit holds the claim.
 - A check step is `sh -c` in the worktree, same trust model as a workflow the
   user wrote, with no secret injection and no `bashAllowlist`.
-- A follow-up starts a new process with `--resume` (Claude, Pi) rather than
-  writing another turn into the process that just finished. Codex always
-  `thread/start`s. If the CLI did not persist that session id, resume fails.
+- A follow-up starts a new process with `--resume` (Claude, Pi) or Codex
+  `thread/resume` of the id the first turn stored. If the CLI did not persist
+  that session, resume fails. There is no writer-lock retry and no `thread/fork`.
 - Worktrees are created inside the project repo. Finish does not merge and does
   not push. Cleaning them up is manual except for delete and orphan prune.
 - The diff anchor is the fork commit recorded at start, so a base branch that

@@ -213,6 +213,15 @@ class Run:
     reported: bool = False
     in_place: bool = False
     kind: str = "implement"
+    archived: bool = False
+    archived_at: str = ""
+    pinned: bool = False
+    pinned_at: str = ""
+    queued_messages: list[dict[str, object]] = field(default_factory=list)
+    group_id: str = ""
+    variant: str = ""
+    codex_thread: str = ""
+    images: list[dict[str, object]] = field(default_factory=list)
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -250,6 +259,15 @@ class Run:
             "reported": self.reported,
             "in_place": self.in_place,
             "kind": self.kind,
+            "archived": self.archived,
+            "archived_at": self.archived_at,
+            "pinned": self.pinned,
+            "pinned_at": self.pinned_at,
+            "queued_messages": self.queued_messages,
+            "group_id": self.group_id,
+            "variant": self.variant,
+            "codex_thread": self.codex_thread,
+            "images": self.images,
         }
 
     @classmethod
@@ -300,6 +318,15 @@ class Run:
             reported=_bool(data.get("reported")),
             in_place=_bool(data.get("in_place")),
             kind=_text(data.get("kind"), "implement"),
+            archived=_bool(data.get("archived")),
+            archived_at=_text(data.get("archived_at")),
+            pinned=_bool(data.get("pinned")),
+            pinned_at=_text(data.get("pinned_at")),
+            queued_messages=_dicts(data.get("queued_messages")),
+            group_id=_text(data.get("group_id")),
+            variant=_text(data.get("variant")),
+            codex_thread=_text(data.get("codex_thread")),
+            images=_dicts(data.get("images")),
         )
 
     def definition(self) -> Workflow:

@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from litewriter import LiteWriter, Tx
+from litewriter.errors import StateError
 from stario import App, Relay
 
 from app.clock import after, now, parse_stamp, stamp
@@ -39,6 +41,7 @@ from app.engine.gitwork import (
 )
 from app.engine.model import TERMINAL, Automation, Project, Run, Settings, Step, Workflow
 from app.engine.prompts import build_user_prompt
+from app.engine.session_extras import load_project_mcp, prompt_task, v2_snapshots
 from app.engine.skills import find_skill
 from app.engine.workflows import newer_catalog_workflow, retryable_exit
 from app.store.db import (
@@ -104,7 +107,22 @@ class Engine:
     boot_project_id: str = ""
     _tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
     _cancel: dict[str, asyncio.Event] = field(default_factory=dict)
+    _finish: set[str] = field(default_factory=set)
+    _live: dict[str, list[Callable[[dict[str, object]], None]]] = field(default_factory=dict)
     _wake: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def subscribe_events(
+        self, run_id: str, listener: Callable[[dict[str, object]], None]
+    ) -> Callable[[], None]:
+        bucket = self._live.setdefault(run_id, [])
+        bucket.append(listener)
+
+        def off() -> None:
+            current = self._live.get(run_id, [])
+            if listener in current:
+                current.remove(listener)
+
+        return off
 
     def kick(self) -> None:
         self._wake.set()
@@ -163,15 +181,23 @@ class Engine:
                 return
             await self._workflow(run, cancel)
         except asyncio.CancelledError:
-            current = get_run(self.db, run_id)
-            if current is not None and current.status == "running":
-                current.status = "failed"
-                current.error = "interrupted by shutdown"
-                current.finished_at = stamp()
-                await self.db.write(save_run, current)
+            try:
+                current = get_run(self.db, run_id)
+                if current is not None and current.status == "running":
+                    current.status = "failed"
+                    current.error = "interrupted by shutdown"
+                    current.finished_at = stamp()
+                    await self.db.write(save_run, current)
+            except StateError:
+                pass
             raise
+        except StateError:
+            return
         finally:
-            await self._report_child(run_id)
+            try:
+                await self._report_child(run_id)
+            except StateError:
+                pass
             self._tasks.pop(run_id, None)
             self._cancel.pop(run_id, None)
             self.kick()
@@ -187,7 +213,10 @@ class Engine:
             if run.status in ("cancelled", "failed", "waiting"):
                 return
             if cancel.is_set():
-                await self._mark_cancelled(run)
+                if run.id in self._finish:
+                    await self._mark_done(run)
+                else:
+                    await self._mark_cancelled(run)
                 return
             steps = run.definition().steps
             if run.step_index >= len(steps):
@@ -307,7 +336,7 @@ class Engine:
         prompt = build_user_prompt(
             steps,
             index,
-            run.task,
+            prompt_task(run),
             check_failure=run.check_failure,
             pending_note=run.pending_note,
             reports=reports,
@@ -323,6 +352,14 @@ class Engine:
             bash_allowlist=step.bash_allowlist,
             session_id=run.id,
             resume=bool(followup) or run.step_index > 0,
+            timeout_ms=15 * 60 * 1000,
+            images=tuple(
+                {"mediaType": str(image.get("mediaType", "")), "data": str(image.get("data", ""))}
+                for image in run.images
+                if index == 0 and not followup
+            ),
+            mcp_servers=load_project_mcp(root),
+            codex_thread=run.codex_thread,
         )
         texts: list[str] = []
         gained = 0
@@ -333,10 +370,27 @@ class Engine:
                 if parsed is not None:
                     gained += parsed[0] + parsed[1]
                 texts.append(event.text)
+            if event.type == "session" and event.text:
+                current_run = get_run(self.db, run.id) or run
+                current_run.codex_thread = event.text
+                await self._save(current_run)
+                continue
+            if event.type == "text" and event.text:
+                await self._emit_live(
+                    run.id,
+                    "item.delta",
+                    event.text,
+                    step.id,
+                )
             await self._note(run.id, event.type, event.text or event.name, step.id)
+            for v2_type, v2_text in v2_snapshots(event.type, event.text, event.name, step.id):
+                await self._note(run.id, v2_type, v2_text, step.id)
             if event.type == "error":
                 if cancel.is_set() or event.text == "cancelled":
-                    await self._mark_cancelled(get_run(self.db, run.id) or run)
+                    if run.id in self._finish:
+                        await self._mark_done(get_run(self.db, run.id) or run)
+                    else:
+                        await self._mark_cancelled(get_run(self.db, run.id) or run)
                     return "stop"
                 await self._fail(get_run(self.db, run.id) or run, event.text or "agent failed")
                 return "stop"
@@ -345,7 +399,7 @@ class Engine:
         if reports:
             current.pending_reports = []
         joined = "\n".join(texts)
-        if "CEZ:ASK" in joined and not followup:
+        if "CEZ:ASK" in joined and not followup and run.id not in self._finish:
             current.status = "waiting"
             current.ask = _ask_line(joined)
             await self._save(current)
@@ -371,7 +425,10 @@ class Engine:
         )
         await self._note(run.id, "check-output", output or f"exit {code}", step.id)
         if cancel.is_set() or code < 0:
-            await self._mark_cancelled(get_run(self.db, run.id) or run)
+            if run.id in self._finish:
+                await self._mark_done(get_run(self.db, run.id) or run)
+            else:
+                await self._mark_cancelled(get_run(self.db, run.id) or run)
             return "stop"
         if code == 0:
             return "ok"
@@ -437,18 +494,126 @@ class Engine:
     async def _mark_cancelled(self, run: Run) -> None:
         if run.status == "cancelled":
             return
+        self._finish.discard(run.id)
         run.status = "cancelled"
         run.finished_at = stamp()
         await self._save(run)
         await self._note(run.id, "lifecycle", "cancelled")
+
+    async def _mark_done(self, run: Run) -> None:
+        self._finish.discard(run.id)
+        if run.status == "done":
+            return
+        run.status = "done"
+        run.ask = ""
+        run.finished_at = stamp()
+        await self._save(run)
+        await self._note(run.id, "lifecycle", "done")
+
+    async def set_archived(self, run_id: str, archived: bool) -> str | None:
+        run = get_run(self.db, run_id)
+        if run is None:
+            return "not found"
+        run.archived = archived
+        run.archived_at = stamp() if archived else ""
+        if archived:
+            run.pinned = False
+            run.pinned_at = ""
+            if run.status in ("queued", "running", "waiting"):
+                self._cancel.setdefault(run_id, asyncio.Event()).set()
+        await self._save(run)
+        return None
+
+    async def set_pinned(self, run_id: str, pinned: bool) -> str | None:
+        run = get_run(self.db, run_id)
+        if run is None:
+            return "not found"
+        run.pinned = pinned
+        run.pinned_at = stamp() if pinned else ""
+        if pinned:
+            run.archived = False
+            run.archived_at = ""
+        await self._save(run)
+        return None
+
+    async def queue_message(
+        self, run_id: str, text: str
+    ) -> tuple[dict[str, object] | None, str | None]:
+        run = get_run(self.db, run_id)
+        if run is None:
+            return None, "not found"
+        if run.status != "queued":
+            return None, "run already started"
+        message: dict[str, object] = {"id": uuid.uuid4().hex, "text": text, "createdAt": stamp()}
+        run.queued_messages.append(message)
+        await self._save(run)
+        return message, None
+
+    async def edit_queued_message(
+        self, run_id: str, message_id: str, text: str
+    ) -> tuple[dict[str, object] | None, str | None]:
+        run = get_run(self.db, run_id)
+        if run is None:
+            return None, "not found"
+        if run.status != "queued":
+            return None, "run already started"
+        for message in run.queued_messages:
+            if message.get("id") == message_id:
+                message["text"] = text
+                await self._save(run)
+                return message, None
+        return None, "not found"
+
+    async def remove_queued_message(self, run_id: str, message_id: str) -> str | None:
+        run = get_run(self.db, run_id)
+        if run is None:
+            return "not found"
+        if run.status != "queued":
+            return "run already started"
+        kept = [message for message in run.queued_messages if message.get("id") != message_id]
+        if len(kept) == len(run.queued_messages):
+            return "not found"
+        run.queued_messages = kept
+        await self._save(run)
+        return None
 
     async def _save(self, run: Run) -> None:
         await self.db.write(save_run, run)
         self.publish()
 
     async def _note(self, run_id: str, type: str, text: str, step_id: str = "") -> None:
-        await self.db.write(add_event, run_id, type, text, step_id, stamp())
+        at = stamp()
+        seq = await self.db.write(add_event, run_id, type, text, step_id, at)
+        self._fanout(
+            {
+                "runId": run_id,
+                "seq": int(seq),
+                "type": type,
+                "text": text,
+                "stepId": step_id,
+                "at": at,
+            }
+        )
         self.publish()
+
+    async def _emit_live(self, run_id: str, type: str, text: str, step_id: str) -> None:
+        """`item.delta` is live-only. It is not written to the event log."""
+        self._fanout(
+            {
+                "runId": run_id,
+                "seq": 0,
+                "type": type,
+                "text": text,
+                "stepId": step_id,
+                "at": stamp(),
+                "live": True,
+            }
+        )
+
+    def _fanout(self, payload: dict[str, object]) -> None:
+        run_id = str(payload.get("runId", ""))
+        for listener in list(self._live.get(run_id, ())):
+            listener(payload)
 
     def _agent_for(self, runner: str) -> Runner:
         if self.agent is not None:
@@ -536,14 +701,16 @@ class Engine:
         run = get_run(self.db, run_id)
         if run is None:
             return "not found"
-        if run.status != "review":
-            return "only a run in review can be finished"
-        run.status = "done"
-        run.finished_at = stamp()
-        await self._save(run)
-        await self._note(run.id, "lifecycle", "done")
-        await self._report_child(run_id)
-        return None
+        if run.status == "review" or run.status == "waiting":
+            await self._mark_done(run)
+            await self._report_child(run_id)
+            return None
+        if run.status == "running":
+            self._finish.add(run_id)
+            self._cancel.setdefault(run_id, asyncio.Event()).set()
+            await self._note(run_id, "lifecycle", "session closed by user")
+            return None
+        return "no open session"
 
     async def delete(self, run_id: str) -> str | None:
         run = get_run(self.db, run_id)

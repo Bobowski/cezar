@@ -247,12 +247,22 @@ def add_event(tx: Tx, run_id: str, type: str, text: str, step_id: str, at: str) 
         "step_id": step_id,
         "at": at,
     }
-    return int(
-        tx.value(
-            "INSERT INTO events (data) VALUES (:data) RETURNING id",
-            data=dumps(payload),
-        )
+    tx.execute(
+        "INSERT INTO events (data) VALUES (:data)",
+        data=dumps(payload),
     )
+    return int(seq)
+
+
+def list_events_since(db: LiteWriter, run_id: str, after_seq: int) -> list[Event]:
+    rows = db.query(
+        "SELECT id, data FROM events WHERE run_id = :run_id AND seq > :after "
+        "ORDER BY seq ASC LIMIT 5000",
+        IntData,
+        run_id=run_id,
+        after=after_seq,
+    )
+    return [_event(row) for row in rows]
 
 
 def list_events(db: LiteWriter, run_id: str) -> list[Event]:

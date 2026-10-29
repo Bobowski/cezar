@@ -13,7 +13,7 @@ from app.features.tasks.urls import TASKS, TASKS_CREATE, TASKS_LIVE
 from app.features.workflows.urls import WORKFLOWS, WORKFLOWS_CREATE
 
 
-async def until(events, needle: str, limit: int = 12) -> str:
+async def until(events, needle: str, limit: int = 40) -> str:
     last = ""
     for _ in range(limit):
         event = await asyncio.wait_for(anext(events), 5)

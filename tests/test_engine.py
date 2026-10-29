@@ -95,6 +95,23 @@ async def _start(engine: Engine, task: str = "do the thing") -> Run:
     return run
 
 
+async def test_queued_messages_are_folded_into_the_prompt_and_not_written_back(world):
+    engine, repo = world
+    run = await _start(engine, "original task")
+    message, reason = await engine.queue_message(run.id, "also this")
+    assert reason is None and message is not None
+    await engine.execute(run.id)
+    stored = get_run(engine.db, run.id)
+    assert stored is not None
+    assert stored.task == "original task"
+    assert stored.queued_messages[0]["text"] == "also this"
+    written = (repo / ".ai" / "cezar" / "worktrees" / run.id / "CEZAR_DRY_RUN.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "original task" in written
+    assert "also this" in written
+
+
 def test_dry_run_is_opt_in_like_the_typescript_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("PROJECT_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("CEZ_DRY_RUN", raising=False)
@@ -192,7 +209,7 @@ async def test_success_stops_at_review_and_finish_does_not_merge(world):
     assert await engine.finish(run.id) is None
     assert (get_run(engine.db, run.id) or done).status == "done"
     assert log_count(repo) == 1
-    assert await engine.finish(run.id) == "only a run in review can be finished"
+    assert await engine.finish(run.id) == "no open session"
 
 
 async def test_a_bad_base_does_not_run_in_the_main_tree(world):

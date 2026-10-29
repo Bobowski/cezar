@@ -237,6 +237,70 @@ async def test_opencode_fake_holds_the_message_post(tmp_path: Path):
     assert events[-1].type == "turn-end"
 
 
+async def test_inactivity_kills_a_silent_process(tmp_path: Path):
+    binary = tmp_path / "claude"
+    install("claude", binary)
+    binary.write_text(
+        "#!/usr/bin/env python3\nimport time\ntime.sleep(5)\n",
+        encoding="utf-8",
+    )
+    binary.chmod(0o755)
+    events = await collect(
+        ProtocolRunner("claude", str(binary)),
+        spec(tmp_path, "claude", timeout_ms=200),
+    )
+    assert any(event.type == "error" and "without any output" in event.text for event in events)
+
+
+async def test_claude_sends_images_and_mcp_config(tmp_path: Path):
+    binary = tmp_path / "claude"
+    binary.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "root = Path(sys.argv[0])\n"
+        "root.with_name(root.name + '.args').write_text('\\n'.join(sys.argv[1:]))\n"
+        "if '--mcp-config' in sys.argv:\n"
+        "    cfg = Path(sys.argv[sys.argv.index('--mcp-config') + 1])\n"
+        "    root.with_name(root.name + '.mcp').write_text(cfg.read_text())\n"
+        "msg = json.loads(sys.stdin.readline())\n"
+        "blocks = msg['message']['content']\n"
+        "kinds = ','.join(block.get('type', '') for block in blocks)\n"
+        "root.with_name(root.name + '.blocks').write_text(kinds)\n"
+        "text = next(block['text'] for block in blocks if block.get('type') == 'text')\n"
+        "usage = {'input_tokens': 1, 'output_tokens': 1}\n"
+        "out = {'type': 'result', 'result': text, 'usage': usage}\n"
+        "sys.stdout.write(json.dumps(out) + '\\n')\n"
+        "sys.stdout.flush()\n",
+        encoding="utf-8",
+    )
+    binary.chmod(0o755)
+    events = await collect(
+        ProtocolRunner("claude", str(binary)),
+        spec(
+            tmp_path,
+            "claude",
+            images=({"mediaType": "image/png", "data": "aaaa"},),
+            mcp_servers=({"name": "docs", "command": "echo", "args": ["hi"]},),
+        ),
+    )
+    assert any(event.text == "ship it" for event in events)
+    assert (tmp_path / "claude.blocks").read_text(encoding="utf-8") == "image,text"
+    assert "docs" in (tmp_path / "claude.mcp").read_text(encoding="utf-8")
+    assert "--mcp-config" in (tmp_path / "claude.args").read_text(encoding="utf-8")
+
+
+async def test_codex_resumes_a_stored_thread(tmp_path: Path):
+    binary = tmp_path / "codex"
+    install("codex_resume", binary)
+    events = await collect(
+        ProtocolRunner("codex", str(binary)),
+        spec(tmp_path, "codex", "again", resume=True, codex_thread="th_saved"),
+    )
+    assert any(event.text == "codex again" for event in events)
+    assert any(event.type == "session" and event.text == "th_saved" for event in events)
+
+
 async def test_a_missing_binary_is_an_error_not_a_crash(tmp_path: Path):
     events = await collect(
         ProtocolRunner("claude", str(tmp_path / "missing")),

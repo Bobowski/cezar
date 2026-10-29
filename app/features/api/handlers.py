@@ -9,14 +9,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from pathlib import Path
 from typing import cast
 
 from litewriter import LiteWriter
 from stario import App, Context, Route, Writer
-from stario.datastar import read_signals
+from stario.datastar import SSE, read_signals
 from stario.exceptions import RequestBodyError
 from stario.json import JsonValue
+from stario.json import dumps as json_dumps
 
 from app.config import RUNNERS, Config
 from app.engine.catalog import load_workflows
@@ -25,11 +28,17 @@ from app.engine.model import Project, Run, Workflow
 from app.engine.workflows import parse_workflow
 from app.features.api.records import public_project, public_run
 from app.features.api.urls import API_PROJECTS
-from app.store.db import get_project, get_run, get_settings, list_events, list_projects, list_runs
+from app.store.db import (
+    get_project,
+    get_run,
+    get_settings,
+    list_events_since,
+    list_projects,
+    list_runs,
+)
 
 _XOR = 'provide either "workflow" or "steps", not both'
 _TASK = "describe the task or attach a file"
-_VARIANTS = "parallel variants are not available in the Python port yet"
 _OPEN = "no open session"
 
 
@@ -47,8 +56,12 @@ class ApiPage:
             ("GET", "/runs/{run_id}/events", self.events),
             ("POST", "/runs/{run_id}/cancel", self.cancel),
             ("POST", "/runs/{run_id}/finish", self.finish),
+            ("POST", "/runs/{run_id}/archive", self.archive),
+            ("POST", "/runs/{run_id}/pin", self.pin),
             ("DELETE", "/runs/{run_id}", self.delete),
             ("POST", "/runs/{run_id}/messages", self.message),
+            ("PATCH", "/runs/{run_id}/queued-messages/{msg_id}", self.edit_queued),
+            ("DELETE", "/runs/{run_id}/queued-messages/{msg_id}", self.remove_queued),
             ("DELETE", "/runs/{run_id}/auto-resume", self.cancel_auto_resume),
             ("GET", "/workflows", self.workflows),
         )
@@ -91,6 +104,43 @@ class ApiPage:
             missing = plan_reason is not None and plan_reason.startswith("unknown workflow:")
             w.json({"error": plan_reason or "invalid task"}, status=404 if missing else 400)
             return
+        images = _images(body.get("images"))
+        if isinstance(images, str):
+            w.json({"error": images}, status=400)
+            return
+        if images:
+            run.images = images
+        count = body.get("variants", 1)
+        if isinstance(count, int) and not isinstance(count, bool) and count > 1:
+            group = run.id
+            made = [run]
+            run.group_id = group
+            run.variant = "A"
+            for letter in "BC"[: count - 1]:
+                sibling, sibling_reason = self.engine.plan_run(
+                    project=project,
+                    task=task,
+                    workflow_name=workflow_name,
+                    runner=runner,
+                    model=model,
+                    autonomous=autonomous,
+                    workflow=workflow,
+                )
+                if sibling is None:
+                    w.json({"error": sibling_reason or "invalid task"}, status=400)
+                    return
+                sibling.group_id = group
+                sibling.variant = letter
+                if images:
+                    sibling.images = images
+                made.append(sibling)
+            w.json(
+                cast(JsonValue, {"runs": [public_run(item, full=True) for item in made]}),
+                status=201,
+            )
+            for item in made:
+                await self.engine.enqueue(item)
+            return
         w.json(cast(JsonValue, public_run(run, full=True)), status=201)
         await self.engine.enqueue(run)
 
@@ -101,23 +151,57 @@ class ApiPage:
         w.json(cast(JsonValue, public_run(run, full=True)))
 
     async def events(self, c: Context, w: Writer) -> None:
+        """SSE replay then live tail. Dotted types ride `ui-event`; the rest ride `run-event`."""
         run = self._existing(c, w)
         if run is None:
             return
-        w.json(
-            {
-                "events": [
+        after = _after_seq(c)
+        sse = SSE(w)
+        sse.open()
+        pending: list[dict[str, object]] = []
+
+        def on_event(payload: dict[str, object]) -> None:
+            pending.append(payload)
+
+        off = self.engine.subscribe_events(run.id, on_event)
+        seen = after
+        try:
+            for event in list_events_since(self.db, run.id, after):
+                if event.seq <= seen:
+                    continue
+                seen = event.seq
+                _write_sse(
+                    w,
+                    _event_name(event.type),
                     {
                         "seq": event.seq,
                         "type": event.type,
                         "text": event.text,
                         "stepId": event.step_id,
                         "at": event.at,
-                    }
-                    for event in list_events(self.db, run.id)
-                ]
-            }
-        )
+                        "runId": event.run_id,
+                    },
+                    str(event.seq),
+                )
+            _write_sse(w, "run", public_run(run, full=True), "")
+            ping_at = time.monotonic() + 15
+            while not c.disconnected:
+                while pending:
+                    payload = pending.pop(0)
+                    seq = payload.get("seq")
+                    number = seq if isinstance(seq, int) else 0
+                    if number and number <= seen:
+                        continue
+                    if number:
+                        seen = number
+                    kind = str(payload.get("type", ""))
+                    _write_sse(w, _event_name(kind), payload, str(number) if number else "")
+                if time.monotonic() >= ping_at:
+                    sse.ping()
+                    ping_at = time.monotonic() + 15
+                await asyncio.sleep(0.05)
+        finally:
+            off()
 
     async def cancel(self, c: Context, w: Writer) -> None:
         run = self._existing(c, w)
@@ -166,6 +250,19 @@ class ApiPage:
         if body.get("images"):
             w.json({"error": "attachments are not supported by the Python port"}, status=400)
             return
+        if not text.strip():
+            w.json({"error": "message needs text or at least one attachment"}, status=400)
+            return
+        if run.status == "queued":
+            message, reason = await self.engine.queue_message(run.id, text.strip())
+            if reason == "not found":
+                w.json({"error": reason}, status=404)
+                return
+            if reason or message is None:
+                w.json({"error": reason or "run already started"}, status=409)
+                return
+            w.json(cast(JsonValue, {"queued": True, "message": message}))
+            return
         reason = await self.engine.deliver(run.id, text)
         if reason == "message is empty":
             w.json({"error": "message needs text or at least one attachment"}, status=400)
@@ -174,6 +271,67 @@ class ApiPage:
             w.json({"error": reason}, status=409)
             return
         w.json({"delivered": True})
+
+    async def archive(self, c: Context, w: Writer) -> None:
+        run = self._existing(c, w)
+        if run is None:
+            return
+        body = await _optional_body(c)
+        archived = True if body is None else body.get("archived") is not False
+        reason = await self.engine.set_archived(run.id, archived)
+        if reason:
+            w.json({"error": reason}, status=404)
+            return
+        updated = get_run(self.db, run.id)
+        w.json(cast(JsonValue, public_run(updated or run, full=True)))
+
+    async def pin(self, c: Context, w: Writer) -> None:
+        run = self._existing(c, w)
+        if run is None:
+            return
+        body = await _optional_body(c)
+        pinned = True if body is None else body.get("pinned") is not False
+        reason = await self.engine.set_pinned(run.id, pinned)
+        if reason:
+            w.json({"error": reason}, status=404)
+            return
+        updated = get_run(self.db, run.id)
+        w.json(cast(JsonValue, public_run(updated or run, full=True)))
+
+    async def edit_queued(self, c: Context, w: Writer) -> None:
+        run = self._existing(c, w)
+        if run is None:
+            return
+        body = await _body(c, w)
+        if body is None:
+            return
+        text = body.get("text", "")
+        if not isinstance(text, str):
+            w.json({"error": "message needs text"}, status=400)
+            return
+        message, reason = await self.engine.edit_queued_message(
+            run.id, c.match.params.get("msg_id", ""), text
+        )
+        if reason == "not found":
+            w.json({"error": reason}, status=404)
+            return
+        if reason or message is None:
+            w.json({"error": reason or "run already started"}, status=409)
+            return
+        w.json(cast(JsonValue, {"message": message}))
+
+    async def remove_queued(self, c: Context, w: Writer) -> None:
+        run = self._existing(c, w)
+        if run is None:
+            return
+        reason = await self.engine.remove_queued_message(run.id, c.match.params.get("msg_id", ""))
+        if reason == "not found":
+            w.json({"error": reason}, status=404)
+            return
+        if reason:
+            w.json({"error": reason}, status=409)
+            return
+        w.json({"removed": True})
 
     async def cancel_auto_resume(self, c: Context, w: Writer) -> None:
         """Nothing here schedules a usage-limit resume, so the off switch is a no-op."""
@@ -255,10 +413,11 @@ def _create_input(
     task = body.get("task", "")
     if not isinstance(task, str) or len(task) > 100_000:
         return None, "", "", "", "", False, "must be at most 100000 characters", 400
-    if body.get("images"):
-        return None, "", "", "", "", False, "attachments are not supported by the Python port", 400
-    if not task.strip():
+    has_images = isinstance(body.get("images"), list) and bool(body.get("images"))
+    if not task.strip() and not has_images:
         return None, "", "", "", "", False, _TASK, 400
+    if not task.strip():
+        task = "(see attachments)"
     profile = body.get("agentProfile")
     if profile is not None:
         if not isinstance(profile, str) or not profile.strip():
@@ -270,8 +429,6 @@ def _create_input(
         variants = 1
     if not isinstance(variants, int) or isinstance(variants, bool) or not 1 <= variants <= 3:
         return None, "", "", "", "", False, "variants must be 1, 2, or 3", 400
-    if variants > 1:
-        return None, "", "", "", "", False, _VARIANTS, 400
     runner = body.get("runner", default_runner)
     if runner is None or runner == "":
         runner = default_runner
@@ -306,3 +463,62 @@ async def _body(c: Context, w: Writer) -> dict[str, object] | None:
 
 def _ok_id(value: str) -> bool:
     return len(value) == 32 and all(ch in "0123456789abcdef" for ch in value)
+
+
+def _event_name(kind: str) -> str:
+    return "ui-event" if "." in kind else "run-event"
+
+
+def _after_seq(c: Context) -> int:
+    found: list[int] = []
+    for raw in (c.req.query.get("afterSeq", ""), c.req.headers.get("last-event-id") or ""):
+        try:
+            number = int(raw)
+        except ValueError:
+            continue
+        if number >= 0:
+            found.append(number)
+    return max(found) if found else 0
+
+
+def _write_sse(w: Writer, event: str, data: object, event_id: str) -> None:
+    raw = json_dumps(cast(JsonValue, data))
+    lines: list[str] = []
+    if event_id:
+        lines.append(f"id: {event_id}")
+    lines.append(f"event: {event}")
+    lines.extend(f"data: {line}" for line in raw.split("\n"))
+    w.write(("\n".join(lines) + "\n\n").encode())
+
+
+async def _optional_body(c: Context) -> dict[str, object] | None:
+    try:
+        loaded = await read_signals(c.req)
+    except RequestBodyError:
+        return None
+    if isinstance(loaded, dict):
+        return cast(dict[str, object], loaded)
+    return None
+
+
+def _images(raw: object) -> list[dict[str, object]] | str | None:
+    if raw in (None, []):
+        return None
+    if not isinstance(raw, list):
+        return "images must be a list"
+    if len(raw) > 8:
+        return "too many attachments"
+    out: list[dict[str, object]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            return "invalid attachment"
+        data = item.get("data")
+        if not isinstance(data, str) or not data:
+            return "attachment needs data"
+        if len(data) > 200_000:
+            return "attachment is too large"
+        media = item.get("mediaType") or item.get("media_type") or "image/png"
+        if not isinstance(media, str):
+            return "invalid attachment"
+        out.append({"mediaType": media, "data": data})
+    return out or None

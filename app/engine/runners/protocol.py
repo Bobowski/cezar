@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import socket
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -29,6 +31,13 @@ from app.engine.runners.argv import (
     build_opencode_args,
     build_pi_args,
     codex_sandbox,
+)
+from app.engine.session_extras import (
+    claude_content,
+    codex_mcp_config,
+    inactivity_message,
+    mcp_allow_rules,
+    write_mcp_config,
 )
 
 SIGNAL_EXITS = frozenset({130, 137, 143})
@@ -255,7 +264,8 @@ async def _process_turn(
     approval_gate: bool,
     codex_network_off: bool,
 ) -> AsyncIterator[AgentEvent]:
-    args = _args(runner, spec, approval_gate=approval_gate)
+    mcp_path = write_mcp_config(spec.mcp_servers) if runner == "claude" else None
+    args = _args(runner, spec, approval_gate=approval_gate, mcp_path=str(mcp_path or ""))
     proc = await asyncio.create_subprocess_exec(
         binary,
         *args,
@@ -270,24 +280,39 @@ async def _process_turn(
         prompt = f"{spec.system_prompt}\n\n---\n\n{spec.user_prompt}"
     try:
         if runner == "codex":
+            frames = _codex_frames(
+                prompt,
+                codex_network_off,
+                thread_id=spec.codex_thread,
+                resume=spec.resume,
+                mcp_config=codex_mcp_config(spec.mcp_servers),
+            )
             async for event in _rpc_turn(
-                proc, spec, state, runner, _codex_frames(prompt, codex_network_off)
+                proc, spec, state, runner, frames, idle_ms=spec.timeout_ms
             ):
                 yield event
         elif runner in ("junie", "copilot"):
-            async for event in _rpc_turn(proc, spec, state, runner, _acp_frames(spec)):
+            async for event in _rpc_turn(
+                proc, spec, state, runner, _acp_frames(spec), idle_ms=spec.timeout_ms
+            ):
                 yield event
         else:
             await _write(proc, _opening_lines(runner, spec, codex_network_off=codex_network_off))
-            async for event in _read_until_done(proc, spec, state, runner, 0):
+            async for event in _read_until_done(
+                proc, spec, state, runner, 0, idle_ms=spec.timeout_ms
+            ):
                 yield event
     finally:
         _close(proc)
+        if mcp_path is not None:
+            shutil.rmtree(mcp_path.parent, ignore_errors=True)
     if spec.cancel.is_set():
         if proc.returncode is None:
             proc.kill()
         await proc.wait()
         return
+    if state.thread_id:
+        yield AgentEvent("session", state.thread_id)
     if state.input_tokens or state.output_tokens:
         yield AgentEvent(
             "text", "", input_tokens=state.input_tokens, output_tokens=state.output_tokens
@@ -312,18 +337,28 @@ async def _process_turn(
     yield AgentEvent("turn-end")
 
 
-def _codex_frames(prompt: str, network_off: bool) -> list[dict[str, Any]]:
+def _codex_frames(
+    prompt: str,
+    network_off: bool,
+    *,
+    thread_id: str,
+    resume: bool,
+    mcp_config: dict[str, Any],
+) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {
+        "sandbox": codex_sandbox(network_off=network_off),
+        "approvalPolicy": "never",
+    }
+    if mcp_config:
+        params["config"] = mcp_config
+    if resume and thread_id:
+        params["threadId"] = thread_id
+        method = "thread/resume"
+    else:
+        method = "thread/start"
     return [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
-        {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "thread/start",
-            "params": {
-                "sandbox": codex_sandbox(network_off=network_off),
-                "approvalPolicy": "never",
-            },
-        },
+        {"jsonrpc": "2.0", "id": 2, "method": method, "params": params},
         {
             "jsonrpc": "2.0",
             "id": 3,
@@ -365,6 +400,8 @@ async def _rpc_turn(
     state: TurnState,
     runner: str,
     frames: list[dict[str, Any]],
+    *,
+    idle_ms: int = 0,
 ) -> AsyncIterator[AgentEvent]:
     """Send each handshake frame, then the prompt, and stop on the prompt's completion.
 
@@ -383,16 +420,17 @@ async def _rpc_turn(
             runner,
             prompt_id,
             stop_id=None if is_prompt else int(frame["id"]),
+            idle_ms=idle_ms,
         ):
             yield event
         if state.failed or state.done or spec.cancel.is_set():
             return
 
 
-def _args(runner: str, spec: AgentSpec, *, approval_gate: bool) -> list[str]:
+def _args(runner: str, spec: AgentSpec, *, approval_gate: bool, mcp_path: str = "") -> list[str]:
     tools = spec.allowed_tools or ("Read", "Edit", "Write", "Grep", "Glob", "Bash")
     if runner == "claude":
-        return build_claude_args(
+        args = build_claude_args(
             system_prompt=spec.system_prompt,
             model=spec.model,
             allowed_tools=tools,
@@ -401,6 +439,15 @@ def _args(runner: str, spec: AgentSpec, *, approval_gate: bool) -> list[str]:
             resume=spec.resume,
             approval_gate=approval_gate,
         )
+        if mcp_path:
+            args.extend(["--mcp-config", mcp_path])
+            rules = mcp_allow_rules(spec.mcp_servers)
+            if rules and "--allowedTools" in args:
+                slot = args.index("--allowedTools") + 1
+                args[slot] = args[slot] + "," + ",".join(rules)
+            elif rules:
+                args.extend(["--allowedTools", ",".join(rules)])
+        return args
     if runner == "cursor":
         return build_cursor_args(
             user_prompt=spec.user_prompt, system_prompt=spec.system_prompt, model=spec.model
@@ -433,7 +480,10 @@ def _opening_lines(
         return [
             {
                 "type": "user",
-                "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
+                "message": {
+                    "role": "user",
+                    "content": claude_content(prompt, spec.images),
+                },
             }
         ]
     if runner == "cursor":
@@ -507,13 +557,22 @@ async def _read_until_done(
     *,
     done: bool = False,
     stop_id: int | None = None,
+    idle_ms: int = 0,
 ) -> AsyncIterator[AgentEvent]:
     assert proc.stdout is not None
     seen_stop = False
+    started = time.monotonic()
+    last = started
     while not (state.done or done or seen_stop):
         if spec.cancel.is_set():
             proc.kill()
             yield AgentEvent("error", "cancelled")
+            return
+        expired = _idle_expired(started, last, idle_ms)
+        if expired:
+            proc.kill()
+            state.failed = inactivity_message(runner, idle_ms, ceiling=expired == "ceiling")
+            state.done = True
             return
         try:
             raw = await asyncio.wait_for(proc.stdout.readline(), timeout=0.2)
@@ -521,6 +580,7 @@ async def _read_until_done(
             if proc.returncode is not None:
                 break
             continue
+        last = time.monotonic()
         if not raw:
             break
         line = raw.decode(errors="replace").rstrip("\n")
@@ -635,6 +695,17 @@ async def _wait_port(port: int, cancel: asyncio.Event) -> None:
         await writer.wait_closed()
         return
     raise TimeoutError(f"opencode did not listen on {port}")
+
+
+def _idle_expired(started: float, last: float, idle_ms: int) -> str:
+    if idle_ms <= 0:
+        return ""
+    now = time.monotonic()
+    if now - started >= (idle_ms / 1000) * 8:
+        return "ceiling"
+    if now - last >= idle_ms / 1000:
+        return "inactivity"
+    return ""
 
 
 def _response_id(line: str) -> int | None:

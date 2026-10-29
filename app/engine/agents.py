@@ -30,6 +30,11 @@ class AgentSpec:
     bash_allowlist: tuple[str, ...] = ()
     session_id: str = ""
     resume: bool = False
+    # 0 disables the inactivity watchdog. The engine passes 15 minutes.
+    timeout_ms: int = 0
+    images: tuple[dict[str, str], ...] = ()
+    mcp_servers: tuple[dict[str, object], ...] = ()
+    codex_thread: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +44,7 @@ class AgentEvent:
     name: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
+    session_id: str = ""
 
 
 def usage_from_line(line: str) -> tuple[int, int] | None:

@@ -26,7 +26,7 @@ def public_run(run: Run, *, full: bool) -> dict[str, JsonValue]:
         "runner": run.runner,
         "createdAt": run.created_at,
         "tokensUsed": run.tokens_used,
-        "archived": False,
+        "archived": run.archived,
         "steps": _steps(run),
     }
     if run.model:
@@ -49,6 +49,25 @@ def public_run(run: Run, *, full: bool) -> dict[str, JsonValue]:
         body["costUsd"] = run.cost_usd
     if run.in_place:
         body["worktree"] = False
+    if run.archived_at:
+        body["archivedAt"] = run.archived_at
+    if run.pinned:
+        body["pinned"] = True
+    if run.pinned_at:
+        body["pinnedAt"] = run.pinned_at
+    if run.group_id:
+        body["groupId"] = run.group_id
+    if run.variant:
+        body["variant"] = run.variant
+    if run.queued_messages:
+        body["queuedMessages"] = [
+            {
+                "id": str(message.get("id", "")),
+                "text": str(message.get("text", "")),
+                "createdAt": str(message.get("createdAt", "")),
+            }
+            for message in run.queued_messages
+        ]
     if full:
         body["workflowDef"] = cast(JsonValue, _workflow(run.workflow_def))
     return body

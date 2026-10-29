@@ -132,10 +132,19 @@ async def test_post_runs_rejects_the_same_bodies_the_contract_rejects(client):
     assert "nope" in account.json()["error"]
     variants = await client.post(
         API_RUNS_CREATE.href(),
-        json={"task": "x", "workflow": "quick-task", "variants": 2},
+        json={"task": "two ways", "workflow": "quick-task", "variants": 2},
     )
-    assert variants.status_code == 400
-    assert "variants" in variants.json()["error"]
+    assert variants.status_code == 201
+    group = variants.json()["runs"]
+    assert [item["variant"] for item in group] == ["A", "B"]
+    assert group[0]["groupId"] == group[1]["groupId"]
+    pending = {item["id"] for item in group}
+    for _ in range(40):
+        rows = (await client.get(API_RUNS.href())).json()
+        settled = ("review", "done", "failed")
+        if all(row["status"] in settled for row in rows if row["id"] in pending):
+            break
+        await asyncio.sleep(0.05)
 
 
 async def test_a_created_run_round_trips_with_the_record_shape(client):
@@ -185,9 +194,6 @@ async def test_cancel_finish_delete_and_messages_use_the_contract_statuses(clien
         json={"task": "mock:ask hold", "workflow": "quick-task"},
     )
     run_id = created.json()["id"]
-    early = await client.post(f"/api/v1/runs/{run_id}/finish")
-    assert early.status_code == 409
-    assert early.json()["error"] == "no open session"
     queued_delete = await client.delete(f"/api/v1/runs/{run_id}")
     assert queued_delete.status_code == 409
     status = ""
@@ -211,6 +217,9 @@ async def test_cancel_finish_delete_and_messages_use_the_contract_statuses(clien
     finished = await client.post(f"/api/v1/runs/{run_id}/finish")
     assert finished.status_code == 200
     assert finished.json() == {"finished": True}
+    again_finish = await client.post(f"/api/v1/runs/{run_id}/finish")
+    assert again_finish.status_code == 409
+    assert again_finish.json()["error"] == "no open session"
     again = await client.post(API_CANCEL.href(run_id))
     assert again.status_code == 200
     assert again.json()["cancelled"] is False
@@ -220,6 +229,57 @@ async def test_cancel_finish_delete_and_messages_use_the_contract_statuses(clien
     assert (await client.get(f"/api/v1/runs/{run_id}")).status_code == 404
     resume = await client.delete(f"/api/v1/runs/{created.json()['id']}/auto-resume")
     assert resume.status_code == 404
+
+
+async def test_waiting_can_be_finished_and_a_settled_run_can_be_pinned(client):
+    created = await client.post(
+        API_RUNS_CREATE.href(),
+        json={"task": "mock:ask hold", "workflow": "quick-task"},
+    )
+    run_id = created.json()["id"]
+    status = ""
+    for _ in range(40):
+        status = (await client.get(f"/api/v1/runs/{run_id}")).json()["status"]
+        if status == "waiting":
+            break
+        await asyncio.sleep(0.05)
+    assert status == "waiting"
+    finished = await client.post(f"/api/v1/runs/{run_id}/finish")
+    assert finished.status_code == 200
+    assert (await client.get(f"/api/v1/runs/{run_id}")).json()["status"] == "done"
+    pinned = await client.post(f"/api/v1/runs/{run_id}/pin")
+    assert pinned.status_code == 200
+    assert pinned.json()["pinned"] is True
+    archived = await client.post(f"/api/v1/runs/{run_id}/archive", json={"archived": True})
+    assert archived.status_code == 200
+    assert archived.json()["archived"] is True
+    assert archived.json().get("pinned") is not True
+
+
+async def test_the_event_stream_replays_sse(client):
+    created = await client.post(
+        API_RUNS_CREATE.href(),
+        json={"task": "write a note", "workflow": "quick-task"},
+    )
+    run_id = created.json()["id"]
+    status = ""
+    for _ in range(40):
+        status = (await client.get(f"/api/v1/runs/{run_id}")).json()["status"]
+        if status == "review":
+            break
+        await asyncio.sleep(0.05)
+    assert status == "review"
+    names: list[str] = []
+    async with client.stream("GET", f"/api/v1/runs/{run_id}/events") as stream:
+        assert stream.status_code == 200
+        assert "text/event-stream" in (stream.headers.get("content-type") or "")
+        async for event in stream.iter_events():
+            names.append(event.get("event", ""))
+            if "ui-event" in names and "run" in names:
+                break
+    assert "run-event" in names
+    assert "ui-event" in names
+    assert "run" in names
 
 
 async def test_projects_list_has_the_registry_keys(client):

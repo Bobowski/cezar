@@ -34,7 +34,11 @@ async def test_headless_run_treats_review_as_success(
     code = await run_task("ship the note", workflow="quick-task", runner="", model="")
     assert code == 0
     out = capsys.readouterr().out
-    assert "review" in out
+    assert "done" in out
+    monkeypatch.setenv("CEZ_REVIEW_GATE", "1")
+    gated = await run_task("park the note", workflow="quick-task", runner="", model="")
+    assert gated == 0
+    assert "review" in capsys.readouterr().out
     failed = await run_task("mock:fail this", workflow="quick-task", runner="claude", model="")
     assert failed == 1
 

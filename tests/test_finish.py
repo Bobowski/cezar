@@ -126,7 +126,7 @@ async def test_a_staged_upload_is_written_into_the_worktree(client):
         if status in ("review", "failed", "done"):
             break
         await asyncio.sleep(0.05)
-    assert status == "review"
+    assert status == "done"
     page = await client.get(f"/tasks/{run_id}?pane=files")
     assert "note.txt" in page.text
 

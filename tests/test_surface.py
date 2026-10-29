@@ -112,7 +112,7 @@ async def test_git_actions_read_receipts_and_a_signed_github_hook(client):
         if current.json()["status"] in ("review", "failed", "done"):
             break
         await asyncio.sleep(0.05)
-    assert current.json()["status"] == "review"
+    assert current.json()["status"] == "done"
     status = await client.get(f"/api/v1/runs/{run_id}/git/status")
     assert status.status_code == 200
     assert status.json()["uncommitted"] is True
@@ -121,6 +121,8 @@ async def test_git_actions_read_receipts_and_a_signed_github_hook(client):
     )
     assert committed.status_code == 200
     assert committed.json()["committed"] is True
+    commits = await client.get(f"/tasks/{run_id}?pane=commits")
+    assert "save the dry run" in commits.text
     pushed = await client.post(f"/api/v1/runs/{run_id}/git/push")
     assert pushed.json()["dryRun"] is True
     opened = await client.post(f"/api/v1/runs/{run_id}/pr")

@@ -134,7 +134,7 @@ async def test_a_graph_check_reviews_on_pass_and_fails_on_an_unwired_failure(wor
     assert passed is not None, reason
     await engine.enqueue(passed)
     await engine.execute(passed.id)
-    assert (get_run(engine.db, passed.id) or passed).status == "review"
+    assert (get_run(engine.db, passed.id) or passed).status == "done"
 
     failed, reason = engine.plan_run(
         project=project,
@@ -248,23 +248,88 @@ async def test_a_restart_fails_a_running_agent_and_leaves_the_queue(world):
     assert (get_run(engine.db, queued.id) or queued).status == "queued"
 
 
-async def test_success_stops_at_review_and_finish_does_not_merge(world):
+async def test_success_is_done_until_the_review_gate_is_on(world, monkeypatch):
     engine, repo = world
     run = await _start(engine, "write the note")
     await engine.execute(run.id)
     done = get_run(engine.db, run.id)
     assert done is not None
-    assert done.status == "review"
+    assert done.status == "done"
     assert done.branch == f"cez/{run.id[:8]}"
     assert log_count(repo) == 1
     diff = diff_against(Path(done.worktree_path), done.base_sha)
     assert "CEZAR_DRY_RUN.txt" in diff.text
-    assert diff.adds > 0
     assert "CEZAR_DRY_RUN" not in (repo / "README.md").read_text(encoding="utf-8")
-    assert await engine.finish(run.id) is None
-    assert (get_run(engine.db, run.id) or done).status == "done"
-    assert log_count(repo) == 1
     assert await engine.finish(run.id) == "no open session"
+
+    monkeypatch.setenv("CEZ_REVIEW_GATE", "true")
+    ignored = await _start(engine, "true is not the switch")
+    await engine.execute(ignored.id)
+    assert (get_run(engine.db, ignored.id) or ignored).status == "done"
+
+    monkeypatch.setenv("CEZ_REVIEW_GATE", "1")
+    gated = await _start(engine, "park this diff")
+    await engine.execute(gated.id)
+    parked = get_run(engine.db, gated.id)
+    assert parked is not None and parked.status == "review"
+    assert await engine.finish(gated.id) is None
+    assert (get_run(engine.db, gated.id) or parked).status == "done"
+    assert log_count(repo) == 1
+
+    project = __import__("app.store.db", fromlist=["get_project"]).get_project(
+        engine.db, engine.boot_project_id
+    )
+    assert project is not None
+    auto, reason = engine.plan_run(
+        project=project,
+        task="skip the gate",
+        workflow_name="quick-task",
+        runner="claude",
+        autonomous=True,
+    )
+    assert auto is not None, reason
+    await engine.enqueue(auto)
+    await engine.execute(auto.id)
+    assert (get_run(engine.db, auto.id) or auto).status == "done"
+    (repo / ".ai" / "cezar" / "config.json").write_text('{"reviewGate": false}\n', encoding="utf-8")
+    forced = await _start(engine, "the file wins")
+    await engine.execute(forced.id)
+    assert (get_run(engine.db, forced.id) or forced).status == "done"
+
+
+async def test_instructions_are_applied_to_the_prompt_and_the_branch(world):
+    engine, repo = world
+    folder = repo / ".ai" / "cezar"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "instructions.json").write_text(
+        '{"systemPrompt": "be brief", "branchNaming": "start with feature/"}\n',
+        encoding="utf-8",
+    )
+    run = await _start(engine, "Fix the login")
+    await engine.execute(run.id)
+    stored = get_run(engine.db, run.id)
+    assert stored is not None
+    assert stored.status == "done"
+    assert stored.branch.startswith("feature/")
+    written = (Path(stored.worktree_path) / "CEZAR_DRY_RUN.txt").read_text(encoding="utf-8")
+    assert written.startswith("be brief\n\n---\n")
+    assert "Fix the login" in written
+
+
+async def test_a_finished_task_is_written_to_the_webhook_outbox(world, monkeypatch):
+    from app.integrations.hooks import save_receiver
+
+    engine, _repo = world
+    quiet = await _start(engine, "no listeners")
+    await engine.execute(quiet.id)
+    assert not (engine.config.data_dir / "webhook-outbox").exists()
+    save_receiver(engine.config.data_dir, "Ops", "https://example.com/hook")
+    monkeypatch.setenv("CEZ_WEBHOOKS", "1")
+    run = await _start(engine, "tell the channel")
+    await engine.execute(run.id)
+    body = (engine.config.data_dir / "webhook-outbox" / "outbox.ndjson").read_text(encoding="utf-8")
+    assert "Task finished" in body
+    assert '"status": "delivered"' in body
 
 
 async def test_a_bad_base_does_not_run_in_the_main_tree(world):
@@ -294,7 +359,7 @@ async def test_a_directory_that_is_not_a_git_repo_runs_in_place(tmp_path: Path):
         await engine.execute(run.id)
         done = get_run(engine.db, run.id)
         assert done is not None
-        assert done.status == "review"
+        assert done.status == "done"
         assert done.in_place is True
         assert (repo / "CEZAR_DRY_RUN.txt").exists()
 
@@ -321,7 +386,7 @@ async def test_cez_done_does_not_skip_the_next_agent_step(world):
     assert "step 1 of 2" in agent.prompts[0]
     assert "step 2 of 2" in agent.prompts[1]
     assert "chain the work" in agent.prompts[0]
-    assert (get_run(engine.db, run.id) or run).status == "review"
+    assert (get_run(engine.db, run.id) or run).status == "done"
 
 
 async def test_a_check_retries_an_earlier_step_then_fails_when_max_is_spent(world):
@@ -348,7 +413,7 @@ async def test_a_check_retries_an_earlier_step_then_fails_when_max_is_spent(worl
     await engine.db.write(save_run, run)
     await engine.execute(run.id)
     assert agent.calls == 2
-    assert (get_run(engine.db, run.id) or run).status == "review"
+    assert (get_run(engine.db, run.id) or run).status == "done"
     assert "Failing output" in agent.prompts[1]
 
     class Never(RecordingAgent):
@@ -442,7 +507,7 @@ async def test_a_check_receives_a_secret_and_a_bash_allowlist_blocks_other_comma
     await engine.db.write(save_run, run)
     await engine.execute(run.id)
     done = get_run(engine.db, run.id)
-    assert done is not None and done.status == "review"
+    assert done is not None and done.status == "done"
     texts = [event.text for event in list_events(engine.db, run.id)]
     assert "super-secret-value" not in "\n".join(texts)
     assert any("●" in text for text in texts)
@@ -456,7 +521,7 @@ async def test_a_check_receives_a_secret_and_a_bash_allowlist_blocks_other_comma
     await engine.db.write(save_run, blocked)
     await engine.execute(blocked.id)
     allowed = get_run(engine.db, blocked.id)
-    assert allowed is not None and allowed.status == "review"
+    assert allowed is not None and allowed.status == "done"
 
 
 async def test_an_ask_waits_and_the_answer_continues(world):
@@ -468,7 +533,7 @@ async def test_an_ask_waits_and_the_answer_continues(world):
     assert "Which name" in waiting.ask
     assert await engine.deliver(run.id, "use the short one") is None
     await engine.execute(run.id)
-    assert (get_run(engine.db, run.id) or waiting).status == "review"
+    assert (get_run(engine.db, run.id) or waiting).status == "done"
 
 
 async def test_cancel_stops_a_check_without_waiting_for_it(world):
@@ -508,16 +573,16 @@ async def test_only_one_run_occupies_a_slot_when_max_parallel_is_one(world):
     for _ in range(50):
         if (
             first.id not in engine._tasks
-            and (get_run(engine.db, first.id) or first).status == "review"
+            and (get_run(engine.db, first.id) or first).status == "done"
         ):
             break
         await asyncio.sleep(0.02)
     await engine.tick()
     for _ in range(50):
-        if (get_run(engine.db, second.id) or second).status == "review":
+        if (get_run(engine.db, second.id) or second).status == "done":
             break
         await asyncio.sleep(0.02)
-    assert (get_run(engine.db, second.id) or second).status == "review"
+    assert (get_run(engine.db, second.id) or second).status == "done"
     assert gate.count == 2
     assert gate.count == 2
 
@@ -593,7 +658,7 @@ async def test_experimental_stdin_runner_records_usage(tmp_path: Path):
         run = await _start(engine, "hello from stdin")
         await engine.execute(run.id)
         done = get_run(engine.db, run.id)
-        assert done is not None and done.status == "review"
+        assert done is not None and done.status == "done"
         assert done.tokens_used == 7
     events = [
         event

@@ -56,18 +56,18 @@ async def test_creating_a_task_reaches_review_and_finish_does_not_merge(client, 
         )
         assert created.status_code == 200
         assert "window.location" in created.text
-        assert "write a note" in await until(events, "status-review")
+        assert "write a note" in await until(events, "status-done")
     runs = (await client.get(API_RUNS.href())).json()
-    assert runs[0]["status"] == "review"
+    assert runs[0]["status"] == "done"
     run_id = runs[0]["id"]
     session = await client.get(TASK.href(run_id))
-    assert "Finish" in session.text
-    assert "Cancel" in session.text
+    assert "status-done" in session.text
+    assert "Finish" not in session.text
     worktree = repo / ".ai" / "cezar" / "worktrees" / run_id / "CEZAR_DRY_RUN.txt"
     assert worktree.is_file()
     assert "CEZAR_DRY_RUN" not in (repo / "README.md").read_text(encoding="utf-8")
     finished = await client.post(TASK_FINISH.href(run_id), json={"tab": "t1"})
-    assert finished.status_code == 204
+    assert finished.status_code == 409
     assert (await client.get(API_RUNS.href())).json()[0]["status"] == "done"
     log = __import__("subprocess").run(
         ["git", "rev-list", "--count", "HEAD"],
@@ -79,6 +79,36 @@ async def test_creating_a_task_reaches_review_and_finish_does_not_merge(client, 
     assert log.stdout.strip() == "1"
     changes = await client.get(TASK.href(run_id, query={"pane": "diff"}))
     assert "CEZAR_DRY_RUN.txt" in changes.text
+
+
+async def test_the_review_gate_offers_finish(client, monkeypatch, repo):
+    monkeypatch.setenv("CEZ_REVIEW_GATE", "1")
+    created = await client.post(
+        API_RUNS_CREATE.href(),
+        json={"task": "park the diff", "workflow": "quick-task", "runner": "claude"},
+    )
+    assert created.status_code == 201
+    run_id = created.json()["id"]
+    status = ""
+    for _ in range(40):
+        status = (await client.get(f"/api/v1/runs/{run_id}")).json()["status"]
+        if status in ("review", "done", "failed"):
+            break
+        await asyncio.sleep(0.05)
+    assert status == "review"
+    session = await client.get(TASK.href(run_id))
+    assert "Finish" in session.text
+    finished = await client.post(TASK_FINISH.href(run_id), json={"tab": "t1"})
+    assert finished.status_code == 204
+    assert (await client.get(f"/api/v1/runs/{run_id}")).json()["status"] == "done"
+    log = __import__("subprocess").run(
+        ["git", "rev-list", "--count", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert log.stdout.strip() == "1"
 
 
 async def test_an_ask_can_be_answered(client):
@@ -96,7 +126,7 @@ async def test_an_ask_can_be_answered(client):
             json={"tab": "t1", "message": "the short one"},
         )
         assert sent.status_code == 200
-        await until(events, "review")
+        await until(events, "status-done")
     empty = await client.post(TASK_MESSAGE.href(run_id), json={"tab": "t1", "message": "   "})
     assert empty.status_code == 409
 

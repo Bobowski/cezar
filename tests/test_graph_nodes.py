@@ -84,10 +84,10 @@ async def test_a_fork_waits_for_both_branches_and_reviews(world: Engine):
             ],
         },
     )
-    assert stored.status == "review"
+    assert stored.status == "done"
     children = list_children(world.db, stored.id)
     assert len(children) == 2
-    assert {child.status for child in children} == {"review"}
+    assert {child.status for child in children} == {"done"}
 
 
 async def test_dispatch_and_git_and_a_dry_run_draft_pr(world: Engine):
@@ -109,7 +109,7 @@ async def test_dispatch_and_git_and_a_dry_run_draft_pr(world: Engine):
             ],
         },
     )
-    assert dispatched.status == "review"
+    assert dispatched.status == "done"
 
     committed = await _go(
         world,
@@ -129,7 +129,7 @@ async def test_dispatch_and_git_and_a_dry_run_draft_pr(world: Engine):
             ],
         },
     )
-    assert committed.status == "review"
+    assert committed.status == "done"
 
     opened = await _go(
         world,
@@ -149,7 +149,7 @@ async def test_dispatch_and_git_and_a_dry_run_draft_pr(world: Engine):
             ],
         },
     )
-    assert opened.status == "review"
+    assert opened.status == "done"
     assert opened.pull_request_url == "https://github.com/open-mercato/demo/pull/777"
 
 
@@ -214,7 +214,7 @@ async def test_wait_ci_fails_without_a_pr_and_is_green_in_a_dry_run(world: Engin
     await world.db.write(save_run, run)
     await world.execute(run.id)
     stored = get_run(world.db, run.id)
-    assert stored is not None and stored.status == "review"
+    assert stored is not None and stored.status == "done"
 
 
 async def test_archive_leaves_a_waiting_run_and_stamps_read_on_done(world: Engine):
@@ -223,7 +223,7 @@ async def test_archive_leaves_a_waiting_run_and_stamps_read_on_done(world: Engin
     run = await _start(world, "settle me")
     await world.execute(run.id)
     stored = get_run(world.db, run.id)
-    assert stored is not None and stored.status == "review"
+    assert stored is not None and stored.status == "done"
     stored.status = "done"
     stored.finished_at = stamp()
     await world.db.write(save_run, stored)

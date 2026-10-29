@@ -188,7 +188,8 @@ async def test_a_created_run_round_trips_with_the_record_shape(client):
     assert inline.json()["workflowDef"]["source"] == "built-in"
 
 
-async def test_cancel_finish_delete_and_messages_use_the_contract_statuses(client):
+async def test_cancel_finish_delete_and_messages_use_the_contract_statuses(client, monkeypatch):
+    monkeypatch.setenv("CEZ_REVIEW_GATE", "1")
     created = await client.post(
         API_RUNS_CREATE.href(),
         json={"task": "mock:ask hold", "workflow": "quick-task"},
@@ -265,10 +266,10 @@ async def test_the_event_stream_replays_sse(client):
     status = ""
     for _ in range(40):
         status = (await client.get(f"/api/v1/runs/{run_id}")).json()["status"]
-        if status == "review":
+        if status == "done":
             break
         await asyncio.sleep(0.05)
-    assert status == "review"
+    assert status == "done"
     names: list[str] = []
     async with client.stream("GET", f"/api/v1/runs/{run_id}/events") as stream:
         assert stream.status_code == 200

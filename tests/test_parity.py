@@ -206,6 +206,117 @@ def test_cursor_agent_bin_uses_the_typescript_name(monkeypatch, tmp_path: Path):
     assert Config.from_env().runner_bins["cursor"] == "/opt/cursor-agent"
 
 
+def test_a_fake_gh_is_used_only_when_dry_run_is_off(tmp_path: Path, monkeypatch):
+    import os
+    import subprocess
+
+    from tests.conftest import init_repo
+
+    from app.engine.git_actions import create_draft_pr, push_branch
+    from app.integrations.github_review import merge_state
+
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    bare = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "init", "--bare", "-b", "main", str(bare)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "remote", "add", "origin", str(bare)], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "push", "-u", "origin", "main"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "checkout", "-b", "cez/abcd1234"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    (repo / "note.txt").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "add", "note.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "note"], cwd=repo, check=True, capture_output=True)
+    log = tmp_path / "gh.log"
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    fake = binary / "gh"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$GH_LOG"\n'
+        'if [ "$1" = pr ] && [ "$2" = create ]; then\n'
+        "  echo https://github.com/acme/app/pull/12; exit 0\n"
+        "fi\n"
+        'if [ "$1" = pr ] && [ "$2" = merge ]; then\n'
+        "  echo https://github.com/acme/app/pull/3; exit 0\n"
+        "fi\n"
+        'if [ "$1" = pr ] && [ "$2" = review ]; then exit 0; fi\n'
+        'if [ "$1" = pr ] && [ "$2" = view ]; then\n'
+        '  echo \'{"mergeable":"MERGEABLE","reviewDecision":"APPROVED"}\'\n'
+        "  exit 0\n"
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("GH_LOG", str(log))
+    monkeypatch.setenv("PATH", f"{binary}{os.pathsep}{os.environ.get('PATH', '')}")
+    assert review_pr(3, "approve", "ok", dry_run=True, cwd=repo)["dryRun"] is True
+    assert not log.exists()
+    pushed = push_branch(repo, "cez/abcd1234", dry_run=False)
+    assert pushed["ok"] is True and pushed["dryRun"] is False
+    assert not log.exists()
+    opened = create_draft_pr(repo, "cez/abcd1234", "Draft", dry_run=False)
+    assert opened["url"] == "https://github.com/acme/app/pull/12"
+    reviewed = review_pr(3, "approve", "ship it", dry_run=False, cwd=repo)
+    merged = merge_pr(3, "squash", dry_run=False, cwd=repo)
+    state = merge_state(3, dry_run=False, cwd=repo)
+    recorded = log.read_text(encoding="utf-8")
+    assert "pr create" in recorded
+    assert "pr review" in recorded
+    assert "pr merge" in recorded
+    assert "pr view" in recorded
+    assert reviewed["dryRun"] is False and reviewed["submitted"] is True
+    assert merged["dryRun"] is False and merged["merged"] is True
+    assert state["dryRun"] is False and "APPROVED" in str(state["raw"])
+
+
+async def test_the_main_loop_screens_show_their_data(client):
+    new = await client.get("/tasks/new")
+    assert new.status_code == 200
+    assert "New task" in new.text and "Start" in new.text and "quick-task" in new.text
+    created = await client.post(
+        "/api/v1/runs",
+        json={"task": "two panes", "workflow": "quick-task", "variants": 2},
+    )
+    assert created.status_code == 201
+    first = created.json()["runs"][0]["id"]
+    compared = await client.get(f"/tasks/{first}/compare")
+    assert "Compare" in compared.text and ">A<" in compared.text and ">B<" in compared.text
+    import asyncio
+
+    status = ""
+    for _ in range(40):
+        status = (await client.get(f"/api/v1/runs/{first}")).json()["status"]
+        if status in ("done", "failed", "review"):
+            break
+        await asyncio.sleep(0.05)
+    assert status == "done"
+    graph = await client.get(f"/tasks/{first}?pane=graph")
+    assert "Do the task" in graph.text
+    browser = await client.get(f"/tasks/{first}?pane=browser")
+    assert "Design Mode" in browser.text
+    saved = await client.post(
+        f"/tasks/{first}/notes",
+        json={"tab": "t1", "notes": "remember the port"},
+    )
+    assert saved.status_code == 204
+    notes = await client.get(f"/tasks/{first}?pane=notes")
+    assert "remember the port" in notes.text
+
+
 def test_delivery_row_shape():
     row = Delivery(sequence=1, body="x")
     assert row.status == "pending"

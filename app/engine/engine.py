@@ -1,6 +1,7 @@
 """Queue, worktrees, and the workflow walk.
 
-A successful workflow stops at `review`. Finish records `done`. Neither merges.
+A successful workflow stops at `done` unless the review gate is on.
+Finish records `done`. Neither merges.
 `waiting` does not hold a parallelism slot: the agent process has already exited.
 """
 
@@ -52,11 +53,13 @@ from app.engine.gitwork import (
     remove_worktree,
 )
 from app.engine.graph import advance, compare_values, enter_graph, fork_shape, render_refs
+from app.engine.instructions import branch_from_instructions, run_instructions
 from app.engine.model import TERMINAL, Automation, Project, Run, Settings, Step, Workflow
 from app.engine.prompts import build_user_prompt
 from app.engine.receipts import archive_finished as sweep_archive
 from app.engine.receipts import mark_all_read as sweep_read
 from app.engine.retention import select_index_prune, select_reclaimable
+from app.engine.review_gate import review_gate_enabled
 from app.engine.session_extras import load_project_mcp, prompt_task, v2_snapshots
 from app.engine.skills import find_skill
 from app.engine.terminal_hub import TerminalHub
@@ -363,6 +366,8 @@ class Engine:
             await self._save(run)
             await self._note(run.id, "note", "not a git repository; ran in place")
             return run
+        _prompt, naming = run_instructions(root)
+        wanted = branch_from_instructions(run.task, naming, run.id)
         try:
             path, branch, sha = await asyncio.to_thread(
                 create_worktree,
@@ -370,6 +375,7 @@ class Engine:
                 run.id,
                 base,
                 fetch=not self.config.dry_run,
+                branch=wanted,
             )
         except WorktreeError as exc:
             return await self._fail(run, str(exc))
@@ -721,6 +727,9 @@ class Engine:
         project = get_project(self.db, run.project_id)
         root = Path(project.root) if project else self.config.repo_root
         system_parts: list[str] = []
+        instructions, _naming = run_instructions(root)
+        if instructions:
+            system_parts.append(instructions)
         if step.skill:
             skill = find_skill(root, step.skill)
             if skill is None:
@@ -838,6 +847,7 @@ class Engine:
             current.awaiting_answer_since = stamp()
             await self._save(current)
             await self._note(current.id, "lifecycle", "waiting")
+            self._notify(current, "running")
             return "stop"
         current.pending_note = ""
         current.check_failure = ""
@@ -923,6 +933,30 @@ class Engine:
         await self._fail(current, message)
         return "stop"
 
+    async def _review_applies(self, run: Run) -> bool:
+        if run.autonomous or not run.worktree_path or not run.base_sha:
+            return False
+        project = get_project(self.db, run.project_id)
+        root = Path(project.root) if project else self.config.repo_root
+        if not review_gate_enabled(root):
+            return False
+        diff = await asyncio.to_thread(diff_against, Path(run.worktree_path), run.base_sha)
+        return diff.files > 0
+
+    def _notify(self, run: Run, previous: str) -> None:
+        from app.integrations.lifecycle import notify_task
+
+        notify_task(
+            self.config.data_dir,
+            run_id=run.id,
+            title=run.title,
+            status=run.status,
+            previous=previous,
+            project_id=run.project_id,
+            error=run.error,
+            dry_run=self.config.dry_run,
+        )
+
     async def _enter_review(self, run: Run) -> None:
         current = get_run(self.db, run.id) or run
         if current.status in ("cancelled", "failed"):
@@ -932,6 +966,10 @@ class Engine:
             return
         if stopped:
             await self._release_deferred(current, stopped=stopped)
+        if not await self._review_applies(current):
+            await self._mark_done(current)
+            return
+        previous = current.status
         current.status = "review"
         current.finished_at = stamp()
         current.ask = ""
@@ -947,15 +985,18 @@ class Engine:
                 f"{diff.files} files, +{diff.adds} −{diff.dels}",
             )
         await self._note(current.id, "lifecycle", "review")
+        self._notify(current, previous)
 
     async def _fail(self, run: Run, message: str) -> Run:
         await self._release_deferred(run, stopped="the run failed")
+        previous = run.status
         run.status = "failed"
         run.error = message
         run.finished_at = stamp()
         await self._save(run)
         await self._note(run.id, "error", message)
         await self._note(run.id, "lifecycle", "failed")
+        self._notify(run, previous)
         return run
 
     async def _mark_cancelled(self, run: Run) -> None:
@@ -963,21 +1004,25 @@ class Engine:
             return
         self._finish.discard(run.id)
         await self._release_deferred(run, stopped="the run was cancelled")
+        previous = run.status
         run.status = "cancelled"
         run.finished_at = stamp()
         await self._save(run)
         await self._note(run.id, "lifecycle", "cancelled")
+        self._notify(run, previous)
 
     async def _mark_done(self, run: Run) -> None:
         self._finish.discard(run.id)
         if run.status == "done":
             return
         await self._release_deferred(run, stopped="the task was finished")
+        previous = run.status
         run.status = "done"
         run.ask = ""
         run.finished_at = stamp()
         await self._save(run)
         await self._note(run.id, "lifecycle", "done")
+        self._notify(run, previous)
 
     async def set_archived(self, run_id: str, archived: bool) -> str | None:
         run = get_run(self.db, run_id)

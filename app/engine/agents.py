@@ -107,7 +107,10 @@ class DryRunAgent:
             yield AgentEvent("error", "dry-run refused a path outside the worktree")
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(spec.user_prompt + "\n", encoding="utf-8")
+        payload = spec.user_prompt
+        if spec.system_prompt:
+            payload = f"{spec.system_prompt}\n\n---\n\n{spec.user_prompt}"
+        path.write_text(payload + "\n", encoding="utf-8")
         yield AgentEvent("tool-call", target, "Write")
         yield AgentEvent("tool-result", f"wrote {target}")
         yield AgentEvent("text", f"Dry run finished in {spec.cwd}.")

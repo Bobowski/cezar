@@ -100,11 +100,17 @@ def fork_sha(repo: Path, base: str, *, fetch: bool) -> str:
     return pinned
 
 
-def create_worktree(repo: Path, run_id: str, base: str, *, fetch: bool) -> tuple[Path, str, str]:
+def create_worktree(
+    repo: Path, run_id: str, base: str, *, fetch: bool, branch: str | None = None
+) -> tuple[Path, str, str]:
     """Return `(path, branch, base_sha)`. Failure leaves the main tree untouched."""
     if not _RUN_DIR.fullmatch(run_id):
         raise WorktreeError("refusing worktree id")
-    branch = branch_for(run_id)
+    branch = branch if branch and is_safe_git_ref(branch) else branch_for(run_id)
+    if branch != branch_for(run_id):
+        ok, _out, _err = git(repo, ["check-ref-format", "--branch", branch])
+        if not ok:
+            branch = branch_for(run_id)
     if not is_safe_git_ref(branch):
         raise WorktreeError(f"refusing option-like branch name: {branch}")
     sha = fork_sha(repo, base, fetch=fetch)

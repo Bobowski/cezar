@@ -48,6 +48,9 @@ EOF_TERM_GRACE_S = 8.0
 RESUME_LOCK_RETRY_S = (0.25, 0.5, 1.0, 2.0, 4.0, 4.0, 4.0)
 
 
+_CODEX_NON_TOOL = frozenset({"agentMessage", "userMessage", "reasoning", "plan"})
+
+
 @dataclass
 class TurnState:
     saw_text: bool = False
@@ -56,6 +59,7 @@ class TurnState:
     input_tokens: int = 0
     output_tokens: int = 0
     thread_id: str = ""
+    compacted: bool = False
 
 
 def parse_claude_line(line: str, state: TurnState) -> list[AgentEvent]:
@@ -139,20 +143,17 @@ def parse_codex_line(line: str, state: TurnState) -> list[AgentEvent]:
         if plan is not None:
             events.append(AgentEvent("plan", plan))
     elif method == "item/started":
-        item = _as_dict(params.get("item"))
-        if item.get("type") == "commandExecution":
-            events.append(AgentEvent("tool-call", str(item.get("command", "")), "Bash"))
+        events.extend(_codex_item(params, state, started=True))
     elif method == "item/completed":
+        events.extend(_codex_item(params, state, started=False))
+    elif method == "item/updated":
         item = _as_dict(params.get("item"))
-        if item.get("type") == "commandExecution":
-            events.append(AgentEvent("tool-result", str(item.get("aggregatedOutput", "")), "Bash"))
-        elif (
-            item.get("type") == "agentMessage"
-            and isinstance(item.get("text"), str)
-            and not state.saw_text
-        ):
-            state.saw_text = True
-            events.append(AgentEvent("text", item["text"]))
+        events.append(
+            AgentEvent(
+                "item.updated",
+                json.dumps({"type": "item.updated", "item": item}, separators=(",", ":")),
+            )
+        )
     elif method == "turn/completed":
         turn = _as_dict(params.get("turn"))
         if str(turn.get("status")) == "failed":
@@ -254,11 +255,12 @@ class ProtocolRunner:
         self.codex_network_off = codex_network_off
         self.resume_lock_retry_s: tuple[float, ...] = RESUME_LOCK_RETRY_S
         self._open: dict[str, tuple[asyncio.subprocess.Process, Path | None]] = {}
+        self._opencode: dict[str, tuple[asyncio.subprocess.Process, int]] = {}
 
     async def stream(self, spec: AgentSpec) -> AsyncIterator[AgentEvent]:
         try:
             if self.runner == "opencode":
-                async for event in _opencode_turn(self.binary, spec):
+                async for event in self._opencode_stream(spec):
                     yield event
                 return
             parked = (
@@ -292,17 +294,65 @@ class ProtocolRunner:
         except FileNotFoundError:
             yield AgentEvent("error", f"`{self.binary}` not found on PATH")
 
+    async def steer(self, session_id: str, text: str) -> bool:
+        """Write a user message into a process that is still on its stdin session."""
+        parked = self._open.get(session_id)
+        if parked is None or parked[0].stdin is None or parked[0].returncode is not None:
+            return False
+        await _write(
+            parked[0],
+            [
+                {
+                    "type": "user",
+                    "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+                }
+            ],
+        )
+        return True
+
+    async def _opencode_stream(self, spec: AgentSpec) -> AsyncIterator[AgentEvent]:
+        parked: tuple[asyncio.subprocess.Process, int] | None = None
+        if spec.resume and spec.codex_thread:
+            current = self._opencode.get(spec.codex_thread)
+            if current is not None and current[0].returncode is None:
+                parked = current
+        hold: dict[str, object] = {}
+        async for event in _opencode_turn(self.binary, spec, parked=parked, hold=hold):
+            yield event
+        proc = hold.get("proc")
+        port = hold.get("port")
+        session_id = hold.get("session")
+        if (
+            isinstance(proc, asyncio.subprocess.Process)
+            and isinstance(port, int)
+            and isinstance(session_id, str)
+            and session_id
+            and proc.returncode is None
+            and not spec.cancel.is_set()
+        ):
+            self._opencode[session_id] = (proc, port)
+            return
+        if isinstance(proc, asyncio.subprocess.Process):
+            await _escalate(proc)
+
     async def aclose(self) -> None:
         parked = list(self._open.values())
         self._open.clear()
         for proc, mcp_path in parked:
             await _finish_proc(proc, mcp_path)
+        servers = list(self._opencode.values())
+        self._opencode.clear()
+        for proc, _port in servers:
+            await _escalate(proc)
 
 
 def _child_env(spec: AgentSpec) -> dict[str, str]:
     from app.engine.agent_env import build_child_env, profile_env
 
-    return build_child_env(spec.runner, extra=profile_env(spec.runner, spec.profile_home))
+    env = build_child_env(spec.runner, extra=profile_env(spec.runner, spec.profile_home))
+    if spec.session_id:
+        env["CEZ_TASK_ID"] = spec.session_id
+    return env
 
 
 async def _process_turn(
@@ -405,7 +455,35 @@ async def _process_turn(
     if not state.done and code in SIGNAL_EXITS:
         yield AgentEvent("error", "cancelled")
         return
-    yield AgentEvent("turn-end")
+    yield AgentEvent("turn-end", name="context-compaction" if state.compacted else "")
+
+
+def _codex_item(params: dict[str, Any], state: TurnState, *, started: bool) -> list[AgentEvent]:
+    item = _as_dict(params.get("item"))
+    kind = str(item.get("type", ""))
+    if kind == "contextCompaction" and not started:
+        state.compacted = True
+    if kind == "agentMessage" and not started:
+        state.compacted = False
+        if isinstance(item.get("text"), str) and not state.saw_text:
+            state.saw_text = True
+            return [AgentEvent("text", item["text"])]
+        return []
+    if kind == "commandExecution":
+        if started:
+            return [AgentEvent("tool-call", str(item.get("command", "")), "Bash")]
+        return [AgentEvent("tool-result", str(item.get("aggregatedOutput", "")), "Bash")]
+    if not kind or kind in _CODEX_NON_TOOL:
+        return []
+    if started:
+        return [AgentEvent("tool-call", str(item.get("id", "")), kind)]
+    return [
+        AgentEvent(
+            "tool-result",
+            json.dumps(item, separators=(",", ":")),
+            kind,
+        )
+    ]
 
 
 def _codex_frames(
@@ -699,36 +777,65 @@ async def _read_until_done(
                 yield event
 
 
-async def _opencode_turn(binary: str, spec: AgentSpec) -> AsyncIterator[AgentEvent]:
-    port = _free_port()
-    proc = await asyncio.create_subprocess_exec(
-        binary,
-        *build_opencode_args(port),
-        cwd=spec.cwd,
-        env=_child_env(spec),
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
-    )
+async def _opencode_turn(
+    binary: str,
+    spec: AgentSpec,
+    *,
+    parked: tuple[asyncio.subprocess.Process, int] | None,
+    hold: dict[str, object],
+) -> AsyncIterator[AgentEvent]:
+    owns_proc = parked is None
+    if parked is None:
+        port = _free_port()
+        proc = await asyncio.create_subprocess_exec(
+            binary,
+            *build_opencode_args(port),
+            cwd=spec.cwd,
+            env=_child_env(spec),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    else:
+        proc, port = parked
+    hold["proc"] = proc
+    hold["port"] = port
     try:
-        await _wait_port(port, spec.cancel)
+        if owns_proc:
+            await _wait_port(port, spec.cancel)
         if spec.cancel.is_set():
             yield AgentEvent("error", "cancelled")
             return
         prompt = spec.user_prompt
         if spec.system_prompt:
             prompt = f"{spec.system_prompt}\n\n---\n\n{spec.user_prompt}"
-        created = await asyncio.to_thread(
-            _post, f"http://127.0.0.1:{port}/session", {"title": "cezar task"}
-        )
-        session_id = str(created.get("id", ""))
+        session_id = spec.codex_thread if spec.resume and spec.codex_thread else ""
         if not session_id:
-            yield AgentEvent("error", "opencode did not return a session id")
-            return
-        body = await asyncio.to_thread(
-            _post,
+            created = await asyncio.to_thread(
+                _post, f"http://127.0.0.1:{port}/session", {"title": "cezar task"}
+            )
+            session_id = str(created.get("id", ""))
+            if not session_id:
+                yield AgentEvent("error", "opencode did not return a session id")
+                return
+            yield AgentEvent("session", session_id)
+        hold["session"] = session_id
+        ctype, raw = await asyncio.to_thread(
+            _exchange,
             f"http://127.0.0.1:{port}/session/{session_id}/message",
             {"parts": [{"type": "text", "text": prompt}]},
         )
+        if "text/event-stream" in ctype or raw.lstrip().startswith(b"data:"):
+            for event in opencode_events(raw.decode(errors="replace")):
+                if event.type == "permission.requested" and event.text:
+                    await asyncio.to_thread(_reply_permission, port, event.text)
+                yield event
+            return
+        try:
+            loaded = json.loads(raw.decode())
+        except json.JSONDecodeError:
+            yield AgentEvent("error", "opencode returned a body that is not json")
+            return
+        body = loaded if isinstance(loaded, dict) else {}
         parts = _as_list(body.get("parts"))
         saw = False
         for part in parts:
@@ -751,8 +858,95 @@ async def _opencode_turn(binary: str, spec: AgentSpec) -> AsyncIterator[AgentEve
         yield AgentEvent("turn-end")
     except (URLError, TimeoutError, OSError) as exc:
         yield AgentEvent("error", f"opencode serve failed: {exc}")
-    finally:
-        await _escalate(proc)
+
+
+def opencode_events(raw: str) -> list[AgentEvent]:
+    """Assistant parts from an OpenCode SSE body. The user's own parts are skipped."""
+    roles: dict[str, str] = {}
+    seen: dict[str, str] = {}
+    events: list[AgentEvent] = []
+    idle = False
+    for payload in _sse_payloads(raw):
+        kind = payload.get("type")
+        props = _as_dict(payload.get("properties") or payload)
+        if kind == "message.updated":
+            info = _as_dict(props.get("info") or props)
+            message_id = info.get("id")
+            role = info.get("role")
+            if isinstance(message_id, str) and isinstance(role, str):
+                roles[message_id] = role
+            continue
+        if kind in ("message.part.updated", "message.part.created"):
+            part = _as_dict(props.get("part") or props)
+            message_id = part.get("messageID")
+            # An unknown role is not assistant yet: the user's echo shares this feed.
+            if isinstance(message_id, str) and roles.get(message_id) != "assistant":
+                continue
+            part_type = part.get("type")
+            part_id = str(part.get("id") or message_id or "")
+            if part_type == "text" and isinstance(part.get("text"), str):
+                if seen.get(part_id) == part["text"]:
+                    continue
+                seen[part_id] = part["text"]
+                events.append(AgentEvent("text", part["text"]))
+            elif part_type == "tool":
+                state = _as_dict(part.get("state"))
+                status = state.get("status")
+                name = str(part.get("tool") or part.get("name") or "tool")
+                if status in ("completed", "error"):
+                    events.append(AgentEvent("tool-result", str(state.get("output", "")), name))
+                elif part_id not in seen:
+                    seen[part_id] = name
+                    events.append(AgentEvent("tool-call", part_id, name))
+                else:
+                    events.append(
+                        AgentEvent(
+                            "item.updated",
+                            json.dumps(
+                                {"type": "item.updated", "item": {"id": part_id, "status": status}},
+                                separators=(",", ":"),
+                            ),
+                        )
+                    )
+            continue
+        if kind in ("permission.asked", "permission.updated"):
+            events.append(AgentEvent("permission.requested", str(props.get("id", ""))))
+            continue
+        if kind == "session.idle":
+            idle = True
+            events.append(AgentEvent("turn-end"))
+    if not idle:
+        events.append(AgentEvent("turn-end"))
+    return events
+
+
+def _sse_payloads(raw: str) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    for block in raw.split("\n\n"):
+        data = "".join(
+            line[5:].lstrip() if line.startswith("data:") else ""
+            for line in block.splitlines()
+            if line.startswith("data:")
+        )
+        if not data:
+            continue
+        try:
+            loaded = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(loaded, dict):
+            found.append(loaded)
+    return found
+
+
+def _reply_permission(port: int, permission_id: str) -> None:
+    try:
+        _exchange(
+            f"http://127.0.0.1:{port}/permission/{permission_id}/reply",
+            {"reply": "once"},
+        )
+    except URLError, TimeoutError, OSError:
+        return
 
 
 async def _write(proc: asyncio.subprocess.Process, messages: list[dict[str, Any]]) -> None:
@@ -872,15 +1066,26 @@ def _codex_plan(raw: Any) -> str | None:
 
 
 def _post(url: str, body: dict[str, Any]) -> dict[str, Any]:
+    _ctype, raw = _exchange(url, body)
+    try:
+        loaded = json.loads(raw.decode())
+    except json.JSONDecodeError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _exchange(url: str, body: dict[str, Any]) -> tuple[str, bytes]:
     request = Request(
         url,
         data=json.dumps(body).encode(),
-        headers={"content-type": "application/json"},
+        headers={
+            "content-type": "application/json",
+            "accept": "application/json, text/event-stream",
+        },
         method="POST",
     )
-    with urlopen(request, timeout=10) as response:
-        loaded = json.loads(response.read().decode())
-    return loaded if isinstance(loaded, dict) else {}
+    with urlopen(request, timeout=20) as response:
+        return response.headers.get("content-type", ""), response.read()
 
 
 def _free_port() -> int:

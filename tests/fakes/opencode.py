@@ -7,6 +7,8 @@ port = int(sys.argv[sys.argv.index("--port") + 1])
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
+        with open(sys.argv[0] + ".log", "a", encoding="utf-8") as log:
+            log.write(self.path + "\n")
         length = int(self.headers.get("content-length", "0"))
         body = json.loads(self.rfile.read(length) or b"{}")
         if self.path == "/session":

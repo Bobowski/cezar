@@ -33,6 +33,7 @@ _PORTS: dict[str, tuple[str, ...]] = {
     "github.issue-comment": ("done", "failed"),
     "github.pr-update": ("done", "failed"),
     "github.wait-ci": ("green", "red", "timeout", "failed"),
+    "notify.webhook": ("done", "failed"),
 }
 
 

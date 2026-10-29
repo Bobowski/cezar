@@ -111,6 +111,25 @@ async def propose_name(
     return compose_name_result(text, task, naming)
 
 
+async def propose_title(
+    task: str, turn: str, *, dry_run: bool, cwd: Path, binary: str
+) -> str | None:
+    """Live title refresh. Branch naming is not asked again."""
+    if not auto_naming_active(dry_run=dry_run):
+        return None
+    body = task.strip()
+    if turn.strip():
+        body = f"{body}\n\nLatest turn:\n{turn.strip()[:1000]}"
+    prompt = build_namer_prompt(body, "")
+    text = mock_namer_answer(prompt) if dry_run else await _ask_claude(binary, cwd, prompt, "")
+    if not text:
+        return None
+    named = compose_name_result(text, task, "")
+    if named is None:
+        return None
+    return named.title
+
+
 async def _ask_claude(binary: str, cwd: Path, prompt: str, naming: str) -> str:
     import asyncio
 

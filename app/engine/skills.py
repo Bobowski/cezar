@@ -1,6 +1,8 @@
 """Markdown skills. Local directories win, in the same order the TypeScript loader starts with.
 
-Global skills and the team-repo cache are not ported.
+Global skills are `~/.agents/skills` and `~/.claude/skills`. A team repo is read
+from the on-disk cache (`~/.cache/cez/team-skills`) when that directory already
+exists. Nothing here clones or fetches.
 """
 
 from __future__ import annotations
@@ -16,6 +18,10 @@ SKILL_ROOTS = (
     Path(".ai") / "cezar" / "skills",
     Path(".ai") / "skills",
     Path(".agents") / "skills",
+    Path(".claude") / "skills",
+    Path(".codex") / "skills",
+    Path(".cursor") / "skills",
+    Path(".opencode") / "skills",
 )
 
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,64}$")
@@ -25,10 +31,22 @@ def valid_skill_name(name: str) -> bool:
     return _NAME.fullmatch(name) is not None
 
 
-def load_skills(repo: Path) -> list[Skill]:
+def global_skill_dirs(home: Path) -> tuple[Path, Path]:
+    return (home / ".agents" / "skills", home / ".claude" / "skills")
+
+
+def team_skill_cache(cache: Path) -> Path:
+    return cache / "team-skills"
+
+
+def load_skills(repo: Path, *, home: Path | None = None, cache: Path | None = None) -> list[Skill]:
     found: dict[str, Skill] = {}
-    for root in SKILL_ROOTS:
-        base = repo / root
+    bases = [repo / root for root in SKILL_ROOTS]
+    bases.extend(global_skill_dirs(home if home is not None else Path.home()))
+    if cache is None:
+        cache = Path.home() / ".cache" / "cez"
+    bases.append(team_skill_cache(cache))
+    for base in bases:
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*.md")):
@@ -40,8 +58,12 @@ def load_skills(repo: Path) -> list[Skill]:
     return sorted(found.values(), key=lambda item: item.name)
 
 
-def find_skill(repo: Path, name: str) -> Skill | None:
-    return next((item for item in load_skills(repo) if item.name == name), None)
+def find_skill(
+    repo: Path, name: str, *, home: Path | None = None, cache: Path | None = None
+) -> Skill | None:
+    return next(
+        (item for item in load_skills(repo, home=home, cache=cache) if item.name == name), None
+    )
 
 
 def write_skill(repo: Path, name: str, description: str, body: str) -> Path:

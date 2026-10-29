@@ -76,6 +76,19 @@ class Config:
     worktree_keep: int = 10
     runs_keep: int = 300
     archived_keep: int = 500
+    # Exact "1" forces autonomous. Exact "0" forces it off. Anything else leaves
+    # the composer on "source-dependent", which plans a normal run.
+    autonomous_default: bool | None = None
+    # Exact "0" runs a new task in the checkout. Unset and "1" use a worktree.
+    worktree_default: bool = True
+    autosave: bool = False
+    autosave_interval_s: float = 90
+    title_updates: bool = True
+    workflow_webhooks: bool = False
+    task_process_reap: bool = True
+    repo_lock: bool = True
+    auto_resume: bool = True
+    monitoring_wake_seconds: float = 300
     # Dashboard totals. CEZ_HIDE_TOKEN_METRICS hides both; the other two hide one.
     hide_token_usage: bool = False
     hide_cost: bool = False
@@ -135,10 +148,26 @@ class Config:
             worktree_keep=_keep(os.environ.get("CEZ_WORKTREE_RETENTION"), 10),
             runs_keep=_keep(os.environ.get("CEZ_RUNS_KEEP"), 300),
             archived_keep=_keep(os.environ.get("CEZ_ARCHIVED_RUNS_KEEP"), 500),
+            autonomous_default=_tri("CEZ_AUTONOMOUS_DEFAULT"),
+            worktree_default=os.environ.get("CEZ_WORKTREE_DEFAULT") != "0",
+            autosave=os.environ.get("CEZ_AUTOSAVE") == "1",
+            title_updates=os.environ.get("CEZ_TITLE_UPDATES") != "0",
+            workflow_webhooks=os.environ.get("CEZ_WORKFLOW_WEBHOOKS") == "1",
+            task_process_reap=os.environ.get("CEZ_TASK_PROCESS_REAP") != "0",
+            repo_lock=os.environ.get("CEZ_DISABLE_REPO_LOCK") != "1",
             hide_token_usage=_flag("CEZ_HIDE_TOKEN_USAGE", "0"),
             hide_cost=_flag("CEZ_HIDE_COST", "0"),
             hide_token_metrics=_flag("CEZ_HIDE_TOKEN_METRICS", "0"),
         )
+
+
+def _tri(name: str) -> bool | None:
+    raw = os.environ.get(name)
+    if raw == "1":
+        return True
+    if raw == "0":
+        return False
+    return None
 
 
 def terminal_enabled() -> bool:

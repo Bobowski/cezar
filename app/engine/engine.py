@@ -8,12 +8,16 @@ Finish records `done`. Neither merges.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field, replace
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, cast
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 from litewriter import LiteWriter, Tx
 from litewriter.errors import StateError
@@ -22,6 +26,7 @@ from stario import App, Relay
 from app.clock import after, now, parse_stamp, stamp
 from app.config import RUNNERS, Config, single_project
 from app.engine.agents import AgentSpec, Runner, usage_from_line
+from app.engine.autosave import autosave_commit
 from app.engine.catalog import find_workflow, load_workflows
 from app.engine.deferred import DeferredBuffer
 from app.engine.deltas import DeltaCoalescer
@@ -55,8 +60,19 @@ from app.engine.gitwork import (
 from app.engine.graph import advance, compare_values, enter_graph, fork_shape, render_refs
 from app.engine.instructions import run_instructions
 from app.engine.model import TERMINAL, Automation, Project, Run, Settings, Step, Workflow
-from app.engine.namer import propose_name
-from app.engine.prompts import build_user_prompt
+from app.engine.namer import propose_name, propose_title
+from app.engine.prompts import (
+    AUTO_RESUME_GRACE_S,
+    AUTONOMOUS_NUDGE,
+    COMPACTION_NUDGE,
+    MAX_AUTO_CONTINUES,
+    MAX_AUTO_RESUMES,
+    MAX_COMPACTION_CONTINUES,
+    MONITORING_WAKE_NUDGE,
+    REPO_LOCK_DISABLED_NOTE,
+    build_user_prompt,
+)
+from app.engine.reap import reap_task_processes
 from app.engine.receipts import archive_finished as sweep_archive
 from app.engine.receipts import mark_all_read as sweep_read
 from app.engine.retention import select_index_prune, select_reclaimable
@@ -65,6 +81,7 @@ from app.engine.session_extras import load_project_mcp, prompt_task, v2_snapshot
 from app.engine.skills import find_skill
 from app.engine.terminal_hub import TerminalHub
 from app.engine.uploads import materialize
+from app.engine.usage_limit import parse_usage_limit
 from app.engine.workflows import newer_catalog_workflow, retryable_exit
 from app.secrets.store import SecretStore, redact
 from app.store.db import (
@@ -90,6 +107,14 @@ from app.store.db import (
 )
 
 CHANGED = "cezar.changed"
+
+
+def _interrupted(run: Run) -> bool:
+    return run.status == "failed" and run.error == "interrupted by restart"
+
+
+def _markerless(text: str) -> bool:
+    return "CEZ:DONE" not in text and "CEZ:ASK" not in text and "CEZ:MONITORING" not in text
 
 
 def _pr_number(url: str) -> str:
@@ -145,6 +170,47 @@ def _gh_checks(cwd: Path, number: str) -> str:
     if states and all(state == "SUCCESS" for state in states):
         return "passing"
     return "pending"
+
+
+def _gh(cwd: Path, args: list[str]) -> tuple[bool, str]:
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["gh", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False, "gh is not installed"
+    except subprocess.TimeoutExpired:
+        return False, "gh timed out"
+    except OSError as exc:
+        return False, str(exc)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        return False, detail[0] if detail else "gh failed"
+    return True, proc.stdout.strip()
+
+
+def _post_json(url: str, payload: dict[str, object]) -> tuple[int, str]:
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return 0, "webhook url must be http or https"
+    raw = json.dumps(payload).encode()
+    request = Request(url, data=raw, headers={"content-type": "application/json"}, method="POST")
+    try:
+        with urlopen(request, timeout=15) as response:
+            return int(response.status), ""
+    except URLError as exc:
+        reason = getattr(exc, "reason", exc)
+        code = getattr(exc, "code", 0)
+        return int(code or 0), f"webhook failed — {reason}"
 
 
 def _usage_event(total: int, gained: int) -> str:
@@ -206,6 +272,23 @@ class Engine:
     _deferred_buf: DeferredBuffer | None = None
     _coalescer: DeltaCoalescer = field(default_factory=DeltaCoalescer)
     _terminals: TerminalHub = field(default_factory=TerminalHub)
+    _workspace: list[Callable[[str, object], None]] = field(default_factory=list)
+    _repo_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
+    _auto_continues: dict[str, int] = field(default_factory=dict)
+    _compaction: dict[str, int] = field(default_factory=dict)
+    _last_autosave: dict[str, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self._coalescer.spawn = self._schedule
+        self._terminals.bind(self._schedule)
+
+    def _schedule(
+        self, coro: Coroutine[Any, Any, None] | Awaitable[None], *, name: str | None = None
+    ) -> asyncio.Task[None]:
+        """`App.create_task` when a server is bound. The CLI has no app."""
+        if self.app is not None:
+            return self.app.create_task(coro, name=name)  # type: ignore[arg-type]
+        return asyncio.create_task(coro, name=name)  # type: ignore[arg-type]
 
     def subscribe_events(
         self, run_id: str, listener: Callable[[dict[str, object]], None]
@@ -225,6 +308,19 @@ class Engine:
 
     def publish(self) -> None:
         self.relay.publish(CHANGED, {})
+
+    def subscribe_workspace(self, listener: Callable[[str, object], None]) -> Callable[[], None]:
+        self._workspace.append(listener)
+
+        def off() -> None:
+            if listener in self._workspace:
+                self._workspace.remove(listener)
+
+        return off
+
+    def _emit_workspace(self, event: str, data: object) -> None:
+        for listener in list(self._workspace):
+            listener(event, data)
 
     async def startup(self) -> None:
         repo = self.config.repo_root
@@ -250,6 +346,9 @@ class Engine:
 
     async def tick(self) -> None:
         await self._launch_due()
+        await self._wake_monitors()
+        await self._resume_limited()
+        await self._periodic_autosave()
         settings = get_settings(self.db)
         alive = [run_id for run_id, task in self._tasks.items() if not task.done()]
         slots = settings.max_parallel - len(alive)
@@ -262,10 +361,7 @@ class Engine:
             slots -= 1
 
     def _spawn(self, run_id: str) -> asyncio.Task[None]:
-        name = f"run-{run_id[:8]}"
-        if self.app is not None:
-            return self.app.create_task(self.execute(run_id), name=name)
-        return asyncio.create_task(self.execute(run_id), name=name)
+        return self._schedule(self.execute(run_id), name=f"run-{run_id[:8]}")
 
     async def execute(self, run_id: str) -> None:
         cancel = self._cancel.setdefault(run_id, asyncio.Event())
@@ -308,6 +404,25 @@ class Engine:
         run = await self._prepare(run)
         if run.status == "failed":
             return
+        lock = await self._claim_root(run)
+        try:
+            await self._walk(run, cancel)
+        finally:
+            if lock is not None and lock.locked():
+                lock.release()
+
+    async def _claim_root(self, run: Run) -> asyncio.Lock | None:
+        if not run.in_place or not run.worktree_path:
+            return None
+        if not self.config.repo_lock:
+            await self._note(run.id, "note", REPO_LOCK_DISABLED_NOTE)
+            return None
+        key = str(Path(run.worktree_path).resolve())
+        lock = self._repo_locks.setdefault(key, asyncio.Lock())
+        await lock.acquire()
+        return lock
+
+    async def _walk(self, run: Run, cancel: asyncio.Event) -> None:
         if run.definition().graph:
             await self._graph_walk(run, cancel)
             return
@@ -376,13 +491,16 @@ class Engine:
             return await self._fail(run, "project is gone")
         root = Path(project.root)
         base = run.base_branch or project.base_branch or "main"
-        if not is_git_repo(root):
+        if run.in_place or not is_git_repo(root):
             run.in_place = True
             run.worktree_path = str(root)
             run.base_branch = base
             await self._lay_down_attachments(run)
             await self._save(run)
-            await self._note(run.id, "note", "not a git repository; ran in place")
+            if is_git_repo(root):
+                await self._note(run.id, "note", "running in the checkout, one task at a time")
+            else:
+                await self._note(run.id, "note", "not a git repository; ran in place")
             return run
         _prompt, naming = run_instructions(root)
         named = await propose_name(
@@ -412,6 +530,10 @@ class Engine:
         run.base_branch = base
         await self._lay_down_attachments(run)
         await self._save(run)
+        self._emit_workspace(
+            "worktree-lifecycle",
+            {"projectId": run.project_id, "runId": run.id, "kind": "created"},
+        )
         return run
 
     async def _refresh_workflow(self, run: Run) -> Run:
@@ -524,7 +646,9 @@ class Engine:
         if kind == "github.wait-ci":
             return await self._run_wait_ci(run, node, outputs)
         if kind in ("github.pr-comment", "github.issue-comment", "github.pr-update"):
-            return await self._run_github_note(run, node)
+            return await self._run_github_note(run, node, outputs)
+        if kind == "notify.webhook":
+            return await self._run_webhook(run, node, outputs)
         await self._fail(run, f'graph node "{node_id}" ({kind}) is not executed by the Python port')
         return None
 
@@ -649,6 +773,7 @@ class Engine:
         return "done", node_id
 
     async def _run_git_push(self, run: Run, node_id: str) -> tuple[str, str]:
+        await self._autosave(run, "pre-PR")
         if not run.branch or run.in_place:
             await self._note(run.id, "note", "this task has no branch of its own to push", node_id)
             return "failed", node_id
@@ -681,6 +806,7 @@ class Engine:
             )
             return "created", node_id
         title = render_refs(str(node.get("title") or run.title), outputs)
+        await self._autosave(run, "pre-PR")
         result = await asyncio.to_thread(
             create_draft_pr,
             Path(run.worktree_path or "."),
@@ -722,16 +848,115 @@ class Engine:
         await self._note(run.id, "note", f"CI on PR #{number}: {glyph or 'timeout'}", node_id)
         return port, node_id
 
-    async def _run_github_note(self, run: Run, node: dict[str, Any]) -> tuple[str, str]:
+    async def _run_github_note(
+        self,
+        run: Run,
+        node: dict[str, Any],
+        outputs: dict[str, dict[str, str]],
+    ) -> tuple[str, str]:
         node_id = str(node.get("id", ""))
         kind = str(node.get("type", ""))
+        body = render_refs(str(node.get("body") or ""), outputs).replace("{{task}}", run.task)
+        cwd = Path(run.worktree_path or ".")
+        if kind == "github.issue-comment":
+            issue = node.get("issue")
+            number = str(issue) if type(issue) is int and issue > 0 else ""
+            missing = "no issue on this task to comment on (set one on the node)"
+            command = ["issue", "comment", number, "--body", body]
+            done = f"commented on issue #{number}"
+        else:
+            number = _pr_number(run.pull_request_url)
+            missing = (
+                "no PR on this task to update"
+                if kind == "github.pr-update"
+                else "no PR on this task to comment on"
+            )
+            command = ["pr", "comment", number, "--body", body]
+            done = f"commented on PR #{number}"
+        if not number:
+            await self._note(run.id, "note", missing, node_id)
+            return "failed", node_id
+        if kind == "github.pr-update":
+            return await self._update_pr(run, node, node_id, number, cwd)
         if self.config.dry_run:
-            await self._note(run.id, "note", f"{kind} skipped in dry run", node_id)
+            if kind == "github.issue-comment":
+                outputs[node_id] = {"issue": number}
+            await self._note(run.id, "note", f"dry run — {done}", node_id)
             return "done", node_id
-        await self._note(
-            run.id, "note", f"{kind} is not executed against GitHub by this port", node_id
+        ok, error = await asyncio.to_thread(_gh, cwd, command)
+        if not ok:
+            await self._note(run.id, "note", f"{kind} failed — {error}", node_id)
+            return "failed", node_id
+        if kind == "github.issue-comment":
+            outputs[node_id] = {"issue": number}
+        await self._note(run.id, "note", done, node_id)
+        return "done", node_id
+
+    async def _update_pr(
+        self, run: Run, node: dict[str, Any], node_id: str, number: str, cwd: Path
+    ) -> tuple[str, str]:
+        if self.config.dry_run:
+            await self._note(run.id, "note", f"dry run — updated PR #{number}", node_id)
+            return "done", node_id
+        if node.get("ready") is True:
+            ok, error = await asyncio.to_thread(_gh, cwd, ["pr", "ready", number])
+            if not ok:
+                await self._note(run.id, "note", f"PR update failed — {error}", node_id)
+                return "failed", node_id
+        args = ["pr", "edit", number]
+        labels = node.get("addLabels")
+        reviewers = node.get("reviewers")
+        if isinstance(labels, list):
+            for label in labels:
+                if isinstance(label, str) and label:
+                    args.extend(["--add-label", label])
+        if isinstance(reviewers, list):
+            for reviewer in reviewers:
+                if isinstance(reviewer, str) and reviewer:
+                    args.extend(["--add-reviewer", reviewer])
+        if len(args) > 3:
+            ok, error = await asyncio.to_thread(_gh, cwd, args)
+            if not ok:
+                await self._note(run.id, "note", f"PR update failed — {error}", node_id)
+                return "failed", node_id
+        await self._note(run.id, "note", f"updated PR #{number}", node_id)
+        return "done", node_id
+
+    async def _run_webhook(
+        self,
+        run: Run,
+        node: dict[str, Any],
+        outputs: dict[str, dict[str, str]],
+    ) -> tuple[str, str]:
+        node_id = str(node.get("id", ""))
+        url = str(node.get("url") or "")
+        if not self.config.workflow_webhooks:
+            await self._note(
+                run.id,
+                "note",
+                "webhooks are off — set CEZ_WORKFLOW_WEBHOOKS=1 to let workflows POST to URLs",
+                node_id,
+            )
+            return "failed", node_id
+        if self.config.dry_run:
+            outputs[node_id] = {"status": "200"}
+            await self._note(run.id, "note", f"dry run — webhook to {url} not sent", node_id)
+            return "done", node_id
+        text = render_refs(str(node.get("body") or "cezar: {{task}}"), outputs).replace(
+            "{{task}}", run.task
         )
-        return "failed", node_id
+        payload = {
+            "text": text,
+            "run": {"id": run.id, "title": run.title, "status": run.status},
+            "node": node_id,
+        }
+        status, error = await asyncio.to_thread(_post_json, url, payload)
+        outputs[node_id] = {"status": str(status)}
+        if error or status < 200 or status >= 300:
+            await self._note(run.id, "note", error or f"webhook answered {status}", node_id)
+            return "failed", node_id
+        await self._note(run.id, "note", f"webhook sent ({status})", node_id)
+        return "done", node_id
 
     async def _agent_step(
         self,
@@ -823,6 +1048,7 @@ class Engine:
         in_gained = 0
         out_gained = 0
         saw_text = False
+        compacted_turn = False
         paused = asyncio.Event()
         watch: asyncio.Task[None] | None = None
         from app.features.settings.store import read_memory
@@ -858,6 +1084,8 @@ class Engine:
                 await self._note(run.id, event.type, event.text or event.name, step.id)
                 for v2_type, v2_text in v2_snapshots(event.type, event.text, event.name, step.id):
                     await self._note(run.id, v2_type, v2_text, step.id)
+                if event.type == "turn-end" and event.name == "context-compaction":
+                    compacted_turn = True
                 if event.type == "error":
                     if paused.is_set():
                         break
@@ -909,6 +1137,13 @@ class Engine:
         if reports:
             current.pending_reports = []
         joined = "\n".join(texts)
+        await self._refresh_live_title(current, joined)
+        continued = await self._continue_compacted(current, cancel, joined, compacted_turn, step.id)
+        if continued is not None:
+            return continued
+        nudged = await self._nudge_autonomous(current, cancel, joined)
+        if nudged is not None:
+            return nudged
         if "CEZ:ASK" in joined and not followup and run.id not in self._finish:
             current.status = "waiting"
             current.ask = _ask_line(joined)
@@ -917,9 +1152,12 @@ class Engine:
             await self._note(current.id, "lifecycle", "waiting")
             self._notify(current, "running")
             return "stop"
+        if joined.rstrip().endswith("CEZ:MONITORING") and run.id not in self._finish:
+            return await self._park_monitoring(current)
         current.pending_note = ""
         current.check_failure = ""
         await self._save(current)
+        await self._autosave(current, "turn end")
         return "ok"
 
     async def _run_check(self, run: Run, step: Step, cancel: asyncio.Event) -> tuple[int, str]:
@@ -942,6 +1180,7 @@ class Engine:
                 "CEZ_ATTEMPT": "1",
             }
         )
+        env["CEZ_TASK_ID"] = run.id
         if run.project_id:
             env["CEZ_PROJECT_ID"] = run.project_id
         if run.branch:
@@ -1063,6 +1302,8 @@ class Engine:
         await self._note(run.id, "error", message)
         await self._note(run.id, "lifecycle", "failed")
         self._notify(run, previous)
+        await self._schedule_auto_resume(run)
+        self._reap(run.id)
         return run
 
     async def _mark_cancelled(self, run: Run) -> None:
@@ -1076,6 +1317,7 @@ class Engine:
         await self._save(run)
         await self._note(run.id, "lifecycle", "cancelled")
         self._notify(run, previous)
+        self._reap(run.id)
 
     async def _mark_done(self, run: Run) -> None:
         self._finish.discard(run.id)
@@ -1093,6 +1335,8 @@ class Engine:
         await self._save(run)
         await self._note(run.id, "lifecycle", "done")
         self._notify(run, previous)
+        await self._autosave(run, "run finalize")
+        self._reap(run.id)
 
     async def _watch_memory(self, run: Run, cwd: Path, paused: asyncio.Event) -> None:
         import signal
@@ -1174,6 +1418,250 @@ class Engine:
         await self._save(run)
         return None
 
+    async def _refresh_live_title(self, run: Run, turn: str) -> None:
+        if not self.config.title_updates or not turn.strip():
+            return
+        project = get_project(self.db, run.project_id)
+        root = Path(project.root) if project else self.config.repo_root
+        title = await propose_title(
+            run.task,
+            turn,
+            dry_run=self.config.dry_run,
+            cwd=root,
+            binary=self.config.runner_bins.get("claude", "claude"),
+        )
+        if title and title != run.title:
+            run.title = title
+
+    async def _continue_compacted(
+        self,
+        run: Run,
+        cancel: asyncio.Event,
+        joined: str,
+        compacted: bool,
+        step_id: str,
+    ) -> str | None:
+        if not compacted or not _markerless(joined) or run.id in self._finish:
+            if not compacted:
+                self._compaction.pop(run.id, None)
+            return None
+        attempts = self._compaction.get(run.id, 0)
+        if attempts >= MAX_COMPACTION_CONTINUES:
+            if attempts == MAX_COMPACTION_CONTINUES:
+                self._compaction[run.id] = attempts + 1
+                await self._note(
+                    run.id,
+                    "note",
+                    (
+                        f"context compaction ended {MAX_COMPACTION_CONTINUES} turns in a row "
+                        "with no progress in between — the run parks for you "
+                        "instead of continuing again"
+                    ),
+                    step_id,
+                )
+            return None
+        self._compaction[run.id] = attempts + 1
+        await self._note(
+            run.id,
+            "note",
+            (
+                "context was compacted mid-task — continuing on the same thread "
+                f"({self._compaction[run.id]}/{MAX_COMPACTION_CONTINUES})"
+            ),
+            step_id,
+        )
+        await self._save(run)
+        return await self._agent_step(run, cancel, followup=COMPACTION_NUDGE)
+
+    async def _nudge_autonomous(self, run: Run, cancel: asyncio.Event, joined: str) -> str | None:
+        if "CEZ:DONE" in joined:
+            self._auto_continues.pop(run.id, None)
+            return None
+        if not run.autonomous or run.id in self._finish:
+            return None
+        if count_in_flight_children(self.db, run.id):
+            return None
+        attempts = self._auto_continues.get(run.id, 0)
+        if attempts >= MAX_AUTO_CONTINUES:
+            return None
+        self._auto_continues[run.id] = attempts + 1
+        await self._note(
+            run.id,
+            "note",
+            f"automatic continuation ({self._auto_continues[run.id]}/{MAX_AUTO_CONTINUES})",
+        )
+        await self._save(run)
+        return await self._agent_step(run, cancel, followup=AUTONOMOUS_NUDGE)
+
+    async def _park_monitoring(self, run: Run) -> str:
+        run.status = "monitoring"
+        run.ask = ""
+        run.finished_at = ""
+        wake = now() + timedelta(seconds=self.config.monitoring_wake_seconds)
+        run.monitoring_wake_at = stamp(wake)
+        await self._save(run)
+        await self._note(run.id, "lifecycle", "monitoring")
+        return "stop"
+
+    async def _wake_monitors(self) -> None:
+        moment = now()
+        for project in list_projects(self.db):
+            for run in list_runs(self.db, project.id, "monitoring", limit=200):
+                if count_in_flight_children(self.db, run.id):
+                    continue
+                if run.monitoring_wakes >= MAX_AUTO_CONTINUES:
+                    run.status = "waiting"
+                    run.ask = "monitoring wake-up cap reached — continue this task manually"
+                    run.monitoring_wake_at = ""
+                    await self._save(run)
+                    await self._note(run.id, "lifecycle", "waiting")
+                    continue
+                due = parse_stamp(run.monitoring_wake_at)
+                if due is None or due > moment:
+                    continue
+                run.monitoring_wakes += 1
+                run.monitoring_wake_at = ""
+                run.mode = "followup"
+                run.continuation = MONITORING_WAKE_NUDGE
+                run.status = "queued"
+                await self._save(run)
+                await self._note(
+                    run.id,
+                    "lifecycle",
+                    f"automatic monitoring wake-up ({run.monitoring_wakes}/{MAX_AUTO_CONTINUES})",
+                )
+
+    async def _schedule_auto_resume(self, run: Run) -> None:
+        if not self.config.auto_resume or run.archived or run.status != "failed":
+            return
+        hit = parse_usage_limit(run.error, now())
+        if hit is None:
+            return
+        if run.auto_resume_attempts >= MAX_AUTO_RESUMES:
+            await self._note(
+                run.id,
+                "note",
+                f"automatic resume cap reached ({MAX_AUTO_RESUMES}) — continue this task manually",
+            )
+            return
+        wake = hit.reset_at + timedelta(seconds=AUTO_RESUME_GRACE_S)
+        run.auto_resume_at = stamp(wake)
+        await self._save(run)
+        await self._note(
+            run.id,
+            "lifecycle",
+            f"usage limit reached — resuming automatically at {run.auto_resume_at}",
+        )
+
+    async def clear_auto_resume(self, run_id: str) -> str | None:
+        run = get_run(self.db, run_id)
+        if run is None:
+            return "not found"
+        if not run.auto_resume_at:
+            return None
+        run.auto_resume_at = ""
+        await self._save(run)
+        await self._note(run.id, "lifecycle", "automatic resume cancelled")
+        return None
+
+    async def _resume_limited(self) -> None:
+        if not self.config.auto_resume:
+            return
+        moment = now()
+        for project in list_projects(self.db):
+            for run in list_runs(self.db, project.id, "failed", limit=200):
+                if not run.auto_resume_at:
+                    continue
+                due = parse_stamp(run.auto_resume_at)
+                if due is None or due > moment:
+                    continue
+                run.auto_resume_attempts += 1
+                run.auto_resume_at = ""
+                run.status = "queued"
+                run.mode = "followup"
+                run.continuation = (
+                    "The usage limit has reset. Continue the task from where you left off."
+                )
+                run.error = ""
+                run.finished_at = ""
+                await self._save(run)
+                await self._note(
+                    run.id,
+                    "lifecycle",
+                    (
+                        "usage limit reset — resuming automatically "
+                        f"({run.auto_resume_attempts}/{MAX_AUTO_RESUMES})"
+                    ),
+                )
+
+    async def _autosave(self, run: Run, reason: str) -> None:
+        if reason == "periodic" and not self.config.autosave:
+            return
+        if not run.worktree_path:
+            return
+        result = await asyncio.to_thread(autosave_commit, Path(run.worktree_path), reason)
+        if result == "committed":
+            await self._note(run.id, "note", f"cezar autosave ({reason})")
+
+    async def _periodic_autosave(self) -> None:
+        if not self.config.autosave:
+            return
+        moment = asyncio.get_running_loop().time()
+        interval = self.config.autosave_interval_s
+        for project in list_projects(self.db):
+            for run in list_runs(self.db, project.id, "running", limit=50):
+                last = self._last_autosave.get(run.id, 0)
+                if moment - last < interval:
+                    continue
+                self._last_autosave[run.id] = moment
+                await self._autosave(run, "periodic")
+
+    def _reap(self, run_id: str) -> None:
+        reap_task_processes(run_id, enabled=self.config.task_process_reap)
+
+    async def _deliver_report(self, parent_id: str, child_id: str, text: str) -> None:
+        parent = get_run(self.db, parent_id)
+        if parent is None or parent.status == "cancelled":
+            return
+        if parent.status == "running" and await self._steer(parent, text):
+            parent.pending_reports = [
+                item for item in parent.pending_reports if item.get("from_id") != child_id
+            ]
+            await self._save(parent)
+            await self._note(parent.id, "note", "report delivered into the live session")
+            return
+        if parent.status == "queued":
+            parent.queued_messages.append(
+                {"id": uuid.uuid4().hex, "text": text, "createdAt": stamp()}
+            )
+            parent.pending_reports = [
+                item for item in parent.pending_reports if item.get("from_id") != child_id
+            ]
+            await self._save(parent)
+            return
+        # `done` keeps the stored report for a later prompt. Requeueing it races the
+        # graph dispatch node that just observed this child and finished the parent.
+        if parent.status in ("failed", "review"):
+            parent.mode = "followup"
+            parent.continuation = text
+            parent.status = "queued"
+            parent.finished_at = ""
+            parent.pending_reports = [
+                item for item in parent.pending_reports if item.get("from_id") != child_id
+            ]
+            await self._save(parent)
+            self.kick()
+
+    async def _steer(self, run: Run, text: str) -> bool:
+        agent = self._agent_for(run.runner)
+        steer = getattr(agent, "steer", None)
+        if steer is None:
+            return False
+        result = steer(run.id, text)
+        if asyncio.iscoroutine(result):
+            result = await result
+        return bool(result)
+
     async def queue_message(
         self, run_id: str, text: str
     ) -> tuple[dict[str, object] | None, str | None]:
@@ -1217,6 +1705,7 @@ class Engine:
 
     async def _save(self, run: Run) -> None:
         await self.db.write(save_run, run)
+        self._emit_workspace("run", run)
         self.publish()
 
     async def _note(self, run_id: str, type: str, text: str, step_id: str = "") -> None:
@@ -1312,6 +1801,10 @@ class Engine:
                 run.worktree_reclaimed_at = stamp()
                 await self._save(run)
                 reclaimed.append(run_id)
+                self._emit_workspace(
+                    "worktree-lifecycle",
+                    {"projectId": project.id, "runId": run_id, "kind": "reclaimed"},
+                )
             runs = list_runs(self.db, project.id, None, limit=10_000)
             for run_id in select_index_prune(
                 runs, keep=self.config.runs_keep, archived_keep=self.config.archived_keep
@@ -1480,12 +1973,13 @@ class Engine:
         workflow_name: str,
         runner: str,
         model: str = "",
-        autonomous: bool = False,
+        autonomous: bool | None = None,
         parent: Run | None = None,
         budget_usd: float | None = None,
         base_branch: str = "",
         kind: str = "implement",
         workflow: Workflow | None = None,
+        in_place: bool | None = None,
     ) -> tuple[Run | None, str | None]:
         text = task.strip()
         if not text:
@@ -1500,6 +1994,10 @@ class Engine:
         if chosen is None:
             return None, f"unknown workflow: {workflow_name}"
         workflow = chosen
+        if autonomous is None:
+            autonomous = self.config.autonomous_default is True
+        if in_place is None:
+            in_place = not self.config.worktree_default
         run = Run(
             id=uuid.uuid4().hex,
             project_id=project.id,
@@ -1511,6 +2009,7 @@ class Engine:
             created_at=stamp(),
             workflow_def=workflow.to_json(),
             autonomous=autonomous,
+            in_place=in_place,
             model=model.strip(),
             parent_id=parent.id if parent else "",
             root_id=(parent.root_id or parent.id) if parent else "",
@@ -1568,6 +2067,7 @@ class Engine:
                 run.branch,
             )
         await self.db.write(delete_run_row, run_id)
+        self._emit_workspace("run-deleted", {"id": run_id, "projectId": run.project_id})
         self.publish()
         return None
 
@@ -1588,10 +2088,14 @@ class Engine:
             await self._save(run)
             self.kick()
             return None
-        if run.status == "review":
+        if run.status in ("review", "monitoring") or _interrupted(run):
+            if run.status == "monitoring":
+                run.monitoring_wakes = 0
+                run.monitoring_wake_at = ""
             run.mode = "followup"
             run.continuation = text
             run.status = "queued"
+            run.error = ""
             run.finished_at = ""
             await self._save(run)
             self.kick()
@@ -1714,6 +2218,7 @@ class Engine:
         }
         await self.db.write(_persist_report, run.id, run.parent_id, entry)
         self.publish()
+        await self._deliver_report(run.parent_id, run.id, text)
 
     async def _ensure_boot_project(self) -> None:
         root = str(self.config.repo_root)

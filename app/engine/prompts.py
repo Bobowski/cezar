@@ -4,6 +4,31 @@ from __future__ import annotations
 
 from app.engine.model import Step
 
+# The dry-run agent answers this exact sentence with CEZ:DONE. Rewording it
+# without that check makes an autonomous run take the full continuation cap.
+AUTONOMOUS_NUDGE = (
+    "Continue working autonomously until the task is fully complete. "
+    "Do not ask me for confirmation or clarification — make reasonable assumptions and proceed. "
+    "When everything is done, end the session with your done signal."
+)
+MONITORING_WAKE_NUDGE = (
+    "Re-check the downstream work you were monitoring. Continue toward the task goal; "
+    "emit CEZ:MONITORING again only if it is still pending."
+)
+COMPACTION_NUDGE = (
+    "Your context was automatically compacted, which ended your turn before the work was "
+    "finished. Nothing is being asked of you. Re-read your handoff file and notes for where "
+    "you got to, then carry on — and end the turn with CEZ:DONE, CEZ:ASK or CEZ:MONITORING "
+    "when you genuinely need to stop."
+)
+MAX_AUTO_CONTINUES = 40
+MAX_COMPACTION_CONTINUES = 3
+MAX_AUTO_RESUMES = 12
+AUTO_RESUME_GRACE_S = 30
+REPO_LOCK_DISABLED_NOTE = (
+    "repository-root lock disabled by CEZ_DISABLE_REPO_LOCK=1 (shared checkout is unsafe)"
+)
+
 
 def substitute_task(prompt: str, task: str) -> str:
     return prompt.replace("{{task}}", task)

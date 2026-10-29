@@ -15,8 +15,11 @@ import signal
 import struct
 import termios
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+
+Spawn = Callable[..., asyncio.Task[object]]
 
 
 @dataclass
@@ -30,6 +33,10 @@ class ShellSession:
 class TerminalHub:
     def __init__(self) -> None:
         self.sessions: dict[str, ShellSession] = {}
+        self.spawn: Spawn = asyncio.create_task
+
+    def bind(self, spawn: Spawn) -> None:
+        self.spawn = spawn
 
     async def open(self, cwd: Path) -> str:
         master, slave = pty.openpty()
@@ -50,7 +57,7 @@ class TerminalHub:
         session_id = uuid.uuid4().hex[:16]
         session = ShellSession(proc, master)
         self.sessions[session_id] = session
-        asyncio.create_task(self._read(session), name=f"term-{session_id}")
+        self.spawn(self._read(session), name=f"term-{session_id}")
         return session_id
 
     async def write(self, session_id: str, data: str) -> bool:

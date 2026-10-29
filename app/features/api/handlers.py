@@ -351,9 +351,12 @@ class ApiPage:
         w.json({"removed": True})
 
     async def cancel_auto_resume(self, c: Context, w: Writer) -> None:
-        """Nothing here schedules a usage-limit resume, so the off switch is a no-op."""
         run = self._existing(c, w)
         if run is None:
+            return
+        reason = await self.engine.clear_auto_resume(run.id)
+        if reason:
+            w.json({"error": reason}, status=404)
             return
         w.json({"cancelled": True})
 

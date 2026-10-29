@@ -36,17 +36,23 @@ from app.engine.telemetry_store import read_consent, write_consent
 from app.engine.ui_state import merge_state, read_state
 from app.engine.uploads import delete_upload, write_upload
 from app.http.loopback import hosted_mode
+from app.integrations import webhook_schema
 from app.integrations.hooks import (
     append_receipt,
-    delete_receiver,
     github_signature_ok,
-    load_receivers,
-    public_receiver,
-    recent_deliveries,
     recent_receipts,
-    record_delivery,
-    save_receiver,
     shared_secret_ok,
+)
+from app.integrations.registry import WebhookStateError
+from app.integrations.service import (
+    WebhookService,
+    webhooks_enabled,
+)
+from app.integrations.service import (
+    subscribe as subscribe_webhook_changes,
+)
+from app.integrations.service import (
+    unsubscribe as unsubscribe_webhook_changes,
 )
 from app.integrations.tracker import TrackerWatches
 from app.store.db import get_project, get_run, list_enabled_automations
@@ -111,13 +117,33 @@ class SurfaceApi:
         app.add(Route("POST /api/v1/preview/design-proxy"), self.preview)
         app.add(Route("GET /api/v1/webhooks"), self.webhooks)
         app.add(Route("POST /api/v1/webhooks"), self.create_webhook)
+        app.add(Route("PATCH /api/v1/webhooks/{receiver_id}"), self.update_webhook)
         app.add(Route("PUT /api/v1/webhooks/{receiver_id}"), self.update_webhook)
-        app.add(Route("GET /api/v1/github"), self.github_tab)
-        app.add(Route("GET /api/v1/jira/search"), self.jira_search)
-        app.add(Route("GET /api/v1/linear/search"), self.linear_search)
         app.add(Route("DELETE /api/v1/webhooks/{receiver_id}"), self.delete_webhook)
         app.add(Route("POST /api/v1/webhooks/{receiver_id}/test"), self.test_webhook)
         app.add(Route("GET /api/v1/webhooks/{receiver_id}/deliveries"), self.deliveries)
+        app.add(Route("GET /api/v1/webhooks/{receiver_id}/activity"), self.webhook_activity)
+        app.add(Route("POST /api/v1/webhooks/{receiver_id}/activate"), self.activate_webhook)
+        app.add(Route("POST /api/v1/webhooks/{receiver_id}/pause"), self.pause_webhook)
+        app.add(Route("POST /api/v1/webhooks/{receiver_id}/resume"), self.resume_webhook)
+        app.add(
+            Route("POST /api/v1/webhooks/{receiver_id}/rotate-secret"),
+            self.rotate_webhook,
+        )
+        app.add(Route("GET /api/v1/webhooks/history"), self.webhook_history)
+        app.add(Route("GET /api/v1/webhooks/events"), self.webhook_events)
+        app.add(Route("POST /api/v1/webhooks/notice/acknowledge"), self.acknowledge_notice)
+        app.add(
+            Route("POST /api/v1/webhooks/deliveries/{delivery_id}/retry"),
+            self.retry_delivery,
+        )
+        app.add(
+            Route("POST /api/v1/webhooks/deliveries/{delivery_id}/replay"),
+            self.replay_delivery,
+        )
+        app.add(Route("GET /api/v1/github"), self.github_tab)
+        app.add(Route("GET /api/v1/jira/search"), self.jira_search)
+        app.add(Route("GET /api/v1/linear/search"), self.linear_search)
         app.add(
             Route("POST /api/v1/webhooks/outbox/{sequence}/replay"),
             self.replay_outbox,
@@ -646,55 +672,240 @@ class SurfaceApi:
         self._proxies[proxy] = close
         w.json({"url": proxy})
 
+    # ---- webhook receivers (contract control plane) -------------------------
+
+    def _webhook_gate(self, w: Writer) -> bool:
+        """Every webhook route answers 409 until `CEZ_WEBHOOKS=1`, like server.ts."""
+        w.headers.set("cache-control", "no-store")
+        if not webhooks_enabled():
+            w.json(
+                {"error": "Enable webhook delivery with CEZ_WEBHOOKS=1 and restart cezar"},
+                status=409,
+            )
+            return True
+        return False
+
+    def _webhook_service(self) -> WebhookService:
+        return WebhookService.open(
+            self.config.data_dir,
+            dry_run=self.config.dry_run,
+            project_id=self.engine.boot_project_id or "",
+            mode="hosted" if hosted_mode(self.config) else "local",
+        )
+
+    def _webhook_call(self, w: Writer, call, status: int = 200) -> None:
+        try:
+            result = call()
+        except WebhookStateError as exc:
+            if exc.retry_after:
+                w.headers.set("retry-after", str(exc.retry_after))
+            w.json({"error": exc.code, "message": str(exc)}, status=exc.status)
+            return
+        w.json(cast(JsonValue, result), status=status)
+
     async def webhooks(self, _c: Context, w: Writer) -> None:
-        rows = [public_receiver(row) for row in load_receivers(self.config.data_dir)]
-        w.json(cast(JsonValue, {"receivers": rows}))
+        if self._webhook_gate(w):
+            return
+        w.json(cast(JsonValue, self._webhook_service().list()))
 
     async def create_webhook(self, c: Context, w: Writer) -> None:
+        if self._webhook_gate(w):
+            return
         body = await _json(c, w)
         if body is None:
             return
-        name = body.get("name", "")
-        url = body.get("url", "")
-        if not isinstance(name, str) or not isinstance(url, str):
-            w.json({"error": "name and url are required"}, status=400)
+        settings, issue = webhook_schema.parse_settings(body, create=True)
+        if issue or settings is None:
+            w.json({"error": issue or "rejected"}, status=400)
             return
-        row, reason = save_receiver(self.config.data_dir, name, url)
-        if reason or row is None:
-            w.json({"error": reason or "rejected"}, status=400)
-            return
-        w.json(
-            cast(JsonValue, {"receiver": public_receiver(row), "secret": row.get("secret", "")}),
+        self._webhook_call(
+            w,
+            lambda: self._webhook_service().create(settings),
             status=201,
         )
 
     async def update_webhook(self, c: Context, w: Writer) -> None:
-        from app.integrations.hooks import update_receiver
-
+        if self._webhook_gate(w):
+            return
         body = await _json(c, w)
         if body is None:
             return
-        name = body.get("name", "")
-        url = body.get("url", "")
-        revision = body.get("expectedRevision")
-        if not isinstance(name, str) or not isinstance(url, str) or not isinstance(revision, int):
-            w.json({"error": "name, url, and expectedRevision are required"}, status=400)
+        revision, issue = webhook_schema.parse_revision(body)
+        if issue or revision is None:
+            w.json({"error": issue or "Invalid expectedRevision"}, status=400)
             return
-        row, reason = update_receiver(
-            self.config.data_dir,
-            c.match.params.get("receiver_id", ""),
-            name=name,
-            url=url,
-            expected_revision=revision,
+        settings, issue = webhook_schema.parse_settings(body, create=False)
+        if issue or settings is None:
+            w.json({"error": issue or "rejected"}, status=400)
+            return
+        self._webhook_call(
+            w,
+            lambda: self._webhook_service().update(
+                c.match.params.get("receiver_id", ""), settings, revision
+            ),
         )
-        if reason == "not found":
-            w.json({"error": reason}, status=404)
+
+    async def delete_webhook(self, c: Context, w: Writer) -> None:
+        if self._webhook_gate(w):
             return
-        if reason or row is None:
-            status = 409 if reason == "revision" else 400
-            w.json({"error": reason or "rejected"}, status=status)
+        self._webhook_call(
+            w,
+            lambda: self._webhook_service().delete(c.match.params.get("receiver_id", "")),
+        )
+
+    async def activate_webhook(self, c: Context, w: Writer) -> None:
+        if self._webhook_gate(w):
             return
-        w.json(cast(JsonValue, {"receiver": public_receiver(row)}))
+        body = await _json(c, w)
+        if body is None:
+            return
+        revision, issue = webhook_schema.parse_activation(body)
+        if issue or revision is None:
+            w.json({"error": issue or "rejected"}, status=400)
+            return
+        self._webhook_call(
+            w,
+            lambda: self._webhook_service().activate(
+                c.match.params.get("receiver_id", ""), revision
+            ),
+        )
+
+    async def _webhook_operation(self, c: Context, w: Writer, call) -> None:
+        body = await _json(c, w)
+        if body is None:
+            return
+        operation, issue = webhook_schema.parse_operation(body)
+        if issue or operation is None:
+            w.json({"error": issue or "rejected"}, status=400)
+            return
+        self._webhook_call(
+            w,
+            lambda: call(c.match.params.get("receiver_id", ""), operation),
+        )
+
+    async def pause_webhook(self, c: Context, w: Writer) -> None:
+        if self._webhook_gate(w):
+            return
+        await self._webhook_operation(c, w, self._webhook_service().pause)
+
+    async def resume_webhook(self, c: Context, w: Writer) -> None:
+        if self._webhook_gate(w):
+            return
+        await self._webhook_operation(c, w, self._webhook_service().resume)
+
+    async def rotate_webhook(self, c: Context, w: Writer) -> None:
+        if self._webhook_gate(w):
+            return
+        body = await _json(c, w)
+        if body is None:
+            return
+        parsed, issue = webhook_schema.parse_rotation(body)
+        if issue or parsed is None:
+            w.json({"error": issue or "rejected"}, status=400)
+            return
+        revision, mode = parsed
+        self._webhook_call(
+            w,
+            lambda: self._webhook_service().rotate(
+                c.match.params.get("receiver_id", ""), revision, mode
+            ),
+        )
+
+    async def acknowledge_notice(self, c: Context, w: Writer) -> None:
+        if self._webhook_gate(w):
+            return
+        body = await _json(c, w)
+        if body is None:
+            return
+        expected, issue = webhook_schema.parse_acknowledge(body)
+        if issue or expected is None:
+            w.json({"error": issue or "rejected"}, status=400)
+            return
+        w.json(cast(JsonValue, self._webhook_service().acknowledge(expected)))
+
+    async def webhook_history(self, c: Context, w: Writer) -> None:
+        if self._webhook_gate(w):
+            return
+        limit, cursor = _page_args(c)
+        w.json(
+            cast(
+                JsonValue,
+                self._webhook_service().history_page(limit=limit, cursor=cursor),
+            )
+        )
+
+    async def webhook_activity(self, c: Context, w: Writer) -> None:
+        if self._webhook_gate(w):
+            return
+        limit, cursor = _page_args(c)
+        w.json(
+            cast(
+                JsonValue,
+                self._webhook_service().activity_page(
+                    c.match.params.get("receiver_id", ""), limit=limit, cursor=cursor
+                ),
+            )
+        )
+
+    async def webhook_events(self, c: Context, w: Writer) -> None:
+        """`GET /webhooks/events`: `resync`, then `change` per registry commit."""
+        if self._webhook_gate(w):
+            return
+        service = self._webhook_service()
+        sse = SSE(w)
+        sse.open()
+        pending: list[tuple[str, dict]] = [
+            ("resync", {"changeSequence": service.registry.change_sequence()})
+        ]
+
+        def on_change(sequence: int) -> None:
+            pending.append(("change", {"changeSequence": sequence}))
+
+        subscribe_webhook_changes(on_change)
+        try:
+            ping_at = time.monotonic() + 15
+            while not c.disconnected:
+                while pending:
+                    event, data = pending.pop(0)
+                    _write_frame(w, event, cast(dict[str, JsonValue], data))
+                if time.monotonic() >= ping_at:
+                    sse.ping()
+                    ping_at = time.monotonic() + 15
+                await asyncio.sleep(0.05)
+        finally:
+            unsubscribe_webhook_changes(on_change)
+
+    async def retry_delivery(self, c: Context, w: Writer) -> None:
+        if self._webhook_gate(w):
+            return
+        self._webhook_call(
+            w,
+            lambda: {
+                "delivery": self._webhook_service().retry(c.match.params.get("delivery_id", ""))
+            },
+        )
+
+    async def replay_delivery(self, c: Context, w: Writer) -> None:
+        if self._webhook_gate(w):
+            return
+        body = await _json(c, w)
+        if body is None:
+            return
+        operation, issue = webhook_schema.parse_operation(body)
+        if issue or operation is None:
+            w.json({"error": issue or "rejected"}, status=400)
+            return
+        if body.get("confirmed") is not True:
+            w.json({"error": "Replay requires confirmed: true"}, status=400)
+            return
+        self._webhook_call(
+            w,
+            lambda: {
+                "delivery": self._webhook_service().replay(
+                    c.match.params.get("delivery_id", ""), operation
+                )
+            },
+        )
 
     async def github_tab(self, _c: Context, w: Writer) -> None:
         from app.integrations.github_read import github_overview
@@ -716,27 +927,13 @@ class SurfaceApi:
 
         w.json(cast(JsonValue, linear_search(self.config, c.req.query.get("q", ""))))
 
-    async def delete_webhook(self, c: Context, w: Writer) -> None:
-        if not delete_receiver(self.config.data_dir, c.match.params.get("receiver_id", "")):
-            w.json({"error": "not found"}, status=404)
-            return
-        w.json({"deleted": True})
-
     async def test_webhook(self, c: Context, w: Writer) -> None:
-        receiver_id = c.match.params.get("receiver_id", "")
-        row = next(
-            (
-                item
-                for item in load_receivers(self.config.data_dir)
-                if item.get("id") == receiver_id
-            ),
-            None,
-        )
-        if row is None:
-            w.json({"error": "not found"}, status=404)
+        if self._webhook_gate(w):
             return
-        delivery = record_delivery(self.config.data_dir, row, dry_run=self.config.dry_run)
-        w.json(cast(JsonValue, delivery))
+        self._webhook_call(
+            w,
+            lambda: self._webhook_service().test(c.match.params.get("receiver_id", "")),
+        )
 
     async def replay_outbox(self, c: Context, w: Writer) -> None:
         import time
@@ -766,11 +963,18 @@ class SurfaceApi:
         w.json({"replayed": True})
 
     async def deliveries(self, c: Context, w: Writer) -> None:
-        receiver_id = c.match.params.get("receiver_id", "")
+        if self._webhook_gate(w):
+            return
+        limit, cursor = _page_args(c)
         w.json(
             cast(
                 JsonValue,
-                {"items": recent_deliveries(self.config.data_dir, receiver_id)},
+                self._webhook_service().delivery_page(
+                    c.match.params.get("receiver_id", ""),
+                    limit=limit,
+                    cursor=cursor,
+                    task_id=c.req.query.get("taskId", ""),
+                ),
             )
         )
 
@@ -1537,6 +1741,19 @@ def _event_body(
             {key: value for key, value in data.items() if key != "projectId"},
         )
     return {}
+
+
+def _page_args(c: Context) -> tuple[int, str | None]:
+    """`{limit, cursor}` webhook page params: limit is 1-100, default 100."""
+    try:
+        limit = int(c.req.query.get("limit", "100"))
+    except ValueError:
+        limit = 100
+    limit = min(100, max(1, limit))
+    cursor = c.req.query.get("cursor") or None
+    if cursor is not None and len(cursor) > 4096:
+        cursor = None
+    return limit, cursor
 
 
 def _write_frame(w: Writer, event: str, data: dict[str, JsonValue]) -> None:

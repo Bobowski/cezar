@@ -31,6 +31,7 @@ from app.engine.engine import Engine
 from app.engine.gitwork import git, head_branch, is_git_repo
 from app.features.health.urls import API_HEALTH, HEALTH
 from app.http.loopback import hosted_mode
+from app.integrations.service import webhooks_enabled
 from app.store.db import get_settings, list_projects
 
 
@@ -77,7 +78,7 @@ def _health(db: LiteWriter, engine: Engine, config: Config) -> dict[str, object]
             "followups": followups_enabled(),
             "singleProject": single_project(),
             "automations": automations_enabled(),
-            "webhooks": False,
+            "webhooks": webhooks_enabled(),
             "dispatch": config.dispatch_enabled,
             "tokenMetrics": usage and cost,
             "tokenUsageMetrics": usage,

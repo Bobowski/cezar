@@ -49,7 +49,8 @@ def test_archive_and_read_receipts_follow_the_store_rules():
     assert unread.seen_at
 
 
-async def test_ui_state_uploads_telemetry_and_webhook_receivers(client, tmp_path):
+async def test_ui_state_uploads_telemetry_and_webhook_receivers(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("CEZ_WEBHOOKS", "1")
     put = await client.put("/api/v1/ui-state", json={"lastAutonomous": True, "custom": 1})
     assert put.status_code == 200
     assert put.json()["custom"] == 1

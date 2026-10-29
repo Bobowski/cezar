@@ -8,6 +8,7 @@ import os
 import socket
 import subprocess
 import sys
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -295,7 +296,9 @@ def test_land_after_autosave_keeps_the_task_file_and_skips_cezar_state(tmp_path:
     (root / "later.txt").write_text("x\n", encoding="utf-8")
     landed = land_inplace(root)
     assert landed["result"] == "landed"
-    assert "later.txt" in landed["files"]
+    files = landed["files"]
+    assert isinstance(files, list)
+    assert "later.txt" in files
     latest = subprocess.check_output(
         ["git", "show", "--name-only", "--format=", "HEAD"], cwd=root, text=True
     )
@@ -566,14 +569,23 @@ def test_server_install_invokes_the_service_manager(tmp_path: Path, monkeypatch)
     assert main(["server-install", "--dest", str(quiet)]) == 0
     assert calls == []
     assert not (quiet / "cezar.service").exists()
-    assert main(["package", "--dest", str(tmp_path / "dist")]) == 0
-    wheels = list((tmp_path / "dist").glob("*.whl"))
+    dist = tmp_path / "dist"
+    assert main(["package", "--dest", str(dist)]) == 0
+    wheels = list(dist.glob("*.whl"))
+    sdists = list(dist.glob("*.tar.gz"))
     assert len(wheels) == 1
+    assert len(sdists) == 1
     with zipfile.ZipFile(wheels[0]) as archive:
-        assert "app/cli.py" in archive.namelist()
         names = archive.namelist()
+        assert "app/cli.py" in names
+        assert "static/icon.svg" in names
         metadata = [name for name in names if name.endswith(".dist-info/METADATA")]
         assert metadata and metadata[0].startswith("cezar-")
+    with tarfile.open(sdists[0]) as archive:
+        packed = archive.getnames()
+        assert any(name.endswith("pyproject.toml") for name in packed)
+        assert any(name.endswith("app/cli.py") for name in packed)
+        assert any(name.endswith("static/icon.svg") for name in packed)
     text = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
     assert "CEZ_DRY_RUN=1" in text
     assert 'CMD ["python", "-m", "app.main"]' in text

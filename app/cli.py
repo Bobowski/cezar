@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -28,7 +29,6 @@ from app.clock import stamp
 from app.config import RUNNERS, Config, apply_overrides, single_project
 from app.engine.engine import Engine
 from app.engine.import_runs import events_near, load_runs_file
-from app.engine.packaging import build_wheel
 from app.engine.scaffold import init_project
 from app.engine.server_install import (
     deploy_service,
@@ -263,10 +263,22 @@ def _files_command(command: str, args: argparse.Namespace) -> int:
     elif command == "uninstall":
         result = uninstall_service(dest, dry_run=config.dry_run)
     else:
-        source = Path(__file__).resolve().parents[1]
-        print(build_wheel(source, dest))
-        return 0
+        return _package(dest)
     return _print_service(result)
+
+
+def _package(dest: Path) -> int:
+    """Build the wheel and sdist with `uv build`."""
+    root = Path.cwd()
+    if not (root / "pyproject.toml").is_file():
+        root = Path(__file__).resolve().parents[1]
+    dest.mkdir(parents=True, exist_ok=True)
+    completed = subprocess.run(
+        ["uv", "build", "--out-dir", str(dest)],
+        cwd=root,
+        check=False,
+    )
+    return completed.returncode
 
 
 def _print_service(result: dict[str, object]) -> int:

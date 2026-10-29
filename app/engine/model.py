@@ -148,6 +148,7 @@ class Workflow:
     steps: tuple[Step, ...]
     source: str
     path: str = ""
+    graph: dict[str, object] | None = None
 
     def to_json(self) -> dict[str, object]:
         body: dict[str, object] = {
@@ -159,6 +160,9 @@ class Workflow:
             body["description"] = self.description
         if self.path:
             body["path"] = self.path
+        if self.graph is not None:
+            body["graph"] = self.graph
+            body["version"] = 2
         return body
 
     @classmethod
@@ -168,12 +172,14 @@ class Workflow:
         steps = (
             tuple(Step.from_json(item) for item in steps_raw) if isinstance(steps_raw, list) else ()
         )
+        graph = data.get("graph")
         return cls(
             name=_text(data.get("name")),
             description=_text(data.get("description")),
             steps=steps,
             source=_text(data.get("source"), "built-in"),
             path=_text(data.get("path")),
+            graph=graph if isinstance(graph, dict) else None,
         )
 
 

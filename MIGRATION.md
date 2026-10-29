@@ -59,7 +59,7 @@ treat it as a non-git directory.
 | What happens to a `running` row after restart? | It becomes `failed` with "interrupted by restart". The subprocess is gone. `queued` stays queued. `waiting` stays, so the question is still on screen. The TypeScript `recover()` path resumes the session; this does not. |
 | Does `waiting` hold a parallelism slot? | No. The agent process has exited. `max_parallel` still defaults to 2 and caps `running` work. |
 | Dry run | Default off, matching TypeScript. Compose sets `CEZ_DRY_RUN=1`. |
-| Graph workflows (`version: 2`) | Refused at load with an error. They are not lowered into steps. |
+| Graph workflows (`version: 2`) | Loaded and walked for `start`, `agent`, `check`, `if` (`output` and `branch`), `loop`, and `end`. A cycle that does not pass a loop `repeat` port is rejected. Other node types fail the run when the walk reaches them. |
 | `onFail` on an agent step | A load error. TypeScript's schema allows the key and ignores it. |
 | Secrets on a check | The check does not run. There is no vault. |
 | `allowedTools` / `bashAllowlist` | Claude argv maps a non-empty allowlist to `Bash(<prefix>:*)`. Pi has no prefix form, so a non-empty allowlist drops Bash. Copilot is `--allow-all-tools` and the allowlist is not mapped, matching TypeScript. The dry-run mock only writes a note. A check step is still `sh -c` with no allowlist. |
@@ -81,8 +81,8 @@ is 33,553 bytes and is not application code. The TypeScript tree is still in the
 | --- | ---: | ---: |
 | TypeScript application (no `*test*` / `*spec*` files) | 807 | 146,242 |
 | TypeScript tests | 810 | 157,213 |
-| Python application (`app/`) | 52 | 5,946 |
-| Python tests, including protocol fakes | 14 | 1,602 |
+| Python application (`app/`) | 53 | 6,574 |
+| Python tests, including protocol fakes | 15 | 1,756 |
 | Python CSS | 1 | 221 |
 
 The Python application is about 4% of the TypeScript application by code lines.
@@ -92,7 +92,7 @@ of `server.ts`.
 ## Checks
 
 `uv run ruff check`, `uv run ruff format --check`, `uv run pyright`, and
-`uv run pytest -q` were run on this branch. **77 tests passed.**
+`uv run pytest -q` were run on this branch. **83 tests passed.**
 
 A manual `CEZ_DRY_RUN=1 uv run python -m app.main` answered `/health`,
 `POST /api/v1/runs` returned 201, and the run reached `review` with a worktree
@@ -131,7 +131,7 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | Chain note when there are 2+ agent steps; `CEZ:DONE` does not skip | done | `test_cez_done_does_not_skip_the_next_agent_step` |
 | Built-in `quick-task`; a valid file overrides it; a bad file does not | done | `tests/test_workflows.py` |
 | Queued file snapshot is not replaced by the built-in when the file disappears | done | `test_a_deleted_file_does_not_replace_a_queued_snapshot_with_the_builtin` |
-| Version 2 graph workflows | not done | load returns an error; not executed |
+| Version 2 graph workflows | partial | `tests/test_graph.py` walks the spec example, including the loop cap. `test_a_graph_check_reviews_on_pass_and_fails_on_an_unwired_failure` runs a check graph. Fork, join, dispatch, git, and GitHub nodes are not executed. |
 | Node editor, loops, gates, PR and CI nodes | not done | — |
 | `init` example `fix-and-verify.yaml` and `project-conventions.md`, never overwrite | done | `tests/test_cli.py` |
 | `.ai/cezar/.gitignore` entry list | done | `test_gitignore_appends_missing_entries_and_keeps_user_lines` |

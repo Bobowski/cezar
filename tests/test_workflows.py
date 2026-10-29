@@ -106,10 +106,10 @@ def test_legacy_runner_id_is_rejected():
     assert issue is not None and "runner" in issue
 
 
-def test_graph_workflows_are_not_executed():
+def test_a_graph_without_a_start_node_is_rejected():
     workflow, issue = parse_workflow({"name": "g", "version": 2, "nodes": []}, source="file")
     assert workflow is None
-    assert issue is not None and "graph" in issue
+    assert issue is not None and "start node" in issue
 
 
 def test_on_fail_max_defaults_to_two():

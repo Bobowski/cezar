@@ -11,6 +11,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any, cast
 
 from litewriter import LiteWriter, Tx
 from litewriter.errors import StateError
@@ -39,6 +40,7 @@ from app.engine.gitwork import (
     prune_orphans,
     remove_worktree,
 )
+from app.engine.graph import advance, compare_values, enter_graph, render_refs
 from app.engine.model import TERMINAL, Automation, Project, Run, Settings, Step, Workflow
 from app.engine.prompts import build_user_prompt
 from app.engine.session_extras import load_project_mcp, prompt_task, v2_snapshots
@@ -206,6 +208,9 @@ class Engine:
         run = await self._prepare(run)
         if run.status == "failed":
             return
+        if run.definition().graph:
+            await self._graph_walk(run, cancel)
+            return
         if run.step_index == 0 and not run.pending_note:
             run = await self._refresh_workflow(run)
         while True:
@@ -302,10 +307,86 @@ class Engine:
         await self._note(run.id, "note", f'workflow "{fresh.name}" was re-read from the catalog')
         return run
 
-    async def _agent_step(self, run: Run, cancel: asyncio.Event, followup: str = "") -> str:
+    async def _graph_walk(self, run: Run, cancel: asyncio.Event) -> None:
+        graph = run.definition().graph
+        if not isinstance(graph, dict):
+            await self._fail(run, "graph workflow has no graph")
+            return
+        body = cast(dict[str, Any], graph)
+        loops: dict[str, int] = {}
+        outputs: dict[str, dict[str, str]] = {}
+        cursor = enter_graph(body, loops)
+        for _guard in range(50):
+            if cancel.is_set():
+                if run.id in self._finish:
+                    await self._mark_done(get_run(self.db, run.id) or run)
+                else:
+                    await self._mark_cancelled(get_run(self.db, run.id) or run)
+                return
+            if cursor.kind != "node" or cursor.node is None:
+                current = get_run(self.db, run.id) or run
+                if cursor.status == "failed":
+                    await self._fail(current, "the graph ended on a failure port")
+                else:
+                    await self._enter_review(current)
+                return
+            node = cursor.node
+            node_id = str(node.get("id", ""))
+            kind = str(node.get("type", ""))
+            await self._note(run.id, "step-start", str(node.get("name") or node_id), node_id)
+            if kind == "agent":
+                prompt = render_refs(str(node.get("prompt") or "{{task}}"), outputs)
+                step = Step(
+                    id=node_id,
+                    name=str(node.get("name") or node_id),
+                    prompt=prompt,
+                    skill=str(node.get("skill") or ""),
+                    runner=str(node.get("runner") or ""),
+                    model=str(node.get("model") or ""),
+                )
+                action = await self._agent_step(run, cancel, graph_step=step)
+                if action == "stop":
+                    return
+                outputs[node_id] = {"summary": "done"}
+                port = "done"
+            elif kind == "check":
+                command = render_refs(str(node.get("command") or ""), outputs)
+                code, output = await run_shell(
+                    command,
+                    Path(run.worktree_path or "."),
+                    cancel,
+                    self.config.check_timeout_seconds,
+                )
+                await self._note(run.id, "check-output", output or f"exit {code}", node_id)
+                if cancel.is_set() or code < 0:
+                    await self._mark_cancelled(get_run(self.db, run.id) or run)
+                    return
+                outputs[node_id] = {"exitCode": str(code), "output": output[-2_000:]}
+                port = "pass" if code == 0 else "fail"
+            elif kind == "if":
+                port = _if_port(run, node, outputs)
+            else:
+                await self._fail(
+                    run,
+                    f'graph node "{node_id}" ({kind}) is not executed by the Python port',
+                )
+                return
+            cursor = advance(body, node_id, port, loops)
+        await self._fail(run, "graph walk did not end")
+
+    async def _agent_step(
+        self,
+        run: Run,
+        cancel: asyncio.Event,
+        followup: str = "",
+        graph_step: Step | None = None,
+    ) -> str:
         steps = run.definition().steps
         index = run.step_index if not followup else 0
-        if followup:
+        if graph_step is not None:
+            steps = (graph_step,)
+            index = 0
+        elif followup:
             steps = (Step(id="followup", name="Follow up", prompt=followup),)
             index = 0
         elif index >= len(steps):
@@ -988,6 +1069,21 @@ def rebaseline_automations(tx: Tx) -> None:
 
         if due < moment - timedelta(minutes=item.every_minutes):
             save_automation(tx, replace(item, next_at=after(item.every_minutes, moment)))
+
+
+def _if_port(run: Run, node: dict[str, Any], outputs: dict[str, dict[str, str]]) -> str:
+    raw_condition = node.get("condition")
+    condition = raw_condition if isinstance(raw_condition, dict) else {}
+    kind = condition.get("kind")
+    if kind == "output":
+        ref = str(condition.get("ref", ""))
+        node_id, _, field_name = ref.partition(".")
+        actual = outputs.get(node_id, {}).get(field_name)
+        ok = compare_values(actual, str(condition.get("op", "equals")), condition.get("value"))
+        return "true" if ok else "false"
+    if kind == "branch":
+        return "true" if run.base_branch == condition.get("value") else "false"
+    return "false"
 
 
 def _persist_report(tx: Tx, child_id: str, parent_id: str, entry: dict[str, object]) -> None:

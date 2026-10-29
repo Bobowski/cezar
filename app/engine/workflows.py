@@ -87,7 +87,9 @@ def parse_workflow(
         return None, "a workflow file must be a mapping"
     version = doc.get("version")
     if version in (2, "2"):
-        return None, "graph workflows (version 2) are not executed by the Python port"
+        from app.engine.graph import graph_issues
+
+        return _parse_graph(doc, source, path, graph_issues)
     name = doc.get("name")
     if not isinstance(name, str) or not name.strip():
         return None, "name must be a non-empty string"
@@ -214,6 +216,46 @@ def _parse_step(raw: object) -> tuple[Step | None, str | None]:
         ),
         None,
     )
+
+
+def _parse_graph(
+    doc: dict[str, object],
+    source: str,
+    path: str,
+    issues_of: object,
+) -> tuple[Workflow | None, str | None]:
+    from app.engine.graph import rail_nodes
+
+    name = doc.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None, "name must be a non-empty string"
+    description = doc.get("description") or ""
+    if not isinstance(description, str):
+        return None, "description must be a string"
+    nodes = doc.get("nodes")
+    edges = doc.get("edges") or []
+    if not isinstance(nodes, list) or not isinstance(edges, list):
+        return None, "a graph needs nodes and edges"
+    graph: dict[str, object] = {"nodes": nodes, "edges": edges}
+    problems = issues_of(graph) if callable(issues_of) else []
+    if isinstance(problems, list) and problems:
+        return None, str(problems[0])
+    steps: list[Step] = []
+    for node in rail_nodes(graph):  # type: ignore[arg-type]
+        node_id = str(node.get("id", ""))
+        label = str(node.get("name") or node_id)
+        if node.get("type") == "check":
+            steps.append(Step(id=node_id, name=label, command=str(node.get("command", ""))))
+        else:
+            steps.append(
+                Step(
+                    id=node_id,
+                    name=label,
+                    prompt=str(node.get("prompt") or ""),
+                    skill=str(node.get("skill") or ""),
+                )
+            )
+    return Workflow(name.strip(), description.strip(), tuple(steps), source, path, graph), None
 
 
 def _optional_str(value: object) -> str | None:

@@ -95,6 +95,61 @@ async def _start(engine: Engine, task: str = "do the thing") -> Run:
     return run
 
 
+async def test_a_graph_check_reviews_on_pass_and_fails_on_an_unwired_failure(world):
+    from app.engine.workflows import parse_workflow
+
+    engine, _repo = world
+    project = __import__("app.store.db", fromlist=["get_project"]).get_project(
+        engine.db, engine.boot_project_id
+    )
+    assert project is not None
+
+    def run_graph(command: str):
+        workflow, issue = parse_workflow(
+            {
+                "name": "g",
+                "version": 2,
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {"id": "tests", "type": "check", "command": command},
+                    {"id": "ok", "type": "end", "status": "success"},
+                ],
+                "edges": [
+                    {"from": "start", "to": "tests"},
+                    {"from": "tests.pass", "to": "ok"},
+                ],
+            },
+            source="file",
+        )
+        assert workflow is not None, issue
+        return workflow
+
+    passed, reason = engine.plan_run(
+        project=project,
+        task="graph",
+        workflow_name="g",
+        runner="claude",
+        workflow=run_graph("true"),
+    )
+    assert passed is not None, reason
+    await engine.enqueue(passed)
+    await engine.execute(passed.id)
+    assert (get_run(engine.db, passed.id) or passed).status == "review"
+
+    failed, reason = engine.plan_run(
+        project=project,
+        task="graph",
+        workflow_name="g",
+        runner="claude",
+        workflow=run_graph("false"),
+    )
+    assert failed is not None, reason
+    await engine.enqueue(failed)
+    await engine.execute(failed.id)
+    done = get_run(engine.db, failed.id)
+    assert done is not None and done.status == "failed"
+
+
 async def test_queued_messages_are_folded_into_the_prompt_and_not_written_back(world):
     engine, repo = world
     run = await _start(engine, "original task")

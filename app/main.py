@@ -21,6 +21,7 @@ from app.features.settings.handlers import SettingsPage
 from app.features.skills.handlers import SkillsPage
 from app.features.task.handlers import TaskPage
 from app.features.tasks.handlers import TasksPage
+from app.features.workflows.editor import EditorPage
 from app.features.workflows.handlers import WorkflowsPage
 from app.http.basic_auth import basic_auth
 from app.http.loopback import loopback_host_guard
@@ -41,6 +42,7 @@ async def bootstrap(app: App, span: Span):
         TasksPage(db, relay, engine, config).register(app)
         TaskPage(db, relay, engine, config).register(app)
         WorkflowsPage(db, relay, engine, config).register(app)
+        EditorPage(db, relay, engine, config).register(app)
         SkillsPage(db, relay, engine, config).register(app)
         AutomationsPage(db, relay, engine, config).register(app)
         DashboardPage(db, relay, engine, config).register(app)

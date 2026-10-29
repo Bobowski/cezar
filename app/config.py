@@ -170,6 +170,11 @@ def _tri(name: str) -> bool | None:
     return None
 
 
+def no_banner() -> bool:
+    """`CEZ_NO_BANNER=1` silences the serve promo. Read at the call."""
+    return os.environ.get("CEZ_NO_BANNER") == "1"
+
+
 def terminal_enabled() -> bool:
     """Read at the call. `CEZ_TERMINAL=0` is the off switch; anything else stays on."""
     return os.environ.get("CEZ_TERMINAL") != "0"

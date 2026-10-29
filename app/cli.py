@@ -81,6 +81,9 @@ def main(argv: list[str] | None = None) -> int:
         config = Config.from_env()
         host = args.host or config.listen_host
         port = args.port or config.listen_port
+        from app.engine.skills_banner import print_skills_banner
+
+        print_skills_banner(config.repo_root)
         asyncio.run(serve(bootstrap, config=ServerConfig(host=host, port=port)))
         return 0
     if command == "init":

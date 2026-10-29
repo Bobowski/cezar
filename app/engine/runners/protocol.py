@@ -80,6 +80,8 @@ def parse_claude_line(line: str, state: TurnState) -> list[AgentEvent]:
                 if block.get("type") == "text" and isinstance(block.get("text"), str):
                     state.saw_text = True
                     events.append(AgentEvent("text", block["text"]))
+                elif block.get("type") == "thinking" and isinstance(block.get("thinking"), str):
+                    events.append(AgentEvent("reasoning", block["thinking"]))
                 elif block.get("type") == "tool_use" and block.get("name"):
                     events.append(
                         AgentEvent("tool-call", str(block.get("id", "")), str(block["name"]))
@@ -93,13 +95,21 @@ def parse_claude_line(line: str, state: TurnState) -> list[AgentEvent]:
         if isinstance(content, list):
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
+                    text = _tool_result_text(block.get("content"))
+                    if block.get("is_error") is True:
+                        text = f"error: {text}" if text else "error"
                     events.append(
                         AgentEvent(
                             "tool-result",
-                            _tool_result_text(block.get("content")),
+                            text,
                             str(block.get("tool_use_id", "")),
                         )
                     )
+    elif kind == "system" and message.get("subtype") == "init":
+        session = message.get("session_id")
+        if isinstance(session, str) and session:
+            state.thread_id = session
+            events.append(AgentEvent("session", session))
     elif kind == "result":
         if isinstance(message.get("result"), str) and not state.saw_text and message["result"]:
             state.saw_text = True
@@ -132,10 +142,18 @@ def parse_codex_line(line: str, state: TurnState) -> list[AgentEvent]:
     method = message.get("method")
     params = _as_dict(message.get("params"))
     thread_id = str(params.get("threadId", ""))
-    if thread_id and state.thread_id and thread_id != state.thread_id:
+    # Only a child thread's turn lifecycle is dropped. Its item events still map.
+    if (
+        method in ("turn/started", "turn/completed", "turn/failed")
+        and thread_id
+        and state.thread_id
+        and thread_id != state.thread_id
+    ):
         return []
     events: list[AgentEvent] = []
-    if method == "item/agentMessage/delta" and isinstance(params.get("delta"), str):
+    if method == "turn/started":
+        state.compacted = False
+    elif method == "item/agentMessage/delta" and isinstance(params.get("delta"), str):
         state.saw_text = True
         events.append(AgentEvent("delta", params["delta"]))
     elif method == "turn/plan/updated":
@@ -154,6 +172,11 @@ def parse_codex_line(line: str, state: TurnState) -> list[AgentEvent]:
                 json.dumps({"type": "item.updated", "item": item}, separators=(",", ":")),
             )
         )
+    elif method == "thread/tokenUsage/updated":
+        usage = _as_dict(_as_dict(params.get("tokenUsage")).get("total"))
+        total = usage.get("totalTokens")
+        if isinstance(total, int) and total > 0:
+            events.append(AgentEvent("usage.updated", str(total)))
     elif method == "turn/completed":
         turn = _as_dict(params.get("turn"))
         if str(turn.get("status")) == "failed":
@@ -184,18 +207,38 @@ def parse_pi_line(line: str, state: TurnState) -> list[AgentEvent]:
             )
         )
     elif kind == "tool_execution_end":
-        events.append(
-            AgentEvent(
-                "tool-result", str(message.get("result", "")), str(message.get("toolCallId", ""))
-            )
-        )
+        result = message.get("result")
+        text = _pi_text(result.get("content")) if isinstance(result, dict) else str(result or "")
+        if message.get("isError") is True:
+            text = f"error: {text}" if text else "error"
+        events.append(AgentEvent("tool-result", text, str(message.get("toolCallId", ""))))
+    elif kind == "message_end" and isinstance(message.get("message"), dict):
+        body = message["message"]
+        if body.get("role") == "assistant":
+            text = _pi_text(body.get("content"))
+            if text:
+                state.saw_text = True
+                events.append(AgentEvent("text", text))
+            usage = _as_dict(body.get("usage"))
+            state.input_tokens += _int(usage.get("input"))
+            state.output_tokens += _int(usage.get("output"))
+    elif (
+        kind == "response"
+        and message.get("command") == "get_state"
+        and message.get("success") is True
+    ):
+        data = _as_dict(message.get("data"))
+        session = data.get("sessionId")
+        if isinstance(session, str) and session:
+            state.thread_id = session
+            events.append(AgentEvent("session", session))
     elif kind == "agent_settled":
         state.done = True
     elif kind == "response" and message.get("success") is False:
         state.failed = str(message.get("error", "pi rejected the command"))
         state.done = True
     elif kind == "extension_error":
-        state.failed = str(message.get("error", "pi extension error"))
+        events.append(AgentEvent("note", str(message.get("error", "pi extension error"))))
     return events
 
 
@@ -212,20 +255,32 @@ def parse_acp_line(line: str, state: TurnState, prompt_id: int) -> list[AgentEve
         if session_update == "agent_message_chunk" and isinstance(content.get("text"), str):
             state.saw_text = True
             events.append(AgentEvent("text", content["text"]))
+        elif session_update == "agent_thought_chunk" and isinstance(content.get("text"), str):
+            events.append(AgentEvent("reasoning", content["text"]))
+        elif session_update == "plan":
+            plan = update.get("entries")
+            if isinstance(plan, list):
+                events.append(AgentEvent("plan", json.dumps(plan, separators=(",", ":"))))
         elif session_update == "tool_call":
-            events.append(
-                AgentEvent(
-                    "tool-call", str(update.get("toolCallId", "")), str(update.get("title", "tool"))
-                )
-            )
+            tool_id = str(update.get("toolCallId", ""))
+            if tool_id:
+                name = str(update.get("title") or update.get("kind") or "tool")
+                events.append(AgentEvent("tool-call", tool_id, name))
         elif session_update == "tool_call_update":
-            events.append(
-                AgentEvent(
-                    "tool-result",
-                    str(update.get("rawOutput", "")),
-                    str(update.get("toolCallId", "")),
+            status = update.get("status")
+            if status in ("completed", "failed"):
+                events.append(
+                    AgentEvent(
+                        "tool-result",
+                        str(update.get("rawOutput", "")),
+                        str(update.get("toolCallId", "")),
+                    )
                 )
-            )
+    if message.get("id") == 2 and isinstance(message.get("result"), dict):
+        session = message["result"].get("sessionId")
+        if isinstance(session, str) and session:
+            state.thread_id = session
+            events.append(AgentEvent("session", session))
     if message.get("id") == prompt_id and "result" in message:
         result = _as_dict(message.get("result"))
         if result.get("stopReason") == "refusal":
@@ -352,6 +407,8 @@ def _child_env(spec: AgentSpec) -> dict[str, str]:
     env = build_child_env(spec.runner, extra=profile_env(spec.runner, spec.profile_home))
     if spec.session_id:
         env["CEZ_TASK_ID"] = spec.session_id
+    if spec.handoff_file:
+        env["CEZ_HANDOFF_FILE"] = spec.handoff_file
     return env
 
 
@@ -463,6 +520,17 @@ def _codex_item(params: dict[str, Any], state: TurnState, *, started: bool) -> l
     kind = str(item.get("type", ""))
     if kind == "contextCompaction" and not started:
         state.compacted = True
+    if kind == "reasoning" and not started:
+        summary = item.get("summary")
+        text = item.get("text") if isinstance(item.get("text"), str) else ""
+        if not text and isinstance(summary, list):
+            text = " ".join(part for part in summary if isinstance(part, str))
+        return [AgentEvent("reasoning", text)] if text else []
+    if kind == "plan" and not started:
+        plan = _codex_plan(item.get("plan") or item.get("entries"))
+        return [AgentEvent("plan", plan)] if plan else []
+    if kind == "userMessage":
+        return []
     if kind == "agentMessage" and not started:
         state.compacted = False
         if isinstance(item.get("text"), str) and not state.saw_text:
@@ -1154,6 +1222,21 @@ def _nested(message: dict[str, Any], *keys: str) -> Any:
             return None
         current = current.get(key)
     return current
+
+
+def _pi_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts = [
+        block.get("text", "")
+        for block in content
+        if isinstance(block, dict)
+        and block.get("type") == "text"
+        and isinstance(block.get("text"), str)
+    ]
+    return "".join(parts)
 
 
 def _tool_result_text(content: Any) -> str:

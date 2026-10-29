@@ -269,6 +269,7 @@ class Run:
     attachment_paths: list[str] = field(default_factory=list)
     dispatch_report: dict[str, object] = field(default_factory=dict)
     account_id: str = ""
+    landing: dict[str, object] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, object]:
         body: dict[str, object] = {
@@ -331,6 +332,8 @@ class Run:
         }
         if self.dispatch_report:
             body["dispatch_report"] = self.dispatch_report
+        if self.landing:
+            body["landing"] = self.landing
         return body
 
     @classmethod
@@ -404,6 +407,7 @@ class Run:
             attachment_paths=_strings(data.get("attachment_paths")),
             dispatch_report=_dict(data.get("dispatch_report")),
             account_id=_text(data.get("account_id")),
+            landing=_dict(data.get("landing")),
         )
 
     def definition(self) -> Workflow:

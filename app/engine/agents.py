@@ -39,6 +39,7 @@ class AgentSpec:
     codex_thread: str = ""
     # A Claude or Codex profile home. Empty keeps the user's default login.
     profile_home: str = ""
+    handoff_file: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +108,10 @@ class DryRunAgent:
             return
         if "mock:ask" in spec.user_prompt and not answered:
             yield AgentEvent("text", "CEZ:ASK: Which name should I use?")
+            yield AgentEvent("turn-end")
+            return
+        if "mock:done" in spec.user_prompt and not answered:
+            yield AgentEvent("text", "CEZ:DONE")
             yield AgentEvent("turn-end")
             return
         target = _mock_target(spec.user_prompt)

@@ -173,7 +173,7 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | Remotes via `gh repo set-default` / fork parent | done | `resolve_task_remotes` in `app/engine/git_remotes.py`. `gh-resolved=base` wins, else a remote GitHub reports as `origin`'s fork parent, else `origin`. Push follows `remote.pushDefault`. The parent lookup is skipped under `CEZ_DRY_RUN=1` and for non-GitHub hosts. A fake `gh` is the only process spawned (`tests/test_git_base.py`). Fork and push use that remote. |
 | Branch naming instructions | done | Dry-run naming stays off unless `CEZ_AUTONAME=1`, then the canned mock answer `feature/implementing-cr-fixes` is the branch and the title is `implementing cr fixes`. `CEZ_AUTONAME=0` keeps `cez/<id8>`. A live run asks the Claude binary with the same prompt and keeps the default when the answer is junk. `tests/test_engine.py`. |
 | Orphan worktree directories whose run id is gone | done | `test_orphan_worktrees_go_and_known_runs_stay` |
-| Draft PRs, merge, GitHub review | partial | `POST /runs/{id}/pr` and a `github.draft-pr` node. Dry-run returns `https://github.com/open-mercato/demo/pull/777` and does not push or call `gh`. The route then marks the run `done`. `GET /github/prs/{n}/merge-state`, `POST …/merge`, and `POST …/reviews` answer a dry-run document and do not call `gh` (`tests/test_parity.py`). With dry-run off, `gh pr view`, `gh pr merge`, `gh pr review`, and `gh pr create` run against a fake `gh` (`tests/test_parity.py`). Push is `git push` to a local bare remote in that test. The task page shows that box. A review comment is still the API, not a form on the page. |
+| Draft PRs, merge, GitHub review | done | `POST /runs/{id}/pr` returns the dry-run URL and does not push. The task page merge box includes a review form (`#review-form`, Send review) that posts `comment`, `approve`, or `request-changes`. `expectedHeadSha` must match the head or the merge is 409 `head_moved` (`tests/test_surface.py`, `tests/test_stream_d_close.py`). |
 
 ### Agents
 
@@ -202,7 +202,7 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | Stale schedule does not launch a backlog | done | `test_a_stale_schedule_does_not_launch_a_backlog` |
 | Due interval launches one run | done | same test |
 | Calendar UI | not done | a list and a form |
-| GitHub / Jira / Linear reads | partial | `tests/test_integrations.py`. Unset credentials answer `{available: false}` and do not call out. A recorded local server returns one GitHub issue, one Jira issue, and one Linear issue. Base URLs must be the vendor https host or loopback; private and non-vendor hosts are refused before a request. Inbound hooks are separate: they check a signature and can start a run for an enabled automation with a matching tracker. |
+| GitHub / Jira / Linear reads | done | Unset credentials answer `{available: false}` and do not call out. A recorded server returns one GitHub issue, one Jira issue, one Linear issue, a Jira search hit, and a Linear search hit. `GET /github` returns the dry-run catalog (issues plus a draft PR). Base URLs must be the vendor https host or loopback (`tests/test_integrations.py`, `tests/test_stream_d_close.py`). |
 
 ### CLI
 
@@ -244,16 +244,16 @@ is the boot project.
 | `GET /api/v1/projects` | partial | `id`, `name`, `root`, `addedAt`, `lastOpenedAt`, `source: local`, `status`, `branch` when it is a git checkout. No forge, tags, or `maxParallel`. `projectsDir` is the Python data directory, not the TypeScript checkouts directory. |
 | Loopback `Host` guard on `/api` | done | `tests/test_api.py`. Foreign Host is 403, including health. `CEZ_REMOTE=1` skips it. |
 | Hosted Basic auth | partial | `tests/test_api.py`. Required when hosted. `GET /health` is open. A missing `CEZ_AUTH_PASSWORD` is generated into the data directory at mode 0600. This is the nginx `auth_basic` challenge from the VPS install, enforced in-process because compose has no proxy. No session cookie and no Settings user store. |
-| `GET/POST /runs/{id}/git/status`, `commit`, `push`, `GET …/diff`, `POST …/pr` | partial | `tests/test_surface.py`. Commit uses the repo identity, or `cezar <cezar@localhost>` when `user.name` is unset. Push and draft PR do not leave the machine when `CEZ_DRY_RUN=1`. |
+| `GET/POST /runs/{id}/git/status`, `commit`, `push`, `GET …/diff`, `POST …/pr` | done | `tests/test_surface.py`. Commit uses the repo identity, or `cezar <cezar@localhost>` when `user.name` is unset. Push and draft PR do not leave the machine when `CEZ_DRY_RUN=1`. The diff uses the freshest anchor. |
 | `GET/PUT /ui-state`, `GET/PUT /workspace/ui-state` | partial | shallow merge, 200-key cap, unknown keys kept. `tests/test_surface.py`. |
 | `POST/DELETE /workspace/uploads` | partial | `tests/test_finish.py` stores text, starts a run, and finds `note.txt` on the files pane. Delete-by-id is implemented in `tests/test_surface.py`. The prompt line `The user attached:` is not asserted. |
 | `GET /api/v1/fs/browse` | partial | `browse_directory` is tested: directories only, `realpath` containment, a symlink out of the root is hidden (`tests/test_finish.py`). No test calls the HTTP route. |
 | `GET /providers/status`, `GET /models` | partial | binary presence and a static id list. |
 | `POST /preview/design-proxy` | partial | Refuses non-loopback and hosted/`CEZ_DESIGN_MODE=0`. A loopback `http://` target is mirrored on `127.0.0.1` with `<!-- cezar-design -->` injected before `</body>`. `tests/test_surface.py`. |
 | `POST /runs/{id}/terminal`, input, resize, output, close | partial | `TerminalHub` opens a PTY, echoes a command, and a resize is read back with `TIOCGWINSZ` (`tests/test_surface.py`, `tests/test_finish.py`). The HTTP open, input, resize, and SSE routes are not called by a test. |
-| `GET/POST/DELETE /webhooks`, `POST …/test`, `GET …/deliveries` | partial | Receiver URL must be public https or loopback http. Dry-run test delivery is recorded as 204 and does not open a socket. Signing key is `whsec_`. |
-| `POST /hooks/github`, `/hooks/jira`, `/hooks/linear`, `GET /hooks/receipts` | partial | GitHub checks `X-Hub-Signature-256` against `CEZ_GITHUB_WEBHOOK_SECRET`. Jira and Linear check `X-Cezar-Webhook-Secret`. Unset or wrong is 401. A matching enabled automation can enqueue a run. Receipts are appended locally. |
-| GitHub review and merge API | partial | Dry-run merge-state, merge, and review in `tests/test_parity.py`. See the git row. No UI. |
+| `GET/POST/DELETE /webhooks`, `POST …/test`, `GET …/deliveries` | done | Receiver URL must pass the destination policy. Dry-run test delivery is recorded as 204 and does not open a socket. Signing key is `whsec_`. `PUT /webhooks/{id}` with `expectedRevision` renames in place and bumps `deliveryRevision` only when the URL changes (`tests/test_stream_d_close.py`). |
+| `POST /hooks/github`, `/hooks/jira`, `/hooks/linear`, `GET /hooks/receipts` | done | GitHub checks `X-Hub-Signature-256` against `CEZ_GITHUB_WEBHOOK_SECRET`. Jira and Linear check `X-Cezar-Webhook-Secret`. Unset or wrong is 401. A matching enabled automation can enqueue a run. Receipts are appended locally (`tests/test_surface.py`). |
+| GitHub review and merge API | done | Dry-run merge-state, merge, and review. `expectedHeadSha` that is not the current head is 409 `head_moved` and does not merge. A matching head merges. The task page sends the review (`tests/test_parity.py`, `tests/test_stream_d_close.py`, `tests/test_surface.py`). |
 | `GET /api/v1/launch-key` | done | Returns the same key the bookmarklet writes, mode 0600. `tests/test_routes.py`. |
 | `GET/PUT /api/v1/config` | done | Reads and writes `systemPrompt`, `branchNaming`, and `reviewGate` without dropping other keys. `tests/test_routes.py`. |
 | Skills update, workspace branding, plan, deferred-start scheduling | not done | — |
@@ -320,8 +320,8 @@ It is not a pixel copy of the React component.
 | Telemetry | intentionally not ported | This fork does not send telemetry. The consent routes, if called, do not open a network request. |
 | Star count, self-update, skills auto-update | intentionally not ported | They would phone home or change the install. This fork leaves them out. |
 | Desktop shell | intentionally not ported | Owner decision: the Tauri shell stays out of this port. |
-| `gh` issues and draft PRs | partial | open issues are read when `CEZ_GITHUB_TOKEN` is set. A draft PR is the dry-run URL unless dry-run is off, in which case the port runs `gh pr create --draft` after a push. |
-| Webhooks | partial | Receivers, signed test deliveries, inbound hooks, and a lifecycle enqueue when `CEZ_WEBHOOKS=1`. The owner is a hard link with a successor slot, retries follow `retryAt` (5s doubling, 20% jitter, 72h expiry), and `POST /webhooks/outbox/{sequence}/replay` copies a finished payload for 7 days and refuses `webhook.test`. Still absent: pid namespaces, admission revisions, and the full transport policy. `tests/test_parity.py`, `tests/test_engine.py`. |
+| `gh` issues and draft PRs | done | `GET /github` lists open issues and pull requests, including the dry-run draft. A draft PR is the dry-run URL unless dry-run is off, in which case the port runs `gh pr create --draft` after a push (`tests/test_stream_d_close.py`, `tests/test_parity.py`). |
+| Webhooks | done | Receivers, signed test deliveries, inbound hooks, and a lifecycle enqueue when `CEZ_WEBHOOKS=1`. The owner is a hard link with a successor slot and refuses to take over a different Linux PID namespace. Retries follow `retryAt`. Replay copies a finished payload for 7 days and refuses `webhook.test`. A receiver edit checks `expectedRevision`. Delivery checks the destination policy (denied, private consent, mixed DNS, hosted https, server port) and does not follow redirects. `tests/test_parity.py`, `tests/test_engine.py`, `tests/test_stream_d_close.py`. |
 
 ## What is still TypeScript
 
@@ -438,14 +438,15 @@ the fake binaries under `tests/fakes/`. Nothing here is a live CLI handshake.
   refuses new accounts unless `CEZ_REMOTE_AGENT_ACCOUNTS=1`.
 - Integrations queues one "Tester Army" task. It does not install a framework.
 - GitHub merge and review call `gh` only when dry-run is off. The eligibility
-  ladder and blocker list live in `app/integrations/merge_state.py`. An
-  expected-head compare is still absent.
+  ladder and blocker list live in `app/integrations/merge_state.py`.
+  `expectedHeadSha` must match the head.
 - The webhook outbox is one NDJSON file. The owner is a hard link with a
-  successor slot. Retries follow `retryAt` (5s doubling, 20% jitter, 72h
-  expiry). Replay copies a finished payload for 7 days and refuses
-  `webhook.test`. Still absent: pid namespaces, admission revisions, and the
-  full transport policy. `CEZ_WEBHOOKS` defaults off. Slack rendering covers
-  labels, escapes, questions, links, and the 40_000-byte fallback.
+  successor slot and a Linux PID namespace. Retries follow `retryAt` (5s
+  doubling, 20% jitter, 72h expiry). Replay copies a finished payload for 7
+  days and refuses `webhook.test`. Receiver edits check `expectedRevision`.
+  Delivery uses the destination policy and does not follow redirects.
+  `CEZ_WEBHOOKS` defaults off. Slack rendering covers labels, escapes,
+  questions, links, and the 40_000-byte fallback.
 - `item.updated` is not emitted. `permission.*` is not emitted. `usage.updated`
   is written only when a turn reports a token gain, and no test reads it back.
 - Follow-up reuses a live Claude or Pi process. Otherwise it is a new process
@@ -482,7 +483,7 @@ next table.
 | `POST /plan` | not done | — |
 | Project checkout, create-on-GitHub, owners, patch, delete | not done | The page can add a local directory. |
 | Provider connect, retry, update, enabled | not done | Status is `shutil.which`. |
-| Repository `/repo/*` routes | done | `GET /repo`, `/repo/diff`, `/repo/changes`, `/repo/tree`, `/repo/files`, `/repo/commit/{sha}`, `POST /repo/branch`, and `/repo/sync` plus fetch, pull, push, and sync. The tree is `git ls-files`, so a gitignored `.env` is not served. An option-like branch name is refused (`tests/test_github_read.py`). Fetch and push use the resolved remote and are not covered by an HTTP test. |
+| Repository `/repo/*` routes | done | `GET /repo`, `/repo/diff`, `/repo/changes`, `/repo/tree`, `/repo/files`, `/repo/commit/{sha}`, `POST /repo/branch`, and `/repo/sync` plus fetch, pull, and push. The tree is `git ls-files`, so a gitignored `.env` is not served. Fetch, pull, and push run against a local bare remote (`tests/test_github_read.py`, `tests/test_stream_d_close.py`). |
 | `GET /runs/{id}/commits`, `GET /runs/{id}/files`, `POST /runs/{id}/continue`, `POST /runs/{id}/remove-worktree` | done | Files list the dry-run note, commits list `init`, continue requeues a review into another turn, and remove deletes the worktree directory. `tests/test_routes.py`. |
 | Run drafts, layouts, handoff, history, images, land, report, start-now | not done | — |
 | `GET /skills/importable`, `POST /skills/refresh` | not done | Local create is tested. |
@@ -692,18 +693,9 @@ The merge box and the commit / push / draft-PR buttons on the task page are D's.
 
 ### D — integrations, webhooks, git, GitHub, secrets
 
-8 partial, 0 not done.
+0 partial, 0 not done.
 
-Partial:
-
-- Draft PRs, merge, GitHub review
-- GitHub / Jira / Linear reads
-- `GET/POST /runs/{id}/git/status`, `commit`, `push`, `GET …/diff`, `POST …/pr`
-- `GET/POST/DELETE /webhooks`, `POST …/test`, `GET …/deliveries`
-- `POST /hooks/github`, `/hooks/jira`, `/hooks/linear`, `GET /hooks/receipts`
-- GitHub review and merge API
-- `gh` issues and draft PRs
-- Webhooks
+Partial: none.
 
 Not done: none.
 

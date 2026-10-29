@@ -91,6 +91,10 @@ class SurfaceApi:
         app.add(Route("POST /api/v1/preview/design-proxy"), self.preview)
         app.add(Route("GET /api/v1/webhooks"), self.webhooks)
         app.add(Route("POST /api/v1/webhooks"), self.create_webhook)
+        app.add(Route("PUT /api/v1/webhooks/{receiver_id}"), self.update_webhook)
+        app.add(Route("GET /api/v1/github"), self.github_tab)
+        app.add(Route("GET /api/v1/jira/search"), self.jira_search)
+        app.add(Route("GET /api/v1/linear/search"), self.linear_search)
         app.add(Route("DELETE /api/v1/webhooks/{receiver_id}"), self.delete_webhook)
         app.add(Route("POST /api/v1/webhooks/{receiver_id}/test"), self.test_webhook)
         app.add(Route("GET /api/v1/webhooks/{receiver_id}/deliveries"), self.deliveries)
@@ -561,6 +565,54 @@ class SurfaceApi:
             status=201,
         )
 
+    async def update_webhook(self, c: Context, w: Writer) -> None:
+        from app.integrations.hooks import update_receiver
+
+        body = await _json(c, w)
+        if body is None:
+            return
+        name = body.get("name", "")
+        url = body.get("url", "")
+        revision = body.get("expectedRevision")
+        if not isinstance(name, str) or not isinstance(url, str) or not isinstance(revision, int):
+            w.json({"error": "name, url, and expectedRevision are required"}, status=400)
+            return
+        row, reason = update_receiver(
+            self.config.data_dir,
+            c.match.params.get("receiver_id", ""),
+            name=name,
+            url=url,
+            expected_revision=revision,
+        )
+        if reason == "not found":
+            w.json({"error": reason}, status=404)
+            return
+        if reason or row is None:
+            status = 409 if reason == "revision" else 400
+            w.json({"error": reason or "rejected"}, status=status)
+            return
+        w.json(cast(JsonValue, {"receiver": public_receiver(row)}))
+
+    async def github_tab(self, _c: Context, w: Writer) -> None:
+        from app.integrations.github_read import github_overview
+
+        w.json(
+            cast(
+                JsonValue,
+                github_overview(self.config.repo_root, dry_run=self.config.dry_run),
+            )
+        )
+
+    async def jira_search(self, c: Context, w: Writer) -> None:
+        from app.integrations.clients import jira_search
+
+        w.json(cast(JsonValue, jira_search(self.config, c.req.query.get("q", ""))))
+
+    async def linear_search(self, c: Context, w: Writer) -> None:
+        from app.integrations.clients import linear_search
+
+        w.json(cast(JsonValue, linear_search(self.config, c.req.query.get("q", ""))))
+
     async def delete_webhook(self, c: Context, w: Writer) -> None:
         if not delete_receiver(self.config.data_dir, c.match.params.get("receiver_id", "")):
             w.json({"error": "not found"}, status=404)
@@ -660,16 +712,23 @@ class SurfaceApi:
                 w.json({"error": "invalid pull request number"}, status=400)
             return
         method = body.get("method", "squash")
+        expected = body.get("expectedHeadSha", "")
         result = merge_pr(
             number,
             method if isinstance(method, str) else "",
             dry_run=self.config.dry_run,
             cwd=self.config.repo_root,
+            expected_head=expected if isinstance(expected, str) else "",
         )
         if not result.get("ok"):
             status = result.get("status")
             code = status if isinstance(status, int) else 409
-            w.json({"error": str(result.get("error", "merge failed"))}, status=code)
+            payload: dict[str, object] = {"error": str(result.get("error", "merge failed"))}
+            if result.get("code"):
+                payload["code"] = result["code"]
+            if result.get("current"):
+                payload["current"] = result["current"]
+            w.json(cast(JsonValue, payload), status=code)
             return
         w.json(cast(JsonValue, {key: value for key, value in result.items() if key != "ok"}))
 

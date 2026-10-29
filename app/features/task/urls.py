@@ -13,6 +13,7 @@ TASK_DISPATCH = Route("POST /tasks/{run_id}/dispatch")
 TASK_COMMIT = Route("POST /tasks/{run_id}/commit")
 TASK_PUSH = Route("POST /tasks/{run_id}/push")
 TASK_PR = Route("POST /tasks/{run_id}/pr")
+TASK_REVIEW = Route("POST /tasks/{run_id}/review")
 TASK_NOTES = Route("POST /tasks/{run_id}/notes")
 TASK_SHELL = Route("POST /tasks/{run_id}/shell")
 

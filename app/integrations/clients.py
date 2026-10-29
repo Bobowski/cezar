@@ -51,6 +51,41 @@ def github_issues(config: Config, owner: str, repo: str) -> dict[str, Any]:
     return {"available": True, "issues": issues}
 
 
+def jira_search(config: Config, query: str) -> dict[str, Any]:
+    if config.jira_base:
+        issue = forge_base_issue(config.jira_base, "jira")
+        if issue:
+            return {"available": False, "reason": issue}
+    if not config.jira_base or not config.jira_email or not config.jira_token:
+        return {"available": False, "reason": "jira is not configured"}
+    if not query.strip():
+        return {"available": False, "reason": "a search query is required"}
+    token = base64.b64encode(f"{config.jira_email}:{config.jira_token}".encode()).decode()
+    from urllib.parse import quote
+
+    jql = quote(f'text ~ "{query.strip()}"')
+    url = f"{config.jira_base.rstrip('/')}/rest/api/3/search?jql={jql}"
+    loaded = _get(url, {"authorization": f"Basic {token}", "accept": "application/json"})
+    if isinstance(loaded, dict) and loaded.get("available") is False:
+        return loaded
+    issues = loaded.get("issues") if isinstance(loaded, dict) else None
+    if not isinstance(issues, list):
+        return {"available": False, "reason": "jira returned an unexpected payload"}
+    rows = []
+    for item in issues:
+        if not isinstance(item, dict):
+            continue
+        fields = _dict(item.get("fields"))
+        rows.append(
+            {
+                "key": item.get("key", ""),
+                "summary": fields.get("summary", ""),
+                "url": f"{config.jira_base.rstrip('/')}/browse/{item.get('key', '')}",
+            }
+        )
+    return {"available": True, "issues": rows}
+
+
 def jira_issue(config: Config, key: str) -> dict[str, Any]:
     if config.jira_base:
         issue = forge_base_issue(config.jira_base, "jira")
@@ -75,6 +110,46 @@ def jira_issue(config: Config, key: str) -> dict[str, Any]:
         "summary": fields.get("summary", ""),
         "status": status.get("name", ""),
         "url": f"{config.jira_base.rstrip('/')}/browse/{loaded.get('key', key)}",
+    }
+
+
+def linear_search(config: Config, query: str) -> dict[str, Any]:
+    issue = forge_base_issue(config.linear_api, "linear")
+    if issue:
+        return {"available": False, "reason": issue}
+    if not config.linear_key:
+        return {"available": False, "reason": "linear is not configured"}
+    if not query.strip():
+        return {"available": False, "reason": "a search query is required"}
+    body = {
+        "query": (
+            "query($term: String) { issues(filter: { title: { contains: $term } }) "
+            "{ nodes { identifier title url } } }"
+        ),
+        "variables": {"term": query.strip()},
+    }
+    loaded = _post(
+        config.linear_api,
+        body,
+        {"authorization": config.linear_key, "content-type": "application/json"},
+    )
+    if isinstance(loaded, dict) and loaded.get("available") is False:
+        return loaded
+    data = _dict(loaded.get("data") if isinstance(loaded, dict) else None)
+    nodes = _dict(data.get("issues")).get("nodes")
+    if not isinstance(nodes, list):
+        return {"available": False, "reason": "linear returned an unexpected payload"}
+    return {
+        "available": True,
+        "issues": [
+            {
+                "identifier": item.get("identifier", ""),
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+            }
+            for item in nodes
+            if isinstance(item, dict)
+        ],
     }
 
 

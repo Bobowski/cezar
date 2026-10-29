@@ -287,7 +287,15 @@ def _network(root: Path, action: str) -> dict[str, object] | str:
     remote = remotes.push if action == "push" else (remotes.base or remotes.push)
     if not remote or not is_safe_git_ref(remote):
         return "no remote"
-    ok, out, err = git(root, [action, remote], timeout=30)
+    if action == "push":
+        args = ["push", "-u", remote, "HEAD"]
+    elif action == "pull":
+        branch_ok, branch, _err = git(root, ["rev-parse", "--abbrev-ref", "HEAD"])
+        name = branch.strip() if branch_ok and branch.strip() else "HEAD"
+        args = ["pull", remote, name]
+    else:
+        args = ["fetch", remote]
+    ok, out, err = git(root, args, timeout=30)
     if not ok:
         return err.strip() or out.strip() or f"git {action} failed"
     status = sync_status(root)

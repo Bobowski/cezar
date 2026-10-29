@@ -86,6 +86,47 @@ def catalog() -> dict[str, Any]:
     }
 
 
+def github_overview(cwd: Path, *, dry_run: bool) -> dict[str, Any]:
+    """The GitHub tab: open issues and pull requests, including drafts."""
+    if dry_run:
+        data = catalog()
+        data["syncedAt"] = "dry-run"
+        return data
+    try:
+        issues_ok, issues_out, issues_err = _gh(
+            cwd, ["issue", "list", "--state", "open", "--limit", "20", "--json", "number,title,url"]
+        )
+        prs_ok, prs_out, prs_err = _gh(
+            cwd,
+            [
+                "pr",
+                "list",
+                "--state",
+                "open",
+                "--limit",
+                "20",
+                "--json",
+                "number,title,url,isDraft",
+            ],
+        )
+    except OSError as exc:
+        return {"available": False, "reason": _reason(str(exc)), "issues": [], "prs": []}
+    if not issues_ok or not prs_ok:
+        return {
+            "available": False,
+            "reason": _reason(issues_err or prs_err),
+            "issues": [],
+            "prs": [],
+        }
+    issues = _loads(issues_out)
+    prs = _loads(prs_out)
+    return {
+        "available": True,
+        "issues": issues if isinstance(issues, list) else [],
+        "prs": prs if isinstance(prs, list) else [],
+    }
+
+
 def github_checks(cwd: Path, numbers: list[int], *, dry_run: bool) -> dict[str, Any]:
     if dry_run:
         by_number = {row["number"]: row.get("checks") for row in catalog()["prs"]}

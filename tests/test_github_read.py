@@ -130,9 +130,9 @@ async def test_checks_call_gh_only_when_dry_run_is_off(
         "import pathlib, sys\n"
         f"pathlib.Path({str(log)!r}).write_text('\\n'.join(sys.argv[1:]))\n"
         "if 'search' in sys.argv:\n"
-        "    print('[{\"number\": 7, \"title\": \"from gh\", \"url\": \"https://github.com/acme/shop/pull/7\"}]')\n"
+        '    print(\'[{"number": 7, "title": "from gh", "url": "https://github.com/acme/shop/pull/7"}]\')\n'
         "else:\n"
-        "    print('{\"statusCheckRollup\":[{\"state\":\"SUCCESS\"}]}')\n",
+        '    print(\'{"statusCheckRollup":[{"state":"SUCCESS"}]}\')\n',
         encoding="utf-8",
     )
     (bindir / "gh").chmod(0o755)

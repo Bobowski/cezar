@@ -21,10 +21,13 @@ from pathlib import Path
 from secrets import token_bytes
 from urllib.error import URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPHandler, HTTPSHandler, Request, build_opener
 
 from app.clock import stamp
 from app.integrations.clients import forge_base_issue
+
+# No redirect handler: a 3xx is a failure, not a new target.
+_OPENER = build_opener(HTTPHandler, HTTPSHandler)
 
 _RECEIVERS = "webhook-receivers.json"
 _RECEIPTS = "hook-receipts.ndjson"
@@ -82,6 +85,8 @@ def save_receiver(
         "url": url,
         "secret": secret,
         "revision": 1,
+        "deliveryRevision": 1,
+        "state": "active",
     }
     rows.append(row)
     _write_json(directory / _RECEIVERS, rows)
@@ -97,12 +102,46 @@ def delete_receiver(directory: Path, receiver_id: str) -> bool:
     return True
 
 
+def update_receiver(
+    directory: Path,
+    receiver_id: str,
+    *,
+    name: str,
+    url: str,
+    expected_revision: int,
+) -> tuple[dict[str, object] | None, str | None]:
+    """A rename keeps the revision. A new URL bumps it and returns the receiver to inactive."""
+    rows = load_receivers(directory)
+    row = next((item for item in rows if item.get("id") == receiver_id), None)
+    if row is None:
+        return None, "not found"
+    current = row.get("revision", 1)
+    if not isinstance(current, int) or current != expected_revision:
+        return None, "revision"
+    if not name.strip() or len(name) > 80:
+        return None, "name must be 1 to 80 characters"
+    issue = delivery_url_issue(url, allow_loopback=True)
+    if issue:
+        return None, issue
+    row["name"] = name.strip()
+    if url != row.get("url"):
+        row["url"] = url
+        row["revision"] = current + 1
+        delivery = row.get("deliveryRevision", 1)
+        row["deliveryRevision"] = delivery + 1 if isinstance(delivery, int) else 2
+        row["state"] = "inactive"
+    _write_json(directory / _RECEIVERS, rows)
+    return row, None
+
+
 def public_receiver(row: dict[str, object]) -> dict[str, object]:
     return {
         "id": row.get("id", ""),
         "name": row.get("name", ""),
         "url": row.get("url", ""),
         "revision": row.get("revision", 1),
+        "deliveryRevision": row.get("deliveryRevision", 1),
+        "state": row.get("state", "active"),
     }
 
 
@@ -134,7 +173,7 @@ def record_delivery(
             "at": stamp(),
         }
     else:
-        issue = delivery_url_issue(url, allow_loopback=True)
+        issue = _policy_issue(url)
         if issue:
             result = {
                 "id": delivery_id,
@@ -165,6 +204,24 @@ def recent_deliveries(
     return rows[-limit:]
 
 
+def _policy_issue(url: str) -> str | None:
+    from urllib.parse import urlsplit
+
+    from app.integrations.destination import (
+        DestinationPolicy,
+        DestinationPolicyError,
+        validate_destination,
+    )
+
+    host = (urlsplit(url).hostname or "").lower()
+    local = host in ("localhost", "127.0.0.1", "::1")
+    try:
+        validate_destination(url, DestinationPolicy(allow_local_network=local))
+    except DestinationPolicyError as exc:
+        return exc.code
+    return None
+
+
 def delivery_url_issue(url: str, *, allow_loopback: bool) -> str | None:
     parsed = urlsplit(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -186,7 +243,7 @@ def _post(url: str, body: str, delivery_id: str, signature: str) -> int | None:
         headers["webhook-signature"] = signature
     try:
         request = Request(url, data=body.encode(), headers=headers, method="POST")
-        with urlopen(request, timeout=3) as response:
+        with _OPENER.open(request, timeout=10) as response:
             return int(response.status)
     except URLError, TimeoutError, OSError, ValueError:
         return None

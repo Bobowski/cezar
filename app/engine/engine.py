@@ -345,6 +345,7 @@ class Engine:
                 pass
 
     async def tick(self) -> None:
+        await self._resume_due()
         await self._launch_due()
         await self._wake_monitors()
         await self._resume_limited()
@@ -491,14 +492,24 @@ class Engine:
             return await self._fail(run, "project is gone")
         root = Path(project.root)
         base = run.base_branch or project.base_branch or "main"
-        if run.in_place or not is_git_repo(root):
+        from app.engine.landing import inplace_requested
+
+        git_checkout = is_git_repo(root)
+        if run.in_place or not git_checkout or inplace_requested(root):
             run.in_place = True
             run.worktree_path = str(root)
             run.base_branch = base
             await self._lay_down_attachments(run)
             await self._save(run)
-            if is_git_repo(root):
-                await self._note(run.id, "note", "running in the checkout, one task at a time")
+            if git_checkout:
+                await self._note(
+                    run.id,
+                    "note",
+                    (
+                        "running in the checkout, one task at a time; "
+                        "the task will land on this branch"
+                    ),
+                )
             else:
                 await self._note(run.id, "note", "not a git repository; ran in place")
             return run
@@ -1188,13 +1199,22 @@ class Engine:
         if run.base_branch:
             env["CEZ_BASE"] = run.base_branch
         env.update(values)
-        code, output = await run_shell(
-            step.command,
-            Path(run.worktree_path or "."),
-            cancel,
-            self.config.check_timeout_seconds,
-            env,
-        )
+        from app.engine.proc_usage import unwatch, watch
+
+        def started(pid: int) -> None:
+            watch(run.id, pid)
+
+        try:
+            code, output = await run_shell(
+                step.command,
+                Path(run.worktree_path or "."),
+                cancel,
+                self.config.check_timeout_seconds,
+                env,
+                on_pid=started,
+            )
+        finally:
+            unwatch(run.id)
         return code, redact(output, list(values.values()))
 
     async def _check(self, run: Run, step: Step, cancel: asyncio.Event) -> str:
@@ -1238,6 +1258,13 @@ class Engine:
         else:
             message = f'check "{step.id}" failed (exit {code})'
         await self._fail(current, message)
+        if "usage limit" in output.lower():
+            failed = get_run(self.db, current.id)
+            if failed is not None and failed.auto_resume_attempts < 3:
+                from datetime import timedelta
+
+                failed.auto_resume_at = stamp(now() + timedelta(milliseconds=400))
+                await self._save(failed)
         return "stop"
 
     async def _review_applies(self, run: Run) -> bool:
@@ -1319,6 +1346,37 @@ class Engine:
         self._notify(run, previous)
         self._reap(run.id)
 
+    async def _resume_due(self) -> None:
+        if not self.config.auto_resume:
+            return
+        moment = now()
+        for run in list_runs(self.db, None, "failed", limit=100):
+            if not run.auto_resume_at:
+                continue
+            due = parse_stamp(run.auto_resume_at)
+            if due is None or due > moment:
+                continue
+            run.auto_resume_attempts += 1
+            run.auto_resume_at = ""
+            run.status = "queued"
+            run.mode = "followup"
+            run.continuation = (
+                "The usage limit has reset. Continue the task from where you left off."
+            )
+            run.error = ""
+            run.finished_at = ""
+            await self._save(run)
+            await self._note(run.id, "lifecycle", "auto-resume")
+            self.kick()
+
+    async def cancel_auto_resume(self, run_id: str) -> bool:
+        run = get_run(self.db, run_id)
+        if run is None or not run.auto_resume_at:
+            return False
+        run.auto_resume_at = ""
+        await self._save(run)
+        return True
+
     async def _mark_done(self, run: Run) -> None:
         self._finish.discard(run.id)
         if run.status == "done":
@@ -1327,6 +1385,18 @@ class Engine:
         if failure:
             await self._fail(run, failure)
             return
+        if run.in_place:
+            project = get_project(self.db, run.project_id)
+            root = Path(project.root) if project else self.config.repo_root
+            if is_git_repo(root):
+                from app.engine.landing import land_inplace
+
+                result = await asyncio.to_thread(land_inplace, root)
+                if result.get("result") == "failed":
+                    await self._fail(run, str(result.get("error") or "land failed"))
+                    return
+                if result.get("result") == "landed":
+                    await self._note(run.id, "lifecycle", f"landed {result.get('sha', '')}")
         await self._release_deferred(run, stopped="the task was finished")
         previous = run.status
         run.status = "done"
@@ -2037,7 +2107,7 @@ class Engine:
         return None
 
     async def finish(self, run_id: str) -> str | None:
-        """Accept the review gate. The branch stays where the agent left it."""
+        """Accept the review gate. An in-place checkout is committed; a worktree is not pushed."""
         run = get_run(self.db, run_id)
         if run is None:
             return "not found"
@@ -2101,6 +2171,25 @@ class Engine:
             self.kick()
             return None
         return "a message can be sent to a run that is waiting or in review"
+
+    async def start_now(self, run_id: str) -> str | None:
+        """Drop a usage-limit hold and queue the run on the next tick."""
+        run = get_run(self.db, run_id)
+        if run is None:
+            return "not found"
+        if run.auto_resume_at:
+            run.status = "queued"
+            run.auto_resume_at = ""
+            run.finished_at = ""
+            run.error = ""
+            await self._save(run)
+            await self._note(run.id, "lifecycle", "start-now")
+            self.kick()
+            return None
+        if run.status == "queued":
+            self.kick()
+            return None
+        return "nothing is scheduled"
 
     async def dispatch(self, parent_id: str, order: DispatchOrder) -> tuple[str | None, str | None]:
         if not self.config.dispatch_enabled:
@@ -2429,6 +2518,7 @@ async def run_shell(
     cancel: asyncio.Event,
     timeout: float,
     env: dict[str, str] | None = None,
+    on_pid: Callable[[int], None] | None = None,
 ) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(
         "bash",
@@ -2439,6 +2529,8 @@ async def run_shell(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
+    if on_pid is not None and proc.pid:
+        on_pid(proc.pid)
     communicate = asyncio.create_task(proc.communicate())
     stopper = asyncio.create_task(cancel.wait())
     timer = asyncio.create_task(asyncio.sleep(timeout))

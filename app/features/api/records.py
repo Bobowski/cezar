@@ -12,8 +12,9 @@ from typing import cast
 
 from stario.json import JsonValue
 
-from app.engine.gitwork import head_branch, is_git_repo
+from app.engine.gitwork import git, head_branch, is_git_repo
 from app.engine.model import Run
+from app.engine.proc_usage import current_usage
 
 
 def public_run(run: Run, *, full: bool) -> dict[str, JsonValue]:
@@ -39,8 +40,6 @@ def public_run(run: Run, *, full: bool) -> dict[str, JsonValue]:
         body["finishedAt"] = run.finished_at
     if run.error:
         body["error"] = run.error
-    if run.auto_resume_at:
-        body["autoResumeAt"] = run.auto_resume_at
     if run.branch:
         body["branch"] = run.branch
     if run.worktree_path:
@@ -65,6 +64,13 @@ def public_run(run: Run, *, full: bool) -> dict[str, JsonValue]:
         body["variant"] = run.variant
     if run.seen_at:
         body["seenAt"] = run.seen_at
+    if run.auto_resume_at:
+        body["autoResumeAt"] = run.auto_resume_at
+    if run.auto_resume_attempts:
+        body["autoResumeAttempts"] = run.auto_resume_attempts
+    usage = current_usage(run.id)
+    if usage is not None:
+        body["usage"] = cast(JsonValue, usage)
     if run.pull_request_url:
         body["pullRequestUrl"] = run.pull_request_url
     if run.parent_id or run.root_id or run.dispatch_report:
@@ -89,7 +95,13 @@ def public_run(run: Run, *, full: bool) -> dict[str, JsonValue]:
     return body
 
 
-def public_project(project_id: str, name: str, root: str, added_at: str) -> dict[str, JsonValue]:
+def public_project(
+    project_id: str,
+    name: str,
+    root: str,
+    added_at: str,
+    tags: tuple[str, ...] = (),
+) -> dict[str, JsonValue]:
     path = Path(root)
     if not path.exists():
         status = "missing"
@@ -105,10 +117,26 @@ def public_project(project_id: str, name: str, root: str, added_at: str) -> dict
         "lastOpenedAt": added_at,
         "source": "local",
         "status": status,
+        "tags": list(tags),
     }
     if status == "ok":
         body["branch"] = head_branch(path)
+    forge = _forge(path)
+    if forge is not None:
+        body["forge"] = cast(JsonValue, forge)
     return body
+
+
+def _forge(root: Path) -> dict[str, str] | None:
+    if not is_git_repo(root):
+        return None
+    ok, out, _err = git(root, ["remote", "get-url", "origin"])
+    if not ok:
+        return None
+    host = out.strip().lower()
+    if "github.com" in host or ".ghe.com" in host:
+        return {"kind": "github"}
+    return None
 
 
 def _steps(run: Run) -> list[JsonValue]:

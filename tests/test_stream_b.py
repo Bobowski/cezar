@@ -82,36 +82,57 @@ async def test_directory_browse_route(repo: Path, monkeypatch: pytest.MonkeyPatc
 
 
 async def test_agent_config_version_and_hosted_write(client, repo: Path, monkeypatch):
+    claude_home = repo / "claude-home"
+    claude_home.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home))
     missing = await client.get("/api/v1/agent-config/nope")
     assert missing.status_code == 404
-    current = await client.get("/api/v1/agent-config/agents-md")
+    current = await client.get("/api/v1/agent-config/project.agents")
     assert current.status_code == 200
     assert current.json()["version"] is None
     saved = await client.put(
-        "/api/v1/agent-config/agents-md",
+        "/api/v1/agent-config/project.agents",
         json={"content": "# hello\n", "version": None},
     )
     assert saved.status_code == 200
     assert (repo / "AGENTS.md").read_text(encoding="utf-8") == "# hello\n"
     stale = await client.put(
-        "/api/v1/agent-config/agents-md",
+        "/api/v1/agent-config/project.agents",
         json={"content": "# other\n", "version": "deadbeef"},
     )
     assert stale.status_code == 409
     listing = (await client.get("/api/v1/agent-config")).json()
     assert listing["editable"] is True
-    assert {row["id"] for row in listing["files"]} == {
-        "agents-md",
-        "claude-project",
-        "claude-local",
-    }
+    assert listing["userMcp"]["servers"] == []
+    assert listing["userMcp"]["readable"] is True
+    (claude_home / ".claude.json").write_text(
+        '{"mcpServers": {"docs": {"command": "echo"}}}\n', encoding="utf-8"
+    )
+    named = (await client.get("/api/v1/agent-config")).json()
+    assert named["userMcp"]["servers"] == ["docs"]
+    ids = {row["id"] for row in listing["files"]}
+    assert "project.agents" in ids
+    assert "claude.project.settings" in ids
+    assert "claude.user.settings" in ids
+    project_settings = next(
+        row for row in listing["files"] if row["id"] == "claude.project.settings"
+    )
+    assert "Overrides user settings" in project_settings["precedence"]
+    home = await client.put(
+        "/api/v1/agent-config/claude.user.settings",
+        json={"content": "{}\n", "version": None},
+    )
+    assert home.status_code == 409
     monkeypatch.setenv("CEZ_REMOTE", "1")
     refused = await client.put(
-        "/api/v1/agent-config/agents-md",
+        "/api/v1/agent-config/project.agents",
         json={"content": "# hosted\n", "version": saved.json()["version"]},
     )
     assert refused.status_code == 409
     assert "hosted" in refused.json()["error"]
+    assert (await client.get("/api/v1/agent-config")).json()["userMcp"] is None
+    hidden = await client.get("/api/v1/agent-config/claude.user.settings")
+    assert hidden.status_code == 409
 
 
 async def test_todos_follow_the_inbox_file(client, repo: Path, monkeypatch):

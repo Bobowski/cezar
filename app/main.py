@@ -7,6 +7,7 @@ from stario.http import same_origin, security_headers
 from app.assets import ASSETS
 from app.config import Config, listen_config
 from app.engine.engine import Engine
+from app.features.api.closeout import CloseoutApi
 from app.features.api.families import RouteFamilies
 from app.features.api.handlers import ApiPage
 from app.features.api.surface import SurfaceApi
@@ -53,6 +54,7 @@ async def bootstrap(app: App, span: Span):
         ApiPage(db, engine, config).register(app)
         SurfaceApi(db, engine, config).register(app)
         RouteFamilies(db, engine, config).register(app)
+        CloseoutApi(db, engine, config).register(app)
         app.create_task(engine.serve())
         yield
 

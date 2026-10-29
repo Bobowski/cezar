@@ -28,7 +28,14 @@ from app.clock import stamp
 from app.config import RUNNERS, Config, apply_overrides, single_project
 from app.engine.engine import Engine
 from app.engine.import_runs import events_near, load_runs_file
+from app.engine.packaging import build_wheel
 from app.engine.scaffold import init_project
+from app.engine.server_install import (
+    deploy_service,
+    first_free_port,
+    install_service,
+    uninstall_service,
+)
 from app.main import bootstrap
 from app.store.db import (
     add_event,
@@ -73,6 +80,10 @@ def main(argv: list[str] | None = None) -> int:
         extra = sub.add_parser(name)
         extra.add_argument("rest", nargs=argparse.REMAINDER)
 
+    for name in ("server-install", "uninstall", "deploy", "package"):
+        extra = sub.add_parser(name, parents=[common])
+        extra.add_argument("--dest", required=True)
+
     args = parser.parse_args(argv)
     if args.repo:
         apply_overrides(repo=args.repo)
@@ -81,8 +92,12 @@ def main(argv: list[str] | None = None) -> int:
         config = Config.from_env()
         host = args.host or config.listen_host
         port = args.port or config.listen_port
+        if args.port == 0:
+            port = first_free_port(host, port)
         asyncio.run(serve(bootstrap, config=ServerConfig(host=host, port=port)))
         return 0
+    if command in ("server-install", "uninstall", "deploy", "package"):
+        return _files_command(command, args)
     if command == "init":
         repo = Config.from_env().repo_root
         print(f"initialized {repo}")
@@ -228,6 +243,45 @@ async def projects_command(action: str, value: str | None) -> int:
             return 0
         print(f"unknown projects action: {action}", file=sys.stderr)
         return 1
+
+
+def _files_command(command: str, args: argparse.Namespace) -> int:
+    """Install or remove the cockpit. A dry run prints the commands and stops."""
+    config = Config.from_env()
+    dest = Path(args.dest)
+    host = args.host or "127.0.0.1"
+    port = args.port or 4321
+    if command == "server-install":
+        result = install_service(
+            dest, host=host, port=port, repo=str(config.repo_root), dry_run=config.dry_run
+        )
+    elif command == "deploy":
+        result = deploy_service(dest, host=host, port=port, dry_run=config.dry_run)
+    elif command == "uninstall":
+        result = uninstall_service(dest, dry_run=config.dry_run)
+    else:
+        source = Path(__file__).resolve().parents[1]
+        print(build_wheel(source, dest))
+        return 0
+    return _print_service(result)
+
+
+def _print_service(result: dict[str, object]) -> int:
+    if result.get("ok") is not True:
+        print(str(result.get("error") or "the service command failed"), file=sys.stderr)
+        return 1
+    if result.get("dryRun") is True:
+        print("dry-run")
+        commands = result.get("commands")
+        if isinstance(commands, list):
+            for command in commands:
+                if isinstance(command, list):
+                    print(" ".join(str(part) for part in command))
+        return 0
+    files = result.get("files")
+    if isinstance(files, list):
+        print(" ".join(str(name) for name in files))
+    return 0
 
 
 def _out(line: str) -> None:

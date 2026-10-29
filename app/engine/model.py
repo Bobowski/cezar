@@ -55,6 +55,10 @@ def _strings(value: object) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
+def _string_tuple(value: object) -> tuple[str, ...]:
+    return tuple(_strings(value))
+
+
 def _dicts(value: object) -> list[dict[str, object]]:
     if not isinstance(value, list):
         return []
@@ -428,6 +432,7 @@ class Project:
     root: str
     base_branch: str
     created_at: str
+    tags: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -436,6 +441,7 @@ class Project:
             "root": self.root,
             "base_branch": self.base_branch,
             "created_at": self.created_at,
+            "tags": list(self.tags),
         }
 
     @classmethod
@@ -447,6 +453,7 @@ class Project:
             root=_text(data.get("root")),
             base_branch=_text(data.get("base_branch"), "main"),
             created_at=_text(data.get("created_at")),
+            tags=_string_tuple(data.get("tags")),
         )
 
 
@@ -501,6 +508,9 @@ class Automation:
     revision: int = 1
     once: bool = False
     creation_key: str = ""
+    kind: str = "schedule"
+    events: tuple[str, ...] = ()
+    filters: dict[str, object] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -520,6 +530,9 @@ class Automation:
             "revision": self.revision,
             "once": self.once,
             "creation_key": self.creation_key,
+            "kind": self.kind,
+            "events": list(self.events),
+            "filters": self.filters,
         }
 
     @classmethod
@@ -548,6 +561,9 @@ class Automation:
             revision=max(1, _int(data.get("revision"), 1)),
             once=_bool(data.get("once")),
             creation_key=_text(data.get("creation_key")),
+            kind=_text(data.get("kind"), "schedule"),
+            events=_string_tuple(data.get("events")),
+            filters=_dict(data.get("filters")),
         )
 
 

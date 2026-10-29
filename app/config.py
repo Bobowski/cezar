@@ -200,6 +200,17 @@ def auth_password() -> str:
     return os.environ.get("CEZ_AUTH_PASSWORD", "").strip()
 
 
+def claude_state_file() -> Path:
+    """`~/.claude.json`, or `<CLAUDE_CONFIG_DIR>/.claude.json` when that home is set.
+
+    Read at the call so a test can point it at a temporary directory.
+    """
+    raw = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if raw:
+        return Path(raw) / ".claude.json"
+    return Path.home() / ".claude.json"
+
+
 def todos_path(repo: Path) -> Path:
     raw = os.environ.get("CEZ_TODOS_FILE", "").strip()
     if raw:

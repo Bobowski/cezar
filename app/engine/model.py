@@ -229,6 +229,8 @@ class Run:
     finished_at: str = ""
     error: str = ""
     tokens_used: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
     cost_usd: float = 0.0
     parent_id: str = ""
     root_id: str = ""
@@ -284,6 +286,8 @@ class Run:
             "finished_at": self.finished_at,
             "error": self.error,
             "tokens_used": self.tokens_used,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
             "cost_usd": self.cost_usd,
             "parent_id": self.parent_id,
             "root_id": self.root_id,
@@ -354,6 +358,8 @@ class Run:
             finished_at=_text(data.get("finished_at")),
             error=_text(data.get("error")),
             tokens_used=_int(data.get("tokens_used")),
+            input_tokens=_int(data.get("input_tokens")),
+            output_tokens=_int(data.get("output_tokens")),
             cost_usd=_float(data.get("cost_usd")),
             parent_id=_text(data.get("parent_id")),
             root_id=_text(data.get("root_id")),

@@ -42,16 +42,6 @@ def render(
         klass = "here" if index == run.step_index and run.status == "running" else ""
         attrs = {"class": klass} if klass else {}
         rail.append(h.Li(attrs, step.name or step.id))
-    window = events if view.earlier or len(events) <= 40 else events[-40:]
-    earlier = None
-    if len(window) < len(events):
-        earlier = h.A(
-            {
-                "id": "transcript-earlier",
-                "href": TASK.href(run.id, query={"pane": "session", "earlier": "1"}),
-            },
-            f"Earlier ({len(events) - len(window)})",
-        )
     transcript = [
         h.Li(
             {"class": f"ev ev-{event.type}"},
@@ -59,7 +49,7 @@ def render(
             event.text,
             *diagrams(event.text),
         )
-        for event in window
+        for event in events
     ]
     actions: list[HtmlElement] = []
     if run.status in ("queued", "running", "waiting", "review"):
@@ -158,9 +148,7 @@ def render(
         blocks.append(h.P({"class": "error"}, run.error))
     if run.status == "waiting" and run.ask:
         blocks.append(h.Div({"class": "card-block ask"}, h.Strong("The agent asked"), h.P(run.ask)))
-    if earlier is not None and view.pane == "session":
-        blocks.append(earlier)
-    blocks.extend(_pane(run, view, diff, transcript))
+    blocks.extend(_pane(run, view, diff, transcript, len(events)))
     if run.status in ("waiting", "review"):
         blocks.append(
             h.Form(
@@ -231,7 +219,9 @@ def render(
     )
 
 
-def _pane(run: Run, view: TaskView, diff: Diff | None, transcript: list) -> list[HtmlElement]:
+def _pane(
+    run: Run, view: TaskView, diff: Diff | None, transcript: list, event_count: int
+) -> list[HtmlElement]:
     if view.pane == "diff":
         body = diff.text if diff and diff.text else "No diff yet."
         return [h.Pre({"class": "diff"}, body)]
@@ -289,7 +279,19 @@ def _pane(run: Run, view: TaskView, diff: Diff | None, transcript: list) -> list
                 "It is off when the cockpit is hosted.",
             ),
         ]
-    return [h.Ol({"id": "transcript", "class": "transcript"}, *transcript)]
+    virtual = view.thread == "virtual" or (view.thread != "flat" and event_count > 300)
+    return [
+        h.Ol(
+            {
+                "id": "transcript",
+                "class": "transcript",
+                "data-virtualized": "true" if virtual else "false",
+                "data-window": "16",
+            },
+            data.init("app.thread.mount(el)"),
+            *transcript,
+        )
+    ]
 
 
 def _merge_box(payload: dict[str, object], run_id: str) -> HtmlElement:

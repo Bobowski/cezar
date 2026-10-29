@@ -1,0 +1,108 @@
+"""Org skill repos: a bare clone, then `git show` of the files under `skills/`.
+
+A local path clones without the network. Anything git refuses is skipped, and
+local skills keep working.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import subprocess
+from pathlib import Path
+
+from app.engine.model import Skill
+from app.features.settings.store import read_skill_repos
+
+_ENV = {
+    "GIT_ALLOW_PROTOCOL": "https:http:ssh:git:file",
+    "GIT_TERMINAL_PROMPT": "0",
+}
+# Same hardening as the TypeScript cache (#428): no remote-helper transports.
+_HARDENING = [
+    "-c",
+    "protocol.ext.allow=never",
+    "-c",
+    "protocol.fd.allow=never",
+    "-c",
+    "protocol.file.allow=user",
+]
+
+
+def org_skill(data_dir: Path, name: str) -> Skill | None:
+    for source in read_skill_repos(data_dir):
+        bare = _bare(data_dir, source.repo)
+        if bare is None:
+            continue
+        found = _read(bare, source.ref, name)
+        if found is not None:
+            return found
+    return None
+
+
+def _bare(data_dir: Path, repo: str) -> Path | None:
+    digest = hashlib.sha256(repo.encode()).hexdigest()[:16]
+    dest = data_dir / "skill-cache" / digest
+    if (dest / "HEAD").is_file():
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # clone writes progress to stderr. An empty stdout is still a success.
+    ok, _out = _git(["clone", "--bare", repo, str(dest)])
+    if not ok or not (dest / "HEAD").is_file():
+        return None
+    return dest
+
+
+def _read(bare: Path, ref: str, name: str) -> Skill | None:
+    if not ref or ref.startswith("-") or ".." in ref.split("/"):
+        return None
+    ok, sha = _git(["-C", str(bare), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"])
+    if not ok or not sha:
+        return None
+    ok, listed = _git(["-C", str(bare), "ls-tree", "-r", "--name-only", sha, "--"])
+    if not ok:
+        return None
+    for path in listed.splitlines():
+        if not _is_skill_file(path):
+            continue
+        ok, body = _git(["-C", str(bare), "show", f"{sha}:{path}"])
+        if not ok:
+            continue
+        skill_name, text = _name_and_body(path, body)
+        if skill_name == name:
+            return Skill(name, "", text, f"{bare}:{path}")
+    return None
+
+
+def _is_skill_file(path: str) -> bool:
+    parts = path.split("/")
+    return path.endswith(".md") and "skills" in parts[:-1]
+
+
+def _name_and_body(path: str, raw: str) -> tuple[str, str]:
+    parts = path.split("/")
+    if parts[-1] == "SKILL.md" and len(parts) >= 2 and parts[-2] != "skills":
+        title = parts[-2]
+    else:
+        title = Path(path).stem
+    body = raw
+    if raw.startswith("---"):
+        end = raw.find("\n---", 3)
+        if end >= 0:
+            body = raw[end + 4 :].lstrip("\n")
+    return title, body.strip()
+
+
+def _git(args: list[str]) -> tuple[bool, str]:
+    try:
+        result = subprocess.run(
+            ["git", *_HARDENING, *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=os.environ | _ENV,
+        )
+    except OSError, subprocess.TimeoutExpired:
+        return False, ""
+    return result.returncode == 0, result.stdout.strip()

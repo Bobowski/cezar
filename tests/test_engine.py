@@ -669,6 +669,8 @@ async def test_experimental_stdin_runner_records_usage(tmp_path: Path):
         done = get_run(engine.db, run.id)
         assert done is not None and done.status == "done"
         assert done.tokens_used == 7
+        assert done.input_tokens == 3
+        assert done.output_tokens == 4
     events = [
         event
         async for event in StdinAgent(str(binary)).stream(

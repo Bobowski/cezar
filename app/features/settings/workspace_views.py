@@ -145,7 +145,8 @@ def skills(rows: list[SkillRepo]) -> tuple[HtmlElement, ...]:
     return (
         h.P(
             {"class": "sub"},
-            "Saved here. The run does not clone these repositories or add them to the prompt.",
+            "Cloned as a bare repository. A step that names one of its skills "
+            "gets that body in the prompt.",
         ),
         h.Ul({"id": "skill-repos"}, *items),
         h.Form(
@@ -156,9 +157,9 @@ def skills(rows: list[SkillRepo]) -> tuple[HtmlElement, ...]:
                 h.Span("Repository"),
                 h.Input(
                     {
-                        "type": "url",
+                        "type": "text",
                         "required": True,
-                        "maxlength": "200",
+                        "maxlength": "500",
                         "aria-label": "Repository",
                     },
                     data.bind("repo"),
@@ -179,8 +180,8 @@ def resources(limit: int | None) -> tuple[HtmlElement, ...]:
     return (
         h.P(
             {"class": "sub"},
-            "How much memory one task may use. Saved for this cockpit. "
-            "The run loop does not pause a task from this number yet.",
+            "How much memory one task's process tree may use. "
+            "Crossing it pauses the task so the queue can move on.",
         ),
         h.Form(
             {"class": "composer"},

@@ -34,6 +34,14 @@ def test_worktree_retention_keeps_the_newest_finished_directories():
     assert select_reclaimable([older, newer], 5) == []
 
 
+def test_archived_runs_use_their_own_cap():
+    older = _run("done", "2026-01-01T00:00:00Z", id="a" * 32, archived=True)
+    newer = _run("done", "2026-02-01T00:00:00Z", id="b" * 32, archived=True)
+    live = _run("running", "2026-03-01T00:00:00Z", id="c" * 32, worktree_path="")
+    pruned = select_index_prune([newer, older, live], keep=1, archived_keep=1)
+    assert pruned == [older.id]
+
+
 def test_the_run_index_keeps_live_rows_past_the_cap():
     rows = [
         _run("done", f"2026-01-{index:02d}T00:00:00Z", id=f"{index:032x}") for index in range(1, 4)

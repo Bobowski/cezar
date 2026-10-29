@@ -319,7 +319,7 @@ It is not a pixel copy of the React component.
 | Star count, self-update, skills auto-update | intentionally not ported | They would phone home or change the install. This fork leaves them out. |
 | Desktop shell | intentionally not ported | Owner decision: the Tauri shell stays out of this port. |
 | `gh` issues and draft PRs | partial | open issues are read when `CEZ_GITHUB_TOKEN` is set. A draft PR is the dry-run URL unless dry-run is off, in which case the port runs `gh pr create --draft` after a push. |
-| Webhooks | partial | Receivers, signed test deliveries, and inbound GitHub/Jira/Linear hooks with receipts. A finished task appends a Slack `Task finished` row and dry-run marks it delivered when `CEZ_WEBHOOKS=1` (`tests/test_engine.py`). With the flag off, no outbox is created. Still not the TypeScript hard-link successor chain, pid namespace, transport policy, or replay API. |
+| Webhooks | partial | Receivers, signed test deliveries, inbound hooks, and a lifecycle enqueue when `CEZ_WEBHOOKS=1`. The owner is a hard link with a successor slot, retries follow `retryAt` (5s doubling, 20% jitter, 72h expiry), and `POST /webhooks/outbox/{sequence}/replay` copies a finished payload for 7 days and refuses `webhook.test`. Still absent: pid namespaces, admission revisions, and the full transport policy. `tests/test_parity.py`, `tests/test_engine.py`. |
 
 ## What is still TypeScript
 

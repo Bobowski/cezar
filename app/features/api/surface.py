@@ -8,6 +8,7 @@ engine can actually perform.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import cast
@@ -56,6 +57,11 @@ class SurfaceApi:
             ("POST", "/runs/{run_id}/read", self.read_one),
             ("POST", "/runs/{run_id}/unread", self.unread_one),
             ("GET", "/runs/{run_id}/diff", self.diff),
+            ("GET", "/runs/{run_id}/commits", self.commits),
+            ("GET", "/runs/{run_id}/files", self.files),
+            ("POST", "/runs/{run_id}/continue", self.continue_run),
+            ("POST", "/runs/{run_id}/remove-worktree", self.remove_worktree),
+            ("POST", "/worktrees/reclaim", self.reclaim),
             ("GET", "/runs/{run_id}/git/status", self.git_status),
             ("POST", "/runs/{run_id}/git/commit", self.git_commit),
             ("POST", "/runs/{run_id}/git/push", self.git_push),
@@ -95,6 +101,9 @@ class SurfaceApi:
         app.add(Route("POST /api/v1/hooks/linear"), self.linear_hook)
         app.add(Route("GET /api/v1/hooks/receipts"), self.receipts)
         app.add(Route("GET /api/v1/fs/browse"), self.browse)
+        app.add(Route("GET /api/v1/launch-key"), self.launch_key)
+        app.add(Route("GET /api/v1/config"), self.read_config)
+        app.add(Route("PUT /api/v1/config"), self.write_config)
         app.add(Route("GET /api/v1/github/prs/{number}/merge-state"), self.merge_state)
         app.add(Route("POST /api/v1/github/prs/{number}/merge"), self.merge_pr)
         app.add(Route("POST /api/v1/github/prs/{number}/reviews"), self.review_pr)
@@ -117,6 +126,103 @@ class SurfaceApi:
 
     async def unread_one(self, c: Context, w: Writer) -> None:
         await self._seen(c, w, False)
+
+    async def commits(self, c: Context, w: Writer) -> None:
+        from app.features.task.views import _commits
+
+        run = self._run(c, w)
+        if run is None:
+            return
+        w.json({"commits": _commits(run.worktree_path)})
+
+    async def files(self, c: Context, w: Writer) -> None:
+        from app.features.task.views import _worktree_files
+
+        run = self._run(c, w)
+        if run is None:
+            return
+        w.json({"files": _worktree_files(run.worktree_path)})
+
+    async def continue_run(self, c: Context, w: Writer) -> None:
+        run = self._run(c, w)
+        if run is None:
+            return
+        body = await _json(c, w)
+        if body is None:
+            return
+        message = body.get("message", "")
+        reason = await self.engine.deliver(run.id, message if isinstance(message, str) else "")
+        if reason:
+            status = 404 if reason == "not found" else 409
+            w.json({"error": reason}, status=status)
+            return
+        w.json({"continued": True})
+
+    async def remove_worktree(self, c: Context, w: Writer) -> None:
+        run = self._run(c, w)
+        if run is None:
+            return
+        if run.status in ("queued", "running", "waiting"):
+            w.json({"error": "cancel the run before removing its worktree"}, status=409)
+            return
+        if not run.worktree_path or run.in_place:
+            w.json({"error": _NO_WORKTREE}, status=409)
+            return
+        project = get_project(self.db, run.project_id)
+        if project is None:
+            w.json({"error": "not found"}, status=404)
+            return
+        from app.engine.gitwork import drop_worktree_dir
+
+        gone = await asyncio.to_thread(
+            drop_worktree_dir, Path(project.root), Path(run.worktree_path)
+        )
+        if not gone:
+            w.json({"error": "worktree could not be removed"}, status=409)
+            return
+        from app.clock import stamp
+
+        run.worktree_reclaimed_at = stamp()
+        await self.engine._save(run)
+        w.json({"removed": True})
+
+    async def reclaim(self, c: Context, w: Writer) -> None:
+        w.json({"reclaimed": await self.engine.retain()})
+
+    async def launch_key(self, _c: Context, w: Writer) -> None:
+        from app.features.editors.store import launch_key
+
+        w.json({"key": launch_key(self.config.data_dir)})
+
+    async def read_config(self, _c: Context, w: Writer) -> None:
+        w.json(self._config_body())
+
+    async def write_config(self, c: Context, w: Writer) -> None:
+        body = await _json(c, w)
+        if body is None:
+            return
+        path = self.config.repo_root / ".ai" / "cezar" / "config.json"
+        current = _object_file(path)
+        if "systemPrompt" in body and isinstance(body["systemPrompt"], str):
+            current["systemPrompt"] = body["systemPrompt"]
+        if "branchNaming" in body and isinstance(body["branchNaming"], str):
+            current["branchNaming"] = body["branchNaming"]
+        if "reviewGate" in body and isinstance(body["reviewGate"], bool):
+            current["reviewGate"] = body["reviewGate"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
+        w.json(self._config_body())
+
+    def _config_body(self) -> dict[str, object]:
+        loaded = _object_file(self.config.repo_root / ".ai" / "cezar" / "config.json")
+        prompt = loaded.get("systemPrompt")
+        naming = loaded.get("branchNaming")
+        gate = loaded.get("reviewGate")
+        return {
+            "systemPrompt": prompt if isinstance(prompt, str) else "",
+            "branchNaming": naming if isinstance(naming, str) else "",
+            "reviewGate": gate if isinstance(gate, bool) else None,
+        }
 
     async def diff(self, c: Context, w: Writer) -> None:
         run = self._run(c, w)
@@ -196,8 +302,13 @@ class SurfaceApi:
         w.json(cast(JsonValue, result), status=201)
 
     async def terminal_open(self, c: Context, w: Writer) -> None:
+        import os
+
         run = self._run(c, w)
         if run is None:
+            return
+        if os.environ.get("CEZ_TERMINAL") == "0":
+            w.json({"error": "terminal is disabled"}, status=409)
             return
         if not run.worktree_path:
             w.json({"error": _NO_WORKTREE}, status=409)
@@ -651,6 +762,16 @@ class SurfaceApi:
             w.json({"error": "not found"}, status=404)
             return None
         return run
+
+
+def _object_file(path: Path) -> dict[str, object]:
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except OSError, json.JSONDecodeError:
+        return {}
+    if isinstance(loaded, dict):
+        return loaded
+    return {}
 
 
 def _pr_number(raw: str) -> int | None:

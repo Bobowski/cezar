@@ -80,6 +80,16 @@ def write_agent_file(root: Path, file_id: str, text: str, *, hosted: bool) -> st
     return None
 
 
+def launch_key(data_dir: Path) -> str:
+    path = data_dir / "launch-key"
+    if path.is_file():
+        return path.read_text(encoding="utf-8").strip()
+    key = uuid.uuid4().hex
+    path.write_text(key + "\n", encoding="utf-8")
+    path.chmod(0o600)
+    return key
+
+
 def accounts_path(config: Config) -> Path:
     return config.data_dir / "agent-accounts.json"
 

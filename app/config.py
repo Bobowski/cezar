@@ -73,6 +73,7 @@ class Config:
     browse_root: str = ""
     worktree_keep: int = 10
     runs_keep: int = 300
+    archived_keep: int = 500
 
     @property
     def hosted(self) -> bool:
@@ -125,6 +126,7 @@ class Config:
             browse_root=os.environ.get("CEZ_BROWSE_ROOT", str(Path.home())),
             worktree_keep=_keep(os.environ.get("CEZ_WORKTREE_RETENTION"), 10),
             runs_keep=_keep(os.environ.get("CEZ_RUNS_KEEP"), 300),
+            archived_keep=_keep(os.environ.get("CEZ_ARCHIVED_RUNS_KEEP"), 500),
         )
 
 

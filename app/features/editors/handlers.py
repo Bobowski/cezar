@@ -220,13 +220,7 @@ class EditorsPage:
         return self._root() / ".ai" / "cezar" / "ui-state.json"
 
     def _launch_key(self) -> str:
-        path = self.config.data_dir / "launch-key"
-        if path.is_file():
-            return path.read_text(encoding="utf-8").strip()
-        key = uuid.uuid4().hex
-        path.write_text(key + "\n", encoding="utf-8")
-        path.chmod(0o600)
-        return key
+        return store.launch_key(self.config.data_dir)
 
     def _doc(self, title: str, element_id: str, prompt: str, naming: str):
         return self._main(

@@ -1192,7 +1192,9 @@ class Engine:
                 await self._save(run)
                 reclaimed.append(run_id)
             runs = list_runs(self.db, project.id, None, limit=10_000)
-            for run_id in select_index_prune(runs, keep=self.config.runs_keep):
+            for run_id in select_index_prune(
+                runs, keep=self.config.runs_keep, archived_keep=self.config.archived_keep
+            ):
                 await self.db.write(delete_run_row, run_id)
         if reclaimed:
             self.publish()

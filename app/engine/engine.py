@@ -991,9 +991,15 @@ class Engine:
         if step.skill:
             skill = find_skill(root, step.skill)
             if skill is None:
+                from app.engine.team_skills import org_skill
+
+                skill = org_skill(self.config.data_dir, step.skill)
+            if skill is None:
                 await self._note(run.id, "note", f'skill "{step.skill}" was not found', step.id)
             else:
                 system_parts.append(skill.body)
+        if not followup and graph_step is None and index == 0 and "```mermaid" in run.task:
+            await self._note(run.id, "text", run.task)
         if run.autonomous:
             system_parts.append(
                 "Work autonomously. Do not stop to ask the user. "
@@ -1039,12 +1045,22 @@ class Engine:
             profile_home=_profile_home(self.config, run.account_id, step.runner or run.runner),
         )
         texts: list[str] = []
-        gained = 0
+        in_gained = 0
+        out_gained = 0
         saw_text = False
         compacted_turn = False
+        paused = asyncio.Event()
+        watch: asyncio.Task[None] | None = None
+        from app.features.settings.store import read_memory
+
+        if read_memory(self.config.data_dir):
+            watch = asyncio.create_task(self._watch_memory(run, Path(spec.cwd), paused))
         try:
             async for event in self._agent_for(spec.runner).stream(spec):
-                gained += event.input_tokens + event.output_tokens
+                if paused.is_set():
+                    break
+                in_gained += event.input_tokens
+                out_gained += event.output_tokens
                 if event.type == "delta" and event.text:
                     self._coalescer.push(run.id, "message", "text", event.text, self._live_delta)
                     continue
@@ -1055,7 +1071,8 @@ class Engine:
                     saw_text = True
                     parsed = usage_from_line(event.text)
                     if parsed is not None:
-                        gained += parsed[0] + parsed[1]
+                        in_gained += parsed[0]
+                        out_gained += parsed[1]
                     texts.append(event.text)
                 if event.type == "session" and event.text:
                     current_run = get_run(self.db, run.id) or run
@@ -1070,6 +1087,8 @@ class Engine:
                 if event.type == "turn-end" and event.name == "context-compaction":
                     compacted_turn = True
                 if event.type == "error":
+                    if paused.is_set():
+                        break
                     if cancel.is_set() or event.text == "cancelled":
                         if run.id in self._finish:
                             await self._mark_done(get_run(self.db, run.id) or run)
@@ -1080,6 +1099,19 @@ class Engine:
                     return "stop"
         finally:
             self._coalescer.flush()
+            if watch is not None:
+                watch.cancel()
+        if paused.is_set():
+            current = get_run(self.db, run.id) or run
+            current.status = "waiting"
+            current.ask = (
+                "Paused because this task crossed the memory cap. Send a message to resume."
+            )
+            current.error = ""
+            current.finished_at = ""
+            await self._save(current)
+            return "stop"
+        gained = in_gained + out_gained
         if not saw_text:
             full = self._coalescer.take_full(run.id, "message")
             if full:
@@ -1093,6 +1125,8 @@ class Engine:
             self._coalescer.take_full(run.id, "message")
         current = get_run(self.db, run.id) or run
         current.tokens_used += gained
+        current.input_tokens += in_gained
+        current.output_tokens += out_gained
         if gained:
             await self._note(
                 current.id,
@@ -1303,6 +1337,39 @@ class Engine:
         self._notify(run, previous)
         await self._autosave(run, "run finalize")
         self._reap(run.id)
+
+    async def _watch_memory(self, run: Run, cwd: Path, paused: asyncio.Event) -> None:
+        import signal
+
+        from app.engine.memory_guard import pids_in, rss_bytes_in
+        from app.features.settings.store import read_memory
+
+        while not paused.is_set():
+            limit = read_memory(self.config.data_dir)
+            if not limit or limit <= 0:
+                await asyncio.sleep(0.05)
+                continue
+            limit_bytes = limit * 1024 * 1024
+            rss = rss_bytes_in(cwd)
+            if rss is not None and rss > limit_bytes:
+                paused.set()
+                used = max(1, round(rss / (1024 * 1024)))
+                await self._note(
+                    run.id,
+                    "note",
+                    "memory limit exceeded — this task's process tree is using "
+                    f"{used} MiB (limit {limit} MiB). Pausing it and letting the next "
+                    "queued task run; resume it with a message.",
+                )
+                for pid in pids_in(cwd):
+                    if pid == os.getpid():
+                        continue
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+                return
+            await asyncio.sleep(0.05)
 
     async def _required_checks(self, run: Run) -> str | None:
         """Shell commands saved on the project. A non-zero exit keeps the run from `done`.

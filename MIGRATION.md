@@ -304,16 +304,16 @@ It is not a pixel copy of the React component.
 | settings `keyboard` | `/settings/keyboard` | done | `enter` is stored and rendered. The other two shortcuts are the same field. |
 | settings `bookmarklets` | `/settings/bookmarklets` | done | The launch-key file is mode `0600`. `?launch=` with that key opens New task; a wrong key is 403 (`tests/test_screens.py`). |
 | settings `integrations` | `/settings/integrations` | done | Set up e2e queues a task titled Tester Army, stores an optional model key as a project secret, and writes `e2e.config.ts` (`127.0.0.1:0`) plus `.ai/cezar/workflows/implement-and-e2e.yaml` when those files are absent (`tests/test_screens.py`). It does not run `npx e2e init`. |
-| `/dashboard` | `/dashboard` | partial | Status counts render, including `count-done` after a finished run. A bar chart groups each finished run's reported tokens by day (`tests/test_screens.py`). It is not the TypeScript usage-window series of input and output tokens. |
+| `/dashboard` | `/dashboard` | done | Status counts render, including `count-done` after a finished run. The usage table is a 7-day or 30-day UTC window (`?period=30d`). Input and output tokens, and cost, are lifetime totals grouped by the day the task was created. Completed counts `done` tasks by the day they finished, including a task created before the window. Hiding token or cost metrics drops those columns (`tests/test_screens.py`). |
 | `/projects` and settings `projects` | `/projects` | done | Add, including refusing `$HOME`. |
 | unknown path | — | done | `/does-not-exist` is 404. |
-| settings `tracker`, `tasks`, `skills` (global), `global-instructions`, resources | `/settings/tracker`, `/settings/tasks`, `/settings/global-skills`, `/settings/global-instructions`, `/settings/resources` | partial | The base branch is what the next task forks from. The global prompt is prepended before the project's own prompt (`tests/test_screens.py`). A required check runs in the worktree before `done`; `false` fails the run. TypeScript runs those checks only while auto-landing, which this port does not do. Org skill repos are saved and are not cloned into the prompt. The memory cap is saved; the run loop does not sample the agent process tree or pause it. |
+| settings `tracker`, `tasks`, `skills` (global), `global-instructions`, resources | `/settings/tracker`, `/settings/tasks`, `/settings/global-skills`, `/settings/global-instructions`, `/settings/resources` | done | The base branch is what the next task forks from. The global prompt is prepended before the project's own prompt (`tests/test_screens.py`). A required check runs in the worktree before `done`; `false` fails the run. TypeScript runs those checks only while auto-landing, which this port does not do. An org skill repo is cloned bare — a local path in the test — and a step that names the skill gets that body in the prompt. The memory cap samples the agent process tree (`VmRSS` of processes whose cwd is the worktree, plus their descendants). Crossing it pauses the task at `waiting` and the note names the limit. The form still rejects a cap under 256 MB. |
 | GitHub review and merge UI | task page `#merge-box` | done | A pull request shows Ready to merge or Merge blocked, the blocker, and Squash and merge. `tests/test_surface.py`. Failing checks block `canMerge`. |
 | Light / violet tokens, phone layout | the same CSS | done | Saving light and violet sets `class="light"` and `data-accent="violet"` (`tests/test_cockpit.py`). At 390×844 the sidebar stacks above the page; at 1280 it sits beside it, and the wordmark is the light-violet primary (`e2e/test_screens.py`). |
 | Command palette | `/palette/results` | done | ⌘K opens a dialog. The results request keeps a task whose title contains the query and drops the pages that do not (`tests/test_screens.py`). |
-| Mermaid in the transcript | session pane | done | A mermaid fence of `A --> B` is an SVG flowchart in the transcript. A diagram this port cannot lay out stays as the source (`tests/test_screens.py`). |
-| Thread virtualization | session pane | partial | The session renders the latest 40 events and an Earlier link for the rest (`tests/test_screens.py`). It does not virtualize row heights in the browser. |
-| Skills auto-update | — | intentionally not ported | It would run `npx` against the network. `CEZ_SKILLS_AUTO_UPDATE` stays unread. |
+| Mermaid in the transcript | session pane | done | Every mermaid fence is a `pre.mermaid`. The vendored `static/js/mermaid.min.js` draws it in the browser. There is no CDN and no homegrown layout. `e2e/test_screens.py` waits for a flowchart and a sequence diagram, and aborts any request that is not the cockpit. |
+| Thread virtualization | session pane | done | The server sends every event. At 300 rows the thread stays flat; past that, or with `?thread=virtual`, the browser keeps the last 16 rows in the DOM. `?thread=flat` keeps every row (`tests/test_screens.py`, `e2e/test_screens.py`). It does not restore a scrolled-up position the way virtua does. |
+| Skills auto-update | — | intentionally not ported | TypeScript runs it. After the server listens, a coordinator checks Open Mercato skill updates at most once per six-hour cache window and, when one is available and auto-update is on, applies it with a bounded `npx --yes skills update`. `CEZ_SKILLS_AUTO_UPDATE=0` or the Settings override skips applying; the background check can still run. This port does not start that coordinator. Adam can decide whether to port it. |
 | Host telemetry | — | intentionally not ported | This fork does not send host telemetry. The consent routes do not open a socket. |
 
 ### Background work and integrations
@@ -435,7 +435,8 @@ the fake binaries under `tests/fakes/`. Nothing here is a live CLI handshake.
   is what makes `GET/DELETE/POST /todos` read the inbox file; off, the list is
   empty and a mutation is 409. The inbox page does not use that file.
   `CEZ_SINGLE_PROJECT=1` refuses project add, patch, and remove. `CEZ_HIDE_TOKEN_*`
-  flips the health capability bits and does not change a chart.
+  flips the health capability bits and hides the matching dashboard totals and
+  usage-series columns.
 - `CEZ_ARCHIVED_RUNS_KEEP` caps archived rows. Live rows still use `CEZ_RUNS_KEEP`.
 - `systemPrompt` is prepended to the agent prompt. Branch names come from the
   namer. Dry-run uses the canned mock only when `CEZ_AUTONAME=1`.
@@ -511,10 +512,10 @@ next table.
 | `CEZ_TERMINAL` | done | `0` makes `POST /runs/{id}/terminal` answer 409 `terminal is disabled`. `tests/test_routes.py`. |
 | `CEZ_AUTOSAVE`, `CEZ_TITLE_UPDATES`, `CEZ_AUTONAME` | done | Turn end and run finalize commit `cezar autosave (turn end)` or `cezar autosave (run finalize)` on the task branch. Signing follows the repo's git config, matching `autosaveCommit` in `packages/cezar/src/git-worktree.ts` (`commit --no-verify`, no `commit.gpgsign` override). Tests set `commit.gpgsign false` on the repo in `tests/conftest.py`. `CEZ_AUTOSAVE=1` adds the periodic commit (`tests/test_stream_a.py`). `CEZ_TITLE_UPDATES=0` skips the live title refresh; otherwise a dry-run with `CEZ_AUTONAME=1` may rename from the turn (`tests/test_stream_a.py`). `CEZ_AUTONAME` itself is covered by `tests/test_engine.py`. |
 | `CEZ_TASK_PROCESS_REAP`, `CEZ_DISABLE_REPO_LOCK`, `CEZ_WORKFLOW_WEBHOOKS` | done | Settling a run SIGTERMs processes whose environ contains `CEZ_TASK_ID=<id>`; `CEZ_TASK_PROCESS_REAP=0` leaves them. In-place runs take one repo-root lock; `CEZ_DISABLE_REPO_LOCK=1` skips it and says so. A `notify.webhook` node fails until `CEZ_WORKFLOW_WEBHOOKS=1`, then POSTs. `tests/test_stream_a.py`. |
-| `CEZ_HIDE_TOKEN_USAGE`, `CEZ_HIDE_COST`, `CEZ_HIDE_TOKEN_METRICS` | done | Each flag is set in `tests/test_screens.py`. The health capabilities follow it, and the dashboard hides the token total, the cost total, or both. There is no daily usage chart. |
+| `CEZ_HIDE_TOKEN_USAGE`, `CEZ_HIDE_COST`, `CEZ_HIDE_TOKEN_METRICS` | done | Each flag is set in `tests/test_screens.py`. The health capabilities follow it, and the dashboard hides the token total, the cost total, or both, and drops the matching columns from the usage series. |
 | `CEZ_NO_BANNER`, `CEZ_UPDATE_CHANNEL`, `CEZ_SUPERVISED` | intentionally not ported | Star count, self-update, and the desktop supervisor. |
 | `CEZ_DESKTOP`, `CEZ_DESKTOP_*`, `CEZ_DISCLAIM_EXEC` | intentionally not ported | The Tauri shell is out of scope. |
-| `CEZ_SKILLS_AUTO_UPDATE` | intentionally not ported | — |
+| `CEZ_SKILLS_AUTO_UPDATE` | intentionally not ported | TypeScript reads it, and the Settings override, to decide whether the post-listen skills update applies. This port does not run that update. See the skills auto-update screen row. |
 | `CEZ_REMOTE_AGENT_ACCOUNTS` | done | Hosted mode (`CEZ_REMOTE=1`) refuses `POST /settings/accounts` with 409 until the flag is exactly `1`. A local cockpit saves without it (`tests/test_agent_env.py`). |
 | `CEZ_AUTONOMOUS_DEFAULT`, `CEZ_WORKTREE_DEFAULT` | done | Exact `1` / `0`. Omitted on `plan_run` inherits them: autonomous on, or a git checkout run in place. An explicit argument wins. `tests/test_stream_a.py`. |
 | Release packaging, server-install, disk space, startup port probe | not done | Compose is the container. The listen port does not auto-increment. |
@@ -532,7 +533,7 @@ Left as they are. A later agent should not "clean these up" as a drive-by:
 - JSON is often `json.dumps` (`app/engine/engine.py`, `app/engine/runners/protocol.py`, `app/integrations/outbox.py`, `app/secrets/store.py`, `app/integrations/hooks.py`). Route documents in `app/features/api/surface.py`, `app/engine/ui_state.py`, and `app/engine/uploads.py` go through `stario.json`. Leave a payload whose bytes are part of a signature or a wire fixture alone.
 - Settings, inbox, and new-task commands answer with `w.redirect(..., 303)`. Tests assert that status. The skill's command reply is `w.empty()` or `SSE(w).navigate`, because a 303 does not change the URL inside a Datastar request. Switching the reply changes those tests and the browser walk. The `/api/v1` families answer JSON.
 - The walk, the delta coalescer, and the terminal read loop go through `Engine._schedule`. When the server has bound an `App`, that is `App.create_task` (`tests/test_stream_a.py`). The CLI builds an `Engine` with no `App`, so the same helper uses `asyncio.create_task` there. Do not delete that fallback.
-- Most features have no `data.py`. Rows live in `app/store/db.py`. `Engine` is about 2,400 lines, `app/features/api/surface.py` about 1,450, and `app/features/api/handlers.py` about 670. The skill treats that shape as a second resource hiding in one class. Splitting it is its own change.
+- Most features have no `data.py`. Rows live in `app/store/db.py`. `Engine` is about 2,500 lines, `app/features/api/surface.py` about 1,450, and `app/features/api/handlers.py` about 670. The skill treats that shape as a second resource hiding in one class. Splitting it is its own change.
 - CSS is hand-written in `static/css/style.css`. That is the Decisions table. Do not add Tailwind.
 - A page is not always one resource plus a `db.watch` stream. Several settings pages are static HTML.
 
@@ -631,15 +632,9 @@ Git, GitHub, webhook, and hook methods already on `surface.py` stay with D.
 
 ### C — Datastar screens, settings, and e2e
 
-3 partial, 0 not done.
+0 partial, 0 not done.
 
-Partial:
-
-- settings `tracker`, `tasks`, `skills` (global), `global-instructions`, resources
-- `/dashboard`
-- Thread virtualization
-
-Command palette and mermaid fences are done. Skills auto-update and host telemetry are intentionally not ported; they are not open work.
+Skills auto-update and host telemetry are intentionally not ported. TypeScript does run skills auto-update after the server listens (at most once per six-hour window, unless `CEZ_SKILLS_AUTO_UPDATE=0` or Settings turns application off). This port does not. Adam can decide whether to port it. Host telemetry stays out.
 
 Owns: `app/features/tasks/`, `app/features/dashboard/`, `app/features/editors/`, `app/features/places/`, `app/features/projects/`, `app/features/settings/`, `app/features/skills/`, `app/features/automations/` (the page, not the JSON API), `app/features/workflows/views.py` and `handlers.py` for the page that already exists, `app/common/shell.py`, `static/css/style.css`, `e2e/test_main_loop.py`, `tests/test_cockpit.py`.
 

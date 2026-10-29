@@ -280,3 +280,52 @@ def test_automations_task_inbox_and_theme(page: Page, cockpit: Cockpit) -> None:
     expect(page.locator("html")).to_have_attribute("data-accent", "violet")
     color = page.evaluate("getComputedStyle(document.querySelector('.wordmark span')).color")
     assert color == "rgb(109, 40, 217)"
+
+
+def _block_off_origin(page: Page, cockpit: Cockpit) -> None:
+    def handle(route) -> None:
+        if route.request.url.startswith(cockpit.base):
+            route.continue_()
+            return
+        route.abort()
+
+    page.route("**/*", handle)
+
+
+def test_mermaid_fences_render_in_the_transcript(page: Page, cockpit: Cockpit) -> None:
+    _block_off_origin(page, cockpit)
+    page.goto(cockpit.url("/tasks/new"), wait_until="domcontentloaded")
+    page.get_by_label("Workflow").select_option("quick-task")
+    page.locator("textarea").fill(
+        "draw both\n\n"
+        "```mermaid\nflowchart LR\n  A --> B\n```\n\n"
+        "```mermaid\nsequenceDiagram\n  Alice->>Bob: hi\n```\n"
+    )
+    page.get_by_role("button", name="Start").click()
+    page.wait_for_url(re.compile(r"/tasks/[0-9a-f]{32}"), timeout=15_000)
+    page.locator("#transcript svg").nth(1).wait_for(timeout=15_000)
+    diagrams = page.locator("#transcript svg")
+    assert diagrams.count() >= 2
+    body = page.locator("#transcript").inner_html()
+    assert "Alice" in body
+    assert "flowchart" in body.lower() or ">B<" in body or ">A<" in body
+    assert page.locator("pre.mermaid[data-error]").count() == 0
+
+
+def test_a_virtual_thread_keeps_sixteen_rows(page: Page, cockpit: Cockpit) -> None:
+    steps = "\n".join(
+        f"  - id: c{index}\n    name: c{index}\n    command: 'true'" for index in range(24)
+    )
+    workflow = cockpit.repo / ".ai" / "cezar" / "workflows" / "many-checks.yaml"
+    workflow.parent.mkdir(parents=True, exist_ok=True)
+    workflow.write_text(f"name: many-checks\nsteps:\n{steps}\n", encoding="utf-8")
+    page.goto(cockpit.url("/tasks/new"), wait_until="domcontentloaded")
+    page.get_by_label("Workflow").select_option("many-checks")
+    page.locator("textarea").fill("run the checks")
+    page.get_by_role("button", name="Start").click()
+    page.wait_for_url(re.compile(r"/tasks/[0-9a-f]{32}$"), timeout=20_000)
+    page.get_by_text("done", exact=True).wait_for(timeout=20_000)
+    assert page.locator("#transcript > li").count() > 16
+    page.goto(page.url + "?thread=virtual", wait_until="domcontentloaded")
+    expect(page.locator("#transcript")).to_have_attribute("data-virtualized", "true")
+    expect(page.locator("#transcript > li")).to_have_count(16, timeout=10_000)

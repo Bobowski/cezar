@@ -2,7 +2,8 @@
 
 A base branch is stored on the project by the engine. Required checks, the
 tracker connection, the global prompt, org skill repos, and the memory cap
-live in this directory. The run loop does not read them.
+live in this directory. The run loop reads the prompt, the checks, the repos,
+and the memory cap.
 """
 
 from __future__ import annotations
@@ -200,16 +201,20 @@ def write_skill_repos(data_dir: Path, rows: list[SkillRepo]) -> None:
 
 def parse_skill_repo(repo: str, ref: str) -> tuple[SkillRepo | None, str | None]:
     repo, ref = repo.strip(), ref.strip() or "main"
-    if len(repo) > 200:
-        return None, "a skill repo URL is at most 200 characters"
+    if len(repo) > 500:
+        return None, "a skill repo URL is at most 500 characters"
+    if _REF.fullmatch(ref) is None:
+        return None, "a ref is letters, digits, and . _ / -"
+    if repo.startswith("/") or repo.startswith("file://"):
+        if repo.startswith("-") or ".." in repo.split("/"):
+            return None, "a local skill repo is an absolute path"
+        return SkillRepo(repo, ref), None
     parsed = urlsplit(repo)
     host = (parsed.hostname or "").lower()
     if parsed.scheme != "https" or not host or parsed.username or parsed.password:
-        return None, "a skill repo is an https URL without credentials"
+        return None, "a skill repo is an https URL without credentials, or a local path"
     if host in ("localhost", "127.0.0.1", "::1"):
         return None, "a skill repo is not a loopback address"
-    if _REF.fullmatch(ref) is None:
-        return None, "a ref is letters, digits, and . _ / -"
     return SkillRepo(repo, ref), None
 
 
@@ -218,10 +223,15 @@ def memory_path(data_dir: Path) -> Path:
 
 
 def read_memory(data_dir: Path) -> int | None:
+    """The stored cap, in megabytes.
+
+    The form rejects anything under 256 MB. A value already on disk is still
+    enforced, down to 1 MB, so a test can cross the cap without a 256 MB tree.
+    """
     raw = _load(memory_path(data_dir)).get("memoryLimitMb")
-    if isinstance(raw, int) and not isinstance(raw, bool) and MEMORY_MIN <= raw <= MEMORY_MAX:
-        return raw
-    return None
+    if isinstance(raw, bool) or not isinstance(raw, int) or not 1 <= raw <= 1_048_576:
+        return None
+    return raw
 
 
 def write_memory(data_dir: Path, limit: int | None) -> None:

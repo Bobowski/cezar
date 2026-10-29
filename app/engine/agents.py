@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from app.engine.prompts import AUTONOMOUS_NUDGE
+
 _WRITE = re.compile(r"mock:write\s+([A-Za-z0-9_./-]+)")
 
 
@@ -92,6 +94,10 @@ class DryRunAgent:
     async def stream(self, spec: AgentSpec) -> AsyncIterator[AgentEvent]:
         if spec.cancel.is_set():
             yield AgentEvent("error", "cancelled")
+            return
+        if AUTONOMOUS_NUDGE in spec.user_prompt:
+            yield AgentEvent("text", "CEZ:DONE")
+            yield AgentEvent("turn-end")
             return
         answered = "The user answered:" in spec.user_prompt
         if "mock:fail" in spec.user_prompt and not answered:

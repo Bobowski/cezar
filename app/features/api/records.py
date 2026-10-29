@@ -39,6 +39,8 @@ def public_run(run: Run, *, full: bool) -> dict[str, JsonValue]:
         body["finishedAt"] = run.finished_at
     if run.error:
         body["error"] = run.error
+    if run.auto_resume_at:
+        body["autoResumeAt"] = run.auto_resume_at
     if run.branch:
         body["branch"] = run.branch
     if run.worktree_path:

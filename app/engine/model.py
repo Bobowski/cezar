@@ -257,6 +257,9 @@ class Run:
     images: list[dict[str, object]] = field(default_factory=list)
     seen_at: str = ""
     auto_resume_at: str = ""
+    auto_resume_attempts: int = 0
+    monitoring_wakes: int = 0
+    monitoring_wake_at: str = ""
     awaiting_answer_since: str = ""
     pull_request_url: str = ""
     worktree_reclaimed_at: str = ""
@@ -310,6 +313,9 @@ class Run:
             "images": self.images,
             "seen_at": self.seen_at,
             "auto_resume_at": self.auto_resume_at,
+            "auto_resume_attempts": self.auto_resume_attempts,
+            "monitoring_wakes": self.monitoring_wakes,
+            "monitoring_wake_at": self.monitoring_wake_at,
             "awaiting_answer_since": self.awaiting_answer_since,
             "pull_request_url": self.pull_request_url,
             "worktree_reclaimed_at": self.worktree_reclaimed_at,
@@ -376,6 +382,9 @@ class Run:
             images=_dicts(data.get("images")),
             seen_at=_text(data.get("seen_at")),
             auto_resume_at=_text(data.get("auto_resume_at")),
+            auto_resume_attempts=_int(data.get("auto_resume_attempts")),
+            monitoring_wakes=_int(data.get("monitoring_wakes")),
+            monitoring_wake_at=_text(data.get("monitoring_wake_at")),
             awaiting_answer_since=_text(data.get("awaiting_answer_since")),
             pull_request_url=_text(data.get("pull_request_url")),
             worktree_reclaimed_at=_text(data.get("worktree_reclaimed_at")),

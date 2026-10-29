@@ -17,6 +17,7 @@ from app.features.skills.handlers import SkillsPage
 from app.features.task.handlers import TaskPage
 from app.features.tasks.handlers import TasksPage
 from app.features.workflows.handlers import WorkflowsPage
+from app.http.loopback import loopback_host_guard
 from app.store.db import schema
 
 
@@ -27,6 +28,7 @@ async def bootstrap(app: App, span: Span):
         engine = Engine(db, relay, config)
         engine.app = app
         app.use("/", same_origin(), security_headers())
+        app.use("/api", loopback_host_guard(config))
         span.attrs(await ASSETS.attach(app))
         span.attr("app.name", config.app_name)
         await engine.startup()
@@ -38,7 +40,7 @@ async def bootstrap(app: App, span: Span):
         DashboardPage(db, relay, engine, config).register(app)
         ProjectsPage(db, relay, engine, config).register(app)
         SettingsPage(db, relay, engine, config).register(app)
-        HealthPage(config).register(app)
+        HealthPage(db, engine, config).register(app)
         ApiPage(db, engine, config).register(app)
         app.create_task(engine.serve())
         yield

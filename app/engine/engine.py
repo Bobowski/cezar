@@ -479,17 +479,21 @@ class Engine:
         budget_usd: float | None = None,
         base_branch: str = "",
         kind: str = "implement",
+        workflow: Workflow | None = None,
     ) -> tuple[Run | None, str | None]:
         text = task.strip()
         if not text:
             return None, "task is empty"
-        if len(text) > 20_000:
-            return None, "task is too long"
+        if len(text) > 100_000:
+            return None, "must be at most 100000 characters"
         if runner not in RUNNERS:
             return None, f"unknown runner {runner}"
-        workflow = find_workflow(Path(project.root), workflow_name)
-        if workflow is None:
-            return None, f'unknown workflow "{workflow_name}"'
+        chosen = workflow
+        if chosen is None:
+            chosen = find_workflow(Path(project.root), workflow_name)
+        if chosen is None:
+            return None, f"unknown workflow: {workflow_name}"
+        workflow = chosen
         run = Run(
             id=uuid.uuid4().hex,
             project_id=project.id,

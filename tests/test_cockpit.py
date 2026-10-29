@@ -28,8 +28,11 @@ async def test_health_and_the_task_list(client):
     assert health.status_code == 200
     assert health.text.strip() == "ok"
     api = await client.get(API_HEALTH.href())
-    assert api.json()["ok"] is True
-    assert api.json()["dryRun"] is True
+    health_body = api.json()
+    assert health_body["version"]
+    assert health_body["defaultRunner"] == "claude"
+    assert health_body["capabilities"]["dispatch"] is True
+    assert health_body["repo"]["branch"] == "main"
     page = await client.get(TASKS.href())
     assert page.status_code == 200
     assert 'id="tasks"' in page.text
@@ -54,7 +57,7 @@ async def test_creating_a_task_reaches_review_and_finish_does_not_merge(client, 
         assert created.status_code == 200
         assert "window.location" in created.text
         assert "write a note" in await until(events, "status-review")
-    runs = (await client.get(API_RUNS.href())).json()["runs"]
+    runs = (await client.get(API_RUNS.href())).json()
     assert runs[0]["status"] == "review"
     run_id = runs[0]["id"]
     session = await client.get(TASK.href(run_id))
@@ -65,7 +68,7 @@ async def test_creating_a_task_reaches_review_and_finish_does_not_merge(client, 
     assert "CEZAR_DRY_RUN" not in (repo / "README.md").read_text(encoding="utf-8")
     finished = await client.post(TASK_FINISH.href(run_id), json={"tab": "t1"})
     assert finished.status_code == 204
-    assert (await client.get(API_RUNS.href())).json()["runs"][0]["status"] == "done"
+    assert (await client.get(API_RUNS.href())).json()[0]["status"] == "done"
     log = __import__("subprocess").run(
         ["git", "rev-list", "--count", "HEAD"],
         cwd=repo,
@@ -112,7 +115,8 @@ async def test_cancel_and_bad_input(client):
         await asyncio.sleep(0.05)
     assert status == "waiting"
     cancelled = await client.post(API_CANCEL.href(run_id))
-    assert cancelled.status_code == 204
+    assert cancelled.status_code == 200
+    assert cancelled.json()["cancelled"] is True
     assert (await client.get(f"/api/v1/runs/{run_id}")).json()["status"] == "cancelled"
     missing = await client.post(
         TASKS_CREATE.href(),
@@ -123,7 +127,7 @@ async def test_cancel_and_bad_input(client):
         API_RUNS_CREATE.href(),
         json={"task": "x", "workflow": "no-such-workflow"},
     )
-    assert unknown.status_code == 400
+    assert unknown.status_code == 404
 
 
 async def test_settings_save_repaints_the_stream(client):

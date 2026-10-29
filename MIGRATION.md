@@ -63,7 +63,7 @@ own the mounted checkout and would otherwise treat it as a non-git directory.
 | Dispatch | Cap of 4 in-flight children and the budget carve are ported. A settled child stores a report on the parent. It is not pushed into a live parent session. `CEZ_DISPATCH=0` refuses new children. |
 | Automations | Interval only, paused until enabled. An enabled row idle longer than its own interval is moved forward at startup and does not fire a backlog. No GitHub, Jira, or Linear triggers. |
 | URL shape | `?project=` on workspace pages, not `/p/:projectId/...`. |
-| Host guard | `same_origin()` on mutating requests. The TypeScript loopback `Host` check is not copied, so a container can be opened by its published host. There is no login. |
+| Host guard | Loopback `Host` check on `/api`, including health, with the same 403 text as #426. A missing Host is untrusted. `CEZ_REMOTE=1` or a non-loopback bind (compose's `0.0.0.0`) skips it, matching hosted mode. `same_origin()` still rejects cross-site mutations. There is no login. |
 | CSS | Hand-written from the cockpit tokens in `packages/web/src/styles/index.css`. Not DaisyUI. The React screens are not reproduced. |
 
 ## Size
@@ -76,16 +76,18 @@ is 33,553 bytes and is not application code. The TypeScript tree is still in the
 | --- | ---: | ---: |
 | TypeScript application (no `*test*` / `*spec*` files) | 807 | 146,242 |
 | TypeScript tests | 810 | 157,213 |
-| Python application (`app/`) | 49 | 5,509 |
-| Python tests, including protocol fakes | 13 | 1,386 |
+| Python application (`app/`) | 51 | 5,883 |
+| Python tests, including protocol fakes | 14 | 1,573 |
 | Python CSS | 1 | 221 |
 
 The Python application is about 4% of the TypeScript application by code lines.
+The HTTP slice covers the run lifecycle the engine already had, not the rest
+of `server.ts`.
 
 ## Checks
 
 `uv run ruff check`, `uv run ruff format --check`, `uv run pyright`, and
-`uv run pytest -q` were run on this branch. **62 tests passed.**
+`uv run pytest -q` were run on this branch. **70 tests passed.**
 
 A manual `CEZ_DRY_RUN=1 uv run python -m app.main` answered `/health`,
 `POST /api/v1/runs` returned 201, and the run reached `review` with a worktree
@@ -209,16 +211,27 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 
 ### HTTP
 
-The Python process does not implement the TypeScript `/api/v1` contract.
-These routes exist and are not a compatible subset of field names beyond the
-ones the tests read:
+Project routes are also mounted at `/api/v1/p/default/…` and
+`/api/v1/p/<project id>/…`. An unknown project id is 404. The unscoped mount
+is the boot project.
 
 | Route | Status | Verified |
 | --- | --- | --- |
-| `GET /health`, `GET /api/v1/health` | done | cockpit test and manual curl |
-| `GET/POST /api/v1/runs`, `GET /api/v1/runs/{id}`, events, cancel, finish | done | cockpit tests |
-| `GET /api/v1/workflows`, `GET /api/v1/projects` | partial | handlers exist; not asserted field-by-field |
-| Everything else in `packages/cezar/src/server/server.ts` (git, GitHub, terminal, fs, webhooks, trackers, providers, models, skills update, star count, preview, self-update, workspace branding, uploads, UI state, launch key, plan, deferred start, WebSocket) | not done | — |
+| `GET /health` | done | cockpit test. Plain `ok`. |
+| `GET /api/v1/health` | partial | `tests/test_api.py`. Required discovery keys, CORS `*`, no `root` on `projects[]`. `checks` is `shutil.which` with no version string. `forge` is null (health does not shell out to `gh`). `terminal` and `designMode` are false because those features are not ported. `disk` and `instanceId` are absent. |
+| `GET /api/v1/runs` | partial | JSON array of records. `workflowDef` omitted unless `full=1`. No live `usage` sample. |
+| `POST /api/v1/runs` | partial | 201 stored record. Workflow XOR steps, empty task, unknown runner, and a non-`default` `agentProfile` are 400. Unknown workflow is 404. Inline steps run as `(planned)`. `variants` above 1 is 400 (not a group). Attachments are 400. |
+| `GET /api/v1/runs/{id}` | partial | Required record keys (`id`, `title`, `workflow`, `task`, `status`, `createdAt`, `tokensUsed`, `archived`, `steps`). |
+| `GET /api/v1/runs/{id}/events` | partial | JSON snapshot. TypeScript answers `text/event-stream` (`run-event` / protocol v2). |
+| `POST /api/v1/runs/{id}/cancel` | partial | 200 `{cancelled: true\|false}`. A settled run is false. 404 unknown. |
+| `POST /api/v1/runs/{id}/finish` | partial | 200 `{finished: true}` from `review` only. Anything else is 409 `no open session`. TypeScript also finishes a waiting session through this route. |
+| `DELETE /api/v1/runs/{id}` | done | 200 `{deleted: true}`. 409 while queued, running, or waiting. 404 unknown. |
+| `POST /api/v1/runs/{id}/messages` | partial | `{delivered: true}` for `waiting` and `review`. No queued-message stack and no `deferred` buffer. Attachments are 400. |
+| `DELETE /api/v1/runs/{id}/auto-resume` | partial | 200 `{cancelled: true}` because nothing schedules a resume. 404 unknown. |
+| `GET /api/v1/workflows` | partial | `{workflows, issues}`. |
+| `GET /api/v1/projects` | partial | `id`, `name`, `root`, `addedAt`, `lastOpenedAt`, `source: local`, `status`, `branch` when it is a git checkout. No forge, tags, or `maxParallel`. `projectsDir` is the Python data directory, not the TypeScript checkouts directory. |
+| Loopback `Host` guard on `/api` | done | `tests/test_api.py`. Foreign Host is 403, including health. `CEZ_REMOTE=1` skips it. |
+| Everything else in `packages/cezar/src/server/server.ts` (git, GitHub, terminal, fs, webhooks, trackers, providers, models, skills update, star count, preview, self-update, workspace branding, uploads, UI state, launch key, plan, deferred start, archive, pin, read receipts, WebSocket) | not done | — |
 
 HTML routes that are live (Datastar SSE, not the old NDJSON event stream):
 `/tasks`, `/tasks/new`, `/tasks/{id}`, `/workflows`, `/skills`, `/automations`,
@@ -272,8 +285,10 @@ TypeScript tree would drop the product.
 - Unset `CEZ_DRY_RUN` spawns whatever binary is on `PATH` for the selected
   runner, with that runner's flags, and does not ask before tools. Compose
   keeps the mock on.
-- The server has no login. Compose publishes port 4321. `same_origin()` blocks
-  cross-site mutations; it is not an access control.
+- The server has no login. Compose binds `0.0.0.0`, which is hosted mode, so
+  the loopback Host check is skipped and port 4321 is reachable by anyone who
+  can open it. `same_origin()` blocks cross-site mutations; it is not an
+  access control.
 - One process owns the SQLite file. A second `run` or `projects` command exits
   if the cockpit holds the claim.
 - A check step is `sh -c` in the worktree, same trust model as a workflow the

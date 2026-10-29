@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import base64
 import hmac
-import os
 import secrets
 import sys
 from pathlib import Path
@@ -21,7 +20,7 @@ from pathlib import Path
 from stario.http.context import Context, Handler, Middleware
 from stario.http.writer import Writer
 
-from app.config import Config
+from app.config import Config, auth_password, auth_user
 from app.http.loopback import hosted_mode
 
 _REALM = 'Basic realm="cezar"'
@@ -54,8 +53,8 @@ def basic_auth(config: Config) -> Middleware:
 
 
 def _credentials(config: Config) -> tuple[str, str]:
-    user = os.environ.get("CEZ_AUTH_USER", "cezar").strip() or "cezar"
-    chosen = os.environ.get("CEZ_AUTH_PASSWORD", "").strip()
+    user = auth_user()
+    chosen = auth_password()
     if chosen:
         return user, chosen
     path = Path(config.data_dir) / "auth-password"

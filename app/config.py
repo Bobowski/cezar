@@ -71,6 +71,7 @@ class Config:
     jira_webhook_secret: str = ""
     linear_webhook_secret: str = ""
     browse_root: str = ""
+    projects_dir: Path = Path("data/projects")
     worktree_keep: int = 10
     runs_keep: int = 300
     archived_keep: int = 500
@@ -86,7 +87,8 @@ class Config:
     @classmethod
     def from_env(cls) -> Config:
         # Yard sets PROJECT_DATA_DIR=/data, a host directory that survives every deploy.
-        data_dir = Path(os.environ.get("PROJECT_DATA_DIR", "data"))
+        # CEZ_HOME is the same directory when that pin is absent (an empty value does not count).
+        data_dir = _data_dir()
         data_dir.mkdir(parents=True, exist_ok=True)
         repo = Path(os.environ.get("CEZ_REPO", os.getcwd())).expanduser().resolve()
         bins = {
@@ -124,10 +126,48 @@ class Config:
             jira_webhook_secret=os.environ.get("CEZ_JIRA_WEBHOOK_SECRET", ""),
             linear_webhook_secret=os.environ.get("CEZ_LINEAR_WEBHOOK_SECRET", ""),
             browse_root=os.environ.get("CEZ_BROWSE_ROOT", str(Path.home())),
+            projects_dir=_projects_dir(data_dir),
             worktree_keep=_keep(os.environ.get("CEZ_WORKTREE_RETENTION"), 10),
             runs_keep=_keep(os.environ.get("CEZ_RUNS_KEEP"), 300),
             archived_keep=_keep(os.environ.get("CEZ_ARCHIVED_RUNS_KEEP"), 500),
         )
+
+
+def terminal_enabled() -> bool:
+    """Read at the call. `CEZ_TERMINAL=0` is the off switch; anything else stays on."""
+    return os.environ.get("CEZ_TERMINAL") != "0"
+
+
+def single_project() -> bool:
+    """Exact `1`, same rule as the TypeScript registry. `true` does not count."""
+    return os.environ.get("CEZ_SINGLE_PROJECT") == "1"
+
+
+def followups_enabled() -> bool:
+    return os.environ.get("CEZ_FOLLOWUPS") == "1"
+
+
+def automations_enabled() -> bool:
+    return os.environ.get("CEZ_AUTOMATIONS") != "0"
+
+
+def instance_id() -> str:
+    return os.environ.get("CEZ_INSTANCE_ID", "").strip()
+
+
+def auth_user() -> str:
+    return os.environ.get("CEZ_AUTH_USER", "cezar").strip() or "cezar"
+
+
+def auth_password() -> str:
+    return os.environ.get("CEZ_AUTH_PASSWORD", "").strip()
+
+
+def todos_path(repo: Path) -> Path:
+    raw = os.environ.get("CEZ_TODOS_FILE", "").strip()
+    if raw:
+        return Path(raw)
+    return repo / ".ai" / "cezar" / "todos.json"
 
 
 def listen_config() -> ServerConfig:
@@ -141,6 +181,23 @@ def apply_overrides(*, repo: str | None = None, data_dir: str | None = None) -> 
         os.environ["CEZ_REPO"] = repo
     if data_dir is not None:
         os.environ["PROJECT_DATA_DIR"] = data_dir
+
+
+def _data_dir() -> Path:
+    explicit = os.environ.get("PROJECT_DATA_DIR", "").strip()
+    if explicit:
+        return Path(explicit)
+    home = os.environ.get("CEZ_HOME", "").strip()
+    if home:
+        return Path(home).expanduser()
+    return Path("data")
+
+
+def _projects_dir(data_dir: Path) -> Path:
+    raw = os.environ.get("CEZ_PROJECTS_DIR", "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return data_dir / "projects"
 
 
 def _design_mode(listen_host: str) -> bool:

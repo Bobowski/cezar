@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
+
+from stario.json import JsonValue
+from stario.json import dumps as json_dumps
 
 MAX_KEYS = 200
 
@@ -31,5 +35,5 @@ def merge_state(path: Path, patch: object) -> tuple[dict[str, object] | None, st
     merged = read_state(path)
     merged.update({str(key): value for key, value in patch.items()})
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    path.write_text(json_dumps(cast(JsonValue, merged)) + "\n", encoding="utf-8")
     return merged, None

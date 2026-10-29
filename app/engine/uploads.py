@@ -11,6 +11,10 @@ import base64
 import json
 import re
 from pathlib import Path
+from typing import cast
+
+from stario.json import JsonValue
+from stario.json import dumps as json_dumps
 
 UPLOAD_ID = re.compile(r"^[a-f0-9]{24}$")
 MAX_DATA_CHARS = 7_000_000
@@ -43,7 +47,9 @@ def write_upload(
     upload_id = token_hex(12)
     (directory / f"{upload_id}.bin").write_bytes(raw)
     meta = {"id": upload_id, "mediaType": media_type, "name": _safe_name(name)}
-    (directory / f"{upload_id}.json").write_text(json.dumps(meta), encoding="utf-8")
+    (directory / f"{upload_id}.json").write_text(
+        json_dumps(cast(JsonValue, meta)), encoding="utf-8"
+    )
     return meta, None
 
 

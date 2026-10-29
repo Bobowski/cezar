@@ -7,7 +7,6 @@ a missing bind host means "we defaulted to loopback".
 
 from __future__ import annotations
 
-import os
 import re
 
 from stario.http.context import Context, Handler, Middleware
@@ -43,7 +42,7 @@ def is_loopback_host_header(host: str | None) -> bool:
 
 
 def hosted_mode(config: Config) -> bool:
-    return os.environ.get("CEZ_REMOTE") == "1" or not is_loopback_host(config.listen_host)
+    return config.hosted
 
 
 def loopback_host_guard(config: Config) -> Middleware:

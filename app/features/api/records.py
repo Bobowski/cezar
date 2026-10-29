@@ -63,6 +63,14 @@ def public_run(run: Run, *, full: bool) -> dict[str, JsonValue]:
         body["seenAt"] = run.seen_at
     if run.pull_request_url:
         body["pullRequestUrl"] = run.pull_request_url
+    if run.parent_id or run.root_id or run.dispatch_report:
+        dispatch: dict[str, JsonValue] = {"rootRunId": run.root_id or run.id}
+        if run.parent_id:
+            dispatch["parentRunId"] = run.parent_id
+            dispatch["kind"] = run.kind or "implement"
+        if run.dispatch_report:
+            dispatch["report"] = cast(JsonValue, run.dispatch_report)
+        body["dispatch"] = dispatch
     if run.queued_messages:
         body["queuedMessages"] = [
             {

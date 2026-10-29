@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -16,8 +17,15 @@ from litewriter import ClaimBusy, LiteWriter
 from stario import Relay, serve
 from stario.http.config import ServerConfig
 
+from app.cli_commands import (
+    run_automation_command,
+    run_runs_command,
+    run_secrets_command,
+    run_task_command,
+    run_telemetry_command,
+)
 from app.clock import stamp
-from app.config import RUNNERS, Config, apply_overrides
+from app.config import RUNNERS, Config, apply_overrides, single_project
 from app.engine.engine import Engine
 from app.engine.import_runs import events_near, load_runs_file
 from app.engine.scaffold import init_project
@@ -61,6 +69,10 @@ def main(argv: list[str] | None = None) -> int:
     importer = sub.add_parser("import-runs", parents=[common])
     importer.add_argument("path")
 
+    for name in ("task", "automation", "runs", "secrets", "telemetry"):
+        extra = sub.add_parser(name)
+        extra.add_argument("rest", nargs=argparse.REMAINDER)
+
     args = parser.parse_args(argv)
     if args.repo:
         apply_overrides(repo=args.repo)
@@ -89,6 +101,18 @@ def main(argv: list[str] | None = None) -> int:
             )
         if command == "import-runs":
             return asyncio.run(import_runs_command(Path(args.path)))
+        if command == "task":
+            return run_task_command(args.rest, dict(os.environ), _out, _err)
+        if command == "automation":
+            return run_automation_command(args.rest, dict(os.environ), _out, _err)
+        if command == "runs":
+            return run_runs_command(args.rest, dict(os.environ), _out, _err)
+        if command == "secrets":
+            return asyncio.run(
+                run_secrets_command(args.rest, read_value=_stdin, log=_out, error=_err)
+            )
+        if command == "telemetry":
+            return run_telemetry_command(args.rest, _out, _err)
         return asyncio.run(projects_command(args.action, args.value))
     except ClaimBusy:
         print("the database is in use by a running cockpit", file=sys.stderr)
@@ -176,6 +200,12 @@ async def projects_command(action: str, value: str | None) -> int:
             for project in list_projects(db):
                 print(f"{project.id}\t{project.root}")
             return 0
+        if action in ("add", "remove") and single_project():
+            print(
+                "add/remove/tag are unavailable when CEZ_SINGLE_PROJECT=1",
+                file=sys.stderr,
+            )
+            return 1
         if action == "add":
             path = Path(value) if value else config.repo_root
             project, reason = await engine.add_project(path)
@@ -198,6 +228,18 @@ async def projects_command(action: str, value: str | None) -> int:
             return 0
         print(f"unknown projects action: {action}", file=sys.stderr)
         return 1
+
+
+def _out(line: str) -> None:
+    print(line)
+
+
+def _err(line: str) -> None:
+    print(line, file=sys.stderr)
+
+
+def _stdin() -> str:
+    return sys.stdin.read()
 
 
 if __name__ == "__main__":

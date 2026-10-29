@@ -479,7 +479,7 @@ class ApiPage:
                         for project in list_projects(self.db)
                     ],
                     "bootProject": self.engine.boot_project_id,
-                    "projectsDir": str(self.config.data_dir),
+                    "projectsDir": str(self.config.projects_dir),
                 },
             )
         )

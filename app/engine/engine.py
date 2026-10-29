@@ -20,7 +20,7 @@ from litewriter.errors import StateError
 from stario import App, Relay
 
 from app.clock import after, now, parse_stamp, stamp
-from app.config import RUNNERS, Config
+from app.config import RUNNERS, Config, single_project
 from app.engine.agents import AgentSpec, Runner, usage_from_line
 from app.engine.catalog import find_workflow, load_workflows
 from app.engine.deferred import DeferredBuffer
@@ -1593,6 +1593,38 @@ class Engine:
         await self._note(parent.id, "note", f'dispatched "{child.title}" ({child.id})')
         return child.id, None
 
+    async def record_report(self, run_id: str, report: dict[str, object]) -> str | None:
+        """The `cez task report` body. A settled child keeps this instead of a generic note."""
+        if not self.config.dispatch_enabled:
+            return "dispatch is disabled on this cockpit (CEZ_DISPATCH=0)"
+        run = get_run(self.db, run_id)
+        if run is None:
+            return "not found"
+        if not run.parent_id:
+            return "run is not part of a dispatch tree"
+        status = report.get("status")
+        result = report.get("result")
+        if status not in ("done", "partial", "failed", "blocked"):
+            return "status must be done, partial, failed, or blocked"
+        if not isinstance(result, str) or not result.strip() or len(result) > 4000:
+            return "result is required"
+        verdict = report.get("verdict")
+        if verdict is not None and verdict not in ("approve", "changes", "reject"):
+            return "verdict must be approve, changes, or reject"
+        stored: dict[str, object] = {"status": status, "result": result.strip()}
+        if isinstance(verdict, str):
+            stored["verdict"] = verdict
+        entry: dict[str, object] = {
+            "title": run.title,
+            "text": result.strip(),
+            "status": status,
+            "from_id": run.id,
+            "at": stamp(),
+        }
+        await self.db.write(_persist_explicit_report, run.id, run.parent_id, entry, stored)
+        self.publish()
+        return None
+
     async def _report_child(self, run_id: str) -> None:
         run = get_run(self.db, run_id)
         if run is None or not run.parent_id or run.reported or run.status not in TERMINAL:
@@ -1637,6 +1669,8 @@ class Engine:
         self.boot_project_id = project.id
 
     async def add_project(self, path: Path) -> tuple[Project | None, str | None]:
+        if single_project():
+            return None, "single-project mode is enabled; adding projects is disabled"
         root = path.expanduser().resolve()
         if not root.is_dir():
             return None, "that path is not a directory"
@@ -1742,7 +1776,10 @@ class Engine:
         await self.enqueue(run)
         updated = replace(item, last_run_id=run.id)
         if move_schedule:
-            updated = replace(updated, next_at=after(item.every_minutes))
+            if item.once:
+                updated = replace(updated, enabled=False)
+            else:
+                updated = replace(updated, next_at=after(item.every_minutes))
         await self.db.write(save_automation, updated)
         self.publish()
         return run.id
@@ -1778,6 +1815,26 @@ def _if_port(run: Run, node: dict[str, Any], outputs: dict[str, dict[str, str]])
     if kind == "branch":
         return "true" if run.base_branch == condition.get("value") else "false"
     return "false"
+
+
+def _persist_explicit_report(
+    tx: Tx,
+    child_id: str,
+    parent_id: str,
+    entry: dict[str, object],
+    report: dict[str, object],
+) -> None:
+    child = get_run_tx(tx, child_id)
+    if child is None:
+        return
+    child.reported = True
+    child.dispatch_report = report
+    save_run(tx, child)
+    parent = get_run_tx(tx, parent_id)
+    if parent is None:
+        return
+    parent.pending_reports = append_report(parent.pending_reports, entry)
+    save_run(tx, parent)
 
 
 def _persist_report(tx: Tx, child_id: str, parent_id: str, entry: dict[str, object]) -> None:

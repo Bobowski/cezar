@@ -262,10 +262,11 @@ class Run:
     worktree_reclaimed_at: str = ""
     notes: str = ""
     attachment_paths: list[str] = field(default_factory=list)
+    dispatch_report: dict[str, object] = field(default_factory=dict)
     account_id: str = ""
 
     def to_json(self) -> dict[str, object]:
-        return {
+        body: dict[str, object] = {
             "id": self.id,
             "project_id": self.project_id,
             "title": self.title,
@@ -318,6 +319,9 @@ class Run:
             "attachment_paths": self.attachment_paths,
             "account_id": self.account_id,
         }
+        if self.dispatch_report:
+            body["dispatch_report"] = self.dispatch_report
+        return body
 
     @classmethod
     def from_json(cls, raw: object) -> Run:
@@ -383,6 +387,7 @@ class Run:
             worktree_reclaimed_at=_text(data.get("worktree_reclaimed_at")),
             notes=_text(data.get("notes")),
             attachment_paths=_strings(data.get("attachment_paths")),
+            dispatch_report=_dict(data.get("dispatch_report")),
             account_id=_text(data.get("account_id")),
         )
 
@@ -478,6 +483,9 @@ class Automation:
     last_run_id: str = ""
     tracker: str = ""
     tracker_event: str = ""
+    revision: int = 1
+    once: bool = False
+    creation_key: str = ""
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -494,6 +502,9 @@ class Automation:
             "last_run_id": self.last_run_id,
             "tracker": self.tracker,
             "tracker_event": self.tracker_event,
+            "revision": self.revision,
+            "once": self.once,
+            "creation_key": self.creation_key,
         }
 
     @classmethod
@@ -519,6 +530,9 @@ class Automation:
             last_run_id=_text(data.get("last_run_id")),
             tracker=_text(data.get("tracker")),
             tracker_event=_text(data.get("tracker_event")),
+            revision=max(1, _int(data.get("revision"), 1)),
+            once=_bool(data.get("once")),
+            creation_key=_text(data.get("creation_key")),
         )
 
 

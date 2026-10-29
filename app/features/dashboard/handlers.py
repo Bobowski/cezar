@@ -26,7 +26,7 @@ class DashboardPage:
         app.add(DASHBOARD_LIVE, self.live)
 
     async def show(self, c: Context, w: Writer) -> None:
-        w.html(self._render(uuid.uuid7().hex))
+        w.html(self._render(uuid.uuid7().hex, _days(c.req.query.get("period", "7d"))))
 
     async def live(self, c: Context, w: Writer) -> None:
         try:
@@ -40,14 +40,14 @@ class DashboardPage:
             return
         async with self.relay.subscribe(CHANGED, f"tab.{tab}", latest=True) as events:
             sse = SSE(w)
-            sse.patch_elements(self._render(tab))
+            sse.patch_elements(self._render(tab, _days(c.req.query.get("period", "7d"))))
             async for subject, payload in c.alive(events):
                 if subject == CHANGED:
-                    sse.patch_elements(self._render(tab))
+                    sse.patch_elements(self._render(tab, _days(c.req.query.get("period", "7d"))))
                 else:
                     sse.patch_signals(payload)
 
-    def _render(self, tab: str):
+    def _render(self, tab: str, days: int = 7):
         hide_all = self.config.hide_token_metrics
         return render(
             list_runs(self.db, None, None),
@@ -57,4 +57,9 @@ class DashboardPage:
             tab,
             show_tokens=not hide_all and not self.config.hide_token_usage,
             show_cost=not hide_all and not self.config.hide_cost,
+            days=days,
         )
+
+
+def _days(period: str) -> int:
+    return 30 if period == "30d" else 7

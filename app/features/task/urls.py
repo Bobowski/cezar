@@ -23,15 +23,18 @@ PANES = ("session", "diff", "files", "commits", "graph", "notes", "terminal", "b
 @dataclass(frozen=True, slots=True)
 class TaskView:
     pane: str = "session"
-    earlier: bool = False
+    thread: str = "auto"
 
     @classmethod
     def from_query(cls, query: ParsedQuery) -> TaskView:
         pane = query.get("pane", "session")
-        return cls(pane if pane in PANES else "session", query.get("earlier") == "1")
+        thread = query.get("thread", "auto")
+        if thread not in ("auto", "flat", "virtual"):
+            thread = "auto"
+        return cls(pane if pane in PANES else "session", thread)
 
     def query(self) -> dict[str, str]:
         params = {"pane": self.pane}
-        if self.earlier:
-            params["earlier"] = "1"
+        if self.thread != "auto":
+            params["thread"] = self.thread
         return params

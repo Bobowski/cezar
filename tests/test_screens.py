@@ -102,6 +102,11 @@ async def test_a_finished_task_shows_transcript_shell_inbox_and_counts(client):
     assert "tokens reported" in board.text
     assert "cost reported" in board.text
     assert "are hidden" not in board.text
+    assert "Input tokens" in board.text and "Output tokens" in board.text
+    assert "Last 7 days" in board.text
+    month = await client.get("/dashboard?period=30d")
+    assert "Last 30 days" in month.text
+    assert month.text.count("<tr>") == 31
     shell = await client.post(
         TASK_SHELL.href(run_id),
         json={"tab": "t1", "command": "echo cezar-pane-ok"},
@@ -480,6 +485,7 @@ async def test_dashboard_hides_token_totals_when_the_flags_are_set(tmp_path, mon
     async with _open(tmp_path, monkeypatch, label="usage", CEZ_HIDE_TOKEN_USAGE="1") as client:
         page = await client.get("/dashboard")
         assert "tokens reported" not in page.text
+        assert "Input tokens" not in page.text
         assert "cost reported" in page.text
         assert "Token totals are hidden." in page.text
         health = (await client.get(API_HEALTH.href())).json()["capabilities"]
@@ -488,6 +494,7 @@ async def test_dashboard_hides_token_totals_when_the_flags_are_set(tmp_path, mon
     async with _open(tmp_path, monkeypatch, label="cost", CEZ_HIDE_COST="1") as client:
         page = await client.get("/dashboard")
         assert "tokens reported" in page.text
+        assert "Input tokens" in page.text
         assert "cost reported" not in page.text
         assert "Cost totals are hidden." in page.text
         health = (await client.get(API_HEALTH.href())).json()["capabilities"]
@@ -550,19 +557,23 @@ async def test_the_command_palette_filters_tasks(client):
     assert "palette needle task" not in pages.text
 
 
-def test_a_mermaid_fence_draws_a_flowchart_and_the_transcript_windows():
+def test_mermaid_fences_and_the_usage_window_and_virtual_thread():
+    from datetime import UTC, datetime, timedelta
+
     from stario.markup import render as html
 
     from app.common.shell import Chrome
     from app.engine.model import Event, Run
-    from app.features.dashboard.views import usage_chart
+    from app.features.dashboard.views import usage_series
     from app.features.task.mermaid import diagrams
     from app.features.task.urls import TaskView
     from app.features.task.views import render as task_page
 
-    drawn = html(diagrams("```mermaid\nflowchart LR\n  A --> B\n```")[0])
-    assert "<svg" in drawn and ">A<" in drawn and ">B<" in drawn
-    assert "mermaid" in html(diagrams("```mermaid\nsequenceDiagram\n  Alice->>Bob: hi\n```")[0])
+    flow = html(diagrams("```mermaid\nflowchart LR\n  A --> B\n```")[0])
+    sequence = html(diagrams("```mermaid\nsequenceDiagram\n  Alice->>Bob: hi\n```")[0])
+    assert 'class="mermaid"' in flow and "A --&gt; B" in flow and "<svg" not in flow
+    assert "Alice-&gt;&gt;Bob: hi" in sequence
+    assert "app.diagram.render" in flow
     run = Run(
         id="a" * 32,
         project_id="p",
@@ -578,31 +589,54 @@ def test_a_mermaid_fence_draws_a_flowchart_and_the_transcript_windows():
         Event(index, run.id, index, "text", f"line {index}", "", "2026-01-01T00:00:00+00:00")
         for index in range(45)
     ]
-    events[44] = Event(
-        44,
-        run.id,
-        44,
-        "text",
-        "```mermaid\nA --> B\n```",
-        "",
-        "2026-01-01T00:00:00+00:00",
-    )
     chrome = Chrome("Task", "tasks", "p", (), "dark", "lime", True, False)
     page = html(task_page(run, events, [], TaskView(), None, chrome, "t1"))
-    assert page.count('class="ev ') == 40
-    assert 'id="transcript-earlier"' in page
-    assert "<svg" in page
-    full = html(task_page(run, events, [], TaskView(earlier=True), None, chrome, "t1"))
-    assert full.count('class="ev ') == 45
-    older = _chart_run("2026-01-01T00:00:00+00:00", 10)
-    newer = _chart_run("2026-01-02T00:00:00+00:00", 30)
-    chart = html(usage_chart([older, newer], show_tokens=True, show_cost=True))
-    assert 'id="usage-chart"' in chart
-    assert "01-01" in chart and "01-02" in chart
-    assert usage_chart([], show_tokens=False, show_cost=False) is None
+    assert page.count('class="ev ') == 45
+    assert 'data-virtualized="false"' in page
+    forced = html(task_page(run, events, [], TaskView(thread="virtual"), None, chrome, "t1"))
+    assert 'data-virtualized="true"' in forced
+    assert "app.thread.mount" in forced
+    at_threshold = [
+        Event(index, run.id, index, "text", f"line {index}", "", "2026-01-01T00:00:00+00:00")
+        for index in range(300)
+    ]
+    past = at_threshold + [
+        Event(300, run.id, 300, "text", "line 300", "", "2026-01-01T00:00:00+00:00")
+    ]
+    assert 'data-virtualized="false"' in html(
+        task_page(run, at_threshold, [], TaskView(), None, chrome, "t1")
+    )
+    assert 'data-virtualized="true"' in html(
+        task_page(run, past, [], TaskView(), None, chrome, "t1")
+    )
+    assert 'data-virtualized="false"' in html(
+        task_page(run, past, [], TaskView(thread="flat"), None, chrome, "t1")
+    )
+    today = datetime.now(UTC)
+    recent = _chart_run(today.isoformat(), 1117, 2228)
+    old = _chart_run((today - timedelta(days=10)).isoformat(), 9090, 8080)
+    week = html(usage_series([recent, old], days=7, show_tokens=True, show_cost=True))
+    assert week.count("<tr>") == 8
+    assert "1117" in week and "2228" in week
+    assert "9090" not in week
+    month = html(usage_series([recent, old], days=30, show_tokens=True, show_cost=True))
+    assert "9090" in month and month.count("<tr>") == 31
+    hidden = html(usage_series([recent], days=7, show_tokens=False, show_cost=True))
+    assert "Input tokens" not in hidden
+    assert "1117" not in hidden
+    early = _chart_run((today - timedelta(days=10)).isoformat(), 4242, 4343)
+    early.finished_at = today.isoformat()
+    week = html(usage_series([recent, early], days=7, show_tokens=True, show_cost=True))
+    assert "4242" not in week
+    row = re.search(
+        rf"<td>{today.date().isoformat()}</td><td>1</td><td[^>]*>1117</td>"
+        rf"<td[^>]*>2228</td><td>1\.50</td><td>2</td>",
+        week,
+    )
+    assert row is not None
 
 
-def _chart_run(when: str, tokens: int):
+def _chart_run(when: str, incoming: int, outgoing: int):
     from app.engine.model import Run
 
     return Run(
@@ -616,9 +650,91 @@ def _chart_run(when: str, tokens: int):
         created_at=when,
         workflow_def={},
         finished_at=when,
-        tokens_used=tokens,
+        input_tokens=incoming,
+        output_tokens=outgoing,
         cost_usd=1.5,
     )
+
+
+async def test_an_org_skill_repo_is_cloned_into_the_prompt(client, repo, tmp_path):
+    origin = tmp_path / "org"
+    origin.mkdir()
+    subprocess.run(["git", "init", "-b", "main", str(origin)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=origin, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=origin, check=True)
+    skill = origin / "skills" / "house-style"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: house-style\ndescription: Be boring\n---\n\nORG-SKILL-BODY\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "skills"], cwd=origin, check=True)
+    subprocess.run(["git", "commit", "-m", "skill"], cwd=origin, check=True, capture_output=True)
+    saved = await client.post(
+        "/settings/global-skills",
+        json={"tab": "t1", "repo": str(origin), "ref": "main"},
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303
+    workflow = repo / ".ai" / "cezar" / "workflows" / "use-org.yaml"
+    workflow.parent.mkdir(parents=True, exist_ok=True)
+    workflow.write_text(
+        "name: use-org\nsteps:\n  - id: apply\n    name: Apply\n    skill: house-style\n"
+        '    prompt: "{{task}}"\n',
+        encoding="utf-8",
+    )
+    created = await client.post(
+        TASKS_CREATE.href(),
+        json={
+            "tab": "t1",
+            "task": "use the org skill",
+            "workflow": "use-org",
+            "runner": "claude",
+        },
+    )
+    assert created.status_code == 200
+    run_id = (await client.get("/api/v1/runs")).json()[0]["id"]
+    assert await _settle(client, run_id) == "done"
+    written = (repo / ".ai" / "cezar" / "worktrees" / run_id / "CEZAR_DRY_RUN.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "ORG-SKILL-BODY" in written
+
+
+async def test_a_memory_cap_pauses_the_agent_process(tmp_path, monkeypatch):
+    script = tmp_path / "claude"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import time\n"
+        "blob = bytearray(8 * 1024 * 1024)\n"
+        "blob[0] = 1\n"
+        "time.sleep(15)\n"
+        "print(blob[:1])\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    async with _open(
+        tmp_path,
+        monkeypatch,
+        label="mem",
+        CEZ_DRY_RUN="0",
+        CEZ_CLAUDE_BIN=str(script),
+    ) as client:
+        (tmp_path / "mem-data" / "resources.json").write_text(
+            '{"memoryLimitMb": 1}\n', encoding="utf-8"
+        )
+        run_id = await _start(client, "hold memory")
+        status = ""
+        body: dict[str, object] = {}
+        for _ in range(120):
+            body = (await client.get(f"/api/v1/runs/{run_id}")).json()
+            status = str(body["status"])
+            if status in ("waiting", "done", "failed", "cancelled"):
+                break
+            await asyncio.sleep(0.05)
+        assert status == "waiting", body
+        page = await client.get(f"/tasks/{run_id}")
+        assert "memory limit exceeded" in page.text
 
 
 def test_the_stylesheet_has_light_violet_tokens_and_a_phone_layout():

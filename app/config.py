@@ -75,6 +75,10 @@ class Config:
     worktree_keep: int = 10
     runs_keep: int = 300
     archived_keep: int = 500
+    # Dashboard totals. CEZ_HIDE_TOKEN_METRICS hides both; the other two hide one.
+    hide_token_usage: bool = False
+    hide_cost: bool = False
+    hide_token_metrics: bool = False
 
     @property
     def hosted(self) -> bool:
@@ -128,6 +132,9 @@ class Config:
             worktree_keep=_keep(os.environ.get("CEZ_WORKTREE_RETENTION"), 10),
             runs_keep=_keep(os.environ.get("CEZ_RUNS_KEEP"), 300),
             archived_keep=_keep(os.environ.get("CEZ_ARCHIVED_RUNS_KEEP"), 500),
+            hide_token_usage=_flag("CEZ_HIDE_TOKEN_USAGE", "0"),
+            hide_cost=_flag("CEZ_HIDE_COST", "0"),
+            hide_token_metrics=_flag("CEZ_HIDE_TOKEN_METRICS", "0"),
         )
 
 

@@ -132,6 +132,9 @@ async def test_git_actions_read_receipts_and_a_signed_github_hook(client):
     done = await client.get(f"/api/v1/runs/{run_id}")
     assert done.json()["status"] == "done"
     assert done.json()["pullRequestUrl"].endswith("/777")
+    box = await client.get(f"/tasks/{run_id}")
+    assert "Ready to merge" in box.text
+    assert "Squash and merge" in box.text
 
     body = json.dumps({"issue": {"title": "A leak"}, "action": "opened"}).encode()
     signature = "sha256=" + hmac.new(b"hook-secret", body, hashlib.sha256).hexdigest()

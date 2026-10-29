@@ -13,6 +13,7 @@ from app.config import Config
 from app.engine.dispatch_logic import DispatchOrder
 from app.engine.engine import CHANGED, Engine
 from app.engine.gitwork import Diff, diff_against
+from app.engine.model import Run
 from app.features.task.urls import (
     TASK,
     TASK_CANCEL,
@@ -30,7 +31,7 @@ from app.features.task.urls import (
 )
 from app.features.task.views import render, render_missing
 from app.features.tasks.urls import TASKS
-from app.store.db import get_run, list_children, list_events
+from app.store.db import get_project, get_run, list_children, list_events
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +74,7 @@ class TaskPage:
                 await self._diff(run, view),
                 self._chrome(run.project_id),
                 uuid.uuid7().hex,
+                self._merge(run),
             )
         )
 
@@ -249,6 +251,7 @@ class TaskPage:
             await self._diff(run, view),
             self._chrome(run.project_id),
             tab,
+            self._merge(run),
         )
 
     async def _diff(self, run, view: TaskView) -> Diff | None:
@@ -260,6 +263,23 @@ class TaskPage:
 
     def _chrome(self, project_id: str):
         return load_chrome(self.db, self.config, "Task", "tasks", project_id)
+
+    def _merge(self, run: Run) -> dict[str, object] | None:
+        from app.integrations.github_review import merge_state
+
+        number = _pull_number(run.pull_request_url)
+        if number is None:
+            return None
+        project = get_project(self.db, run.project_id)
+        cwd = Path(project.root) if project else self.config.repo_root
+        return merge_state(number, dry_run=self.config.dry_run, cwd=cwd)
+
+
+def _pull_number(url: str) -> int | None:
+    piece = url.rstrip("/").rsplit("/", 1)[-1]
+    if piece.isdigit() and int(piece) > 0:
+        return int(piece)
+    return None
 
 
 def _run_id(value: str) -> bool:

@@ -33,6 +33,7 @@ def render(
     diff: Diff | None,
     chrome: Chrome,
     tab: str,
+    merge: dict[str, object] | None = None,
 ) -> HtmlElement:
     steps = run.definition().steps
     rail = []
@@ -134,6 +135,7 @@ def render(
             ),
             h.Div({"class": "actions"}, *actions) if actions else None,
         ),
+        _merge_box(merge) if merge and merge.get("available") else None,
         panes,
         h.Ol({"class": "steps"}, *rail),
     ]
@@ -266,6 +268,29 @@ def _pane(run: Run, view: TaskView, diff: Diff | None, transcript: list) -> list
             ),
         ]
     return [h.Ol({"id": "transcript", "class": "transcript"}, *transcript)]
+
+
+def _merge_box(payload: dict[str, object]) -> HtmlElement:
+    state = payload.get("mergeState")
+    inner = state if isinstance(state, dict) else {}
+    heading = "Ready to merge" if inner.get("eligibility") == "ready" else "Merge blocked"
+    blockers = inner.get("blockers")
+    rows = blockers if isinstance(blockers, list) else []
+    messages = [h.Li(str(item.get("message", ""))) for item in rows if isinstance(item, dict)]
+    number = inner.get("number")
+    button = None
+    if inner.get("canMerge") is True and isinstance(number, int):
+        button = h.Button(
+            {"type": "button", "class": "btn btn-primary", "id": "merge-pr"},
+            data.on("click", at.post(f"/api/v1/github/prs/{number}/merge")),
+            "Squash and merge",
+        )
+    return h.Section(
+        {"id": "merge-box"},
+        h.H2(heading),
+        h.Ul(*messages) if messages else None,
+        button,
+    )
 
 
 def _worktree_files(root: str) -> list[str]:

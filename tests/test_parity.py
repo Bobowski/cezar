@@ -106,6 +106,38 @@ def test_one_live_owner_blocks_a_second_token(tmp_path: Path):
     assert second.valid() is True
 
 
+def test_a_failing_check_blocks_merge_and_a_clean_pr_is_ready():
+    from app.integrations.merge_state import normalize_merge_state
+
+    policy = {
+        "allow_squash_merge": True,
+        "allow_merge_commit": True,
+        "allow_rebase_merge": False,
+        "squash_merge_commit_title": "PR_TITLE",
+    }
+    pr = {
+        "number": 9,
+        "title": "Ship",
+        "url": "https://github.com/acme/app/pull/9",
+        "state": "OPEN",
+        "isDraft": False,
+        "headRefName": "cez/demo",
+        "baseRefName": "main",
+        "headRefOid": "b" * 40,
+        "mergeable": "MERGEABLE",
+        "reviewDecision": "APPROVED",
+        "mergeStateStatus": "CLEAN",
+        "statusCheckRollup": [{"name": "ci", "conclusion": "FAILURE"}],
+    }
+    blocked = normalize_merge_state(pr, policy)
+    assert blocked["eligibility"] == "blocked" and blocked["canMerge"] is False
+    assert blocked["blockers"][0]["code"] == "checks-failing"
+    pr["statusCheckRollup"] = [{"name": "ci", "state": "SUCCESS"}]
+    ready = normalize_merge_state(pr, policy)
+    assert ready["eligibility"] == "ready" and ready["canMerge"] is True
+    assert ready["defaultMethod"] == "squash"
+
+
 def test_dry_run_review_and_merge_do_not_need_gh(tmp_path: Path):
     reviewed = review_pr(4, "approve", "looks good", dry_run=True, cwd=tmp_path)
     assert reviewed["dryRun"] is True and reviewed["submitted"] is True
@@ -254,7 +286,15 @@ def test_a_fake_gh_is_used_only_when_dry_run_is_off(tmp_path: Path, monkeypatch)
         "fi\n"
         'if [ "$1" = pr ] && [ "$2" = review ]; then exit 0; fi\n'
         'if [ "$1" = pr ] && [ "$2" = view ]; then\n'
-        '  echo \'{"mergeable":"MERGEABLE","reviewDecision":"APPROVED"}\'\n'
+        "  echo '{\"number\":3,\"title\":\"Draft\",\"url\":\"https://github.com/acme/app/pull/3\","
+        "\"state\":\"OPEN\",\"isDraft\":false,\"headRefName\":\"cez/abcd1234\","
+        "\"baseRefName\":\"main\",\"headRefOid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+        "\"mergeable\":\"MERGEABLE\",\"reviewDecision\":\"APPROVED\",\"mergeStateStatus\":\"CLEAN\","
+        "\"statusCheckRollup\":[{\"name\":\"ci\",\"state\":\"SUCCESS\"}]}'\n"
+        "  exit 0\n"
+        "fi\n"
+        'if [ "$1" = repo ] && [ "$2" = view ]; then\n'
+        "  echo '{\"squashMergeAllowed\":true,\"mergeCommitAllowed\":true}'\n"
         "  exit 0\n"
         "fi\n"
         "exit 1\n",
@@ -280,7 +320,10 @@ def test_a_fake_gh_is_used_only_when_dry_run_is_off(tmp_path: Path, monkeypatch)
     assert "pr view" in recorded
     assert reviewed["dryRun"] is False and reviewed["submitted"] is True
     assert merged["dryRun"] is False and merged["merged"] is True
-    assert state["dryRun"] is False and "APPROVED" in str(state["raw"])
+    inner = state["mergeState"]
+    assert isinstance(inner, dict)
+    assert state["dryRun"] is False
+    assert inner["eligibility"] == "ready" and inner["canMerge"] is True
 
 
 async def test_the_main_loop_screens_show_their_data(client):

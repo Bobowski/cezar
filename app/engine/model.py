@@ -68,6 +68,8 @@ class Step:
     retry_max: int = 0
     retry_on: tuple[int, ...] = ()
     has_secrets: bool = False
+    # None means every `checks` secret. A tuple is the step's `secrets:` list, (name, alias).
+    secret_bindings: tuple[tuple[str, str], ...] | None = None
     allowed_tools: tuple[str, ...] = ()
     bash_allowlist: tuple[str, ...] = ()
 
@@ -93,7 +95,12 @@ class Step:
                 "max": self.retry_max,
                 **({"retryOn": list(self.retry_on)} if self.retry_on else {}),
             }
-        if self.has_secrets:
+        if self.secret_bindings is not None:
+            body["secrets"] = [
+                name if alias == name else {"name": name, "as": alias}
+                for name, alias in self.secret_bindings
+            ]
+        elif self.has_secrets:
             body["secrets"] = True
         if self.allowed_tools:
             body["allowedTools"] = list(self.allowed_tools)
@@ -119,7 +126,8 @@ class Step:
             retry=_text(on_fail.get("retry")),
             retry_max=_int(on_fail.get("max")),
             retry_on=retry_on,
-            has_secrets=data.get("secrets") not in (None, False),
+            has_secrets=isinstance(data.get("secrets"), list) or data.get("secrets") is True,
+            secret_bindings=_secret_bindings(data.get("secrets")),
             allowed_tools=tools,
             bash_allowlist=allow,
         )
@@ -133,6 +141,19 @@ def data_retry_on(value: object) -> tuple[int, ...]:
         if isinstance(item, int) and not isinstance(item, bool):
             nums.append(item)
     return tuple(nums)
+
+
+def _secret_bindings(value: object) -> tuple[tuple[str, str], ...] | None:
+    if not isinstance(value, list):
+        return None
+    bindings: list[tuple[str, str]] = []
+    for item in value:
+        if isinstance(item, str):
+            bindings.append((item, item))
+        elif isinstance(item, dict) and isinstance(item.get("name"), str):
+            alias = item.get("as")
+            bindings.append((item["name"], alias if isinstance(alias, str) else item["name"]))
+    return tuple(bindings)
 
 
 def _str_tuple(value: object) -> tuple[str, ...]:

@@ -29,6 +29,7 @@ from app.engine.workflows import parse_workflow
 from app.features.api.records import public_project, public_run
 from app.features.api.urls import API_PROJECTS
 from app.integrations.clients import github_issues, jira_issue, linear_issue
+from app.secrets.store import SecretsError, SecretStore
 from app.store.db import (
     get_project,
     get_run,
@@ -73,6 +74,12 @@ class ApiPage:
         app.add(Route("GET /api/v1/github/issues"), self.github_issues)
         app.add(Route("GET /api/v1/jira/issue/{key}"), self.jira_issue)
         app.add(Route("POST /api/v1/linear/issue"), self.linear_issue)
+        app.add(Route("GET /api/v1/secrets"), self.secrets)
+        app.add(Route("PUT /api/v1/secrets/{name}"), self.put_secret)
+        app.add(Route("DELETE /api/v1/secrets/{name}"), self.delete_secret)
+        app.add(Route("GET /api/v1/workspace/secrets"), self.workspace_secrets)
+        app.add(Route("PUT /api/v1/workspace/secrets/{name}"), self.put_workspace_secret)
+        app.add(Route("DELETE /api/v1/workspace/secrets/{name}"), self.delete_workspace_secret)
 
     async def runs(self, c: Context, w: Writer) -> None:
         project = self._bound(c, w)
@@ -358,6 +365,94 @@ class ApiPage:
                 },
             )
         )
+
+    async def secrets(self, c: Context, w: Writer) -> None:
+        await self._list_secrets(w, workspace=False)
+
+    async def workspace_secrets(self, c: Context, w: Writer) -> None:
+        await self._list_secrets(w, workspace=True)
+
+    async def put_secret(self, c: Context, w: Writer) -> None:
+        await self._put_secret(c, w, workspace=False)
+
+    async def put_workspace_secret(self, c: Context, w: Writer) -> None:
+        await self._put_secret(c, w, workspace=True)
+
+    async def delete_secret(self, c: Context, w: Writer) -> None:
+        await self._delete_secret(c, w, workspace=False)
+
+    async def delete_workspace_secret(self, c: Context, w: Writer) -> None:
+        await self._delete_secret(c, w, workspace=True)
+
+    async def _list_secrets(self, w: Writer, *, workspace: bool) -> None:
+        scope, root = self._secret_scope(workspace)
+        if scope is None:
+            w.json({"error": "not found"}, status=404)
+            return
+        rows, skipped = self._secret_store().list(scope, root=root)
+        body: dict[str, object] = {
+            "secrets": [
+                {"name": row.name, "audiences": list(row.audiences), "updatedAt": row.updated_at}
+                for row in rows
+            ],
+            "keyBackend": "file",
+        }
+        if skipped:
+            body["skipped"] = skipped
+        w.json(cast(JsonValue, body))
+
+    async def _put_secret(self, c: Context, w: Writer, *, workspace: bool) -> None:
+        scope, root = self._secret_scope(workspace)
+        if scope is None:
+            w.json({"error": "not found"}, status=404)
+            return
+        body = await _body(c, w)
+        if body is None:
+            return
+        value = body.get("value", "")
+        if not isinstance(value, str):
+            w.json({"error": "a value is one line, without NUL"}, status=400)
+            return
+        audiences = body.get("audiences", ["checks"])
+        if not isinstance(audiences, list) or not all(isinstance(item, str) for item in audiences):
+            w.json({"error": "a secret names at least one audience (checks, cezar)"}, status=400)
+            return
+        try:
+            self._secret_store().set(
+                scope,
+                c.match.params.get("name", ""),
+                value,
+                root=root,
+                audiences=tuple(item for item in audiences if isinstance(item, str)),
+            )
+        except SecretsError as exc:
+            w.json({"error": str(exc)}, status=400)
+            return
+        w.json({"stored": True})
+
+    async def _delete_secret(self, c: Context, w: Writer, *, workspace: bool) -> None:
+        scope, root = self._secret_scope(workspace)
+        if scope is None:
+            w.json({"error": "not found"}, status=404)
+            return
+        removed = self._secret_store().unset(scope, c.match.params.get("name", ""), root=root)
+        if not removed:
+            w.json({"error": "not found"}, status=404)
+            return
+        w.json({"deleted": True})
+
+    def _secret_store(self) -> SecretStore:
+        return SecretStore(self.config.data_dir / "secrets")
+
+    def _secret_scope(self, workspace: bool) -> tuple[str | None, str]:
+        if workspace:
+            return "workspace", ""
+        from app.store.db import get_project
+
+        project = get_project(self.db, self.engine.boot_project_id)
+        if project is None:
+            return None, ""
+        return project.id, project.root
 
     async def github_issues(self, c: Context, w: Writer) -> None:
         owner = c.req.query.get("owner", "")

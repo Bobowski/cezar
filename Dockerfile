@@ -3,7 +3,7 @@ FROM python:3.14-slim-bookworm
 COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /uvx /bin/
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates \
+    && apt-get install -y --no-install-recommends bash git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -7,6 +7,7 @@ A successful workflow stops at `review`. Finish records `done`. Neither merges.
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -46,6 +47,7 @@ from app.engine.prompts import build_user_prompt
 from app.engine.session_extras import load_project_mcp, prompt_task, v2_snapshots
 from app.engine.skills import find_skill
 from app.engine.workflows import newer_catalog_workflow, retryable_exit
+from app.secrets.store import SecretStore, command_allowed, redact
 from app.store.db import (
     add_event,
     count_in_flight_children,
@@ -351,12 +353,17 @@ class Engine:
                 port = "done"
             elif kind == "check":
                 command = render_refs(str(node.get("command") or ""), outputs)
-                code, output = await run_shell(
-                    command,
-                    Path(run.worktree_path or "."),
-                    cancel,
-                    self.config.check_timeout_seconds,
+                raw_allow = node.get("bashAllowlist")
+                allow = (
+                    tuple(item for item in raw_allow if isinstance(item, str))
+                    if isinstance(raw_allow, list)
+                    else ()
                 )
+                step = Step(id=node_id, name=node_id, command=command, bash_allowlist=allow)
+                if not command_allowed(command, allow):
+                    await self._fail(run, "command is not in bashAllowlist")
+                    return
+                code, output = await self._run_check(run, step, cancel)
                 await self._note(run.id, "check-output", output or f"exit {code}", node_id)
                 if cancel.is_set() or code < 0:
                     await self._mark_cancelled(get_run(self.db, run.id) or run)
@@ -491,19 +498,47 @@ class Engine:
         await self._save(current)
         return "ok"
 
-    async def _check(self, run: Run, step: Step, cancel: asyncio.Event) -> str:
-        if step.has_secrets:
-            await self._fail(
-                run,
-                "this check names project secrets, and the Python port has no secrets vault",
-            )
-            return "stop"
+    async def _run_check(self, run: Run, step: Step, cancel: asyncio.Event) -> tuple[int, str]:
+        project = get_project(self.db, run.project_id)
+        store = SecretStore(self.config.data_dir / "secrets")
+        values, notes = store.resolve(
+            "checks",
+            project_id=run.project_id,
+            root=project.root if project else "",
+            bindings=step.secret_bindings,
+        )
+        for note in notes:
+            await self._note(run.id, "note", note, step.id)
+        env = {key: value for key, value in os.environ.items() if not key.startswith("CEZ_")}
+        env.update(
+            {
+                "CEZ_RUN_ID": run.id,
+                "CEZ_STEP_ID": step.id,
+                "CEZ_WORKTREE": run.worktree_path or "",
+                "CEZ_ATTEMPT": "1",
+            }
+        )
+        if run.project_id:
+            env["CEZ_PROJECT_ID"] = run.project_id
+        if run.branch:
+            env["CEZ_BRANCH"] = run.branch
+        if run.base_branch:
+            env["CEZ_BASE"] = run.base_branch
+        env.update(values)
         code, output = await run_shell(
             step.command,
             Path(run.worktree_path or "."),
             cancel,
             self.config.check_timeout_seconds,
+            env,
         )
+        return code, redact(output, list(values.values()))
+
+    async def _check(self, run: Run, step: Step, cancel: asyncio.Event) -> str:
+        if not command_allowed(step.command, step.bash_allowlist):
+            await self._fail(run, "command is not in bashAllowlist")
+            return "stop"
+        code, output = await self._run_check(run, step, cancel)
         await self._note(run.id, "check-output", output or f"exit {code}", step.id)
         if cancel.is_set() or code < 0:
             if run.id in self._finish:
@@ -1101,13 +1136,18 @@ def _persist_report(tx: Tx, child_id: str, parent_id: str, entry: dict[str, obje
 
 
 async def run_shell(
-    command: str, cwd: Path, cancel: asyncio.Event, timeout: float
+    command: str,
+    cwd: Path,
+    cancel: asyncio.Event,
+    timeout: float,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(
-        "sh",
-        "-c",
+        "bash",
+        "-lc",
         command,
         cwd=cwd,
+        env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )

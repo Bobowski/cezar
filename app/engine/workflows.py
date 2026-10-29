@@ -9,7 +9,7 @@ attempt; `0` is rejected because a passing check never reaches the loop.
 from __future__ import annotations
 
 from app.config import RUNNERS
-from app.engine.model import Step, Workflow
+from app.engine.model import Step, Workflow, _secret_bindings
 
 QUICK_TASK = Workflow(
     name="quick-task",
@@ -211,6 +211,7 @@ def _parse_step(raw: object) -> tuple[Step | None, str | None]:
             retry_max=retry_max,
             retry_on=retry_on,
             has_secrets=has_secrets,
+            secret_bindings=_secret_bindings(secrets),
             allowed_tools=tuple(allowed),
             bash_allowlist=tuple(bash),
         ),

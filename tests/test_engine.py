@@ -413,8 +413,17 @@ async def test_retry_on_skips_codes_the_agent_cannot_fix(world):
     assert (get_run(engine.db, run.id) or run).status == "failed"
 
 
-async def test_a_check_that_names_secrets_does_not_run(world):
+async def test_a_check_receives_a_secret_and_a_bash_allowlist_blocks_other_commands(world):
+    from app.secrets.store import SecretStore
+    from app.store.db import list_events
+
     engine, _repo = world
+    project = __import__("app.store.db", fromlist=["get_project"]).get_project(
+        engine.db, engine.boot_project_id
+    )
+    assert project is not None
+    store = SecretStore(engine.config.data_dir / "secrets")
+    store.set(project.id, "BUILD_TOKEN", "super-secret-value", root=project.root)
     run = await _start(engine, "secret")
     definition = Workflow(
         name="secret",
@@ -422,14 +431,32 @@ async def test_a_check_that_names_secrets_does_not_run(world):
         source="built-in",
         steps=(
             Step(id="implement", prompt="{{task}}"),
-            Step(id="verify", command="true", retry="", has_secrets=True),
+            Step(
+                id="verify",
+                command='printf %s "$BUILD_TOKEN"',
+                secret_bindings=(("BUILD_TOKEN", "BUILD_TOKEN"),),
+            ),
         ),
     )
     run.workflow_def = definition.to_json()
     await engine.db.write(save_run, run)
     await engine.execute(run.id)
-    failed = get_run(engine.db, run.id)
-    assert failed is not None and "secrets" in failed.error
+    done = get_run(engine.db, run.id)
+    assert done is not None and done.status == "review"
+    texts = [event.text for event in list_events(engine.db, run.id)]
+    assert "super-secret-value" not in "\n".join(texts)
+    assert any("●" in text for text in texts)
+    blocked = await _start(engine, "blocked")
+    blocked.workflow_def = Workflow(
+        name="blocked",
+        description="",
+        source="built-in",
+        steps=(Step(id="nope", command="true", bash_allowlist=("npm",)),),
+    ).to_json()
+    await engine.db.write(save_run, blocked)
+    await engine.execute(blocked.id)
+    failed = get_run(engine.db, blocked.id)
+    assert failed is not None and "bashAllowlist" in failed.error
 
 
 async def test_an_ask_waits_and_the_answer_continues(world):

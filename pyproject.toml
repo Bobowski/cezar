@@ -5,6 +5,7 @@ description = "Python port of cezar: a local cockpit for parallel coding agents.
 readme = "MIGRATION.md"
 requires-python = ">=3.14"
 dependencies = [
+    "cryptography>=50.0.2",
     "litewriter>=0.3.2,<0.4",
     "pyyaml>=6.0.2",
     "stario>=5.2,<6",

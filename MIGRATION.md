@@ -61,7 +61,7 @@ treat it as a non-git directory.
 | Dry run | Default off, matching TypeScript. Compose sets `CEZ_DRY_RUN=1`. |
 | Graph workflows (`version: 2`) | Loaded and walked for `start`, `agent`, `check`, `if` (`output` and `branch`), `loop`, and `end`. A cycle that does not pass a loop `repeat` port is rejected. Other node types fail the run when the walk reaches them. |
 | `onFail` on an agent step | A load error. TypeScript's schema allows the key and ignores it. |
-| Secrets on a check | The check does not run. There is no vault. |
+| Secrets on a check | Injected into the check environment from an AES-256-GCM store under the data directory. Values are not returned by the list API. A `cezar` audience is not given to checks. A non-empty `bashAllowlist` on a check fail-closes the command; an empty list stays unrestricted, which is what the TypeScript check shell does. |
 | `allowedTools` / `bashAllowlist` | Claude argv maps a non-empty allowlist to `Bash(<prefix>:*)`. Pi has no prefix form, so a non-empty allowlist drops Bash. Copilot is `--allow-all-tools` and the allowlist is not mapped, matching TypeScript. The dry-run mock only writes a note. A check step is still `sh -c` with no allowlist. |
 | Diff base | The commit the worktree was branched from. Not `resolveTaskDiffBase` (freshest `origin/<base>` versus `<branch>@{start}`). |
 | Fetch | Skipped when dry-run is on. Otherwise one best-effort `git fetch` of the base branch. |
@@ -92,7 +92,7 @@ of `server.ts`.
 ## Checks
 
 `uv run ruff check`, `uv run ruff format --check`, `uv run pyright`, and
-`uv run pytest -q` were run on this branch. **85 tests passed.**
+`uv run pytest -q` were run on this branch. **89 tests passed.**
 
 A manual `CEZ_DRY_RUN=1 uv run python -m app.main` answered `/health`,
 `POST /api/v1/runs` returned 201, and the run reached `review` with a worktree
@@ -115,7 +115,7 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | Workflow and skill files remain the authored source | done | `tests/test_workflows.py`, cockpit workflow/skill test |
 | Workspace settings: parallel (default 2), runner, theme, accent | done | settings stream test |
 | Per-project base branch stored at registration | partial | used by the engine; no editor in the UI |
-| Secrets vault | not done | a check that names secrets fails closed (`test_engine`) |
+| Secrets vault | partial | `tests/test_secrets.py` and the check injection test. AES-256-GCM, file key only (no OS keychain), audiences `checks` and `cezar`, project root binding, list API omits values. Stored under `$PROJECT_DATA_DIR/secrets`, not `~/.cezar/secrets`. |
 | Agent accounts / profiles | not done | — |
 | UI state, attachments, layouts | not done | — |
 
@@ -300,8 +300,11 @@ TypeScript tree would drop the product.
   password.
 - One process owns the SQLite file. A second `run` or `projects` command exits
   if the cockpit holds the claim.
-- A check step is `sh -c` in the worktree, same trust model as a workflow the
-  user wrote, with no secret injection and no `bashAllowlist`.
+- A check step is `bash -lc` in the worktree. Secrets with the `checks`
+  audience are injected and redacted from the transcript when they are at
+  least 12 characters. A non-empty `bashAllowlist` refuses other commands;
+  the TypeScript check shell does not, so this is stricter when a check
+  names a list. An empty list stays unrestricted.
 - A follow-up starts a new process with `--resume` (Claude, Pi) or Codex
   `thread/resume` of the id the first turn stored. If the CLI did not persist
   that session, resume fails. There is no writer-lock retry and no `thread/fork`.

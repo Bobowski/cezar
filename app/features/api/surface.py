@@ -133,7 +133,7 @@ class SurfaceApi:
         run = self._run(c, w)
         if run is None:
             return
-        w.json({"commits": _commits(run.worktree_path)})
+        w.json(cast(JsonValue, {"commits": _commits(run.worktree_path)}))
 
     async def files(self, c: Context, w: Writer) -> None:
         from app.features.task.views import _worktree_files
@@ -141,7 +141,7 @@ class SurfaceApi:
         run = self._run(c, w)
         if run is None:
             return
-        w.json({"files": _worktree_files(run.worktree_path)})
+        w.json(cast(JsonValue, {"files": _worktree_files(run.worktree_path)}))
 
     async def continue_run(self, c: Context, w: Writer) -> None:
         run = self._run(c, w)
@@ -187,7 +187,7 @@ class SurfaceApi:
         w.json({"removed": True})
 
     async def reclaim(self, c: Context, w: Writer) -> None:
-        w.json({"reclaimed": await self.engine.retain()})
+        w.json(cast(JsonValue, {"reclaimed": await self.engine.retain()}))
 
     async def launch_key(self, _c: Context, w: Writer) -> None:
         from app.features.editors.store import launch_key
@@ -195,7 +195,7 @@ class SurfaceApi:
         w.json({"key": launch_key(self.config.data_dir)})
 
     async def read_config(self, _c: Context, w: Writer) -> None:
-        w.json(self._config_body())
+        w.json(cast(JsonValue, self._config_body()))
 
     async def write_config(self, c: Context, w: Writer) -> None:
         body = await _json(c, w)
@@ -211,7 +211,7 @@ class SurfaceApi:
             current["reviewGate"] = body["reviewGate"]
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
-        w.json(self._config_body())
+        w.json(cast(JsonValue, self._config_body()))
 
     def _config_body(self) -> dict[str, object]:
         loaded = _object_file(self.config.repo_root / ".ai" / "cezar" / "config.json")

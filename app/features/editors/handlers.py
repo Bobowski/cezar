@@ -9,7 +9,7 @@ from pathlib import Path
 
 from litewriter import LiteWriter
 from stario import App, Context, Writer, h
-from stario.datastar import read_signals
+from stario.datastar import at, data, read_signals
 from stario.exceptions import RequestBodyError
 
 from app.common.shell import frame, load_chrome
@@ -226,16 +226,35 @@ class EditorsPage:
         return self._main(
             title,
             element_id,
+            h.Form(
+                {"id": "instructions-form"},
+                data.on("submit", at.post(INSTRUCTIONS_SAVE.href()), prevent=True),
+                h.Label(
+                    {"class": "field"},
+                    h.Span("System prompt"),
+                    h.Textarea({"id": "system-prompt-input"}, data.bind("systemPrompt")),
+                ),
+                h.Label(
+                    {"class": "field"},
+                    h.Span("Branch naming"),
+                    h.Input({"id": "branch-naming-input"}, data.bind("branchNaming")),
+                ),
+                h.Button({"type": "submit"}, "Save"),
+            ),
             h.P({"id": "system-prompt"}, prompt),
             h.P({"id": "branch-naming"}, naming),
+            signals={"systemPrompt": prompt, "branchNaming": naming},
         )
 
-    def _main(self, title: str, element_id: str, *children):
+    def _main(self, title: str, element_id: str, *children, signals: dict | None = None):
         chrome = load_chrome(self.db, self.config, title, "settings", self.engine.boot_project_id)
+        payload = {"tab": uuid.uuid7().hex}
+        if signals:
+            payload.update(signals)
         return frame(
             chrome,
             None,
-            {"tab": uuid.uuid7().hex},
+            payload,
             h.Main({"id": element_id}, h.H1(title), *children),
         )
 

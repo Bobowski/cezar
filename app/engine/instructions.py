@@ -29,4 +29,3 @@ def _pair(path: Path) -> tuple[str, str]:
         prompt.strip() if isinstance(prompt, str) else "",
         naming.strip() if isinstance(naming, str) else "",
     )
-

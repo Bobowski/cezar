@@ -93,8 +93,8 @@ tracker hook intake. Most of `server.ts` is still absent.
 ## Checks
 
 `uv run ruff check`, `uv run ruff format --check`, `uv run pyright`, and
-`uv run pytest -q` were run on this branch. **132 tests passed.**
-`uv run --group e2e pytest e2e -q` passed one Chromium walk (New task → done).
+`uv run pytest -q` were run on this branch. **138 tests passed.**
+`uv run --group e2e pytest e2e -q` passed two Chromium walks: New task → done, and review → commit → push → fake-`gh` draft PR, then the instructions editor.
 
 A manual `CEZ_DRY_RUN=1 uv run python -m app.main` answered `/health`,
 `POST /api/v1/runs` returned 201, and the run reached `review` with a worktree
@@ -254,7 +254,9 @@ is the boot project.
 | `GET/POST/DELETE /webhooks`, `POST …/test`, `GET …/deliveries` | partial | Receiver URL must be public https or loopback http. Dry-run test delivery is recorded as 204 and does not open a socket. Signing key is `whsec_`. |
 | `POST /hooks/github`, `/hooks/jira`, `/hooks/linear`, `GET /hooks/receipts` | partial | GitHub checks `X-Hub-Signature-256` against `CEZ_GITHUB_WEBHOOK_SECRET`. Jira and Linear check `X-Cezar-Webhook-Secret`. Unset or wrong is 401. A matching enabled automation can enqueue a run. Receipts are appended locally. |
 | GitHub review and merge API | partial | Dry-run merge-state, merge, and review in `tests/test_parity.py`. See the git row. No UI. |
-| Skills update, workspace branding, launch-key API, plan, deferred-start scheduling | not done | The bookmarklet page writes a launch key file. `GET /launch-key` is not a route. |
+| `GET /api/v1/launch-key` | done | Returns the same key the bookmarklet writes, mode 0600. `tests/test_routes.py`. |
+| `GET/PUT /api/v1/config` | done | Reads and writes `systemPrompt`, `branchNaming`, and `reviewGate` without dropping other keys. `tests/test_routes.py`. |
+| Skills update, workspace branding, plan, deferred-start scheduling | not done | — |
 | Star count, self-update | intentionally not ported | They phone home or rewrite the install. |
 
 The Python cockpit does not use `/p/:projectId`. The same screen is a top-level
@@ -478,7 +480,8 @@ next table.
 | Project checkout, create-on-GitHub, owners, patch, delete | not done | The page can add a local directory. |
 | Provider connect, retry, update, enabled | not done | Status is `shutil.which`. |
 | Repository `/repo/*` routes | not done | `/git` renders a heading. |
-| Run drafts, layouts, handoff, history, images, continue, land, remove-worktree, report, start-now | not done | — |
+| `GET /runs/{id}/commits`, `GET /runs/{id}/files`, `POST /runs/{id}/continue`, `POST /runs/{id}/remove-worktree` | done | Files list the dry-run note, commits list `init`, continue requeues a review into another turn, and remove deletes the worktree directory. `tests/test_routes.py`. |
+| Run drafts, layouts, handoff, history, images, land, report, start-now | not done | — |
 | `GET /skills/importable`, `POST /skills/refresh` | not done | Local create is tested. |
 | `GET/PUT /start-app` | not done | — |
 | `POST /telemetry/error`, `POST /telemetry/page` | intentionally not ported | Consent routes do not send. |
@@ -487,14 +490,14 @@ next table.
 | Workspace profiles, branding, config, host usage, runs index, automation templates | not done | — |
 | Self-update and skills auto-update routes | intentionally not ported | — |
 | `GET /star-count` | intentionally not ported | — |
-| `POST /worktrees/reclaim` | not done | No such route. The selector is unit-tested. |
+| `POST /worktrees/reclaim` | done | Returns the ids `Engine.retain()` reclaimed. `tests/test_routes.py`. |
 | `CEZ_REVIEW_GATE` | done | Exact `1` parks a diff at `review`. `true` does not. `reviewGate: false` in config wins. An autonomous run stays `done`. `tests/test_engine.py`, `tests/test_cockpit.py`, `tests/test_cli.py`. |
-| `CEZ_ARCHIVED_RUNS_KEEP` | not done | One index cap, `CEZ_RUNS_KEEP`. |
+| `CEZ_ARCHIVED_RUNS_KEEP` | done | Archived rows use this cap and live rows use `CEZ_RUNS_KEEP`. `tests/test_finish.py`. `Config.from_env` reads it. |
 | `CEZ_HOME`, `CEZ_PROJECTS_DIR` | not done | State is `PROJECT_DATA_DIR` and SQLite. |
 | `CEZ_SINGLE_PROJECT` | partial | The health document reports the flag. Project add is not refused because of it. |
 | `CEZ_SECRETS_KEYCHAIN` | not done | The key is always a file. |
 | `CEZ_ENV_PASSTHROUGH`, `CEZ_AGENT_ENV_FULL`, `CEZ_REDACT_SECRETS` | not done | Checks drop `CEZ_*` from the server environment and add secret values. Agents do not receive the secret store. |
-| `CEZ_TERMINAL` | not done | The hub is not switched off by this flag. |
+| `CEZ_TERMINAL` | done | `0` makes `POST /runs/{id}/terminal` answer 409 `terminal is disabled`. `tests/test_routes.py`. |
 | `CEZ_AUTOSAVE`, `CEZ_TITLE_UPDATES`, `CEZ_AUTONAME` | not done | No periodic commit and no model title. |
 | `CEZ_TASK_PROCESS_REAP`, `CEZ_DISABLE_REPO_LOCK`, `CEZ_WORKFLOW_WEBHOOKS` | not done | — |
 | `CEZ_HIDE_TOKEN_USAGE`, `CEZ_HIDE_COST`, `CEZ_HIDE_TOKEN_METRICS` | partial | The health document's capability flags follow them. The dashboard does not chart tokens, and no test sets the flags. |
@@ -505,4 +508,4 @@ next table.
 | `CEZ_AUTONOMOUS_DEFAULT`, `CEZ_WORKTREE_DEFAULT` | not done | — |
 | Release packaging, server-install, disk space, startup port probe | not done | Compose is the container. The listen port does not auto-increment. |
 | Worktree lifecycle events, handoff files, skills banner, remote skills | not done | — |
-| Browser e2e (`packages/web/e2e/`) | partial | `e2e/test_main_loop.py` drives Chromium from New task to `done`. The other React specs are not ported. `uv run pytest` does not collect `e2e/`. |
+| Browser e2e (`packages/web/e2e/`) | partial | `e2e/test_main_loop.py` drives Chromium from New task to `done`, and from review through commit, push, and a fake-`gh` draft PR, then saves the instructions editor. The other React specs are not ported. `uv run pytest` does not collect `e2e/`. |

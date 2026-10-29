@@ -154,7 +154,9 @@ def test_a_failing_check_blocks_merge_and_a_clean_pr_is_ready():
     }
     blocked = normalize_merge_state(pr, policy)
     assert blocked["eligibility"] == "blocked" and blocked["canMerge"] is False
-    assert blocked["blockers"][0]["code"] == "checks-failing"
+    blockers = blocked["blockers"]
+    assert isinstance(blockers, list) and isinstance(blockers[0], dict)
+    assert blockers[0]["code"] == "checks-failing"
     pr["statusCheckRollup"] = [{"name": "ci", "state": "SUCCESS"}]
     ready = normalize_merge_state(pr, policy)
     assert ready["eligibility"] == "ready" and ready["canMerge"] is True
@@ -309,15 +311,15 @@ def test_a_fake_gh_is_used_only_when_dry_run_is_off(tmp_path: Path, monkeypatch)
         "fi\n"
         'if [ "$1" = pr ] && [ "$2" = review ]; then exit 0; fi\n'
         'if [ "$1" = pr ] && [ "$2" = view ]; then\n'
-        "  echo '{\"number\":3,\"title\":\"Draft\",\"url\":\"https://github.com/acme/app/pull/3\","
-        "\"state\":\"OPEN\",\"isDraft\":false,\"headRefName\":\"cez/abcd1234\","
-        "\"baseRefName\":\"main\",\"headRefOid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
-        "\"mergeable\":\"MERGEABLE\",\"reviewDecision\":\"APPROVED\",\"mergeStateStatus\":\"CLEAN\","
-        "\"statusCheckRollup\":[{\"name\":\"ci\",\"state\":\"SUCCESS\"}]}'\n"
+        '  echo \'{"number":3,"title":"Draft","url":"https://github.com/acme/app/pull/3",'
+        '"state":"OPEN","isDraft":false,"headRefName":"cez/abcd1234",'
+        '"baseRefName":"main","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
+        '"mergeable":"MERGEABLE","reviewDecision":"APPROVED","mergeStateStatus":"CLEAN",'
+        '"statusCheckRollup":[{"name":"ci","state":"SUCCESS"}]}\'\n'
         "  exit 0\n"
         "fi\n"
         'if [ "$1" = repo ] && [ "$2" = view ]; then\n'
-        "  echo '{\"squashMergeAllowed\":true,\"mergeCommitAllowed\":true}'\n"
+        '  echo \'{"squashMergeAllowed":true,"mergeCommitAllowed":true}\'\n'
         "  exit 0\n"
         "fi\n"
         "exit 1\n",

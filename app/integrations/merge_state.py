@@ -223,9 +223,7 @@ def _review(value: object) -> str:
     return "unknown"
 
 
-def _check(
-    item: object, readable: bool, required: list[str], tier: str
-) -> dict[str, object]:
+def _check(item: object, readable: bool, required: list[str], tier: str) -> dict[str, object]:
     raw = item if isinstance(item, dict) else {}
     value = str(raw.get("conclusion") or raw.get("state") or raw.get("status") or "").upper()
     if value in _PASSING:

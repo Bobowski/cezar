@@ -296,16 +296,11 @@ class Engine:
                 "Work autonomously. Do not stop to ask the user. "
                 "When this step's own goal is achieved, end your turn with CEZ:DONE."
             )
-        if step.allowed_tools:
-            system_parts.append(
-                "The workflow asked for these tools. The Python port does not enforce the list: "
-                + ", ".join(step.allowed_tools)
-            )
-        if step.bash_allowlist:
+        if self.config.dry_run and step.bash_allowlist:
             await self._note(
                 run.id,
                 "note",
-                "bashAllowlist is not enforced by the Python port",
+                "bashAllowlist is not applied by the dry-run mock",
                 step.id,
             )
         reports = list(run.pending_reports)
@@ -324,11 +319,16 @@ class Engine:
             runner=step.runner or run.runner,
             model=step.model or run.model,
             cancel=cancel,
+            allowed_tools=step.allowed_tools,
+            bash_allowlist=step.bash_allowlist,
+            session_id=run.id,
+            resume=bool(followup) or run.step_index > 0,
         )
         texts: list[str] = []
         gained = 0
         async for event in self._agent_for(spec.runner).stream(spec):
-            if event.type == "text":
+            gained += event.input_tokens + event.output_tokens
+            if event.type == "text" and event.text:
                 parsed = usage_from_line(event.text)
                 if parsed is not None:
                     gained += parsed[0] + parsed[1]
@@ -457,13 +457,14 @@ class Engine:
             from app.engine.agents import DryRunAgent
 
             return DryRunAgent()
-        if self.config.real_agents:
-            from app.engine.agents import StdinAgent
+        from app.engine.runners.protocol import ProtocolRunner
 
-            return StdinAgent(self.config.runner_bins.get(runner, runner))
-        from app.engine.agents import MissingAgent
-
-        return MissingAgent()
+        return ProtocolRunner(
+            runner,
+            self.config.runner_bins.get(runner, runner),
+            approval_gate=self.config.approval_gate,
+            codex_network_off=self.config.codex_network_off,
+        )
 
     def plan_run(
         self,

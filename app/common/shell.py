@@ -90,10 +90,8 @@ def _sidebar(chrome: Chrome) -> HtmlElement:
     )
     if chrome.dry_run:
         banner = "Python port. Dry run is on — tasks use the mock agent."
-    elif chrome.real_agents:
-        banner = "Python port. Experimental subprocess runners are on."
     else:
-        banner = "Python port. Real agent backends are not wired up yet."
+        banner = "Python port. Tasks spawn the selected agent CLI."
     return h.Aside(
         {"class": "sidebar"},
         h.Div({"class": "wordmark"}, "ce", h.Span("zar")),

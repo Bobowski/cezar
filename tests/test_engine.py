@@ -95,14 +95,12 @@ async def _start(engine: Engine, task: str = "do the thing") -> Run:
     return run
 
 
-def test_dry_run_defaults_on_until_a_backend_is_ported(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
+def test_dry_run_is_opt_in_like_the_typescript_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("PROJECT_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("CEZ_DRY_RUN", raising=False)
-    assert Config.from_env().dry_run is True
-    monkeypatch.setenv("CEZ_DRY_RUN", "0")
     assert Config.from_env().dry_run is False
+    monkeypatch.setenv("CEZ_DRY_RUN", "1")
+    assert Config.from_env().dry_run is True
 
 
 def test_option_like_refs_are_refused():
@@ -478,8 +476,12 @@ async def test_experimental_stdin_runner_records_usage(tmp_path: Path):
     init_repo(repo)
     binary = tmp_path / "fake-claude"
     binary.write_text(
-        "#!/bin/sh\ncat >/dev/null\n"
-        'printf \'%s\\n\' \'{"type":"result","usage":{"input_tokens":3,"output_tokens":4}}\'\n',
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "sys.stdin.readline()\n"
+        "sys.stdout.write("
+        '\'{"type":"result","result":"ok","usage":{"input_tokens":3,"output_tokens":4}}\\n\')\n'
+        "sys.stdout.flush()\n",
         encoding="utf-8",
     )
     binary.chmod(0o755)
@@ -514,7 +516,7 @@ async def test_a_missing_backend_fails_the_run_instead_of_spawning(tmp_path: Pat
         await engine.execute(run.id)
         failed = get_run(engine.db, run.id)
         assert failed is not None
-        assert "No ported backend" in failed.error
+        assert "not found" in failed.error
 
 
 def test_gitignore_appends_missing_entries_and_keeps_user_lines(tmp_path: Path):

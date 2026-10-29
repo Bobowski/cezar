@@ -45,8 +45,8 @@ class Config:
     data_dir: Path
     db_path: Path
     repo_root: Path
-    # Unset CEZ_DRY_RUN defaults to the mock. The TypeScript app defaults the other way;
-    # the real CLI protocols are not ported, so spawning them is opt-in. See MIGRATION.md.
+    # Unset CEZ_DRY_RUN spawns the real CLI, matching the TypeScript app.
+    # Compose sets CEZ_DRY_RUN=1 so a published container never launches an agent.
     dry_run: bool
     real_agents: bool
     dispatch_enabled: bool
@@ -55,6 +55,10 @@ class Config:
     runner_bins: dict[str, str]
     listen_host: str
     listen_port: int
+    # Claude `--permission-mode acceptEdits` when set. There is still no cockpit approval channel.
+    approval_gate: bool = False
+    # Codex sandbox opt-out: `workspace-write` instead of `danger-full-access`.
+    codex_network_off: bool = False
 
     @classmethod
     def from_env(cls) -> Config:
@@ -71,7 +75,7 @@ class Config:
             data_dir=data_dir,
             db_path=data_dir / "app.sqlite3",
             repo_root=repo,
-            dry_run=_flag("CEZ_DRY_RUN", "1"),
+            dry_run=_flag("CEZ_DRY_RUN", "0"),
             real_agents=_flag("CEZ_REAL_AGENTS", "0"),
             dispatch_enabled=os.environ.get("CEZ_DISPATCH", "1") != "0",
             tick_seconds=0.2,
@@ -79,6 +83,8 @@ class Config:
             runner_bins=bins,
             listen_host=os.environ.get("STARIO_HOST", "127.0.0.1"),
             listen_port=_port(os.environ.get("STARIO_PORT", "4321")),
+            approval_gate=_flag("CEZ_APPROVAL_GATE", "0"),
+            codex_network_off=os.environ.get("CEZ_CODEX_NETWORK") == "0",
         )
 
 

@@ -26,11 +26,11 @@ uv run python -m app.cli projects
 just check    # ruff, ruff format, pyright, pytest
 ```
 
-`CEZ_DRY_RUN` defaults to **on** here. Unset, a task uses the mock agent.
-`CEZ_DRY_RUN=0` without `CEZ_REAL_AGENTS=1` fails the run on purpose.
-`CEZ_REAL_AGENTS=1` starts the named binary with the prompt on stdin and no
-protocol flags. That is not Claude, Codex, OpenCode, Cursor, pi, Junie, or
-Copilot session parity.
+`CEZ_DRY_RUN` defaults to **off**, matching the TypeScript app. Unset, a task
+spawns the selected CLI (`claude`, `codex`, `opencode`, `cursor-agent`, `pi`,
+`junie`, `copilot`) with that backend's argv and wire format. `CEZ_DRY_RUN=1`
+uses the mock agent. Compose sets that. A missing binary fails the run; it
+does not fall back to the mock. `CEZ_REAL_AGENTS` is ignored.
 
 Docker:
 
@@ -53,11 +53,11 @@ own the mounted checkout and would otherwise treat it as a non-git directory.
 | What does a finished workflow become? | `review`. Finish sets `done`. Neither merges. Headless `run` treats `review` as exit 0. |
 | What happens to a `running` row after restart? | It becomes `failed` with "interrupted by restart". The subprocess is gone. `queued` stays queued. `waiting` stays, so the question is still on screen. The TypeScript `recover()` path resumes the session; this does not. |
 | Does `waiting` hold a parallelism slot? | No. The agent process has exited. `max_parallel` still defaults to 2 and caps `running` work. |
-| Dry run | Default on, unlike TypeScript, because the real CLI protocols are not ported. |
+| Dry run | Default off, matching TypeScript. Compose sets `CEZ_DRY_RUN=1`. |
 | Graph workflows (`version: 2`) | Refused at load with an error. They are not lowered into steps. |
 | `onFail` on an agent step | A load error. TypeScript's schema allows the key and ignores it. |
 | Secrets on a check | The check does not run. There is no vault. |
-| `allowedTools` / `bashAllowlist` | Accepted on load, not enforced. A note is written when a bash allowlist is present. |
+| `allowedTools` / `bashAllowlist` | Claude argv maps a non-empty allowlist to `Bash(<prefix>:*)`. Pi has no prefix form, so a non-empty allowlist drops Bash. Copilot is `--allow-all-tools` and the allowlist is not mapped, matching TypeScript. The dry-run mock only writes a note. A check step is still `sh -c` with no allowlist. |
 | Diff base | The commit the worktree was branched from. Not `resolveTaskDiffBase` (freshest `origin/<base>` versus `<branch>@{start}`). |
 | Fetch | Skipped when dry-run is on. Otherwise one best-effort `git fetch` of the base branch. |
 | Dispatch | Cap of 4 in-flight children and the budget carve are ported. A settled child stores a report on the parent. It is not pushed into a live parent session. `CEZ_DISPATCH=0` refuses new children. |
@@ -76,17 +76,16 @@ is 33,553 bytes and is not application code. The TypeScript tree is still in the
 | --- | ---: | ---: |
 | TypeScript application (no `*test*` / `*spec*` files) | 807 | 146,242 |
 | TypeScript tests | 810 | 157,213 |
-| Python application (`app/`) | 47 | 4,763 |
-| Python tests | 6 | 976 |
+| Python application (`app/`) | 49 | 5,509 |
+| Python tests, including protocol fakes | 13 | 1,386 |
 | Python CSS | 1 | 221 |
 
-The Python application is about 3% of the TypeScript application by code lines.
-That matches the checklist: a working core, not a port of the cockpit.
+The Python application is about 4% of the TypeScript application by code lines.
 
 ## Checks
 
 `uv run ruff check`, `uv run ruff format --check`, `uv run pyright`, and
-`uv run pytest -q` were run on this branch. **53 tests passed.**
+`uv run pytest -q` were run on this branch. **62 tests passed.**
 
 A manual `CEZ_DRY_RUN=1 uv run python -m app.main` answered `/health`,
 `POST /api/v1/runs` returned 201, and the run reached `review` with a worktree
@@ -171,17 +170,18 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | Item | Status | Verified |
 | --- | --- | --- |
 | Dry-run mock (`mock:fail`, `mock:ask`, `mock:write`) | done | engine and cockpit tests. Not `scripts/mock-claude.mjs` |
-| Claude stream-json session | not done | — |
-| Codex app-server | not done | — |
-| OpenCode serve | not done | — |
-| Cursor agent | not done | — |
-| pi RPC | not done | — |
-| Junie ACP | not done | — |
-| Copilot ACP | not done | — |
-| Experimental stdin subprocess | partial | `test_experimental_stdin_runner_records_usage` with a fake binary |
-| Refuse to spawn when dry-run is off and real agents are off | done | `test_a_missing_backend_fails_the_run_instead_of_spawning` |
-| Model catalog, provider login, accounts | not done | a model string is stored and ignored by the mock |
-| MCP, images, tool allowlists | not done | — |
+| Claude stream-json session | partial | `tests/test_runners.py` fake binary. Argv matches `buildClaudeArgs`: `--print`, stream-json in and out, `--verbose`, `--include-partial-messages`, `--permission-mode dontAsk` (`acceptEdits` when `CEZ_APPROVAL_GATE=1`), `--append-system-prompt` including the headless guidance, `--session-id` or `--resume`, `--allowedTools`, `--model`. Stdin is one user NDJSON message. Assistant text and `tool_use`, user `tool_result`, and the `result` frame are parsed. Only `result.usage` counts. The turn ends on `result`. A later step or follow-up spawns a new process with `--resume <run id>` rather than keeping one process open. Not ported: `stream_event` token deltas, `--mcp-config`, images, the inactivity SIGTERM→SIGKILL watchdog, the v2 `UiEvent` stream. |
+| Codex app-server | partial | fake binary. Spawns `codex app-server`. Handshake is `initialize`, `thread/start` (`danger-full-access`, or `workspace-write` when `CEZ_CODEX_NETWORK=0`, `approvalPolicy: never`), then `turn/start`. A notification whose `threadId` is not this thread does not end the turn. `turn/completed` does. The system prompt is prepended into the user text. Not ported: resuming an existing Codex thread, compaction, the rest of the item types, v2 events. |
+| OpenCode serve | partial | fake binary. `opencode serve --hostname 127.0.0.1 --port N`, then `POST /session` and `POST /session/:id/message` with `{parts:[{type:text}]}`. The Python client reads one JSON body. TypeScript reads the SSE part stream while that POST stays open and only surfaces assistant parts. No session resume. |
+| Cursor agent | partial | fake binary. Argv is `-p --force --trust --output-format stream-json` and the prompt as the last positional (system prompt prepended). Same stream-json parser as Claude. One shot: the prompt is argv, not a stdin session. |
+| pi RPC | partial | fake binary. `pi --mode rpc`, then `{type:get_state}` and `{type:prompt, streamingBehavior:steer}`. `message_update` / `text_delta`, tool start/end, and `agent_settled` ends the turn. `--session` versus `--session-id`. A non-empty bash allowlist drops Bash. Not the rest of the pi event set. |
+| Junie ACP | partial | fake binary. `junie --acp=true -p <cwd>`. JSON-RPC `initialize` (protocolVersion 1), `session/new`, `session/prompt`. `session/update` chunks stream; the prompt response completes the turn. `stopReason: refusal` fails it. |
+| Copilot ACP | partial | fake binary. `--acp --allow-all-tools --no-auto-update` (`--model` when set). Same ACP frames as Junie. `allowedTools` and `bashAllowlist` are not mapped onto flags, matching TypeScript. |
+| Stdin subprocess | partial | `StdinAgent` remains for a test that records a result-frame usage line. The engine does not use it. |
+| Missing binary | done | `test_a_missing_backend_fails_the_run_instead_of_spawning` — the run fails with "not found". There is no `CEZ_REAL_AGENTS` gate. |
+| Model catalog, provider login, accounts | partial | `--model` is passed for Claude, Cursor, Pi, and Copilot. No catalog, no login probe, no agent accounts. |
+| MCP, images | not done | — |
+| Tool allowlists | partial | see the decisions table. Checked by the argv tests. |
 | Skills as extra system prompt, local directories only | partial | engine loads `.ai/cezar/skills`, `.ai/skills`, `.agents/skills`. No global or team repo |
 
 ### Automations
@@ -258,24 +258,29 @@ HTML routes that are live (Datastar SSE, not the old NDJSON event stream):
 
 ## What is still TypeScript
 
-`packages/`, the React cockpit, the CLI in `packages/cezar/src/index.ts`, and
-the agent runners stay. They are the behavior this port does not cover.
-Deleting them would drop the product.
+`packages/`, the React cockpit, and the CLI in `packages/cezar/src/index.ts`
+stay. The Python runners speak the same wire formats against fake binaries;
+the TypeScript runners are still the reference for everything the partial rows
+above name (live session, v2 events, MCP, images, watchdog). Deleting the
+TypeScript tree would drop the product.
 
 ## Risks
 
-- Calling this parity would be false. Most of the cockpit, every real agent
-  protocol, GitHub, and the trackers are absent.
-- `CEZ_REAL_AGENTS=1` can start whatever binary is on `PATH`. It does not speak
-  that CLI's protocol and it does not ask before tools. Leave it off.
+- Calling this parity would be false. The cockpit, the HTTP contract, GitHub,
+  and the trackers are still mostly absent. The runners are protocol-tested
+  against fakes, not against the real CLIs.
+- Unset `CEZ_DRY_RUN` spawns whatever binary is on `PATH` for the selected
+  runner, with that runner's flags, and does not ask before tools. Compose
+  keeps the mock on.
 - The server has no login. Compose publishes port 4321. `same_origin()` blocks
   cross-site mutations; it is not an access control.
 - One process owns the SQLite file. A second `run` or `projects` command exits
   if the cockpit holds the claim.
 - A check step is `sh -c` in the worktree, same trust model as a workflow the
   user wrote, with no secret injection and no `bashAllowlist`.
-- Dry-run is the default. People coming from the TypeScript app will not hit
-  their logged-in agent unless they opt in, and opting in is not the real runner.
+- A follow-up starts a new process with `--resume` (Claude, Pi) rather than
+  writing another turn into the process that just finished. Codex always
+  `thread/start`s. If the CLI did not persist that session id, resume fails.
 - Worktrees are created inside the project repo. Finish does not merge and does
   not push. Cleaning them up is manual except for delete and orphan prune.
 - The diff anchor is the fork commit recorded at start, so a base branch that

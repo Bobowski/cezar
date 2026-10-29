@@ -1,8 +1,8 @@
 """Agent sessions.
 
-The dry-run mock is the path tests and `docker compose up` exercise. The subprocess
-runner is experimental: it writes the prompt to the binary's stdin and reads stdout.
-It does not speak the TypeScript runners' JSON-RPC / stream-json session protocols.
+`DryRunAgent` is what `CEZ_DRY_RUN=1` and `docker compose up` exercise. A real
+runner is `ProtocolRunner` in `app.engine.runners`: the same argv and wire
+format as the TypeScript backend, one turn per process.
 """
 
 from __future__ import annotations
@@ -26,6 +26,10 @@ class AgentSpec:
     runner: str
     model: str
     cancel: asyncio.Event
+    allowed_tools: tuple[str, ...] = ()
+    bash_allowlist: tuple[str, ...] = ()
+    session_id: str = ""
+    resume: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +37,8 @@ class AgentEvent:
     type: str
     text: str = ""
     name: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 def usage_from_line(line: str) -> tuple[int, int] | None:

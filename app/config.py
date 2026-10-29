@@ -59,6 +59,13 @@ class Config:
     approval_gate: bool = False
     # Codex sandbox opt-out: `workspace-write` instead of `danger-full-access`.
     codex_network_off: bool = False
+    github_token: str = ""
+    github_api: str = "https://api.github.com"
+    jira_base: str = ""
+    jira_email: str = ""
+    jira_token: str = ""
+    linear_key: str = ""
+    linear_api: str = "https://api.linear.app/graphql"
 
     @classmethod
     def from_env(cls) -> Config:
@@ -85,6 +92,13 @@ class Config:
             listen_port=_port(os.environ.get("STARIO_PORT", "4321")),
             approval_gate=_flag("CEZ_APPROVAL_GATE", "0"),
             codex_network_off=os.environ.get("CEZ_CODEX_NETWORK") == "0",
+            github_token=os.environ.get("CEZ_GITHUB_TOKEN", os.environ.get("GITHUB_TOKEN", "")),
+            github_api=os.environ.get("CEZ_GITHUB_API", "https://api.github.com"),
+            jira_base=os.environ.get("CEZ_JIRA_BASE", ""),
+            jira_email=os.environ.get("CEZ_JIRA_EMAIL", ""),
+            jira_token=os.environ.get("CEZ_JIRA_TOKEN", ""),
+            linear_key=os.environ.get("CEZ_LINEAR_API_KEY", ""),
+            linear_api=os.environ.get("CEZ_LINEAR_API", "https://api.linear.app/graphql"),
         )
 
 

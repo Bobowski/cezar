@@ -92,7 +92,7 @@ of `server.ts`.
 ## Checks
 
 `uv run ruff check`, `uv run ruff format --check`, `uv run pyright`, and
-`uv run pytest -q` were run on this branch. **83 tests passed.**
+`uv run pytest -q` were run on this branch. **85 tests passed.**
 
 A manual `CEZ_DRY_RUN=1 uv run python -m app.main` answered `/health`,
 `POST /api/v1/runs` returned 201, and the run reached `review` with a worktree
@@ -199,7 +199,7 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | Stale schedule does not launch a backlog | done | `test_a_stale_schedule_does_not_launch_a_backlog` |
 | Due interval launches one run | done | same test |
 | Calendar UI | not done | a list and a form |
-| GitHub / Jira / Linear triggers, receipts, webhook ingress | not done | — |
+| GitHub / Jira / Linear reads | partial | `tests/test_integrations.py`. Unset credentials answer `{available: false}` and do not call out. A recorded local server returns one GitHub issue, one Jira issue, and one Linear issue. No triggers, receipts, draft PRs, or webhook ingress. |
 
 ### CLI
 

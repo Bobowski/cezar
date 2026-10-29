@@ -28,6 +28,7 @@ from app.engine.model import Project, Run, Workflow
 from app.engine.workflows import parse_workflow
 from app.features.api.records import public_project, public_run
 from app.features.api.urls import API_PROJECTS
+from app.integrations.clients import github_issues, jira_issue, linear_issue
 from app.store.db import (
     get_project,
     get_run,
@@ -69,6 +70,9 @@ class ApiPage:
             app.add(Route(f"{method} /api/v1{path}"), handler)
             app.add(Route(f"{method} /api/v1/p/{{project_id}}{path}"), handler)
         app.add(API_PROJECTS, self.projects)
+        app.add(Route("GET /api/v1/github/issues"), self.github_issues)
+        app.add(Route("GET /api/v1/jira/issue/{key}"), self.jira_issue)
+        app.add(Route("POST /api/v1/linear/issue"), self.linear_issue)
 
     async def runs(self, c: Context, w: Writer) -> None:
         project = self._bound(c, w)
@@ -354,6 +358,20 @@ class ApiPage:
                 },
             )
         )
+
+    async def github_issues(self, c: Context, w: Writer) -> None:
+        owner = c.req.query.get("owner", "")
+        repo = c.req.query.get("repo", "")
+        w.json(cast(JsonValue, github_issues(self.config, owner, repo)))
+
+    async def jira_issue(self, c: Context, w: Writer) -> None:
+        w.json(cast(JsonValue, jira_issue(self.config, c.match.params.get("key", ""))))
+
+    async def linear_issue(self, c: Context, w: Writer) -> None:
+        body = await _optional_body(c) or {}
+        issue_id = body.get("id", "")
+        ident = issue_id if isinstance(issue_id, str) else ""
+        w.json(cast(JsonValue, linear_issue(self.config, ident)))
 
     async def projects(self, c: Context, w: Writer) -> None:
         w.json(

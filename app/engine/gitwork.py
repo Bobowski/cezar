@@ -119,6 +119,16 @@ def create_worktree(repo: Path, run_id: str, base: str, *, fetch: bool) -> tuple
     return path, branch, sha
 
 
+def drop_worktree_dir(repo: Path, path: Path) -> bool:
+    """Remove the worktree directory and keep the branch. True when the directory is gone."""
+    if path.exists():
+        git(repo, ["worktree", "remove", "--force", str(path)])
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
+    git(repo, ["worktree", "prune"])
+    return not path.exists()
+
+
 def remove_worktree(repo: Path, path: Path, branch: str) -> None:
     if path.exists():
         git(repo, ["worktree", "remove", "--force", str(path)])

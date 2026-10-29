@@ -26,7 +26,7 @@ def render(settings: Settings, chrome: Chrome, tab: str) -> HtmlElement:
             h.P(
                 {"class": "sub"},
                 "Workspace-wide. Parallelism defaults to 2, same as the TypeScript cockpit. "
-                "Telemetry stays off until Settings records a yes, and this port does not send it.",
+                "Telemetry is intentionally not ported and is not sent.",
             ),
             h.Form(
                 {"class": "composer"},

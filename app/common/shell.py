@@ -12,6 +12,7 @@ from app.config import Config
 from app.engine.model import Project
 from app.features.automations.urls import AUTOMATIONS
 from app.features.dashboard.urls import DASHBOARD
+from app.features.places.urls import GITHUB, INBOX, REPO, TRACKER
 from app.features.projects.urls import PROJECTS
 from app.features.secrets.urls import SECRETS
 from app.features.settings.urls import SETTINGS
@@ -82,6 +83,10 @@ def _sidebar(chrome: Chrome) -> HtmlElement:
     query = {"project": project, "status": "all"}
     links = (
         ("tasks", "Tasks", TASKS.href(query=query)),
+        ("inbox", "Inbox", INBOX.href()),
+        ("git", "Repository", REPO.href()),
+        ("github", "GitHub", GITHUB.href()),
+        ("tracker", "Tracker", TRACKER.href()),
         ("dashboard", "Dashboard", DASHBOARD.href()),
         ("workflows", "Workflows", WORKFLOWS.href(query={"project": project})),
         ("skills", "Skills", SKILLS.href(query={"project": project})),

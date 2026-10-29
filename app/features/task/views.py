@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 from stario import h
 from stario.datastar import at, data
 from stario.markup import HtmlElement
@@ -14,11 +17,12 @@ from app.features.task.urls import (
     TASK_FINISH,
     TASK_LIVE,
     TASK_MESSAGE,
+    TASK_NOTES,
     TASK_PR,
     TASK_PUSH,
+    TASK_SHELL,
     TaskView,
 )
-from app.features.tasks.urls import TASKS
 
 
 def render(
@@ -98,9 +102,19 @@ def render(
         )
     panes = h.Nav(
         {"class": "filters"},
-        h.A({"href": TASK.href(run.id, query={"pane": "session"})}, "Session"),
-        h.A({"href": TASK.href(run.id, query={"pane": "diff"})}, "Changes"),
-        h.A({"href": TASKS.href(query={"project": run.project_id, "status": "all"})}, "All tasks"),
+        *[
+            h.A({"href": TASK.href(run.id, query={"pane": pane})}, label)
+            for pane, label in (
+                ("session", "Session"),
+                ("diff", "Changes"),
+                ("files", "Files"),
+                ("commits", "Commits"),
+                ("graph", "Graph"),
+                ("notes", "Notes"),
+                ("terminal", "Terminal"),
+                ("browser", "Browser"),
+            )
+        ],
     )
     blocks: list[HtmlElement] = [
         h.Div(
@@ -127,11 +141,7 @@ def render(
         blocks.append(h.P({"class": "error"}, run.error))
     if run.status == "waiting" and run.ask:
         blocks.append(h.Div({"class": "card-block ask"}, h.Strong("The agent asked"), h.P(run.ask)))
-    if view.pane == "diff":
-        body = diff.text if diff and diff.text else "No diff yet."
-        blocks.append(h.Pre({"class": "diff"}, body))
-    else:
-        blocks.append(h.Ol({"id": "transcript", "class": "transcript"}, *transcript))
+    blocks.extend(_pane(run, view, diff, transcript))
     if run.status in ("waiting", "review"):
         blocks.append(
             h.Form(
@@ -189,9 +199,100 @@ def render(
     return frame(
         chrome,
         TASK_LIVE.href(run.id, query=view.query()),
-        {"tab": tab, "message": "", "objective": "", "_error": ""},
+        {
+            "tab": tab,
+            "message": "",
+            "objective": "",
+            "notes": run.notes,
+            "command": "",
+            "_error": "",
+        },
         h.Main({"id": "task"}, *blocks),
     )
+
+
+def _pane(run: Run, view: TaskView, diff: Diff | None, transcript: list) -> list[HtmlElement]:
+    if view.pane == "diff":
+        body = diff.text if diff and diff.text else "No diff yet."
+        return [h.Pre({"class": "diff"}, body)]
+    if view.pane == "files":
+        names = _worktree_files(run.worktree_path)
+        rows = [h.Li(name) for name in names] or [h.Li({"class": "muted"}, "No files yet.")]
+        return [h.H2("Files"), h.Ul(*rows)]
+    if view.pane == "commits":
+        lines = _commits(run.worktree_path)
+        rows = [h.Li(line) for line in lines] or [h.Li({"class": "muted"}, "No commits.")]
+        return [h.H2("Commits"), h.Ul(*rows)]
+    if view.pane == "graph":
+        graph = run.workflow_def.get("graph")
+        nodes = graph.get("nodes") if isinstance(graph, dict) else None
+        if isinstance(nodes, list) and nodes:
+            rows = [
+                h.Li(f"{item.get('id')} · {item.get('type')}")
+                for item in nodes
+                if isinstance(item, dict)
+            ]
+        else:
+            rows = [h.Li(step.name or step.id) for step in run.definition().steps]
+        return [h.H2("Graph"), h.Ol(*rows)]
+    if view.pane == "notes":
+        return [
+            h.H2("Notes"),
+            h.Form(
+                {"class": "composer"},
+                data.on("submit", at.post(TASK_NOTES.href(run.id)), prevent=True),
+                h.Textarea({"maxlength": "20000"}, data.bind("notes")),
+                h.Button({"class": "btn", "type": "submit"}, "Save notes"),
+            ),
+        ]
+    if view.pane == "terminal":
+        return [
+            h.H2("Terminal"),
+            h.P({"class": "sub"}, "A PTY in this task's worktree. Resize is cols and rows."),
+            h.Form(
+                {"class": "composer"},
+                data.on("submit", at.post(TASK_SHELL.href(run.id)), prevent=True),
+                h.Input({"required": True, "maxlength": "400"}, data.bind("command")),
+                h.Button({"class": "btn", "type": "submit"}, "Run"),
+            ),
+        ]
+    if view.pane == "browser":
+        return [
+            h.H2("Browser"),
+            h.P(
+                {"class": "sub"},
+                "Design Mode mirrors a loopback http server and injects a picker marker. "
+                "It is off when the cockpit is hosted.",
+            ),
+        ]
+    return [h.Ol({"id": "transcript", "class": "transcript"}, *transcript)]
+
+
+def _worktree_files(root: str) -> list[str]:
+    if not root:
+        return []
+    base = Path(root)
+    if not base.is_dir():
+        return []
+    found: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [name for name in dirnames if name not in (".git", "node_modules")]
+        for name in filenames:
+            found.append(str(Path(dirpath, name).relative_to(base)))
+            if len(found) >= 200:
+                return found
+    return found
+
+
+def _commits(root: str) -> list[str]:
+    if not root:
+        return []
+    from app.engine.gitwork import git
+
+    ok, out, _err = git(Path(root), ["log", "--oneline", "-n", "20"])
+    if not ok:
+        return []
+    return [line for line in out.splitlines() if line.strip()]
 
 
 def render_missing(chrome: Chrome, tab: str) -> HtmlElement:

@@ -45,6 +45,7 @@ from app.engine.gitwork import (
     WorktreeError,
     create_worktree,
     diff_against,
+    drop_worktree_dir,
     head_branch,
     is_git_repo,
     prune_orphans,
@@ -55,11 +56,13 @@ from app.engine.model import TERMINAL, Automation, Project, Run, Settings, Step,
 from app.engine.prompts import build_user_prompt
 from app.engine.receipts import archive_finished as sweep_archive
 from app.engine.receipts import mark_all_read as sweep_read
+from app.engine.retention import select_index_prune, select_reclaimable
 from app.engine.session_extras import load_project_mcp, prompt_task, v2_snapshots
 from app.engine.skills import find_skill
 from app.engine.terminal_hub import TerminalHub
+from app.engine.uploads import materialize
 from app.engine.workflows import newer_catalog_workflow, retryable_exit
-from app.secrets.store import SecretStore, command_allowed, redact
+from app.secrets.store import SecretStore, redact
 from app.store.db import (
     add_event,
     count_in_flight_children,
@@ -83,6 +86,50 @@ from app.store.db import (
 )
 
 CHANGED = "cezar.changed"
+
+
+def _pr_number(url: str) -> str:
+    if "/pull/" not in url:
+        return ""
+    number = url.rstrip("/").rsplit("/", 1)[-1]
+    return number if number.isdigit() else ""
+
+
+def _gh_checks(cwd: Path, number: str) -> str:
+    import json
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "checks", number, "--json", "state"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except OSError, subprocess.TimeoutExpired:
+        return ""
+    if proc.returncode != 0:
+        return ""
+    try:
+        loaded = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(loaded, list) or not loaded:
+        return "pending"
+    states = [str(item.get("state", "")).upper() for item in loaded if isinstance(item, dict)]
+    if any(state in ("FAILURE", "ERROR", "CANCELLED") for state in states):
+        return "failing"
+    if states and all(state == "SUCCESS" for state in states):
+        return "passing"
+    return "pending"
+
+
+def _usage_event(total: int, gained: int) -> str:
+    import json
+
+    return json.dumps({"type": "usage.updated", "usage": {"total": total, "delta": gained}})
 
 
 def _delta_snapshot(text: str) -> str:
@@ -165,6 +212,7 @@ class Engine:
             await self._ensure_boot_project()
             if is_git_repo(repo):
                 await asyncio.to_thread(prune_orphans, repo, list_run_ids(self.db))
+                await self.retain()
         for run_id, message in self._buffer().lost_on_startup():
             if get_run(self.db, run_id) is not None:
                 await self._note(run_id, "lifecycle", message)
@@ -300,6 +348,7 @@ class Engine:
 
     async def _prepare(self, run: Run) -> Run:
         if run.worktree_path:
+            await self._lay_down_attachments(run)
             return run
         project = get_project(self.db, run.project_id)
         if project is None:
@@ -310,6 +359,7 @@ class Engine:
             run.in_place = True
             run.worktree_path = str(root)
             run.base_branch = base
+            await self._lay_down_attachments(run)
             await self._save(run)
             await self._note(run.id, "note", "not a git repository; ran in place")
             return run
@@ -327,6 +377,7 @@ class Engine:
         run.branch = branch
         run.base_sha = sha
         run.base_branch = base
+        await self._lay_down_attachments(run)
         await self._save(run)
         return run
 
@@ -395,9 +446,6 @@ class Engine:
                     else ()
                 )
                 step = Step(id=node_id, name=node_id, command=command, bash_allowlist=allow)
-                if not command_allowed(command, allow):
-                    await self._fail(run, "command is not in bashAllowlist")
-                    return
                 code, output = await self._run_check(run, step, cancel)
                 await self._note(run.id, "check-output", output or f"exit {code}", node_id)
                 if cancel.is_set() or code < 0:
@@ -440,6 +488,8 @@ class Engine:
             return await self._run_git_sync(run, node_id)
         if kind == "github.draft-pr":
             return await self._run_draft_pr(run, node, outputs)
+        if kind == "github.wait-ci":
+            return await self._run_wait_ci(run, node, outputs)
         if kind in ("github.pr-comment", "github.issue-comment", "github.pr-update"):
             return await self._run_github_note(run, node)
         await self._fail(run, f'graph node "{node_id}" ({kind}) is not executed by the Python port')
@@ -618,6 +668,27 @@ class Engine:
         await self._note(run.id, "note", note, node_id)
         return "created", node_id
 
+    async def _run_wait_ci(
+        self, run: Run, node: dict[str, Any], outputs: dict[str, dict[str, str]]
+    ) -> tuple[str, str]:
+        node_id = str(node.get("id", ""))
+        number = _pr_number(run.pull_request_url)
+        if not number:
+            await self._note(run.id, "note", "no PR on this task — nothing to wait for", node_id)
+            outputs[node_id] = {"status": "no-pr"}
+            return "failed", node_id
+        if self.config.dry_run:
+            await self._note(
+                run.id, "note", f"dry run — CI on PR #{number} reported green", node_id
+            )
+            outputs[node_id] = {"status": "passing"}
+            return "green", node_id
+        glyph = await asyncio.to_thread(_gh_checks, Path(run.worktree_path or "."), number)
+        port = "green" if glyph == "passing" else "red" if glyph == "failing" else "timeout"
+        outputs[node_id] = {"status": glyph or "timeout"}
+        await self._note(run.id, "note", f"CI on PR #{number}: {glyph or 'timeout'}", node_id)
+        return port, node_id
+
     async def _run_github_note(self, run: Run, node: dict[str, Any]) -> tuple[str, str]:
         node_id = str(node.get("id", ""))
         kind = str(node.get("type", ""))
@@ -677,6 +748,8 @@ class Engine:
             pending_note=run.pending_note,
             reports=reports,
         )
+        if run.attachment_paths:
+            prompt += "\n\nThe user attached:\n" + "\n".join(run.attachment_paths)
         spec = AgentSpec(
             user_prompt=prompt,
             system_prompt="\n\n".join(system_parts),
@@ -749,6 +822,13 @@ class Engine:
             self._coalescer.take_full(run.id, "message")
         current = get_run(self.db, run.id) or run
         current.tokens_used += gained
+        if gained:
+            await self._note(
+                current.id,
+                "usage.updated",
+                _usage_event(current.tokens_used, gained),
+                step.id,
+            )
         if reports:
             current.pending_reports = []
         joined = "\n".join(texts)
@@ -801,9 +881,8 @@ class Engine:
         return code, redact(output, list(values.values()))
 
     async def _check(self, run: Run, step: Step, cancel: asyncio.Event) -> str:
-        if not command_allowed(step.command, step.bash_allowlist):
-            await self._fail(run, "command is not in bashAllowlist")
-            return "stop"
+        # The TypeScript check shell is always `bash -lc`. `bashAllowlist` is an
+        # agent-argv concern and does not gate the command.
         code, output = await self._run_check(run, step, cancel)
         await self._note(run.id, "check-output", output or f"exit {code}", step.id)
         if cancel.is_set() or code < 0:
@@ -1040,6 +1119,43 @@ class Engine:
         self._runners[runner] = created
         return created
 
+    async def retain(self) -> list[str]:
+        """Reclaim finished worktree directories past the cap, and drop old index rows."""
+        reclaimed: list[str] = []
+        for project in list_projects(self.db):
+            runs = list_runs(self.db, project.id, None, limit=10_000)
+            for run_id in select_reclaimable(runs, self.config.worktree_keep):
+                run = get_run(self.db, run_id)
+                if run is None or not run.worktree_path:
+                    continue
+                gone = await asyncio.to_thread(
+                    drop_worktree_dir, Path(project.root), Path(run.worktree_path)
+                )
+                if not gone:
+                    continue
+                run.worktree_reclaimed_at = stamp()
+                await self._save(run)
+                reclaimed.append(run_id)
+            runs = list_runs(self.db, project.id, None, limit=10_000)
+            for run_id in select_index_prune(runs, keep=self.config.runs_keep):
+                await self.db.write(delete_run_row, run_id)
+        if reclaimed:
+            self.publish()
+        return reclaimed
+
+    async def _lay_down_attachments(self, run: Run) -> None:
+        if run.attachment_paths or not run.images or not run.worktree_path:
+            return
+        paths = await asyncio.to_thread(
+            materialize,
+            self.config.data_dir / "uploads",
+            Path(run.worktree_path) / ".cezar-attachments",
+            run.images,
+        )
+        if paths:
+            run.attachment_paths = paths
+            await self._save(run)
+
     def _buffer(self) -> DeferredBuffer:
         if self._deferred_buf is None:
             self._deferred_buf = DeferredBuffer(self.config.data_dir / "runs")
@@ -1089,6 +1205,14 @@ class Engine:
         for run in changed:
             await self._save(run)
         return len(changed)
+
+    async def set_notes(self, run_id: str, notes: str) -> str | None:
+        run = get_run(self.db, run_id)
+        if run is None:
+            return "not found"
+        run.notes = notes
+        await self._save(run)
+        return None
 
     async def set_read(self, run_id: str, read: bool) -> str | None:
         run = get_run(self.db, run_id)

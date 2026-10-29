@@ -1,7 +1,8 @@
 """Import a TypeScript `runs.json` array into the SQLite run table.
 
-Only the fields this port stores are kept. Event NDJSON is not imported.
-A record without a usable id, task, or status is skipped.
+Event NDJSON is read from `runs/<id>.ndjson` beside the data directory, which
+is where the TypeScript store writes `<dataDir>/runs/<id>.ndjson`. A record
+without a usable id, task, or status is skipped.
 """
 
 from __future__ import annotations
@@ -30,6 +31,49 @@ def runs_from_document(raw: object, project_id: str) -> tuple[list[Run], int]:
 
 def load_runs_file(path: Path, project_id: str) -> tuple[list[Run], int]:
     return runs_from_document(json.loads(path.read_text(encoding="utf-8")), project_id)
+
+
+def events_near(runs_json: Path, run_id: str) -> list[dict[str, str]]:
+    """Lines from the TypeScript event file for this run, if it is on disk."""
+    candidates = (
+        runs_json.parent / "runs" / f"{run_id}.ndjson",
+        runs_json.parent / f"{run_id}.ndjson",
+    )
+    for path in candidates:
+        if path.is_file():
+            return _events(path)
+    return []
+
+
+def _events(path: Path) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            loaded = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(loaded, dict):
+            continue
+        kind = loaded.get("type")
+        if not isinstance(kind, str) or not kind:
+            continue
+        text = loaded.get("text")
+        if not isinstance(text, str):
+            message = loaded.get("message")
+            text = message if isinstance(message, str) else ""
+        step = loaded.get("stepId")
+        at = loaded.get("ts")
+        rows.append(
+            {
+                "type": kind,
+                "text": text,
+                "step_id": step if isinstance(step, str) else "",
+                "at": at if isinstance(at, str) else "",
+            }
+        )
+    return rows
 
 
 def _one(item: object, project_id: str) -> Run | None:

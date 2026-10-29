@@ -16,12 +16,14 @@ from litewriter import ClaimBusy, LiteWriter
 from stario import Relay, serve
 from stario.http.config import ServerConfig
 
+from app.clock import stamp
 from app.config import RUNNERS, Config, apply_overrides
 from app.engine.engine import Engine
-from app.engine.import_runs import load_runs_file
+from app.engine.import_runs import events_near, load_runs_file
 from app.engine.scaffold import init_project
 from app.main import bootstrap
 from app.store.db import (
+    add_event,
     find_project_by_root,
     get_run,
     get_settings,
@@ -150,6 +152,15 @@ async def import_runs_command(path: Path) -> int:
                 skipped += 1
                 continue
             await db.write(insert_run, run)
+            for event in events_near(path, run.id):
+                await db.write(
+                    add_event,
+                    run.id,
+                    event["type"],
+                    event["text"],
+                    event["step_id"],
+                    event["at"] or stamp(),
+                )
             stored += 1
         print(f"imported {stored}, skipped {skipped}")
         return 0

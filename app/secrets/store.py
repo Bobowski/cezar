@@ -288,11 +288,11 @@ def redact(text: str, values: list[str]) -> str:
 
 
 def command_allowed(command: str, allowlist: tuple[str, ...]) -> bool:
-    """Empty allowlist means unrestricted, which is what a TypeScript check does.
+    """Whether an agent Bash rule would admit `command`.
 
-    A non-empty list fail-closes: the command must start with one prefix. The
-    TypeScript check shell ignores `bashAllowlist`; this is stricter on purpose
-    when a check step names one.
+    Check steps do not call this. The TypeScript check shell is `bash -lc`
+    for every command, allowlist or not. An empty list is unrestricted. A
+    non-empty list matches a command that equals a prefix or starts with it.
     """
     prefixes = [item.strip() for item in allowlist if item.strip()]
     if not prefixes:

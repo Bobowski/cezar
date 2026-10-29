@@ -62,6 +62,7 @@ class SurfaceApi:
             ("POST", "/runs/{run_id}/pr", self.draft_pr),
             ("POST", "/runs/{run_id}/terminal", self.terminal_open),
             ("POST", "/runs/{run_id}/terminal/{session_id}/input", self.terminal_input),
+            ("POST", "/runs/{run_id}/terminal/{session_id}/resize", self.terminal_resize),
             ("GET", "/runs/{run_id}/terminal/{session_id}/output", self.terminal_output),
             ("DELETE", "/runs/{run_id}/terminal/{session_id}", self.terminal_close),
             ("GET", "/ui-state", self.ui_state),
@@ -89,6 +90,7 @@ class SurfaceApi:
         app.add(Route("POST /api/v1/hooks/jira"), self.jira_hook)
         app.add(Route("POST /api/v1/hooks/linear"), self.linear_hook)
         app.add(Route("GET /api/v1/hooks/receipts"), self.receipts)
+        app.add(Route("GET /api/v1/fs/browse"), self.browse)
 
     async def archive_finished(self, c: Context, w: Writer) -> None:
         project = self._project(c, w)
@@ -209,6 +211,24 @@ class SurfaceApi:
             return
         session_id = c.match.params.get("session_id", "")
         if not await self.engine._terminals.write(session_id, data):
+            w.json({"error": "not found"}, status=404)
+            return
+        w.json({"ok": True})
+
+    async def terminal_resize(self, c: Context, w: Writer) -> None:
+        run = self._run(c, w)
+        if run is None:
+            return
+        body = await _json(c, w)
+        if body is None:
+            return
+        rows = body.get("rows", 24)
+        cols = body.get("cols", 80)
+        if not isinstance(rows, int) or not isinstance(cols, int):
+            w.json({"error": "rows and cols must be integers"}, status=400)
+            return
+        session_id = c.match.params.get("session_id", "")
+        if not self.engine._terminals.resize(session_id, rows, cols):
             w.json({"error": "not found"}, status=404)
             return
         w.json({"ok": True})
@@ -428,6 +448,24 @@ class SurfaceApi:
 
     async def linear_hook(self, c: Context, w: Writer) -> None:
         await self._shared_hook(c, w, "linear", self.config.linear_webhook_secret)
+
+    async def browse(self, c: Context, w: Writer) -> None:
+        from pathlib import Path
+
+        from app.engine.fs_browse import browse as browse_directory
+
+        root = Path(self.config.browse_root or str(Path.home()))
+        result = browse_directory(
+            root,
+            c.req.query.get("path", ""),
+            show_hidden=c.req.query.get("showHidden") == "1",
+        )
+        if result.get("ok") is not True:
+            status = result.get("status")
+            code = status if isinstance(status, int) else 400
+            w.json({"error": str(result.get("error", "browse failed"))}, status=code)
+            return
+        w.json(cast(JsonValue, {key: value for key, value in result.items() if key != "ok"}))
 
     async def receipts(self, _c: Context, w: Writer) -> None:
         w.json(cast(JsonValue, {"receipts": recent_receipts(self.config.data_dir)}))

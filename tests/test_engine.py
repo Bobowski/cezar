@@ -455,8 +455,8 @@ async def test_a_check_receives_a_secret_and_a_bash_allowlist_blocks_other_comma
     ).to_json()
     await engine.db.write(save_run, blocked)
     await engine.execute(blocked.id)
-    failed = get_run(engine.db, blocked.id)
-    assert failed is not None and "bashAllowlist" in failed.error
+    allowed = get_run(engine.db, blocked.id)
+    assert allowed is not None and allowed.status == "review"
 
 
 async def test_an_ask_waits_and_the_answer_continues(world):

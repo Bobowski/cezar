@@ -70,6 +70,9 @@ class Config:
     github_webhook_secret: str = ""
     jira_webhook_secret: str = ""
     linear_webhook_secret: str = ""
+    browse_root: str = ""
+    worktree_keep: int = 10
+    runs_keep: int = 300
 
     @classmethod
     def from_env(cls) -> Config:
@@ -108,6 +111,9 @@ class Config:
             github_webhook_secret=os.environ.get("CEZ_GITHUB_WEBHOOK_SECRET", ""),
             jira_webhook_secret=os.environ.get("CEZ_JIRA_WEBHOOK_SECRET", ""),
             linear_webhook_secret=os.environ.get("CEZ_LINEAR_WEBHOOK_SECRET", ""),
+            browse_root=os.environ.get("CEZ_BROWSE_ROOT", str(Path.home())),
+            worktree_keep=_keep(os.environ.get("CEZ_WORKTREE_RETENTION"), 10),
+            runs_keep=_keep(os.environ.get("CEZ_RUNS_KEEP"), 300),
         )
 
 
@@ -129,6 +135,16 @@ def _design_mode(listen_host: str) -> bool:
     if hosted:
         return False
     return os.environ.get("CEZ_DESIGN_MODE", "1") == "1"
+
+
+def _keep(raw: str | None, default: int) -> int:
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value >= 0 else default
 
 
 def _port(raw: str) -> int:

@@ -1,13 +1,19 @@
-"""A shell in the task worktree.
+"""A PTY in the task worktree.
 
-There is no PTY: the session is `bash --noprofile --norc -s` with pipes, and
-the cockpit reads it as SSE. Resize is refused. The working directory is the
-worktree the run already owns.
+The session is an interactive bash on a pseudo-terminal, so a full-screen
+program sees a tty. Resize uses `TIOCSWINSZ` and `SIGWINCH`. Output is read
+from the master and served as SSE.
 """
 
 from __future__ import annotations
 
 import asyncio
+import fcntl
+import os
+import pty
+import signal
+import struct
+import termios
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,6 +22,7 @@ from pathlib import Path
 @dataclass
 class ShellSession:
     proc: asyncio.subprocess.Process
+    master: int
     chunks: list[str] = field(default_factory=list)
     changed: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -25,28 +32,49 @@ class TerminalHub:
         self.sessions: dict[str, ShellSession] = {}
 
     async def open(self, cwd: Path) -> str:
+        master, slave = pty.openpty()
+        _winsize(master, 24, 80)
         proc = await asyncio.create_subprocess_exec(
             "bash",
             "--noprofile",
             "--norc",
-            "-s",
+            "-i",
             cwd=cwd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            start_new_session=True,
         )
+        os.close(slave)
+        os.set_blocking(master, False)
         session_id = uuid.uuid4().hex[:16]
-        session = ShellSession(proc)
+        session = ShellSession(proc, master)
         self.sessions[session_id] = session
         asyncio.create_task(self._read(session), name=f"term-{session_id}")
         return session_id
 
     async def write(self, session_id: str, data: str) -> bool:
         session = self.sessions.get(session_id)
-        if session is None or session.proc.stdin is None or session.proc.returncode is not None:
+        if session is None or session.proc.returncode is not None:
             return False
-        session.proc.stdin.write(data.encode())
-        await session.proc.stdin.drain()
+        try:
+            os.write(session.master, data.encode())
+        except OSError:
+            return False
+        return True
+
+    def resize(self, session_id: str, rows: int, cols: int) -> bool:
+        session = self.sessions.get(session_id)
+        if session is None or session.proc.returncode is not None:
+            return False
+        if not 1 <= rows <= 500 or not 1 <= cols <= 500:
+            return False
+        _winsize(session.master, rows, cols)
+        if session.proc.pid:
+            try:
+                os.killpg(session.proc.pid, signal.SIGWINCH)
+            except OSError:
+                os.kill(session.proc.pid, signal.SIGWINCH)
         return True
 
     def output(self, session_id: str) -> str | None:
@@ -66,16 +94,28 @@ class TerminalHub:
             except TimeoutError:
                 session.proc.kill()
                 await session.proc.wait()
+        os.close(session.master)
         return True
 
     async def _read(self, session: ShellSession) -> None:
-        stdout = session.proc.stdout
-        if stdout is None:
-            return
         while True:
-            raw = await stdout.read(1024)
+            try:
+                raw = os.read(session.master, 4096)
+            except BlockingIOError:
+                if session.proc.returncode is not None:
+                    session.changed.set()
+                    return
+                await asyncio.sleep(0.02)
+                continue
+            except OSError:
+                session.changed.set()
+                return
             if not raw:
                 session.changed.set()
                 return
             session.chunks.append(raw.decode(errors="replace"))
             session.changed.set()
+
+
+def _winsize(fd: int, rows: int, cols: int) -> None:
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))

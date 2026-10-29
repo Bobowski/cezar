@@ -22,8 +22,10 @@ from app.features.task.urls import (
     TASK_FINISH,
     TASK_LIVE,
     TASK_MESSAGE,
+    TASK_NOTES,
     TASK_PR,
     TASK_PUSH,
+    TASK_SHELL,
     TaskView,
 )
 from app.features.task.views import render, render_missing
@@ -49,6 +51,8 @@ class TaskPage:
         app.add(TASK_COMMIT, self.commit)
         app.add(TASK_PUSH, self.push)
         app.add(TASK_PR, self.draft_pr)
+        app.add(TASK_NOTES, self.notes)
+        app.add(TASK_SHELL, self.shell)
 
     async def show(self, c: Context, w: Writer) -> None:
         run_id = c.match.params["run_id"]
@@ -162,6 +166,46 @@ class TaskPage:
         if reason:
             self._tell(w, tab, reason, 409)
             return
+        w.empty()
+
+    async def notes(self, c: Context, w: Writer) -> None:
+        run_id, tab, signals = await self._input(c, w)
+        if run_id is None or tab is None or signals is None:
+            return
+        text = str(signals.get("notes", ""))
+        if len(text) > 20_000:
+            self._tell(w, tab, "notes are too long", 400)
+            return
+        reason = await self.engine.set_notes(run_id, text)
+        if reason:
+            self._tell(w, tab, reason, 404)
+            return
+        w.empty()
+
+    async def shell(self, c: Context, w: Writer) -> None:
+        run_id, tab, signals = await self._input(c, w)
+        if run_id is None or tab is None or signals is None:
+            return
+        command = str(signals.get("command", "")).strip()
+        if not command or len(command) > 400:
+            self._tell(w, tab, "command must be 1 to 400 characters", 400)
+            return
+        run = get_run(self.db, run_id)
+        if run is None or not run.worktree_path:
+            self._tell(w, tab, "no worktree", 409)
+            return
+        session_id = await self.engine._terminals.open(Path(run.worktree_path))
+        try:
+            await self.engine._terminals.write(session_id, command + "\n")
+            text = ""
+            for _ in range(30):
+                text = self.engine._terminals.output(session_id) or ""
+                if command.split()[0] in text and len(text) > len(command):
+                    break
+                await asyncio.sleep(0.05)
+        finally:
+            await self.engine._terminals.close(session_id)
+        self.relay.publish(f"tab.{tab}", {"_error": text[-500:]})
         w.empty()
 
     async def _command(self, c: Context, w: Writer, fn) -> None:

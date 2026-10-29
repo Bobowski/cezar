@@ -176,6 +176,47 @@ async def test_a_message_during_the_turn_is_delivered_when_it_ends(world: Engine
     assert stored.continuation == "while it ran"
 
 
+def _ci_graph() -> dict[str, object]:
+    return {
+        "name": "g",
+        "version": 2,
+        "nodes": [
+            {"id": "start", "type": "start"},
+            {"id": "ready", "type": "check", "command": "true"},
+            {"id": "ci", "type": "github.wait-ci", "timeoutMs": 1000},
+            {"id": "ok", "type": "end", "status": "success"},
+        ],
+        "edges": [
+            {"from": "start", "to": "ready"},
+            {"from": "ready.pass", "to": "ci"},
+            {"from": "ci.green", "to": "ok"},
+        ],
+    }
+
+
+async def test_wait_ci_fails_without_a_pr_and_is_green_in_a_dry_run(world: Engine):
+    failed = await _go(world, _ci_graph())
+    assert failed.status == "failed"
+    project = get_project(world.db, world.boot_project_id)
+    assert project is not None
+    run, reason = world.plan_run(
+        project=project,
+        task="ci",
+        workflow_name="g",
+        runner="claude",
+        workflow=_graph(_ci_graph()),
+    )
+    assert run is not None, reason
+    run.pull_request_url = "https://github.com/acme/demo/pull/4"
+    await world.enqueue(run)
+    from app.store.db import save_run
+
+    await world.db.write(save_run, run)
+    await world.execute(run.id)
+    stored = get_run(world.db, run.id)
+    assert stored is not None and stored.status == "review"
+
+
 async def test_archive_leaves_a_waiting_run_and_stamps_read_on_done(world: Engine):
     from tests.test_engine import _start
 

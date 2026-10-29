@@ -626,6 +626,14 @@ def _images(raw: object) -> list[dict[str, object]] | str | None:
     for item in raw:
         if not isinstance(item, dict):
             return "invalid attachment"
+        upload_id = item.get("uploadId")
+        if isinstance(upload_id, str) and upload_id:
+            name = item.get("name")
+            entry: dict[str, object] = {"uploadId": upload_id}
+            if isinstance(name, str) and name:
+                entry["name"] = name
+            out.append(entry)
+            continue
         data = item.get("data")
         if not isinstance(data, str) or not data:
             return "attachment needs data"

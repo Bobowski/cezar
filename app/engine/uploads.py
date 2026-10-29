@@ -73,6 +73,39 @@ def delete_upload(directory: Path, upload_id: str) -> bool:
     return True
 
 
+def materialize(store: Path, dest: Path, images: list[dict[str, object]]) -> list[str]:
+    """Write staged or inline attachments into the worktree and return their paths.
+
+    The agent is told the path. Image bytes also stay on the run so Claude can
+    send them as content blocks.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    paths: list[str] = []
+    for index, image in enumerate(images):
+        upload_id = image.get("uploadId")
+        if isinstance(upload_id, str):
+            found = read_upload(store, upload_id)
+            if found is None:
+                continue
+            meta, raw = found
+            name = _safe_name(meta.get("name") or upload_id) or f"attachment-{index}"
+        else:
+            data = image.get("data")
+            if not isinstance(data, str) or not data:
+                continue
+            try:
+                raw = base64.b64decode(data, validate=True)
+            except ValueError, TypeError:
+                continue
+            media = str(image.get("mediaType") or "application/octet-stream")
+            suffix = ".png" if media.startswith("image/") else ".bin"
+            name = _safe_name(str(image.get("name") or f"attachment-{index}{suffix}"))
+        path = dest / name
+        path.write_bytes(raw)
+        paths.append(str(path))
+    return paths
+
+
 def _safe_name(name: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in name)[:100]
     return cleaned

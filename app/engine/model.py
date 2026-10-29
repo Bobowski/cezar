@@ -49,6 +49,12 @@ def _dict(value: object) -> dict[str, object]:
     return {}
 
 
+def _strings(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
 def _dicts(value: object) -> list[dict[str, object]]:
     if not isinstance(value, list):
         return []
@@ -253,6 +259,9 @@ class Run:
     auto_resume_at: str = ""
     awaiting_answer_since: str = ""
     pull_request_url: str = ""
+    worktree_reclaimed_at: str = ""
+    notes: str = ""
+    attachment_paths: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -303,6 +312,9 @@ class Run:
             "auto_resume_at": self.auto_resume_at,
             "awaiting_answer_since": self.awaiting_answer_since,
             "pull_request_url": self.pull_request_url,
+            "worktree_reclaimed_at": self.worktree_reclaimed_at,
+            "notes": self.notes,
+            "attachment_paths": self.attachment_paths,
         }
 
     @classmethod
@@ -366,6 +378,9 @@ class Run:
             auto_resume_at=_text(data.get("auto_resume_at")),
             awaiting_answer_since=_text(data.get("awaiting_answer_since")),
             pull_request_url=_text(data.get("pull_request_url")),
+            worktree_reclaimed_at=_text(data.get("worktree_reclaimed_at")),
+            notes=_text(data.get("notes")),
+            attachment_paths=_strings(data.get("attachment_paths")),
         )
 
     def definition(self) -> Workflow:

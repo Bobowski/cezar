@@ -95,32 +95,12 @@ def accounts_path(config: Config) -> Path:
 
 
 def list_accounts(config: Config) -> list[dict[str, str]]:
-    try:
-        loaded = json.loads(accounts_path(config).read_text(encoding="utf-8"))
-    except OSError, json.JSONDecodeError:
-        return []
-    if not isinstance(loaded, list):
-        return []
-    rows = []
-    for item in loaded:
-        if isinstance(item, dict) and isinstance(item.get("name"), str):
-            rows.append(
-                {
-                    "id": str(item.get("id", "")),
-                    "name": item["name"],
-                    "runner": str(item.get("runner", "claude")),
-                }
-            )
-    return rows
+    from app.integrations.accounts import list_accounts as load
+
+    return load(config)
 
 
 def add_account(config: Config, name: str, runner: str) -> str | None:
-    if not name.strip() or len(name) > 80:
-        return "name must be 1 to 80 characters"
-    if runner not in ("claude", "codex", "opencode", "cursor", "pi", "junie", "copilot"):
-        return "unknown runner"
-    rows = list_accounts(config)
-    rows.append({"id": uuid.uuid4().hex, "name": name.strip(), "runner": runner})
-    path = accounts_path(config)
-    path.write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8")
-    return None
+    from app.integrations.accounts import add_account as save
+
+    return save(config, name, runner)

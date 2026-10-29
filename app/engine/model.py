@@ -263,6 +263,7 @@ class Run:
     notes: str = ""
     attachment_paths: list[str] = field(default_factory=list)
     dispatch_report: dict[str, object] = field(default_factory=dict)
+    account_id: str = ""
 
     def to_json(self) -> dict[str, object]:
         body: dict[str, object] = {
@@ -316,6 +317,7 @@ class Run:
             "worktree_reclaimed_at": self.worktree_reclaimed_at,
             "notes": self.notes,
             "attachment_paths": self.attachment_paths,
+            "account_id": self.account_id,
         }
         if self.dispatch_report:
             body["dispatch_report"] = self.dispatch_report
@@ -386,6 +388,7 @@ class Run:
             notes=_text(data.get("notes")),
             attachment_paths=_strings(data.get("attachment_paths")),
             dispatch_report=_dict(data.get("dispatch_report")),
+            account_id=_text(data.get("account_id")),
         )
 
     def definition(self) -> Workflow:

@@ -26,12 +26,31 @@ def merge_state(number: int, *, dry_run: bool, cwd: Path) -> dict[str, object]:
     return {"available": True, "dryRun": False, "mergeState": state}
 
 
-def merge_pr(number: int, method: str, *, dry_run: bool, cwd: Path) -> dict[str, object]:
+def merge_pr(
+    number: int,
+    method: str,
+    *,
+    dry_run: bool,
+    cwd: Path,
+    expected_head: str = "",
+) -> dict[str, object]:
     if number < 1:
         return {"ok": False, "status": 400, "error": "invalid pull request number"}
     if method not in METHODS:
         return {"ok": False, "status": 400, "error": "method must be merge, squash, or rebase"}
+    if expected_head and (
+        len(expected_head) != 40 or any(ch not in "0123456789abcdef" for ch in expected_head)
+    ):
+        return {"ok": False, "status": 400, "error": "invalid merge request"}
     if dry_run:
+        if expected_head and expected_head != "a" * 40:
+            return {
+                "ok": False,
+                "status": 409,
+                "error": "the pull request head moved",
+                "code": "head_moved",
+                "current": "a" * 40,
+            }
         return {
             "ok": True,
             "merged": True,
@@ -44,6 +63,15 @@ def merge_pr(number: int, method: str, *, dry_run: bool, cwd: Path) -> dict[str,
     current, err = load_merge_state(number, cwd)
     if current is None:
         return {"ok": False, "status": 409, "error": err or "gh pr view failed"}
+    head = str(current.get("headSha", ""))
+    if expected_head and head and expected_head != head:
+        return {
+            "ok": False,
+            "status": 409,
+            "error": "the pull request head moved",
+            "code": "head_moved",
+            "current": head,
+        }
     if current.get("canMerge") is not True:
         blockers = current.get("blockers")
         message = "The pull request is not eligible to merge."
@@ -56,7 +84,10 @@ def merge_pr(number: int, method: str, *, dry_run: bool, cwd: Path) -> dict[str,
             "eligibility": current.get("eligibility"),
         }
     flag = {"merge": "--merge", "squash": "--squash", "rebase": "--rebase"}[method]
-    ok, out, err = _gh(cwd, ["pr", "merge", str(number), flag, "--yes"])
+    args = ["pr", "merge", str(number), flag, "--yes"]
+    if expected_head:
+        args.extend(["--match-head-commit", expected_head])
+    ok, out, err = _gh(cwd, args)
     if not ok:
         return {"ok": False, "status": 409, "error": err or "gh pr merge failed"}
     return {

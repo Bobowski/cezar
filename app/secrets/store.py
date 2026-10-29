@@ -1,11 +1,11 @@
 """Project and workspace secrets.
 
-Same rules as the TypeScript store: AES-256-GCM, a 0600 key file, metadata in
-the clear, values never returned by the list API, and a project file that
-refuses another root. There is no OS keychain here, so `keyBackend` is always
-`file` — the fallback the TypeScript store uses when the keychain is absent.
-The directory is `$PROJECT_DATA_DIR/secrets`, not `~/.cezar/secrets`, so the
-compose volume keeps it.
+Same rules as the TypeScript store: AES-256-GCM, metadata in the clear,
+values never returned by the list API, and a project file that refuses
+another root. The 32-byte data key lives in the OS keychain when one is
+available. `CEZ_SECRETS_KEYCHAIN=0`, a pytest process, or a machine without
+`secret-tool` keeps it in a `0600` file instead. The directory is
+`$PROJECT_DATA_DIR/secrets`, not `~/.cezar/secrets`.
 """
 
 from __future__ import annotations
@@ -85,7 +85,9 @@ class SecretStore:
         self.directory = directory
 
     def key_backend(self) -> str:
-        return "file"
+        from app.secrets.keychain import os_keychain
+
+        return "keychain" if os_keychain() is not None else "file"
 
     def list(self, scope: str, *, root: str = "") -> tuple[list[SecretMeta], str]:
         secrets, skipped = self._read(scope, root)
@@ -268,6 +270,22 @@ class SecretStore:
 
     def _key(self) -> bytes:
         self._prepare()
+        from app.secrets.keychain import KeychainLocked, os_keychain
+
+        ring = os_keychain()
+        if ring is not None:
+            try:
+                stored = ring.get()
+            except KeychainLocked as exc:
+                raise SecretsError("the keychain is locked") from exc
+            if stored is not None and len(stored) == 32:
+                return stored
+            raw = os.urandom(32)
+            try:
+                ring.set(raw)
+            except KeychainLocked as exc:
+                raise SecretsError("the keychain is locked") from exc
+            return raw
         path = self.directory / ".key"
         if path.is_file():
             raw = b64decode(path.read_text(encoding="utf-8").strip())

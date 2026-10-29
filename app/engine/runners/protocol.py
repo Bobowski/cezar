@@ -299,6 +299,12 @@ class ProtocolRunner:
             await _finish_proc(proc, mcp_path)
 
 
+def _child_env(spec: AgentSpec) -> dict[str, str]:
+    from app.engine.agent_env import build_child_env, profile_env
+
+    return build_child_env(spec.runner, extra=profile_env(spec.runner, spec.profile_home))
+
+
 async def _process_turn(
     runner: str,
     binary: str,
@@ -316,6 +322,7 @@ async def _process_turn(
         binary,
         *args,
         cwd=spec.cwd,
+        env=_child_env(spec),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -698,6 +705,7 @@ async def _opencode_turn(binary: str, spec: AgentSpec) -> AsyncIterator[AgentEve
         binary,
         *build_opencode_args(port),
         cwd=spec.cwd,
+        env=_child_env(spec),
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )

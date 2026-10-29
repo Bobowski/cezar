@@ -45,12 +45,12 @@ from app.engine.gitignore_data import ensure_data_gitignore
 from app.engine.gitwork import (
     WorktreeError,
     create_worktree,
-    diff_against,
     drop_worktree_dir,
     head_branch,
     is_git_repo,
     prune_orphans,
     remove_worktree,
+    task_diff,
 )
 from app.engine.graph import advance, compare_values, enter_graph, fork_shape, render_refs
 from app.engine.instructions import run_instructions
@@ -97,6 +97,23 @@ def _pr_number(url: str) -> str:
         return ""
     number = url.rstrip("/").rsplit("/", 1)[-1]
     return number if number.isdigit() else ""
+
+
+def _profile_home(config: Config, account_id: str, runner: str) -> str:
+    from app.integrations.accounts import profile_home_for
+
+    home = profile_home_for(config, account_id, runner)
+    return home or ""
+
+
+def _measured_diff(run: Run):
+    return task_diff(
+        Path(run.worktree_path),
+        base_branch=run.base_branch,
+        task_branch=run.branch,
+        started_at=run.started_at,
+        fallback_sha=run.base_sha,
+    )
 
 
 def _gh_checks(cwd: Path, number: str) -> str:
@@ -788,6 +805,7 @@ class Engine:
             ),
             mcp_servers=load_project_mcp(root),
             codex_thread=run.codex_thread,
+            profile_home=_profile_home(self.config, run.account_id, step.runner or run.runner),
         )
         texts: list[str] = []
         gained = 0
@@ -950,7 +968,7 @@ class Engine:
         root = Path(project.root) if project else self.config.repo_root
         if not review_gate_enabled(root):
             return False
-        diff = await asyncio.to_thread(diff_against, Path(run.worktree_path), run.base_sha)
+        diff = await asyncio.to_thread(_measured_diff, run)
         return diff.files > 0
 
     def _notify(self, run: Run, previous: str) -> None:
@@ -986,9 +1004,7 @@ class Engine:
         current.mode = "workflow"
         await self._save(current)
         if current.worktree_path and current.base_sha and not current.in_place:
-            diff = await asyncio.to_thread(
-                diff_against, Path(current.worktree_path), current.base_sha
-            )
+            diff = await asyncio.to_thread(_measured_diff, current)
             await self._note(
                 current.id,
                 "note",
@@ -1106,6 +1122,9 @@ class Engine:
         self.publish()
 
     async def _note(self, run_id: str, type: str, text: str, step_id: str = "") -> None:
+        from app.engine.agent_env import scrub
+
+        text = scrub(text)
         at = stamp()
         seq = await self.db.write(add_event, run_id, type, text, step_id, at)
         self._fanout(

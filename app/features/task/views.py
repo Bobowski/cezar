@@ -18,6 +18,7 @@ from app.features.task.urls import (
     TASK_NOTES,
     TASK_PR,
     TASK_PUSH,
+    TASK_REVIEW,
     TASK_SHELL,
     TaskView,
 )
@@ -133,7 +134,7 @@ def render(
             ),
             h.Div({"class": "actions"}, *actions) if actions else None,
         ),
-        _merge_box(merge) if merge and merge.get("available") else None,
+        _merge_box(merge, run.id) if merge and merge.get("available") else None,
         panes,
         h.Ol({"class": "steps"}, *rail),
     ]
@@ -268,7 +269,7 @@ def _pane(run: Run, view: TaskView, diff: Diff | None, transcript: list) -> list
     return [h.Ol({"id": "transcript", "class": "transcript"}, *transcript)]
 
 
-def _merge_box(payload: dict[str, object]) -> HtmlElement:
+def _merge_box(payload: dict[str, object], run_id: str) -> HtmlElement:
     state = payload.get("mergeState")
     inner = state if isinstance(state, dict) else {}
     heading = "Ready to merge" if inner.get("eligibility") == "ready" else "Merge blocked"
@@ -277,6 +278,20 @@ def _merge_box(payload: dict[str, object]) -> HtmlElement:
     messages = [h.Li(str(item.get("message", ""))) for item in rows if isinstance(item, dict)]
     number = inner.get("number")
     button = None
+    review = None
+    if isinstance(number, int):
+        review = h.Form(
+            {"id": "review-form"},
+            data.on("submit", at.post(TASK_REVIEW.href(run_id)), prevent=True),
+            h.Select(
+                data.bind("review_event"),
+                h.Option({"value": "comment"}, "Comment"),
+                h.Option({"value": "approve"}, "Approve"),
+                h.Option({"value": "request-changes"}, "Request changes"),
+            ),
+            h.Textarea({"id": "review-body", "maxlength": "20000"}, data.bind("review_body")),
+            h.Button({"class": "btn", "type": "submit"}, "Send review"),
+        )
     if inner.get("canMerge") is True and isinstance(number, int):
         button = h.Button(
             {"type": "button", "class": "btn btn-primary", "id": "merge-pr"},
@@ -287,6 +302,7 @@ def _merge_box(payload: dict[str, object]) -> HtmlElement:
         {"id": "merge-box"},
         h.H2(heading),
         h.Ul(*messages) if messages else None,
+        review,
         button,
     )
 

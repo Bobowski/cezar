@@ -292,3 +292,32 @@ async def test_projects_list_has_the_registry_keys(client):
         assert key in project
     assert project["status"] == "ok"
     assert project["source"] == "local"
+
+
+async def test_unset_parallel_default_is_two(client):
+    body = (await client.get("/api/v1/workspace/config")).json()
+    assert body["maxParallel"] == 2
+    page = await client.get("/settings")
+    assert "defaults to 2" in page.text
+
+
+async def test_cancel_a_live_run_and_an_unknown_id(client):
+    missing = await client.post(f"/api/v1/runs/{'ab' * 16}/cancel")
+    assert missing.status_code == 404
+    assert missing.json()["error"] == "not found"
+    created = await client.post(
+        API_RUNS_CREATE.href(),
+        json={"task": "hold", "steps": [{"id": "wait", "command": "sleep 30"}]},
+    )
+    assert created.status_code == 201
+    run_id = created.json()["id"]
+    status = ""
+    for _ in range(50):
+        status = (await client.get(f"/api/v1/runs/{run_id}")).json()["status"]
+        if status == "running":
+            break
+        await asyncio.sleep(0.05)
+    assert status == "running"
+    cancelled = await client.post(f"/api/v1/runs/{run_id}/cancel")
+    assert cancelled.status_code == 200
+    assert cancelled.json() == {"cancelled": True}

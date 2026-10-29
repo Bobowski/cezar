@@ -9,7 +9,7 @@ from tests.conftest import init_repo
 
 from app.clock import now, stamp
 from app.config import RUNNERS, Config
-from app.engine.agents import AgentEvent, AgentSpec, StdinAgent, usage_from_line
+from app.engine.agents import AgentEvent, AgentSpec, DryRunAgent, StdinAgent, usage_from_line
 from app.engine.engine import Engine, rebaseline_automations
 from app.engine.gitignore_data import DATA_GITIGNORE_ENTRIES, ensure_data_gitignore
 from app.engine.gitwork import diff_against, is_safe_git_ref, log_count, prune_orphans
@@ -93,6 +93,29 @@ async def _start(engine: Engine, task: str = "do the thing") -> Run:
     assert run is not None, reason
     await engine.enqueue(run)
     return run
+
+
+async def test_mock_write_creates_the_named_file(world):
+    engine, _repo = world
+    run = await _start(engine, "mock:write notes/out.txt")
+    await engine.execute(run.id)
+    stored = get_run(engine.db, run.id)
+    assert stored is not None and stored.status == "done"
+    written = Path(stored.worktree_path) / "notes" / "out.txt"
+    assert written.is_file()
+    assert "mock:write notes/out.txt" in written.read_text(encoding="utf-8")
+    direct = Path(stored.worktree_path) / "plain.txt"
+    spec = AgentSpec(
+        user_prompt="mock:write plain.txt",
+        system_prompt="",
+        cwd=stored.worktree_path,
+        runner="claude",
+        model="",
+        cancel=asyncio.Event(),
+    )
+    async for _event in DryRunAgent().stream(spec):
+        pass
+    assert direct.is_file()
 
 
 async def test_a_graph_check_reviews_on_pass_and_fails_on_an_unwired_failure(world):

@@ -246,6 +246,14 @@ class ApiPage:
         run = self._existing(c, w)
         if run is None:
             return
+        project = get_project(self.db, run.project_id)
+        if project is not None:
+            from app.engine.lifecycle_ops import removal_block_reason
+
+            blocked = removal_block_reason(Path(project.root))
+            if blocked:
+                w.json({"error": blocked}, status=409)
+                return
         reason = await self.engine.delete(run.id)
         if reason:
             w.json({"error": reason}, status=409)

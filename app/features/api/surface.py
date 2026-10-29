@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Awaitable
 from pathlib import Path
 from typing import Any, cast
 
@@ -23,6 +24,12 @@ from stario.json import dumps as json_dumps
 
 from app.config import Config
 from app.engine.engine import Engine
+from app.engine.lifecycle_ops import (
+    LifecycleDesk,
+    LifecycleFailure,
+    pending_reason,
+    removal_block_reason,
+)
 from app.engine.preview import design_proxy_issue, start_proxy
 from app.engine.providers import model_catalog, provider_status
 from app.engine.telemetry_store import read_consent, write_consent
@@ -53,6 +60,7 @@ class SurfaceApi:
         self.config = config
         self._proxies: dict[str, object] = {}
         self.watches = TrackerWatches()
+        self.lifecycle = LifecycleDesk(db, engine)
 
     def register(self, app: App) -> None:
         routes = (
@@ -65,6 +73,15 @@ class SurfaceApi:
             ("GET", "/runs/{run_id}/files", self.files),
             ("POST", "/runs/{run_id}/continue", self.continue_run),
             ("POST", "/runs/{run_id}/remove-worktree", self.remove_worktree),
+            ("POST", "/worktree-lifecycle/operations", self.lifecycle_start),
+            ("GET", "/worktree-lifecycle/operations/{operation_id}", self.lifecycle_get),
+            ("POST", "/worktree-lifecycle/operations/{operation_id}/actions", self.lifecycle_act),
+            (
+                "GET",
+                "/worktree-lifecycle/operations/{operation_id}/output",
+                self.lifecycle_output,
+            ),
+            ("POST", "/worktree-lifecycle/preview", self.lifecycle_preview),
             ("POST", "/worktrees/reclaim", self.reclaim),
             ("GET", "/runs/{run_id}/git/status", self.git_status),
             ("POST", "/runs/{run_id}/git/commit", self.git_commit),
@@ -250,6 +267,11 @@ class SurfaceApi:
             w.json({"error": _NO_WORKTREE}, status=409)
             return
         project = get_project(self.db, run.project_id)
+        if project is not None:
+            blocked = removal_block_reason(Path(project.root))
+            if blocked:
+                w.json({"error": blocked}, status=409)
+                return
         if project is None:
             w.json({"error": "not found"}, status=404)
             return
@@ -344,6 +366,12 @@ class SurfaceApi:
         if not isinstance(message, str):
             w.json({"error": "commit message must be one plain line"}, status=400)
             return
+        project = get_project(self.db, run.project_id)
+        if project is not None:
+            blocked = pending_reason(Path(project.root), run.id)
+            if blocked:
+                w.json({"error": blocked}, status=409)
+                return
         result, reason = await self.engine.git_commit(run.id, message)
         if reason or result is None:
             status = 404 if reason == "not found" else 409
@@ -1337,6 +1365,71 @@ class SurfaceApi:
             w.json({"error": "Tracker observation expired. Reopen the view."}, status=404)
             return
         w.json(cast(JsonValue, snap))
+
+    async def lifecycle_start(self, c: Context, w: Writer) -> None:
+        root = self._root(c, w)
+        if root is None:
+            return
+        body = await _json(c, w)
+        if body is None:
+            return
+        await self._lifecycle(w, self.lifecycle.start(root, body), 202)
+
+    async def lifecycle_get(self, c: Context, w: Writer) -> None:
+        root = self._root(c, w)
+        if root is None:
+            return
+        operation_id = c.match.params.get("operation_id", "")
+        await self._lifecycle(w, self.lifecycle.get(root, operation_id))
+
+    async def lifecycle_act(self, c: Context, w: Writer) -> None:
+        root = self._root(c, w)
+        if root is None:
+            return
+        body = await _json(c, w)
+        if body is None:
+            return
+        operation_id = c.match.params.get("operation_id", "")
+        await self._lifecycle(w, self.lifecycle.act(root, operation_id, body), 202)
+
+    async def lifecycle_output(self, c: Context, w: Writer) -> None:
+        root = self._root(c, w)
+        if root is None:
+            return
+        operation_id = c.match.params.get("operation_id", "")
+        try:
+            after = int(c.req.query.get("afterSeq", "0"))
+            limit = int(c.req.query.get("limit", "100"))
+        except ValueError:
+            w.json({"error": "limit must be 1–200"}, status=400)
+            return
+        try:
+            payload = self.lifecycle.output(root, operation_id, after, limit)
+        except LifecycleFailure as exc:
+            w.json({"error": str(exc)}, status=exc.status)
+            return
+        w.json(cast(JsonValue, payload))
+
+    async def lifecycle_preview(self, c: Context, w: Writer) -> None:
+        body = await _json(c, w)
+        if body is None:
+            return
+        try:
+            payload = self.lifecycle.preview(body)
+        except LifecycleFailure as exc:
+            w.json({"error": str(exc)}, status=exc.status)
+            return
+        w.json(cast(JsonValue, payload))
+
+    async def _lifecycle(
+        self, w: Writer, work: Awaitable[dict[str, object]], status: int = 200
+    ) -> None:
+        try:
+            view = await work
+        except LifecycleFailure as exc:
+            w.json({"error": str(exc)}, status=exc.status)
+            return
+        w.json({"operation": cast(JsonValue, view)}, status=status)
 
     def _root(self, c: Context, w: Writer) -> Path | None:
         project = self._project(c, w)

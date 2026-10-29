@@ -157,10 +157,10 @@ def test_repository_commits_and_workflow_steps(page: Page, cockpit: Cockpit) -> 
 def test_settings_editors_save(page: Page, cockpit: Cockpit) -> None:
     page.goto(cockpit.url("/settings/tasks"), wait_until="domcontentloaded")
     page.get_by_label("Base branch").fill("main")
-    page.get_by_label("Required checks").fill("lint")
+    page.get_by_label("Required checks").fill("true")
     _click(page, "Save")
     page.goto(cockpit.url("/settings/tasks"), wait_until="domcontentloaded")
-    expect(page.locator("#required-checks")).to_contain_text("lint")
+    expect(page.locator("#required-checks")).to_contain_text("true")
 
     page.goto(cockpit.url("/settings/global-instructions"), wait_until="domcontentloaded")
     page.locator("#global-prompt-input").fill("be brief in the browser")
@@ -252,7 +252,7 @@ def test_automations_task_inbox_and_theme(page: Page, cockpit: Cockpit) -> None:
     page.get_by_text("done", exact=True).wait_for(timeout=15_000)
     expect(page.locator("#transcript")).to_contain_text("Dry run finished")
     page.get_by_role("link", name="Terminal").click()
-    page.get_by_label("Command").fill("echo cezar-pane-ok")
+    page.get_by_role("textbox", name="Command", exact=True).fill("echo cezar-pane-ok")
     page.get_by_role("button", name="Run").click()
     expect(page.locator("#shell-output")).to_contain_text("cezar-pane-ok", timeout=10_000)
 

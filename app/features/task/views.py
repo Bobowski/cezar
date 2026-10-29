@@ -7,6 +7,7 @@ from app.engine.gitwork import Diff
 from app.engine.model import Event, Run
 from app.features.places.urls import COMPARE
 from app.features.task.data import list_commits, list_worktree_files
+from app.features.task.mermaid import diagrams
 from app.features.task.urls import (
     TASK,
     TASK_CANCEL,
@@ -40,13 +41,24 @@ def render(
         klass = "here" if index == run.step_index and run.status == "running" else ""
         attrs = {"class": klass} if klass else {}
         rail.append(h.Li(attrs, step.name or step.id))
+    window = events if view.earlier or len(events) <= 40 else events[-40:]
+    earlier = None
+    if len(window) < len(events):
+        earlier = h.A(
+            {
+                "id": "transcript-earlier",
+                "href": TASK.href(run.id, query={"pane": "session", "earlier": "1"}),
+            },
+            f"Earlier ({len(events) - len(window)})",
+        )
     transcript = [
         h.Li(
             {"class": f"ev ev-{event.type}"},
             h.Span({"class": "ev-type"}, event.type),
             event.text,
+            *diagrams(event.text),
         )
-        for event in events
+        for event in window
     ]
     actions: list[HtmlElement] = []
     if run.status in ("queued", "running", "waiting", "review"):
@@ -145,6 +157,8 @@ def render(
         blocks.append(h.P({"class": "error"}, run.error))
     if run.status == "waiting" and run.ask:
         blocks.append(h.Div({"class": "card-block ask"}, h.Strong("The agent asked"), h.P(run.ask)))
+    if earlier is not None and view.pane == "session":
+        blocks.append(earlier)
     blocks.extend(_pane(run, view, diff, transcript))
     if run.status in ("waiting", "review"):
         blocks.append(

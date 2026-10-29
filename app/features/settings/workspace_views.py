@@ -19,8 +19,8 @@ def tasks(branch: str, checks: list[str]) -> tuple[HtmlElement, ...]:
     return (
         h.P(
             {"class": "sub"},
-            "New task worktrees branch from this. Required checks are listed here; "
-            "merge does not block on the list.",
+            "New task worktrees branch from this. Each required check runs in the worktree "
+            "before the task is marked done. Auto-land onto the trunk is not this port.",
         ),
         h.Form(
             {"class": "composer"},
@@ -108,7 +108,7 @@ def instructions(prompt: str) -> tuple[HtmlElement, ...]:
     return (
         h.P(
             {"class": "sub"},
-            "Rules for every project. A project's own system prompt is what a run prepends today.",
+            "Prepended to every agent step, before the project's own system prompt.",
         ),
         h.Form(
             {"class": "composer"},
@@ -145,7 +145,7 @@ def skills(rows: list[SkillRepo]) -> tuple[HtmlElement, ...]:
     return (
         h.P(
             {"class": "sub"},
-            "Org skill repositories. A run still reads skills from the repo directories only.",
+            "Saved here. The run does not clone these repositories or add them to the prompt.",
         ),
         h.Ul({"id": "skill-repos"}, *items),
         h.Form(

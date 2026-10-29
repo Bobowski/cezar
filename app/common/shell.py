@@ -12,7 +12,7 @@ from app.config import Config
 from app.engine.model import Project
 from app.features.automations.urls import AUTOMATIONS
 from app.features.dashboard.urls import DASHBOARD
-from app.features.places.urls import GITHUB, INBOX, REPO, TRACKER
+from app.features.places.urls import GITHUB, INBOX, PALETTE_RESULTS, REPO, TRACKER
 from app.features.projects.urls import PROJECTS
 from app.features.secrets.urls import SECRETS
 from app.features.settings.urls import SETTINGS
@@ -65,14 +65,21 @@ def frame(
     signals: Mapping[str, SignalValue],
     *children: HtmlElement,
 ) -> HtmlElement:
-    nodes = [data.signals(signals, if_missing=True)]
+    merged = {"q": "", **dict(signals)}
+    nodes = [data.signals(merged, if_missing=True)]
     if live is not None:
         nodes.append(data.init(at.get(live, retry="always")))
     body = h.Div(
         {"id": "app", "class": "app"},
+        data.on(
+            "keydown",
+            "if ((evt.metaKey || evt.ctrlKey) && evt.key === 'k') $_palette.showModal()",
+            target="window",
+        ),
         *nodes,
         _sidebar(chrome),
         h.Div({"class": "main"}, *children),
+        _palette(),
     )
     theme_class = "light" if chrome.theme == "light" else ""
     return page(f"cezar · {chrome.title}", theme_class, chrome.accent, body)
@@ -106,7 +113,30 @@ def _sidebar(chrome: Chrome) -> HtmlElement:
             {"class": "nav"},
             *[_nav_link(section, label, href, chrome.section) for section, label, href in links],
         ),
+        h.Button(
+            {"type": "button", "id": "command-palette-open"},
+            data.on("click", "$_palette.showModal(); " + at.get(PALETTE_RESULTS.href())),
+            "Search",
+        ),
         h.P({"class": "banner"}, banner),
+    )
+
+
+def _palette() -> HtmlElement:
+    return h.Dialog(
+        {"id": "command-palette"},
+        data.ref("_palette"),
+        data.preserve_attr("open"),
+        h.Input(
+            {
+                "type": "search",
+                "placeholder": "Tasks and pages",
+                "aria-label": "Command palette",
+            },
+            data.bind("q"),
+            data.on("input", at.get(PALETTE_RESULTS.href()), debounce="150ms"),
+        ),
+        h.Div({"id": "palette-results"}),
     )
 
 

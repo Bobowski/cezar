@@ -18,16 +18,23 @@ from app.features.places.urls import (
     GITHUB,
     INBOX,
     INBOX_READ,
+    PALETTE_RESULTS,
     REPO,
     SETTINGS_AGENTS,
     SETTINGS_PRIVACY,
     SETTINGS_WEBHOOKS,
     SETTINGS_WEBHOOKS_SAVE,
     SETTINGS_WORKTREES,
+    SETTINGS_WORKTREES_SAVE,
     TRACKER,
     WORKFLOW,
 )
-from app.features.settings.store import tracker_overrides
+from app.features.settings.store import (
+    parse_retention,
+    read_retention,
+    tracker_overrides,
+    write_retention,
+)
 from app.integrations.clients import github_issues, jira_issue, linear_issue
 from app.integrations.hooks import load_receivers, save_receiver
 from app.store.db import get_project, get_run, list_runs
@@ -52,6 +59,8 @@ class PlacesPage:
         app.add(SETTINGS_WEBHOOKS, self.webhooks)
         app.add(SETTINGS_WEBHOOKS_SAVE, self.save_webhook)
         app.add(SETTINGS_WORKTREES, self.worktrees)
+        app.add(SETTINGS_WORKTREES_SAVE, self.save_worktrees)
+        app.add(PALETTE_RESULTS, self.palette)
 
     async def inbox(self, c: Context, w: Writer) -> None:
         project = self.engine.boot_project_id
@@ -192,13 +201,76 @@ class PlacesPage:
         return [str(row.get("name", "")) for row in load_receivers(self.config.data_dir)]
 
     async def worktrees(self, c: Context, w: Writer) -> None:
+        project_id = self.engine.boot_project_id
+        saved = read_retention(self.config.data_dir, project_id)
         w.html(
             views.worktrees(
-                self.config.worktree_keep,
+                self.config.worktree_keep if saved is None else saved,
+                saved is not None,
                 self._chrome("Worktrees", "settings"),
                 uuid.uuid7().hex,
             )
         )
 
+    async def save_worktrees(self, c: Context, w: Writer) -> None:
+        from stario.datastar import read_signals
+        from stario.exceptions import RequestBodyError
+
+        try:
+            signals = await read_signals(c.req)
+        except RequestBodyError:
+            w.text("invalid input", 400)
+            return
+        tab = str(signals.get("tab", ""))
+        if not (tab.isalnum() and len(tab) <= 32):
+            w.text("tab must be a short id", 400)
+            return
+        keep, issue = parse_retention(signals.get("keep", ""))
+        if issue or keep is None:
+            w.text(issue or "invalid retention", 400)
+            return
+        write_retention(self.config.data_dir, self.engine.boot_project_id, keep)
+        w.redirect(SETTINGS_WORKTREES.href(), 303)
+
+    async def palette(self, c: Context, w: Writer) -> None:
+        from stario.datastar import SSE, read_signals
+        from stario.exceptions import RequestBodyError
+
+        try:
+            signals = await read_signals(c.req)
+        except RequestBodyError:
+            signals = {}
+        query = str(signals.get("q", "")).strip().lower()
+        tokens = [part for part in query.split() if part]
+        project = self.engine.boot_project_id
+        pages = [
+            ("Tasks", "/tasks"),
+            ("Inbox", "/inbox"),
+            ("Repository", "/git"),
+            ("GitHub", "/github"),
+            ("Tracker", "/tracker"),
+            ("Dashboard", "/dashboard"),
+            ("Workflows", "/workflows"),
+            ("Skills", "/skills"),
+            ("Automations", "/automations"),
+            ("Settings", "/settings"),
+        ]
+        rows: list[tuple[str, str]] = []
+        for run in list_runs(self.db, project, None, limit=40):
+            label = run.title or run.task
+            if _matches(f"{label} {run.id}", tokens):
+                rows.append((label, f"/tasks/{run.id}"))
+        for label, href in pages:
+            if _matches(label, tokens):
+                rows.append((label, href))
+        SSE(w).patch_elements(views.palette_results(rows[:20]))
+
     def _chrome(self, title: str, section: str):
         return load_chrome(self.db, self.config, title, section, self.engine.boot_project_id)
+
+
+def _matches(haystack: str, tokens: list[str]) -> bool:
+    if not tokens:
+        return True
+    text = haystack.lower()
+    return all(token in text for token in tokens)

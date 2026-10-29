@@ -4,7 +4,14 @@ from stario.markup import HtmlElement
 
 from app.common.shell import Chrome, frame, status_chip
 from app.engine.model import Run, Workflow
-from app.features.places.urls import GITHUB, INBOX_READ, REPO, SETTINGS_WEBHOOKS_SAVE, TRACKER
+from app.features.places.urls import (
+    GITHUB,
+    INBOX_READ,
+    REPO,
+    SETTINGS_WEBHOOKS_SAVE,
+    SETTINGS_WORKTREES_SAVE,
+    TRACKER,
+)
 from app.features.settings.nav import settings_nav
 from app.features.task.urls import TASK
 from app.features.tasks.urls import TASKS_NEW
@@ -247,25 +254,54 @@ def webhooks(names: list[str], chrome: Chrome, tab: str) -> HtmlElement:
     )
 
 
-def worktrees(keep: int, chrome: Chrome, tab: str) -> HtmlElement:
-    text = (
-        f"The {keep} newest finished worktree directories are kept. "
-        "Older directories are removed and the branch stays."
-        if keep > 0
-        else "Worktree retention is off. Finished directories are kept."
-    )
+def worktrees(keep: int, saved: bool, chrome: Chrome, tab: str) -> HtmlElement:
+    if keep > 0:
+        text = (
+            f"The {keep} newest finished worktree directories are kept. "
+            "Older directories are removed and the branch stays."
+        )
+    else:
+        text = "Worktree retention is unlimited. Finished directories are kept."
+    source = "Saved for this project." if saved else "The process default, until you save one."
     return frame(
         chrome,
         None,
-        {"tab": tab},
+        {"tab": tab, "keep": str(keep), "_error": ""},
         h.Main(
             {"id": "worktrees"},
             settings_nav(),
             h.H1("Worktrees"),
             h.P({"class": "sub"}, text),
+            h.P({"class": "meta"}, source),
             h.P({"id": "worktree-keep"}, str(keep)),
+            h.Form(
+                {"class": "composer"},
+                data.on("submit", at.post(SETTINGS_WORKTREES_SAVE.href()), prevent=True),
+                h.Label(
+                    {"class": "field"},
+                    h.Span("Keep"),
+                    h.Input(
+                        {
+                            "type": "number",
+                            "min": "0",
+                            "max": "1000",
+                            "required": True,
+                            "aria-label": "Worktree retention",
+                        },
+                        data.bind("keep"),
+                    ),
+                ),
+                h.Button({"class": "btn btn-primary", "type": "submit"}, "Save retention"),
+            ),
         ),
     )
+
+
+def palette_results(rows: list[tuple[str, str]]) -> HtmlElement:
+    items = [h.Li(h.A({"href": href}, label)) for label, href in rows] or [
+        h.Li({"class": "muted"}, "Nothing matches.")
+    ]
+    return h.Div({"id": "palette-results"}, h.Ul(*items))
 
 
 def _page(chrome: Chrome, tab: str, element_id: str, title: str, text: str) -> HtmlElement:

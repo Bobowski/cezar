@@ -51,7 +51,30 @@ def read_checks(data_dir: Path, project_id: str) -> list[str]:
 
 
 def write_checks(data_dir: Path, project_id: str, names: list[str]) -> None:
-    _save(checks_path(data_dir, project_id), {"requiredChecks": names})
+    current = _load(checks_path(data_dir, project_id))
+    current["requiredChecks"] = names
+    _save(checks_path(data_dir, project_id), current)
+
+
+def read_retention(data_dir: Path, project_id: str) -> int | None:
+    raw = _load(checks_path(data_dir, project_id)).get("worktreeRetention")
+    if isinstance(raw, bool) or not isinstance(raw, int) or not 0 <= raw <= 1000:
+        return None
+    return raw
+
+
+def write_retention(data_dir: Path, project_id: str, keep: int) -> None:
+    current = _load(checks_path(data_dir, project_id))
+    current["worktreeRetention"] = keep
+    _save(checks_path(data_dir, project_id), current)
+
+
+def parse_retention(raw: object) -> tuple[int | None, str | None]:
+    if isinstance(raw, str) and raw.isdecimal():
+        raw = int(raw)
+    if isinstance(raw, bool) or not isinstance(raw, int) or not 0 <= raw <= 1000:
+        return None, "worktree retention is a whole number from 0 to 1000"
+    return raw, None
 
 
 def parse_checks(raw: str) -> tuple[list[str] | None, str | None]:

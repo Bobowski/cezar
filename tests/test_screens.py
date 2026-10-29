@@ -19,6 +19,7 @@ from app.features.places.urls import (
     GITHUB,
     INBOX,
     INBOX_READ,
+    PALETTE_RESULTS,
     REPO,
     SETTINGS_AGENTS,
     SETTINGS_WEBHOOKS,
@@ -332,7 +333,7 @@ async def test_bookmarklet_launch_key_is_private_and_opens_new_task(client, tmp_
     assert refused.status_code == 403
 
 
-async def test_integrations_queues_a_reviewable_task_and_stores_the_key(client):
+async def test_integrations_queues_a_reviewable_task_and_stores_the_key(client, repo):
     page = await client.get("/settings/integrations")
     assert "Set up e2e" in page.text
     assert "https://github.com/tester-army/e2e" in page.text
@@ -354,6 +355,12 @@ async def test_integrations_queues_a_reviewable_task_and_stores_the_key(client):
     secrets = await client.get(SECRETS.href())
     assert "AI_GATEWAY_API_KEY" in secrets.text
     assert "super-secret-value" not in secrets.text
+    config = (repo / "e2e.config.ts").read_text(encoding="utf-8")
+    assert "http://127.0.0.1:0" in config
+    workflow = (repo / ".ai" / "cezar" / "workflows" / "implement-and-e2e.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "{{task}}" in workflow
 
 
 async def test_base_branch_and_the_remaining_settings_editors(client, repo):
@@ -367,12 +374,12 @@ async def test_base_branch_and_the_remaining_settings_editors(client, repo):
     assert "base release" in (await client.get(PROJECTS.href())).text
     checks = await client.post(
         TASKS_SETTINGS_SAVE.href(),
-        json={"tab": "t1", "branch": "release", "checks": "lint, unit"},
+        json={"tab": "t1", "branch": "release", "checks": "true"},
         follow_redirects=False,
     )
     assert checks.status_code == 303
     tasks = await client.get(TASKS_SETTINGS.href())
-    assert "lint" in tasks.text and "unit" in tasks.text
+    assert "true" in tasks.text
     assert "Landing branch: release" in tasks.text
     bad = await client.post(
         TASKS_SETTINGS_SAVE.href(),
@@ -380,9 +387,29 @@ async def test_base_branch_and_the_remaining_settings_editors(client, repo):
         follow_redirects=False,
     )
     assert bad.status_code == 400
+    prompt = await client.post(
+        GLOBAL_INSTRUCTIONS_SAVE.href(),
+        json={"tab": "t1", "prompt": "GLOBAL-RULE"},
+        follow_redirects=False,
+    )
+    assert prompt.status_code == 303
     run_id = await _start(client, "branch from release")
     assert await _settle(client, run_id) == "done"
     assert (await client.get(f"/api/v1/runs/{run_id}")).json()["baseBranch"] == "release"
+    written = (repo / ".ai" / "cezar" / "worktrees" / run_id / "CEZAR_DRY_RUN.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "GLOBAL-RULE" in written
+    failing = await client.post(
+        TASKS_SETTINGS_SAVE.href(),
+        json={"tab": "t1", "branch": "release", "checks": "false"},
+        follow_redirects=False,
+    )
+    assert failing.status_code == 303
+    blocked = await _start(client, "this check must fail")
+    assert await _settle(client, blocked) == "failed"
+    failed = await client.get(f"/api/v1/runs/{blocked}")
+    assert "required check `false` failed" in failed.json()["error"]
 
     prompt = await client.post(
         GLOBAL_INSTRUCTIONS_SAVE.href(),
@@ -485,6 +512,113 @@ async def test_a_workflow_page_lists_its_steps(client):
     assert "Start a task" in page.text
     opened = await client.get(TASKS_NEW.href(query={"workflow": "quick-task"}))
     assert "quick-task" in opened.text
+
+
+async def test_saved_retention_reclaims_the_older_worktree(client, repo):
+    first = await _start(client, "first finished task")
+    assert await _settle(client, first) == "done"
+    second = await _start(client, "second finished task")
+    assert await _settle(client, second) == "done"
+    saved = await client.post(
+        "/settings/worktrees", json={"tab": "t1", "keep": 1}, follow_redirects=False
+    )
+    assert saved.status_code == 303
+    page = await client.get("/settings/worktrees")
+    assert ">1<" in page.text
+    assert "Saved for this project." in page.text
+    reclaimed = await client.post("/api/v1/worktrees/reclaim")
+    assert reclaimed.status_code == 200
+    dropped = reclaimed.json()["reclaimed"]
+    assert dropped == [first]
+    root = repo / ".ai" / "cezar" / "worktrees"
+    assert not (root / first).exists()
+    assert (root / second).is_dir()
+
+
+async def test_the_command_palette_filters_tasks(client):
+    home = await client.get("/tasks")
+    assert 'id="command-palette"' in home.text
+    assert "evt.metaKey" in home.text
+    await _start(client, "palette needle task")
+
+    matched = await client.get(PALETTE_RESULTS.href(), params={"datastar": '{"q": "needle"}'})
+    assert matched.status_code == 200
+    assert "palette needle task" in matched.text
+    assert "Settings" not in matched.text
+    pages = await client.get(PALETTE_RESULTS.href(), params={"datastar": '{"q": "settings"}'})
+    assert "Settings" in pages.text
+    assert "palette needle task" not in pages.text
+
+
+def test_a_mermaid_fence_draws_a_flowchart_and_the_transcript_windows():
+    from stario.markup import render as html
+
+    from app.common.shell import Chrome
+    from app.engine.model import Event, Run
+    from app.features.dashboard.views import usage_chart
+    from app.features.task.mermaid import diagrams
+    from app.features.task.urls import TaskView
+    from app.features.task.views import render as task_page
+
+    drawn = html(diagrams("```mermaid\nflowchart LR\n  A --> B\n```")[0])
+    assert "<svg" in drawn and ">A<" in drawn and ">B<" in drawn
+    assert "mermaid" in html(diagrams("```mermaid\nsequenceDiagram\n  Alice->>Bob: hi\n```")[0])
+    run = Run(
+        id="a" * 32,
+        project_id="p",
+        title="t",
+        task="task",
+        workflow="quick-task",
+        status="done",
+        runner="claude",
+        created_at="2026-01-01T00:00:00+00:00",
+        workflow_def={},
+    )
+    events = [
+        Event(index, run.id, index, "text", f"line {index}", "", "2026-01-01T00:00:00+00:00")
+        for index in range(45)
+    ]
+    events[44] = Event(
+        44,
+        run.id,
+        44,
+        "text",
+        "```mermaid\nA --> B\n```",
+        "",
+        "2026-01-01T00:00:00+00:00",
+    )
+    chrome = Chrome("Task", "tasks", "p", (), "dark", "lime", True, False)
+    page = html(task_page(run, events, [], TaskView(), None, chrome, "t1"))
+    assert page.count('class="ev ') == 40
+    assert 'id="transcript-earlier"' in page
+    assert "<svg" in page
+    full = html(task_page(run, events, [], TaskView(earlier=True), None, chrome, "t1"))
+    assert full.count('class="ev ') == 45
+    older = _chart_run("2026-01-01T00:00:00+00:00", 10)
+    newer = _chart_run("2026-01-02T00:00:00+00:00", 30)
+    chart = html(usage_chart([older, newer], show_tokens=True, show_cost=True))
+    assert 'id="usage-chart"' in chart
+    assert "01-01" in chart and "01-02" in chart
+    assert usage_chart([], show_tokens=False, show_cost=False) is None
+
+
+def _chart_run(when: str, tokens: int):
+    from app.engine.model import Run
+
+    return Run(
+        id="b" * 32,
+        project_id="p",
+        title="t",
+        task="task",
+        workflow="quick-task",
+        status="done",
+        runner="claude",
+        created_at=when,
+        workflow_def={},
+        finished_at=when,
+        tokens_used=tokens,
+        cost_usd=1.5,
+    )
 
 
 def test_the_stylesheet_has_light_violet_tokens_and_a_phone_layout():

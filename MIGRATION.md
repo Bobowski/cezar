@@ -296,20 +296,25 @@ It is not a pixel copy of the React component.
 | settings `privacy` | `/settings/privacy` | done | The page says telemetry is intentionally not ported. `tests/test_finish.py`. |
 | settings `agents` | `/settings/agents` | done | A binary on disk is `installed` and a missing path is `missing` (`tests/test_screens.py`). |
 | settings `webhooks` | `/settings/webhooks` | done | Saving a loopback receiver puts its name on the page. An http non-loopback URL is refused (`tests/test_screens.py`). |
-| settings `worktrees` | `/settings/worktrees` | done | The page states the count the engine keeps: 10 by default, and 3 when `CEZ_WORKTREE_RETENTION=3` (`tests/test_screens.py`). |
+| settings `worktrees` | `/settings/worktrees` | done | The page saves a keep count for the project. `Engine.retain` uses that count: with two finished worktrees and keep 1, reclaim drops the older directory (`tests/test_screens.py`). Unset, it stays the process default. |
 | settings `instructions` | `/settings/instructions` | done | The editor saves both fields, the prompt is prepended on the run, and a `start with` rule renames the branch (`tests/test_engine.py`, `tests/test_parity.py`). Free-text naming still does not call a model. |
 | settings `agent-config` | `/settings/agent-config` | done | Posting the editor writes `AGENTS.md`. A hosted cockpit answers 409 `agent config writes are local-only` (`tests/test_screens.py`). Catalog is those three files, not `catalog.ts`. |
 | settings `accounts` | `/settings/accounts` | done | The form saves a name and a runner and lists them (`tests/test_screens.py`). Profile homes stay on stream D's accounts row. |
 | settings `notifications` | `/settings/notifications` | done | The browser toggle saves and the page says it is on. |
 | settings `keyboard` | `/settings/keyboard` | done | `enter` is stored and rendered. The other two shortcuts are the same field. |
 | settings `bookmarklets` | `/settings/bookmarklets` | done | The launch-key file is mode `0600`. `?launch=` with that key opens New task; a wrong key is 403 (`tests/test_screens.py`). |
-| settings `integrations` | `/settings/integrations` | done | Set up e2e queues a task titled Tester Army and can store the model key as a project secret that the page does not echo (`tests/test_screens.py`). The task does not write an e2e config into the repo. |
-| `/dashboard` | `/dashboard` | done | Status counts render, including `count-done` after a finished run (`tests/test_screens.py`). Token and cost totals are the run sums, not a daily chart. |
+| settings `integrations` | `/settings/integrations` | done | Set up e2e queues a task titled Tester Army, stores an optional model key as a project secret, and writes `e2e.config.ts` (`127.0.0.1:0`) plus `.ai/cezar/workflows/implement-and-e2e.yaml` when those files are absent (`tests/test_screens.py`). It does not run `npx e2e init`. |
+| `/dashboard` | `/dashboard` | partial | Status counts render, including `count-done` after a finished run. A bar chart groups each finished run's reported tokens by day (`tests/test_screens.py`). It is not the TypeScript usage-window series of input and output tokens. |
 | `/projects` and settings `projects` | `/projects` | done | Add, including refusing `$HOME`. |
 | unknown path | — | done | `/does-not-exist` is 404. |
-| settings `tracker`, `tasks`, `skills` (global), `global-instructions`, resources | `/settings/tracker`, `/settings/tasks`, `/settings/global-skills`, `/settings/global-instructions`, `/settings/resources` | done | Each editor saves and renders its value (`tests/test_screens.py`). The base branch is what the next task forks from. Required checks, the global prompt, org skill repos, and the memory cap are stored only; the run loop does not enforce them. |
+| settings `tracker`, `tasks`, `skills` (global), `global-instructions`, resources | `/settings/tracker`, `/settings/tasks`, `/settings/global-skills`, `/settings/global-instructions`, `/settings/resources` | partial | The base branch is what the next task forks from. The global prompt is prepended before the project's own prompt (`tests/test_screens.py`). A required check runs in the worktree before `done`; `false` fails the run. TypeScript runs those checks only while auto-landing, which this port does not do. Org skill repos are saved and are not cloned into the prompt. The memory cap is saved; the run loop does not sample the agent process tree or pause it. |
 | GitHub review and merge UI | task page `#merge-box` | done | A pull request shows Ready to merge or Merge blocked, the blocker, and Squash and merge. `tests/test_surface.py`. Failing checks block `canMerge`. |
 | Light / violet tokens, phone layout | the same CSS | done | Saving light and violet sets `class="light"` and `data-accent="violet"` (`tests/test_cockpit.py`). At 390×844 the sidebar stacks above the page; at 1280 it sits beside it, and the wordmark is the light-violet primary (`e2e/test_screens.py`). |
+| Command palette | `/palette/results` | done | ⌘K opens a dialog. The results request keeps a task whose title contains the query and drops the pages that do not (`tests/test_screens.py`). |
+| Mermaid in the transcript | session pane | done | A mermaid fence of `A --> B` is an SVG flowchart in the transcript. A diagram this port cannot lay out stays as the source (`tests/test_screens.py`). |
+| Thread virtualization | session pane | partial | The session renders the latest 40 events and an Earlier link for the rest (`tests/test_screens.py`). It does not virtualize row heights in the browser. |
+| Skills auto-update | — | intentionally not ported | It would run `npx` against the network. `CEZ_SKILLS_AUTO_UPDATE` stays unread. |
+| Host telemetry | — | intentionally not ported | This fork does not send host telemetry. The consent routes do not open a socket. |
 
 ### Background work and integrations
 
@@ -508,7 +513,7 @@ next table.
 | `CEZ_AUTONOMOUS_DEFAULT`, `CEZ_WORKTREE_DEFAULT` | not done | — |
 | Release packaging, server-install, disk space, startup port probe | not done | Compose is the container. The listen port does not auto-increment. |
 | Worktree lifecycle events, handoff files, skills banner, remote skills | not done | — |
-| Browser e2e (`packages/web/e2e/`) | done | `e2e/test_main_loop.py` drives New task to `done`, and review through commit, push, and a fake-`gh` draft PR. `e2e/test_screens.py` covers each ported screen's main action: git panes, workflow steps, settings editors, automations and the calendar, variants compare, the terminal pane, inbox, dashboard, integrations, phone layout, and light/violet. `uv run pytest` does not collect `e2e/`. Specs that need features this port does not have — thread virtualization, mermaid, host telemetry, skills auto-update, the command palette — are not ported. |
+| Browser e2e (`packages/web/e2e/`) | done | `e2e/test_main_loop.py` drives New task to `done`, and review through commit, push, and a fake-`gh` draft PR. `e2e/test_screens.py` covers each ported screen's main action: git panes, workflow steps, settings editors, automations and the calendar, variants compare, the terminal pane, inbox, dashboard, integrations, phone layout, and light/violet. `uv run pytest` does not collect `e2e/`. Thread virtualization, host telemetry, and skills auto-update are separate rows. |
 
 
 ## Deviations from the Stario skills
@@ -650,7 +655,15 @@ Git, GitHub, webhook, and hook methods already on `surface.py` stay with D.
 
 ### C — Datastar screens, settings, and e2e
 
-0 partial, 0 not done.
+3 partial, 0 not done.
+
+Partial:
+
+- settings `tracker`, `tasks`, `skills` (global), `global-instructions`, resources
+- `/dashboard`
+- Thread virtualization
+
+Command palette and mermaid fences are done. Skills auto-update and host telemetry are intentionally not ported; they are not open work.
 
 Owns: `app/features/tasks/`, `app/features/dashboard/`, `app/features/editors/`, `app/features/places/`, `app/features/projects/`, `app/features/settings/`, `app/features/skills/`, `app/features/automations/` (the page, not the JSON API), `app/features/workflows/views.py` and `handlers.py` for the page that already exists, `app/common/shell.py`, `static/css/style.css`, `e2e/test_main_loop.py`, `tests/test_cockpit.py`.
 

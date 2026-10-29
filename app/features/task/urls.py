@@ -22,11 +22,15 @@ PANES = ("session", "diff", "files", "commits", "graph", "notes", "terminal", "b
 @dataclass(frozen=True, slots=True)
 class TaskView:
     pane: str = "session"
+    earlier: bool = False
 
     @classmethod
     def from_query(cls, query: ParsedQuery) -> TaskView:
         pane = query.get("pane", "session")
-        return cls(pane if pane in PANES else "session")
+        return cls(pane if pane in PANES else "session", query.get("earlier") == "1")
 
     def query(self) -> dict[str, str]:
-        return {"pane": self.pane}
+        params = {"pane": self.pane}
+        if self.earlier:
+            params["earlier"] = "1"
+        return params

@@ -288,6 +288,7 @@ class EditorsPage:
             return
         run.title = "Tester Army"
         await self.engine.enqueue(run)
+        _write_e2e_scaffold(self._root())
         w.redirect(f"/tasks/{run.id}", 303)
 
     def _root(self) -> Path:
@@ -335,6 +336,44 @@ class EditorsPage:
             payload,
             h.Main({"id": element_id}, settings_nav(), h.H1(title), *children),
         )
+
+
+_E2E_CONFIG = """\
+export default {
+  app: {
+    url: 'http://127.0.0.1:0',
+    command: {
+      executable: 'npm',
+      args: ['run', 'dev', '--', '--host', '127.0.0.1', '--port', '{port}'],
+      env: { PORT: '{port}' },
+    },
+  },
+}
+"""
+
+_E2E_WORKFLOW = """\
+name: implement-and-e2e
+description: Implement, unit-test, then prove it in a real browser (set up by cezar).
+steps:
+  - id: implement
+    name: Implement
+    prompt: |
+      {{task}}
+  - id: browser
+    name: Browser e2e
+    command: "npm run test:e2e"
+"""
+
+
+def _write_e2e_scaffold(root: Path) -> None:
+    """The files `e2e init` would leave. Skip a file that is already there."""
+    config = root / "e2e.config.ts"
+    if not config.exists():
+        config.write_text(_E2E_CONFIG, encoding="utf-8")
+    workflow = root / ".ai" / "cezar" / "workflows" / "implement-and-e2e.yaml"
+    if not workflow.exists():
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text(_E2E_WORKFLOW, encoding="utf-8")
 
 
 async def _signals(c: Context, w: Writer) -> dict[str, object] | None:

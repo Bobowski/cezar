@@ -737,6 +737,12 @@ class Engine:
         project = get_project(self.db, run.project_id)
         root = Path(project.root) if project else self.config.repo_root
         system_parts: list[str] = []
+        # Global rules first; the project's own prompt follows and wins on conflict.
+        from app.features.settings.store import read_prompt
+
+        global_prompt = read_prompt(self.config.data_dir).strip()
+        if global_prompt:
+            system_parts.append(global_prompt)
         instructions, _naming = run_instructions(root)
         if instructions:
             system_parts.append(instructions)
@@ -1025,6 +1031,10 @@ class Engine:
         self._finish.discard(run.id)
         if run.status == "done":
             return
+        failure = await self._required_checks(run)
+        if failure:
+            await self._fail(run, failure)
+            return
         await self._release_deferred(run, stopped="the task was finished")
         previous = run.status
         run.status = "done"
@@ -1033,6 +1043,27 @@ class Engine:
         await self._save(run)
         await self._note(run.id, "lifecycle", "done")
         self._notify(run, previous)
+
+    async def _required_checks(self, run: Run) -> str | None:
+        """Shell commands saved on the project. A non-zero exit keeps the run from `done`.
+
+        TypeScript runs these only while auto-landing onto the trunk. This port
+        has no auto-land, so they run in the worktree at the moment of success.
+        """
+        from app.features.settings.store import read_checks
+
+        commands = read_checks(self.config.data_dir, run.project_id)
+        if not commands:
+            return None
+        cwd = Path(run.worktree_path) if run.worktree_path else self.config.repo_root
+        for command in commands:
+            code, output = await run_shell(
+                command, cwd, asyncio.Event(), self.config.check_timeout_seconds
+            )
+            if code != 0:
+                detail = output.strip() or f"exit {code}"
+                return f"required check `{command}` failed:\n{detail}"
+        return None
 
     async def set_archived(self, run_id: str, archived: bool) -> str | None:
         run = get_run(self.db, run_id)
@@ -1177,9 +1208,13 @@ class Engine:
     async def retain(self) -> list[str]:
         """Reclaim finished worktree directories past the cap, and drop old index rows."""
         reclaimed: list[str] = []
+        from app.features.settings.store import read_retention
+
         for project in list_projects(self.db):
+            saved = read_retention(self.config.data_dir, project.id)
+            keep = self.config.worktree_keep if saved is None else saved
             runs = list_runs(self.db, project.id, None, limit=10_000)
-            for run_id in select_reclaimable(runs, self.config.worktree_keep):
+            for run_id in select_reclaimable(runs, keep):
                 run = get_run(self.db, run_id)
                 if run is None or not run.worktree_path:
                     continue

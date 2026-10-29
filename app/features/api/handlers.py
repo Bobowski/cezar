@@ -263,15 +263,22 @@ class ApiPage:
         if not isinstance(text, str):
             w.json({"error": "message needs text or at least one attachment"}, status=400)
             return
-        if run.status == "running" and isinstance(text, str) and text.strip():
-            if self.engine.defer_message(run.id, text):
-                w.json({"deferred": True})
-                return
-        if not text.strip() and not body.get("images"):
+        images = _images(body.get("images"))
+        if isinstance(images, str):
+            w.json({"error": images}, status=400)
+            return
+        if not text.strip() and not images:
             w.json({"error": "message needs text or at least one attachment"}, status=400)
             return
+        if images:
+            await self._attach(run, images)
+        outgoing = text.strip() or "(see attachments)"
+        if run.status == "running" and text.strip():
+            if self.engine.defer_message(run.id, text.strip()):
+                w.json({"deferred": True})
+                return
         if run.status == "queued":
-            message, reason = await self.engine.queue_message(run.id, text.strip())
+            message, reason = await self.engine.queue_message(run.id, outgoing)
             if reason == "not found":
                 w.json({"error": reason}, status=404)
                 return
@@ -280,7 +287,7 @@ class ApiPage:
                 return
             w.json(cast(JsonValue, {"queued": True, "message": message}))
             return
-        reason = await self.engine.deliver(run.id, text)
+        reason = await self.engine.deliver(run.id, outgoing)
         if reason == "message is empty":
             w.json({"error": "message needs text or at least one attachment"}, status=400)
             return
@@ -288,6 +295,22 @@ class ApiPage:
             w.json({"error": reason}, status=409)
             return
         w.json({"delivered": True})
+
+    async def _attach(self, run: Run, images: list[dict[str, object]]) -> None:
+        from app.engine.uploads import materialize
+
+        if run.worktree_path:
+            paths = materialize(
+                self.config.data_dir / "uploads",
+                Path(run.worktree_path) / ".cezar-attachments",
+                images,
+            )
+            if paths:
+                run.attachment_paths = paths
+                await self.engine._save(run)
+                return
+        run.images = [*run.images, *images]
+        await self.engine._save(run)
 
     async def archive(self, c: Context, w: Writer) -> None:
         run = self._existing(c, w)
@@ -351,11 +374,11 @@ class ApiPage:
         w.json({"removed": True})
 
     async def cancel_auto_resume(self, c: Context, w: Writer) -> None:
-        """Nothing here schedules a usage-limit resume, so the off switch is a no-op."""
         run = self._existing(c, w)
         if run is None:
             return
-        w.json({"cancelled": True})
+        cancelled = await self.engine.cancel_auto_resume(run.id)
+        w.json({"cancelled": cancelled})
 
     async def workflows(self, c: Context, w: Writer) -> None:
         project = self._bound(c, w)
@@ -480,11 +503,18 @@ class ApiPage:
                 JsonValue,
                 {
                     "projects": [
-                        public_project(project.id, project.name, project.root, project.created_at)
+                        public_project(
+                            project.id,
+                            project.name,
+                            project.root,
+                            project.created_at,
+                            project.tags,
+                        )
                         for project in list_projects(self.db)
                     ],
                     "bootProject": self.engine.boot_project_id,
                     "projectsDir": str(self.config.projects_dir),
+                    "maxParallel": get_settings(self.db).max_parallel,
                 },
             )
         )
@@ -661,5 +691,9 @@ def _images(raw: object) -> list[dict[str, object]] | str | None:
         media = item.get("mediaType") or item.get("media_type") or "image/png"
         if not isinstance(media, str):
             return "invalid attachment"
-        out.append({"mediaType": media, "data": data})
+        entry = {"mediaType": media, "data": data}
+        name = item.get("name")
+        if isinstance(name, str) and name:
+            entry["name"] = name
+        out.append(entry)
     return out or None

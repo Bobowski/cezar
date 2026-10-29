@@ -17,6 +17,7 @@ import secrets
 import sys
 from pathlib import Path
 
+from stario.cookies import set_cookie
 from stario.http.context import Context, Handler, Middleware
 from stario.http.writer import Writer
 
@@ -24,6 +25,7 @@ from app.config import Config, auth_password, auth_user
 from app.http.loopback import hosted_mode
 
 _REALM = 'Basic realm="cezar"'
+_COOKIE = "cezar_session"
 
 
 def basic_auth(config: Config) -> Middleware:
@@ -35,13 +37,19 @@ def basic_auth(config: Config) -> Middleware:
         return open_middleware
 
     user, password = _credentials(config)
+    token = _session_token(config)
 
     def middleware(handler: Handler) -> Handler:
         async def wrapped(c: Context, w: Writer) -> None:
             if c.req.path == "/health":
                 await handler(c, w)
                 return
+            presented = c.req.cookies.get(_COOKIE, "")
+            if presented and hmac.compare_digest(presented, token):
+                await handler(c, w)
+                return
             if _accepts(c.req.headers.get("authorization"), user, password):
+                set_cookie(w, _COOKIE, token, httponly=True, samesite="lax", secure=False)
                 await handler(c, w)
                 return
             w.headers.set("www-authenticate", _REALM)
@@ -50,6 +58,18 @@ def basic_auth(config: Config) -> Middleware:
         return wrapped
 
     return middleware
+
+
+def _session_token(config: Config) -> str:
+    path = Path(config.data_dir) / "session-token"
+    if path.is_file():
+        stored = path.read_text(encoding="utf-8").strip()
+        if stored:
+            return stored
+    token = secrets.token_urlsafe(24)
+    path.write_text(token + "\n", encoding="utf-8")
+    path.chmod(0o600)
+    return token
 
 
 def _credentials(config: Config) -> tuple[str, str]:

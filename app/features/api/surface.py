@@ -522,7 +522,12 @@ class SurfaceApi:
         w.empty()
 
     async def providers(self, _c: Context, w: Writer) -> None:
-        w.json(cast(JsonValue, provider_status(self.config.runner_bins)))
+        w.json(
+            cast(
+                JsonValue,
+                provider_status(self.config.runner_bins, self.config.data_dir / "providers.json"),
+            )
+        )
 
     async def models(self, c: Context, w: Writer) -> None:
         runner = c.req.query.get("runner", "")

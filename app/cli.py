@@ -28,7 +28,14 @@ from app.clock import stamp
 from app.config import RUNNERS, Config, apply_overrides, single_project
 from app.engine.engine import Engine
 from app.engine.import_runs import events_near, load_runs_file
+from app.engine.packaging import build_wheel
 from app.engine.scaffold import init_project
+from app.engine.server_install import (
+    deploy_compose,
+    first_free_port,
+    install_files,
+    uninstall_files,
+)
 from app.main import bootstrap
 from app.store.db import (
     add_event,
@@ -73,6 +80,10 @@ def main(argv: list[str] | None = None) -> int:
         extra = sub.add_parser(name)
         extra.add_argument("rest", nargs=argparse.REMAINDER)
 
+    for name in ("server-install", "uninstall", "deploy", "package"):
+        extra = sub.add_parser(name, parents=[common])
+        extra.add_argument("--dest", required=True)
+
     args = parser.parse_args(argv)
     if args.repo:
         apply_overrides(repo=args.repo)
@@ -81,8 +92,12 @@ def main(argv: list[str] | None = None) -> int:
         config = Config.from_env()
         host = args.host or config.listen_host
         port = args.port or config.listen_port
+        if args.port == 0:
+            port = first_free_port(host, port)
         asyncio.run(serve(bootstrap, config=ServerConfig(host=host, port=port)))
         return 0
+    if command in ("server-install", "uninstall", "deploy", "package"):
+        return _files_command(command, args)
     if command == "init":
         repo = Config.from_env().repo_root
         print(f"initialized {repo}")
@@ -228,6 +243,27 @@ async def projects_command(action: str, value: str | None) -> int:
             return 0
         print(f"unknown projects action: {action}", file=sys.stderr)
         return 1
+
+
+def _files_command(command: str, args: argparse.Namespace) -> int:
+    """Write unit files or a wheel. Nothing is registered with systemd or a registry."""
+    dest = Path(args.dest)
+    host = args.host or "127.0.0.1"
+    port = args.port or 4321
+    if command == "server-install":
+        names = install_files(dest, host=host, port=port, repo=str(Config.from_env().repo_root))
+        print(" ".join(names))
+        return 0
+    if command == "deploy":
+        print(deploy_compose(dest, host=host, port=port))
+        return 0
+    if command == "uninstall":
+        removed = uninstall_files(dest)
+        print(" ".join(removed) if removed else "nothing")
+        return 0
+    source = Path(__file__).resolve().parents[1]
+    print(build_wheel(source, dest))
+    return 0
 
 
 def _out(line: str) -> None:

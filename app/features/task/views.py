@@ -1,6 +1,3 @@
-import os
-from pathlib import Path
-
 from stario import h
 from stario.datastar import at, data
 from stario.markup import HtmlElement
@@ -8,6 +5,7 @@ from stario.markup import HtmlElement
 from app.common.shell import Chrome, frame, status_chip
 from app.engine.gitwork import Diff
 from app.engine.model import Event, Run
+from app.features.task.data import list_commits, list_worktree_files
 from app.features.task.urls import (
     TASK,
     TASK_CANCEL,
@@ -218,11 +216,11 @@ def _pane(run: Run, view: TaskView, diff: Diff | None, transcript: list) -> list
         body = diff.text if diff and diff.text else "No diff yet."
         return [h.Pre({"class": "diff"}, body)]
     if view.pane == "files":
-        names = _worktree_files(run.worktree_path)
+        names = list_worktree_files(run.worktree_path)
         rows = [h.Li(name) for name in names] or [h.Li({"class": "muted"}, "No files yet.")]
         return [h.H2("Files"), h.Ul(*rows)]
     if view.pane == "commits":
-        lines = _commits(run.worktree_path)
+        lines = list_commits(run.worktree_path)
         rows = [h.Li(line) for line in lines] or [h.Li({"class": "muted"}, "No commits.")]
         return [h.H2("Commits"), h.Ul(*rows)]
     if view.pane == "graph":
@@ -291,33 +289,6 @@ def _merge_box(payload: dict[str, object]) -> HtmlElement:
         h.Ul(*messages) if messages else None,
         button,
     )
-
-
-def _worktree_files(root: str) -> list[str]:
-    if not root:
-        return []
-    base = Path(root)
-    if not base.is_dir():
-        return []
-    found: list[str] = []
-    for dirpath, dirnames, filenames in os.walk(base):
-        dirnames[:] = [name for name in dirnames if name not in (".git", "node_modules")]
-        for name in filenames:
-            found.append(str(Path(dirpath, name).relative_to(base)))
-            if len(found) >= 200:
-                return found
-    return found
-
-
-def _commits(root: str) -> list[str]:
-    if not root:
-        return []
-    from app.engine.gitwork import git
-
-    ok, out, _err = git(Path(root), ["log", "--oneline", "-n", "20"])
-    if not ok:
-        return []
-    return [line for line in out.splitlines() if line.strip()]
 
 
 def render_missing(chrome: Chrome, tab: str) -> HtmlElement:

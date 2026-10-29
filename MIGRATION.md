@@ -81,7 +81,7 @@ is 33,553 bytes and is not application code. The TypeScript tree is still in the
 | --- | ---: | ---: |
 | TypeScript application (no `*test*` / `*spec*` files) | 800 | 145,968 |
 | TypeScript tests | 817 | 157,487 |
-| Python application (`app/`) | 89 | 12,328 |
+| Python application (`app/`) | 90 | 12,330 |
 | Python tests, including protocol fakes and `e2e/` | 29 | 3,523 |
 | Python CSS | 1 | 221 |
 
@@ -428,21 +428,21 @@ the fake binaries under `tests/fakes/`. Nothing here is a live CLI handshake.
   ticker. `CEZ_FOLLOWUPS` and `CEZ_SINGLE_PROJECT` are the same kind of flag:
   visible on `/api/v1/health`, not enforced. `CEZ_HIDE_TOKEN_*` flips the
   health capability bits and does not change a chart.
-- `CEZ_ARCHIVED_RUNS_KEEP` is not read. Index prune uses `CEZ_RUNS_KEEP` only.
+- `CEZ_ARCHIVED_RUNS_KEEP` caps archived rows. Live rows still use `CEZ_RUNS_KEEP`.
 - `systemPrompt` is prepended to the agent prompt. Branch names come from the
   namer. Dry-run uses the canned mock only when `CEZ_AUTONAME=1`.
 - Agent config is three files. Writes are refused when the cockpit is hosted.
 - Accounts are `{id, name, runner}` in the data directory.
 - Integrations queues one "Tester Army" task. It does not install a framework.
-- GitHub merge and review are dry-run JSON unless `CEZ_DRY_RUN` is off. There
-  is no checks tier, blocker list, or expected-head compare.
-- The webhook outbox is one NDJSON file plus an exclusive `owner.lock`. A dead
-  holder is replaced only when the caller says so. There is no hard-link
-  successor, pid namespace, or boot id. Retries are `5s * 2^(attempt-1)` with
-  no jitter, and the fifth failure is terminal. Slack rendering covers labels,
-  escapes, questions, links, and the 40_000-byte fallback. The coordinator is
-  not started by the server and does not subscribe to run transitions.
-  `CEZ_WEBHOOKS` defaults off.
+- GitHub merge and review call `gh` only when dry-run is off. The eligibility
+  ladder and blocker list live in `app/integrations/merge_state.py`. An
+  expected-head compare is still absent.
+- The webhook outbox is one NDJSON file. The owner is a hard link with a
+  successor slot. Retries follow `retryAt` (5s doubling, 20% jitter, 72h
+  expiry). Replay copies a finished payload for 7 days and refuses
+  `webhook.test`. Still absent: pid namespaces, admission revisions, and the
+  full transport policy. `CEZ_WEBHOOKS` defaults off. Slack rendering covers
+  labels, escapes, questions, links, and the 40_000-byte fallback.
 - `item.updated` is not emitted. `permission.*` is not emitted. `usage.updated`
   is written only when a turn reports a token gain, and no test reads it back.
 - Follow-up reuses a live Claude or Pi process. Otherwise it is a new process
@@ -468,13 +468,13 @@ next table.
 | `GET/PUT /api/v1/agent-config/:id` | not done | The HTML editor is three files. There is no JSON API. |
 | Static `/assets`, `/icon.svg` | not done | The Python cockpit serves its own CSS. |
 | Automations JSON API, automation log, check id | not done | Page posts exist and are not this contract. |
-| `GET/PUT /config` | not done | Settings writes SQLite. |
+| `GET/PUT /config` | done | See the HTTP section. `tests/test_routes.py` writes `.ai/cezar/config.json`. |
 | Deferred start options, preview, create | not done | — |
 | `GET /e2e`, `POST /e2e/setup` | not done | Integrations queues a task instead. |
 | Workspace event stream `GET /events` | not done | Per-run SSE exists. |
 | GitHub checks, review comments, PR changes, ref status, search | not done | Issues and dry-run merge are separate rows. |
 | Run groups and pick | not done | — |
-| `GET /launch-key` | not done | The bookmarklet page writes a file. |
+| `GET /launch-key` | done | See the HTTP section. `tests/test_routes.py`. |
 | Open in editor / open targets | not done | — |
 | `POST /plan` | not done | — |
 | Project checkout, create-on-GitHub, owners, patch, delete | not done | The page can add a local directory. |
@@ -509,3 +509,230 @@ next table.
 | Release packaging, server-install, disk space, startup port probe | not done | Compose is the container. The listen port does not auto-increment. |
 | Worktree lifecycle events, handoff files, skills banner, remote skills | not done | — |
 | Browser e2e (`packages/web/e2e/`) | partial | `e2e/test_main_loop.py` drives Chromium from New task to `done`, and from review through commit, push, and a fake-`gh` draft PR, then saves the instructions editor. The other React specs are not ported. `uv run pytest` does not collect `e2e/`. |
+
+
+## Deviations from the Stario skills
+
+Skills are from stario-create `e56b6cd80cfcc011c8c1be7b4da92dfba5b5c31c`. One contradiction was fixed in this pass: the run API was importing private helpers from `app/features/task/views.py`. Those reads now live in `app/features/task/data.py`, which is the module another feature is allowed to import.
+
+Left as they are. A later agent should not "clean these up" as a drive-by:
+
+- `os.environ` is still read outside `app/config.py`: `app/engine/engine.py` (the check environment), `app/engine/namer.py`, `app/engine/review_gate.py`, `app/engine/gitwork.py`, `app/engine/telemetry_store.py`, `app/integrations/lifecycle.py`, `app/integrations/coordinator.py`, and `app/features/api/surface.py` (`CEZ_TERMINAL`). Several of those are read at the call, so a test can flip the flag after `Config` is built. A new process-lifetime flag belongs on `Config`. Do not move the live ones without updating the test that sets the variable after the client exists.
+- JSON is often `json.dumps` (`app/engine/engine.py`, `app/engine/runners/protocol.py`, `app/integrations/outbox.py`, `app/secrets/store.py`, `app/integrations/hooks.py`). New documents should use `stario.json`. Leave a payload whose bytes are part of a signature or a wire fixture alone.
+- Settings, inbox, and new-task commands answer with `w.redirect(..., 303)`. Tests assert that status. The skill's command reply is `w.empty()` or `SSE(w).navigate`, because a 303 does not change the URL inside a Datastar request. Switching the reply changes those tests and the browser walk.
+- `Engine`, the terminal hub, and the delta coalescer use `asyncio.create_task`. The skill wants `c.app.create_task`. The engine is constructed with no `App` in tests, so the fallback stays until those tests hold an app.
+- Most features have no `data.py`. Rows live in `app/store/db.py`. `Engine` is about 1,800 lines, `app/features/api/surface.py` about 830, and `app/features/api/handlers.py` about 650. The skill treats that shape as a second resource hiding in one class. Splitting it is its own change.
+- CSS is hand-written in `static/css/style.css`. That is the Decisions table. Do not add Tailwind.
+- A page is not always one resource plus a `db.watch` stream. Several settings pages are static HTML.
+
+## Workstreams
+
+Checklist after this pass: **67 done**, **77 partial**, **41 not done**, **12 intentionally not ported** (197 rows). `GET/PUT /config` and `GET /launch-key` in "Not previously listed" are done; `tests/test_routes.py` already covered them. The 118 open rows (`partial` + `not done`) are each in exactly one stream below. An agent updates only its rows in this file.
+
+`intentionally not ported` (telemetry, star count, self-update, desktop) is not a stream. Do not send it.
+
+How a row was placed when it touched two areas:
+
+- Both SSE rows are A. B owns the other route families in `app/features/api/surface.py` and does not rewrite the event handlers.
+- The node editor is A. The existing `/workflows/:name` shell is C. They share `app/features/workflows/`.
+- The Todos API is B. The `/inbox` screen is C.
+- Static `/assets` and `/icon.svg` are B. CSS and layout are C.
+- `CEZ_TASK_PROCESS_REAP`, `CEZ_DISABLE_REPO_LOCK`, and `CEZ_WORKFLOW_WEBHOOKS` are one A row. If that webhook flag starts gating delivery, D edits the coordinator and A edits the engine. Add the field on `Config` once.
+- Every CLI row is B, including a future `secrets` subcommand, because they all land in `app/cli.py`. D owns `app/secrets/` and does not add subcommands.
+- Worktree retention is A. `POST /worktrees/reclaim` is already done.
+- Automations page posts are C. The automations JSON API is B. `Engine.tick` is shared.
+- Variants are C: the untested part is `/tasks/{id}/compare`. The `{runs}` body stays on B's `POST /api/v1/runs` row.
+- Per-project base branch is C (no editor). Diff-base math is D.
+- The model-catalog row is A. `GET /providers/status` and provider connect are B.
+- Terminal HTTP routes are B. The terminal pane is C. `app/engine/terminal_hub.py` is shared.
+
+### A — runners, event stream, workflows and graph
+
+18 partial, 10 not done.
+
+Partial:
+
+- Version 2 graph workflows
+- Follow-up from `review` is one more agent turn
+- Worktree and index retention
+- Queued message stack editable before dequeue
+- In-place / trunk landing
+- Claude stream-json session
+- Codex app-server
+- OpenCode serve
+- Cursor agent
+- pi RPC
+- Junie ACP
+- Copilot ACP
+- Stdin subprocess
+- Model catalog, provider login, accounts
+- MCP, images
+- Tool allowlists
+- Skills as extra system prompt, local directories only
+- `GET /api/v1/runs/{id}/events`
+
+Not done:
+
+- Node editor
+- Resume of a live CLI session after restart
+- Monitoring / autonomous nudge loop
+- Usage-limit auto-resume
+- Report injected into the parent's live session
+- Workspace event stream `GET /events`
+- `CEZ_AUTOSAVE`, `CEZ_TITLE_UPDATES`, `CEZ_AUTONAME`
+- `CEZ_TASK_PROCESS_REAP`, `CEZ_DISABLE_REPO_LOCK`, `CEZ_WORKFLOW_WEBHOOKS`
+- `CEZ_AUTONOMOUS_DEFAULT`, `CEZ_WORKTREE_DEFAULT`
+- Worktree lifecycle events, handoff files, skills banner, remote skills
+
+Owns: `app/engine/runners/`, `app/engine/agents.py`, `app/engine/namer.py`, `app/engine/workflows.py`, `app/engine/graph.py`, `app/engine/skills.py`, `app/engine/prompts.py`, `app/engine/retention.py`, `app/engine/deltas.py`, `app/engine/session_extras.py`, `app/engine/dispatch_logic.py`, `tests/test_runners.py`, `tests/test_runner_gaps.py`, `tests/test_graph.py`, `tests/test_graph_nodes.py`, `tests/test_workflows.py`, `tests/fakes/`.
+
+The node editor, when it exists, is new files under `app/features/workflows/`. C already renders `/workflows/{name}` from that folder.
+
+### B — server route families and the CLI
+
+25 partial, 21 not done.
+
+Partial:
+
+- Import of `.ai/cezar/runs.json` and NDJSON
+- UI state, attachments, layouts
+- `serve` (default)
+- `projects remove`
+- `import-runs <path>`
+- `GET /api/v1/health`
+- `GET /api/v1/runs`
+- `POST /api/v1/runs`
+- `GET /api/v1/runs/{id}`
+- `POST /api/v1/runs/{id}/cancel`
+- `POST /api/v1/runs/{id}/finish`
+- `POST /api/v1/runs/{id}/messages`
+- `POST /api/v1/runs/{id}/archive`, `POST …/pin`, `POST /runs/archive-finished`, `POST /runs/read-all`, `POST …/read`, `POST …/unread`
+- `PATCH/DELETE …/queued-messages/{msgId}`
+- `DELETE /api/v1/runs/{id}/auto-resume`
+- `GET /api/v1/workflows`
+- `GET /api/v1/projects`
+- Hosted Basic auth
+- `GET/PUT /ui-state`, `GET/PUT /workspace/ui-state`
+- `POST/DELETE /workspace/uploads`
+- `GET /api/v1/fs/browse`
+- `GET /providers/status`, `GET /models`
+- `POST /preview/design-proxy`
+- `POST /runs/{id}/terminal`, input, resize, output, close
+- `CEZ_SINGLE_PROJECT`
+
+Not done:
+
+- `cez task` CLI inside the worktree
+- `task`, `automation`, `runs`, `secrets`, `telemetry`
+- `server-install` / `deploy` / `uninstall`
+- Skills update, workspace branding, plan, deferred-start scheduling
+- `GET/PUT /api/v1/agent-config/:id`
+- Static `/assets`, `/icon.svg`
+- Automations JSON API, automation log, check id
+- Deferred start options, preview, create
+- `GET /e2e`, `POST /e2e/setup`
+- Run groups and pick
+- Open in editor / open targets
+- `POST /plan`
+- Project checkout, create-on-GitHub, owners, patch, delete
+- Provider connect, retry, update, enabled
+- Run drafts, layouts, handoff, history, images, land, report, start-now
+- `GET /skills/importable`, `POST /skills/refresh`
+- `GET/PUT /start-app`
+- Todos API and `cez` follow-up inbox file
+- Workspace profiles, branding, config, host usage, runs index, automation templates
+- `CEZ_HOME`, `CEZ_PROJECTS_DIR`
+- Release packaging, server-install, disk space, startup port probe
+
+Owns: `app/features/api/` (`handlers.py`, `records.py`, `urls.py`, and the non-event, non-git, non-webhook methods of `surface.py`), `app/cli.py`, `app/http/`, `app/engine/import_runs.py`, `app/engine/ui_state.py`, `app/engine/uploads.py`, `app/engine/fs_browse.py`, `app/engine/preview.py`, `app/engine/providers.py`, `app/engine/deferred.py`, `tests/test_api.py`, `tests/test_routes.py`, `tests/test_cli.py`, `tests/test_import_runs.py`.
+
+Git, GitHub, webhook, and hook methods already on `surface.py` stay with D.
+
+### C — Datastar screens, settings, and e2e
+
+23 partial, 2 not done.
+
+Partial:
+
+- Per-project base branch stored at registration
+- Variants (×2 / ×3) and compare
+- Create paused, enable, pause, run now, delete
+- `/p/:projectId/tasks/:id` session
+- `…/terminal`
+- `/p/:projectId/git`
+- `/p/:projectId/github`
+- `/p/:projectId/tracker`
+- `/p/:projectId/automations`
+- `/workflows/:name`
+- `/p/:projectId/inbox`
+- settings `secrets`, `workspace-secrets`
+- settings `agents`
+- settings `webhooks`
+- settings `worktrees`
+- settings `agent-config`
+- settings `accounts`
+- settings `bookmarklets`
+- settings `integrations`
+- `/dashboard`
+- Light / violet tokens, phone layout
+- `CEZ_HIDE_TOKEN_USAGE`, `CEZ_HIDE_COST`, `CEZ_HIDE_TOKEN_METRICS`
+- Browser e2e (`packages/web/e2e/`)
+
+Not done:
+
+- Calendar UI
+- settings `tracker`, `tasks`, `skills` (global), `global-instructions`, resources
+
+Owns: `app/features/tasks/`, `app/features/dashboard/`, `app/features/editors/`, `app/features/places/`, `app/features/projects/`, `app/features/settings/`, `app/features/skills/`, `app/features/automations/` (the page, not the JSON API), `app/features/workflows/views.py` and `handlers.py` for the page that already exists, `app/common/shell.py`, `static/css/style.css`, `e2e/test_main_loop.py`, `tests/test_cockpit.py`.
+
+The merge box and the commit / push / draft-PR buttons on the task page are D's. C owns the rest of that page's layout.
+
+### D — integrations, webhooks, git, GitHub, secrets
+
+11 partial, 8 not done.
+
+Partial:
+
+- Secrets vault
+- Agent accounts / profiles
+- Diff includes untracked files and is capped
+- Draft PRs, merge, GitHub review
+- GitHub / Jira / Linear reads
+- `GET/POST /runs/{id}/git/status`, `commit`, `push`, `GET …/diff`, `POST …/pr`
+- `GET/POST/DELETE /webhooks`, `POST …/test`, `GET …/deliveries`
+- `POST /hooks/github`, `/hooks/jira`, `/hooks/linear`, `GET /hooks/receipts`
+- GitHub review and merge API
+- `gh` issues and draft PRs
+- Webhooks
+
+Not done:
+
+- Freshest `origin/<base>` vs fork-point attribution
+- Remotes via `gh repo set-default` / fork parent
+- GitHub checks, review comments, PR changes, ref status, search
+- Repository `/repo/*` routes
+- Tracker connection, watch, search, association
+- `CEZ_SECRETS_KEYCHAIN`
+- `CEZ_ENV_PASSTHROUGH`, `CEZ_AGENT_ENV_FULL`, `CEZ_REDACT_SECRETS`
+- `CEZ_REMOTE_AGENT_ACCOUNTS`
+
+Owns: `app/integrations/`, `app/engine/gitwork.py`, `app/engine/git_actions.py`, `app/secrets/`, `app/features/secrets/`, `tests/test_secrets.py`, `tests/test_integrations.py`.
+
+### Shared files
+
+Touch these only for the stream that owns the behavior, and leave the other stream's functions in place.
+
+| File | Who writes | Care |
+| --- | --- | --- |
+| `app/engine/engine.py` | A for the walk, slots, namer, settle, and review gate. D for webhook notify and git actions the walk calls. | B does not rewrite the walk. C does not. |
+| `app/features/api/surface.py` | B for route registration and the HTTP families in its list. A for the two event streams. D for git, GitHub, webhook, and hook handlers. | Add a method next to the family you own. |
+| `app/features/task/views.py`, `app/features/task/handlers.py` | C for layout. D for the merge box and the git buttons. | A reads the transcript; it does not restyle the page. |
+| `app/features/task/data.py` | Shared read. B and C import it. | Do not import `views.py` from the API. |
+| `app/features/workflows/` | C owns the current page. A adds a node editor beside it. | Do not replace `views.py` in order to add a canvas. |
+| `app/engine/terminal_hub.py` | B opens it from HTTP. C renders the pane. | The PTY loop has one owner at a time; say which in the row you close. |
+| `app/config.py` | Whoever adds a field. | One field, one reader. Default it. |
+| `app/main.py` | Registration only. | A new page is one `register` call. |
+| `app/store/db.py` | Whoever adds a column the skill's way (virtual column, no data migration). | Schema changes are one transaction in `schema`. |
+| `tests/conftest.py` | Fixtures only. | `CEZ_DRY_RUN`, `TestClient` base URL, `request_timeout` 30. |
+| `tests/test_surface.py`, `tests/test_engine.py`, `tests/test_parity.py`, `tests/test_finish.py` | The stream whose assertion you add. | Do not rewrite another stream's test to make yours fit. |
+| `MIGRATION.md` | The stream whose row you close. | Leave the other rows and this section's counts. Fix the count in your stream when a row moves to done. |

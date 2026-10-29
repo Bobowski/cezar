@@ -128,20 +128,20 @@ class SurfaceApi:
         await self._seen(c, w, False)
 
     async def commits(self, c: Context, w: Writer) -> None:
-        from app.features.task.views import _commits
+        from app.features.task.data import list_commits
 
         run = self._run(c, w)
         if run is None:
             return
-        w.json(cast(JsonValue, {"commits": _commits(run.worktree_path)}))
+        w.json(cast(JsonValue, {"commits": list_commits(run.worktree_path)}))
 
     async def files(self, c: Context, w: Writer) -> None:
-        from app.features.task.views import _worktree_files
+        from app.features.task.data import list_worktree_files
 
         run = self._run(c, w)
         if run is None:
             return
-        w.json(cast(JsonValue, {"files": _worktree_files(run.worktree_path)}))
+        w.json(cast(JsonValue, {"files": list_worktree_files(run.worktree_path)}))
 
     async def continue_run(self, c: Context, w: Writer) -> None:
         run = self._run(c, w)

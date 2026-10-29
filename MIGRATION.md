@@ -518,7 +518,7 @@ next table.
 | `CEZ_SKILLS_AUTO_UPDATE` | intentionally not ported | TypeScript reads it, and the Settings override, to decide whether the post-listen skills update applies. This port does not run that update. See the skills auto-update screen row. |
 | `CEZ_REMOTE_AGENT_ACCOUNTS` | done | Hosted mode (`CEZ_REMOTE=1`) refuses `POST /settings/accounts` with 409 until the flag is exactly `1`. A local cockpit saves without it (`tests/test_agent_env.py`). |
 | `CEZ_AUTONOMOUS_DEFAULT`, `CEZ_WORKTREE_DEFAULT` | done | Exact `1` / `0`. Omitted on `plan_run` inherits them: autonomous on, or a git checkout run in place. An explicit argument wins. `tests/test_stream_a.py`. |
-| Release packaging, server-install, disk space, startup port probe | partial | `server-install` / `deploy` / `uninstall` invoke `systemctl` or `launchctl` and `docker compose` through an injectable command; a dry run does not (`tests/test_stream_b_close.py`). Disk space is on `GET /api/v1/health` and `GET /workspace/host-usage`. An omitted listen port probes forward from 4321; `--port 9` stays 9. The image is the repo `Dockerfile`. The gap: `cez package` assembles a wheel in `app/engine/packaging.py`. `[tool.uv] package = false`, so `uv build` is not the backend. |
+| Release packaging, server-install, disk space, startup port probe | done | The project is a hatchling package (`[tool.uv] package = true`). `cez package` runs `uv build`, which writes a wheel and an sdist; the wheel includes `app/` and `static/` (`tests/test_stream_b_close.py`). `server-install` / `deploy` / `uninstall` invoke `systemctl` or `launchctl` and `docker compose` through an injectable command; a dry run does not. Disk space is on `GET /api/v1/health` and `GET /workspace/host-usage`. An omitted listen port probes forward from 4321; `--port 9` stays 9. The image is the repo `Dockerfile`. |
 | Worktree lifecycle events, handoff files, skills banner, remote skills | not done | — |
 | Browser e2e (`packages/web/e2e/`) | done | `e2e/test_main_loop.py` drives New task to `done`, and review through commit, push, and a fake-`gh` draft PR. `e2e/test_screens.py` covers each ported screen's main action: git panes, workflow steps, settings editors, automations and the calendar, variants compare, the terminal pane, inbox, dashboard, integrations, phone layout, and light/violet. `uv run pytest` does not collect `e2e/`. Thread virtualization, host telemetry, and skills auto-update are separate rows. |
 
@@ -539,7 +539,7 @@ Left as they are. A later agent should not "clean these up" as a drive-by:
 
 ## Workstreams
 
-Checklist after this pass: **174 done**, **12 partial**, **2 not done**, **14 intentionally not ported** (202 rows). Stream B has one partial row (the wheel is not `uv build`). The other 13 open rows are stream A's. An agent updates only its rows in this file.
+Checklist after this pass: **175 done**, **11 partial**, **2 not done**, **14 intentionally not ported** (202 rows). Stream B has no open rows. The 13 open rows are stream A's. An agent updates only its rows in this file.
 
 `intentionally not ported` (telemetry, star count, self-update, desktop) is not a stream. Do not send it.
 
@@ -587,11 +587,9 @@ The node editor, when it exists, is new files under `app/features/workflows/`. C
 
 ### B — server route families and the CLI
 
-1 partial, 0 not done.
+0 partial, 0 not done.
 
-Partial:
-
-- Release packaging, server-install, disk space, startup port probe
+Partial: none.
 
 Not done: none.
 

@@ -68,7 +68,7 @@ allowlist), `SECURITY.md` (supported versions). `risk-low`, `skip-qa`.
 
 1. Sync
    - 1.1 Add `@clack/prompts`, `dotenv`, `undici` to the runtime dependency allowlist, each with its reason.
-   - 1.2 `SECURITY.md`: supported = the newest release line(s) per `SDLC.md` § Release lines (today 0.17.x and 0.16.x if still patched; confirm with the release policy).
+   - 1.2 `SECURITY.md`: supported = the newest release line(s) per `SDLC.md` § Release lines (on 2026-10-29: 0.16.x is published; `release/v0.17.x` is cut but 0.17.0 is still `# Unreleased` in `CHANGELOG.md`; list only published lines).
    - 1.3 Optional guard: a unit test that fails when a `packages/*/package.json` runtime dependency is missing from the allowlist (keeps F8 honest later).
 
 **Brief.** `docs: sync CODE_REVIEW dependency allowlist and SECURITY supported versions — plan A3`

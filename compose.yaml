@@ -1,7 +1,8 @@
 # Local cockpit. The mounted repo is the project agents work in.
 # CEZ_DRY_RUN=1 uses the built-in mock so the stack boots without a logged-in agent CLI.
-# Point CEZ_REPO at another checkout, or set CEZ_DRY_RUN=0 and CEZ_REAL_AGENTS=1
-# for the experimental subprocess runner (see MIGRATION.md).
+# STARIO_HOST=0.0.0.0 is hosted mode: the process requires HTTP Basic auth.
+# Set CEZ_AUTH_PASSWORD, or read the generated one from the cezar-data volume
+# (auth-password) after the first start. GET /health stays open for the healthcheck.
 services:
   cezar:
     build: .

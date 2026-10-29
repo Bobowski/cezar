@@ -39,11 +39,16 @@ docker compose up --build
 ```
 
 Compose publishes `4321`, stores SQLite in the `cezar-data` volume, and mounts
-the repo at `/repo`. It sets `CEZ_DRY_RUN=1`. `docker compose up --build` was
-run here: the image built, the container became healthy, and a dry-run task
-reached `review` on `cez/<id8>` inside the mounted repo. Git is invoked with
-`safe.directory=*` for that process only, because the container user does not
-own the mounted checkout and would otherwise treat it as a non-git directory.
+the repo at `/repo`. It sets `CEZ_DRY_RUN=1` and `STARIO_HOST=0.0.0.0`, so the
+process is hosted and requires HTTP Basic auth. `GET /health` stays open for
+the healthcheck. `docker compose up --build` was run here: the image built and
+the container became healthy. An earlier boot (before Basic auth) ran a dry-run
+task to `review` on `cez/<id8>` inside the mounted repo. The latest boot checked
+the gate: `/health` was 200 with no credentials, `/tasks` and `/api/v1/health`
+were 401, and the generated password from the data volume authenticated
+`/api/v1/health`. Git is invoked with `safe.directory=*` for that process only,
+because the container user does not own the mounted checkout and would otherwise
+treat it as a non-git directory.
 
 ## Decisions
 
@@ -63,7 +68,7 @@ own the mounted checkout and would otherwise treat it as a non-git directory.
 | Dispatch | Cap of 4 in-flight children and the budget carve are ported. A settled child stores a report on the parent. It is not pushed into a live parent session. `CEZ_DISPATCH=0` refuses new children. |
 | Automations | Interval only, paused until enabled. An enabled row idle longer than its own interval is moved forward at startup and does not fire a backlog. No GitHub, Jira, or Linear triggers. |
 | URL shape | `?project=` on workspace pages, not `/p/:projectId/...`. |
-| Host guard | Loopback `Host` check on `/api`, including health, with the same 403 text as #426. A missing Host is untrusted. `CEZ_REMOTE=1` or a non-loopback bind (compose's `0.0.0.0`) skips it, matching hosted mode. `same_origin()` still rejects cross-site mutations. There is no login. |
+| Host guard and login | Loopback `Host` check on `/api`, including health, with the same 403 text as #426. A missing Host is untrusted. `CEZ_REMOTE=1` or a non-loopback bind (compose's `0.0.0.0`) skips it, matching hosted mode, and then requires HTTP Basic auth. `GET /health` stays open for the healthcheck. A loopback bind does not ask for a password. The TypeScript process has no login; its VPS install puts this challenge on nginx. There is no nginx in compose, so the Python process issues it. |
 | CSS | Hand-written from the cockpit tokens in `packages/web/src/styles/index.css`. Not DaisyUI. The React screens are not reproduced. |
 
 ## Size
@@ -76,8 +81,8 @@ is 33,553 bytes and is not application code. The TypeScript tree is still in the
 | --- | ---: | ---: |
 | TypeScript application (no `*test*` / `*spec*` files) | 807 | 146,242 |
 | TypeScript tests | 810 | 157,213 |
-| Python application (`app/`) | 51 | 5,883 |
-| Python tests, including protocol fakes | 14 | 1,573 |
+| Python application (`app/`) | 52 | 5,946 |
+| Python tests, including protocol fakes | 14 | 1,602 |
 | Python CSS | 1 | 221 |
 
 The Python application is about 4% of the TypeScript application by code lines.
@@ -87,7 +92,7 @@ of `server.ts`.
 ## Checks
 
 `uv run ruff check`, `uv run ruff format --check`, `uv run pyright`, and
-`uv run pytest -q` were run on this branch. **70 tests passed.**
+`uv run pytest -q` were run on this branch. **71 tests passed.**
 
 A manual `CEZ_DRY_RUN=1 uv run python -m app.main` answered `/health`,
 `POST /api/v1/runs` returned 201, and the run reached `review` with a worktree
@@ -231,6 +236,7 @@ is the boot project.
 | `GET /api/v1/workflows` | partial | `{workflows, issues}`. |
 | `GET /api/v1/projects` | partial | `id`, `name`, `root`, `addedAt`, `lastOpenedAt`, `source: local`, `status`, `branch` when it is a git checkout. No forge, tags, or `maxParallel`. `projectsDir` is the Python data directory, not the TypeScript checkouts directory. |
 | Loopback `Host` guard on `/api` | done | `tests/test_api.py`. Foreign Host is 403, including health. `CEZ_REMOTE=1` skips it. |
+| Hosted Basic auth | partial | `tests/test_api.py`. Required when hosted. `GET /health` is open. A missing `CEZ_AUTH_PASSWORD` is generated into the data directory at mode 0600. This is the nginx `auth_basic` challenge from the VPS install, enforced in-process because compose has no proxy. No session cookie and no Settings user store. |
 | Everything else in `packages/cezar/src/server/server.ts` (git, GitHub, terminal, fs, webhooks, trackers, providers, models, skills update, star count, preview, self-update, workspace branding, uploads, UI state, launch key, plan, deferred start, archive, pin, read receipts, WebSocket) | not done | — |
 
 HTML routes that are live (Datastar SSE, not the old NDJSON event stream):
@@ -285,10 +291,11 @@ TypeScript tree would drop the product.
 - Unset `CEZ_DRY_RUN` spawns whatever binary is on `PATH` for the selected
   runner, with that runner's flags, and does not ask before tools. Compose
   keeps the mock on.
-- The server has no login. Compose binds `0.0.0.0`, which is hosted mode, so
-  the loopback Host check is skipped and port 4321 is reachable by anyone who
-  can open it. `same_origin()` blocks cross-site mutations; it is not an
-  access control.
+- Compose binds `0.0.0.0`, so it is hosted mode: HTTP Basic auth, not the
+  loopback Host check. `GET /health` is unauthenticated on purpose. A loopback
+  `cezar serve` is still an open local port, matching the TypeScript app.
+  `same_origin()` blocks cross-site mutations and is not a substitute for the
+  password.
 - One process owns the SQLite file. A second `run` or `projects` command exits
   if the cockpit holds the claim.
 - A check step is `sh -c` in the worktree, same trust model as a workflow the

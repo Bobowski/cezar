@@ -17,6 +17,7 @@ from app.features.skills.handlers import SkillsPage
 from app.features.task.handlers import TaskPage
 from app.features.tasks.handlers import TasksPage
 from app.features.workflows.handlers import WorkflowsPage
+from app.http.basic_auth import basic_auth
 from app.http.loopback import loopback_host_guard
 from app.store.db import schema
 
@@ -27,7 +28,7 @@ async def bootstrap(app: App, span: Span):
         relay: Relay[dict[str, str]] = Relay()
         engine = Engine(db, relay, config)
         engine.app = app
-        app.use("/", same_origin(), security_headers())
+        app.use("/", same_origin(), security_headers(), basic_auth(config))
         app.use("/api", loopback_host_guard(config))
         span.attrs(await ASSETS.attach(app))
         span.attr("app.name", config.app_name)

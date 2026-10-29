@@ -1,4 +1,5 @@
 import asyncio
+import base64
 
 from stario.testing import TestClient
 
@@ -60,10 +61,42 @@ async def test_a_foreign_host_is_forbidden(client):
     assert (await client.get("/api/v1/health", headers={"host": "evil.com"})).status_code == 403
 
 
-async def test_hosted_mode_accepts_a_public_host(repo, monkeypatch):
+def _basic(user: str, password: str) -> str:
+    token = base64.b64encode(f"{user}:{password}".encode()).decode()
+    return f"Basic {token}"
+
+
+async def test_hosted_mode_requires_basic_auth(repo, monkeypatch):
     monkeypatch.setenv("CEZ_REMOTE", "1")
+    monkeypatch.setenv("CEZ_AUTH_USER", "ada")
+    monkeypatch.setenv("CEZ_AUTH_PASSWORD", "secret-token")
     async with TestClient(bootstrap, request_timeout=15, base_url="http://evil.example") as hosted:
-        allowed = await hosted.get("/api/v1/health")
+        assert (await hosted.get("/health")).status_code == 200
+        denied = await hosted.get("/api/v1/health")
+        assert denied.status_code == 401
+        assert denied.json()["error"] == "authentication required"
+        assert "basic" in (denied.headers.get("www-authenticate") or "").lower()
+        wrong = await hosted.get("/api/v1/health", headers={"authorization": _basic("ada", "nope")})
+        assert wrong.status_code == 401
+        allowed = await hosted.get(
+            "/api/v1/health", headers={"authorization": _basic("ada", "secret-token")}
+        )
+        assert allowed.status_code == 200
+        page = await hosted.get("/tasks", headers={"authorization": _basic("ada", "secret-token")})
+        assert page.status_code == 200
+
+
+async def test_hosted_mode_writes_a_password_when_none_is_configured(repo, monkeypatch):
+    monkeypatch.setenv("CEZ_REMOTE", "1")
+    monkeypatch.delenv("CEZ_AUTH_PASSWORD", raising=False)
+    async with TestClient(bootstrap, request_timeout=15, base_url="http://evil.example") as hosted:
+        path = repo.parent / "data" / "auth-password"
+        password = path.read_text(encoding="utf-8").strip()
+        assert password
+        assert path.stat().st_mode & 0o777 == 0o600
+        allowed = await hosted.get(
+            "/api/v1/runs", headers={"authorization": _basic("cezar", password)}
+        )
         assert allowed.status_code == 200
 
 

@@ -4,7 +4,7 @@ from stario.markup import HtmlElement
 
 from app.common.shell import Chrome, frame
 from app.engine.model import Skill
-from app.features.skills.urls import SKILLS_CREATE, SKILLS_LIVE, SkillsView
+from app.features.skills.urls import SKILLS_CREATE, SKILLS_LIVE, SKILLS_REFRESH, SkillsView
 
 
 def render(skills: list[Skill], view: SkillsView, chrome: Chrome, tab: str) -> HtmlElement:
@@ -27,6 +27,10 @@ def render(skills: list[Skill], view: SkillsView, chrome: Chrome, tab: str) -> H
             h.P(
                 {"class": "sub"},
                 "Markdown playbooks. The body is added to the agent step that names the skill.",
+            ),
+            h.Form(
+                data.on("submit", at.post(SKILLS_REFRESH.href(query=view.query())), prevent=True),
+                h.Button({"class": "btn", "type": "submit"}, "Refresh"),
             ),
             *rows,
             h.Form(

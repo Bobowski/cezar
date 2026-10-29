@@ -572,8 +572,24 @@ class SurfaceApi:
         )
 
     async def models(self, c: Context, w: Writer) -> None:
+        from app.engine.agent_env import build_child_env, profile_env
+        from app.integrations.accounts import profile_home_for
+
         runner = c.req.query.get("runner", "")
-        w.json(cast(JsonValue, model_catalog(runner, self.config.runner_bins)))
+        account = c.req.query.get("account", "")
+        home = profile_home_for(self.config, account, runner) if account else ""
+        env = build_child_env(runner or "claude", extra=profile_env(runner, home or ""))
+        w.json(
+            cast(
+                JsonValue,
+                model_catalog(
+                    runner,
+                    self.config.runner_bins,
+                    cwd=str(self.config.repo_root),
+                    env=env,
+                ),
+            )
+        )
 
     async def preview(self, c: Context, w: Writer) -> None:
         body = await _json(c, w)

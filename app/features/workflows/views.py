@@ -37,6 +37,7 @@ def render(
             h.Div(
                 {"class": "task-row"},
                 h.A({"href": WORKFLOW.href(item.name)}, h.Strong(item.name)),
+                h.A({"href": f"/workflows/{item.name}/editor"}, "Edit graph"),
                 h.Span({"class": "meta grow"}, item.description or f"{len(item.steps)} steps"),
                 tail,
             )
@@ -93,8 +94,7 @@ def render(
             ),
             h.P(
                 {"class": "muted"},
-                "Open a name to read its steps and start a task. "
-                "The node-graph editor is separate.",
+                "Open a name to read its steps, or Edit graph to add, move, and connect nodes.",
             ),
         ),
     )

@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -11,7 +12,8 @@ from app.common.shell import load_chrome
 from app.config import Config
 from app.engine.engine import CHANGED, Engine
 from app.engine.skills import load_skills, valid_skill_name, write_skill
-from app.features.skills.urls import SKILLS, SKILLS_CREATE, SKILLS_LIVE, SkillsView
+from app.engine.team_skills import list_team_skills, refresh_team_skills
+from app.features.skills.urls import SKILLS, SKILLS_CREATE, SKILLS_LIVE, SKILLS_REFRESH, SkillsView
 from app.features.skills.views import render
 from app.store.db import get_project
 
@@ -27,6 +29,7 @@ class SkillsPage:
         app.add(SKILLS, self.show)
         app.add(SKILLS_LIVE, self.live)
         app.add(SKILLS_CREATE, self.create)
+        app.add(SKILLS_REFRESH, self.refresh)
 
     def _view(self, query: object) -> SkillsView:
         view = SkillsView.from_query(query)  # type: ignore[arg-type]
@@ -86,9 +89,27 @@ class SkillsPage:
         write_skill(Path(project.root), name, description, body)
         self.relay.publish(CHANGED, {})
 
+    async def refresh(self, c: Context, w: Writer) -> None:
+        try:
+            signals = await read_signals(c.req)
+        except RequestBodyError:
+            w.text("invalid input", 400)
+            return
+        tab = str(signals.get("tab", ""))
+        if not (tab.isalnum() and len(tab) <= 32):
+            w.text("tab must be a short id", 400)
+            return
+        w.empty()
+        await asyncio.to_thread(refresh_team_skills, self.config.data_dir)
+        self.relay.publish(CHANGED, {})
+
     def _render(self, view: SkillsView, tab: str):
         project = get_project(self.db, view.project)
         skills = load_skills(Path(project.root)) if project else []
+        names = {skill.name for skill in skills}
+        for skill in list_team_skills(self.config.data_dir):
+            if skill.name not in names:
+                skills.append(skill)
         return render(
             skills,
             view,

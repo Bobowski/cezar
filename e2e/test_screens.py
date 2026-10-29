@@ -329,3 +329,26 @@ def test_a_virtual_thread_keeps_sixteen_rows(page: Page, cockpit: Cockpit) -> No
     page.goto(page.url + "?thread=virtual", wait_until="domcontentloaded")
     expect(page.locator("#transcript")).to_have_attribute("data-virtualized", "true")
     expect(page.locator("#transcript > li")).to_have_count(16, timeout=10_000)
+
+
+def test_the_node_editor_adds_moves_and_connects(page: Page, cockpit: Cockpit) -> None:
+    page.goto(cockpit.url("/workflows/review-graph/editor"), wait_until="domcontentloaded")
+    _click(page, "Start graph")
+    expect(page.locator("#node-implement")).to_be_visible()
+    page.locator("#node-id").fill("review")
+    _click(page, "Add node")
+    expect(page.locator("#node-review")).to_be_visible()
+    page.locator("#move-id").select_option("review")
+    page.locator("#move-x").fill("300")
+    page.locator("#move-y").fill("200")
+    _click(page, "Move")
+    expect(page.locator("#node-review")).to_have_attribute("data-x", "300", timeout=10_000)
+    page.locator("#from-id").select_option("review")
+    page.locator("#to-id").select_option("ok")
+    _click(page, "Connect")
+    expect(page.locator("#graph-edges")).to_contain_text("review → ok")
+    _click(page, "Save YAML")
+    text = (cockpit.repo / ".ai" / "cezar" / "workflows" / "review-graph.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "id: review" in text and "x: 300" in text

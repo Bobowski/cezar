@@ -277,6 +277,7 @@ class Engine:
     _auto_continues: dict[str, int] = field(default_factory=dict)
     _compaction: dict[str, int] = field(default_factory=dict)
     _last_autosave: dict[str, float] = field(default_factory=dict)
+    _land_attempts: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self._coalescer.spawn = self._schedule
@@ -1011,6 +1012,17 @@ class Engine:
                 system_parts.append(skill.body)
         if not followup and graph_step is None and index == 0 and "```mermaid" in run.task:
             await self._note(run.id, "text", run.task)
+        from app.engine.handoff import HANDOFF_INSTRUCTIONS, handoff_path, seed_handoff
+
+        seeded = seed_handoff(
+            self.config.data_dir,
+            run_id=run.id,
+            title=run.title,
+            workflow=run.workflow,
+            task=run.task,
+            branch=run.branch,
+            worktree=run.worktree_path,
+        )
         if run.autonomous:
             system_parts.append(
                 "Work autonomously. Do not stop to ask the user. "
@@ -1034,6 +1046,8 @@ class Engine:
         )
         if run.attachment_paths:
             prompt += "\n\nThe user attached:\n" + "\n".join(run.attachment_paths)
+        if seeded.is_file():
+            prompt = f"{HANDOFF_INSTRUCTIONS}\n\n{prompt}"
         spec = AgentSpec(
             user_prompt=prompt,
             system_prompt="\n\n".join(system_parts),
@@ -1054,6 +1068,7 @@ class Engine:
             mcp_servers=load_project_mcp(root),
             codex_thread=run.codex_thread,
             profile_home=_profile_home(self.config, run.account_id, step.runner or run.runner),
+            handoff_file=str(handoff_path(self.config.data_dir, run.id)),
         )
         texts: list[str] = []
         in_gained = 0
@@ -1149,6 +1164,9 @@ class Engine:
             current.pending_reports = []
         joined = "\n".join(texts)
         await self._refresh_live_title(current, joined)
+        from app.engine.handoff import append_heartbeat
+
+        append_heartbeat(self.config.data_dir, current.id, "turn complete", at=stamp())
         continued = await self._continue_compacted(current, cancel, joined, compacted_turn, step.id)
         if continued is not None:
             return continued
@@ -1192,6 +1210,9 @@ class Engine:
             }
         )
         env["CEZ_TASK_ID"] = run.id
+        from app.engine.handoff import handoff_path
+
+        env["CEZ_HANDOFF_FILE"] = str(handoff_path(self.config.data_dir, run.id))
         if run.project_id:
             env["CEZ_PROJECT_ID"] = run.project_id
         if run.branch:
@@ -1301,6 +1322,8 @@ class Engine:
         if stopped:
             await self._release_deferred(current, stopped=stopped)
         if not await self._review_applies(current):
+            if await self._auto_land(current, finish=current.id in self._finish):
+                return
             await self._mark_done(current)
             return
         previous = current.status
@@ -1381,22 +1404,21 @@ class Engine:
         self._finish.discard(run.id)
         if run.status == "done":
             return
-        failure = await self._required_checks(run)
-        if failure:
-            await self._fail(run, failure)
-            return
         if run.in_place:
             project = get_project(self.db, run.project_id)
             root = Path(project.root) if project else self.config.repo_root
-            if is_git_repo(root):
-                from app.engine.landing import land_inplace
+            from app.engine.landing import land_inplace, read_policy
 
+            # Auto-land owns the commit when `landing: auto` is set. Otherwise
+            # an in-place checkout is committed here, excluding `.ai/cezar`.
+            if is_git_repo(root) and read_policy(root) is None:
                 result = await asyncio.to_thread(land_inplace, root)
                 if result.get("result") == "failed":
                     await self._fail(run, str(result.get("error") or "land failed"))
                     return
                 if result.get("result") == "landed":
-                    await self._note(run.id, "lifecycle", f"landed {result.get('sha', '')}")
+                    sha = str(result.get("sha", ""))
+                    await self._note(run.id, "lifecycle", f"landed {sha}")
         await self._release_deferred(run, stopped="the task was finished")
         previous = run.status
         run.status = "done"
@@ -1441,26 +1463,100 @@ class Engine:
                 return
             await asyncio.sleep(0.05)
 
-    async def _required_checks(self, run: Run) -> str | None:
-        """Shell commands saved on the project. A non-zero exit keeps the run from `done`.
-
-        TypeScript runs these only while auto-landing onto the trunk. This port
-        has no auto-land, so they run in the worktree at the moment of success.
-        """
+    async def _auto_land(self, run: Run, *, finish: bool) -> bool:
+        """Land an in-place run. True when this call owns the settle."""
+        from app.engine.landing import (
+            MAX_LAND_ATTEMPTS,
+            failure_prompt,
+            has_unlanded,
+            land_in_place,
+            read_policy,
+        )
         from app.features.settings.store import read_checks
 
-        commands = read_checks(self.config.data_dir, run.project_id)
-        if not commands:
-            return None
-        cwd = Path(run.worktree_path) if run.worktree_path else self.config.repo_root
-        for command in commands:
-            code, output = await run_shell(
-                command, cwd, asyncio.Event(), self.config.check_timeout_seconds
+        if not run.in_place or not run.worktree_path:
+            return False
+        project = get_project(self.db, run.project_id)
+        root = Path(project.root) if project else Path(run.worktree_path)
+        policy = read_policy(root, tuple(read_checks(self.config.data_dir, run.project_id)))
+        if policy is None:
+            return False
+        if policy.refusal:
+            await self._note(run.id, "note", policy.refusal)
+            return False
+        dirty = await asyncio.to_thread(has_unlanded, root)
+        if not finish and not run.autonomous:
+            if not dirty:
+                return False
+            run.status = "waiting"
+            run.ask = ""
+            run.finished_at = ""
+            await self._save(run)
+            label = policy.base_branch or run.base_branch or "the base branch"
+            await self._note(
+                run.id,
+                "note",
+                "changes ready for review — check Changes, reply with corrections, "
+                f"or Commit to {label} (or Finish) to land them",
             )
-            if code != 0:
-                detail = output.strip() or f"exit {code}"
-                return f"required check `{command}` failed:\n{detail}"
-        return None
+            return True
+        if not dirty:
+            return False
+        outcome = await asyncio.to_thread(
+            land_in_place,
+            root,
+            checks=policy.checks,
+            base_branch=policy.base_branch,
+            since=run.base_sha,
+            dry_run=self.config.dry_run,
+            check_timeout=self.config.check_timeout_seconds,
+        )
+        if outcome.result == "landed":
+            run.landing = {
+                "status": "landed",
+                "branch": outcome.branch,
+                "sha": outcome.sha,
+                "pushed": outcome.pushed,
+                "files": list(outcome.files),
+            }
+            pushed = " and pushed" if outcome.pushed else ""
+            await self._note(
+                run.id,
+                "note",
+                f"landed {outcome.sha[:8]} on {outcome.branch}{pushed}",
+            )
+            await self._mark_done(run)
+            return True
+        if outcome.result == "nothing":
+            run.landing = {"status": "nothing"}
+            await self._note(run.id, "note", "auto-land — nothing to land")
+            await self._mark_done(run)
+            return True
+        run.landing = {"status": "failed", "stage": outcome.stage, "error": outcome.error}
+        await self._save(run)
+        attempts = self._land_attempts.get(run.id, 0) + 1
+        self._land_attempts[run.id] = attempts
+        if attempts >= MAX_LAND_ATTEMPTS:
+            await self._note(
+                run.id,
+                "note",
+                f"auto-land failed {attempts} times ({outcome.stage}) — not landed",
+            )
+            await self._fail(run, outcome.error)
+            return True
+        run.mode = "followup"
+        run.continuation = failure_prompt(outcome)
+        run.status = "queued"
+        run.finished_at = ""
+        await self._save(run)
+        await self._note(
+            run.id,
+            "note",
+            f"auto-land failed at {outcome.stage} — sent back to the agent "
+            f"({attempts}/{MAX_LAND_ATTEMPTS})",
+        )
+        self.kick()
+        return True
 
     async def set_archived(self, run_id: str, archived: bool) -> str | None:
         run = get_run(self.db, run_id)
@@ -1669,6 +1765,14 @@ class Engine:
             return
         if not run.worktree_path:
             return
+        # An in-place auto-land checkout is the user's branch. Turn-end autosave
+        # would commit it before the review park. TypeScript skips that flush
+        # when the cwd is the repo root.
+        if run.in_place:
+            from app.engine.landing import read_policy
+
+            if read_policy(Path(run.worktree_path)) is not None:
+                return
         result = await asyncio.to_thread(autosave_commit, Path(run.worktree_path), reason)
         if result == "committed":
             await self._note(run.id, "note", f"cezar autosave ({reason})")
@@ -1839,6 +1943,12 @@ class Engine:
         cached = self._runners.get(runner)
         if cached is not None:
             return cached
+        if self.config.real_agents:
+            from app.engine.agents import StdinAgent
+
+            created = StdinAgent(self.config.runner_bins.get(runner, runner))
+            self._runners[runner] = created
+            return created
         from app.engine.runners.protocol import ProtocolRunner
 
         created = ProtocolRunner(
@@ -2112,7 +2222,10 @@ class Engine:
         if run is None:
             return "not found"
         if run.status == "review" or run.status == "waiting":
-            await self._mark_done(run)
+            self._finish.add(run_id)
+            if not await self._auto_land(run, finish=True):
+                await self._mark_done(run)
+            self._finish.discard(run_id)
             await self._report_child(run_id)
             return None
         if run.status == "running":

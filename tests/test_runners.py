@@ -19,8 +19,10 @@ from app.engine.runners.protocol import (
     ProtocolRunner,
     TurnState,
     opencode_events,
+    parse_acp_line,
     parse_claude_line,
     parse_codex_line,
+    parse_pi_line,
 )
 
 FAKES = Path(__file__).parent / "fakes"
@@ -390,3 +392,215 @@ async def test_a_missing_binary_is_an_error_not_a_crash(tmp_path: Path):
     )
     assert events[-1].type == "error"
     assert "not found" in events[-1].text
+
+
+def test_claude_and_cursor_map_init_thinking_and_tool_errors():
+    state = TurnState()
+    init = parse_claude_line(
+        json.dumps({"type": "system", "subtype": "init", "session_id": "sess-9"}),
+        state,
+    )
+    assert init[0].type == "session" and init[0].text == "sess-9"
+    thought = parse_claude_line(
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "thinking", "thinking": "hmm"},
+                        {"type": "text", "text": "hi"},
+                    ]
+                },
+            }
+        ),
+        state,
+    )
+    assert any(event.type == "reasoning" and event.text == "hmm" for event in thought)
+    assert any(event.type == "text" and event.text == "hi" for event in thought)
+    failed = parse_claude_line(
+        json.dumps(
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "t1",
+                            "is_error": True,
+                            "content": "no",
+                        }
+                    ]
+                },
+            }
+        ),
+        state,
+    )
+    assert failed[0].text == "error: no"
+
+
+def test_codex_reasoning_plan_usage_and_a_foreign_turn():
+    state = TurnState()
+    state.thread_id = "th_parent"
+    reasoning = parse_codex_line(
+        json.dumps(
+            {
+                "method": "item/completed",
+                "params": {"item": {"type": "reasoning", "text": "because"}},
+            }
+        ),
+        state,
+    )
+    assert reasoning[0].type == "reasoning" and reasoning[0].text == "because"
+    plan = parse_codex_line(
+        json.dumps(
+            {
+                "method": "item/completed",
+                "params": {
+                    "item": {"type": "plan", "plan": [{"step": "ship", "status": "pending"}]}
+                },
+            }
+        ),
+        state,
+    )
+    assert plan and plan[0].type == "plan"
+    usage = parse_codex_line(
+        json.dumps(
+            {
+                "method": "thread/tokenUsage/updated",
+                "params": {"tokenUsage": {"total": {"totalTokens": 12}}},
+            }
+        ),
+        state,
+    )
+    assert usage[0].type == "usage.updated" and usage[0].text == "12"
+    dropped = parse_codex_line(
+        json.dumps(
+            {
+                "method": "turn/completed",
+                "params": {"threadId": "th_child", "turn": {"status": "completed"}},
+            }
+        ),
+        state,
+    )
+    assert dropped == []
+    assert state.done is False
+    child_item = parse_codex_line(
+        json.dumps(
+            {
+                "method": "item/completed",
+                "params": {
+                    "threadId": "th_child",
+                    "item": {"id": "f1", "type": "fileChange"},
+                },
+            }
+        ),
+        state,
+    )
+    assert child_item and child_item[0].type == "tool-result"
+
+
+def test_pi_message_end_session_and_extension_note():
+    state = TurnState()
+    ended = parse_pi_line(
+        json.dumps(
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "pi says"}],
+                    "usage": {"input": 2, "output": 3},
+                },
+            }
+        ),
+        state,
+    )
+    assert ended[0].text == "pi says"
+    assert state.input_tokens == 2 and state.output_tokens == 3
+    session = parse_pi_line(
+        json.dumps(
+            {
+                "type": "response",
+                "command": "get_state",
+                "success": True,
+                "data": {"sessionId": "pi-1"},
+            }
+        ),
+        state,
+    )
+    assert session[0].type == "session" and session[0].text == "pi-1"
+    note = parse_pi_line(
+        json.dumps({"type": "extension_error", "error": "plugin broke"}),
+        state,
+    )
+    assert note[0].type == "note" and state.failed == ""
+    result = parse_pi_line(
+        json.dumps(
+            {
+                "type": "tool_execution_end",
+                "toolCallId": "call-1",
+                "isError": True,
+                "result": {"content": [{"type": "text", "text": "denied"}]},
+            }
+        ),
+        state,
+    )
+    assert result[0].text == "error: denied"
+
+
+def test_junie_and_copilot_map_thoughts_plans_and_session_ids():
+    state = TurnState()
+    thought = parse_acp_line(
+        json.dumps(
+            {
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "agent_thought_chunk",
+                        "content": {"text": "thinking"},
+                    }
+                },
+            }
+        ),
+        state,
+        3,
+    )
+    assert thought[0].type == "reasoning" and thought[0].text == "thinking"
+    plan = parse_acp_line(
+        json.dumps(
+            {
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "plan",
+                        "entries": [{"content": "ship", "status": "pending"}],
+                    }
+                },
+            }
+        ),
+        state,
+        3,
+    )
+    assert plan[0].type == "plan"
+    tool = parse_acp_line(
+        json.dumps(
+            {
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "c1",
+                        "kind": "execute",
+                    }
+                },
+            }
+        ),
+        state,
+        3,
+    )
+    assert tool[0].name == "execute"
+    opened = parse_acp_line(
+        json.dumps({"id": 2, "result": {"sessionId": "ses_junie"}}),
+        state,
+        3,
+    )
+    assert opened[0].type == "session" and opened[0].text == "ses_junie"

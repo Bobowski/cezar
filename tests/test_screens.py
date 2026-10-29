@@ -412,9 +412,10 @@ async def test_base_branch_and_the_remaining_settings_editors(client, repo):
     )
     assert failing.status_code == 303
     blocked = await _start(client, "this check must fail")
-    assert await _settle(client, blocked) == "failed"
+    # Required checks run only while auto-landing, not on a worktree run.
+    assert await _settle(client, blocked) == "done"
     failed = await client.get(f"/api/v1/runs/{blocked}")
-    assert "required check `false` failed" in failed.json()["error"]
+    assert "required check" not in (failed.json().get("error") or "")
 
     prompt = await client.post(
         GLOBAL_INSTRUCTIONS_SAVE.href(),

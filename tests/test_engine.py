@@ -648,9 +648,11 @@ async def test_experimental_stdin_runner_records_usage(tmp_path: Path):
     repo = tmp_path / "repo"
     init_repo(repo)
     binary = tmp_path / "fake-claude"
+    argv_log = tmp_path / "argv.txt"
     binary.write_text(
         "#!/usr/bin/env python3\n"
         "import sys\n"
+        f"open({str(argv_log)!r}, 'w').write('\\n'.join(sys.argv))\n"
         "sys.stdin.readline()\n"
         "sys.stdout.write("
         '\'{"type":"result","result":"ok","usage":{"input_tokens":3,"output_tokens":4}}\\n\')\n'
@@ -660,7 +662,9 @@ async def test_experimental_stdin_runner_records_usage(tmp_path: Path):
     binary.chmod(0o755)
     bins = {runner: runner for runner in RUNNERS}
     bins["claude"] = str(binary)
-    cfg = config_for(tmp_path, repo, dry_run=False, real_agents=True, runner_bins=bins)
+    cfg = config_for(
+        tmp_path, repo, dry_run=False, real_agents=True, title_updates=False, runner_bins=bins
+    )
     async with LiteWriter(cfg.db_path, schema=schema, claim=5) as db:
         engine = Engine(db, Relay(), cfg)
         await engine.startup()
@@ -671,6 +675,7 @@ async def test_experimental_stdin_runner_records_usage(tmp_path: Path):
         assert done.tokens_used == 7
         assert done.input_tokens == 3
         assert done.output_tokens == 4
+        assert argv_log.read_text(encoding="utf-8") == str(binary)
     events = [
         event
         async for event in StdinAgent(str(binary)).stream(

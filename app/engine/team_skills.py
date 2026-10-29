@@ -40,10 +40,41 @@ def org_skill(data_dir: Path, name: str) -> Skill | None:
     return None
 
 
-def _bare(data_dir: Path, repo: str) -> Path | None:
+def list_team_skills(data_dir: Path) -> list[Skill]:
+    """Skills already cloned. Does not fetch."""
+    return _collect(data_dir, refresh=False)
+
+
+def refresh_team_skills(data_dir: Path) -> list[Skill]:
+    """Clone missing sources and `git fetch` ones already on disk.
+
+    Tests point `repo` at a local path, so this does not touch the network.
+    A fetch that fails still lists whatever the existing clone has.
+    """
+    return _collect(data_dir, refresh=True)
+
+
+def _collect(data_dir: Path, *, refresh: bool) -> list[Skill]:
+    found: list[Skill] = []
+    seen: set[str] = set()
+    for source in read_skill_repos(data_dir):
+        bare = _bare(data_dir, source.repo, refresh=refresh)
+        if bare is None:
+            continue
+        for skill in _listed(bare, source.ref):
+            if skill.name in seen:
+                continue
+            seen.add(skill.name)
+            found.append(skill)
+    return found
+
+
+def _bare(data_dir: Path, repo: str, *, refresh: bool = False) -> Path | None:
     digest = hashlib.sha256(repo.encode()).hexdigest()[:16]
     dest = data_dir / "skill-cache" / digest
     if (dest / "HEAD").is_file():
+        if refresh:
+            _git(["-C", str(dest), "fetch", "origin", "+refs/heads/*:refs/heads/*"])
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
     # clone writes progress to stderr. An empty stdout is still a success.
@@ -51,6 +82,27 @@ def _bare(data_dir: Path, repo: str) -> Path | None:
     if not ok or not (dest / "HEAD").is_file():
         return None
     return dest
+
+
+def _listed(bare: Path, ref: str) -> list[Skill]:
+    if not ref or ref.startswith("-") or ".." in ref.split("/"):
+        return []
+    ok, sha = _git(["-C", str(bare), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"])
+    if not ok or not sha:
+        return []
+    ok, listed = _git(["-C", str(bare), "ls-tree", "-r", "--name-only", sha, "--"])
+    if not ok:
+        return []
+    skills: list[Skill] = []
+    for path in listed.splitlines():
+        if not _is_skill_file(path):
+            continue
+        ok, body = _git(["-C", str(bare), "show", f"{sha}:{path}"])
+        if not ok:
+            continue
+        skill_name, text = _name_and_body(path, body)
+        skills.append(Skill(skill_name, "", text, f"{bare}:{path}"))
+    return skills
 
 
 def _read(bare: Path, ref: str, name: str) -> Skill | None:

@@ -72,7 +72,7 @@ def _health(db: LiteWriter, engine: Engine, config: Config) -> dict[str, object]
         "forge": _forge(root),
         "capabilities": {
             "localHandoff": local,
-            "terminal": local and terminal_enabled(),
+            "terminal": terminal_enabled(not local),
             "designMode": config.design_mode,
             "followups": followups_enabled(),
             "singleProject": single_project(),

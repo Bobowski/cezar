@@ -9,7 +9,7 @@ from stario.datastar import SSE, read_signals
 from stario.exceptions import RequestBodyError
 
 from app.common.shell import load_chrome
-from app.config import Config
+from app.config import Config, terminal_enabled
 from app.engine.dispatch_logic import DispatchOrder
 from app.engine.engine import CHANGED, Engine
 from app.engine.gitwork import Diff, task_diff
@@ -32,6 +32,7 @@ from app.features.task.urls import (
 )
 from app.features.task.views import render, render_missing
 from app.features.tasks.urls import TASKS
+from app.http.loopback import hosted_mode
 from app.store.db import get_project, get_run, list_children, list_events
 
 
@@ -218,6 +219,9 @@ class TaskPage:
         command = str(signals.get("command", "")).strip()
         if not command or len(command) > 400:
             self._tell(w, tab, "command must be 1 to 400 characters", 400)
+            return
+        if not terminal_enabled(hosted_mode(self.config)):
+            self._tell(w, tab, "terminal is disabled", 409)
             return
         run = get_run(self.db, run_id)
         if run is None or not run.worktree_path:

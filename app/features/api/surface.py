@@ -22,7 +22,7 @@ from stario.exceptions import RequestBodyError
 from stario.json import JsonValue
 from stario.json import dumps as json_dumps
 
-from app.config import Config
+from app.config import Config, terminal_enabled
 from app.engine.engine import Engine
 from app.engine.lifecycle_ops import (
     LifecycleDesk,
@@ -35,6 +35,7 @@ from app.engine.providers import model_catalog, provider_status
 from app.engine.telemetry_store import read_consent, write_consent
 from app.engine.ui_state import merge_state, read_state
 from app.engine.uploads import delete_upload, write_upload
+from app.http.loopback import hosted_mode
 from app.integrations.hooks import (
     append_receipt,
     delete_receiver,
@@ -416,14 +417,18 @@ class SurfaceApi:
             return
         w.json(cast(JsonValue, result), status=201)
 
-    async def terminal_open(self, c: Context, w: Writer) -> None:
-        from app.config import terminal_enabled
+    def _terminal_refused(self, w: Writer) -> bool:
+        """Every terminal route but close answers 409 where the policy is off, as in TypeScript."""
+        if terminal_enabled(hosted_mode(self.config)):
+            return False
+        w.json({"error": "terminal is disabled"}, status=409)
+        return True
 
+    async def terminal_open(self, c: Context, w: Writer) -> None:
         run = self._run(c, w)
         if run is None:
             return
-        if not terminal_enabled():
-            w.json({"error": "terminal is disabled"}, status=409)
+        if self._terminal_refused(w):
             return
         if not run.worktree_path:
             w.json({"error": _NO_WORKTREE}, status=409)
@@ -434,6 +439,8 @@ class SurfaceApi:
     async def terminal_input(self, c: Context, w: Writer) -> None:
         run = self._run(c, w)
         if run is None:
+            return
+        if self._terminal_refused(w):
             return
         body = await _json(c, w)
         if body is None:
@@ -452,6 +459,8 @@ class SurfaceApi:
         run = self._run(c, w)
         if run is None:
             return
+        if self._terminal_refused(w):
+            return
         body = await _json(c, w)
         if body is None:
             return
@@ -469,6 +478,8 @@ class SurfaceApi:
     async def terminal_output(self, c: Context, w: Writer) -> None:
         run = self._run(c, w)
         if run is None:
+            return
+        if self._terminal_refused(w):
             return
         session_id = c.match.params.get("session_id", "")
         session = self.engine._terminals.sessions.get(session_id)

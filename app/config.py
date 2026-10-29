@@ -175,9 +175,18 @@ def no_banner() -> bool:
     return os.environ.get("CEZ_NO_BANNER") == "1"
 
 
-def terminal_enabled() -> bool:
-    """Read at the call. `CEZ_TERMINAL=0` is the off switch; anything else stays on."""
-    return os.environ.get("CEZ_TERMINAL") != "0"
+def terminal_enabled(hosted: bool) -> bool:
+    """`terminalEnabled` in `packages/cezar/src/server/capabilities.ts`. Read at the call.
+
+    `1` opts a hosted cockpit in, `0` turns it off everywhere, and unset (or any other
+    value) follows local handoff: on locally, off when hosted.
+    """
+    raw = os.environ.get("CEZ_TERMINAL")
+    if raw == "1":
+        return True
+    if raw == "0":
+        return False
+    return not hosted
 
 
 def single_project() -> bool:

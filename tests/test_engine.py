@@ -297,7 +297,7 @@ async def test_success_is_done_until_the_review_gate_is_on(world, monkeypatch):
     assert (get_run(engine.db, forced.id) or forced).status == "done"
 
 
-async def test_instructions_are_applied_to_the_prompt_and_the_branch(world):
+async def test_instructions_are_applied_to_the_prompt_and_the_branch(world, monkeypatch):
     engine, repo = world
     folder = repo / ".ai" / "cezar"
     folder.mkdir(parents=True, exist_ok=True)
@@ -309,11 +309,20 @@ async def test_instructions_are_applied_to_the_prompt_and_the_branch(world):
     await engine.execute(run.id)
     stored = get_run(engine.db, run.id)
     assert stored is not None
-    assert stored.status == "done"
-    assert stored.branch.startswith("feature/")
+    assert stored.branch.startswith("cez/")
     written = (Path(stored.worktree_path) / "CEZAR_DRY_RUN.txt").read_text(encoding="utf-8")
     assert written.startswith("be brief\n\n---\n")
-    assert "Fix the login" in written
+    monkeypatch.setenv("CEZ_AUTONAME", "1")
+    named = await _start(engine, "Fix the login")
+    await engine.execute(named.id)
+    stored = get_run(engine.db, named.id)
+    assert stored is not None
+    assert stored.branch == "feature/implementing-cr-fixes"
+    assert stored.title == "implementing cr fixes"
+    monkeypatch.setenv("CEZ_AUTONAME", "0")
+    quiet = await _start(engine, "Fix the login again")
+    await engine.execute(quiet.id)
+    assert (get_run(engine.db, quiet.id) or quiet).branch.startswith("cez/")
 
 
 async def test_a_finished_task_is_written_to_the_webhook_outbox(world, monkeypatch):

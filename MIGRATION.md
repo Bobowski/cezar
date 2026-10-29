@@ -171,7 +171,7 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | Diff includes untracked files and is capped | partial | untracked file asserted; cap helper exists, cap edge not separately tested |
 | Freshest `origin/<base>` vs fork-point attribution | not done | fork SHA only |
 | Remotes via `gh repo set-default` / fork parent | not done | — |
-| Branch naming instructions | partial | A `start with <prefix>` instruction becomes `prefix/<slug>-<id8>` (`tests/test_engine.py`). Any other wording keeps `cez/<id8>`. The TypeScript model namer is not called. |
+| Branch naming instructions | done | Dry-run naming stays off unless `CEZ_AUTONAME=1`, then the canned mock answer `feature/implementing-cr-fixes` is the branch and the title is `implementing cr fixes`. `CEZ_AUTONAME=0` keeps `cez/<id8>`. A live run asks the Claude binary with the same prompt and keeps the default when the answer is junk. `tests/test_engine.py`. |
 | Orphan worktree directories whose run id is gone | done | `test_orphan_worktrees_go_and_known_runs_stay` |
 | Draft PRs, merge, GitHub review | partial | `POST /runs/{id}/pr` and a `github.draft-pr` node. Dry-run returns `https://github.com/open-mercato/demo/pull/777` and does not push or call `gh`. The route then marks the run `done`. `GET /github/prs/{n}/merge-state`, `POST …/merge`, and `POST …/reviews` answer a dry-run document and do not call `gh` (`tests/test_parity.py`). With dry-run off, `gh pr view`, `gh pr merge`, `gh pr review`, and `gh pr create` run against a fake `gh` (`tests/test_parity.py`). Push is `git push` to a local bare remote in that test. There is no merge-state machine (checks, blockers, head SHA) and no review UI. |
 
@@ -427,9 +427,8 @@ the fake binaries under `tests/fakes/`. Nothing here is a live CLI handshake.
   visible on `/api/v1/health`, not enforced. `CEZ_HIDE_TOKEN_*` flips the
   health capability bits and does not change a chart.
 - `CEZ_ARCHIVED_RUNS_KEEP` is not read. Index prune uses `CEZ_RUNS_KEEP` only.
-- `systemPrompt` is prepended to the agent prompt. `branchNaming` changes the
-  branch only when it says `start with <prefix>`. Other wording keeps
-  `cez/<id8>`. There is no model namer.
+- `systemPrompt` is prepended to the agent prompt. Branch names come from the
+  namer. Dry-run uses the canned mock only when `CEZ_AUTONAME=1`.
 - Agent config is three files. Writes are refused when the cockpit is hosted.
 - Accounts are `{id, name, runner}` in the data directory.
 - Integrations queues one "Tester Army" task. It does not install a framework.

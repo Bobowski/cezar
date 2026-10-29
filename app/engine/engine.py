@@ -53,8 +53,9 @@ from app.engine.gitwork import (
     remove_worktree,
 )
 from app.engine.graph import advance, compare_values, enter_graph, fork_shape, render_refs
-from app.engine.instructions import branch_from_instructions, run_instructions
+from app.engine.instructions import run_instructions
 from app.engine.model import TERMINAL, Automation, Project, Run, Settings, Step, Workflow
+from app.engine.namer import propose_name
 from app.engine.prompts import build_user_prompt
 from app.engine.receipts import archive_finished as sweep_archive
 from app.engine.receipts import mark_all_read as sweep_read
@@ -367,7 +368,16 @@ class Engine:
             await self._note(run.id, "note", "not a git repository; ran in place")
             return run
         _prompt, naming = run_instructions(root)
-        wanted = branch_from_instructions(run.task, naming, run.id)
+        named = await propose_name(
+            run.task,
+            naming,
+            dry_run=self.config.dry_run,
+            cwd=root,
+            binary=self.config.runner_bins.get("claude", "claude"),
+        )
+        wanted = named.branch if named and named.branch else None
+        if named and named.title:
+            run.title = named.title
         try:
             path, branch, sha = await asyncio.to_thread(
                 create_worktree,

@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from stario.testing import TestClient
 
+from app.integrations.clients import forge_base_issue
 from app.main import bootstrap
 
 
@@ -11,6 +12,17 @@ def serve(handler: type[BaseHTTPRequestHandler]) -> tuple[ThreadingHTTPServer, i
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd, int(httpd.server_address[1])
+
+
+def test_forge_base_urls_reject_private_and_non_vendor_hosts():
+    assert forge_base_issue("https://api.github.com", "github") is None
+    assert forge_base_issue("https://acme.ghe.com", "github") is None
+    assert forge_base_issue("http://169.254.169.254/", "github") is not None
+    assert forge_base_issue("https://evil.example", "github") is not None
+    assert forge_base_issue("https://api.linear.app/graphql", "linear") is None
+    assert forge_base_issue("https://evil.example/graphql", "linear") is not None
+    assert forge_base_issue("http://127.0.0.1:9", "jira") is None
+    assert forge_base_issue("http://example.atlassian.net", "jira") is not None
 
 
 async def test_unconfigured_forges_do_not_call_out(client):

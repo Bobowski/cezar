@@ -8,14 +8,19 @@ from __future__ import annotations
 
 import base64
 import json
+from ipaddress import ip_address
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from app.config import Config
 
 
 def github_issues(config: Config, owner: str, repo: str) -> dict[str, Any]:
+    issue = forge_base_issue(config.github_api, "github")
+    if issue:
+        return {"available": False, "reason": issue}
     if not config.github_token:
         return {"available": False, "reason": "gh is not authenticated"}
     if not owner or not repo:
@@ -47,6 +52,10 @@ def github_issues(config: Config, owner: str, repo: str) -> dict[str, Any]:
 
 
 def jira_issue(config: Config, key: str) -> dict[str, Any]:
+    if config.jira_base:
+        issue = forge_base_issue(config.jira_base, "jira")
+        if issue:
+            return {"available": False, "reason": issue}
     if not config.jira_base or not config.jira_email or not config.jira_token:
         return {"available": False, "reason": "jira is not configured"}
     if not key:
@@ -70,6 +79,9 @@ def jira_issue(config: Config, key: str) -> dict[str, Any]:
 
 
 def linear_issue(config: Config, issue_id: str) -> dict[str, Any]:
+    issue = forge_base_issue(config.linear_api, "linear")
+    if issue:
+        return {"available": False, "reason": issue}
     if not config.linear_key:
         return {"available": False, "reason": "linear is not configured"}
     if not issue_id:
@@ -99,6 +111,53 @@ def linear_issue(config: Config, issue_id: str) -> dict[str, Any]:
 
 def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def forge_base_issue(url: str, kind: str) -> str | None:
+    """Refuse a base URL that is not the vendor host or a loopback test server.
+
+    GitHub is `api.github.com`, `github.com`, or `*.ghe.com`. Linear is
+    `api.linear.app`. Jira is any public https host. Loopback is allowed so
+    the recorded-server tests can stand in. Anything else, including link-local
+    and private addresses, is rejected before a request is made.
+    """
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("https", "http") or not parsed.hostname:
+        return "forge URL must be an http(s) address"
+    if parsed.username or parsed.password:
+        return "forge URL must not carry credentials"
+    host = parsed.hostname.lower().rstrip(".")
+    if _loopback(host):
+        return None
+    if parsed.scheme != "https":
+        return "forge URL must be https"
+    if _private_host(host):
+        return "forge URL must not target a private address"
+    github_ok = host in ("api.github.com", "github.com") or host.endswith(".ghe.com")
+    if kind == "github" and not github_ok:
+        return "github API host must be api.github.com, github.com, or a *.ghe.com host"
+    if kind == "linear" and host != "api.linear.app":
+        return "linear API host must be api.linear.app"
+    return None
+
+
+def _loopback(host: str) -> bool:
+    if host in ("localhost", "127.0.0.1", "::1"):
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _private_host(host: str) -> bool:
+    if host in ("metadata.google.internal", "metadata"):
+        return True
+    try:
+        address = ip_address(host)
+    except ValueError:
+        return False
+    return address.is_private or address.is_link_local or address.is_reserved
 
 
 def _get(url: str, headers: dict[str, str]) -> Any:

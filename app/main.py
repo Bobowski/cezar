@@ -8,10 +8,12 @@ from app.assets import ASSETS
 from app.config import Config, listen_config
 from app.engine.engine import Engine
 from app.features.api.handlers import ApiPage
+from app.features.api.surface import SurfaceApi
 from app.features.automations.handlers import AutomationsPage
 from app.features.dashboard.handlers import DashboardPage
 from app.features.health.handlers import HealthPage
 from app.features.projects.handlers import ProjectsPage
+from app.features.secrets.handlers import SecretsPage
 from app.features.settings.handlers import SettingsPage
 from app.features.skills.handlers import SkillsPage
 from app.features.task.handlers import TaskPage
@@ -41,8 +43,10 @@ async def bootstrap(app: App, span: Span):
         DashboardPage(db, relay, engine, config).register(app)
         ProjectsPage(db, relay, engine, config).register(app)
         SettingsPage(db, relay, engine, config).register(app)
+        SecretsPage(db, engine, config).register(app)
         HealthPage(db, engine, config).register(app)
         ApiPage(db, engine, config).register(app)
+        SurfaceApi(db, engine, config).register(app)
         app.create_task(engine.serve())
         yield
 

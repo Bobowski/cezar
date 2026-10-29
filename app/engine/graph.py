@@ -2,8 +2,8 @@
 
 The walk matches `advance` / `enterGraph` in `packages/cezar/src/workflows/graph.ts`.
 A loop's `repeat` port is the only bounded edge: every other cycle is rejected.
-Node types other than agent, check, if, loop, start, and end load, and the
-executor refuses them when the walk reaches one.
+Fork, join, dispatch, git, and GitHub nodes are executed by the engine.
+A join is only reached from its fork. Other types still fail the run.
 """
 
 from __future__ import annotations
@@ -25,6 +25,14 @@ _PORTS: dict[str, tuple[str, ...]] = {
     "fork": ("1", "2", "3"),
     "join": ("done", "failed"),
     "workflow": ("done", "failed"),
+    "git.commit": ("done", "nothing", "failed"),
+    "git.push": ("done", "failed"),
+    "git.sync-base": ("done", "conflict", "failed"),
+    "github.draft-pr": ("created", "failed"),
+    "github.pr-comment": ("done", "failed"),
+    "github.issue-comment": ("done", "failed"),
+    "github.pr-update": ("done", "failed"),
+    "github.wait-ci": ("green", "red", "timeout", "failed"),
 }
 
 
@@ -164,6 +172,77 @@ def graph_issues(graph: dict[str, Any]) -> list[str]:
             if ref not in ids:
                 issues.append(f'node "{node.get("id")}" references unknown node "{ref}"')
     return issues
+
+
+@dataclass(frozen=True, slots=True)
+class ForkBranch:
+    port: str
+    agent: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class ForkShape:
+    branches: tuple[ForkBranch, ...]
+    join: str
+    wait: str
+
+
+def fork_shape(graph: dict[str, Any], fork_id: str) -> ForkShape | str:
+    """The fork's agents and the one join they meet at, or why it cannot run."""
+    nodes = _nodes(graph)
+    fork = next((node for node in nodes if node.get("id") == fork_id), None)
+    if fork is None or fork.get("type") != "fork":
+        return f'no fork node "{fork_id}"'
+    branches: list[ForkBranch] = []
+    join = ""
+    for port in ports_of(fork):
+        edge = _edge_from(graph, fork_id, port)
+        if edge is None:
+            return f'fork "{fork_id}": branch {port} is not wired to an agent'
+        agent = next((node for node in nodes if node.get("id") == edge.get("to")), None)
+        if agent is None or agent.get("type") != "agent":
+            return f'fork "{fork_id}": branch {port} must lead to an agent node'
+        if agent.get("session") or agent.get("verdicts"):
+            return (
+                f'agent node "{agent.get("id")}" runs as a fork branch — '
+                "it cannot continue a session or declare verdicts"
+            )
+        agent_id = str(agent.get("id", ""))
+        if any(item.agent.get("id") == agent_id for item in branches):
+            return f'fork "{fork_id}": two branches lead to the same agent "{agent_id}"'
+        done = _edge_from(graph, agent_id, "done")
+        if done is None:
+            return f'fork branch "{agent_id}": wire its done port into a join'
+        for out_port in ("done", "failed"):
+            out = _edge_from(graph, agent_id, out_port)
+            if out is None:
+                continue
+            target = next((node for node in nodes if node.get("id") == out.get("to")), None)
+            if target is None or target.get("type") != "join":
+                return f'fork branch "{agent_id}": its {out_port} port must lead into a join'
+            target_id = str(target.get("id", ""))
+            if join and target_id != join:
+                return f'fork "{fork_id}": every branch must meet at the same join'
+            join = target_id
+        branches.append(ForkBranch(port, agent))
+    if not join:
+        return f'fork "{fork_id}" needs a join'
+    return ForkShape(tuple(branches), join, _join_wait(nodes, join))
+
+
+def _join_wait(nodes: list[dict[str, Any]], join_id: str) -> str:
+    join = next((node for node in nodes if node.get("id") == join_id), None)
+    wait = join.get("wait") if join else "all"
+    return wait if wait in ("all", "any") else "all"
+
+
+def _edge_from(graph: dict[str, Any], node_id: str, port: str) -> dict[str, Any] | None:
+    nodes = _nodes(graph)
+    for edge in _edges(graph):
+        parsed = parse_edge_from(str(edge.get("from", "")), nodes)
+        if parsed == (node_id, port):
+            return edge
+    return None
 
 
 def render_refs(text: str, outputs: dict[str, dict[str, str]]) -> str:

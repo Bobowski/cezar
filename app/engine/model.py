@@ -249,6 +249,10 @@ class Run:
     variant: str = ""
     codex_thread: str = ""
     images: list[dict[str, object]] = field(default_factory=list)
+    seen_at: str = ""
+    auto_resume_at: str = ""
+    awaiting_answer_since: str = ""
+    pull_request_url: str = ""
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -295,6 +299,10 @@ class Run:
             "variant": self.variant,
             "codex_thread": self.codex_thread,
             "images": self.images,
+            "seen_at": self.seen_at,
+            "auto_resume_at": self.auto_resume_at,
+            "awaiting_answer_since": self.awaiting_answer_since,
+            "pull_request_url": self.pull_request_url,
         }
 
     @classmethod
@@ -354,6 +362,10 @@ class Run:
             variant=_text(data.get("variant")),
             codex_thread=_text(data.get("codex_thread")),
             images=_dicts(data.get("images")),
+            seen_at=_text(data.get("seen_at")),
+            auto_resume_at=_text(data.get("auto_resume_at")),
+            awaiting_answer_since=_text(data.get("awaiting_answer_since")),
+            pull_request_url=_text(data.get("pull_request_url")),
         )
 
     def definition(self) -> Workflow:
@@ -446,6 +458,8 @@ class Automation:
     next_at: str
     created_at: str
     last_run_id: str = ""
+    tracker: str = ""
+    tracker_event: str = ""
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -460,6 +474,8 @@ class Automation:
             "next_at": self.next_at,
             "created_at": self.created_at,
             "last_run_id": self.last_run_id,
+            "tracker": self.tracker,
+            "tracker_event": self.tracker_event,
         }
 
     @classmethod
@@ -483,6 +499,8 @@ class Automation:
             next_at=_text(data.get("next_at")),
             created_at=_text(data.get("created_at")),
             last_run_id=_text(data.get("last_run_id")),
+            tracker=_text(data.get("tracker")),
+            tracker_event=_text(data.get("tracker_event")),
         )
 
 

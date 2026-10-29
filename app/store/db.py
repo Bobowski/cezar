@@ -187,7 +187,9 @@ def get_run_tx(tx: Tx, run_id: str) -> Run | None:
     return _run(row) if row else None
 
 
-def list_runs(db: LiteWriter, project_id: str | None, status: str | None) -> list[Run]:
+def list_runs(
+    db: LiteWriter, project_id: str | None, status: str | None, *, limit: int = 200
+) -> list[Run]:
     where: list[str] = []
     params: dict[str, object] = {}
     if project_id:
@@ -199,7 +201,8 @@ def list_runs(db: LiteWriter, project_id: str | None, status: str | None) -> lis
     sql = "SELECT id, data FROM runs"
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY created_at DESC LIMIT 200"
+    sql += " ORDER BY created_at DESC LIMIT :limit"
+    params["limit"] = limit
     return [_run(row) for row in db.query(sql, IdData, **params)]
 
 

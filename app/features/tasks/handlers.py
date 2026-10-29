@@ -11,7 +11,16 @@ from app.config import RUNNERS, Config
 from app.engine.catalog import load_workflows
 from app.engine.engine import CHANGED, Engine
 from app.features.task.urls import TASK
-from app.features.tasks.urls import HOME, TASKS, TASKS_CREATE, TASKS_LIVE, TASKS_NEW, TasksView
+from app.features.tasks.urls import (
+    HOME,
+    TASKS,
+    TASKS_ARCHIVE,
+    TASKS_CREATE,
+    TASKS_LIVE,
+    TASKS_NEW,
+    TASKS_READ,
+    TasksView,
+)
 from app.features.tasks.views import render_list, render_new
 from app.store.db import get_project, get_settings, list_runs
 
@@ -29,6 +38,8 @@ class TasksPage:
         app.add(TASKS_LIVE, self.live)
         app.add(TASKS_NEW, self.new)
         app.add(TASKS_CREATE, self.create)
+        app.add(TASKS_ARCHIVE, self.archive_finished)
+        app.add(TASKS_READ, self.mark_read)
 
     def _view(self, query: object) -> TasksView:
         view = TasksView.from_query(query)  # type: ignore[arg-type]
@@ -124,10 +135,25 @@ class TasksPage:
         SSE(w).navigate(TASK.href(run.id))
         await self.engine.enqueue(run)
 
+    async def archive_finished(self, c: Context, w: Writer) -> None:
+        view = self._view(c.req.query)
+        await self.engine.archive_finished(view.project)
+        w.empty()
+
+    async def mark_read(self, c: Context, w: Writer) -> None:
+        view = self._view(c.req.query)
+        await self.engine.mark_all_read(view.project)
+        w.empty()
+
     def _runs(self, view: TasksView) -> list:
-        status = None if view.status == "all" else view.status
         project = view.project or None
-        return list_runs(self.db, project, status)
+        status = None if view.status in ("all", "archived") else view.status
+        rows = list_runs(self.db, project, status)
+        if view.status == "archived":
+            return [run for run in rows if run.archived]
+        if view.status == "all":
+            return [run for run in rows if not run.archived]
+        return rows
 
     def _chrome(self, project_id: str):
         return load_chrome(self.db, self.config, "Tasks", "tasks", project_id)

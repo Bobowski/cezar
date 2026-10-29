@@ -9,6 +9,8 @@ TASKS = Route("GET /tasks")
 TASKS_LIVE = Route("GET /tasks/live")
 TASKS_NEW = Route("GET /tasks/new")
 TASKS_CREATE = Route("POST /tasks")
+TASKS_ARCHIVE = Route("POST /tasks/archive-finished")
+TASKS_READ = Route("POST /tasks/read-all")
 HOME = Route("GET /")
 
 
@@ -21,7 +23,7 @@ class TasksView:
     def from_query(cls, query: ParsedQuery) -> TasksView:
         status = query.get("status", "all")
         project = query.get("project", "")
-        if status not in STATUSES and status != "all":
+        if status not in STATUSES and status not in ("all", "archived"):
             status = "all"
         if project and not _slug(project):
             project = ""

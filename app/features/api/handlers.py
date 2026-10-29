@@ -258,10 +258,11 @@ class ApiPage:
         if not isinstance(text, str):
             w.json({"error": "message needs text or at least one attachment"}, status=400)
             return
-        if body.get("images"):
-            w.json({"error": "attachments are not supported by the Python port"}, status=400)
-            return
-        if not text.strip():
+        if run.status == "running" and isinstance(text, str) and text.strip():
+            if self.engine.defer_message(run.id, text):
+                w.json({"deferred": True})
+                return
+        if not text.strip() and not body.get("images"):
             w.json({"error": "message needs text or at least one attachment"}, status=400)
             return
         if run.status == "queued":

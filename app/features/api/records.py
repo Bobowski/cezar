@@ -59,6 +59,10 @@ def public_run(run: Run, *, full: bool) -> dict[str, JsonValue]:
         body["groupId"] = run.group_id
     if run.variant:
         body["variant"] = run.variant
+    if run.seen_at:
+        body["seenAt"] = run.seen_at
+    if run.pull_request_url:
+        body["pullRequestUrl"] = run.pull_request_url
     if run.queued_messages:
         body["queuedMessages"] = [
             {

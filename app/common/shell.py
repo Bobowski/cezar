@@ -13,6 +13,7 @@ from app.engine.model import Project
 from app.features.automations.urls import AUTOMATIONS
 from app.features.dashboard.urls import DASHBOARD
 from app.features.projects.urls import PROJECTS
+from app.features.secrets.urls import SECRETS
 from app.features.settings.urls import SETTINGS
 from app.features.skills.urls import SKILLS
 from app.features.tasks.urls import TASKS
@@ -84,6 +85,7 @@ def _sidebar(chrome: Chrome) -> HtmlElement:
         ("dashboard", "Dashboard", DASHBOARD.href()),
         ("workflows", "Workflows", WORKFLOWS.href(query={"project": project})),
         ("skills", "Skills", SKILLS.href(query={"project": project})),
+        ("secrets", "Secrets", SECRETS.href(query={"project": project})),
         ("automations", "Automations", AUTOMATIONS.href(query={"project": project})),
         ("projects", "Projects", PROJECTS.href()),
         ("settings", "Settings", SETTINGS.href()),

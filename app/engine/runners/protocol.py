@@ -17,6 +17,7 @@ import socket
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -41,6 +42,10 @@ from app.engine.session_extras import (
 )
 
 SIGNAL_EXITS = frozenset({130, 137, 143})
+# Same grace as the TypeScript CLI runners: SIGTERM, then SIGKILL.
+KILL_GRACE_S = 4.0
+EOF_TERM_GRACE_S = 8.0
+RESUME_LOCK_RETRY_S = (0.25, 0.5, 1.0, 2.0, 4.0, 4.0, 4.0)
 
 
 @dataclass
@@ -59,6 +64,8 @@ def parse_claude_line(line: str, state: TurnState) -> list[AgentEvent]:
     if message is None:
         return []
     kind = message.get("type")
+    if kind == "stream_event":
+        return _stream_event(message)
     events: list[AgentEvent] = []
     if kind == "assistant":
         content = _nested(message, "message", "content")
@@ -73,6 +80,10 @@ def parse_claude_line(line: str, state: TurnState) -> list[AgentEvent]:
                     events.append(
                         AgentEvent("tool-call", str(block.get("id", "")), str(block["name"]))
                     )
+                    if str(block["name"]).lower() == "todowrite":
+                        plan = _todo_plan(block.get("input"))
+                        if plan:
+                            events.append(AgentEvent("plan", plan))
     elif kind == "user":
         content = _nested(message, "message", "content")
         if isinstance(content, list):
@@ -122,7 +133,11 @@ def parse_codex_line(line: str, state: TurnState) -> list[AgentEvent]:
     events: list[AgentEvent] = []
     if method == "item/agentMessage/delta" and isinstance(params.get("delta"), str):
         state.saw_text = True
-        events.append(AgentEvent("text", params["delta"]))
+        events.append(AgentEvent("delta", params["delta"]))
+    elif method == "turn/plan/updated":
+        plan = _codex_plan(params.get("plan"))
+        if plan is not None:
+            events.append(AgentEvent("plan", plan))
     elif method == "item/started":
         item = _as_dict(params.get("item"))
         if item.get("type") == "commandExecution":
@@ -237,6 +252,8 @@ class ProtocolRunner:
         self.binary = binary
         self.approval_gate = approval_gate
         self.codex_network_off = codex_network_off
+        self.resume_lock_retry_s: tuple[float, ...] = RESUME_LOCK_RETRY_S
+        self._open: dict[str, tuple[asyncio.subprocess.Process, Path | None]] = {}
 
     async def stream(self, spec: AgentSpec) -> AsyncIterator[AgentEvent]:
         try:
@@ -244,16 +261,42 @@ class ProtocolRunner:
                 async for event in _opencode_turn(self.binary, spec):
                     yield event
                 return
+            parked = (
+                self._open.pop(spec.session_id, None) if spec.resume and spec.session_id else None
+            )
+            if parked is not None and parked[0].returncode is None:
+                proc, mcp_path = parked
+                async for event in _continue_parked(proc, spec, self.runner):
+                    yield event
+                if proc.returncode is None and not spec.cancel.is_set():
+                    self._open[spec.session_id] = (proc, mcp_path)
+                else:
+                    await _finish_proc(proc, mcp_path)
+                return
+            hold: list[asyncio.subprocess.Process | None] = [None]
+            mcp_hold: list[Path | None] = [None]
             async for event in _process_turn(
                 self.runner,
                 self.binary,
                 spec,
                 approval_gate=self.approval_gate,
                 codex_network_off=self.codex_network_off,
+                hold=hold,
+                mcp_hold=mcp_hold,
+                lock_retries=self.resume_lock_retry_s,
             ):
                 yield event
+            proc = hold[0]
+            if proc is not None and spec.session_id:
+                self._open[spec.session_id] = (proc, mcp_hold[0])
         except FileNotFoundError:
             yield AgentEvent("error", f"`{self.binary}` not found on PATH")
+
+    async def aclose(self) -> None:
+        parked = list(self._open.values())
+        self._open.clear()
+        for proc, mcp_path in parked:
+            await _finish_proc(proc, mcp_path)
 
 
 async def _process_turn(
@@ -263,6 +306,9 @@ async def _process_turn(
     *,
     approval_gate: bool,
     codex_network_off: bool,
+    hold: list[asyncio.subprocess.Process | None] | None = None,
+    mcp_hold: list[Path | None] | None = None,
+    lock_retries: tuple[float, ...] = (),
 ) -> AsyncIterator[AgentEvent]:
     mcp_path = write_mcp_config(spec.mcp_servers) if runner == "claude" else None
     args = _args(runner, spec, approval_gate=approval_gate, mcp_path=str(mcp_path or ""))
@@ -288,7 +334,13 @@ async def _process_turn(
                 mcp_config=codex_mcp_config(spec.mcp_servers),
             )
             async for event in _rpc_turn(
-                proc, spec, state, runner, frames, idle_ms=spec.timeout_ms
+                proc,
+                spec,
+                state,
+                runner,
+                frames,
+                idle_ms=spec.timeout_ms,
+                lock_retries=lock_retries,
             ):
                 yield event
         elif runner in ("junie", "copilot"):
@@ -303,13 +355,26 @@ async def _process_turn(
             ):
                 yield event
     finally:
-        _close(proc)
-        if mcp_path is not None:
-            shutil.rmtree(mcp_path.parent, ignore_errors=True)
-    if spec.cancel.is_set():
         if proc.returncode is None:
-            proc.kill()
-        await proc.wait()
+            try:
+                await asyncio.wait_for(proc.wait(), 0.05)
+            except TimeoutError:
+                pass
+        keep = (
+            hold is not None
+            and proc.returncode is None
+            and not spec.cancel.is_set()
+            and not state.failed
+            and runner in ("claude", "pi")
+            and bool(spec.session_id)
+        )
+        if keep and hold is not None:
+            hold[0] = proc
+            if mcp_hold is not None:
+                mcp_hold[0] = mcp_path
+        else:
+            await _finish_proc(proc, mcp_path)
+    if spec.cancel.is_set():
         return
     if state.thread_id:
         yield AgentEvent("session", state.thread_id)
@@ -319,11 +384,10 @@ async def _process_turn(
         )
     if state.failed:
         yield AgentEvent("error", state.failed)
-        if proc.returncode is None:
-            proc.kill()
-        await proc.wait()
         return
-    code = await proc.wait()
+    code = proc.returncode
+    if code is None and (hold is None or hold[0] is None):
+        code = await proc.wait()
     if code not in (0, None) and code not in SIGNAL_EXITS:
         err = b""
         if proc.stderr is not None:
@@ -402,6 +466,7 @@ async def _rpc_turn(
     frames: list[dict[str, Any]],
     *,
     idle_ms: int = 0,
+    lock_retries: tuple[float, ...] = (),
 ) -> AsyncIterator[AgentEvent]:
     """Send each handshake frame, then the prompt, and stop on the prompt's completion.
 
@@ -410,7 +475,10 @@ async def _rpc_turn(
     before the prompt is sent.
     """
     prompt_id = int(frames[-1]["id"])
-    for index, frame in enumerate(frames):
+    index = 0
+    retries = lock_retries
+    while index < len(frames):
+        frame = frames[index]
         await _write(proc, [frame])
         is_prompt = index == len(frames) - 1
         async for event in _read_until_done(
@@ -423,8 +491,39 @@ async def _rpc_turn(
             idle_ms=idle_ms,
         ):
             yield event
+        if frame.get("method") == "thread/resume" and _writer_lock(state.failed):
+            state.failed = ""
+            state.done = False
+            if retries:
+                await asyncio.sleep(retries[0])
+                retries = retries[1:]
+                continue
+            forked = dict(frame)
+            forked["method"] = "thread/fork"
+            await _write(proc, [forked])
+            async for event in _read_until_done(
+                proc,
+                spec,
+                state,
+                runner,
+                prompt_id,
+                stop_id=int(frame["id"]),
+                idle_ms=idle_ms,
+            ):
+                yield event
+            if state.thread_id:
+                yield AgentEvent(
+                    "note",
+                    f"codex: thread {spec.codex_thread} is still open in another Codex process "
+                    f"— continuing in a fork of it ({state.thread_id})",
+                )
+            if state.failed or spec.cancel.is_set():
+                return
+            index += 1
+            continue
         if state.failed or state.done or spec.cancel.is_set():
             return
+        index += 1
 
 
 def _args(runner: str, spec: AgentSpec, *, approval_gate: bool, mcp_path: str = "") -> list[str]:
@@ -565,12 +664,12 @@ async def _read_until_done(
     last = started
     while not (state.done or done or seen_stop):
         if spec.cancel.is_set():
-            proc.kill()
+            await _escalate(proc)
             yield AgentEvent("error", "cancelled")
             return
         expired = _idle_expired(started, last, idle_ms)
         if expired:
-            proc.kill()
+            await _escalate(proc)
             state.failed = inactivity_message(runner, idle_ms, ceiling=expired == "ceiling")
             state.done = True
             return
@@ -645,9 +744,7 @@ async def _opencode_turn(binary: str, spec: AgentSpec) -> AsyncIterator[AgentEve
     except (URLError, TimeoutError, OSError) as exc:
         yield AgentEvent("error", f"opencode serve failed: {exc}")
     finally:
-        if proc.returncode is None:
-            proc.kill()
-            await proc.wait()
+        await _escalate(proc)
 
 
 async def _write(proc: asyncio.subprocess.Process, messages: list[dict[str, Any]]) -> None:
@@ -662,6 +759,108 @@ async def _write(proc: asyncio.subprocess.Process, messages: list[dict[str, Any]
 def _close(proc: asyncio.subprocess.Process) -> None:
     if proc.stdin is not None and not proc.stdin.is_closing():
         proc.stdin.close()
+
+
+async def _escalate(proc: asyncio.subprocess.Process) -> None:
+    """SIGTERM, then SIGKILL if the process is still alive after the grace."""
+    if proc.returncode is not None:
+        return
+    proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), KILL_GRACE_S)
+    except TimeoutError:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+
+
+async def _reap(proc: asyncio.subprocess.Process) -> None:
+    """After stdin closes, wait, then escalate. An already-exited process returns at once."""
+    if proc.returncode is not None:
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), EOF_TERM_GRACE_S)
+    except TimeoutError:
+        await _escalate(proc)
+
+
+async def _finish_proc(proc: asyncio.subprocess.Process, mcp_path: Path | None) -> None:
+    _close(proc)
+    await _reap(proc)
+    if mcp_path is not None:
+        shutil.rmtree(mcp_path.parent, ignore_errors=True)
+
+
+async def _continue_parked(
+    proc: asyncio.subprocess.Process, spec: AgentSpec, runner: str
+) -> AsyncIterator[AgentEvent]:
+    """A follow-up on the process that stayed open after the previous turn."""
+    state = TurnState()
+    await _write(proc, _opening_lines(runner, spec, codex_network_off=False))
+    async for event in _read_until_done(proc, spec, state, runner, 0, idle_ms=spec.timeout_ms):
+        yield event
+    if state.input_tokens or state.output_tokens:
+        yield AgentEvent(
+            "text", "", input_tokens=state.input_tokens, output_tokens=state.output_tokens
+        )
+    if state.failed:
+        yield AgentEvent("error", state.failed)
+        return
+    yield AgentEvent("turn-end")
+
+
+def _writer_lock(message: str) -> bool:
+    return "already has an active writer" in message
+
+
+def _stream_event(message: dict[str, Any]) -> list[AgentEvent]:
+    event = _as_dict(message.get("event"))
+    if event.get("type") != "content_block_delta":
+        return []
+    delta = _as_dict(event.get("delta"))
+    if delta.get("type") == "text_delta" and isinstance(delta.get("text"), str):
+        return [AgentEvent("delta", delta["text"])]
+    return []
+
+
+def _todo_plan(raw: Any) -> str:
+    todos = raw.get("todos") if isinstance(raw, dict) else None
+    if not isinstance(todos, list):
+        return ""
+    entries = []
+    for item in todos:
+        if not isinstance(item, dict) or not isinstance(item.get("content"), str):
+            continue
+        status = item.get("status")
+        if status not in ("pending", "in_progress", "completed"):
+            status = "pending"
+        active = item.get("activeForm")
+        if not isinstance(active, str):
+            active = item["content"]
+        entries.append({"content": item["content"], "status": status, "activeForm": active})
+    if not entries:
+        return ""
+    return json.dumps({"type": "plan.updated", "entries": entries}, separators=(",", ":"))
+
+
+def _codex_plan(raw: Any) -> str | None:
+    if not isinstance(raw, list):
+        return None
+    entries = []
+    for step in raw:
+        if not isinstance(step, dict) or not isinstance(step.get("step"), str):
+            continue
+        status = step.get("status")
+        if status in ("inProgress", "in_progress"):
+            mapped = "in_progress"
+        elif status == "completed":
+            mapped = "completed"
+        else:
+            mapped = "pending"
+        entries.append({"content": step["step"], "status": mapped, "activeForm": step["step"]})
+    if raw and not entries:
+        return None
+    return json.dumps({"type": "plan.updated", "entries": entries}, separators=(",", ":"))
 
 
 def _post(url: str, body: dict[str, Any]) -> dict[str, Any]:

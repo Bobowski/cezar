@@ -66,6 +66,10 @@ class Config:
     jira_token: str = ""
     linear_key: str = ""
     linear_api: str = "https://api.linear.app/graphql"
+    design_mode: bool = True
+    github_webhook_secret: str = ""
+    jira_webhook_secret: str = ""
+    linear_webhook_secret: str = ""
 
     @classmethod
     def from_env(cls) -> Config:
@@ -76,6 +80,7 @@ class Config:
         bins = {
             runner: os.environ.get(_BIN_ENV[runner], _DEFAULT_BIN[runner]) for runner in RUNNERS
         }
+        listen_host = os.environ.get("STARIO_HOST", "127.0.0.1")
         return cls(
             app_name=os.environ.get("APP_NAME", "cezar"),
             version=VERSION,
@@ -88,7 +93,7 @@ class Config:
             tick_seconds=0.2,
             check_timeout_seconds=600,
             runner_bins=bins,
-            listen_host=os.environ.get("STARIO_HOST", "127.0.0.1"),
+            listen_host=listen_host,
             listen_port=_port(os.environ.get("STARIO_PORT", "4321")),
             approval_gate=_flag("CEZ_APPROVAL_GATE", "0"),
             codex_network_off=os.environ.get("CEZ_CODEX_NETWORK") == "0",
@@ -99,6 +104,10 @@ class Config:
             jira_token=os.environ.get("CEZ_JIRA_TOKEN", ""),
             linear_key=os.environ.get("CEZ_LINEAR_API_KEY", ""),
             linear_api=os.environ.get("CEZ_LINEAR_API", "https://api.linear.app/graphql"),
+            design_mode=_design_mode(listen_host),
+            github_webhook_secret=os.environ.get("CEZ_GITHUB_WEBHOOK_SECRET", ""),
+            jira_webhook_secret=os.environ.get("CEZ_JIRA_WEBHOOK_SECRET", ""),
+            linear_webhook_secret=os.environ.get("CEZ_LINEAR_WEBHOOK_SECRET", ""),
         )
 
 
@@ -113,6 +122,13 @@ def apply_overrides(*, repo: str | None = None, data_dir: str | None = None) -> 
         os.environ["CEZ_REPO"] = repo
     if data_dir is not None:
         os.environ["PROJECT_DATA_DIR"] = data_dir
+
+
+def _design_mode(listen_host: str) -> bool:
+    hosted = _flag("CEZ_REMOTE", "0") or listen_host not in ("127.0.0.1", "localhost", "::1")
+    if hosted:
+        return False
+    return os.environ.get("CEZ_DESIGN_MODE", "1") == "1"
 
 
 def _port(raw: str) -> int:

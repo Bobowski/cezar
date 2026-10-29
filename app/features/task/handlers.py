@@ -16,11 +16,14 @@ from app.engine.gitwork import Diff, diff_against
 from app.features.task.urls import (
     TASK,
     TASK_CANCEL,
+    TASK_COMMIT,
     TASK_DELETE,
     TASK_DISPATCH,
     TASK_FINISH,
     TASK_LIVE,
     TASK_MESSAGE,
+    TASK_PR,
+    TASK_PUSH,
     TaskView,
 )
 from app.features.task.views import render, render_missing
@@ -43,6 +46,9 @@ class TaskPage:
         app.add(TASK_DELETE, self.delete)
         app.add(TASK_MESSAGE, self.message)
         app.add(TASK_DISPATCH, self.dispatch)
+        app.add(TASK_COMMIT, self.commit)
+        app.add(TASK_PUSH, self.push)
+        app.add(TASK_PR, self.draft_pr)
 
     async def show(self, c: Context, w: Writer) -> None:
         run_id = c.match.params["run_id"]
@@ -127,6 +133,36 @@ class TaskPage:
             self._tell(w, tab, reason or "refused", 409)
             return
         SSE(w).patch_signals({"objective": "", "_error": ""})
+
+    async def commit(self, c: Context, w: Writer) -> None:
+        run_id, tab, _signals = await self._input(c, w)
+        if run_id is None or tab is None:
+            return
+        _result, reason = await self.engine.git_commit(run_id, "cezar")
+        if reason:
+            self._tell(w, tab, reason, 409)
+            return
+        w.empty()
+
+    async def push(self, c: Context, w: Writer) -> None:
+        run_id, tab, _signals = await self._input(c, w)
+        if run_id is None or tab is None:
+            return
+        _result, reason = await self.engine.git_push(run_id)
+        if reason:
+            self._tell(w, tab, reason, 409)
+            return
+        w.empty()
+
+    async def draft_pr(self, c: Context, w: Writer) -> None:
+        run_id, tab, _signals = await self._input(c, w)
+        if run_id is None or tab is None:
+            return
+        _result, reason = await self.engine.open_draft_pr(run_id)
+        if reason:
+            self._tell(w, tab, reason, 409)
+            return
+        w.empty()
 
     async def _command(self, c: Context, w: Writer, fn) -> None:
         run_id, tab, _signals = await self._input(c, w)

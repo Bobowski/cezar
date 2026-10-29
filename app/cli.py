@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -17,12 +18,14 @@ from stario.http.config import ServerConfig
 
 from app.config import RUNNERS, Config, apply_overrides
 from app.engine.engine import Engine
+from app.engine.import_runs import load_runs_file
 from app.engine.scaffold import init_project
 from app.main import bootstrap
 from app.store.db import (
     find_project_by_root,
     get_run,
     get_settings,
+    insert_run,
     list_events,
     list_projects,
     schema,
@@ -53,6 +56,9 @@ def main(argv: list[str] | None = None) -> int:
     projects.add_argument("action", nargs="?", default="list")
     projects.add_argument("value", nargs="?")
 
+    importer = sub.add_parser("import-runs", parents=[common])
+    importer.add_argument("path")
+
     args = parser.parse_args(argv)
     if args.repo:
         apply_overrides(repo=args.repo)
@@ -79,6 +85,8 @@ def main(argv: list[str] | None = None) -> int:
                     model=args.model,
                 )
             )
+        if command == "import-runs":
+            return asyncio.run(import_runs_command(Path(args.path)))
         return asyncio.run(projects_command(args.action, args.value))
     except ClaimBusy:
         print("the database is in use by a running cockpit", file=sys.stderr)
@@ -119,6 +127,32 @@ async def run_task(task: str, *, workflow: str, runner: str, model: str) -> int:
         if status in ("review", "done"):
             return 0
         return 1
+
+
+async def import_runs_command(path: Path) -> int:
+    config = Config.from_env()
+    async with LiteWriter(config.db_path, schema=schema, claim=30) as db:
+        relay: Relay[dict[str, str]] = Relay()
+        engine = Engine(db, relay, config)
+        await engine.startup()
+        project = find_project_by_root(db, str(config.repo_root))
+        if project is None:
+            print("this directory is not a project", file=sys.stderr)
+            return 1
+        try:
+            runs, skipped = load_runs_file(path, project.id)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        stored = 0
+        for run in runs:
+            if get_run(db, run.id) is not None:
+                skipped += 1
+                continue
+            await db.write(insert_run, run)
+            stored += 1
+        print(f"imported {stored}, skipped {skipped}")
+        return 0
 
 
 async def projects_command(action: str, value: str | None) -> int:

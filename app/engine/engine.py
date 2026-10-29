@@ -22,6 +22,8 @@ from app.clock import after, now, parse_stamp, stamp
 from app.config import RUNNERS, Config
 from app.engine.agents import AgentSpec, Runner, usage_from_line
 from app.engine.catalog import find_workflow, load_workflows
+from app.engine.deferred import DeferredBuffer
+from app.engine.deltas import DeltaCoalescer
 from app.engine.dispatch_logic import (
     BudgetChild,
     DispatchOrder,
@@ -30,6 +32,13 @@ from app.engine.dispatch_logic import (
     child_report_text,
     child_task_envelope,
     in_flight_refusal,
+)
+from app.engine.git_actions import (
+    commit_all,
+    create_draft_pr,
+    push_branch,
+    sync_base,
+    worktree_git_status,
 )
 from app.engine.gitignore_data import ensure_data_gitignore
 from app.engine.gitwork import (
@@ -41,11 +50,14 @@ from app.engine.gitwork import (
     prune_orphans,
     remove_worktree,
 )
-from app.engine.graph import advance, compare_values, enter_graph, render_refs
+from app.engine.graph import advance, compare_values, enter_graph, fork_shape, render_refs
 from app.engine.model import TERMINAL, Automation, Project, Run, Settings, Step, Workflow
 from app.engine.prompts import build_user_prompt
+from app.engine.receipts import archive_finished as sweep_archive
+from app.engine.receipts import mark_all_read as sweep_read
 from app.engine.session_extras import load_project_mcp, prompt_task, v2_snapshots
 from app.engine.skills import find_skill
+from app.engine.terminal_hub import TerminalHub
 from app.engine.workflows import newer_catalog_workflow, retryable_exit
 from app.secrets.store import SecretStore, command_allowed, redact
 from app.store.db import (
@@ -64,12 +76,20 @@ from app.store.db import (
     list_projects,
     list_queued,
     list_run_ids,
+    list_runs,
     save_automation,
     save_project,
     save_run,
 )
 
 CHANGED = "cezar.changed"
+
+
+def _delta_snapshot(text: str) -> str:
+    import json
+
+    item = {"id": "message", "type": "message", "text": text}
+    return json.dumps({"type": "item.completed", "item": item}, separators=(",", ":"))
 
 
 def _ask_line(text: str) -> str:
@@ -114,6 +134,10 @@ class Engine:
     _finish: set[str] = field(default_factory=set)
     _live: dict[str, list[Callable[[dict[str, object]], None]]] = field(default_factory=dict)
     _wake: asyncio.Event = field(default_factory=asyncio.Event)
+    _runners: dict[str, Runner] = field(default_factory=dict)
+    _deferred_buf: DeferredBuffer | None = None
+    _coalescer: DeltaCoalescer = field(default_factory=DeltaCoalescer)
+    _terminals: TerminalHub = field(default_factory=TerminalHub)
 
     def subscribe_events(
         self, run_id: str, listener: Callable[[dict[str, object]], None]
@@ -141,6 +165,9 @@ class Engine:
             await self._ensure_boot_project()
             if is_git_repo(repo):
                 await asyncio.to_thread(prune_orphans, repo, list_run_ids(self.db))
+        for run_id, message in self._buffer().lost_on_startup():
+            if get_run(self.db, run_id) is not None:
+                await self._note(run_id, "lifecycle", message)
         await self.db.write(rebaseline_automations)
 
     async def serve(self) -> None:
@@ -153,8 +180,6 @@ class Engine:
                 pass
 
     async def tick(self) -> None:
-        if self.app is None:
-            return
         await self._launch_due()
         settings = get_settings(self.db)
         alive = [run_id for run_id, task in self._tasks.items() if not task.done()]
@@ -164,10 +189,14 @@ class Engine:
                 return
             if run.id in alive or run.id in self._tasks:
                 continue
-            self._tasks[run.id] = self.app.create_task(
-                self.execute(run.id), name=f"run-{run.id[:8]}"
-            )
+            self._tasks[run.id] = self._spawn(run.id)
             slots -= 1
+
+    def _spawn(self, run_id: str) -> asyncio.Task[None]:
+        name = f"run-{run_id[:8]}"
+        if self.app is not None:
+            return self.app.create_task(self.execute(run_id), name=name)
+        return asyncio.create_task(self.execute(run_id), name=name)
 
     async def execute(self, run_id: str) -> None:
         cancel = self._cancel.setdefault(run_id, asyncio.Event())
@@ -243,6 +272,12 @@ class Engine:
             current.step_index += 1
             current.pending_note = ""
             current.check_failure = ""
+            upcoming = current.definition().steps
+            nxt = upcoming[current.step_index] if current.step_index < len(upcoming) else None
+            if nxt is not None and nxt.kind == "agent":
+                held = self._buffer().take(current.id)
+                if held:
+                    current.pending_note = "\n\n".join(held)
             await self._save(current)
 
     async def _followup(self, run: Run, cancel: asyncio.Event) -> None:
@@ -373,13 +408,226 @@ class Engine:
             elif kind == "if":
                 port = _if_port(run, node, outputs)
             else:
-                await self._fail(
-                    run,
-                    f'graph node "{node_id}" ({kind}) is not executed by the Python port',
-                )
-                return
+                outcome = await self._graph_system(run, cancel, body, node, outputs)
+                if outcome is None:
+                    return
+                port, node_id = outcome
             cursor = advance(body, node_id, port, loops)
         await self._fail(run, "graph walk did not end")
+
+    async def _graph_system(
+        self,
+        run: Run,
+        cancel: asyncio.Event,
+        graph: dict[str, Any],
+        node: dict[str, Any],
+        outputs: dict[str, dict[str, str]],
+    ) -> tuple[str, str] | None:
+        node_id = str(node.get("id", ""))
+        kind = str(node.get("type", ""))
+        if kind == "join":
+            await self._fail(run, "a join can only be reached from a fork")
+            return None
+        if kind == "fork":
+            return await self._run_fork(run, cancel, graph, node, outputs)
+        if kind == "dispatch":
+            return await self._run_dispatch(run, cancel, node, outputs)
+        if kind == "git.commit":
+            return await self._run_git_commit(run, node, outputs)
+        if kind == "git.push":
+            return await self._run_git_push(run, node_id)
+        if kind == "git.sync-base":
+            return await self._run_git_sync(run, node_id)
+        if kind == "github.draft-pr":
+            return await self._run_draft_pr(run, node, outputs)
+        if kind in ("github.pr-comment", "github.issue-comment", "github.pr-update"):
+            return await self._run_github_note(run, node)
+        await self._fail(run, f'graph node "{node_id}" ({kind}) is not executed by the Python port')
+        return None
+
+    async def _run_fork(
+        self,
+        run: Run,
+        cancel: asyncio.Event,
+        graph: dict[str, Any],
+        node: dict[str, Any],
+        outputs: dict[str, dict[str, str]],
+    ) -> tuple[str, str] | None:
+        node_id = str(node.get("id", ""))
+        shape = fork_shape(graph, node_id)
+        if isinstance(shape, str):
+            await self._fail(run, shape)
+            return None
+        child_ids: list[str] = []
+        for branch in shape.branches:
+            prompt = render_refs(str(branch.agent.get("prompt") or "{{task}}"), outputs)
+            title = str(branch.agent.get("name") or branch.agent.get("id") or "branch")
+            child_id, reason = await self.dispatch(
+                run.id,
+                DispatchOrder(objective=prompt[:4_000], title=title),
+            )
+            if reason or not child_id:
+                await self._note(run.id, "note", f'branch "{title}" refused — {reason}', node_id)
+                continue
+            child_ids.append(child_id)
+            outputs[str(branch.agent.get("id", ""))] = {"runId": child_id, "status": "running"}
+        outputs[node_id] = {"runIds": ",".join(child_ids)}
+        if not child_ids:
+            return "failed", shape.join
+        settled = await self._await_children(child_ids, shape.wait, cancel)
+        if settled is None:
+            await self._mark_cancelled(get_run(self.db, run.id) or run)
+            return None
+        succeeded = [item for item in settled.values() if item in ("done", "review")]
+        if shape.wait == "any":
+            port = "done" if succeeded else "failed"
+        else:
+            port = "done" if len(succeeded) == len(child_ids) else "failed"
+        await self._note(
+            run.id,
+            "note",
+            f"fork {node_id}: {len(succeeded)} succeeded, {len(settled) - len(succeeded)} failed",
+            node_id,
+        )
+        return port, shape.join
+
+    async def _run_dispatch(
+        self,
+        run: Run,
+        cancel: asyncio.Event,
+        node: dict[str, Any],
+        outputs: dict[str, dict[str, str]],
+    ) -> tuple[str, str] | None:
+        node_id = str(node.get("id", ""))
+        prompt = render_refs(str(node.get("prompt") or "{{task}}"), outputs)
+        child_id, reason = await self.dispatch(
+            run.id,
+            DispatchOrder(
+                objective=prompt[:4_000],
+                title=str(node.get("name") or node_id),
+            ),
+        )
+        if reason or not child_id:
+            await self._note(run.id, "note", f"dispatch refused — {reason}", node_id)
+            return "failed", node_id
+        outputs[node_id] = {"runId": child_id, "status": "running", "summary": ""}
+        settled = await self._await_children([child_id], "all", cancel)
+        if settled is None:
+            await self._mark_cancelled(get_run(self.db, run.id) or run)
+            return None
+        status = settled.get(child_id, "failed")
+        outputs[node_id] = {"runId": child_id, "status": status, "summary": ""}
+        return ("done" if status in ("done", "review") else "failed"), node_id
+
+    async def _await_children(
+        self, child_ids: list[str], mode: str, cancel: asyncio.Event
+    ) -> dict[str, str] | None:
+        pending = list(child_ids)
+        settled: dict[str, str] = {}
+        while pending:
+            if cancel.is_set():
+                return None
+            await self.tick()
+            still: list[str] = []
+            for child_id in pending:
+                child = get_run(self.db, child_id)
+                if child is None:
+                    settled[child_id] = "failed"
+                    continue
+                if child.status in ("done", "review", "failed", "cancelled"):
+                    settled[child_id] = child.status
+                    continue
+                still.append(child_id)
+            pending = still
+            if mode == "any" and any(status in ("done", "review") for status in settled.values()):
+                for child_id in pending:
+                    await self.cancel(child_id)
+                break
+            if pending:
+                await asyncio.sleep(0.05)
+        return settled
+
+    async def _run_git_commit(
+        self, run: Run, node: dict[str, Any], outputs: dict[str, dict[str, str]]
+    ) -> tuple[str, str]:
+        node_id = str(node.get("id", ""))
+        cwd = Path(run.worktree_path or ".")
+        message = render_refs(str(node.get("message") or "cezar graph commit"), outputs)
+        result = await asyncio.to_thread(commit_all, cwd, message)
+        if result.get("ok") != "true":
+            await self._note(run.id, "note", str(result.get("error", "commit failed")), node_id)
+            return "failed", node_id
+        if result.get("result") == "nothing":
+            await self._note(run.id, "note", "nothing to commit", node_id)
+            return "nothing", node_id
+        sha = str(result.get("sha", ""))
+        outputs[node_id] = {"sha": sha}
+        await self._note(run.id, "note", f"committed {sha[:8]}", node_id)
+        return "done", node_id
+
+    async def _run_git_push(self, run: Run, node_id: str) -> tuple[str, str]:
+        if not run.branch or run.in_place:
+            await self._note(run.id, "note", "this task has no branch of its own to push", node_id)
+            return "failed", node_id
+        result = await asyncio.to_thread(
+            push_branch, Path(run.worktree_path or "."), run.branch, dry_run=self.config.dry_run
+        )
+        if not result.get("ok"):
+            await self._note(run.id, "note", str(result.get("error", "push failed")), node_id)
+            return "failed", node_id
+        await self._note(run.id, "note", f"pushed {run.branch}", node_id)
+        return "done", node_id
+
+    async def _run_git_sync(self, run: Run, node_id: str) -> tuple[str, str]:
+        result = await asyncio.to_thread(sync_base, Path(run.worktree_path or "."), run.base_branch)
+        if result.get("ok") != "true":
+            await self._note(run.id, "note", str(result.get("error", "sync failed")), node_id)
+            return "failed", node_id
+        port = str(result.get("port", "failed"))
+        await self._note(run.id, "note", f"sync with {run.base_branch}: {port}", node_id)
+        return port, node_id
+
+    async def _run_draft_pr(
+        self, run: Run, node: dict[str, Any], outputs: dict[str, dict[str, str]]
+    ) -> tuple[str, str]:
+        node_id = str(node.get("id", ""))
+        if run.pull_request_url:
+            outputs[node_id] = {"url": run.pull_request_url}
+            await self._note(
+                run.id, "note", f"draft PR already open: {run.pull_request_url}", node_id
+            )
+            return "created", node_id
+        title = render_refs(str(node.get("title") or run.title), outputs)
+        result = await asyncio.to_thread(
+            create_draft_pr,
+            Path(run.worktree_path or "."),
+            run.branch,
+            title,
+            dry_run=self.config.dry_run,
+        )
+        if not result.get("ok"):
+            await self._note(run.id, "note", str(result.get("error", "draft PR failed")), node_id)
+            return "failed", node_id
+        url = str(result.get("url", ""))
+        run.pull_request_url = url
+        await self._save(run)
+        outputs[node_id] = {"url": url}
+        note = f"draft PR opened: {url}"
+        if result.get("dryRun"):
+            note += " (dry run — no real PR)"
+        await self._note(run.id, "note", note, node_id)
+        return "created", node_id
+
+    async def _run_github_note(self, run: Run, node: dict[str, Any]) -> tuple[str, str]:
+        node_id = str(node.get("id", ""))
+        kind = str(node.get("type", ""))
+        if self.config.dry_run:
+            await self._note(run.id, "note", f"{kind} skipped in dry run", node_id)
+            return "done", node_id
+        await self._note(
+            run.id, "note", f"{kind} is not executed against GitHub by this port", node_id
+        )
+        return "failed", node_id
 
     async def _agent_step(
         self,
@@ -451,37 +699,54 @@ class Engine:
         )
         texts: list[str] = []
         gained = 0
-        async for event in self._agent_for(spec.runner).stream(spec):
-            gained += event.input_tokens + event.output_tokens
-            if event.type == "text" and event.text:
-                parsed = usage_from_line(event.text)
-                if parsed is not None:
-                    gained += parsed[0] + parsed[1]
-                texts.append(event.text)
-            if event.type == "session" and event.text:
-                current_run = get_run(self.db, run.id) or run
-                current_run.codex_thread = event.text
-                await self._save(current_run)
-                continue
-            if event.type == "text" and event.text:
-                await self._emit_live(
+        saw_text = False
+        try:
+            async for event in self._agent_for(spec.runner).stream(spec):
+                gained += event.input_tokens + event.output_tokens
+                if event.type == "delta" and event.text:
+                    self._coalescer.push(run.id, "message", "text", event.text, self._live_delta)
+                    continue
+                if event.type == "plan" and event.text:
+                    await self._note(run.id, "plan.updated", event.text, step.id)
+                    continue
+                if event.type == "text" and event.text:
+                    saw_text = True
+                    parsed = usage_from_line(event.text)
+                    if parsed is not None:
+                        gained += parsed[0] + parsed[1]
+                    texts.append(event.text)
+                if event.type == "session" and event.text:
+                    current_run = get_run(self.db, run.id) or run
+                    current_run.codex_thread = event.text
+                    await self._save(current_run)
+                    continue
+                if event.type == "text" and event.text:
+                    await self._emit_live(run.id, "item.delta", event.text, step.id)
+                await self._note(run.id, event.type, event.text or event.name, step.id)
+                for v2_type, v2_text in v2_snapshots(event.type, event.text, event.name, step.id):
+                    await self._note(run.id, v2_type, v2_text, step.id)
+                if event.type == "error":
+                    if cancel.is_set() or event.text == "cancelled":
+                        if run.id in self._finish:
+                            await self._mark_done(get_run(self.db, run.id) or run)
+                        else:
+                            await self._mark_cancelled(get_run(self.db, run.id) or run)
+                        return "stop"
+                    await self._fail(get_run(self.db, run.id) or run, event.text or "agent failed")
+                    return "stop"
+        finally:
+            self._coalescer.flush()
+        if not saw_text:
+            full = self._coalescer.take_full(run.id, "message")
+            if full:
+                await self._note(
                     run.id,
-                    "item.delta",
-                    event.text,
+                    "item.completed",
+                    _delta_snapshot(full),
                     step.id,
                 )
-            await self._note(run.id, event.type, event.text or event.name, step.id)
-            for v2_type, v2_text in v2_snapshots(event.type, event.text, event.name, step.id):
-                await self._note(run.id, v2_type, v2_text, step.id)
-            if event.type == "error":
-                if cancel.is_set() or event.text == "cancelled":
-                    if run.id in self._finish:
-                        await self._mark_done(get_run(self.db, run.id) or run)
-                    else:
-                        await self._mark_cancelled(get_run(self.db, run.id) or run)
-                    return "stop"
-                await self._fail(get_run(self.db, run.id) or run, event.text or "agent failed")
-                return "stop"
+        else:
+            self._coalescer.take_full(run.id, "message")
         current = get_run(self.db, run.id) or run
         current.tokens_used += gained
         if reports:
@@ -490,6 +755,7 @@ class Engine:
         if "CEZ:ASK" in joined and not followup and run.id not in self._finish:
             current.status = "waiting"
             current.ask = _ask_line(joined)
+            current.awaiting_answer_since = stamp()
             await self._save(current)
             await self._note(current.id, "lifecycle", "waiting")
             return "stop"
@@ -582,6 +848,11 @@ class Engine:
         current = get_run(self.db, run.id) or run
         if current.status in ("cancelled", "failed"):
             return
+        stopped = "the task was finished" if run.id in self._finish else ""
+        if not stopped and await self._release_deferred(current, stopped=""):
+            return
+        if stopped:
+            await self._release_deferred(current, stopped=stopped)
         current.status = "review"
         current.finished_at = stamp()
         current.ask = ""
@@ -599,6 +870,7 @@ class Engine:
         await self._note(current.id, "lifecycle", "review")
 
     async def _fail(self, run: Run, message: str) -> Run:
+        await self._release_deferred(run, stopped="the run failed")
         run.status = "failed"
         run.error = message
         run.finished_at = stamp()
@@ -611,6 +883,7 @@ class Engine:
         if run.status == "cancelled":
             return
         self._finish.discard(run.id)
+        await self._release_deferred(run, stopped="the run was cancelled")
         run.status = "cancelled"
         run.finished_at = stamp()
         await self._save(run)
@@ -620,6 +893,7 @@ class Engine:
         self._finish.discard(run.id)
         if run.status == "done":
             return
+        await self._release_deferred(run, stopped="the task was finished")
         run.status = "done"
         run.ask = ""
         run.finished_at = stamp()
@@ -714,13 +988,27 @@ class Engine:
 
     async def _emit_live(self, run_id: str, type: str, text: str, step_id: str) -> None:
         """`item.delta` is live-only. It is not written to the event log."""
+        self._live_delta(run_id, "message", "text", text, step_id=step_id, type_name=type)
+
+    def _live_delta(
+        self,
+        run_id: str,
+        item_id: str,
+        field_name: str,
+        text: str,
+        *,
+        step_id: str = "",
+        type_name: str = "item.delta",
+    ) -> None:
         self._fanout(
             {
                 "runId": run_id,
                 "seq": 0,
-                "type": type,
+                "type": type_name,
                 "text": text,
                 "stepId": step_id,
+                "itemId": item_id,
+                "field": field_name,
                 "at": stamp(),
                 "live": True,
             }
@@ -738,14 +1026,149 @@ class Engine:
             from app.engine.agents import DryRunAgent
 
             return DryRunAgent()
+        cached = self._runners.get(runner)
+        if cached is not None:
+            return cached
         from app.engine.runners.protocol import ProtocolRunner
 
-        return ProtocolRunner(
+        created = ProtocolRunner(
             runner,
             self.config.runner_bins.get(runner, runner),
             approval_gate=self.config.approval_gate,
             codex_network_off=self.config.codex_network_off,
         )
+        self._runners[runner] = created
+        return created
+
+    def _buffer(self) -> DeferredBuffer:
+        if self._deferred_buf is None:
+            self._deferred_buf = DeferredBuffer(self.config.data_dir / "runs")
+        return self._deferred_buf
+
+    def defer_message(self, run_id: str, text: str) -> bool:
+        run = get_run(self.db, run_id)
+        if run is None or run.status != "running" or not text.strip():
+            return False
+        self._buffer().add(run_id, text.strip())
+        return True
+
+    async def _release_deferred(self, run: Run, *, stopped: str) -> bool:
+        pending = self._buffer().take(run.id)
+        if not pending:
+            return False
+        count = len(pending)
+        word = "a message" if count == 1 else f"{count} messages"
+        if stopped:
+            await self._note(
+                run.id,
+                "lifecycle",
+                f"{word} sent while the session was closing could not be delivered — {stopped}",
+            )
+            return False
+        run.mode = "followup"
+        run.continuation = "\n\n".join(pending)
+        run.status = "queued"
+        run.finished_at = ""
+        run.ask = ""
+        await self._save(run)
+        await self._note(
+            run.id,
+            "lifecycle",
+            "delivered a message sent while the session was closing",
+        )
+        return True
+
+    async def archive_finished(self, project_id: str) -> int:
+        changed = sweep_archive(list_runs(self.db, project_id, None, limit=10_000), stamp())
+        for run in changed:
+            await self._save(run)
+        return len(changed)
+
+    async def mark_all_read(self, project_id: str) -> int:
+        changed = sweep_read(list_runs(self.db, project_id, None, limit=10_000), stamp())
+        for run in changed:
+            await self._save(run)
+        return len(changed)
+
+    async def set_read(self, run_id: str, read: bool) -> str | None:
+        run = get_run(self.db, run_id)
+        if run is None:
+            return "not found"
+        run.seen_at = stamp() if read else ""
+        await self._save(run)
+        return None
+
+    async def git_commit(
+        self, run_id: str, message: str
+    ) -> tuple[dict[str, str] | None, str | None]:
+        run = get_run(self.db, run_id)
+        if run is None:
+            return None, "not found"
+        if not run.worktree_path:
+            return None, "no worktree"
+        result = await asyncio.to_thread(commit_all, Path(run.worktree_path), message)
+        if result.get("ok") != "true":
+            return None, str(result.get("error", "commit failed"))
+        await self._note(
+            run.id,
+            "note",
+            f"commit: {result.get('result', '')} {result.get('sha', '')}",
+        )
+        return result, None
+
+    async def git_push(self, run_id: str) -> tuple[dict[str, object] | None, str | None]:
+        run = get_run(self.db, run_id)
+        if run is None:
+            return None, "not found"
+        if not run.worktree_path or not run.branch:
+            return None, "no worktree"
+        result = await asyncio.to_thread(
+            push_branch, Path(run.worktree_path), run.branch, dry_run=self.config.dry_run
+        )
+        if not result.get("ok"):
+            return None, str(result.get("error", "push failed"))
+        await self._note(run.id, "note", f"pushed {run.branch}")
+        return cast(dict[str, object], result), None
+
+    async def git_status(self, run_id: str) -> tuple[dict[str, object] | None, str | None]:
+        run = get_run(self.db, run_id)
+        if run is None:
+            return None, "not found"
+        if not run.worktree_path:
+            return None, "no worktree"
+        result = await asyncio.to_thread(
+            worktree_git_status, Path(run.worktree_path), run.base_branch or "HEAD"
+        )
+        if not result.get("ok"):
+            return None, str(result.get("error", "git status failed"))
+        return result, None
+
+    async def open_draft_pr(self, run_id: str) -> tuple[dict[str, object] | None, str | None]:
+        run = get_run(self.db, run_id)
+        if run is None:
+            return None, "not found"
+        if run.status in ("queued", "running", "waiting"):
+            return None, "run is still active — wait for the review gate"
+        if not run.worktree_path or not run.branch or run.in_place:
+            return None, "no worktree/branch to publish"
+        result = await asyncio.to_thread(
+            create_draft_pr,
+            Path(run.worktree_path),
+            run.branch,
+            run.title,
+            dry_run=self.config.dry_run,
+        )
+        if not result.get("ok"):
+            return None, str(result.get("error", "draft PR failed"))
+        url = str(result.get("url", ""))
+        run.pull_request_url = url
+        run.status = "done"
+        if not run.finished_at:
+            run.finished_at = stamp()
+        await self._save(run)
+        suffix = " (dry run — no real PR)" if result.get("dryRun") else ""
+        await self._note(run.id, "note", f"draft PR created: {url}{suffix}")
+        return {"url": url, "dryRun": bool(result.get("dryRun"))}, None
 
     def plan_run(
         self,
@@ -858,6 +1281,7 @@ class Engine:
         if run.status == "waiting":
             run.pending_note = f"The user answered:\n{text}"
             run.ask = ""
+            run.awaiting_answer_since = ""
             run.status = "queued"
             await self._save(run)
             self.kick()

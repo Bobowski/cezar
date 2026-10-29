@@ -10,6 +10,9 @@ TASK_FINISH = Route("POST /tasks/{run_id}/finish")
 TASK_DELETE = Route("POST /tasks/{run_id}/delete")
 TASK_MESSAGE = Route("POST /tasks/{run_id}/message")
 TASK_DISPATCH = Route("POST /tasks/{run_id}/dispatch")
+TASK_COMMIT = Route("POST /tasks/{run_id}/commit")
+TASK_PUSH = Route("POST /tasks/{run_id}/push")
+TASK_PR = Route("POST /tasks/{run_id}/pr")
 
 PANES = ("session", "diff")
 

@@ -213,9 +213,7 @@ class SecretStore:
             values[alias or name] = plain
         return values, notes
 
-    def _read(
-        self, scope: str, root: str
-    ) -> tuple[dict[str, dict[str, object]] | None, str]:
+    def _read(self, scope: str, root: str) -> tuple[dict[str, dict[str, object]] | None, str]:
         file_id = _file_id(scope)
         if file_id is None:
             return None, ""
@@ -321,7 +319,7 @@ def _decrypt_entry(key: bytes, file_id: str, name: str, entry: dict[str, object]
         nonce = b64decode(str(entry["iv"]))
         data = b64decode(str(entry["data"]))
         tag = b64decode(str(entry["tag"]))
-    except (KeyError, ValueError):
+    except KeyError, ValueError:
         return None
     try:
         plain = AESGCM(key).decrypt(nonce, data + tag, f"cezar-secret\0{file_id}\0{name}".encode())

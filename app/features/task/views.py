@@ -8,11 +8,14 @@ from app.engine.model import Event, Run
 from app.features.task.urls import (
     TASK,
     TASK_CANCEL,
+    TASK_COMMIT,
     TASK_DELETE,
     TASK_DISPATCH,
     TASK_FINISH,
     TASK_LIVE,
     TASK_MESSAGE,
+    TASK_PR,
+    TASK_PUSH,
     TaskView,
 )
 from app.features.tasks.urls import TASKS
@@ -60,6 +63,30 @@ def render(
                 "Finish",
             )
         )
+        actions.append(
+            h.Button(
+                {"type": "button", "class": "btn"},
+                data.on("click", at.post(TASK_COMMIT.href(run.id))),
+                data.indicator("_saving"),
+                "Commit",
+            )
+        )
+        actions.append(
+            h.Button(
+                {"type": "button", "class": "btn"},
+                data.on("click", at.post(TASK_PUSH.href(run.id))),
+                data.indicator("_saving"),
+                "Push",
+            )
+        )
+        actions.append(
+            h.Button(
+                {"type": "button", "class": "btn"},
+                data.on("click", at.post(TASK_PR.href(run.id))),
+                data.indicator("_saving"),
+                "Draft PR",
+            )
+        )
     if run.status in ("review", "done", "failed", "cancelled"):
         actions.append(
             h.Button(
@@ -88,6 +115,7 @@ def render(
                     " · ",
                     run.runner,
                     f" · {run.branch}" if run.branch else "",
+                    f" · {run.pull_request_url}" if run.pull_request_url else "",
                 ),
             ),
             h.Div({"class": "actions"}, *actions) if actions else None,

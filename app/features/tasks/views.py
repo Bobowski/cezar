@@ -6,7 +6,15 @@ from app.common.shell import Chrome, frame, project_name, status_chip
 from app.config import RUNNERS
 from app.engine.model import Run, Workflow
 from app.features.task.urls import TASK
-from app.features.tasks.urls import TASKS, TASKS_CREATE, TASKS_LIVE, TASKS_NEW, TasksView
+from app.features.tasks.urls import (
+    TASKS,
+    TASKS_ARCHIVE,
+    TASKS_CREATE,
+    TASKS_LIVE,
+    TASKS_NEW,
+    TASKS_READ,
+    TasksView,
+)
 
 
 def render_list(runs: list[Run], view: TasksView, chrome: Chrome, tab: str) -> HtmlElement:
@@ -43,6 +51,16 @@ def render_list(runs: list[Run], view: TasksView, chrome: Chrome, tab: str) -> H
                 h.A(
                     {"class": "btn btn-primary", "href": TASKS_NEW.href(query=view.query())},
                     "New task",
+                ),
+                h.Button(
+                    {"type": "button", "class": "btn"},
+                    data.on("click", at.post(TASKS_ARCHIVE.href(query=view.query()))),
+                    "Archive finished",
+                ),
+                h.Button(
+                    {"type": "button", "class": "btn"},
+                    data.on("click", at.post(TASKS_READ.href(query=view.query()))),
+                    "Mark read",
                 ),
             ),
             h.Nav({"class": "filters"}, *filters),

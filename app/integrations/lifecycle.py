@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 from app.clock import stamp
@@ -76,7 +77,7 @@ def notify_task(
                     continue
                 coordinator.deliver(
                     lambda body, url=url, secret=secret: _send(url, body, secret),
-                    stamp(),
+                    int(time.time() * 1000),
                 )
         finally:
             coordinator.close()

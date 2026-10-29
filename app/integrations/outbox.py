@@ -1,11 +1,11 @@
 """Webhook outbox, single-owner lock, and delivery retries.
 
 The outbox is an NDJSON file. Sequence numbers must increase by one. The owner
-file is created exclusively; a live other token keeps it, and a caller that
-reports the holder dead can replace it. That is not the TypeScript hard-link
-successor chain. Dry-run marks a delivery delivered and does not call the
-sender. A failure waits `5s * 2^(attempt-1)` (capped at one hour, no jitter)
-and becomes failed after five attempts.
+lock is a hard link of the candidate record. A dead holder is replaced only
+through an exclusive successor slot. Dry-run marks a delivery delivered and
+does not call the sender. A failure waits `5s * 2^(attempt-1)`, capped at one
+hour, plus up to 20% jitter, and becomes failed when that deadline passes the
+72-hour expiry.
 """
 
 from __future__ import annotations
@@ -16,12 +16,16 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-_MAX_ATTEMPTS = 5
+_HOUR_MS = 3_600_000
+_EXPIRY_MS = 72 * _HOUR_MS
+_REPLAY_MS = 7 * 24 * _HOUR_MS
 
 
-def retry_delay_seconds(attempts: int) -> int:
-    """TypeScript `retryAt` base: 5s * 2^(attempt-1), capped at one hour. No jitter."""
-    return min(3600, 5 * 2 ** min(max(0, attempts - 1), 20))
+def retry_at_ms(attempt: int, now_ms: int, *, jitter: float = 0.0) -> int:
+    """TypeScript `retryAt` without a Retry-After header. `jitter` is 0..1."""
+    base = min(_HOUR_MS, 5_000 * 2 ** min(max(0, attempt - 1), 20))
+    span = max(0.0, min(1.0, jitter))
+    return now_ms + min(_HOUR_MS, int(base * (1 + span * 0.2)))
 
 
 class OutboxError(Exception):
@@ -35,6 +39,10 @@ class Delivery:
     attempts: int = 0
     status: str = "pending"
     next_attempt_at: str = ""
+    expires_at: int = 0
+    completed_at: int = 0
+    event_type: str = ""
+    reason: str = ""
 
 
 class Outbox:
@@ -82,14 +90,18 @@ class Outbox:
                     attempts=int(loaded.get("attempts", 0)),
                     status=str(loaded.get("status", "pending")),
                     next_attempt_at=str(loaded.get("nextAttemptAt", "")),
+                    expires_at=_int(loaded.get("expiresAt")),
+                    completed_at=_int(loaded.get("completedAt")),
+                    event_type=str(loaded.get("eventType", "")),
+                    reason=str(loaded.get("reason", "")),
                 )
             )
         self._rows = rows
         self._offset = self._read_cursor()
 
-    def append(self, body: str) -> Delivery:
+    def append(self, body: str, *, event_type: str = "", expires_at: int = 0) -> Delivery:
         sequence = self.high_water + 1
-        row = Delivery(sequence=sequence, body=body)
+        row = Delivery(sequence=sequence, body=body, event_type=event_type, expires_at=expires_at)
         self._rows.append(row)
         self.high_water = sequence
         self._rewrite()
@@ -103,15 +115,35 @@ class Outbox:
                 return row
         return None
 
-    def mark(self, sequence: int, *, status: str, attempts: int, next_attempt_at: str = "") -> None:
+    def find(self, sequence: int) -> Delivery | None:
         for row in self._rows:
             if row.sequence == sequence:
-                row.status = status
-                row.attempts = attempts
-                row.next_attempt_at = next_attempt_at
-                self._rewrite()
-                return
-        raise OutboxError("Invalid webhook outbox cursor")
+                return row
+        return None
+
+    def mark(
+        self,
+        sequence: int,
+        *,
+        status: str,
+        attempts: int,
+        next_attempt_at: str = "",
+        expires_at: int = 0,
+        completed_at: int = 0,
+        reason: str = "",
+    ) -> None:
+        row = self.find(sequence)
+        if row is None:
+            raise OutboxError("Invalid webhook outbox cursor")
+        row.status = status
+        row.attempts = attempts
+        row.next_attempt_at = next_attempt_at
+        if expires_at:
+            row.expires_at = expires_at
+        if completed_at:
+            row.completed_at = completed_at
+        row.reason = reason
+        self._rewrite()
 
     def advance(self) -> None:
         pending = self.peek()
@@ -145,6 +177,10 @@ class Outbox:
                         "attempts": row.attempts,
                         "status": row.status,
                         "nextAttemptAt": row.next_attempt_at,
+                        "expiresAt": row.expires_at,
+                        "completedAt": row.completed_at,
+                        "eventType": row.event_type,
+                        "reason": row.reason,
                     }
                 )
             )
@@ -168,21 +204,39 @@ class Owner:
 
     def acquire(self, *, alive: bool) -> bool:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if self.path.exists():
-            current = _read_owner(self.path)
-            if current is None:
-                raise OutboxError("Invalid webhook owner metadata")
-            if current["token"] == self.token:
-                self.held = True
-                return True
-            if alive:
-                return False
-            self.path.unlink()
-        payload = json.dumps({"token": self.token, "pid": self.pid})
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        fd = os.open(self.path, flags, 0o600)
-        os.write(fd, payload.encode())
-        os.close(fd)
+        candidate = self.path.parent / f"owner-record-{self.token}.json"
+        if not candidate.exists():
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            fd = os.open(candidate, flags, 0o600)
+            os.write(fd, json.dumps({"token": self.token, "pid": self.pid}).encode())
+            os.close(fd)
+        try:
+            os.link(candidate, self.path)
+        except FileExistsError:
+            return self._take_over(candidate, alive=alive)
+        self.held = True
+        return True
+
+    def _take_over(self, candidate: Path, *, alive: bool) -> bool:
+        current = _read_owner(self.path)
+        if current is None:
+            raise OutboxError("Invalid webhook owner metadata")
+        if current.get("token") == self.token:
+            self.held = True
+            return True
+        if alive:
+            return False
+        slot = self.path.parent / f"owner-next-{current['token']}.json"
+        try:
+            os.link(candidate, slot)
+        except FileExistsError:
+            return False
+        publication = self.path.parent / f"owner-publication-{self.token}.tmp"
+        try:
+            os.link(candidate, publication)
+        except FileExistsError:
+            pass
+        os.replace(publication, self.path)
         self.held = True
         return True
 
@@ -201,34 +255,76 @@ def deliver_once(
     *,
     dry_run: bool,
     send: Callable[[str], None],
-    now: str,
+    now_ms: int,
+    jitter: float = 0.0,
 ) -> str:
     """Try the next pending row. Returns delivered, retry, failed, or idle."""
     row = outbox.peek()
     if row is None:
         return "idle"
     if dry_run:
-        outbox.mark(row.sequence, status="delivered", attempts=row.attempts + 1)
+        outbox.mark(
+            row.sequence,
+            status="delivered",
+            attempts=row.attempts + 1,
+            completed_at=now_ms,
+        )
         outbox.advance()
         return "delivered"
     try:
         send(row.body)
     except Exception:
         attempts = row.attempts + 1
-        if attempts >= _MAX_ATTEMPTS:
-            outbox.mark(row.sequence, status="failed", attempts=attempts)
+        expires = row.expires_at or now_ms + _EXPIRY_MS
+        deadline = retry_at_ms(attempts, now_ms, jitter=jitter)
+        if deadline >= expires:
+            outbox.mark(
+                row.sequence,
+                status="failed",
+                attempts=attempts,
+                expires_at=expires,
+                completed_at=now_ms,
+                reason="expired",
+            )
             outbox.advance()
             return "failed"
         outbox.mark(
             row.sequence,
             status="pending",
             attempts=attempts,
-            next_attempt_at=f"{now}+{retry_delay_seconds(attempts)}s",
+            next_attempt_at=str(deadline),
+            expires_at=expires,
         )
         return "retry"
-    outbox.mark(row.sequence, status="delivered", attempts=row.attempts + 1)
+    outbox.mark(
+        row.sequence,
+        status="delivered",
+        attempts=row.attempts + 1,
+        completed_at=now_ms,
+    )
     outbox.advance()
     return "delivered"
+
+
+def replay(outbox: Outbox, sequence: int, *, now_ms: int) -> str | None:
+    """Copy a finished payload into a new pending row. Mirrors the 7-day rule."""
+    row = outbox.find(sequence)
+    if row is None:
+        return "Delivery not found"
+    if row.event_type == "webhook.test" or row.status not in ("delivered", "failed"):
+        return "Payload is unavailable for replay"
+    if not row.body or not row.completed_at:
+        return "Payload is unavailable for replay"
+    if now_ms - row.completed_at > _REPLAY_MS:
+        return "Payload is unavailable for replay"
+    outbox.append(row.body, event_type=row.event_type, expires_at=now_ms + _EXPIRY_MS)
+    return None
+
+
+def _int(value: object) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return 0
 
 
 def _read_owner(path: Path) -> dict[str, object] | None:

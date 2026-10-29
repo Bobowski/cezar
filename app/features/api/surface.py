@@ -86,6 +86,10 @@ class SurfaceApi:
         app.add(Route("DELETE /api/v1/webhooks/{receiver_id}"), self.delete_webhook)
         app.add(Route("POST /api/v1/webhooks/{receiver_id}/test"), self.test_webhook)
         app.add(Route("GET /api/v1/webhooks/{receiver_id}/deliveries"), self.deliveries)
+        app.add(
+            Route("POST /api/v1/webhooks/outbox/{sequence}/replay"),
+            self.replay_outbox,
+        )
         app.add(Route("POST /api/v1/hooks/github"), self.github_hook)
         app.add(Route("POST /api/v1/hooks/jira"), self.jira_hook)
         app.add(Route("POST /api/v1/hooks/linear"), self.linear_hook)
@@ -425,6 +429,33 @@ class SurfaceApi:
             return
         delivery = record_delivery(self.config.data_dir, row, dry_run=self.config.dry_run)
         w.json(cast(JsonValue, delivery))
+
+    async def replay_outbox(self, c: Context, w: Writer) -> None:
+        import time
+
+        from app.integrations.outbox import Outbox, OutboxError, replay
+
+        raw = c.match.params.get("sequence", "")
+        if not raw.isdigit():
+            w.json({"error": "Delivery not found"}, status=404)
+            return
+        directory = self.config.data_dir / "webhook-outbox"
+        install = directory / "installation"
+        if not install.is_file():
+            w.json({"error": "Delivery not found"}, status=404)
+            return
+        box = Outbox(directory, install.read_text(encoding="utf-8").strip())
+        try:
+            box.open()
+        except OSError, OutboxError:
+            w.json({"error": "Delivery not found"}, status=404)
+            return
+        reason = replay(box, int(raw), now_ms=int(time.time() * 1000))
+        if reason:
+            status = 404 if reason == "Delivery not found" else 409
+            w.json({"error": reason}, status=status)
+            return
+        w.json({"replayed": True})
 
     async def deliveries(self, c: Context, w: Writer) -> None:
         receiver_id = c.match.params.get("receiver_id", "")

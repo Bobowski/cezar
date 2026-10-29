@@ -173,7 +173,7 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | Remotes via `gh repo set-default` / fork parent | not done | — |
 | Branch naming instructions | done | Dry-run naming stays off unless `CEZ_AUTONAME=1`, then the canned mock answer `feature/implementing-cr-fixes` is the branch and the title is `implementing cr fixes`. `CEZ_AUTONAME=0` keeps `cez/<id8>`. A live run asks the Claude binary with the same prompt and keeps the default when the answer is junk. `tests/test_engine.py`. |
 | Orphan worktree directories whose run id is gone | done | `test_orphan_worktrees_go_and_known_runs_stay` |
-| Draft PRs, merge, GitHub review | partial | `POST /runs/{id}/pr` and a `github.draft-pr` node. Dry-run returns `https://github.com/open-mercato/demo/pull/777` and does not push or call `gh`. The route then marks the run `done`. `GET /github/prs/{n}/merge-state`, `POST …/merge`, and `POST …/reviews` answer a dry-run document and do not call `gh` (`tests/test_parity.py`). With dry-run off, `gh pr view`, `gh pr merge`, `gh pr review`, and `gh pr create` run against a fake `gh` (`tests/test_parity.py`). Push is `git push` to a local bare remote in that test. There is no merge-state machine (checks, blockers, head SHA) and no review UI. |
+| Draft PRs, merge, GitHub review | partial | `POST /runs/{id}/pr` and a `github.draft-pr` node. Dry-run returns `https://github.com/open-mercato/demo/pull/777` and does not push or call `gh`. The route then marks the run `done`. `GET /github/prs/{n}/merge-state`, `POST …/merge`, and `POST …/reviews` answer a dry-run document and do not call `gh` (`tests/test_parity.py`). With dry-run off, `gh pr view`, `gh pr merge`, `gh pr review`, and `gh pr create` run against a fake `gh` (`tests/test_parity.py`). Push is `git push` to a local bare remote in that test. The task page shows that box. A review comment is still the API, not a form on the page. |
 
 ### Agents
 
@@ -306,7 +306,7 @@ It is not a pixel copy of the React component.
 | `/projects` and settings `projects` | `/projects` | done | Add, including refusing `$HOME`. |
 | unknown path | — | done | `/does-not-exist` is 404. |
 | settings `tracker`, `tasks`, `skills` (global), `global-instructions`, resources | — | not done | No editor for tracker connection, landing branch, required checks, the global prompt, or the memory cap. |
-| GitHub review and merge UI | — | not done | The dry-run API exists. There is no merge box. |
+| GitHub review and merge UI | task page `#merge-box` | done | A pull request shows Ready to merge or Merge blocked, the blocker, and Squash and merge. `tests/test_surface.py`. Failing checks block `canMerge`. |
 | Light / violet tokens, phone layout | the same CSS | partial | Tokens exist. Not compared in a phone browser. |
 
 ### Background work and integrations

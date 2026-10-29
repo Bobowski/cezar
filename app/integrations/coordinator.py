@@ -1,15 +1,13 @@
 """Webhook delivery coordinator for one project directory.
 
 `CEZ_WEBHOOKS=1` is required, matching the TypeScript gate. The owner lock is
-taken before a row is sent. Dry-run marks the row delivered and does not call
-the sender. Retries use the TypeScript base delay (`5s * 2^(attempt-1)`, cap
-one hour) without the random 20% jitter, and stop after five attempts instead
-of the 72-hour expiry. There is no transport, replay API, or hard-link
-successor chain: a dead owner is replaced only when the caller says it is dead.
+a hard link. Dry-run marks the row delivered and does not call the sender.
+Retries use `retry_at_ms`. Replay is `replay()` on a finished row.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -53,15 +51,25 @@ class Coordinator:
         if not self.opened or not self.owner.valid():
             return "webhook owner is not held"
         body = render_slack(event_json, receiver_name=receiver_name)
-        self.outbox.append(body)
+        self.outbox.append(body, event_type=_event_type(event_json))
         return None
 
-    def deliver(self, send: Callable[[str], None], now: str) -> str:
+    def deliver(self, send: Callable[[str], None], now_ms: int) -> str:
         if not self.opened or not self.owner.valid():
             return "idle"
-        return deliver_once(self.outbox, dry_run=self.dry_run, send=send, now=now)
+        return deliver_once(self.outbox, dry_run=self.dry_run, send=send, now_ms=now_ms)
 
     def close(self) -> None:
         if self.owner.held:
             self.owner.release()
         self.opened = False
+
+
+def _event_type(event_json: str) -> str:
+    try:
+        loaded = json.loads(event_json)
+    except json.JSONDecodeError:
+        return ""
+    if isinstance(loaded, dict) and isinstance(loaded.get("type"), str):
+        return loaded["type"]
+    return ""

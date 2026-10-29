@@ -81,19 +81,42 @@ def test_the_outbox_rejects_a_foreign_installation_and_retries_then_fails(tmp_pa
 
     fresh = Outbox(tmp_path, "install-a")
     fresh.open()
-    assert deliver_once(fresh, dry_run=True, send=fail, now="t") == "delivered"
+    assert deliver_once(fresh, dry_run=True, send=fail, now_ms=1_000) == "delivered"
     assert calls == []
     again = Outbox(tmp_path / "retry", "install-a")
     again.open()
     again.append("payload")
-    first = deliver_once(again, dry_run=False, send=fail, now="t")
+    first = deliver_once(again, dry_run=False, send=fail, now_ms=1_000_000, jitter=1)
     waiting = again.peek()
     assert first == "retry"
-    assert waiting is not None and waiting.next_attempt_at == "t+5s"
-    seen = [first, *[deliver_once(again, dry_run=False, send=fail, now="t") for _ in range(4)]]
-    assert seen[:4] == ["retry", "retry", "retry", "retry"]
-    assert seen[4] == "failed"
-    assert again.peek() is None
+    assert waiting is not None and waiting.next_attempt_at == str(1_000_000 + 6_000)
+    expired = Outbox(tmp_path / "expire", "install-a")
+    expired.open()
+    expired.append("payload", expires_at=1_000_000 + 1_000)
+    assert deliver_once(expired, dry_run=False, send=fail, now_ms=1_000_000) == "failed"
+    assert expired.peek() is None
+
+
+def test_a_dead_owner_is_replaced_through_its_successor_slot(tmp_path: Path):
+    from app.integrations.outbox import replay
+
+    first = Owner(tmp_path, "token-a", pid=10)
+    assert first.acquire(alive=True) is True
+    second = Owner(tmp_path, "token-b", pid=11)
+    assert second.acquire(alive=False) is True
+    assert first.valid() is False and second.valid() is True
+    assert (tmp_path / "owner-next-token-a.json").is_file()
+    box = Outbox(tmp_path, "install-a")
+    box.open()
+    row = box.append("payload", event_type="task.finished")
+    assert deliver_once(box, dry_run=True, send=lambda _body: None, now_ms=5_000) == "delivered"
+    assert replay(box, row.sequence, now_ms=5_000) is None
+    pending = box.peek()
+    assert pending is not None and pending.sequence == row.sequence + 1
+    assert pending.event_type == "task.finished" and pending.status == "pending"
+    ping = box.append("ping", event_type="webhook.test")
+    box.mark(ping.sequence, status="delivered", attempts=1, completed_at=5_000)
+    assert replay(box, ping.sequence, now_ms=5_000) == "Payload is unavailable for replay"
 
 
 def test_one_live_owner_blocks_a_second_token(tmp_path: Path):
@@ -224,7 +247,7 @@ def test_the_coordinator_stays_off_until_enabled_and_dry_run_does_not_send(tmp_p
     assert blocked.open(other_alive=True) == "another owner holds the webhook outbox"
     assert live.enqueue(json.dumps({"type": "webhook.test"}), receiver_name="Ops") is None
     calls: list[str] = []
-    assert live.deliver(calls.append, "t") == "delivered"
+    assert live.deliver(calls.append, 1_000) == "delivered"
     assert calls == []
     live.close()
 
@@ -358,6 +381,32 @@ async def test_the_main_loop_screens_show_their_data(client):
     assert saved.status_code == 204
     notes = await client.get(f"/tasks/{first}?pane=notes")
     assert "remember the port" in notes.text
+
+
+async def test_the_replay_route_copies_a_finished_payload(client, tmp_path: Path):
+    import time
+
+    from app.integrations.outbox import Outbox
+
+    directory = tmp_path / "data" / "webhook-outbox"
+    directory.mkdir(parents=True)
+    (directory / "installation").write_text("install-local\n", encoding="utf-8")
+    box = Outbox(directory, "install-local")
+    box.open()
+    row = box.append("hello", event_type="task.finished")
+    box.mark(row.sequence, status="delivered", attempts=1, completed_at=int(time.time() * 1000))
+    replayed = await client.post(f"/api/v1/webhooks/outbox/{row.sequence}/replay")
+    assert replayed.status_code == 200
+    assert replayed.json()["replayed"] is True
+    ping = box.append("ping", event_type="webhook.test")
+    box.mark(ping.sequence, status="delivered", attempts=1, completed_at=int(time.time() * 1000))
+    # The route opens its own outbox, so re-read after the first replay, then refuse a test ping.
+    fresh = Outbox(directory, "install-local")
+    fresh.open()
+    test_row = fresh.find(ping.sequence)
+    assert test_row is not None
+    refused = await client.post(f"/api/v1/webhooks/outbox/{ping.sequence}/replay")
+    assert refused.status_code == 409
 
 
 def test_delivery_row_shape():

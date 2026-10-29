@@ -9,31 +9,29 @@ beyond `repo.root`, and `projects[]` has no `root`.
 from __future__ import annotations
 
 import os
-import shutil
+from pathlib import Path
 from typing import cast
 
 from litewriter import LiteWriter
 from stario import App, Context, Writer
 from stario.json import JsonValue
 
-from app.config import RUNNERS, Config
+from app.config import (
+    RUNNERS,
+    Config,
+    automations_enabled,
+    followups_enabled,
+    instance_id,
+    single_project,
+    terminal_enabled,
+)
+from app.engine.checks import backend_checks
+from app.engine.disk_health import disk_health
 from app.engine.engine import Engine
-from app.engine.gitwork import head_branch, is_git_repo
+from app.engine.gitwork import git, head_branch, is_git_repo
 from app.features.health.urls import API_HEALTH, HEALTH
 from app.http.loopback import hosted_mode
 from app.store.db import get_settings, list_projects
-
-_CHECK_NAMES = (
-    "claude",
-    "codex",
-    "opencode",
-    "cursor",
-    "pi",
-    "junie",
-    "copilot",
-    "gh",
-    "git",
-)
 
 
 class HealthPage:
@@ -63,28 +61,22 @@ def _health(db: LiteWriter, engine: Engine, config: Config) -> dict[str, object]
     usage = not hide_all and os.environ.get("CEZ_HIDE_TOKEN_USAGE") != "1"
     cost = not hide_all and os.environ.get("CEZ_HIDE_COST") != "1"
     local = not hosted_mode(config)
-    return {
+    body: dict[str, object] = {
         "version": config.version,
         "repoRoot": str(root),
         "repo": repo,
-        "checks": [
-            {
-                "name": name,
-                "available": shutil.which(_binary(config, name)) is not None,
-            }
-            for name in _CHECK_NAMES
-        ],
+        "checks": backend_checks(config),
         "defaultRunner": get_settings(db).default_runner
         if get_settings(db).default_runner in RUNNERS
         else "claude",
-        "forge": None,
+        "forge": _forge(root),
         "capabilities": {
             "localHandoff": local,
-            "terminal": False,
-            "designMode": False,
-            "followups": os.environ.get("CEZ_FOLLOWUPS") == "1",
-            "singleProject": os.environ.get("CEZ_SINGLE_PROJECT") == "1",
-            "automations": os.environ.get("CEZ_AUTOMATIONS") != "0",
+            "terminal": local and terminal_enabled(),
+            "designMode": config.design_mode,
+            "followups": followups_enabled(),
+            "singleProject": single_project(),
+            "automations": automations_enabled(),
             "webhooks": False,
             "dispatch": config.dispatch_enabled,
             "tokenMetrics": usage and cost,
@@ -94,9 +86,23 @@ def _health(db: LiteWriter, engine: Engine, config: Config) -> dict[str, object]
         "projects": [{"id": project.id, "name": project.name} for project in list_projects(db)],
         "bootProject": engine.boot_project_id,
     }
+    ident = instance_id()
+    if ident:
+        body["instanceId"] = ident
+    disk = disk_health(root)
+    if disk is not None:
+        body["disk"] = disk
+    return body
 
 
-def _binary(config: Config, name: str) -> str:
-    if name in config.runner_bins:
-        return config.runner_bins[name]
-    return name
+def _forge(root: Path) -> dict[str, str] | None:
+    """Kind only. Health does not shell out to `gh`, so `available` stays absent."""
+    if not is_git_repo(root):
+        return None
+    ok, out, _err = git(root, ["remote", "get-url", "origin"])
+    if not ok:
+        return None
+    host = out.strip().lower()
+    if "github.com" in host or ".ghe.com" in host:
+        return {"kind": "github"}
+    return None

@@ -113,7 +113,7 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | Item | Status | Verified |
 | --- | --- | --- |
 | SQLite for projects, runs, events, settings, automations | done | `tests/test_engine.py`, `tests/test_cockpit.py` |
-| Import of `.ai/cezar/runs.json` and NDJSON | partial | `tests/test_import_runs.py` keeps id, task, status, workflow, runner, and timestamps, skips a bad row, and reads `runs/<id>.ndjson` through `events_near`. The `import-runs` command writes those events into SQLite; that command is not called by a test. |
+| Import of `.ai/cezar/runs.json` and NDJSON | done | `tests/test_import_runs.py` keeps id, task, status, workflow, runner, and timestamps, skips a bad row, and reads `runs/<id>.ndjson`. `tests/test_stream_b.py` runs `import-runs` and finds the dashed UUID's event text in SQLite. A second import skips the same id. |
 | Workflow and skill files remain the authored source | done | `tests/test_workflows.py`, cockpit workflow/skill test |
 | Workspace settings: parallel (default 2), runner, theme, accent | done | settings stream test |
 | Per-project base branch stored at registration | done | The project card and Settings → Tasks save it through `Engine.set_base_branch`. A task started after that forks from the saved branch (`tests/test_screens.py`). |
@@ -157,7 +157,7 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | Queued message stack editable before dequeue | partial | `queue_message` is folded into the prompt and not written back onto `task` (`tests/test_engine.py`). Edit and delete of a stacked message are implemented and not called by a test. A message that arrives while `running` is delivered as the next follow-up (`tests/test_graph_nodes.py`). A restart does not keep the text: the marker helper records that it was lost (`tests/test_finish.py`). That helper is not driven by a second `Engine.startup`. |
 | Child dispatch cap 4, budget carve, settle report | done | `tests/test_dispatch.py`, `test_dispatch_caps_children_and_reports_when_one_settles` |
 | Report injected into the parent's live session | not done | the report is stored and prepended on a later prompt |
-| `cez task` CLI inside the worktree | not done | — |
+| `cez task` CLI inside the worktree | done | `POST /runs/{id}/dispatch` creates a child while the parent is running and has a branch. `POST /runs/{id}/report` stores `status` and `verdict` on that child and 404s a run with no parent. The CLI posts those routes when `CEZ_API_URL` and `CEZ_TASK_ID` are set, and exits 2 when the URL is missing. `tests/test_stream_b.py`, `tests/test_cli.py`. The child uses the parent's runner. |
 | Variants (×2 / ×3) and compare | done | The new-task form posts `variants` 2 and 3 and lands on `/tasks/{id}/compare`, which renders A/B and A/B/C (`tests/test_screens.py`). `POST /api/v1/runs` still returns `{runs}` (`tests/test_api.py`). |
 | In-place / trunk landing | partial | a non-git directory runs in place; no auto-land |
 
@@ -208,13 +208,13 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 
 | Command | Status | Verified |
 | --- | --- | --- |
-| `serve` (default) | partial | `python -m app.main` was booted by hand and by compose. No test calls `python -m app.cli serve`. |
+| `serve` (default) | done | `tests/test_cli.py`. No arguments and `serve` both call `serve` on `127.0.0.1`. `--port 9` is the port passed through. |
 | `run` — `review` is exit 0, failure is exit 1 | done | `tests/test_cli.py` |
 | `init` | done | same |
 | `projects list` / `add` | done | same |
-| `projects remove` | partial | implemented, not covered by a test |
-| `import-runs <path>` | partial | The command copies records and `events_near` rows into SQLite. `tests/test_import_runs.py` covers the parser and the NDJSON helper, not this command. |
-| `task`, `automation`, `runs`, `secrets`, `telemetry` | not done | secrets and telemetry are HTTP and a Secrets page, not CLI subcommands |
+| `projects remove` | done | `tests/test_cli.py`. Removes an added id, then a second remove is "not found". `CEZ_SINGLE_PROJECT=1` refuses add and remove. |
+| `import-runs <path>` | done | `tests/test_stream_b.py`. The command copies the record and the dashed `runs/<uuid>.ndjson` event into SQLite. |
+| `task`, `automation`, `runs`, `secrets`, `telemetry` | partial | `tests/test_cli.py`. `task create` posts dispatch. `runs list --json` prints the records. `automation schema` and `automation create --json` talk to the schedule API. `secrets set` reads stdin, `list` prints the name and audience, never the value, and `unset` removes it. `telemetry status` says it does not send; `telemetry enable` exits 1. Cron, tracker, and check subcommands are not in the automation CLI. |
 | `versions`, `unlink` | intentionally not ported | Same family as self-update. This fork does not rewrite its install. |
 | `server-install` / `deploy` / `uninstall` | not done | compose is the deploy path |
 | self-update `install` / `update` / `use` / `link` | intentionally not ported | They rewrite the install. See `versions` and `unlink` above. |
@@ -228,7 +228,7 @@ is the boot project.
 | Route | Status | Verified |
 | --- | --- | --- |
 | `GET /health` | done | cockpit test. Plain `ok`. |
-| `GET /api/v1/health` | partial | `tests/test_api.py`. Required discovery keys, CORS `*`, no `root` on `projects[]`. `checks` is `shutil.which` with no version string. `forge` is null (health does not shell out to `gh`). The health document still reports `terminal` and `designMode` as false; the routes exist beside that document. `disk` and `instanceId` are absent. |
+| `GET /api/v1/health` | done | `tests/test_api.py` and `tests/test_stream_b.py`. Required discovery keys, CORS `*`, no `root` on `projects[]`. A found binary includes its `--version` line (`git` in the test). `disk` has `freeBytes`, `totalBytes`, and `level`. `instanceId` is sent when `CEZ_INSTANCE_ID` is set. `terminal` follows `CEZ_TERMINAL` on a local bind. `designMode` follows the local design-mode flag. `forge` is `{kind: github}` when `origin` is a GitHub host, and null otherwise. Health does not shell out to `gh`, so `available` stays absent. |
 | `GET /api/v1/runs` | partial | JSON array of records. `workflowDef` omitted unless `full=1`. No live `usage` sample. |
 | `POST /api/v1/runs` | partial | 201 stored record, or `{runs}` for `variants` 2 or 3 (letters A/B/C, one `groupId`). Inline steps run as `(planned)`. Image attachments are stored and sent to Claude. An attachment-only task is stored as `(see attachments)`. |
 | `GET /api/v1/runs/{id}` | partial | Required record keys (`id`, `title`, `workflow`, `task`, `status`, `createdAt`, `tokensUsed`, `archived`, `steps`). |
@@ -238,19 +238,19 @@ is the boot project.
 | `DELETE /api/v1/runs/{id}` | done | 200 `{deleted: true}`. 409 while queued, running, or waiting. 404 unknown. |
 | `POST /api/v1/runs/{id}/messages` | partial | `{queued, message}` while the run is still `queued`; the stack is composed into the prompt and not written back onto `task`. `{delivered: true}` for `waiting` and `review`. `{deferred: true}` while `running`. Attachments on a message are still not accepted on this route; staged uploads are `POST /workspace/uploads`. |
 | `POST /api/v1/runs/{id}/archive`, `POST …/pin`, `POST /runs/archive-finished`, `POST /runs/read-all`, `POST …/read`, `POST …/unread` | partial | Archive and pin flags. Archiving clears a pin and cancels queued, running, or waiting work. The bulk sweep and read receipts match the TypeScript rules and are tested. |
-| `PATCH/DELETE …/queued-messages/{msgId}` | partial | Edit or remove a stacked message while the run is still queued. 409 `run already started` after that. |
+| `PATCH/DELETE …/queued-messages/{msgId}` | done | Edit and delete while the run is still queued. After it starts, patch is 409. `tests/test_stream_b.py`. |
 | `DELETE /api/v1/runs/{id}/auto-resume` | partial | 200 `{cancelled: true}` because nothing schedules a resume. 404 unknown. |
 | `GET /api/v1/workflows` | partial | `{workflows, issues}`. |
-| `GET /api/v1/projects` | partial | `id`, `name`, `root`, `addedAt`, `lastOpenedAt`, `source: local`, `status`, `branch` when it is a git checkout. No forge, tags, or `maxParallel`. `projectsDir` is the Python data directory, not the TypeScript checkouts directory. |
+| `GET /api/v1/projects` | partial | `id`, `name`, `root`, `addedAt`, `lastOpenedAt`, `source: local`, `status`, `branch` when it is a git checkout. No forge, tags, or `maxParallel`. `projectsDir` is `CEZ_PROJECTS_DIR`, or `<data dir>/projects` when that is unset. |
 | Loopback `Host` guard on `/api` | done | `tests/test_api.py`. Foreign Host is 403, including health. `CEZ_REMOTE=1` skips it. |
 | Hosted Basic auth | partial | `tests/test_api.py`. Required when hosted. `GET /health` is open. A missing `CEZ_AUTH_PASSWORD` is generated into the data directory at mode 0600. This is the nginx `auth_basic` challenge from the VPS install, enforced in-process because compose has no proxy. No session cookie and no Settings user store. |
 | `GET/POST /runs/{id}/git/status`, `commit`, `push`, `GET …/diff`, `POST …/pr` | done | `tests/test_surface.py`. Commit uses the repo identity, or `cezar <cezar@localhost>` when `user.name` is unset. Push and draft PR do not leave the machine when `CEZ_DRY_RUN=1`. The diff uses the freshest anchor. |
 | `GET/PUT /ui-state`, `GET/PUT /workspace/ui-state` | partial | shallow merge, 200-key cap, unknown keys kept. `tests/test_surface.py`. |
 | `POST/DELETE /workspace/uploads` | partial | `tests/test_finish.py` stores text, starts a run, and finds `note.txt` on the files pane. Delete-by-id is implemented in `tests/test_surface.py`. The prompt line `The user attached:` is not asserted. |
-| `GET /api/v1/fs/browse` | partial | `browse_directory` is tested: directories only, `realpath` containment, a symlink out of the root is hidden (`tests/test_finish.py`). No test calls the HTTP route. |
+| `GET /api/v1/fs/browse` | done | Directories only. A symlink whose target is outside `CEZ_BROWSE_ROOT` is hidden, and that outside path is 400. `tests/test_stream_b.py`. |
 | `GET /providers/status`, `GET /models` | partial | binary presence and a static id list. |
 | `POST /preview/design-proxy` | partial | Refuses non-loopback and hosted/`CEZ_DESIGN_MODE=0`. A loopback `http://` target is mirrored on `127.0.0.1` with `<!-- cezar-design -->` injected before `</body>`. `tests/test_surface.py`. |
-| `POST /runs/{id}/terminal`, input, resize, output, close | partial | `TerminalHub` opens a PTY, echoes a command, and a resize is read back with `TIOCGWINSZ` (`tests/test_surface.py`, `tests/test_finish.py`). The HTTP open, input, resize, and SSE routes are not called by a test. |
+| `POST /runs/{id}/terminal`, input, resize, output, close | done | Open answers 201, input and resize answer 200, the output stream's first event is `output`, and close then a second close is 404. `tests/test_stream_b.py`. `CEZ_TERMINAL=0` is still 409 (`tests/test_routes.py`). |
 | `GET/POST/DELETE /webhooks`, `POST …/test`, `GET …/deliveries` | done | Receiver URL must pass the destination policy. Dry-run test delivery is recorded as 204 and does not open a socket. Signing key is `whsec_`. `PUT /webhooks/{id}` with `expectedRevision` renames in place and bumps `deliveryRevision` only when the URL changes (`tests/test_stream_d_close.py`). |
 | `POST /hooks/github`, `/hooks/jira`, `/hooks/linear`, `GET /hooks/receipts` | done | GitHub checks `X-Hub-Signature-256` against `CEZ_GITHUB_WEBHOOK_SECRET`. Jira and Linear check `X-Cezar-Webhook-Secret`. Unset or wrong is 401. A matching enabled automation can enqueue a run. Receipts are appended locally (`tests/test_surface.py`). |
 | GitHub review and merge API | done | Dry-run merge-state, merge, and review. `expectedHeadSha` that is not the current head is 409 `head_moved` and does not merge. A matching head merges. The task page sends the review (`tests/test_parity.py`, `tests/test_stream_d_close.py`, `tests/test_surface.py`). |
@@ -431,9 +431,11 @@ the fake binaries under `tests/fakes/`. Nothing here is a live CLI handshake.
   keychain when `secret-tool` answers; `CEZ_SECRETS_KEYCHAIN=0` keeps the file.
 - Cursor's binary override is `CEZ_CURSOR_AGENT_BIN`, then `CEZ_CURSOR_BIN`.
 - `CEZ_AUTOMATIONS=0` is reported on the health document and does not stop the
-  ticker. `CEZ_FOLLOWUPS` and `CEZ_SINGLE_PROJECT` are the same kind of flag:
-  visible on `/api/v1/health`, not enforced. `CEZ_HIDE_TOKEN_*` flips the
-  health capability bits and hides the matching dashboard totals and
+  ticker. The automations JSON family answers 409 when it is set. `CEZ_FOLLOWUPS=1`
+  is what makes `GET/DELETE/POST /todos` read the inbox file; off, the list is
+  empty and a mutation is 409. The inbox page does not use that file.
+  `CEZ_SINGLE_PROJECT=1` refuses project add, patch, and remove. `CEZ_HIDE_TOKEN_*`
+  flips the health capability bits and hides the matching dashboard totals and
   usage-series columns.
 - `CEZ_ARCHIVED_RUNS_KEEP` caps archived rows. Live rows still use `CEZ_RUNS_KEEP`.
 - `systemPrompt` is prepended to the agent prompt. Branch names come from the
@@ -475,19 +477,19 @@ next table.
 
 | Item | Status | Verified |
 | --- | --- | --- |
-| `GET/PUT /api/v1/agent-config/:id` | not done | The HTML editor is three files. There is no JSON API. |
-| Static `/assets`, `/icon.svg` | not done | The Python cockpit serves its own CSS. |
-| Automations JSON API, automation log, check id | not done | Page posts exist and are not this contract. |
+| `GET/PUT /api/v1/agent-config/:id` | partial | `tests/test_stream_b.py`. GET lists `agents-md`, `claude-project`, and `claude-local`. PUT writes the bytes when `version` matches (null creates) and 409s a stale version. A hosted cockpit (`CEZ_REMOTE=1`) 409s the write. Not the full `catalog.ts` set, and `userMcp.servers` stays empty. |
+| Static `/assets`, `/icon.svg` | done | `GET /icon.svg` returns the svg and `GET /assets/mark.txt` returns that file. A missing asset is 404. `tests/test_stream_b.py`. These are files under `static/`, not a Vite `web/dist` manifest. |
+| Automations JSON API, automation log, check id | partial | `tests/test_stream_b.py`. Schedule create, revisioned PUT (409 on a stale `expectedRevision`), enable, run, delete, and `GET /automation-log` (the run id from run-now). `POST …/check` returns an id, `matches: 0`, and `launched: false`. `CEZ_AUTOMATIONS=0` is 409. GitHub event filters, tracker options, and the stats document are not this shape. The HTML page is unchanged. |
 | `GET/PUT /config` | done | See the HTTP section. `tests/test_routes.py` writes `.ai/cezar/config.json`. |
-| Deferred start options, preview, create | not done | — |
+| Deferred start options, preview, create | done | `tests/test_stream_b.py`. Options report the local zone and `usageReset.available: false`. A future `at` previews `notBefore` and a revision; a past time is unavailable. Create stores one enabled once-automation and replays the same idempotency key. A different task on that key is 409. |
 | `GET /e2e`, `POST /e2e/setup` | not done | Integrations queues a task instead. |
 | Workspace event stream `GET /events` | not done | Per-run SSE exists. |
 | GitHub checks, review comments, PR changes, ref status, search | done | `GET /github/checks`, `/github/search`, `/github/ref-status`, `/github/comments/{kind}/{number}`, `/github/prs/{n}/changes`. Dry-run answers the fixed catalog (128 passing, 124 failing, issue 142, review thread, renamed and binary files) and does not run `gh`. With dry-run off, checks and search run a fake `gh` (`tests/test_github_read.py`). Unknown ref-status numbers are absent; unknown checks are null. |
-| Run groups and pick | not done | — |
+| Run groups and pick | done | `tests/test_stream_b.py`. `GET /groups/{id}` lists letters A and B. `POST …/pick` archives the other variant and leaves the winner. `diffStat` is empty. Handoff excerpts are not included. |
 | `GET /launch-key` | done | See the HTTP section. `tests/test_routes.py`. |
-| Open in editor / open targets | not done | — |
+| Open in editor / open targets | partial | `tests/test_stream_b.py`. `GET /open-targets` lists `cursor`, `code`, or `idea` when that binary is on `PATH`. An unknown target is 400. With `CEZ_DRY_RUN=1` a known target answers `{opened: true, dryRun: true}` and does not spawn. Hosted mode returns an empty list. |
 | `POST /plan` | not done | — |
-| Project checkout, create-on-GitHub, owners, patch, delete | not done | The page can add a local directory. |
+| Project checkout, create-on-GitHub, owners, patch, delete | partial | `tests/test_stream_b.py`. `POST /projects` registers a local directory. `PATCH` renames it. `DELETE` removes it and 409s the boot project. `CEZ_SINGLE_PROJECT=1` 409s add. Checkout, GitHub owners, and create-on-GitHub are absent. |
 | Provider connect, retry, update, enabled | not done | Status is `shutil.which`. |
 | Repository `/repo/*` routes | done | `GET /repo`, `/repo/diff`, `/repo/changes`, `/repo/tree`, `/repo/files`, `/repo/commit/{sha}`, `POST /repo/branch`, and `/repo/sync` plus fetch, pull, and push. The tree is `git ls-files`, so a gitignored `.env` is not served. Fetch, pull, and push run against a local bare remote (`tests/test_github_read.py`, `tests/test_stream_d_close.py`). |
 | `GET /runs/{id}/commits`, `GET /runs/{id}/files`, `POST /runs/{id}/continue`, `POST /runs/{id}/remove-worktree` | done | Files list the dry-run note, commits list `init`, continue requeues a review into another turn, and remove deletes the worktree directory. `tests/test_routes.py`. |
@@ -495,16 +497,16 @@ next table.
 | `GET /skills/importable`, `POST /skills/refresh` | not done | Local create is tested. |
 | `GET/PUT /start-app` | not done | — |
 | `POST /telemetry/error`, `POST /telemetry/page` | intentionally not ported | Consent routes do not send. |
-| Todos API and `cez` follow-up inbox file | not done | `/inbox` lists unread runs. `CEZ_FOLLOWUPS` is copied onto the health document and does not change the page. |
+| Todos API and `cez` follow-up inbox file | done | `tests/test_stream_b.py`. The file is `.ai/cezar/todos.json` (or `CEZ_TODOS_FILE`). A row without a summary is skipped. `GET` is `[]` when `CEZ_FOLLOWUPS` is off; delete is then 409. Start enqueues a run, writes `startedTaskId`, and a second start is 409. The `/inbox` page is unchanged. |
 | Tracker connection, watch, search, association | done | `GET/PUT/DELETE /tracker/connection` stores a `0600` dotenv under `$PROJECT_DATA_DIR/tracker-connections` and never returns the token. Dry-run refuses the save. Association, candidates, list, search, and a watch snapshot talk to a recorded loopback Jira server (`tests/test_tracker.py`). A private origin is rejected before any request. |
-| Workspace profiles, branding, config, host usage, runs index, automation templates | not done | — |
+| Workspace profiles, branding, config, host usage, runs index, automation templates | partial | `tests/test_stream_b.py`. `GET/PUT /workspace/config` reads and sets `maxParallel` (1–16). `GET /workspace/runs-index` lists id, title, status, and project across the registry. Profiles, branding, host usage, and automation templates are absent. |
 | Self-update and skills auto-update routes | intentionally not ported | — |
 | `GET /star-count` | intentionally not ported | — |
 | `POST /worktrees/reclaim` | done | Returns the ids `Engine.retain()` reclaimed. `tests/test_routes.py`. |
 | `CEZ_REVIEW_GATE` | done | Exact `1` parks a diff at `review`. `true` does not. `reviewGate: false` in config wins. An autonomous run stays `done`. `tests/test_engine.py`, `tests/test_cockpit.py`, `tests/test_cli.py`. |
 | `CEZ_ARCHIVED_RUNS_KEEP` | done | Archived rows use this cap and live rows use `CEZ_RUNS_KEEP`. `tests/test_finish.py`. `Config.from_env` reads it. |
-| `CEZ_HOME`, `CEZ_PROJECTS_DIR` | not done | State is `PROJECT_DATA_DIR` and SQLite. |
-| `CEZ_SINGLE_PROJECT` | partial | The health document reports the flag. Project add is not refused because of it. |
+| `CEZ_HOME`, `CEZ_PROJECTS_DIR` | done | `tests/test_stream_b.py`. With `PROJECT_DATA_DIR` unset, `CEZ_HOME` is the SQLite directory. An empty `CEZ_HOME` does not count. `PROJECT_DATA_DIR` still wins, so compose keeps its volume. `CEZ_PROJECTS_DIR` is `projectsDir` on `GET /projects`. |
+| `CEZ_SINGLE_PROJECT` | done | Exact `1`. The health document reports it. Project add, patch, and delete answer 409, and `projects add` / `projects remove` refuse. `tests/test_stream_b.py`, `tests/test_cli.py`. |
 | `CEZ_SECRETS_KEYCHAIN` | done | `0` forces the `0600` file. Otherwise a test-injected keychain (or `secret-tool` outside pytest) holds the 32-byte data key and the file is not written. A locked keychain fails the read instead of minting a new key (`tests/test_secrets.py`). |
 | `CEZ_ENV_PASSTHROUGH`, `CEZ_AGENT_ENV_FULL`, `CEZ_REDACT_SECRETS` | done | Agents get a curated environment. `CEZ_ENV_PASSTHROUGH` forwards named extras. `CEZ_AGENT_ENV_FULL` of `1`, `true`, or `yes` restores the parent environment; `0` and `false` stay curated. A spawned fake does not see `AWS_SECRET_ACCESS_KEY` unless the full hatch is on. Stored events replace token shapes with `[REDACTED]` unless `CEZ_REDACT_SECRETS=0` (`tests/test_agent_env.py`). Checks still drop `CEZ_*` and inject secret values. |
 | `CEZ_TERMINAL` | done | `0` makes `POST /runs/{id}/terminal` answer 409 `terminal is disabled`. `tests/test_routes.py`. |
@@ -527,9 +529,9 @@ Skills are from stario-create `e56b6cd80cfcc011c8c1be7b4da92dfba5b5c31c`. One co
 
 Left as they are. A later agent should not "clean these up" as a drive-by:
 
-- `os.environ` is still read outside `app/config.py`: `app/engine/engine.py` (the check environment), `app/engine/namer.py`, `app/engine/review_gate.py`, `app/engine/gitwork.py`, `app/engine/telemetry_store.py`, `app/integrations/lifecycle.py`, `app/integrations/coordinator.py`, and `app/features/api/surface.py` (`CEZ_TERMINAL`). Several of those are read at the call, so a test can flip the flag after `Config` is built. A new process-lifetime flag belongs on `Config`. Do not move the live ones without updating the test that sets the variable after the client exists.
-- JSON is often `json.dumps` (`app/engine/engine.py`, `app/engine/runners/protocol.py`, `app/integrations/outbox.py`, `app/secrets/store.py`, `app/integrations/hooks.py`). New documents should use `stario.json`. Leave a payload whose bytes are part of a signature or a wire fixture alone.
-- Settings, inbox, and new-task commands answer with `w.redirect(..., 303)`. Tests assert that status. The skill's command reply is `w.empty()` or `SSE(w).navigate`, because a 303 does not change the URL inside a Datastar request. Switching the reply changes those tests and the browser walk.
+- `os.environ` is still read outside `app/config.py`: `app/engine/engine.py` (the check environment), `app/engine/namer.py`, `app/engine/review_gate.py`, `app/engine/gitwork.py`, `app/engine/telemetry_store.py`, `app/integrations/lifecycle.py`, and `app/integrations/coordinator.py`. `CEZ_TERMINAL`, `CEZ_SINGLE_PROJECT`, `CEZ_FOLLOWUPS`, `CEZ_AUTOMATIONS`, `CEZ_INSTANCE_ID`, and the hosted Basic credentials are read in `app/config.py` at the call, so a test can still flip them after `Config` is built. A new process-lifetime flag belongs on `Config`. Do not move the live engine ones without updating the test that sets the variable after the client exists.
+- JSON is often `json.dumps` (`app/engine/engine.py`, `app/engine/runners/protocol.py`, `app/integrations/outbox.py`, `app/secrets/store.py`, `app/integrations/hooks.py`). Route documents in `app/features/api/surface.py`, `app/engine/ui_state.py`, and `app/engine/uploads.py` go through `stario.json`. Leave a payload whose bytes are part of a signature or a wire fixture alone.
+- Settings, inbox, and new-task commands answer with `w.redirect(..., 303)`. Tests assert that status. The skill's command reply is `w.empty()` or `SSE(w).navigate`, because a 303 does not change the URL inside a Datastar request. Switching the reply changes those tests and the browser walk. The `/api/v1` families answer JSON.
 - `Engine`, the terminal hub, and the delta coalescer use `asyncio.create_task`. The skill wants `c.app.create_task`. The engine is constructed with no `App` in tests, so the fallback stays until those tests hold an app.
 - Most features have no `data.py`. Rows live in `app/store/db.py`. `Engine` is about 1,800 lines, `app/features/api/surface.py` about 830, and `app/features/api/handlers.py` about 650. The skill treats that shape as a second resource hiding in one class. Splitting it is its own change.
 - CSS is hand-written in `static/css/style.css`. That is the Decisions table. Do not add Tailwind.
@@ -600,16 +602,11 @@ The node editor, when it exists, is new files under `app/features/workflows/`. C
 
 ### B — server route families and the CLI
 
-25 partial, 21 not done.
+22 partial, 9 not done.
 
 Partial:
 
-- Import of `.ai/cezar/runs.json` and NDJSON
 - UI state, attachments, layouts
-- `serve` (default)
-- `projects remove`
-- `import-runs <path>`
-- `GET /api/v1/health`
 - `GET /api/v1/runs`
 - `POST /api/v1/runs`
 - `GET /api/v1/runs/{id}`
@@ -617,41 +614,31 @@ Partial:
 - `POST /api/v1/runs/{id}/finish`
 - `POST /api/v1/runs/{id}/messages`
 - `POST /api/v1/runs/{id}/archive`, `POST …/pin`, `POST /runs/archive-finished`, `POST /runs/read-all`, `POST …/read`, `POST …/unread`
-- `PATCH/DELETE …/queued-messages/{msgId}`
 - `DELETE /api/v1/runs/{id}/auto-resume`
 - `GET /api/v1/workflows`
 - `GET /api/v1/projects`
 - Hosted Basic auth
 - `GET/PUT /ui-state`, `GET/PUT /workspace/ui-state`
 - `POST/DELETE /workspace/uploads`
-- `GET /api/v1/fs/browse`
 - `GET /providers/status`, `GET /models`
 - `POST /preview/design-proxy`
-- `POST /runs/{id}/terminal`, input, resize, output, close
-- `CEZ_SINGLE_PROJECT`
+- `GET/PUT /api/v1/agent-config/:id`
+- Automations JSON API, automation log, check id
+- `task`, `automation`, `runs`, `secrets`, `telemetry`
+- Open in editor / open targets
+- Project checkout, create-on-GitHub, owners, patch, delete
+- Workspace profiles, branding, config, host usage, runs index, automation templates
 
 Not done:
 
-- `cez task` CLI inside the worktree
-- `task`, `automation`, `runs`, `secrets`, `telemetry`
 - `server-install` / `deploy` / `uninstall`
 - Skills update, workspace branding, plan, deferred-start scheduling
-- `GET/PUT /api/v1/agent-config/:id`
-- Static `/assets`, `/icon.svg`
-- Automations JSON API, automation log, check id
-- Deferred start options, preview, create
 - `GET /e2e`, `POST /e2e/setup`
-- Run groups and pick
-- Open in editor / open targets
 - `POST /plan`
-- Project checkout, create-on-GitHub, owners, patch, delete
 - Provider connect, retry, update, enabled
 - Run drafts, layouts, handoff, history, images, land, report, start-now
 - `GET /skills/importable`, `POST /skills/refresh`
 - `GET/PUT /start-app`
-- Todos API and `cez` follow-up inbox file
-- Workspace profiles, branding, config, host usage, runs index, automation templates
-- `CEZ_HOME`, `CEZ_PROJECTS_DIR`
 - Release packaging, server-install, disk space, startup port probe
 
 Owns: `app/features/api/` (`handlers.py`, `records.py`, `urls.py`, and the non-event, non-git, non-webhook methods of `surface.py`), `app/cli.py`, `app/http/`, `app/engine/import_runs.py`, `app/engine/ui_state.py`, `app/engine/uploads.py`, `app/engine/fs_browse.py`, `app/engine/preview.py`, `app/engine/providers.py`, `app/engine/deferred.py`, `tests/test_api.py`, `tests/test_routes.py`, `tests/test_cli.py`, `tests/test_import_runs.py`.

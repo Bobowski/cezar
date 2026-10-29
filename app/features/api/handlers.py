@@ -121,6 +121,10 @@ class ApiPage:
             return
         if images:
             run.images = images
+        account_error = _account(self.config, body.get("accountId"), runner, run)
+        if account_error:
+            w.json({"error": account_error}, status=400)
+            return
         count = body.get("variants", 1)
         if isinstance(count, int) and not isinstance(count, bool) and count > 1:
             group = run.id
@@ -142,6 +146,7 @@ class ApiPage:
                     return
                 sibling.group_id = group
                 sibling.variant = letter
+                sibling.account_id = run.account_id
                 if images:
                     sibling.images = images
                 made.append(sibling)
@@ -396,7 +401,7 @@ class ApiPage:
                 {"name": row.name, "audiences": list(row.audiences), "updatedAt": row.updated_at}
                 for row in rows
             ],
-            "keyBackend": "file",
+            "keyBackend": self._secret_store().key_backend(),
         }
         if skipped:
             body["skipped"] = skipped
@@ -505,6 +510,20 @@ class ApiPage:
             w.json({"error": "not found"}, status=404)
             return None
         return run
+
+
+def _account(config: Config, raw: object, runner: str, run: Run) -> str | None:
+    if raw in (None, ""):
+        return None
+    if not isinstance(raw, str):
+        return "unknown account"
+    from app.integrations.accounts import profile_home_for
+
+    home = profile_home_for(config, raw, runner)
+    if home is None:
+        return "unknown account"
+    run.account_id = raw
+    return None
 
 
 def _create_input(

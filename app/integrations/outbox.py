@@ -195,20 +195,49 @@ class Outbox:
         )
 
 
+def linux_pid_namespace() -> str | None:
+    """`pid:[inode]` from `/proc/self/ns/pid`. None where that namespace is invisible."""
+    try:
+        target = os.readlink("/proc/self/ns/pid")
+    except OSError:
+        return None
+    if target.startswith("pid:[") and target.endswith("]") and target[5:-1].isdigit():
+        return target
+    return None
+
+
+def namespace_blocks_takeover(stored: object, own: str | None) -> bool:
+    """A different PID namespace is never declared dead.
+
+    `/proc` only answers inside this namespace, so a foreign pid looks absent
+    while its owner is alive. A record written before the field existed is
+    left alone too: stealing it would be the same mistake.
+    """
+    if not isinstance(stored, str):
+        return own is not None
+    return stored != own
+
+
 class Owner:
-    def __init__(self, directory: Path, token: str, pid: int) -> None:
+    def __init__(
+        self, directory: Path, token: str, pid: int, *, namespace: str | None = None
+    ) -> None:
         self.path = directory / "owner.lock"
         self.token = token
         self.pid = pid
+        self.namespace = linux_pid_namespace() if namespace is None else namespace
         self.held = False
 
     def acquire(self, *, alive: bool) -> bool:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         candidate = self.path.parent / f"owner-record-{self.token}.json"
         if not candidate.exists():
+            body = {"token": self.token, "pid": self.pid}
+            if self.namespace is not None:
+                body["pidNamespace"] = self.namespace
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
             fd = os.open(candidate, flags, 0o600)
-            os.write(fd, json.dumps({"token": self.token, "pid": self.pid}).encode())
+            os.write(fd, json.dumps(body).encode())
             os.close(fd)
         try:
             os.link(candidate, self.path)
@@ -224,6 +253,8 @@ class Owner:
         if current.get("token") == self.token:
             self.held = True
             return True
+        if namespace_blocks_takeover(current.get("pidNamespace"), self.namespace):
+            return False
         if alive:
             return False
         slot = self.path.parent / f"owner-next-{current['token']}.json"

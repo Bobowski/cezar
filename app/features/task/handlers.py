@@ -12,7 +12,7 @@ from app.common.shell import load_chrome
 from app.config import Config
 from app.engine.dispatch_logic import DispatchOrder
 from app.engine.engine import CHANGED, Engine
-from app.engine.gitwork import Diff, diff_against
+from app.engine.gitwork import Diff, task_diff
 from app.engine.model import Run
 from app.features.task.urls import (
     TASK,
@@ -26,6 +26,7 @@ from app.features.task.urls import (
     TASK_NOTES,
     TASK_PR,
     TASK_PUSH,
+    TASK_REVIEW,
     TASK_SHELL,
     TaskView,
 )
@@ -52,6 +53,7 @@ class TaskPage:
         app.add(TASK_COMMIT, self.commit)
         app.add(TASK_PUSH, self.push)
         app.add(TASK_PR, self.draft_pr)
+        app.add(TASK_REVIEW, self.review)
         app.add(TASK_NOTES, self.notes)
         app.add(TASK_SHELL, self.shell)
 
@@ -170,6 +172,31 @@ class TaskPage:
             return
         w.empty()
 
+    async def review(self, c: Context, w: Writer) -> None:
+        from app.integrations.github_review import review_pr
+
+        run_id, tab, signals = await self._input(c, w)
+        if run_id is None or tab is None or signals is None:
+            return
+        run = get_run(self.db, run_id)
+        if run is None:
+            self._tell(w, tab, "not found", 404)
+            return
+        number = _pull_number(run.pull_request_url)
+        if number is None:
+            self._tell(w, tab, "no pull request on this task", 409)
+            return
+        event = str(signals.get("review_event", "comment"))
+        body = str(signals.get("review_body", ""))
+        project = get_project(self.db, run.project_id)
+        cwd = Path(project.root) if project else self.config.repo_root
+        result = review_pr(number, event, body, dry_run=self.config.dry_run, cwd=cwd)
+        if not result.get("ok"):
+            self._tell(w, tab, str(result.get("error", "review failed")), 400)
+            return
+        self.relay.publish(f"tab.{tab}", {"_toast": "Review sent"})
+        w.empty()
+
     async def notes(self, c: Context, w: Writer) -> None:
         run_id, tab, signals = await self._input(c, w)
         if run_id is None or tab is None or signals is None:
@@ -262,7 +289,14 @@ class TaskPage:
             if view.pane == "diff" and run.in_place:
                 return Diff("This run was not given a worktree.", 0, 0, 0, False)
             return None
-        return await asyncio.to_thread(diff_against, Path(run.worktree_path), run.base_sha)
+        return await asyncio.to_thread(
+            task_diff,
+            Path(run.worktree_path),
+            base_branch=run.base_branch,
+            task_branch=run.branch,
+            started_at=run.started_at,
+            fallback_sha=run.base_sha,
+        )
 
     def _chrome(self, project_id: str):
         return load_chrome(self.db, self.config, "Task", "tasks", project_id)

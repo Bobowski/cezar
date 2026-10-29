@@ -117,8 +117,8 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | Workflow and skill files remain the authored source | done | `tests/test_workflows.py`, cockpit workflow/skill test |
 | Workspace settings: parallel (default 2), runner, theme, accent | done | settings stream test |
 | Per-project base branch stored at registration | partial | used by the engine; no editor in the UI |
-| Secrets vault | partial | `tests/test_secrets.py` and the check injection test. AES-256-GCM, file key only (no OS keychain), audiences `checks` and `cezar`, project root binding, list API omits values. Stored under `$PROJECT_DATA_DIR/secrets`, not `~/.cezar/secrets`. |
-| Agent accounts / profiles | partial | `/settings/accounts` stores `{id, name, runner}` in `$PROJECT_DATA_DIR/agent-accounts.json` (`tests/test_parity.py`). Not the TypeScript profile homes, second logins, or `CEZ_REMOTE_AGENT_ACCOUNTS`. |
+| Secrets vault | done | `tests/test_secrets.py` and the check injection test. AES-256-GCM, audiences `checks` and `cezar`, project root binding, list API omits values. Stored under `$PROJECT_DATA_DIR/secrets`, not `~/.cezar/secrets`. The data key is the keychain row. |
+| Agent accounts / profiles | done | `/settings/accounts` stores `{id, name, runner, home}` in `$PROJECT_DATA_DIR/agent-accounts.json`. Claude gets `CLAUDE_CONFIG_DIR` and Codex gets `CODEX_HOME`; OpenCode, Cursor, pi, Junie, and Copilot stay on the default login. A turn whose run names the account is spawned with that home (`tests/test_agent_env.py`). `POST /runs` accepts `accountId`. Hosted mode is the `CEZ_REMOTE_AGENT_ACCOUNTS` row. |
 | UI state, attachments, layouts | partial | `tests/test_surface.py`. Project `.ai/cezar/ui-state.json` and `$PROJECT_DATA_DIR/ui-state.json` merge shallowly and cap a write at 200 keys. Uploads store base64 under the data directory (text, images, pdf, octet-stream) and delete by id. No layouts, drafts, or prompt-template editor. |
 
 ### Workflows
@@ -168,9 +168,9 @@ actually run, not a claim that the TypeScript behavior matches line for line.
 | Worktree per task at `.ai/cezar/worktrees/<id>`, branch `cez/<id8>` | done | engine success test, manual run |
 | Option-like refs refused before git sees them | done | `test_option_like_refs_are_refused`, bad-base test |
 | A failed worktree create does not run in the main tree | done | `test_a_bad_base_does_not_run_in_the_main_tree` |
-| Diff includes untracked files and is capped | partial | untracked file asserted; cap helper exists, cap edge not separately tested |
-| Freshest `origin/<base>` vs fork-point attribution | not done | fork SHA only |
-| Remotes via `gh repo set-default` / fork parent | not done | — |
+| Diff includes untracked files and is capped | done | untracked file asserted; a body over the cap is truncated (`tests/test_git_base.py`) |
+| Freshest `origin/<base>` vs fork-point attribution | done | `resolve_task_diff_base` in `app/engine/git_diff_base.py`. A stale local `main` measures against `origin/main`. A repointed HEAD uses the branch reflog at `started_at` unless the merge-base attributes fewer lines. No start time stays at `HEAD`. The task diff, the review-gate diff, and `GET /runs/{id}/diff` go through it (`tests/test_git_base.py`). |
+| Remotes via `gh repo set-default` / fork parent | done | `resolve_task_remotes` in `app/engine/git_remotes.py`. `gh-resolved=base` wins, else a remote GitHub reports as `origin`'s fork parent, else `origin`. Push follows `remote.pushDefault`. The parent lookup is skipped under `CEZ_DRY_RUN=1` and for non-GitHub hosts. A fake `gh` is the only process spawned (`tests/test_git_base.py`). Fork and push use that remote. |
 | Branch naming instructions | done | Dry-run naming stays off unless `CEZ_AUTONAME=1`, then the canned mock answer `feature/implementing-cr-fixes` is the branch and the title is `implementing cr fixes`. `CEZ_AUTONAME=0` keeps `cez/<id8>`. A live run asks the Claude binary with the same prompt and keeps the default when the answer is junk. `tests/test_engine.py`. |
 | Orphan worktree directories whose run id is gone | done | `test_orphan_worktrees_go_and_known_runs_stay` |
 | Draft PRs, merge, GitHub review | partial | `POST /runs/{id}/pr` and a `github.draft-pr` node. Dry-run returns `https://github.com/open-mercato/demo/pull/777` and does not push or call `gh`. The route then marks the run `done`. `GET /github/prs/{n}/merge-state`, `POST …/merge`, and `POST …/reviews` answer a dry-run document and do not call `gh` (`tests/test_parity.py`). With dry-run off, `gh pr view`, `gh pr merge`, `gh pr review`, and `gh pr create` run against a fake `gh` (`tests/test_parity.py`). Push is `git push` to a local bare remote in that test. The task page shows that box. A review comment is still the API, not a form on the page. |
@@ -420,9 +420,10 @@ the fake binaries under `tests/fakes/`. Nothing here is a live CLI handshake.
 - URLs are `?project=` on top-level paths. There is no `/p/:projectId`.
 - Hosted mode (`CEZ_REMOTE=1` or a non-loopback bind) requires HTTP Basic
   inside this process. TypeScript puts that challenge on nginx.
-- The diff base is the fork commit, not `resolveTaskDiffBase`.
-- Secrets live in `$PROJECT_DATA_DIR/secrets` with a file key. There is no OS
-  keychain. `CEZ_SECRETS_KEYCHAIN` is not read.
+- The diff base is `resolve_task_diff_base`: the freshest base ref, and a
+  repointed HEAD measured against the branch as the run first saw it.
+- Secrets live in `$PROJECT_DATA_DIR/secrets`. The data key uses the OS
+  keychain when `secret-tool` answers; `CEZ_SECRETS_KEYCHAIN=0` keeps the file.
 - Cursor's binary override is `CEZ_CURSOR_AGENT_BIN`, then `CEZ_CURSOR_BIN`.
 - `CEZ_AUTOMATIONS=0` is reported on the health document and does not stop the
   ticker. `CEZ_FOLLOWUPS` and `CEZ_SINGLE_PROJECT` are the same kind of flag:
@@ -432,7 +433,9 @@ the fake binaries under `tests/fakes/`. Nothing here is a live CLI handshake.
 - `systemPrompt` is prepended to the agent prompt. Branch names come from the
   namer. Dry-run uses the canned mock only when `CEZ_AUTONAME=1`.
 - Agent config is three files. Writes are refused when the cockpit is hosted.
-- Accounts are `{id, name, runner}` in the data directory.
+- Accounts are `{id, name, runner, home}` in the data directory. Claude and
+  Codex homes are injected on a turn that names the account. Hosted mode
+  refuses new accounts unless `CEZ_REMOTE_AGENT_ACCOUNTS=1`.
 - Integrations queues one "Tester Army" task. It does not install a framework.
 - GitHub merge and review call `gh` only when dry-run is off. The eligibility
   ladder and blocker list live in `app/integrations/merge_state.py`. An
@@ -472,21 +475,21 @@ next table.
 | Deferred start options, preview, create | not done | — |
 | `GET /e2e`, `POST /e2e/setup` | not done | Integrations queues a task instead. |
 | Workspace event stream `GET /events` | not done | Per-run SSE exists. |
-| GitHub checks, review comments, PR changes, ref status, search | not done | Issues and dry-run merge are separate rows. |
+| GitHub checks, review comments, PR changes, ref status, search | done | `GET /github/checks`, `/github/search`, `/github/ref-status`, `/github/comments/{kind}/{number}`, `/github/prs/{n}/changes`. Dry-run answers the fixed catalog (128 passing, 124 failing, issue 142, review thread, renamed and binary files) and does not run `gh`. With dry-run off, checks and search run a fake `gh` (`tests/test_github_read.py`). Unknown ref-status numbers are absent; unknown checks are null. |
 | Run groups and pick | not done | — |
 | `GET /launch-key` | done | See the HTTP section. `tests/test_routes.py`. |
 | Open in editor / open targets | not done | — |
 | `POST /plan` | not done | — |
 | Project checkout, create-on-GitHub, owners, patch, delete | not done | The page can add a local directory. |
 | Provider connect, retry, update, enabled | not done | Status is `shutil.which`. |
-| Repository `/repo/*` routes | not done | `/git` renders a heading. |
+| Repository `/repo/*` routes | done | `GET /repo`, `/repo/diff`, `/repo/changes`, `/repo/tree`, `/repo/files`, `/repo/commit/{sha}`, `POST /repo/branch`, and `/repo/sync` plus fetch, pull, push, and sync. The tree is `git ls-files`, so a gitignored `.env` is not served. An option-like branch name is refused (`tests/test_github_read.py`). Fetch and push use the resolved remote and are not covered by an HTTP test. |
 | `GET /runs/{id}/commits`, `GET /runs/{id}/files`, `POST /runs/{id}/continue`, `POST /runs/{id}/remove-worktree` | done | Files list the dry-run note, commits list `init`, continue requeues a review into another turn, and remove deletes the worktree directory. `tests/test_routes.py`. |
 | Run drafts, layouts, handoff, history, images, land, report, start-now | not done | — |
 | `GET /skills/importable`, `POST /skills/refresh` | not done | Local create is tested. |
 | `GET/PUT /start-app` | not done | — |
 | `POST /telemetry/error`, `POST /telemetry/page` | intentionally not ported | Consent routes do not send. |
 | Todos API and `cez` follow-up inbox file | not done | `/inbox` lists unread runs. `CEZ_FOLLOWUPS` is copied onto the health document and does not change the page. |
-| Tracker connection, watch, search, association | not done | Issue reads are a separate partial row. |
+| Tracker connection, watch, search, association | done | `GET/PUT/DELETE /tracker/connection` stores a `0600` dotenv under `$PROJECT_DATA_DIR/tracker-connections` and never returns the token. Dry-run refuses the save. Association, candidates, list, search, and a watch snapshot talk to a recorded loopback Jira server (`tests/test_tracker.py`). A private origin is rejected before any request. |
 | Workspace profiles, branding, config, host usage, runs index, automation templates | not done | — |
 | Self-update and skills auto-update routes | intentionally not ported | — |
 | `GET /star-count` | intentionally not ported | — |
@@ -495,8 +498,8 @@ next table.
 | `CEZ_ARCHIVED_RUNS_KEEP` | done | Archived rows use this cap and live rows use `CEZ_RUNS_KEEP`. `tests/test_finish.py`. `Config.from_env` reads it. |
 | `CEZ_HOME`, `CEZ_PROJECTS_DIR` | not done | State is `PROJECT_DATA_DIR` and SQLite. |
 | `CEZ_SINGLE_PROJECT` | partial | The health document reports the flag. Project add is not refused because of it. |
-| `CEZ_SECRETS_KEYCHAIN` | not done | The key is always a file. |
-| `CEZ_ENV_PASSTHROUGH`, `CEZ_AGENT_ENV_FULL`, `CEZ_REDACT_SECRETS` | not done | Checks drop `CEZ_*` from the server environment and add secret values. Agents do not receive the secret store. |
+| `CEZ_SECRETS_KEYCHAIN` | done | `0` forces the `0600` file. Otherwise a test-injected keychain (or `secret-tool` outside pytest) holds the 32-byte data key and the file is not written. A locked keychain fails the read instead of minting a new key (`tests/test_secrets.py`). |
+| `CEZ_ENV_PASSTHROUGH`, `CEZ_AGENT_ENV_FULL`, `CEZ_REDACT_SECRETS` | done | Agents get a curated environment. `CEZ_ENV_PASSTHROUGH` forwards named extras. `CEZ_AGENT_ENV_FULL` of `1`, `true`, or `yes` restores the parent environment; `0` and `false` stay curated. A spawned fake does not see `AWS_SECRET_ACCESS_KEY` unless the full hatch is on. Stored events replace token shapes with `[REDACTED]` unless `CEZ_REDACT_SECRETS=0` (`tests/test_agent_env.py`). Checks still drop `CEZ_*` and inject secret values. |
 | `CEZ_TERMINAL` | done | `0` makes `POST /runs/{id}/terminal` answer 409 `terminal is disabled`. `tests/test_routes.py`. |
 | `CEZ_AUTOSAVE`, `CEZ_TITLE_UPDATES`, `CEZ_AUTONAME` | not done | No periodic commit and no model title. |
 | `CEZ_TASK_PROCESS_REAP`, `CEZ_DISABLE_REPO_LOCK`, `CEZ_WORKFLOW_WEBHOOKS` | not done | — |
@@ -504,7 +507,7 @@ next table.
 | `CEZ_NO_BANNER`, `CEZ_UPDATE_CHANNEL`, `CEZ_SUPERVISED` | intentionally not ported | Star count, self-update, and the desktop supervisor. |
 | `CEZ_DESKTOP`, `CEZ_DESKTOP_*`, `CEZ_DISCLAIM_EXEC` | intentionally not ported | The Tauri shell is out of scope. |
 | `CEZ_SKILLS_AUTO_UPDATE` | intentionally not ported | — |
-| `CEZ_REMOTE_AGENT_ACCOUNTS` | not done | Accounts are a local list. |
+| `CEZ_REMOTE_AGENT_ACCOUNTS` | done | Hosted mode (`CEZ_REMOTE=1`) refuses `POST /settings/accounts` with 409 until the flag is exactly `1`. A local cockpit saves without it (`tests/test_agent_env.py`). |
 | `CEZ_AUTONOMOUS_DEFAULT`, `CEZ_WORKTREE_DEFAULT` | not done | — |
 | Release packaging, server-install, disk space, startup port probe | not done | Compose is the container. The listen port does not auto-increment. |
 | Worktree lifecycle events, handoff files, skills banner, remote skills | not done | — |
@@ -689,13 +692,10 @@ The merge box and the commit / push / draft-PR buttons on the task page are D's.
 
 ### D — integrations, webhooks, git, GitHub, secrets
 
-11 partial, 8 not done.
+8 partial, 0 not done.
 
 Partial:
 
-- Secrets vault
-- Agent accounts / profiles
-- Diff includes untracked files and is capped
 - Draft PRs, merge, GitHub review
 - GitHub / Jira / Linear reads
 - `GET/POST /runs/{id}/git/status`, `commit`, `push`, `GET …/diff`, `POST …/pr`
@@ -705,16 +705,7 @@ Partial:
 - `gh` issues and draft PRs
 - Webhooks
 
-Not done:
-
-- Freshest `origin/<base>` vs fork-point attribution
-- Remotes via `gh repo set-default` / fork parent
-- GitHub checks, review comments, PR changes, ref status, search
-- Repository `/repo/*` routes
-- Tracker connection, watch, search, association
-- `CEZ_SECRETS_KEYCHAIN`
-- `CEZ_ENV_PASSTHROUGH`, `CEZ_AGENT_ENV_FULL`, `CEZ_REDACT_SECRETS`
-- `CEZ_REMOTE_AGENT_ACCOUNTS`
+Not done: none.
 
 Owns: `app/integrations/`, `app/engine/gitwork.py`, `app/engine/git_actions.py`, `app/secrets/`, `app/features/secrets/`, `tests/test_secrets.py`, `tests/test_integrations.py`.
 

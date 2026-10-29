@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -158,6 +159,44 @@ def _keep(raw: str | None, default: int) -> int:
     except ValueError:
         return default
     return value if value >= 0 else default
+
+
+def redact_secrets_enabled(source: Mapping[str, str] | None = None) -> bool:
+    """On unless `CEZ_REDACT_SECRETS=0`. Read at the call so a test can flip it."""
+    return _read(source, "CEZ_REDACT_SECRETS", "1") != "0"
+
+
+def agent_env_full(source: Mapping[str, str] | None = None) -> bool:
+    """`1`, `true`, and `yes` restore the full parent environment. `0` and `false` do not."""
+    value = _read(source, "CEZ_AGENT_ENV_FULL", "").strip().lower()
+    return value not in ("", "0", "false")
+
+
+def env_passthrough(source: Mapping[str, str] | None = None) -> str:
+    return _read(source, "CEZ_ENV_PASSTHROUGH", "")
+
+
+def secrets_keychain_enabled() -> bool:
+    """`CEZ_SECRETS_KEYCHAIN=0` forces the file key. Anything else may use a keychain."""
+    return os.environ.get("CEZ_SECRETS_KEYCHAIN", "1") != "0"
+
+
+def agent_accounts_enabled(config: Config) -> bool:
+    """Hosted cockpits hide accounts unless `CEZ_REMOTE_AGENT_ACCOUNTS=1`."""
+    if os.environ.get("CEZ_REMOTE_AGENT_ACCOUNTS") == "1":
+        return True
+    return not config.hosted
+
+
+def _read(source: Mapping[str, str] | None, name: str, default: str) -> str:
+    env: Mapping[str, str] = os.environ if source is None else source
+    if name in env:
+        return env[name]
+    upper = name.upper()
+    for key, value in env.items():
+        if key.upper() == upper:
+            return value
+    return default
 
 
 def _port(raw: str) -> int:

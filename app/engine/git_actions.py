@@ -42,18 +42,23 @@ def commit_all(cwd: Path, message: str) -> dict[str, str]:
 def push_branch(cwd: Path, branch: str, *, dry_run: bool) -> dict[str, str | bool]:
     if not branch or not is_safe_git_ref(branch):
         return {"ok": False, "error": "this task has no branch of its own to push"}
+    from app.engine.git_remotes import resolve_task_remotes
+
+    remote = resolve_task_remotes(cwd).push or "origin"
+    if not is_safe_git_ref(remote):
+        return {"ok": False, "error": "refusing option-like push remote"}
     if dry_run:
         return {
             "ok": True,
             "branch": branch,
-            "remote": "origin",
+            "remote": remote,
             "upstreamSet": False,
             "dryRun": True,
         }
-    ok, _out, err = git(cwd, ["push", "-u", "origin", branch], timeout=30)
+    ok, _out, err = git(cwd, ["push", "-u", remote, branch], timeout=30)
     if not ok:
         return {"ok": False, "error": err.strip() or "git push failed"}
-    return {"ok": True, "branch": branch, "remote": "origin", "upstreamSet": True, "dryRun": False}
+    return {"ok": True, "branch": branch, "remote": remote, "upstreamSet": True, "dryRun": False}
 
 
 def worktree_git_status(cwd: Path, base: str) -> dict[str, object]:

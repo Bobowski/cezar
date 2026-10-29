@@ -12,7 +12,7 @@ from app.common.shell import load_chrome
 from app.config import Config
 from app.engine.dispatch_logic import DispatchOrder
 from app.engine.engine import CHANGED, Engine
-from app.engine.gitwork import Diff, diff_against
+from app.engine.gitwork import Diff, task_diff
 from app.engine.model import Run
 from app.features.task.urls import (
     TASK,
@@ -259,7 +259,14 @@ class TaskPage:
             if view.pane == "diff" and run.in_place:
                 return Diff("This run was not given a worktree.", 0, 0, 0, False)
             return None
-        return await asyncio.to_thread(diff_against, Path(run.worktree_path), run.base_sha)
+        return await asyncio.to_thread(
+            task_diff,
+            Path(run.worktree_path),
+            base_branch=run.base_branch,
+            task_branch=run.branch,
+            started_at=run.started_at,
+            fallback_sha=run.base_sha,
+        )
 
     def _chrome(self, project_id: str):
         return load_chrome(self.db, self.config, "Task", "tasks", project_id)

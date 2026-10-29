@@ -57,6 +57,8 @@ def public_run(run: Run, *, full: bool) -> dict[str, JsonValue]:
         body["pinnedAt"] = run.pinned_at
     if run.group_id:
         body["groupId"] = run.group_id
+    if run.account_id:
+        body["accountId"] = run.account_id
     if run.variant:
         body["variant"] = run.variant
     if run.seen_at:

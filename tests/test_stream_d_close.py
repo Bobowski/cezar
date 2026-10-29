@@ -218,6 +218,7 @@ async def test_repo_fetch_pull_and_push_use_a_local_bare_remote(client, repo: Pa
     subprocess.run(["git", "clone", str(bare), str(other)], check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=other, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=other, check=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=other, check=True)
     (other / "remote.txt").write_text("from the other clone\n", encoding="utf-8")
     subprocess.run(["git", "add", "remote.txt"], cwd=other, check=True)
     subprocess.run(["git", "commit", "-m", "remote"], cwd=other, check=True, capture_output=True)

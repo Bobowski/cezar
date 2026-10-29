@@ -34,10 +34,20 @@ def load_runs_file(path: Path, project_id: str) -> tuple[list[Run], int]:
 
 
 def events_near(runs_json: Path, run_id: str) -> list[dict[str, str]]:
-    """Lines from the TypeScript event file for this run, if it is on disk."""
-    candidates = (
-        runs_json.parent / "runs" / f"{run_id}.ndjson",
-        runs_json.parent / f"{run_id}.ndjson",
+    """Lines from the TypeScript event file for this run, if it is on disk.
+
+    The stored id is compact hex. The file on disk keeps the dashed UUID.
+    """
+    dashed = ""
+    if len(run_id) == 32:
+        dashed = f"{run_id[0:8]}-{run_id[8:12]}-{run_id[12:16]}-{run_id[16:20]}-{run_id[20:]}"
+    names = [run_id]
+    if dashed:
+        names.append(dashed)
+    candidates = tuple(
+        folder / f"{name}.ndjson"
+        for name in names
+        for folder in (runs_json.parent / "runs", runs_json.parent)
     )
     for path in candidates:
         if path.is_file():

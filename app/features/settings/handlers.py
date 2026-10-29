@@ -12,6 +12,7 @@ from app.engine.engine import CHANGED, Engine
 from app.engine.model import Settings
 from app.features.settings.urls import SETTINGS, SETTINGS_LIVE, SETTINGS_SAVE
 from app.features.settings.views import render
+from app.features.settings.workspace import WorkspaceSettings
 from app.store.db import get_settings
 
 
@@ -26,6 +27,7 @@ class SettingsPage:
         app.add(SETTINGS, self.show)
         app.add(SETTINGS_LIVE, self.live)
         app.add(SETTINGS_SAVE, self.save)
+        WorkspaceSettings(self.db, self.engine, self.config).register(app)
 
     async def show(self, c: Context, w: Writer) -> None:
         w.html(self._render(uuid.uuid7().hex))

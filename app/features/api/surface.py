@@ -291,7 +291,7 @@ class SurfaceApi:
         if "reviewGate" in body and isinstance(body["reviewGate"], bool):
             current["reviewGate"] = body["reviewGate"]
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
+        path.write_text(json_dumps(cast(JsonValue, current)) + "\n", encoding="utf-8")
         w.json(cast(JsonValue, self._config_body()))
 
     def _config_body(self) -> dict[str, object]:
@@ -389,12 +389,12 @@ class SurfaceApi:
         w.json(cast(JsonValue, result), status=201)
 
     async def terminal_open(self, c: Context, w: Writer) -> None:
-        import os
+        from app.config import terminal_enabled
 
         run = self._run(c, w)
         if run is None:
             return
-        if os.environ.get("CEZ_TERMINAL") == "0":
+        if not terminal_enabled():
             w.json({"error": "terminal is disabled"}, status=409)
             return
         if not run.worktree_path:
@@ -1418,7 +1418,7 @@ def _write_frame(w: Writer, event: str, data: dict[str, JsonValue]) -> None:
 
 
 def _frame(w: Writer, text: str) -> None:
-    w.write(f"event: output\ndata: {json.dumps(text)}\n\n".encode())
+    w.write(f"event: output\ndata: {json_dumps(text)}\n\n".encode())
 
 
 async def _raw(c: Context, w: Writer) -> bytes | None:

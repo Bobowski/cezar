@@ -257,9 +257,21 @@ textarea { min-height: 8rem; resize: vertical; }
 }
 .count b { display: block; font-size: 1.4rem; }
 
+.calendar { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; }
+.calendar th, .calendar td {
+  border: 1px solid var(--border);
+  padding: 0.35rem;
+  vertical-align: top;
+  font-size: 0.8rem;
+}
+.calendar td { height: 4.2rem; }
+.cal-item { font-weight: 600; }
+
 @media (max-width: 800px) {
   .app { grid-template-columns: 1fr; }
   .sidebar { position: sticky; top: 0; z-index: 2; }
   .nav { flex-direction: row; overflow: auto; }
   .main { padding: 1rem; }
+  .top { flex-direction: column; align-items: stretch; }
+  .calendar td { height: auto; min-height: 2.5rem; }
 }

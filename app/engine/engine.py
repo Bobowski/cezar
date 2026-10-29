@@ -24,7 +24,7 @@ from litewriter.errors import StateError
 from stario import App, Relay
 
 from app.clock import after, now, parse_stamp, stamp
-from app.config import RUNNERS, Config
+from app.config import RUNNERS, Config, single_project
 from app.engine.agents import AgentSpec, Runner, usage_from_line
 from app.engine.autosave import autosave_commit
 from app.engine.catalog import find_workflow, load_workflows
@@ -979,6 +979,12 @@ class Engine:
         project = get_project(self.db, run.project_id)
         root = Path(project.root) if project else self.config.repo_root
         system_parts: list[str] = []
+        # Global rules first; the project's own prompt follows and wins on conflict.
+        from app.features.settings.store import read_prompt
+
+        global_prompt = read_prompt(self.config.data_dir).strip()
+        if global_prompt:
+            system_parts.append(global_prompt)
         instructions, _naming = run_instructions(root)
         if instructions:
             system_parts.append(instructions)
@@ -1283,6 +1289,10 @@ class Engine:
         self._finish.discard(run.id)
         if run.status == "done":
             return
+        failure = await self._required_checks(run)
+        if failure:
+            await self._fail(run, failure)
+            return
         await self._release_deferred(run, stopped="the task was finished")
         previous = run.status
         run.status = "done"
@@ -1293,6 +1303,27 @@ class Engine:
         self._notify(run, previous)
         await self._autosave(run, "run finalize")
         self._reap(run.id)
+
+    async def _required_checks(self, run: Run) -> str | None:
+        """Shell commands saved on the project. A non-zero exit keeps the run from `done`.
+
+        TypeScript runs these only while auto-landing onto the trunk. This port
+        has no auto-land, so they run in the worktree at the moment of success.
+        """
+        from app.features.settings.store import read_checks
+
+        commands = read_checks(self.config.data_dir, run.project_id)
+        if not commands:
+            return None
+        cwd = Path(run.worktree_path) if run.worktree_path else self.config.repo_root
+        for command in commands:
+            code, output = await run_shell(
+                command, cwd, asyncio.Event(), self.config.check_timeout_seconds
+            )
+            if code != 0:
+                detail = output.strip() or f"exit {code}"
+                return f"required check `{command}` failed:\n{detail}"
+        return None
 
     async def set_archived(self, run_id: str, archived: bool) -> str | None:
         run = get_run(self.db, run_id)
@@ -1685,9 +1716,13 @@ class Engine:
     async def retain(self) -> list[str]:
         """Reclaim finished worktree directories past the cap, and drop old index rows."""
         reclaimed: list[str] = []
+        from app.features.settings.store import read_retention
+
         for project in list_projects(self.db):
+            saved = read_retention(self.config.data_dir, project.id)
+            keep = self.config.worktree_keep if saved is None else saved
             runs = list_runs(self.db, project.id, None, limit=10_000)
-            for run_id in select_reclaimable(runs, self.config.worktree_keep):
+            for run_id in select_reclaimable(runs, keep):
                 run = get_run(self.db, run_id)
                 if run is None or not run.worktree_path:
                     continue
@@ -2062,6 +2097,38 @@ class Engine:
         await self._note(parent.id, "note", f'dispatched "{child.title}" ({child.id})')
         return child.id, None
 
+    async def record_report(self, run_id: str, report: dict[str, object]) -> str | None:
+        """The `cez task report` body. A settled child keeps this instead of a generic note."""
+        if not self.config.dispatch_enabled:
+            return "dispatch is disabled on this cockpit (CEZ_DISPATCH=0)"
+        run = get_run(self.db, run_id)
+        if run is None:
+            return "not found"
+        if not run.parent_id:
+            return "run is not part of a dispatch tree"
+        status = report.get("status")
+        result = report.get("result")
+        if status not in ("done", "partial", "failed", "blocked"):
+            return "status must be done, partial, failed, or blocked"
+        if not isinstance(result, str) or not result.strip() or len(result) > 4000:
+            return "result is required"
+        verdict = report.get("verdict")
+        if verdict is not None and verdict not in ("approve", "changes", "reject"):
+            return "verdict must be approve, changes, or reject"
+        stored: dict[str, object] = {"status": status, "result": result.strip()}
+        if isinstance(verdict, str):
+            stored["verdict"] = verdict
+        entry: dict[str, object] = {
+            "title": run.title,
+            "text": result.strip(),
+            "status": status,
+            "from_id": run.id,
+            "at": stamp(),
+        }
+        await self.db.write(_persist_explicit_report, run.id, run.parent_id, entry, stored)
+        self.publish()
+        return None
+
     async def _report_child(self, run_id: str) -> None:
         run = get_run(self.db, run_id)
         if run is None or not run.parent_id or run.reported or run.status not in TERMINAL:
@@ -2107,6 +2174,8 @@ class Engine:
         self.boot_project_id = project.id
 
     async def add_project(self, path: Path) -> tuple[Project | None, str | None]:
+        if single_project():
+            return None, "single-project mode is enabled; adding projects is disabled"
         root = path.expanduser().resolve()
         if not root.is_dir():
             return None, "that path is not a directory"
@@ -2212,7 +2281,10 @@ class Engine:
         await self.enqueue(run)
         updated = replace(item, last_run_id=run.id)
         if move_schedule:
-            updated = replace(updated, next_at=after(item.every_minutes))
+            if item.once:
+                updated = replace(updated, enabled=False)
+            else:
+                updated = replace(updated, next_at=after(item.every_minutes))
         await self.db.write(save_automation, updated)
         self.publish()
         return run.id
@@ -2248,6 +2320,26 @@ def _if_port(run: Run, node: dict[str, Any], outputs: dict[str, dict[str, str]])
     if kind == "branch":
         return "true" if run.base_branch == condition.get("value") else "false"
     return "false"
+
+
+def _persist_explicit_report(
+    tx: Tx,
+    child_id: str,
+    parent_id: str,
+    entry: dict[str, object],
+    report: dict[str, object],
+) -> None:
+    child = get_run_tx(tx, child_id)
+    if child is None:
+        return
+    child.reported = True
+    child.dispatch_report = report
+    save_run(tx, child)
+    parent = get_run_tx(tx, parent_id)
+    if parent is None:
+        return
+    parent.pending_reports = append_report(parent.pending_reports, entry)
+    save_run(tx, parent)
 
 
 def _persist_report(tx: Tx, child_id: str, parent_id: str, entry: dict[str, object]) -> None:

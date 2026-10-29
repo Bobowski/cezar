@@ -1,0 +1,159 @@
+"""`python -m app.cli` — serve, run, init, projects.
+
+`run` treats `review` as success (exit 0), the same rule as headless `cezar run`.
+If a cockpit already holds the database, the command says so instead of waiting out the lock.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import sys
+from pathlib import Path
+
+from litewriter import ClaimBusy, LiteWriter
+from stario import Relay, serve
+from stario.http.config import ServerConfig
+
+from app.config import RUNNERS, Config, apply_overrides
+from app.engine.engine import Engine
+from app.engine.scaffold import init_project
+from app.main import bootstrap
+from app.store.db import (
+    find_project_by_root,
+    get_run,
+    get_settings,
+    list_events,
+    list_projects,
+    schema,
+)
+
+
+def main(argv: list[str] | None = None) -> int:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--repo", default="")
+    common.add_argument("--port", type=int, default=0)
+    common.add_argument("--host", default="")
+    parser = argparse.ArgumentParser(
+        prog="cezar-py", description="Python cockpit for cezar", parents=[common]
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("serve", parents=[common])
+
+    run_parser = sub.add_parser("run", parents=[common])
+    run_parser.add_argument("task", nargs="+")
+    run_parser.add_argument("--workflow", default="quick-task")
+    run_parser.add_argument("--runner", default="")
+    run_parser.add_argument("--model", default="")
+
+    sub.add_parser("init", parents=[common])
+
+    projects = sub.add_parser("projects", parents=[common])
+    projects.add_argument("action", nargs="?", default="list")
+    projects.add_argument("value", nargs="?")
+
+    args = parser.parse_args(argv)
+    if args.repo:
+        apply_overrides(repo=args.repo)
+    command = args.command or "serve"
+    if command == "serve":
+        config = Config.from_env()
+        host = args.host or config.listen_host
+        port = args.port or config.listen_port
+        asyncio.run(serve(bootstrap, config=ServerConfig(host=host, port=port)))
+        return 0
+    if command == "init":
+        repo = Config.from_env().repo_root
+        print(f"initialized {repo}")
+        for line in init_project(repo):
+            print(line)
+        return 0
+    try:
+        if command == "run":
+            return asyncio.run(
+                run_task(
+                    " ".join(args.task),
+                    workflow=args.workflow,
+                    runner=args.runner,
+                    model=args.model,
+                )
+            )
+        return asyncio.run(projects_command(args.action, args.value))
+    except ClaimBusy:
+        print("the database is in use by a running cockpit", file=sys.stderr)
+        return 1
+
+
+async def run_task(task: str, *, workflow: str, runner: str, model: str) -> int:
+    config = Config.from_env()
+    async with LiteWriter(config.db_path, schema=schema, claim=30) as db:
+        relay: Relay[dict[str, str]] = Relay()
+        engine = Engine(db, relay, config)
+        await engine.startup()
+        project = find_project_by_root(db, str(config.repo_root))
+        if project is None:
+            print("this directory is not a project", file=sys.stderr)
+            return 1
+        chosen = runner or get_settings(db).default_runner
+        if chosen not in RUNNERS:
+            print(f"unknown runner {chosen}", file=sys.stderr)
+            return 1
+        run, reason = engine.plan_run(
+            project=project,
+            task=task,
+            workflow_name=workflow,
+            runner=chosen,
+            model=model,
+        )
+        if run is None:
+            print(reason or "invalid task", file=sys.stderr)
+            return 1
+        await engine.enqueue(run)
+        await engine.execute(run.id)
+        current = get_run(db, run.id)
+        for event in list_events(db, run.id):
+            print(f"{event.type}: {event.text}")
+        status = current.status if current else "failed"
+        print(status)
+        if status in ("review", "done"):
+            return 0
+        return 1
+
+
+async def projects_command(action: str, value: str | None) -> int:
+    config = Config.from_env()
+    async with LiteWriter(config.db_path, schema=schema, claim=30) as db:
+        relay: Relay[dict[str, str]] = Relay()
+        engine = Engine(db, relay, config)
+        await engine.startup()
+        if action in ("", "list"):
+            for project in list_projects(db):
+                print(f"{project.id}\t{project.root}")
+            return 0
+        if action == "add":
+            path = Path(value) if value else config.repo_root
+            project, reason = await engine.add_project(path)
+            if project is None:
+                print(reason or "could not add", file=sys.stderr)
+                return 1
+            print(f"{project.id}\t{project.root}")
+            return 0
+        if action == "remove":
+            if not value:
+                print("projects remove <id>", file=sys.stderr)
+                return 1
+            from app.store.db import delete_project, get_project
+
+            if get_project(db, value) is None:
+                print("not found", file=sys.stderr)
+                return 1
+            await db.write(delete_project, value)
+            print(f"removed {value}")
+            return 0
+        print(f"unknown projects action: {action}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

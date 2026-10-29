@@ -1,0 +1,105 @@
+"""Process configuration. The only module that reads the environment."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+from stario.http.config import ServerConfig
+
+VERSION = "0.1.0"
+
+# User-selectable runners, in the same order as the TypeScript cockpit.
+RUNNERS: tuple[str, ...] = ("claude", "codex", "opencode", "cursor", "pi", "junie", "copilot")
+
+_BIN_ENV = {
+    "claude": "CEZ_CLAUDE_BIN",
+    "codex": "CEZ_CODEX_BIN",
+    "opencode": "CEZ_OPENCODE_BIN",
+    "cursor": "CEZ_CURSOR_BIN",
+    "pi": "CEZ_PI_BIN",
+    "junie": "CEZ_JUNIE_BIN",
+    "copilot": "CEZ_COPILOT_BIN",
+}
+
+_DEFAULT_BIN = {
+    "claude": "claude",
+    "codex": "codex",
+    "opencode": "opencode",
+    "cursor": "cursor-agent",
+    "pi": "pi",
+    "junie": "junie",
+    "copilot": "copilot",
+}
+
+
+def _flag(name: str, default: str) -> bool:
+    return os.environ.get(name, default) == "1"
+
+
+@dataclass(frozen=True, slots=True)
+class Config:
+    app_name: str
+    version: str
+    data_dir: Path
+    db_path: Path
+    repo_root: Path
+    # Unset CEZ_DRY_RUN defaults to the mock. The TypeScript app defaults the other way;
+    # the real CLI protocols are not ported, so spawning them is opt-in. See MIGRATION.md.
+    dry_run: bool
+    real_agents: bool
+    dispatch_enabled: bool
+    tick_seconds: float
+    check_timeout_seconds: float
+    runner_bins: dict[str, str]
+    listen_host: str
+    listen_port: int
+
+    @classmethod
+    def from_env(cls) -> Config:
+        # Yard sets PROJECT_DATA_DIR=/data, a host directory that survives every deploy.
+        data_dir = Path(os.environ.get("PROJECT_DATA_DIR", "data"))
+        data_dir.mkdir(parents=True, exist_ok=True)
+        repo = Path(os.environ.get("CEZ_REPO", os.getcwd())).expanduser().resolve()
+        bins = {
+            runner: os.environ.get(_BIN_ENV[runner], _DEFAULT_BIN[runner]) for runner in RUNNERS
+        }
+        return cls(
+            app_name=os.environ.get("APP_NAME", "cezar"),
+            version=VERSION,
+            data_dir=data_dir,
+            db_path=data_dir / "app.sqlite3",
+            repo_root=repo,
+            dry_run=_flag("CEZ_DRY_RUN", "1"),
+            real_agents=_flag("CEZ_REAL_AGENTS", "0"),
+            dispatch_enabled=os.environ.get("CEZ_DISPATCH", "1") != "0",
+            tick_seconds=0.2,
+            check_timeout_seconds=600,
+            runner_bins=bins,
+            listen_host=os.environ.get("STARIO_HOST", "127.0.0.1"),
+            listen_port=_port(os.environ.get("STARIO_PORT", "4321")),
+        )
+
+
+def listen_config() -> ServerConfig:
+    """Listen address for `python -m app.main`. Cezar's cockpit port is 4321."""
+    cfg = Config.from_env()
+    return ServerConfig(host=cfg.listen_host, port=cfg.listen_port)
+
+
+def apply_overrides(*, repo: str | None = None, data_dir: str | None = None) -> None:
+    if repo is not None:
+        os.environ["CEZ_REPO"] = repo
+    if data_dir is not None:
+        os.environ["PROJECT_DATA_DIR"] = data_dir
+
+
+def _port(raw: str) -> int:
+    try:
+        port = int(raw)
+    except ValueError:
+        return 4321
+    if 1 <= port <= 65535:
+        return port
+    return 4321

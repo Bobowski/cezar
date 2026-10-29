@@ -1,0 +1,265 @@
+/* Cezar cockpit palette (packages/web/src/styles/index.css), laid out for a server-rendered page. */
+
+:root {
+  color-scheme: dark;
+  --background: #0d0d0d;
+  --foreground: #ffffff;
+  --card: #171717;
+  --muted: #262626;
+  --muted-foreground: #a3a3a3;
+  --border: #262626;
+  --primary: #a8f372;
+  --primary-foreground: #0d0d0d;
+  --violet: #8f86e8;
+  --danger: #ef4444;
+  --success: #10b981;
+  --pending: #fbbf24;
+  --info: #93c5fd;
+  --sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+:root[data-accent="violet"] {
+  --primary: var(--violet);
+  --primary-foreground: #ffffff;
+}
+
+.light {
+  color-scheme: light;
+  --background: #ffffff;
+  --foreground: #171717;
+  --card: #fafafa;
+  --muted: #f3f3f3;
+  --muted-foreground: #5c5c5c;
+  --border: #ebebeb;
+  --primary: #3f6212;
+  --primary-foreground: #ffffff;
+  --info: #1d4ed8;
+}
+
+:root.light[data-accent="violet"],
+.light[data-accent="violet"] {
+  --primary: #6d28d9;
+  --primary-foreground: #ffffff;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+a { color: inherit; }
+
+.app {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  background: var(--card);
+  border-right: 1px solid var(--border);
+  padding: 1.25rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.wordmark {
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  font-size: 1.15rem;
+}
+
+.wordmark span { color: var(--primary); }
+
+.nav { display: flex; flex-direction: column; gap: 0.15rem; }
+
+.nav a {
+  text-decoration: none;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.4rem;
+  color: var(--muted-foreground);
+}
+
+.nav a.active,
+.nav a:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.banner {
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+}
+
+.main { padding: 1.5rem 1.75rem 3rem; min-width: 0; }
+
+.top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+h1 { font-size: 1.35rem; font-weight: 600; margin: 0; }
+
+.sub { color: var(--muted-foreground); margin: 0.25rem 0 0; }
+
+.row, .filters, .actions, .inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.filters a {
+  color: var(--muted-foreground);
+  text-decoration: none;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.filters a.on {
+  border-color: var(--border);
+  color: var(--foreground);
+}
+
+.task-list, .stack { display: flex; flex-direction: column; gap: 0.4rem; }
+
+.task-row, .card {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+  text-decoration: none;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  padding: 0.7rem 0.85rem;
+}
+
+.task-row strong { font-weight: 600; }
+
+.grow { flex: 1; min-width: 0; }
+
+.meta, .muted { color: var(--muted-foreground); font-size: 0.85rem; }
+
+.status {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+}
+
+.status-running { color: var(--primary); }
+.status-waiting { color: var(--info); }
+.status-review { color: var(--violet); }
+.status-done { color: var(--success); }
+.status-failed { color: var(--danger); }
+.status-queued, .status-cancelled { color: var(--pending); }
+
+.field { display: flex; flex-direction: column; gap: 0.3rem; margin: 0.75rem 0; }
+.field span { color: var(--muted-foreground); font-size: 0.85rem; }
+
+input, textarea, select {
+  background: var(--background);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  border-radius: 0.45rem;
+  padding: 0.55rem 0.7rem;
+  font: inherit;
+  width: 100%;
+}
+
+textarea { min-height: 8rem; resize: vertical; }
+
+.btn, button, .btn-link {
+  background: var(--muted);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  border-radius: 0.45rem;
+  padding: 0.45rem 0.8rem;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn-primary { background: var(--primary); color: var(--primary-foreground); border-color: transparent; }
+.btn-danger { background: transparent; color: var(--danger); border-color: var(--danger); }
+
+.composer, .card-block {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0.7rem;
+  padding: 1rem;
+  margin: 1rem 0;
+}
+
+.ask {
+  border-color: var(--info);
+  background: color-mix(in srgb, var(--info) 12%, var(--card));
+}
+
+.transcript { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.35rem; }
+.transcript li {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  white-space: pre-wrap;
+  background: var(--card);
+  border-radius: 0.4rem;
+  padding: 0.45rem 0.6rem;
+}
+.ev-type { color: var(--primary); margin-right: 0.4rem; }
+.ev-error .ev-type { color: var(--danger); }
+
+.diff {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  overflow: auto;
+  background: var(--card);
+  border-radius: 0.5rem;
+  padding: 0.8rem;
+  white-space: pre;
+}
+
+.steps { display: flex; gap: 0.4rem; flex-wrap: wrap; padding: 0; list-style: none; }
+.steps li { font-size: 0.8rem; color: var(--muted-foreground); }
+.steps .here { color: var(--primary); }
+
+.error { color: var(--danger); min-height: 1.2em; }
+
+#toast {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  padding: 0.6rem 0.8rem;
+  border-radius: 0.5rem;
+}
+
+.counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.6rem; }
+.count {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  padding: 0.8rem;
+}
+.count b { display: block; font-size: 1.4rem; }
+
+@media (max-width: 800px) {
+  .app { grid-template-columns: 1fr; }
+  .sidebar { position: sticky; top: 0; z-index: 2; }
+  .nav { flex-direction: row; overflow: auto; }
+  .main { padding: 1rem; }
+}

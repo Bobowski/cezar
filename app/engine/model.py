@@ -1,0 +1,440 @@
+"""Documents stored in SQLite and the workflow values the executor walks.
+
+Field names stay snake_case in Python. The small JSON API maps the ones it exposes.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import cast
+
+from app.config import RUNNERS
+
+STATUSES: tuple[str, ...] = (
+    "queued",
+    "running",
+    "waiting",
+    "review",
+    "done",
+    "failed",
+    "cancelled",
+)
+TERMINAL: frozenset[str] = frozenset({"done", "review", "failed", "cancelled"})
+IN_FLIGHT: frozenset[str] = frozenset({"queued", "running", "waiting"})
+
+
+def _text(value: object, default: str = "") -> str:
+    return value if isinstance(value, str) else default
+
+
+def _int(value: object, default: int = 0) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def _float(value: object, default: float = 0.0) -> float:
+    if isinstance(value, bool) or value is None:
+        return default
+    if isinstance(value, int | float):
+        return float(value)
+    return default
+
+
+def _bool(value: object, default: bool = False) -> bool:
+    return value if isinstance(value, bool) else default
+
+
+def _dict(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return cast(dict[str, object], value)
+    return {}
+
+
+def _dicts(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [cast(dict[str, object], item) for item in value if isinstance(item, dict)]
+
+
+@dataclass(frozen=True, slots=True)
+class Step:
+    id: str
+    name: str = ""
+    prompt: str = ""
+    skill: str = ""
+    command: str = ""
+    runner: str = ""
+    model: str = ""
+    retry: str = ""
+    retry_max: int = 0
+    retry_on: tuple[int, ...] = ()
+    has_secrets: bool = False
+    allowed_tools: tuple[str, ...] = ()
+    bash_allowlist: tuple[str, ...] = ()
+
+    @property
+    def kind(self) -> str:
+        return "check" if self.command else "agent"
+
+    def to_json(self) -> dict[str, object]:
+        body: dict[str, object] = {"id": self.id, "name": self.name}
+        if self.prompt:
+            body["prompt"] = self.prompt
+        if self.skill:
+            body["skill"] = self.skill
+        if self.command:
+            body["command"] = self.command
+        if self.runner:
+            body["runner"] = self.runner
+        if self.model:
+            body["model"] = self.model
+        if self.retry:
+            body["onFail"] = {
+                "retry": self.retry,
+                "max": self.retry_max,
+                **({"retryOn": list(self.retry_on)} if self.retry_on else {}),
+            }
+        if self.has_secrets:
+            body["secrets"] = True
+        if self.allowed_tools:
+            body["allowedTools"] = list(self.allowed_tools)
+        if self.bash_allowlist:
+            body["bashAllowlist"] = list(self.bash_allowlist)
+        return body
+
+    @classmethod
+    def from_json(cls, raw: object) -> Step:
+        data = _dict(raw)
+        on_fail = _dict(data.get("onFail"))
+        retry_on = data_retry_on(on_fail.get("retryOn"))
+        tools = _str_tuple(data.get("allowedTools"))
+        allow = _str_tuple(data.get("bashAllowlist"))
+        return cls(
+            id=_text(data.get("id")),
+            name=_text(data.get("name")),
+            prompt=_text(data.get("prompt")),
+            skill=_text(data.get("skill")),
+            command=_text(data.get("command")),
+            runner=_text(data.get("runner")),
+            model=_text(data.get("model")),
+            retry=_text(on_fail.get("retry")),
+            retry_max=_int(on_fail.get("max")),
+            retry_on=retry_on,
+            has_secrets=data.get("secrets") not in (None, False),
+            allowed_tools=tools,
+            bash_allowlist=allow,
+        )
+
+
+def data_retry_on(value: object) -> tuple[int, ...]:
+    if not isinstance(value, list):
+        return ()
+    nums: list[int] = []
+    for item in value:
+        if isinstance(item, int) and not isinstance(item, bool):
+            nums.append(item)
+    return tuple(nums)
+
+
+def _str_tuple(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, str))
+
+
+@dataclass(frozen=True, slots=True)
+class Workflow:
+    name: str
+    description: str
+    steps: tuple[Step, ...]
+    source: str
+    path: str = ""
+
+    def to_json(self) -> dict[str, object]:
+        body: dict[str, object] = {
+            "name": self.name,
+            "source": self.source,
+            "steps": [step.to_json() for step in self.steps],
+        }
+        if self.description:
+            body["description"] = self.description
+        if self.path:
+            body["path"] = self.path
+        return body
+
+    @classmethod
+    def from_json(cls, raw: object) -> Workflow:
+        data = _dict(raw)
+        steps_raw = data.get("steps")
+        steps = (
+            tuple(Step.from_json(item) for item in steps_raw) if isinstance(steps_raw, list) else ()
+        )
+        return cls(
+            name=_text(data.get("name")),
+            description=_text(data.get("description")),
+            steps=steps,
+            source=_text(data.get("source"), "built-in"),
+            path=_text(data.get("path")),
+        )
+
+
+@dataclass(slots=True)
+class Run:
+    id: str
+    project_id: str
+    title: str
+    task: str
+    workflow: str
+    status: str
+    runner: str
+    created_at: str
+    workflow_def: dict[str, object]
+    branch: str = ""
+    worktree_path: str = ""
+    base_branch: str = ""
+    base_sha: str = ""
+    started_at: str = ""
+    finished_at: str = ""
+    error: str = ""
+    tokens_used: int = 0
+    cost_usd: float = 0.0
+    parent_id: str = ""
+    root_id: str = ""
+    budget_usd: float | None = None
+    autonomous: bool = False
+    model: str = ""
+    step_index: int = 0
+    mode: str = "workflow"
+    continuation: str = ""
+    ask: str = ""
+    pending_note: str = ""
+    check_failure: str = ""
+    retries: dict[str, int] = field(default_factory=dict)
+    pending_reports: list[dict[str, object]] = field(default_factory=list)
+    reported: bool = False
+    in_place: bool = False
+    kind: str = "implement"
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "title": self.title,
+            "task": self.task,
+            "workflow": self.workflow,
+            "status": self.status,
+            "runner": self.runner,
+            "created_at": self.created_at,
+            "workflow_def": self.workflow_def,
+            "branch": self.branch,
+            "worktree_path": self.worktree_path,
+            "base_branch": self.base_branch,
+            "base_sha": self.base_sha,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "error": self.error,
+            "tokens_used": self.tokens_used,
+            "cost_usd": self.cost_usd,
+            "parent_id": self.parent_id,
+            "root_id": self.root_id,
+            "budget_usd": self.budget_usd,
+            "autonomous": self.autonomous,
+            "model": self.model,
+            "step_index": self.step_index,
+            "mode": self.mode,
+            "continuation": self.continuation,
+            "ask": self.ask,
+            "pending_note": self.pending_note,
+            "check_failure": self.check_failure,
+            "retries": self.retries,
+            "pending_reports": self.pending_reports,
+            "reported": self.reported,
+            "in_place": self.in_place,
+            "kind": self.kind,
+        }
+
+    @classmethod
+    def from_json(cls, raw: object) -> Run:
+        data = _dict(raw)
+        retries_raw = _dict(data.get("retries"))
+        retries = {
+            key: value
+            for key, value in retries_raw.items()
+            if isinstance(value, int) and not isinstance(value, bool)
+        }
+        budget = data.get("budget_usd")
+        budget_usd = None if budget is None else _float(budget)
+        if budget is None:
+            budget_usd = None
+        return cls(
+            id=_text(data.get("id")),
+            project_id=_text(data.get("project_id")),
+            title=_text(data.get("title")),
+            task=_text(data.get("task")),
+            workflow=_text(data.get("workflow")),
+            status=_text(data.get("status"), "queued"),
+            runner=_text(data.get("runner"), "claude"),
+            created_at=_text(data.get("created_at")),
+            workflow_def=_dict(data.get("workflow_def")),
+            branch=_text(data.get("branch")),
+            worktree_path=_text(data.get("worktree_path")),
+            base_branch=_text(data.get("base_branch")),
+            base_sha=_text(data.get("base_sha")),
+            started_at=_text(data.get("started_at")),
+            finished_at=_text(data.get("finished_at")),
+            error=_text(data.get("error")),
+            tokens_used=_int(data.get("tokens_used")),
+            cost_usd=_float(data.get("cost_usd")),
+            parent_id=_text(data.get("parent_id")),
+            root_id=_text(data.get("root_id")),
+            budget_usd=budget_usd,
+            autonomous=_bool(data.get("autonomous")),
+            model=_text(data.get("model")),
+            step_index=_int(data.get("step_index")),
+            mode=_text(data.get("mode"), "workflow"),
+            continuation=_text(data.get("continuation")),
+            ask=_text(data.get("ask")),
+            pending_note=_text(data.get("pending_note")),
+            check_failure=_text(data.get("check_failure")),
+            retries=retries,
+            pending_reports=_dicts(data.get("pending_reports")),
+            reported=_bool(data.get("reported")),
+            in_place=_bool(data.get("in_place")),
+            kind=_text(data.get("kind"), "implement"),
+        )
+
+    def definition(self) -> Workflow:
+        return Workflow.from_json(self.workflow_def)
+
+
+@dataclass(frozen=True, slots=True)
+class Event:
+    id: int
+    run_id: str
+    seq: int
+    type: str
+    text: str
+    step_id: str
+    at: str
+
+
+@dataclass(frozen=True, slots=True)
+class Project:
+    id: str
+    name: str
+    root: str
+    base_branch: str
+    created_at: str
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "root": self.root,
+            "base_branch": self.base_branch,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_json(cls, raw: object) -> Project:
+        data = _dict(raw)
+        return cls(
+            id=_text(data.get("id")),
+            name=_text(data.get("name")),
+            root=_text(data.get("root")),
+            base_branch=_text(data.get("base_branch"), "main"),
+            created_at=_text(data.get("created_at")),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Settings:
+    max_parallel: int = 2
+    default_runner: str = "claude"
+    theme: str = "dark"
+    accent: str = "lime"
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "max_parallel": self.max_parallel,
+            "default_runner": self.default_runner,
+            "theme": self.theme,
+            "accent": self.accent,
+        }
+
+    @classmethod
+    def from_json(cls, raw: object) -> Settings:
+        data = _dict(raw)
+        parallel = _int(data.get("max_parallel"), 2)
+        if not 1 <= parallel <= 16:
+            parallel = 2
+        runner = _text(data.get("default_runner"), "claude")
+        if runner not in RUNNERS:
+            runner = "claude"
+        theme = _text(data.get("theme"), "dark")
+        if theme not in ("dark", "light"):
+            theme = "dark"
+        accent = _text(data.get("accent"), "lime")
+        if accent not in ("lime", "violet"):
+            accent = "lime"
+        return cls(parallel, runner, theme, accent)
+
+
+@dataclass(frozen=True, slots=True)
+class Automation:
+    id: str
+    project_id: str
+    name: str
+    task: str
+    workflow: str
+    runner: str
+    every_minutes: int
+    enabled: bool
+    next_at: str
+    created_at: str
+    last_run_id: str = ""
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "name": self.name,
+            "task": self.task,
+            "workflow": self.workflow,
+            "runner": self.runner,
+            "every_minutes": self.every_minutes,
+            "enabled": self.enabled,
+            "next_at": self.next_at,
+            "created_at": self.created_at,
+            "last_run_id": self.last_run_id,
+        }
+
+    @classmethod
+    def from_json(cls, raw: object) -> Automation:
+        data = _dict(raw)
+        every = _int(data.get("every_minutes"), 60)
+        if not 1 <= every <= 10080:
+            every = 60
+        runner = _text(data.get("runner"), "claude")
+        if runner not in RUNNERS:
+            runner = "claude"
+        return cls(
+            id=_text(data.get("id")),
+            project_id=_text(data.get("project_id")),
+            name=_text(data.get("name")),
+            task=_text(data.get("task")),
+            workflow=_text(data.get("workflow"), "quick-task"),
+            runner=runner,
+            every_minutes=every,
+            enabled=_bool(data.get("enabled")),
+            next_at=_text(data.get("next_at")),
+            created_at=_text(data.get("created_at")),
+            last_run_id=_text(data.get("last_run_id")),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Skill:
+    name: str
+    description: str
+    body: str
+    path: str

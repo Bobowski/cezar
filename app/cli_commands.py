@@ -37,6 +37,9 @@ _AUTO_USAGE = """cez automation — create and manage schedule automations
   cez automation schema
   cez automation list
   cez automation create --json '<json>'
+  cez automation cron --json '<json>'
+  cez automation tracker --json '<json>'
+  cez automation check <id>
 """
 
 
@@ -122,7 +125,11 @@ def run_automation_command(
         log(_AUTO_USAGE.strip())
         return 0 if command else 2
     if command == "schema":
-        log('schedule automation: {"name", "task", "everyMinutes", "workflow", "runner", "enable"}')
+        log(
+            "schedule automation: name, task, everyMinutes, workflow, runner, enable, "
+            "kind (schedule|github|tracker), events, filters. "
+            "GET /automations includes stats total, enabled, runsLaunched."
+        )
         return 0
     base = _scope(env)
     if base is None:
@@ -140,7 +147,7 @@ def run_automation_command(
                 if isinstance(item, dict):
                     log(f"{item.get('id', '')}\t{item.get('name', '')}")
         return 0
-    if command == "create":
+    if command in ("create", "cron", "tracker"):
         flags, _positionals = _split(args[1:])
         raw = flags.get("json")
         if not raw:
@@ -151,8 +158,29 @@ def run_automation_command(
         except json.JSONDecodeError as exc:
             error(f"cez automation: the definition is not valid JSON — {exc}")
             return 1
+        if not isinstance(body, dict):
+            error("cez automation: the definition must be an object")
+            return 1
+        if command == "cron":
+            body.setdefault("kind", "schedule")
+        if command == "tracker":
+            body.setdefault("kind", "tracker")
         status, response = _call(caller, "POST", f"{base}/automations", body)
         if status not in (200, 201) or not isinstance(response, dict):
+            error(f"cez automation: {_error_text(response, status)}")
+            return 1
+        log(str(response.get("id", "")))
+        return 0
+    if command == "check":
+        flags, positionals = _split(args[1:])
+        ident = flags.get("id") or (positionals[0] if positionals else "")
+        if not ident:
+            error("cez automation: check needs an id")
+            return 1
+        status, response = _call(
+            caller, "POST", f"{base}/automations/{ident}/check", {"execute": "execute" in flags}
+        )
+        if status != 200 or not isinstance(response, dict):
             error(f"cez automation: {_error_text(response, status)}")
             return 1
         log(str(response.get("id", "")))

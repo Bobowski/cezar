@@ -145,6 +145,73 @@ def _name_and_body(path: str, raw: str) -> tuple[str, str]:
     return title, body.strip()
 
 
+def refresh_sources(
+    data_dir: Path, repos: list[tuple[str, str]], *, dry_run: bool
+) -> dict[str, object]:
+    """Clone or fetch each configured skills repo and list the skills it holds.
+
+    A dry run still clones a local path or `file://` URL. Anything else is
+    skipped, so a dry run does not talk to a network remote.
+    """
+    found: list[dict[str, str]] = []
+    skipped: list[str] = []
+    for repo, ref in repos:
+        local = _local_repo(repo)
+        if not local and dry_run:
+            skipped.append(repo)
+            continue
+        source = repo.removeprefix("file://") if local else repo
+        existed = (_cache(data_dir, source) / "HEAD").is_file()
+        bare = _bare(data_dir, source)
+        if bare is None:
+            skipped.append(repo)
+            continue
+        if existed:
+            _git(["-C", str(bare), "fetch", "--all", "--prune"])
+        found.extend(_catalog(bare, ref))
+    return {"skills": found, "skipped": skipped, "network": False}
+
+
+def cached_sources(data_dir: Path, repos: list[tuple[str, str]]) -> list[dict[str, str]]:
+    found: list[dict[str, str]] = []
+    for repo, ref in repos:
+        source = repo.removeprefix("file://") if _local_repo(repo) else repo
+        bare = _cache(data_dir, source)
+        if (bare / "HEAD").is_file():
+            found.extend(_catalog(bare, ref))
+    return found
+
+
+def _local_repo(repo: str) -> bool:
+    return repo.startswith("/") or repo.startswith("file://")
+
+
+def _cache(data_dir: Path, repo: str) -> Path:
+    digest = hashlib.sha256(repo.encode()).hexdigest()[:16]
+    return data_dir / "skill-cache" / digest
+
+
+def _catalog(bare: Path, ref: str) -> list[dict[str, str]]:
+    if not ref or ref.startswith("-") or ".." in ref.split("/"):
+        return []
+    ok, sha = _git(["-C", str(bare), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"])
+    if not ok or not sha:
+        return []
+    ok, listed = _git(["-C", str(bare), "ls-tree", "-r", "--name-only", sha, "--"])
+    if not ok:
+        return []
+    rows: list[dict[str, str]] = []
+    for path in listed.splitlines():
+        if not _is_skill_file(path):
+            continue
+        ok, body = _git(["-C", str(bare), "show", f"{sha}:{path}"])
+        if not ok:
+            continue
+        name, _text = _name_and_body(path, body)
+        rows.append({"name": name, "path": f"{bare}:{path}"})
+    return rows
+
+
 def _git(args: list[str]) -> tuple[bool, str]:
     try:
         result = subprocess.run(

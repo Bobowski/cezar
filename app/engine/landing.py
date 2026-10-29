@@ -1,8 +1,11 @@
-"""Auto-land an in-place task onto the checkout branch.
+"""In-place commits.
 
-Matches `landInPlace` in `packages/cezar/src/workflows/landing.ts`. A git-tracked
-`.ai/cezar/config.json` cannot grant it. Required checks run here, after a
-rebase when the branch has an upstream and before the commit when it does not.
+`land_in_place` is the auto-land from `landInPlace` in
+`packages/cezar/src/workflows/landing.ts`. A git-tracked config cannot grant
+it. Required checks run during that land.
+
+`land_inplace` is the explicit `POST …/land` commit. It does not push, and it
+does not stage `.ai/cezar`.
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from app.engine.gitwork import git
 
@@ -255,3 +259,35 @@ def _count(repo: Path, range_expr: str) -> int:
     if not ok or not out.strip().isdigit():
         return 0
     return int(out.strip())
+
+
+def land_inplace(root: Path) -> dict[str, Any]:
+    ok, status, err = git(root, ["status", "--porcelain", "--", ".", ":(exclude).ai/cezar"])
+    if not ok:
+        return {"result": "failed", "stage": "commit", "error": err.strip() or "git status failed"}
+    if not status.strip():
+        return {"result": "nothing"}
+    added, _out, add_err = git(root, ["add", "-A", "--", ".", ":(exclude).ai/cezar"])
+    if not added:
+        return {"result": "failed", "stage": "commit", "error": add_err.strip() or "git add failed"}
+    committed, _cout, commit_err = git(root, ["commit", "-m", "land the task"])
+    if not committed:
+        return {
+            "result": "failed",
+            "stage": "commit",
+            "error": commit_err.strip() or "git commit failed",
+        }
+    _ok, sha, _sha_err = git(root, ["rev-parse", "HEAD"])
+    files = [line[3:] for line in status.splitlines() if len(line) > 3]
+    return {"result": "landed", "sha": sha.strip(), "files": files}
+
+
+def inplace_requested(root: Path) -> bool:
+    path = root / ".ai" / "cezar" / "config.json"
+    try:
+        import json
+
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except OSError, ValueError:
+        return False
+    return isinstance(loaded, dict) and loaded.get("inPlace") is True

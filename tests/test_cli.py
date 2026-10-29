@@ -111,6 +111,8 @@ def test_task_runs_and_automation_commands_need_a_cockpit():
             return 200, [{"id": "parent", "title": "Parent", "status": "running"}]
         if url.endswith("/automations"):
             return 201, {"id": "auto-1", "name": "nightly"}
+        if url.endswith("/check"):
+            return 200, {"id": "chk-1", "matches": 0, "launched": False}
         return 500, {"error": "nope"}
 
     env = {"CEZ_API_URL": "http://127.0.0.1:9", "CEZ_TASK_ID": "parent"}
@@ -142,6 +144,36 @@ def test_task_runs_and_automation_commands_need_a_cockpit():
         == 0
     )
     assert created[-1] == "auto-1"
+    tracked: list[str] = []
+    assert (
+        run_automation_command(
+            ["tracker", "--json", '{"name":"issues","task":"triage"}'],
+            env,
+            tracked.append,
+            tracked.append,
+            fetch,
+        )
+        == 0
+    )
+    posted_auto = calls[-1][2]
+    assert isinstance(posted_auto, dict)
+    assert posted_auto["kind"] == "tracker"
+    checked: list[str] = []
+    assert (
+        run_automation_command(
+            ["check", "auto-1"],
+            env,
+            checked.append,
+            checked.append,
+            fetch,
+        )
+        == 0
+    )
+    assert checked[-1] == "chk-1"
+    schema: list[str] = []
+    assert run_automation_command(["schema"], {}, schema.append, schema.append) == 0
+    assert "runsLaunched" in schema[-1]
+    assert "filters" in schema[-1]
 
 
 def test_telemetry_command_does_not_enable_sending():

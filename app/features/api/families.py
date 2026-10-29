@@ -7,7 +7,6 @@ and the static `/icon.svg` and `/assets` files.
 
 from __future__ import annotations
 
-import hashlib
 import shutil
 import subprocess
 import uuid
@@ -26,10 +25,12 @@ from app.config import (
     RUNNERS,
     Config,
     automations_enabled,
+    claude_state_file,
     followups_enabled,
     single_project,
     todos_path,
 )
+from app.engine.agent_catalog import FILES, describe, find_file, read_bytes, resolve_path, user_mcp
 from app.engine.catalog import load_workflows
 from app.engine.deferred_start import (
     load_creations,
@@ -46,7 +47,6 @@ from app.engine.gitwork import drop_worktree_dir
 from app.engine.model import Automation, Project, Run, Settings
 from app.engine.todos import mark_started, read_todos, remove_todo
 from app.features.api.records import public_run
-from app.features.editors.store import CATALOG, read_agent_file, write_agent_file
 from app.http.loopback import hosted_mode
 from app.store.db import (
     get_automation,
@@ -60,28 +60,19 @@ from app.store.db import (
     save_project,
 )
 
+
+def _spawn(args: list[str]) -> None:
+    subprocess.Popen(  # noqa: S603 — the binary is one of the fixed editor names
+        args,
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 _OFF = "Automations are off — this cockpit was started with CEZ_AUTOMATIONS=0"
 _FOLLOWUPS = "the follow-up inbox is disabled — set CEZ_FOLLOWUPS=1 to enable it"
 _STATIC = Path(__file__).resolve().parents[3] / "static"
-_META = {
-    "agents-md": ("memory", "project", "markdown", "tracked", False, "https://agents.md"),
-    "claude-project": (
-        "settings",
-        "project",
-        "json",
-        "tracked",
-        False,
-        "https://code.claude.com/docs/en/settings",
-    ),
-    "claude-local": (
-        "settings",
-        "local",
-        "json",
-        "gitignored",
-        False,
-        "https://code.claude.com/docs/en/settings",
-    ),
-}
 _OPEN = (
     ("cursor", "Cursor"),
     ("code", "Visual Studio Code"),
@@ -140,7 +131,20 @@ class RouteFamilies:
         if project is None or not self._automations(w):
             return
         rows = list_automations(self.db, project.id)
-        w.json(cast(JsonValue, {"automations": [_automation(item) for item in rows]}))
+        launched = sum(1 for item in rows if item.last_run_id)
+        w.json(
+            cast(
+                JsonValue,
+                {
+                    "automations": [_automation(item) for item in rows],
+                    "stats": {
+                        "total": len(rows),
+                        "enabled": sum(1 for item in rows if item.enabled),
+                        "runsLaunched": launched,
+                    },
+                },
+            )
+        )
 
     async def create_automation(self, c: Context, w: Writer) -> None:
         project = self._project(c, w)
@@ -355,17 +359,19 @@ class RouteFamilies:
         if project is None:
             return
         editable = not hosted_mode(self.config)
-        files = [
-            _config_file(Path(project.root), file_id, relative, editable)
-            for file_id, relative in CATALOG.items()
-        ]
+        repo = Path(project.root)
+        files = []
+        for item in FILES:
+            if not editable and item.tracked == "outside-repo":
+                continue
+            files.append(describe(item, repo, editable=editable))
         w.json(
             cast(
                 JsonValue,
                 {
                     "editable": editable,
                     "files": files,
-                    "userMcp": None if not editable else _user_mcp(),
+                    "userMcp": None if not editable else user_mcp(claude_state_file()),
                 },
             )
         )
@@ -374,16 +380,19 @@ class RouteFamilies:
         project = self._project(c, w)
         if project is None:
             return
-        found = read_agent_file(Path(project.root), c.match.params.get("file_id", ""))
-        if found is None:
+        item = find_file(c.match.params.get("file_id", ""))
+        if item is None:
             w.json({"error": "unknown config file"}, status=404)
             return
-        relative, _text = found
-        content, version = _bytes(Path(project.root) / relative)
+        if hosted_mode(self.config) and item.tracked == "outside-repo":
+            w.json({"error": "this file is not served in hosted mode (CEZ_REMOTE)"}, status=409)
+            return
+        path = resolve_path(item, Path(project.root))
+        content, version = read_bytes(path)
         w.json(
             {
-                "id": c.match.params.get("file_id", ""),
-                "path": relative,
+                "id": item.id,
+                "path": item.label,
                 "exists": version is not None,
                 "content": content,
                 "version": version,
@@ -405,10 +414,12 @@ class RouteFamilies:
                 status=409,
             )
             return
-        file_id = c.match.params.get("file_id", "")
-        found = read_agent_file(Path(project.root), file_id)
-        if found is None:
+        item = find_file(c.match.params.get("file_id", ""))
+        if item is None:
             w.json({"error": "unknown config file"}, status=404)
+            return
+        if item.tracked == "outside-repo":
+            w.json({"error": "user files are not written by this cockpit"}, status=409)
             return
         body = await _object(c, w)
         if body is None:
@@ -417,20 +428,18 @@ class RouteFamilies:
         if "version" not in body or not isinstance(content, str) or len(content) > 2_000_000:
             w.json({"error": "content and version are required"}, status=400)
             return
-        relative, _existing = found
-        _current, version = _bytes(Path(project.root) / relative)
+        path = resolve_path(item, Path(project.root))
+        _current, version = read_bytes(path)
         if body.get("version") != version:
             w.json({"error": "the file changed since you read it"}, status=409)
             return
-        reason = write_agent_file(Path(project.root), file_id, content, hosted=False)
-        if reason:
-            w.json({"error": reason}, status=400)
-            return
-        written, new_version = _bytes(Path(project.root) / relative)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        written, new_version = read_bytes(path)
         w.json(
             {
-                "id": file_id,
-                "path": relative,
+                "id": item.id,
+                "path": item.label,
                 "exists": True,
                 "content": written,
                 "version": new_version,
@@ -631,12 +640,7 @@ class RouteFamilies:
         if self.config.dry_run:
             w.json({"opened": True, "path": project.root, "dryRun": True})
             return
-        subprocess.Popen(  # noqa: S603 — the binary is one of the fixed editor names
-            [target, project.root],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        _spawn([target, project.root])
         w.json({"opened": True, "path": project.root})
 
     async def add_project(self, c: Context, w: Writer) -> None:
@@ -683,11 +687,27 @@ class RouteFamilies:
                 w.json({"error": reason}, status=400)
                 return
             project = get_project(self.db, project.id) or project
-        if name != project.name:
-            await self.db.write(save_project, replace(project, name=name.strip()))
+        tags = project.tags
+        if "tags" in body:
+            raw_tags = body.get("tags")
+            if not isinstance(raw_tags, list) or not all(
+                isinstance(item, str) and item.strip() for item in raw_tags
+            ):
+                w.json({"error": "tags must be a list of strings"}, status=400)
+                return
+            tags = tuple(item.strip() for item in raw_tags)
+        if name != project.name or tags != project.tags:
+            await self.db.write(save_project, replace(project, name=name.strip(), tags=tags))
             self.engine.publish()
             project = get_project(self.db, project.id) or project
-        w.json({"id": project.id, "name": project.name, "baseBranch": project.base_branch})
+        w.json(
+            {
+                "id": project.id,
+                "name": project.name,
+                "baseBranch": project.base_branch,
+                "tags": list(project.tags),
+            }
+        )
 
     async def delete_project(self, c: Context, w: Writer) -> None:
         if single_project():
@@ -852,9 +872,30 @@ class RouteFamilies:
                 enabled=body.get("enable") is True,
                 next_at=after(every),
                 created_at=stamp(),
+                kind=_kind(body.get("kind")),
+                events=_events(body.get("events")),
+                filters=_filters(body.get("filters")),
             ),
             None,
         )
+
+
+def _kind(value: object) -> str:
+    if value in ("schedule", "github", "tracker"):
+        return str(value)
+    return "schedule"
+
+
+def _events(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, str))
+
+
+def _filters(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): item for key, item in value.items()}
 
 
 def _automation(item: Automation) -> dict[str, object]:
@@ -863,7 +904,9 @@ def _automation(item: Automation) -> dict[str, object]:
         "revision": item.revision,
         "name": item.name,
         "enabled": item.enabled,
-        "kind": "schedule",
+        "kind": item.kind or "schedule",
+        "events": list(item.events),
+        "filters": item.filters,
         "everyMinutes": item.every_minutes,
         "workflow": item.workflow,
         "runner": item.runner,
@@ -905,42 +948,6 @@ def _apply_update(
         ),
         None,
     )
-
-
-def _config_file(root: Path, file_id: str, relative: str, editable: bool) -> dict[str, object]:
-    kind, scope, fmt, tracked, private, docs = _META[file_id]
-    content, version = _bytes(root / relative)
-    return {
-        "id": file_id,
-        "runners": ["claude"] if file_id != "agents-md" else ["claude", "codex", "cursor"],
-        "kind": kind,
-        "scope": scope,
-        "label": relative,
-        "path": relative,
-        "format": fmt,
-        "tracked": tracked,
-        "seeded": False,
-        "holdsMcp": False,
-        "private": private,
-        "precedence": f"{relative} in the project checkout",
-        "docsUrl": docs,
-        "exists": version is not None,
-        "size": len(content.encode()),
-        "version": version,
-        "writable": editable,
-    }
-
-
-def _bytes(path: Path) -> tuple[str, str | None]:
-    if not path.is_file():
-        return "", None
-    raw = path.read_bytes()
-    return raw.decode("utf-8", errors="replace"), hashlib.sha256(raw).hexdigest()
-
-
-def _user_mcp() -> dict[str, object]:
-    path = Path.home() / ".claude.json"
-    return {"path": str(path), "servers": [], "readable": path.is_file()}
 
 
 def _group(db: LiteWriter, group_id: str) -> list[Run]:

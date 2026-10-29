@@ -7,15 +7,18 @@ from app.engine.agents import AgentEvent, AgentSpec
 from app.engine.runners.argv import (
     build_allowed_tools,
     build_claude_args,
+    build_codex_args,
     build_copilot_args,
     build_cursor_args,
     build_junie_args,
+    build_opencode_args,
     build_pi_args,
     codex_sandbox,
 )
 from app.engine.runners.protocol import (
     ProtocolRunner,
     TurnState,
+    opencode_events,
     parse_claude_line,
     parse_codex_line,
 )
@@ -99,6 +102,8 @@ def test_cursor_pi_junie_and_copilot_argv():
     assert copilot[:3] == ["--acp", "--allow-all-tools", "--no-auto-update"]
     assert codex_sandbox(network_off=False) == "danger-full-access"
     assert codex_sandbox(network_off=True) == "workspace-write"
+    assert "allowedTools" not in build_codex_args()
+    assert "--allowedTools" not in build_opencode_args(1)
 
 
 def test_a_child_codex_turn_does_not_finish_the_parent():
@@ -229,12 +234,89 @@ async def test_pi_cursor_and_acp_fakes(tmp_path: Path):
 async def test_opencode_fake_holds_the_message_post(tmp_path: Path):
     binary = tmp_path / "opencode"
     install("opencode", binary)
-    events = await collect(
-        ProtocolRunner("opencode", str(binary)),
-        spec(tmp_path, "opencode", "serve"),
-    )
+    runner = ProtocolRunner("opencode", str(binary))
+    events = await collect(runner, spec(tmp_path, "opencode", "serve"))
+    await runner.aclose()
+    assert any(event.type == "session" and event.text == "ses_1" for event in events)
     assert any(event.text == "oc serve" for event in events)
     assert events[-1].type == "turn-end"
+
+
+async def test_opencode_resume_reuses_the_session(tmp_path: Path):
+    binary = tmp_path / "opencode"
+    install("opencode", binary)
+    runner = ProtocolRunner("opencode", str(binary))
+    first = await collect(runner, spec(tmp_path, "opencode", "serve"))
+    session = next(event.text for event in first if event.type == "session")
+    second = await collect(
+        runner,
+        spec(tmp_path, "opencode", "again", resume=True, codex_thread=session),
+    )
+    await runner.aclose()
+    assert any(event.text == "oc again" for event in second)
+    log = Path(str(binary) + ".log").read_text(encoding="utf-8")
+    assert log.splitlines() == ["/session", "/session/ses_1/message", "/session/ses_1/message"]
+
+
+def test_opencode_sse_keeps_assistant_parts_and_permission():
+    frames = [
+        {"type": "message.updated", "properties": {"info": {"id": "m1", "role": "user"}}},
+        {
+            "type": "message.part.updated",
+            "properties": {"part": {"messageID": "m1", "id": "p0", "type": "text", "text": "echo"}},
+        },
+        {"type": "message.updated", "properties": {"info": {"id": "m2", "role": "assistant"}}},
+        {
+            "type": "message.part.updated",
+            "properties": {
+                "part": {"messageID": "m2", "id": "p1", "type": "text", "text": "answer"}
+            },
+        },
+        {"type": "permission.asked", "properties": {"id": "perm-1"}},
+        {"type": "session.idle", "properties": {}},
+    ]
+    raw = "\n\n".join(f"data: {json.dumps(frame, separators=(',', ':'))}" for frame in frames)
+    events = opencode_events(raw)
+    assert [event.text for event in events if event.type == "text"] == ["answer"]
+    assert any(event.type == "permission.requested" and event.text == "perm-1" for event in events)
+    assert events[-1].type == "turn-end"
+
+
+def test_codex_compaction_and_item_updated():
+    state = TurnState()
+    started = parse_codex_line(
+        json.dumps(
+            {
+                "method": "item/completed",
+                "params": {"item": {"id": "c1", "type": "contextCompaction"}},
+            }
+        ),
+        state,
+    )
+    assert state.compacted is True
+    assert any(event.name == "contextCompaction" for event in started)
+    updated = parse_codex_line(
+        json.dumps(
+            {
+                "method": "item/updated",
+                "params": {"item": {"id": "c1", "type": "fileChange"}},
+            }
+        ),
+        state,
+    )
+    assert updated[0].type == "item.updated"
+    assert "fileChange" in updated[0].text
+    file_change = parse_codex_line(
+        json.dumps(
+            {
+                "method": "item/started",
+                "params": {"item": {"id": "f1", "type": "fileChange"}},
+            }
+        ),
+        state,
+    )
+    assert file_change[0].type == "tool-call"
+    assert file_change[0].name == "fileChange"
 
 
 async def test_inactivity_kills_a_silent_process(tmp_path: Path):

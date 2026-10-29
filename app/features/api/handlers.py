@@ -377,6 +377,9 @@ class ApiPage:
         run = self._existing(c, w)
         if run is None:
             return
+        if get_run(self.db, run.id) is None:
+            w.json({"error": "not found"}, status=404)
+            return
         cancelled = await self.engine.cancel_auto_resume(run.id)
         w.json({"cancelled": cancelled})
 

@@ -115,14 +115,15 @@ async def test_git_actions_read_receipts_and_a_signed_github_hook(client):
     assert current.json()["status"] == "done"
     status = await client.get(f"/api/v1/runs/{run_id}/git/status")
     assert status.status_code == 200
-    assert status.json()["uncommitted"] is True
+    # The turn-end autosave already committed the dry-run file.
+    assert status.json()["uncommitted"] is False
     committed = await client.post(
         f"/api/v1/runs/{run_id}/git/commit", json={"message": "save the dry run"}
     )
     assert committed.status_code == 200
-    assert committed.json()["committed"] is True
+    assert committed.json()["committed"] is False
     commits = await client.get(f"/tasks/{run_id}?pane=commits")
-    assert "save the dry run" in commits.text
+    assert "cezar autosave (turn end)" in commits.text
     pushed = await client.post(f"/api/v1/runs/{run_id}/git/push")
     assert pushed.json()["dryRun"] is True
     opened = await client.post(f"/api/v1/runs/{run_id}/pr")

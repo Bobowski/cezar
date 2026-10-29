@@ -266,6 +266,9 @@ textarea { min-height: 8rem; resize: vertical; }
 }
 .calendar td { height: 4.2rem; }
 .cal-item { font-weight: 600; }
+#transcript[data-virtualized="true"] { max-height: 70vh; overflow: auto; }
+#usage-series { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+#usage-series th, #usage-series td { border-bottom: 1px solid var(--border); padding: 0.3rem 0.5rem; text-align: left; }
 
 @media (max-width: 800px) {
   .app { grid-template-columns: 1fr; }

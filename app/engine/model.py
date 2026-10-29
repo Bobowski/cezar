@@ -233,6 +233,8 @@ class Run:
     finished_at: str = ""
     error: str = ""
     tokens_used: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
     cost_usd: float = 0.0
     parent_id: str = ""
     root_id: str = ""
@@ -262,6 +264,8 @@ class Run:
     seen_at: str = ""
     auto_resume_at: str = ""
     auto_resume_attempts: int = 0
+    monitoring_wakes: int = 0
+    monitoring_wake_at: str = ""
     awaiting_answer_since: str = ""
     pull_request_url: str = ""
     worktree_reclaimed_at: str = ""
@@ -289,6 +293,8 @@ class Run:
             "finished_at": self.finished_at,
             "error": self.error,
             "tokens_used": self.tokens_used,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
             "cost_usd": self.cost_usd,
             "parent_id": self.parent_id,
             "root_id": self.root_id,
@@ -318,6 +324,8 @@ class Run:
             "seen_at": self.seen_at,
             "auto_resume_at": self.auto_resume_at,
             "auto_resume_attempts": self.auto_resume_attempts,
+            "monitoring_wakes": self.monitoring_wakes,
+            "monitoring_wake_at": self.monitoring_wake_at,
             "awaiting_answer_since": self.awaiting_answer_since,
             "pull_request_url": self.pull_request_url,
             "worktree_reclaimed_at": self.worktree_reclaimed_at,
@@ -360,6 +368,8 @@ class Run:
             finished_at=_text(data.get("finished_at")),
             error=_text(data.get("error")),
             tokens_used=_int(data.get("tokens_used")),
+            input_tokens=_int(data.get("input_tokens")),
+            output_tokens=_int(data.get("output_tokens")),
             cost_usd=_float(data.get("cost_usd")),
             parent_id=_text(data.get("parent_id")),
             root_id=_text(data.get("root_id")),
@@ -389,6 +399,8 @@ class Run:
             seen_at=_text(data.get("seen_at")),
             auto_resume_at=_text(data.get("auto_resume_at")),
             auto_resume_attempts=_int(data.get("auto_resume_attempts")),
+            monitoring_wakes=_int(data.get("monitoring_wakes")),
+            monitoring_wake_at=_text(data.get("monitoring_wake_at")),
             awaiting_answer_since=_text(data.get("awaiting_answer_since")),
             pull_request_url=_text(data.get("pull_request_url")),
             worktree_reclaimed_at=_text(data.get("worktree_reclaimed_at")),

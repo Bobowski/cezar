@@ -9,16 +9,19 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from typing import Any
 
 FLUSH_S = 0.04
 MAX_BUFFER = 64_000
 
 LiveEmit = Callable[[str, str, str, str], None]
+Spawn = Callable[..., asyncio.Task[Any]]
 
 
 class DeltaCoalescer:
-    def __init__(self, flush_s: float = FLUSH_S) -> None:
+    def __init__(self, flush_s: float = FLUSH_S, spawn: Spawn | None = None) -> None:
         self.flush_s = flush_s
+        self.spawn: Spawn = spawn or asyncio.create_task
         self.pending: dict[tuple[str, str, str], str] = {}
         self.full: dict[tuple[str, str], str] = {}
         self._timer: asyncio.Task[None] | None = None
@@ -36,7 +39,7 @@ class DeltaCoalescer:
             self.flush()
             return
         if self._timer is None or self._timer.done():
-            self._timer = asyncio.create_task(self._wait())
+            self._timer = self.spawn(self._wait())
 
     async def _wait(self) -> None:
         try:

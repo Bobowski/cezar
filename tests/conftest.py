@@ -14,6 +14,9 @@ def init_repo(path: Path) -> None:
     subprocess.run(["git", "init", "-b", "main"], cwd=path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+    # Local only. The product autosave respects commit.gpgsign, matching
+    # autosaveCommit in packages/cezar/src/git-worktree.ts.
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=path, check=True)
     (path / "README.md").write_text("hi\n", encoding="utf-8")
     subprocess.run(["git", "add", "README.md"], cwd=path, check=True)
     subprocess.run(

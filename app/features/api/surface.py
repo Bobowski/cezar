@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from litewriter import LiteWriter
 from stario import App, Context, Route, Writer
@@ -114,6 +115,9 @@ class SurfaceApi:
         app.add(Route("GET /api/v1/github/prs/{number}/merge-state"), self.merge_state)
         app.add(Route("POST /api/v1/github/prs/{number}/merge"), self.merge_pr)
         app.add(Route("POST /api/v1/github/prs/{number}/reviews"), self.review_pr)
+        app.add(Route("GET /api/v1/events"), self.project_events)
+        app.add(Route("GET /api/v1/p/{project_id}/events"), self.project_events)
+        app.add(Route("GET /api/v1/workspace/events"), self.workspace_events)
         for method, path, handler in (
             ("GET", "/github/checks", self.github_checks),
             ("GET", "/github/search", self.github_search),
@@ -148,6 +152,42 @@ class SurfaceApi:
         ):
             app.add(Route(f"{method} /api/v1{path}"), handler)
             app.add(Route(f"{method} /api/v1/p/{{project_id}}{path}"), handler)
+
+    async def project_events(self, c: Context, w: Writer) -> None:
+        project = self._project(c, w)
+        if project is None:
+            return
+        await self._event_stream(c, w, project.id)
+
+    async def workspace_events(self, c: Context, w: Writer) -> None:
+        await self._event_stream(c, w, None)
+
+    async def _event_stream(self, c: Context, w: Writer, project_id: str | None) -> None:
+        """List-level SSE. `/events` is one project. `/workspace/events` stamps `projectId`."""
+        from app.features.api.records import public_run
+
+        sse = SSE(w)
+        sse.open()
+        pending: list[tuple[str, object]] = []
+
+        def on_event(event: str, data: object) -> None:
+            if not _event_visible(event, data, project_id):
+                return
+            pending.append((event, data))
+
+        off = self.engine.subscribe_workspace(on_event)
+        try:
+            ping_at = time.monotonic() + 15
+            while not c.disconnected:
+                while pending:
+                    event, data = pending.pop(0)
+                    _write_frame(w, event, _event_body(event, data, project_id, public_run))
+                if time.monotonic() >= ping_at:
+                    sse.ping()
+                    ping_at = time.monotonic() + 15
+                await asyncio.sleep(0.05)
+        finally:
+            off()
 
     async def archive_finished(self, c: Context, w: Writer) -> None:
         project = self._project(c, w)
@@ -1342,6 +1382,44 @@ def _hook_title(loaded: object) -> str:
             return title
     title = loaded.get("title")
     return title if isinstance(title, str) else ""
+
+
+def _event_visible(event: str, data: object, project_id: str | None) -> bool:
+    if project_id is None:
+        return True
+    if event == "run":
+        return getattr(data, "project_id", None) == project_id
+    if isinstance(data, dict):
+        owner = data.get("projectId")
+        return owner in (None, project_id)
+    return False
+
+
+def _event_body(
+    event: str,
+    data: object,
+    project_id: str | None,
+    public_run: object,
+) -> dict[str, JsonValue]:
+    if event == "run":
+        render = cast(Any, public_run)
+        body = dict(render(data, full=False))
+        if project_id is None:
+            body["projectId"] = cast(Any, data).project_id
+        return cast(dict[str, JsonValue], body)
+    if isinstance(data, dict):
+        if project_id is None:
+            return cast(dict[str, JsonValue], data)
+        return cast(
+            dict[str, JsonValue],
+            {key: value for key, value in data.items() if key != "projectId"},
+        )
+    return {}
+
+
+def _write_frame(w: Writer, event: str, data: dict[str, JsonValue]) -> None:
+    raw = json_dumps(cast(JsonValue, data))
+    w.write(f"event: {event}\ndata: {raw}\n\n".encode())
 
 
 def _frame(w: Writer, text: str) -> None:

@@ -110,18 +110,19 @@ async def test_an_in_place_checkout_is_committed(client, repo: Path):
     body = await _until(client, run_id, lambda row: row["status"] in ("done", "failed", "review"))
     assert body["status"] == "done"
     assert body.get("worktree") is False
-    log = subprocess.check_output(
-        ["git", "log", "-1", "--format=%s", "--name-only"], cwd=repo, text=True
+    committed = subprocess.check_output(
+        ["git", "ls-tree", "-r", "--name-only", "HEAD"], cwd=repo, text=True
     )
-    assert "land the task" in log
-    assert "CEZAR_DRY_RUN.txt" in log
-    assert ".ai/cezar" not in log
+    assert "CEZAR_DRY_RUN.txt" in committed
     (repo / "after.txt").write_text("later\n", encoding="utf-8")
     landed = await client.post(f"/api/v1/runs/{run_id}/land")
     assert landed.json()["result"] == "landed"
-    assert "after.txt" in subprocess.check_output(
-        ["git", "log", "-1", "--name-only"], cwd=repo, text=True
+    latest = subprocess.check_output(
+        ["git", "log", "-1", "--format=%s", "--name-only"], cwd=repo, text=True
     )
+    assert "land the task" in latest
+    assert "after.txt" in latest
+    assert ".ai/cezar" not in latest
 
 
 async def test_delete_auto_resume_cancels_the_scheduled_retry(client):

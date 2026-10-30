@@ -112,3 +112,9 @@ def build_user_prompt(
     if pending_note:
         parts.append(pending_note)
     return "\n\n".join(parts)
+
+
+RESTART_CONTINUATION = (
+    "The cezar process restarted while you were working on this task. Read the handoff file "
+    "(CEZ_HANDOFF_FILE) to recover context, then continue the task from where you left off."
+)

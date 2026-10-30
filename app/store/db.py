@@ -57,10 +57,9 @@ def _columns(tx: Tx, table: str, columns: dict[str, str]) -> None:
 
 
 def mark_interrupted(tx: Tx) -> None:
-    """A restarted process no longer has the agent. Queued work stays queued.
+    """Fail every `running` row: the subprocess of a restarted process is gone.
 
-    TypeScript resumes a running session. This port cannot: the subprocess is gone.
-    `waiting` is left alone so the question is still on screen.
+    `Engine.recover` resumes what it can first and calls this for the rest.
     """
     tx.execute(
         "UPDATE runs SET data = json_set(data, '$.status', 'failed', "
@@ -105,8 +104,6 @@ def schema(tx: Tx) -> None:
     )
     _columns(tx, "automations", AUTOMATION_COLUMNS)
     tx.execute("CREATE INDEX IF NOT EXISTS automations_due ON automations(enabled, next_at)")
-
-    mark_interrupted(tx)
 
 
 def _run(row: IdData) -> Run:

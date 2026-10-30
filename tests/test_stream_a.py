@@ -33,7 +33,6 @@ from app.store.db import (
     insert_run,
     list_events,
     list_runs,
-    mark_interrupted,
     save_run,
     schema,
 )
@@ -309,7 +308,7 @@ async def test_an_interrupted_run_resumes_the_cli_session(tmp_path: Path):
         run.worktree_path = str(repo)
         run.started_at = stamp()
         await db.write(insert_run, run)
-        await db.write(mark_interrupted)
+        await engine.recover()
         assert _got(db, run.id).error == "interrupted by restart"
         capture = Capture()
         engine.agent = capture

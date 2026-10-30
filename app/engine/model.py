@@ -260,6 +260,9 @@ class Run:
     group_id: str = ""
     variant: str = ""
     codex_thread: str = ""
+    # The runner that opened an agent session for this run. Claude and Pi name the session after
+    # the run id; Codex and OpenCode keep theirs in `codex_thread`. Empty: no session yet.
+    session_runner: str = ""
     images: list[dict[str, object]] = field(default_factory=list)
     seen_at: str = ""
     auto_resume_at: str = ""
@@ -322,6 +325,7 @@ class Run:
             "group_id": self.group_id,
             "variant": self.variant,
             "codex_thread": self.codex_thread,
+            "session_runner": self.session_runner,
             "images": self.images,
             "seen_at": self.seen_at,
             "auto_resume_at": self.auto_resume_at,
@@ -401,6 +405,7 @@ class Run:
             group_id=_text(data.get("group_id")),
             variant=_text(data.get("variant")),
             codex_thread=_text(data.get("codex_thread")),
+            session_runner=_text(data.get("session_runner")),
             images=_dicts(data.get("images")),
             seen_at=_text(data.get("seen_at")),
             auto_resume_at=_text(data.get("auto_resume_at")),

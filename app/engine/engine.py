@@ -77,6 +77,7 @@ from app.engine.prompts import (
     MAX_COMPACTION_CONTINUES,
     MONITORING_WAKE_NUDGE,
     REPO_LOCK_DISABLED_NOTE,
+    RESTART_CONTINUATION,
     build_user_prompt,
 )
 from app.engine.reap import reap_task_processes
@@ -108,6 +109,7 @@ from app.store.db import (
     list_queued,
     list_run_ids,
     list_runs,
+    mark_interrupted,
     save_automation,
     save_project,
     save_run,
@@ -342,6 +344,52 @@ class Engine:
             if get_run(self.db, run_id) is not None:
                 await self._note(run_id, "lifecycle", message)
         await self.db.write(rebaseline_automations)
+        await self.recover()
+
+    def _resumable(self, run: Run) -> bool:
+        """Whether the agent's session outlives the process and can be reopened.
+
+        Claude and Pi name the session after the run id. Codex and OpenCode need the thread id
+        they reported. The dry-run mock resumes anything that opened a session.
+        """
+        runner = run.session_runner
+        if not runner:
+            return False
+        if self.config.dry_run:
+            return True
+        if runner in ("claude", "pi"):
+            return True
+        return runner in ("codex", "opencode") and bool(run.codex_thread)
+
+    async def recover(self) -> None:
+        """Startup recovery, before the server takes requests (TypeScript `RunManager.recover`).
+
+        `queued` stays queued for the first tick and `waiting` stays waiting, graph parks
+        included. A `running` agent with a resumable session is queued as a follow-up that
+        reopens it and points the agent at its handoff file. Every other `running` row fails
+        with "interrupted by restart": no session yet, a runner that cannot resume, or a graph
+        parent still waiting on its dispatched children (re-attaching to those is not ported).
+        """
+        from app.engine.handoff import append_heartbeat
+
+        for run in list_runs(self.db, None, "running", limit=1000):
+            if not self._resumable(run):
+                continue
+            if run.definition().graph and count_in_flight_children(self.db, run.id):
+                continue
+            run.mode = "followup"
+            run.continuation = RESTART_CONTINUATION
+            run.status = "queued"
+            run.error = ""
+            run.finished_at = ""
+            await self._save(run)
+            append_heartbeat(self.config.data_dir, run.id, "cezar restarted", at=stamp())
+            await self._note(
+                run.id,
+                "lifecycle",
+                "cezar restarted — resuming the interrupted task from its last session",
+            )
+        await self.db.write(mark_interrupted)
 
     async def serve(self) -> None:
         while self.app is not None and not self.app.shutting_down:
@@ -1212,6 +1260,11 @@ class Engine:
             profile_home=_profile_home(self.config, run.account_id, step.runner or run.runner),
             handoff_file=str(handoff_path(self.config.data_dir, run.id)),
         )
+        if run.session_runner != spec.runner:
+            opened = get_run(self.db, run.id) or run
+            opened.session_runner = spec.runner
+            await self._save(opened)
+            run.session_runner = spec.runner
         texts: list[str] = []
         in_gained = 0
         out_gained = 0

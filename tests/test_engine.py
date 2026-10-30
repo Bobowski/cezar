@@ -1,4 +1,6 @@
 import asyncio
+import dataclasses
+import uuid
 from datetime import timedelta
 from pathlib import Path
 
@@ -14,7 +16,7 @@ from app.engine.engine import Engine, rebaseline_automations
 from app.engine.gitignore_data import DATA_GITIGNORE_ENTRIES, ensure_data_gitignore
 from app.engine.gitwork import diff_against, is_safe_git_ref, log_count, prune_orphans
 from app.engine.model import Automation, Run, Settings, Step, Workflow
-from app.store.db import get_run, insert_run, list_runs, mark_interrupted, save_run, schema
+from app.store.db import get_run, insert_run, list_runs, save_run, schema
 
 
 def config_for(tmp_path: Path, repo: Path, **overrides: object) -> Config:
@@ -250,11 +252,19 @@ async def test_a_stale_schedule_does_not_launch_a_backlog(world):
     assert len(launched) == 1
 
 
-async def test_a_restart_fails_a_running_agent_and_leaves_the_queue(world):
-    engine, _repo = world
-    queued = await _start(engine, "queued work")
-    running = Run(
-        id="a" * 32,
+class SpecCapture:
+    def __init__(self) -> None:
+        self.specs: list[AgentSpec] = []
+
+    async def stream(self, spec: AgentSpec):
+        self.specs.append(spec)
+        yield AgentEvent("text", "CEZ:DONE")
+        yield AgentEvent("turn-end")
+
+
+async def _live(engine: Engine, repo: Path, *, session: str, **fields: object) -> Run:
+    run = Run(
+        id=uuid.uuid4().hex,
         project_id=engine.boot_project_id,
         title="live",
         task="live",
@@ -262,13 +272,93 @@ async def test_a_restart_fails_a_running_agent_and_leaves_the_queue(world):
         status="running",
         runner="claude",
         created_at=stamp(),
-        workflow_def={},
+        worktree_path=str(repo),
+        session_runner=session,
+        **({"workflow_def": {}} | fields),  # type: ignore[arg-type]
     )
-    await engine.db.write(insert_run, running)
-    await engine.db.write(mark_interrupted)
-    assert (get_run(engine.db, running.id) or running).status == "failed"
-    assert "interrupted" in (get_run(engine.db, running.id) or running).error
+    await engine.db.write(insert_run, run)
+    return run
+
+
+async def test_a_restart_requeues_queued_work_and_the_scheduler_runs_it(world):
+    engine, _repo = world
+    queued = await _start(engine, "queued work")
+    await engine.recover()
     assert (get_run(engine.db, queued.id) or queued).status == "queued"
+    await engine.tick()
+    await asyncio.gather(*list(engine._tasks.values()))
+    assert (get_run(engine.db, queued.id) or queued).status == "done"
+
+
+async def test_a_restart_resumes_a_running_agent_with_its_session_and_handoff(world):
+    engine, repo = world
+    run = await _live(engine, repo, session="claude")
+    await engine.recover()
+    stored = get_run(engine.db, run.id) or run
+    assert stored.status == "queued"
+    assert stored.error == ""
+    capture = SpecCapture()
+    engine.agent = capture
+    await engine.execute(run.id)
+    assert capture.specs[0].resume is True
+    assert capture.specs[0].session_id == run.id
+    assert capture.specs[0].handoff_file.endswith(f"{run.id}.handoff.md")
+    assert "CEZ_HANDOFF_FILE" in capture.specs[0].user_prompt
+    assert "restarted" in capture.specs[0].user_prompt
+    assert (get_run(engine.db, run.id) or run).status == "done"
+
+
+async def test_a_restart_fails_a_running_agent_that_never_opened_a_session(world):
+    engine, repo = world
+    run = await _live(engine, repo, session="")
+    queued = await _start(engine, "still queued")
+    await engine.recover()
+    stored = get_run(engine.db, run.id) or run
+    assert stored.status == "failed"
+    assert stored.error == "interrupted by restart"
+    assert (get_run(engine.db, queued.id) or queued).status == "queued"
+
+
+async def test_a_restart_fails_a_running_agent_whose_runner_cannot_resume(world):
+    engine, repo = world
+    engine.config = dataclasses.replace(engine.config, dry_run=False)
+    cursor = await _live(engine, repo, session="cursor")
+    codex_without_thread = await _live(engine, repo, session="codex")
+    codex_with_thread = await _live(engine, repo, session="codex", codex_thread="t-1")
+    await engine.recover()
+    assert (get_run(engine.db, cursor.id) or cursor).error == "interrupted by restart"
+    assert (get_run(engine.db, codex_without_thread.id) or cursor).status == "failed"
+    assert (get_run(engine.db, codex_with_thread.id) or cursor).status == "queued"
+
+
+async def test_a_restart_fails_a_graph_parent_that_was_awaiting_children(world):
+    engine, repo = world
+    graph = {"nodes": [], "edges": []}
+    parent = await _live(engine, repo, session="claude", workflow_def={"name": "g", "graph": graph})
+    child = await _live(engine, repo, session="", parent_id=parent.id)
+    child.status = "queued"
+    await engine.db.write(save_run, child)
+    await engine.recover()
+    stored = get_run(engine.db, parent.id) or parent
+    assert stored.status == "failed" and stored.error == "interrupted by restart"
+    assert (get_run(engine.db, child.id) or child).status == "queued"
+
+
+async def test_a_restart_keeps_a_waiting_run_waiting(world):
+    engine, repo = world
+    asking = await _live(engine, repo, session="claude")
+    asking.status = "waiting"
+    asking.ask = "which one?"
+    parked = await _live(engine, repo, session="")
+    parked.status = "waiting"
+    parked.graph_park = {"node": "gate", "kind": "gate.human"}
+    await engine.db.write(save_run, asking)
+    await engine.db.write(save_run, parked)
+    await engine.recover()
+    kept = get_run(engine.db, asking.id) or asking
+    assert kept.status == "waiting" and kept.ask == "which one?"
+    held = get_run(engine.db, parked.id) or parked
+    assert held.status == "waiting" and held.graph_park["node"] == "gate"
 
 
 async def test_success_is_done_until_the_review_gate_is_on(world, monkeypatch):

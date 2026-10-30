@@ -1,6 +1,6 @@
 # Python port: trim proposal
 
-Status: proposal, not applied. Measured on `port-finish` at 69303c94.
+Status: proposal, not applied. Measured on `port-finish` at 69303c94, before the simplification pass (S1 already removed cut 3; see `docs/ts-vs-python-comparison.md` for current numbers).
 
 The Python `app/` is 35.3k raw lines. The pages (Datastar screens) depend on almost none of the
 `/api/v1` JSON layer: apart from `/api/v1/health` and the PR merge button, no view or script in

@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import os
 
-DEFAULT_ALLOWED_TOOLS = ("Read", "Edit", "Write", "Grep", "Glob", "Bash")
-
 CLAUDE_HEADLESS_GUIDANCE = (
     "You are running Claude Code through cezar's headless integration. "
     "Permission prompts cannot be answered in the cezar cockpit. If a tool call is denied, "

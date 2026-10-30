@@ -12,7 +12,6 @@ from app.engine.model import Run
 
 _FINISHED = frozenset({"done", "failed", "cancelled"})
 _LIVE = frozenset({"queued", "running", "waiting"})
-DEFAULT_WORKTREE_KEEP = 10
 DEFAULT_RUNS_KEEP = 300
 DEFAULT_ARCHIVED_KEEP = 500
 

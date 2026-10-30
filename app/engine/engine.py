@@ -2196,12 +2196,6 @@ class Engine:
         cached = self._runners.get(runner)
         if cached is not None:
             return cached
-        if self.config.real_agents:
-            from app.engine.agents import StdinAgent
-
-            created = StdinAgent(self.config.runner_bins.get(runner, runner))
-            self._runners[runner] = created
-            return created
         from app.engine.runners.protocol import ProtocolRunner
 
         created = ProtocolRunner(

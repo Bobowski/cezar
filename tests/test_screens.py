@@ -590,7 +590,7 @@ def test_mermaid_fences_and_the_usage_window_and_virtual_thread():
         Event(index, run.id, index, "text", f"line {index}", "", "2026-01-01T00:00:00+00:00")
         for index in range(45)
     ]
-    chrome = Chrome("Task", "tasks", "p", (), "dark", "lime", True, False)
+    chrome = Chrome("Task", "tasks", "p", (), "dark", "lime", True)
     page = html(task_page(run, events, [], TaskView(), None, chrome, "t1"))
     assert page.count('class="ev ') == 45
     assert 'data-virtualized="false"' in page

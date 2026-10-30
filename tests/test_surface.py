@@ -1,13 +1,10 @@
 import asyncio
-import hashlib
-import hmac
-import json
 
 from app.clock import stamp
 from app.engine.model import Run
 from app.engine.receipts import archive_finished, is_unread, mark_all_read
 from app.features.secrets.urls import SECRETS
-from app.integrations.hooks import github_signature_ok, save_receiver
+from app.integrations.hooks import save_receiver
 
 
 def _run(status: str, **kwargs: object) -> Run:
@@ -145,11 +142,6 @@ async def test_git_actions_read_receipts_and_a_signed_github_hook(client):
     )
     assert reviewed.status_code == 204
 
-    body = json.dumps({"issue": {"title": "A leak"}, "action": "opened"}).encode()
-    signature = "sha256=" + hmac.new(b"hook-secret", body, hashlib.sha256).hexdigest()
-    missing = await client.post("/api/v1/hooks/github", content=body)
-    assert missing.status_code == 401
-    assert github_signature_ok("hook-secret", body, signature)
     refused = await client.post(
         "/api/v1/preview/design-proxy",
         json={"url": "http://example.com"},

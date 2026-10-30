@@ -35,7 +35,6 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("CEZ_REPO", str(root))
     monkeypatch.setenv("CEZ_DRY_RUN", "1")
     monkeypatch.setenv("CEZ_DISPATCH", "1")
-    monkeypatch.setenv("CEZ_REAL_AGENTS", "0")
     return root
 
 

@@ -301,11 +301,6 @@ def get_project(db: LiteWriter, project_id: str) -> Project | None:
     return _project(row) if row else None
 
 
-def get_project_tx(tx: Tx, project_id: str) -> Project | None:
-    row = tx.one("SELECT id, data FROM projects WHERE id = :id", IdData, id=project_id)
-    return _project(row) if row else None
-
-
 def find_project_by_root(db: LiteWriter, root: str) -> Project | None:
     row = db.one("SELECT id, data FROM projects WHERE root = :root", IdData, root=root)
     return _project(row) if row else None
@@ -318,13 +313,6 @@ def list_projects(db: LiteWriter) -> list[Project]:
 
 def get_settings(db: LiteWriter) -> Settings:
     row = db.one("SELECT id, data FROM settings WHERE id = 'workspace'", IdData)
-    if row is None:
-        return Settings()
-    return Settings.from_json(loads(row.data))
-
-
-def get_settings_tx(tx: Tx) -> Settings:
-    row = tx.one("SELECT id, data FROM settings WHERE id = 'workspace'", IdData)
     if row is None:
         return Settings()
     return Settings.from_json(loads(row.data))
@@ -365,11 +353,6 @@ def delete_automation(tx: Tx, automation_id: str) -> None:
 
 def get_automation(db: LiteWriter, automation_id: str) -> Automation | None:
     row = db.one("SELECT id, data FROM automations WHERE id = :id", IdData, id=automation_id)
-    return _automation(row) if row else None
-
-
-def get_automation_tx(tx: Tx, automation_id: str) -> Automation | None:
-    row = tx.one("SELECT id, data FROM automations WHERE id = :id", IdData, id=automation_id)
     return _automation(row) if row else None
 
 

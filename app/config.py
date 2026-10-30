@@ -49,7 +49,6 @@ class Config:
     # Unset CEZ_DRY_RUN spawns the real CLI, matching the TypeScript app.
     # Compose sets CEZ_DRY_RUN=1 so a published container never launches an agent.
     dry_run: bool
-    real_agents: bool
     dispatch_enabled: bool
     tick_seconds: float
     check_timeout_seconds: float
@@ -75,9 +74,6 @@ class Config:
     linear_key: str = ""
     linear_api: str = "https://api.linear.app/graphql"
     design_mode: bool = True
-    github_webhook_secret: str = ""
-    jira_webhook_secret: str = ""
-    linear_webhook_secret: str = ""
     browse_root: str = ""
     projects_dir: Path = Path("data/projects")
     worktree_keep: int = 10
@@ -130,7 +126,6 @@ class Config:
             db_path=data_dir / "app.sqlite3",
             repo_root=repo,
             dry_run=_flag("CEZ_DRY_RUN", "0"),
-            real_agents=_flag("CEZ_REAL_AGENTS", "0"),
             dispatch_enabled=os.environ.get("CEZ_DISPATCH", "1") != "0",
             tick_seconds=0.2,
             check_timeout_seconds=600,
@@ -150,9 +145,6 @@ class Config:
             linear_key=os.environ.get("CEZ_LINEAR_API_KEY", ""),
             linear_api=os.environ.get("CEZ_LINEAR_API", "https://api.linear.app/graphql"),
             design_mode=_design_mode(listen_host),
-            github_webhook_secret=os.environ.get("CEZ_GITHUB_WEBHOOK_SECRET", ""),
-            jira_webhook_secret=os.environ.get("CEZ_JIRA_WEBHOOK_SECRET", ""),
-            linear_webhook_secret=os.environ.get("CEZ_LINEAR_WEBHOOK_SECRET", ""),
             browse_root=os.environ.get("CEZ_BROWSE_ROOT", str(Path.home())),
             projects_dir=_projects_dir(data_dir),
             worktree_keep=_keep(os.environ.get("CEZ_WORKTREE_RETENTION"), 10),

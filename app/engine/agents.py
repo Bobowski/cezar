@@ -74,16 +74,6 @@ def usage_from_line(line: str) -> tuple[int, int] | None:
     return None
 
 
-def result_is_error(line: str) -> bool:
-    if not line.startswith("{"):
-        return False
-    try:
-        obj = json.loads(line)
-    except json.JSONDecodeError:
-        return False
-    return isinstance(obj, dict) and obj.get("type") == "result" and obj.get("is_error") is True
-
-
 class Runner(Protocol):
     def stream(self, spec: AgentSpec) -> AsyncIterator[AgentEvent]: ...
 
@@ -130,76 +120,6 @@ class DryRunAgent:
         yield AgentEvent("tool-result", f"wrote {target}")
         yield AgentEvent("text", f"Dry run finished in {spec.cwd}.")
         yield AgentEvent("turn-end")
-
-
-class StdinAgent:
-    """Run `binary` with the prompt on stdin. No protocol flags, no auto-approve."""
-
-    def __init__(self, binary: str) -> None:
-        self.binary = binary
-
-    async def stream(self, spec: AgentSpec) -> AsyncIterator[AgentEvent]:
-        if spec.cancel.is_set():
-            yield AgentEvent("error", "cancelled")
-            return
-        payload = spec.user_prompt
-        if spec.system_prompt:
-            payload = f"{spec.system_prompt}\n\n---\n\n{spec.user_prompt}"
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                self.binary,
-                cwd=spec.cwd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except FileNotFoundError:
-            yield AgentEvent("error", f"{spec.runner} executable not found: {self.binary}")
-            return
-        assert proc.stdin is not None
-        assert proc.stdout is not None
-        proc.stdin.write(payload.encode())
-        await proc.stdin.drain()
-        proc.stdin.close()
-        while True:
-            if spec.cancel.is_set():
-                proc.kill()
-                await proc.wait()
-                yield AgentEvent("error", "cancelled")
-                return
-            try:
-                line = await asyncio.wait_for(proc.stdout.readline(), timeout=0.2)
-            except TimeoutError:
-                if proc.returncode is not None:
-                    break
-                continue
-            if not line:
-                break
-            text = line.decode(errors="replace").rstrip("\n")
-            if result_is_error(text):
-                yield AgentEvent("error", text)
-                await proc.wait()
-                return
-            yield AgentEvent("text", text)
-        code = await proc.wait()
-        if code not in (0, None):
-            err = b""
-            if proc.stderr is not None:
-                err = await proc.stderr.read()
-            message = err.decode(errors="replace").strip() or f"exit {code}"
-            yield AgentEvent("error", message[:4_000])
-            return
-        yield AgentEvent("turn-end")
-
-
-class MissingAgent:
-    async def stream(self, spec: AgentSpec) -> AsyncIterator[AgentEvent]:
-        yield AgentEvent(
-            "error",
-            f"No ported backend for {spec.runner}. Set CEZ_DRY_RUN=1 for the mock, "
-            "or CEZ_REAL_AGENTS=1 for the experimental stdin subprocess. "
-            "The TypeScript runners still live in packages/cezar.",
-        )
 
 
 def _mock_target(prompt: str) -> str:

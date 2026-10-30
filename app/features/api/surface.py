@@ -37,12 +37,6 @@ from app.engine.ui_state import merge_state, read_state
 from app.engine.uploads import delete_upload, write_upload
 from app.http.loopback import hosted_mode
 from app.integrations import webhook_schema
-from app.integrations.hooks import (
-    append_receipt,
-    github_signature_ok,
-    recent_receipts,
-    shared_secret_ok,
-)
 from app.integrations.registry import WebhookStateError
 from app.integrations.service import (
     WebhookService,
@@ -55,7 +49,7 @@ from app.integrations.service import (
     unsubscribe as unsubscribe_webhook_changes,
 )
 from app.integrations.tracker import TrackerWatches
-from app.store.db import get_project, get_run, list_enabled_automations
+from app.store.db import get_project, get_run
 
 _NO_WORKTREE = "no worktree"
 
@@ -148,10 +142,6 @@ class SurfaceApi:
             Route("POST /api/v1/webhooks/outbox/{sequence}/replay"),
             self.replay_outbox,
         )
-        app.add(Route("POST /api/v1/hooks/github"), self.github_hook)
-        app.add(Route("POST /api/v1/hooks/jira"), self.jira_hook)
-        app.add(Route("POST /api/v1/hooks/linear"), self.linear_hook)
-        app.add(Route("GET /api/v1/hooks/receipts"), self.receipts)
         app.add(Route("GET /api/v1/fs/browse"), self.browse)
         app.add(Route("GET /api/v1/launch-key"), self.launch_key)
         app.add(Route("GET /api/v1/config"), self.read_config)
@@ -978,23 +968,6 @@ class SurfaceApi:
             )
         )
 
-    async def github_hook(self, c: Context, w: Writer) -> None:
-        raw = await _raw(c, w)
-        if raw is None:
-            return
-        secret = self.config.github_webhook_secret
-        header = c.req.headers.get("x-hub-signature-256", "")
-        if not github_signature_ok(secret, raw, header):
-            w.json({"error": "invalid signature"}, status=401)
-            return
-        await self._accept_hook(w, "github", raw, c.req.headers.get("x-github-event", ""))
-
-    async def jira_hook(self, c: Context, w: Writer) -> None:
-        await self._shared_hook(c, w, "jira", self.config.jira_webhook_secret)
-
-    async def linear_hook(self, c: Context, w: Writer) -> None:
-        await self._shared_hook(c, w, "linear", self.config.linear_webhook_secret)
-
     async def merge_state(self, c: Context, w: Writer) -> None:
         from app.integrations.github_review import merge_state
 
@@ -1081,61 +1054,6 @@ class SurfaceApi:
             w.json({"error": str(result.get("error", "browse failed"))}, status=code)
             return
         w.json(cast(JsonValue, {key: value for key, value in result.items() if key != "ok"}))
-
-    async def receipts(self, _c: Context, w: Writer) -> None:
-        w.json(cast(JsonValue, {"receipts": recent_receipts(self.config.data_dir)}))
-
-    async def _shared_hook(self, c: Context, w: Writer, source: str, secret: str) -> None:
-        raw = await _raw(c, w)
-        if raw is None:
-            return
-        header = c.req.headers.get("x-cezar-webhook-secret", "")
-        if not shared_secret_ok(secret, header):
-            w.json({"error": "invalid signature"}, status=401)
-            return
-        event = c.req.headers.get("x-cezar-event", "")
-        await self._accept_hook(w, source, raw, event)
-
-    async def _accept_hook(self, w: Writer, source: str, raw: bytes, event: str) -> None:
-        try:
-            loaded = json.loads(raw.decode())
-        except UnicodeError, json.JSONDecodeError:
-            w.json({"error": "invalid json"}, status=400)
-            return
-        title = _hook_title(loaded)
-        run_id = await self._maybe_start(source, event, title)
-        receipt = {
-            "source": source,
-            "event": event,
-            "accepted": True,
-            "runId": run_id or "",
-            "title": title,
-        }
-        append_receipt(self.config.data_dir, receipt)
-        w.json(cast(JsonValue, {"ok": True, "runId": run_id or ""}))
-
-    async def _maybe_start(self, source: str, event: str, title: str) -> str | None:
-        if not title:
-            return None
-        for item in list_enabled_automations(self.db):
-            if item.tracker != source:
-                continue
-            if item.tracker_event and item.tracker_event != event:
-                continue
-            project = get_project(self.db, item.project_id)
-            if project is None:
-                continue
-            run, _reason = self.engine.plan_run(
-                project=project,
-                task=title,
-                workflow_name=item.workflow or "quick-task",
-                runner=item.runner,
-            )
-            if run is None:
-                continue
-            await self.engine.enqueue(run)
-            return run.id
-        return None
 
     async def _seen(self, c: Context, w: Writer, read: bool) -> None:
         run = self._run(c, w)
@@ -1696,18 +1614,6 @@ def _pr_number(raw: str) -> int | None:
 
 def _ui_path(root: Path) -> Path:
     return root / ".ai" / "cezar" / "ui-state.json"
-
-
-def _hook_title(loaded: object) -> str:
-    if not isinstance(loaded, dict):
-        return ""
-    issue = loaded.get("issue")
-    if isinstance(issue, dict):
-        title = issue.get("title")
-        if isinstance(title, str):
-            return title
-    title = loaded.get("title")
-    return title if isinstance(title, str) else ""
 
 
 def _event_visible(event: str, data: object, project_id: str | None) -> bool:

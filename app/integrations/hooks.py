@@ -1,11 +1,6 @@
-"""Inbound tracker hooks and outbound webhook receivers.
+"""Outbound webhook receivers.
 
-GitHub checks `X-Hub-Signature-256` when `CEZ_GITHUB_WEBHOOK_SECRET` is set.
-Jira and Linear check `X-Cezar-Webhook-Secret` the same way. An unset secret
-refuses the request. A matching enabled automation starts one run. Receipts
-are appended locally.
-
-Outbound receivers keep a `whsec_` signing key. A test delivery is recorded.
+Receivers keep a `whsec_` signing key. A test delivery is recorded.
 Dry-run does not open a socket. Any other delivery may only target public
 https or loopback http.
 """
@@ -30,22 +25,7 @@ from app.integrations.clients import forge_base_issue
 _OPENER = build_opener(HTTPHandler, HTTPSHandler)
 
 _RECEIVERS = "webhook-receivers.json"
-_RECEIPTS = "hook-receipts.ndjson"
 _DELIVERIES = "webhook-deliveries.ndjson"
-
-
-def github_signature_ok(secret: str, body: bytes, header: str) -> bool:
-    if not secret or not header:
-        return False
-    digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    expected = f"sha256={digest}"
-    return hmac.compare_digest(expected, header.strip())
-
-
-def shared_secret_ok(secret: str, header: str) -> bool:
-    if not secret or not header:
-        return False
-    return hmac.compare_digest(secret, header.strip())
 
 
 def sign_webhook(secret: str, delivery_id: str, timestamp: int, body: str) -> str:
@@ -112,14 +92,6 @@ def save_receiver(
     return _legacy_view(registry.private(str(receiver["id"])) or receiver), None
 
 
-def delete_receiver(directory: Path, receiver_id: str) -> bool:
-    registry = _registry(directory)
-    if registry.private(receiver_id) is None:
-        return False
-    registry.delete(receiver_id)
-    return True
-
-
 def update_receiver(
     directory: Path,
     receiver_id: str,
@@ -166,25 +138,6 @@ def update_receiver(
     return _legacy_view(row), None
 
 
-def public_receiver(row: dict[str, object]) -> dict[str, object]:
-    return {
-        "id": row.get("id", ""),
-        "name": row.get("name", ""),
-        "url": row.get("url", ""),
-        "revision": row.get("revision", 1),
-        "deliveryRevision": row.get("deliveryRevision", 1),
-        "state": row.get("state", "active"),
-    }
-
-
-def append_receipt(directory: Path, receipt: dict[str, object]) -> None:
-    _append(directory / _RECEIPTS, receipt)
-
-
-def recent_receipts(directory: Path, limit: int = 50) -> list[dict[str, object]]:
-    return _tail(directory / _RECEIPTS, limit)
-
-
 def record_delivery(
     directory: Path, receiver: dict[str, object], *, dry_run: bool
 ) -> dict[str, object]:
@@ -225,15 +178,6 @@ def record_delivery(
             }
     _append(directory / _DELIVERIES, result)
     return result
-
-
-def recent_deliveries(
-    directory: Path, receiver_id: str, limit: int = 50
-) -> list[dict[str, object]]:
-    rows = [
-        row for row in _tail(directory / _DELIVERIES, 200) if row.get("receiverId") == receiver_id
-    ]
-    return rows[-limit:]
 
 
 def _policy_issue(url: str) -> str | None:
@@ -301,19 +245,3 @@ def _append(path: Path, value: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(value) + "\n")
-
-
-def _tail(path: Path, limit: int) -> list[dict[str, object]]:
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    rows: list[dict[str, object]] = []
-    for line in lines[-limit:]:
-        try:
-            loaded = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(loaded, dict):
-            rows.append(loaded)
-    return rows

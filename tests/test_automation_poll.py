@@ -404,7 +404,6 @@ async def live(tmp_path: Path, fake_gh: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("PROJECT_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("CEZ_REPO", str(root))
     monkeypatch.setenv("CEZ_DRY_RUN", "0")
-    monkeypatch.setenv("CEZ_REAL_AGENTS", "0")
     async with TestClient(bootstrap, request_timeout=30, base_url="http://127.0.0.1:4321") as c:
         yield c
 

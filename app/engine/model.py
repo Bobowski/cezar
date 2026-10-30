@@ -20,7 +20,6 @@ STATUSES: tuple[str, ...] = (
     "cancelled",
 )
 TERMINAL: frozenset[str] = frozenset({"done", "review", "failed", "cancelled"})
-IN_FLIGHT: frozenset[str] = frozenset({"queued", "running", "waiting"})
 
 
 def _text(value: object, default: str = "") -> str:

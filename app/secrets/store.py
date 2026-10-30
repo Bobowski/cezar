@@ -372,11 +372,3 @@ def _assert_mode(path: Path, forbidden: int, *, directory: bool) -> None:
         raise SecretsError("the store file is unusable — it must be a regular 0600 file")
     if mode & forbidden:
         raise SecretsError("the store file is unusable — it must be a regular 0600 file")
-
-
-def _label_scope(label: str, project_id: str) -> str:
-    return "workspace" if label == "workspace" else project_id
-
-
-def _owner_scope(entry: dict[str, object], project_id: str) -> str:
-    return project_id or "workspace"

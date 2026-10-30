@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 
 from app.features.editors import store
-from app.integrations.coordinator import Coordinator
 from app.integrations.github_review import merge_pr, review_pr
 from app.integrations.outbox import Delivery, Outbox, OutboxError, Owner, deliver_once
 from app.integrations.slack_render import render_slack
@@ -236,22 +235,6 @@ async def test_the_settings_editors_render_and_save(client, repo: Path):
     merged = await client.post("/api/v1/github/prs/9/merge", json={"method": "squash"})
     assert merged.json()["dryRun"] is True
     assert merged.json()["merged"] is True
-
-
-def test_the_coordinator_stays_off_until_enabled_and_dry_run_does_not_send(tmp_path: Path):
-    quiet = Coordinator(tmp_path / "off", "install-a", "token-a", 1, dry_run=True, enabled=False)
-    assert quiet.open(other_alive=False) == (
-        "Enable webhook delivery with CEZ_WEBHOOKS=1 and restart cezar"
-    )
-    live = Coordinator(tmp_path / "on", "install-a", "token-a", 1, dry_run=True, enabled=True)
-    assert live.open(other_alive=False) is None
-    blocked = Coordinator(tmp_path / "on", "install-a", "token-b", 2, dry_run=True, enabled=True)
-    assert blocked.open(other_alive=True) == "another owner holds the webhook outbox"
-    assert live.enqueue(json.dumps({"type": "webhook.test"}), receiver_name="Ops") is None
-    calls: list[str] = []
-    assert live.deliver(calls.append, 1_000) == "delivered"
-    assert calls == []
-    live.close()
 
 
 def test_cursor_agent_bin_uses_the_typescript_name(monkeypatch, tmp_path: Path):

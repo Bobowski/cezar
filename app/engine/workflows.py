@@ -19,10 +19,6 @@ QUICK_TASK = Workflow(
 )
 
 
-def step_kind(step: Step) -> str:
-    return "check" if step.command else "agent"
-
-
 def retryable_exit(retry_on: tuple[int, ...] | list[int], exit_code: int) -> bool:
     """A failing check buys another attempt. With no list, any non-zero code does."""
     if not retry_on:

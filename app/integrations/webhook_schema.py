@@ -18,7 +18,6 @@ TASK_EVENTS = (
     "task.failed",
     "task.cancelled",
 )
-EVENT_TYPES = (*TASK_EVENTS, "webhook.test")
 FORMATS = ("cezar.json.v1", "slack.v1", "discord.v1")
 DISCORD_HOSTS = frozenset(
     {"discord.com", "discordapp.com", "ptb.discord.com", "canary.discord.com"}
@@ -27,18 +26,6 @@ GRACE_SECONDS = (0, 60, 180, 600)
 SCOPES = ("main_and_questions", "every_task")
 PRESETS = ("attention", "all", "custom")
 PROFILES = ("minimal", "standard")
-STATES = ("inactive", "active", "paused", "suspended", "disabled")
-DELIVERY_STATUSES = (
-    "pending",
-    "in_flight",
-    "retrying",
-    "blocked_policy",
-    "delivered",
-    "failed",
-    "superseded",
-    "cancelled",
-    "dropped",
-)
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _SLACK_PATH = re.compile(r"^/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9_-]+$")
 _DISCORD_PATH = re.compile(r"^/api/(?:v10/)?webhooks/[0-9]{17,20}/[A-Za-z0-9_-]{60,80}$")

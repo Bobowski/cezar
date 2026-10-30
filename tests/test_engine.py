@@ -11,7 +11,7 @@ from tests.conftest import init_repo
 
 from app.clock import now, stamp
 from app.config import RUNNERS, Config
-from app.engine.agents import AgentEvent, AgentSpec, DryRunAgent, StdinAgent, usage_from_line
+from app.engine.agents import AgentEvent, AgentSpec, DryRunAgent, usage_from_line
 from app.engine.engine import Engine, rebaseline_automations
 from app.engine.gitignore_data import DATA_GITIGNORE_ENTRIES, ensure_data_gitignore
 from app.engine.gitwork import diff_against, is_safe_git_ref, log_count, prune_orphans
@@ -29,7 +29,6 @@ def config_for(tmp_path: Path, repo: Path, **overrides: object) -> Config:
         "db_path": data / "app.sqlite3",
         "repo_root": repo,
         "dry_run": True,
-        "real_agents": False,
         "dispatch_enabled": True,
         "tick_seconds": 0.05,
         "check_timeout_seconds": 30,
@@ -769,51 +768,10 @@ async def test_dispatch_is_off_when_the_flag_says_so(tmp_path: Path):
         assert reason is not None and "CEZ_DISPATCH=0" in reason
 
 
-async def test_experimental_stdin_runner_records_usage(tmp_path: Path):
-    repo = tmp_path / "repo"
-    init_repo(repo)
-    binary = tmp_path / "fake-claude"
-    argv_log = tmp_path / "argv.txt"
-    binary.write_text(
-        "#!/usr/bin/env python3\n"
-        "import sys\n"
-        f"open({str(argv_log)!r}, 'w').write('\\n'.join(sys.argv))\n"
-        "sys.stdin.readline()\n"
-        "sys.stdout.write("
-        '\'{"type":"result","result":"ok","usage":{"input_tokens":3,"output_tokens":4}}\\n\')\n'
-        "sys.stdout.flush()\n",
-        encoding="utf-8",
-    )
-    binary.chmod(0o755)
-    bins = {runner: runner for runner in RUNNERS}
-    bins["claude"] = str(binary)
-    cfg = config_for(
-        tmp_path, repo, dry_run=False, real_agents=True, title_updates=False, runner_bins=bins
-    )
-    async with LiteWriter(cfg.db_path, schema=schema, claim=5) as db:
-        engine = Engine(db, Relay(), cfg)
-        await engine.startup()
-        run = await _start(engine, "hello from stdin")
-        await engine.execute(run.id)
-        done = get_run(engine.db, run.id)
-        assert done is not None and done.status == "done"
-        assert done.tokens_used == 7
-        assert done.input_tokens == 3
-        assert done.output_tokens == 4
-        assert argv_log.read_text(encoding="utf-8") == str(binary)
-    events = [
-        event
-        async for event in StdinAgent(str(binary)).stream(
-            AgentSpec("prompt", "", str(repo), "claude", "", asyncio.Event())
-        )
-    ]
-    assert any("input_tokens" in event.text for event in events)
-
-
 async def test_a_missing_backend_fails_the_run_instead_of_spawning(tmp_path: Path):
     repo = tmp_path / "repo"
     init_repo(repo)
-    cfg = config_for(tmp_path, repo, dry_run=False, real_agents=False)
+    cfg = config_for(tmp_path, repo, dry_run=False)
     async with LiteWriter(cfg.db_path, schema=schema, claim=5) as db:
         engine = Engine(db, Relay(), cfg)
         await engine.startup()

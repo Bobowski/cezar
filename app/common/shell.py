@@ -31,7 +31,6 @@ class Chrome:
     theme: str
     accent: str
     dry_run: bool
-    real_agents: bool
 
 
 @baked
@@ -161,7 +160,6 @@ def load_chrome(
         theme=settings.theme,
         accent=settings.accent,
         dry_run=config.dry_run,
-        real_agents=config.real_agents,
     )
 
 

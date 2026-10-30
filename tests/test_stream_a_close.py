@@ -304,7 +304,6 @@ async def test_codex_compaction_is_a_real_process(tmp_path: Path):
         tmp_path,
         repo,
         dry_run=False,
-        real_agents=False,
         runner_bins={
             "claude": "claude",
             "codex": str(binary),

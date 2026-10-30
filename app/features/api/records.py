@@ -16,6 +16,27 @@ from app.engine.gitwork import forge_kind, head_branch, is_git_repo
 from app.engine.model import Run
 from app.engine.proc_usage import current_usage
 
+# Fields the response carries only when the run has them.
+_OPTIONAL = (
+    ("model", "model"),
+    ("startedAt", "started_at"),
+    ("finishedAt", "finished_at"),
+    ("error", "error"),
+    ("branch", "branch"),
+    ("worktreePath", "worktree_path"),
+    ("baseBranch", "base_branch"),
+    ("costUsd", "cost_usd"),
+    ("archivedAt", "archived_at"),
+    ("pinnedAt", "pinned_at"),
+    ("groupId", "group_id"),
+    ("accountId", "account_id"),
+    ("variant", "variant"),
+    ("seenAt", "seen_at"),
+    ("autoResumeAt", "auto_resume_at"),
+    ("autoResumeAttempts", "auto_resume_attempts"),
+    ("pullRequestUrl", "pull_request_url"),
+)
+
 
 def public_run(run: Run, *, full: bool) -> dict[str, JsonValue]:
     body: dict[str, JsonValue] = {
@@ -30,49 +51,16 @@ def public_run(run: Run, *, full: bool) -> dict[str, JsonValue]:
         "archived": run.archived,
         "steps": _steps(run),
     }
-    if run.model:
-        body["model"] = run.model
-    if run.autonomous:
-        body["autonomous"] = True
-    if run.started_at:
-        body["startedAt"] = run.started_at
-    if run.finished_at:
-        body["finishedAt"] = run.finished_at
-    if run.error:
-        body["error"] = run.error
-    if run.branch:
-        body["branch"] = run.branch
-    if run.worktree_path:
-        body["worktreePath"] = run.worktree_path
-    if run.base_branch:
-        body["baseBranch"] = run.base_branch
-    if run.cost_usd:
-        body["costUsd"] = run.cost_usd
+    flags = {"autonomous": run.autonomous, "pinned": run.pinned}
+    body.update({key: True for key, on in flags.items() if on})
     if run.in_place:
         body["worktree"] = False
-    if run.archived_at:
-        body["archivedAt"] = run.archived_at
-    if run.pinned:
-        body["pinned"] = True
-    if run.pinned_at:
-        body["pinnedAt"] = run.pinned_at
-    if run.group_id:
-        body["groupId"] = run.group_id
-    if run.account_id:
-        body["accountId"] = run.account_id
-    if run.variant:
-        body["variant"] = run.variant
-    if run.seen_at:
-        body["seenAt"] = run.seen_at
-    if run.auto_resume_at:
-        body["autoResumeAt"] = run.auto_resume_at
-    if run.auto_resume_attempts:
-        body["autoResumeAttempts"] = run.auto_resume_attempts
+    for key, attr in _OPTIONAL:
+        if value := getattr(run, attr):
+            body[key] = value
     usage = current_usage(run.id)
     if usage is not None:
         body["usage"] = cast(JsonValue, usage)
-    if run.pull_request_url:
-        body["pullRequestUrl"] = run.pull_request_url
     if run.parent_id or run.root_id or run.dispatch_report:
         dispatch: dict[str, JsonValue] = {"rootRunId": run.root_id or run.id}
         if run.parent_id:

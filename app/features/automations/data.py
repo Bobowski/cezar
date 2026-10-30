@@ -97,11 +97,9 @@ def parse_form(
         picked = [item for item in raw if isinstance(item, str)] if isinstance(raw, list) else []
         events = tuple(item for item in EVENTS if item in picked)
         for key in LIST_FILTERS:
-            words = _words(signals.get(f"f_{key}"))
-            if words:
+            if words := _words(signals.get(f"f_{key}")):
                 filters[key] = words
-        repo = _text(signals, "f_repo")
-        if repo:
+        if repo := _text(signals, "f_repo"):
             filters["repo"] = repo
         if signals.get("f_prHead") is True:
             filters["checkout"] = "pr-head"
@@ -109,11 +107,9 @@ def parse_form(
                 filters["allowForkHeads"] = True
     if kind == "tracker":
         for key in ("status", "query"):
-            value = _text(signals, f"t_{key}")
-            if value:
+            if value := _text(signals, f"t_{key}"):
                 filters[key] = value
-        labels = _words(signals.get("t_allLabels"))
-        if labels:
+        if labels := _words(signals.get("t_allLabels")):
             filters["allLabels"] = labels
         if "status" not in filters:
             return None, "a tracker automation needs a target status"

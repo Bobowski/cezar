@@ -106,25 +106,24 @@ def parse_settings(body: object, *, create: bool) -> tuple[dict | None, str | No
     url = body.get("url")
     if create and not isinstance(url, str):
         return None, "Invalid url"
-    if url is not None and (not isinstance(url, str) or destination_issue(url)):
-        return None, destination_issue(url) or "Invalid url"
-    settings: dict[str, object] = {}
-    for key, default in _DEFAULTS.items():
-        value = body.get(key, default)
-        settings[key] = value
+    if url is not None:
+        if not isinstance(url, str):
+            return None, "Invalid url"
+        if issue := destination_issue(url):
+            return None, issue
+    settings = {key: body.get(key, default) for key, default in _DEFAULTS.items()}
     for key, allowed in (
         ("format", FORMATS),
         ("profile", PROFILES),
         ("preset", PRESETS),
         ("scope", SCOPES),
+        ("graceSeconds", GRACE_SECONDS),
     ):
-        if key in body and body[key] not in allowed:
+        if settings[key] not in allowed:
             return None, f"Invalid {key}"
     for key in ("includeScheduledFailures", "allowLocalNetwork"):
         if not isinstance(settings[key], bool):
             return None, f"Invalid {key}"
-    if settings["graceSeconds"] not in GRACE_SECONDS:
-        return None, "Invalid graceSeconds"
     events = settings["events"]
     if (
         not isinstance(events, list)
@@ -133,9 +132,10 @@ def parse_settings(body: object, *, create: bool) -> tuple[dict | None, str | No
         or len(set(events)) != len(events)
     ):
         return None, "Invalid events"
-    if settings["preset"] != "custom" and events:
+    custom = settings["preset"] == "custom"
+    if events and not custom:
         return None, "events require the custom preset"
-    if settings["preset"] == "custom" and not events:
+    if custom and not events:
         return None, "custom preset requires events"
     issue = chat_destination_issue(
         str(settings["format"]), url or "", bool(settings["allowLocalNetwork"])

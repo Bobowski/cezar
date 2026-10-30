@@ -120,16 +120,8 @@ def land_in_place(
                 return LandResult(
                     "failed", "sync", f"git fetch failed: {err.strip() or 'no answer'}"
                 )
-        rebased, _out, err = git(repo, [*identity, "rebase", "--autostash", upstream_ref])
-        if not rebased:
-            conflicted, names, _err = git(repo, ["diff", "--name-only", "--diff-filter=U"])
-            git(repo, ["rebase", "--abort"])
-            listed = [line for line in names.splitlines() if line.strip()] if conflicted else []
-            detail = (
-                f"rebasing onto {upstream_ref} conflicts in: {', '.join(listed)}"
-                if listed
-                else f"rebasing onto {upstream_ref} failed: {err.strip() or 'unknown error'}"
-            )
+        detail = _rebase(repo, identity, upstream_ref)
+        if detail:
             return LandResult("failed", "sync", detail)
         checked = _checks(repo, checks, check_timeout)
         if checked is not None:
@@ -146,6 +138,19 @@ def land_in_place(
         if attempt == 1 or "rejected" not in err.lower():
             return LandResult("failed", "push", f"git push failed: {err.strip() or 'no answer'}")
     return LandResult("failed", "push", "git push was rejected twice")
+
+
+def _rebase(repo: Path, identity: list[str], upstream_ref: str) -> str:
+    """Rebase onto the upstream. Empty when it worked, else why it did not (rebase aborted)."""
+    rebased, _out, err = git(repo, [*identity, "rebase", "--autostash", upstream_ref])
+    if rebased:
+        return ""
+    conflicted, names, _err = git(repo, ["diff", "--name-only", "--diff-filter=U"])
+    git(repo, ["rebase", "--abort"])
+    listed = [line for line in names.splitlines() if line.strip()] if conflicted else []
+    if listed:
+        return f"rebasing onto {upstream_ref} conflicts in: {', '.join(listed)}"
+    return f"rebasing onto {upstream_ref} failed: {err.strip() or 'unknown error'}"
 
 
 def failure_prompt(outcome: LandResult) -> str:

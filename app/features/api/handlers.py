@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
-from typing import cast
+from typing import NamedTuple, cast
 
 from litewriter import LiteWriter
 from stario import App, Context, Route, Writer
@@ -96,12 +96,12 @@ class ApiPage:
         body = await json_body(c, w)
         if body is None:
             return
-        workflow, workflow_name, task, runner, model, autonomous, reason, status = _create_input(
-            body, get_settings(self.db).default_runner
-        )
-        if reason:
-            w.json({"error": reason}, status=status)
+        try:
+            parsed = _create_input(body, get_settings(self.db).default_runner)
+        except ValueError as problem:
+            w.json({"error": str(problem)}, status=400)
             return
+        workflow, workflow_name, task, runner, model, autonomous = parsed
         locked = self.engine.model_lock_error(model)
         if locked:
             w.json({"error": locked}, status=409)
@@ -549,60 +549,63 @@ def _account(config: Config, raw: object, runner: str, run: Run) -> str | None:
     return None
 
 
-def _create_input(
-    body: dict[str, object], default_runner: str
-) -> tuple[Workflow | None, str, str, str, str, bool, str, int]:
-    workflow_name = body.get("workflow")
-    steps = body.get("steps")
-    has_workflow = isinstance(workflow_name, str) and bool(workflow_name.strip())
-    has_steps = isinstance(steps, list) and len(steps) > 0
-    if isinstance(workflow_name, str) and not workflow_name.strip() and not has_steps:
-        has_workflow = False
-    if (workflow_name is not None and not isinstance(workflow_name, str)) or (
+class _CreateInput(NamedTuple):
+    workflow: Workflow | None
+    workflow_name: str
+    task: str
+    runner: str
+    model: str
+    autonomous: bool
+
+
+def _create_input(body: dict[str, object], default_runner: str) -> _CreateInput:
+    """The validated create body. A ValueError carries the 400 message."""
+    name, steps = body.get("workflow"), body.get("steps")
+    if (name is not None and not isinstance(name, str)) or (
         steps is not None and not isinstance(steps, list)
     ):
-        return None, "", "", "", "", False, _XOR, 400
+        raise ValueError(_XOR)
+    has_workflow = isinstance(name, str) and bool(name.strip())
+    has_steps = isinstance(steps, list) and len(steps) > 0
     if has_workflow == has_steps:
-        return None, "", "", "", "", False, _XOR, 400
+        raise ValueError(_XOR)
     if isinstance(steps, list) and len(steps) > 8:
-        return None, "", "", "", "", False, "steps must be at most 8", 400
+        raise ValueError("steps must be at most 8")
     task = body.get("task", "")
     if not isinstance(task, str) or len(task) > 100_000:
-        return None, "", "", "", "", False, "must be at most 100000 characters", 400
+        raise ValueError("must be at most 100000 characters")
     has_images = isinstance(body.get("images"), list) and bool(body.get("images"))
-    if not task.strip() and not has_images:
-        return None, "", "", "", "", False, _TASK, 400
     if not task.strip():
+        if not has_images:
+            raise ValueError(_TASK)
         task = "(see attachments)"
     profile = body.get("agentProfile")
     if profile is not None:
         if not isinstance(profile, str) or not profile.strip():
-            return None, "", "", "", "", False, "unknown agent account", 400
+            raise ValueError("unknown agent account")
         if profile != "default":
-            return None, "", "", "", "", False, f'unknown agent account "{profile}"', 400
-    variants = body.get("variants", 1)
-    if variants is None:
-        variants = 1
-    if not isinstance(variants, int) or isinstance(variants, bool) or not 1 <= variants <= 3:
-        return None, "", "", "", "", False, "variants must be 1, 2, or 3", 400
-    runner = body.get("runner", default_runner)
+            raise ValueError(f'unknown agent account "{profile}"')
+    variants = body.get("variants")
+    if variants is not None and (
+        not isinstance(variants, int) or isinstance(variants, bool) or not 1 <= variants <= 3
+    ):
+        raise ValueError("variants must be 1, 2, or 3")
+    runner = body.get("runner")
     if runner is None or runner == "":
         runner = default_runner
     if not isinstance(runner, str) or runner not in RUNNERS:
-        return None, "", "", "", "", False, "unknown runner", 400
-    model = body.get("model", "")
-    if model is None:
-        model = ""
+        raise ValueError("unknown runner")
+    model = "" if body.get("model") is None else body["model"]
     if not isinstance(model, str):
-        return None, "", "", "", "", False, "model must be a string", 400
+        raise ValueError("model must be a string")
     autonomous = body.get("autonomous") is True
-    if has_steps:
-        parsed, issue = parse_workflow({"name": "(planned)", "steps": steps}, source="built-in")
-        if issue or parsed is None:
-            return None, "", "", "", "", False, issue or "invalid step", 400
-        return parsed, parsed.name, task, runner, model, autonomous, "", 200
-    assert isinstance(workflow_name, str)
-    return None, workflow_name.strip(), task, runner, model, autonomous, "", 200
+    if not has_steps:
+        assert isinstance(name, str)
+        return _CreateInput(None, name.strip(), task, runner, model, autonomous)
+    parsed, issue = parse_workflow({"name": "(planned)", "steps": steps}, source="built-in")
+    if issue or parsed is None:
+        raise ValueError(issue or "invalid step")
+    return _CreateInput(parsed, parsed.name, task, runner, model, autonomous)
 
 
 def _ok_id(value: str) -> bool:

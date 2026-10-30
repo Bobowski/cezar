@@ -123,25 +123,20 @@ class AutomationPoller:
         if engine.config.dry_run:
             entry = self._entry(item, mode, message="polling is off while CEZ_DRY_RUN=1")
             return await self._store(entry) if mode != "poll" else entry
+
+        async def failed(message: str) -> dict[str, object]:
+            return await self._store(self._entry(item, mode, status="error", message=message))
+
         if guard and mode == "execute" and item.id in self._busy:
-            return await self._store(
-                self._entry(item, mode, status="error", message="a poll is already running")
-            )
+            return await failed("a poll is already running")
         project = get_project(engine.db, item.project_id)
         if project is None:
-            return await self._store(
-                self._entry(item, mode, status="error", message="the project is gone")
-            )
-        root = Path(project.root)
+            return await failed("the project is gone")
         try:
-            if item.kind == "github":
-                found = await self._github(item, mode, root)
-            else:
-                found = await self._tracker(item, mode, root)
+            find = self._github if item.kind == "github" else self._tracker
+            found = await find(item, mode, Path(project.root))
         except Exception as exc:
-            return await self._store(
-                self._entry(item, mode, status="error", message=str(exc)[:500] or "poll failed")
-            )
+            return await failed(str(exc)[:500] or "poll failed")
         if found is None:
             return self._entry(item, mode, message="baselined; the next poll looks for new items")
         rows, cursor = found
@@ -150,9 +145,7 @@ class AutomationPoller:
             row["status"] = "seen" if row["key"] in seen else "new"
         launched = 0
         if mode != "preview":
-            for row in rows:
-                if row["status"] != "new":
-                    continue
+            for row in (row for row in rows if row["status"] == "new"):
                 run_id, error = await self.launch(item, row)
                 row["runId"], row["error"] = run_id or "", error
                 row["status"] = _launch_status(run_id, error)

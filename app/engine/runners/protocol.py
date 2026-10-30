@@ -443,9 +443,7 @@ async def _process_turn(
         stderr=asyncio.subprocess.PIPE,
     )
     state = TurnState()
-    prompt = spec.user_prompt
-    if runner == "codex" and spec.system_prompt:
-        prompt = f"{spec.system_prompt}\n\n---\n\n{spec.user_prompt}"
+    prompt = _with_system(spec) if runner == "codex" else spec.user_prompt
     try:
         if runner == "codex":
             frames = _codex_frames(
@@ -505,6 +503,17 @@ async def _process_turn(
                 mcp_hold[0] = mcp_path
         else:
             await _finish_proc(proc, mcp_path)
+    async for event in _turn_end(proc, spec, state, runner, hold):
+        yield event
+
+
+async def _turn_end(
+    proc: asyncio.subprocess.Process,
+    spec: AgentSpec,
+    state: TurnState,
+    runner: str,
+    hold: list[asyncio.subprocess.Process | None] | None,
+) -> AsyncIterator[AgentEvent]:
     if spec.cancel.is_set():
         return
     if state.thread_id:
@@ -532,43 +541,43 @@ async def _process_turn(
     yield AgentEvent("turn-end", name="context-compaction" if state.compacted else "")
 
 
+def _with_system(spec: AgentSpec) -> str:
+    if not spec.system_prompt:
+        return spec.user_prompt
+    return f"{spec.system_prompt}\n\n---\n\n{spec.user_prompt}"
+
+
 def _codex_item(params: dict[str, Any], state: TurnState, *, started: bool) -> list[AgentEvent]:
     item = _as_dict(params.get("item"))
     kind = str(item.get("type", ""))
-    if kind == "contextCompaction" and not started:
+    if started:
+        if kind == "commandExecution":
+            return [AgentEvent("tool-call", str(item.get("command", "")), "Bash")]
+        if not kind or kind in _CODEX_NON_TOOL:
+            return []
+        return [AgentEvent("tool-call", str(item.get("id", "")), kind)]
+    if kind == "contextCompaction":
         state.compacted = True
-    if kind == "reasoning" and not started:
+    if kind == "reasoning":
         summary = item.get("summary")
         text = item.get("text") if isinstance(item.get("text"), str) else ""
         if not text and isinstance(summary, list):
             text = " ".join(part for part in summary if isinstance(part, str))
         return [AgentEvent("reasoning", text)] if text else []
-    if kind == "plan" and not started:
+    if kind == "plan":
         plan = _codex_plan(item.get("plan") or item.get("entries"))
         return [AgentEvent("plan", plan)] if plan else []
-    if kind == "userMessage":
-        return []
-    if kind == "agentMessage" and not started:
+    if kind == "agentMessage":
         state.compacted = False
         if isinstance(item.get("text"), str) and not state.saw_text:
             state.saw_text = True
             return [AgentEvent("text", item["text"])]
         return []
     if kind == "commandExecution":
-        if started:
-            return [AgentEvent("tool-call", str(item.get("command", "")), "Bash")]
         return [AgentEvent("tool-result", str(item.get("aggregatedOutput", "")), "Bash")]
     if not kind or kind in _CODEX_NON_TOOL:
         return []
-    if started:
-        return [AgentEvent("tool-call", str(item.get("id", "")), kind)]
-    return [
-        AgentEvent(
-            "tool-result",
-            json.dumps(item, separators=(",", ":")),
-            kind,
-        )
-    ]
+    return [AgentEvent("tool-result", json.dumps(item, separators=(",", ":")), kind)]
 
 
 def _codex_frames(
@@ -901,9 +910,6 @@ async def _opencode_turn(
         if spec.cancel.is_set():
             yield AgentEvent("error", "cancelled")
             return
-        prompt = spec.user_prompt
-        if spec.system_prompt:
-            prompt = f"{spec.system_prompt}\n\n---\n\n{spec.user_prompt}"
         session_id = spec.codex_thread if spec.resume and spec.codex_thread else ""
         if not session_id:
             created = await asyncio.to_thread(
@@ -918,7 +924,7 @@ async def _opencode_turn(
         ctype, raw = await asyncio.to_thread(
             _exchange,
             f"http://127.0.0.1:{port}/session/{session_id}/message",
-            {"parts": [{"type": "text", "text": prompt}]},
+            {"parts": [{"type": "text", "text": _with_system(spec)}]},
         )
         if "text/event-stream" in ctype or raw.lstrip().startswith(b"data:"):
             for event in opencode_events(raw.decode(errors="replace")):
@@ -926,34 +932,33 @@ async def _opencode_turn(
                     await asyncio.to_thread(_reply_permission, port, event.text)
                 yield event
             return
-        try:
-            loaded = json.loads(raw.decode())
-        except json.JSONDecodeError:
-            yield AgentEvent("error", "opencode returned a body that is not json")
-            return
-        body = loaded if isinstance(loaded, dict) else {}
-        parts = _as_list(body.get("parts"))
-        saw = False
-        for part in parts:
-            if (
-                isinstance(part, dict)
-                and part.get("type") == "text"
-                and isinstance(part.get("text"), str)
-            ):
-                saw = True
-                yield AgentEvent("text", part["text"])
-            elif isinstance(part, dict) and part.get("type") == "tool":
-                yield AgentEvent(
-                    "tool-call", str(part.get("id", "")), str(part.get("tool", "tool"))
-                )
-        if body.get("error"):
-            yield AgentEvent("error", str(body["error"]))
-            return
-        if not saw and isinstance(body.get("text"), str):
-            yield AgentEvent("text", body["text"])
-        yield AgentEvent("turn-end")
+        for event in _opencode_json_events(raw):
+            yield event
     except (URLError, TimeoutError, OSError) as exc:
         yield AgentEvent("error", f"opencode serve failed: {exc}")
+
+
+def _opencode_json_events(raw: bytes) -> list[AgentEvent]:
+    try:
+        loaded = json.loads(raw.decode())
+    except json.JSONDecodeError:
+        return [AgentEvent("error", "opencode returned a body that is not json")]
+    body = loaded if isinstance(loaded, dict) else {}
+    events: list[AgentEvent] = []
+    for part in _as_list(body.get("parts")):
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "text" and isinstance(part.get("text"), str):
+            events.append(AgentEvent("text", part["text"]))
+        elif part.get("type") == "tool":
+            events.append(
+                AgentEvent("tool-call", str(part.get("id", "")), str(part.get("tool", "tool")))
+            )
+    if body.get("error"):
+        return [*events, AgentEvent("error", str(body["error"]))]
+    if isinstance(body.get("text"), str) and not any(e.type == "text" for e in events):
+        events.append(AgentEvent("text", body["text"]))
+    return [*events, AgentEvent("turn-end")]
 
 
 def opencode_events(raw: str) -> list[AgentEvent]:

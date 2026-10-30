@@ -382,21 +382,7 @@ async def _supervise(
     code = cap.windows_code if cap.windows_code is not None else exit_code
     if cap.windows_code is not None:
         exit_signal = ""
-    if cap.output_error:
-        reason = "Could not persist lifecycle output"
-    elif cap.stop_reason:
-        reason = cap.stop_reason
-    elif not quiescent:
-        reason = "Could not verify command process-tree termination; directory retained"
-    else:
-        reason = ""
-    persisted = cap.stop_reason.startswith("Could not persist")
-    if reason and cap.stop_reason and not cap.output_error and not persisted:
-        state = "interrupted"
-    elif reason or code != 0 or not quiescent:
-        state = "failed"
-    else:
-        state = "succeeded"
+    state, reason = _outcome(cap, code, quiescent)
     return LifecycleResult(
         state,
         code,
@@ -406,6 +392,18 @@ async def _supervise(
         reason=reason,
         identity=identity,
     )
+
+
+def _outcome(cap: _Cap, code: int | None, quiescent: bool) -> tuple[str, str]:
+    """The result state and the reason the command did not simply run to its end."""
+    if cap.output_error:
+        return "failed", "Could not persist lifecycle output"
+    if cap.stop_reason:
+        persist_failed = cap.stop_reason.startswith("Could not persist")
+        return ("failed" if persist_failed else "interrupted"), cap.stop_reason
+    if not quiescent:
+        return "failed", "Could not verify command process-tree termination; directory retained"
+    return ("succeeded" if code == 0 else "failed"), ""
 
 
 async def _release(

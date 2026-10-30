@@ -57,56 +57,16 @@ def render(
     ]
     actions: list[HtmlElement] = []
     if run.status in ("queued", "running", "waiting", "review"):
-        actions.append(
-            h.Button(
-                {"type": "button", "class": "btn"},
-                data.on("click", at.post(TASK_CANCEL.href(run.id))),
-                data.indicator("_saving"),
-                "Cancel",
-            )
-        )
+        actions.append(_button(TASK_CANCEL.href(run.id), "Cancel"))
     if run.status == "review":
-        actions.append(
-            h.Button(
-                {"type": "button", "class": "btn btn-primary"},
-                data.on("click", at.post(TASK_FINISH.href(run.id))),
-                data.indicator("_saving"),
-                "Finish",
-            )
-        )
-        actions.append(
-            h.Button(
-                {"type": "button", "class": "btn"},
-                data.on("click", at.post(TASK_COMMIT.href(run.id))),
-                data.indicator("_saving"),
-                "Commit",
-            )
-        )
-        actions.append(
-            h.Button(
-                {"type": "button", "class": "btn"},
-                data.on("click", at.post(TASK_PUSH.href(run.id))),
-                data.indicator("_saving"),
-                "Push",
-            )
-        )
-        actions.append(
-            h.Button(
-                {"type": "button", "class": "btn"},
-                data.on("click", at.post(TASK_PR.href(run.id))),
-                data.indicator("_saving"),
-                "Draft PR",
-            )
-        )
+        actions += [
+            _button(TASK_FINISH.href(run.id), "Finish", "btn btn-primary"),
+            _button(TASK_COMMIT.href(run.id), "Commit"),
+            _button(TASK_PUSH.href(run.id), "Push"),
+            _button(TASK_PR.href(run.id), "Draft PR"),
+        ]
     if run.status in ("review", "done", "failed", "cancelled"):
-        actions.append(
-            h.Button(
-                {"type": "button", "class": "btn btn-danger"},
-                data.on("click", at.post(TASK_DELETE.href(run.id))),
-                data.indicator("_saving"),
-                "Delete",
-            )
-        )
+        actions.append(_button(TASK_DELETE.href(run.id), "Delete", "btn btn-danger"))
     panes = h.Nav(
         {"class": "filters"},
         *[
@@ -154,66 +114,7 @@ def render(
     if run.status == "waiting" and run.ask:
         blocks.append(h.Div({"class": "card-block ask"}, h.Strong("The agent asked"), h.P(run.ask)))
     blocks.extend(_pane(run, view, diff, transcript, len(events)))
-    if run.status == "waiting" and run.graph_park.get("kind") == "gate.human":
-        blocks.append(
-            h.Form(
-                {"class": "composer", "id": "gate"},
-                data.indicator("_saving"),
-                h.Label(
-                    {"class": "field"},
-                    h.Span("Comment (optional)"),
-                    h.Textarea({"maxlength": "20000"}, data.bind("message")),
-                ),
-                h.Button(
-                    {"class": "btn btn-primary", "type": "button"},
-                    data.on("click", at.post(TASK_APPROVE.href(run.id))),
-                    data.attr("disabled", "$_saving"),
-                    "Approve",
-                ),
-                h.Button(
-                    {"class": "btn btn-danger", "type": "button"},
-                    data.on("click", at.post(TASK_REJECT.href(run.id))),
-                    data.attr("disabled", "$_saving"),
-                    "Reject",
-                ),
-            )
-        )
-    elif run.status in ("waiting", "review"):
-        blocks.append(
-            h.Form(
-                {"class": "composer"},
-                data.on("submit", at.post(TASK_MESSAGE.href(run.id)), prevent=True),
-                data.indicator("_saving"),
-                h.Label(
-                    {"class": "field"},
-                    h.Span("Answer" if run.status == "waiting" else "Follow-up"),
-                    h.Textarea({"required": True, "maxlength": "20000"}, data.bind("message")),
-                ),
-                h.Button(
-                    {"class": "btn btn-primary", "type": "submit"},
-                    data.attr("disabled", "$_saving"),
-                    "Send",
-                ),
-            )
-        )
-    if run.status in ("running", "waiting") and run.branch:
-        blocks.append(
-            h.Form(
-                {"class": "composer"},
-                data.on("submit", at.post(TASK_DISPATCH.href(run.id)), prevent=True),
-                data.indicator("_dispatching"),
-                h.Label(
-                    {"class": "field"},
-                    h.Span("Dispatch a child task"),
-                    h.Textarea({"required": True, "maxlength": "4000"}, data.bind("objective")),
-                ),
-                h.Button(
-                    {"class": "btn", "type": "submit"},
-                    data.attr("disabled", "$_dispatching"),
-                    "Dispatch",
-                ),
-            )
-        )
+    blocks.extend(_composers(run))
     if children:
         blocks.append(h.H2("Children"))
         blocks.append(
@@ -247,6 +148,81 @@ def render(
         },
         h.Main({"id": "task"}, *blocks),
     )
+
+
+def _button(url: str, label: str, klass: str = "btn") -> HtmlElement:
+    return h.Button(
+        {"type": "button", "class": klass},
+        data.on("click", at.post(url)),
+        data.indicator("_saving"),
+        label,
+    )
+
+
+def _composers(run: Run) -> list[HtmlElement]:
+    """The gate, answer/follow-up and dispatch forms the run's status allows."""
+    forms: list[HtmlElement] = []
+    if run.status == "waiting" and run.graph_park.get("kind") == "gate.human":
+        forms.append(
+            h.Form(
+                {"class": "composer", "id": "gate"},
+                data.indicator("_saving"),
+                h.Label(
+                    {"class": "field"},
+                    h.Span("Comment (optional)"),
+                    h.Textarea({"maxlength": "20000"}, data.bind("message")),
+                ),
+                h.Button(
+                    {"class": "btn btn-primary", "type": "button"},
+                    data.on("click", at.post(TASK_APPROVE.href(run.id))),
+                    data.attr("disabled", "$_saving"),
+                    "Approve",
+                ),
+                h.Button(
+                    {"class": "btn btn-danger", "type": "button"},
+                    data.on("click", at.post(TASK_REJECT.href(run.id))),
+                    data.attr("disabled", "$_saving"),
+                    "Reject",
+                ),
+            )
+        )
+    elif run.status in ("waiting", "review"):
+        forms.append(
+            h.Form(
+                {"class": "composer"},
+                data.on("submit", at.post(TASK_MESSAGE.href(run.id)), prevent=True),
+                data.indicator("_saving"),
+                h.Label(
+                    {"class": "field"},
+                    h.Span("Answer" if run.status == "waiting" else "Follow-up"),
+                    h.Textarea({"required": True, "maxlength": "20000"}, data.bind("message")),
+                ),
+                h.Button(
+                    {"class": "btn btn-primary", "type": "submit"},
+                    data.attr("disabled", "$_saving"),
+                    "Send",
+                ),
+            )
+        )
+    if run.status in ("running", "waiting") and run.branch:
+        forms.append(
+            h.Form(
+                {"class": "composer"},
+                data.on("submit", at.post(TASK_DISPATCH.href(run.id)), prevent=True),
+                data.indicator("_dispatching"),
+                h.Label(
+                    {"class": "field"},
+                    h.Span("Dispatch a child task"),
+                    h.Textarea({"required": True, "maxlength": "4000"}, data.bind("objective")),
+                ),
+                h.Button(
+                    {"class": "btn", "type": "submit"},
+                    data.attr("disabled", "$_dispatching"),
+                    "Dispatch",
+                ),
+            )
+        )
+    return forms
 
 
 def _pane(

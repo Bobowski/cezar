@@ -169,10 +169,10 @@ class SecretStore:
             loaded, skipped = self._read(scope, scope_root)
             if skipped:
                 notes.append(f"{label} secrets skipped — {skipped}")
-            sources.append((label, {} if loaded is None else loaded))
+            sources.append((scope, loaded or {}))
 
         values: dict[str, str] = {}
-        key = self._key() if any(secrets for _label, secrets in sources) else b""
+        key = self._key() if any(secrets for _scope, secrets in sources) else b""
 
         def plain_for(scope: str, name: str, entry: dict[str, object]) -> str | None:
             file_id = _file_id(scope)
@@ -181,23 +181,23 @@ class SecretStore:
             return _decrypt_entry(key, file_id, name, entry)
 
         if bindings is None:
-            for label, secrets in sources:
-                scope = "workspace" if label == "workspace" else project_id
+            for scope, secrets in sources:
                 for name, entry in secrets.items():
                     audiences = entry.get("audiences")
-                    if not isinstance(audiences, list) or audience not in audiences:
-                        continue
-                    plain = plain_for(scope, name, entry)
-                    if plain is not None:
-                        values[name] = plain
+                    if isinstance(audiences, list) and audience in audiences:
+                        plain = plain_for(scope, name, entry)
+                        if plain is not None:
+                            values[name] = plain
             return values, notes
         for name, alias in bindings:
-            found: tuple[str, dict[str, object]] | None = None
-            for label, secrets in reversed(sources):
-                entry = secrets.get(name)
-                if isinstance(entry, dict):
-                    found = ("workspace" if label == "workspace" else project_id, entry)
-                    break
+            found = next(
+                (
+                    (scope, secrets[name])
+                    for scope, secrets in reversed(sources)
+                    if isinstance(secrets.get(name), dict)
+                ),
+                None,
+            )
             if found is None:
                 notes.append(f"secret {name} is not stored for this project or workspace")
                 continue

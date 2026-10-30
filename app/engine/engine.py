@@ -525,14 +525,11 @@ class Engine:
         if run.step_index == 0 and not run.pending_note:
             run = await self._refresh_workflow(run)
         while True:
-            run = get_run(self.db, run.id) or run
+            run = self._fresh(run)
             if run.status in ("cancelled", "failed", "waiting"):
                 return
             if cancel.is_set():
-                if run.id in self._finish:
-                    await self._mark_done(run)
-                else:
-                    await self._mark_cancelled(run)
+                await self._stop(run)
                 return
             steps = run.definition().steps
             if run.step_index >= len(steps):
@@ -548,7 +545,7 @@ class Engine:
                 return
             if action == "jump":
                 continue
-            current = get_run(self.db, run.id) or run
+            current = self._fresh(run)
             current.step_index += 1
             current.pending_note = ""
             current.check_failure = ""
@@ -669,13 +666,10 @@ class Engine:
         cursor = resumed or enter_graph(body, loops)
         for _guard in range(50):
             if cancel.is_set():
-                if run.id in self._finish:
-                    await self._mark_done(get_run(self.db, run.id) or run)
-                else:
-                    await self._mark_cancelled(get_run(self.db, run.id) or run)
+                await self._stop(run)
                 return
             if cursor.kind != "node" or cursor.node is None:
-                current = get_run(self.db, run.id) or run
+                current = self._fresh(run)
                 if cursor.status == "failed":
                     await self._fail(current, "the graph ended on a failure port")
                 else:
@@ -683,50 +677,15 @@ class Engine:
                 return
             node = cursor.node
             node_id = str(node.get("id", ""))
-            kind = str(node.get("type", ""))
             await self._note(run.id, "step-start", str(node.get("name") or node_id), node_id)
-            if kind == "agent":
-                prompt = render_refs(str(node.get("prompt") or "{{task}}"), outputs)
-                step = Step(
-                    id=node_id,
-                    name=str(node.get("name") or node_id),
-                    prompt=prompt,
-                    skill=str(node.get("skill") or ""),
-                    runner=str(node.get("runner") or ""),
-                    model=str(node.get("model") or ""),
-                )
-                action = await self._agent_step(run, cancel, graph_step=step)
-                if action == "stop":
-                    return
-                outputs[node_id] = {"summary": "done"}
-                port = "done"
-            elif kind == "check":
-                command = render_refs(str(node.get("command") or ""), outputs)
-                raw_allow = node.get("bashAllowlist")
-                allow = (
-                    tuple(item for item in raw_allow if isinstance(item, str))
-                    if isinstance(raw_allow, list)
-                    else ()
-                )
-                step = Step(id=node_id, name=node_id, command=command, bash_allowlist=allow)
-                code, output = await self._run_check(run, step, cancel)
-                await self._note(run.id, "check-output", output or f"exit {code}", node_id)
-                if cancel.is_set() or code < 0:
-                    await self._mark_cancelled(get_run(self.db, run.id) or run)
-                    return
-                outputs[node_id] = {"exitCode": str(code), "output": output[-2_000:]}
-                port = "pass" if code == 0 else "fail"
-            elif kind == "if":
-                port = _if_port(run, node, outputs)
-            else:
-                outcome = await self._graph_system(run, cancel, body, node, outputs, loops)
-                if outcome is None:
-                    return
-                port, node_id = outcome
+            outcome = await self._graph_node(run, cancel, body, node, outputs, loops)
+            if outcome is None:
+                return
+            port, node_id = outcome
             cursor = advance(body, node_id, port, loops)
         await self._fail(run, "graph walk did not end")
 
-    async def _graph_system(
+    async def _graph_node(
         self,
         run: Run,
         cancel: asyncio.Event,
@@ -735,36 +694,84 @@ class Engine:
         outputs: dict[str, dict[str, str]],
         loops: dict[str, int],
     ) -> tuple[str, str] | None:
+        """Run one node: `(port, node id)` to follow, or None when the walk ends here."""
         node_id = str(node.get("id", ""))
         kind = str(node.get("type", ""))
         if kind in ("gate.human", "ask-user"):
             await self._park_graph(run, node, outputs, loops)
             return None
-        if kind == "workflow":
-            return await self._run_subworkflow(run, cancel, node, outputs)
         if kind == "join":
             await self._fail(run, "a join can only be reached from a fork")
             return None
-        if kind == "fork":
-            return await self._run_fork(run, cancel, graph, node, outputs)
-        if kind == "dispatch":
-            return await self._run_dispatch(run, cancel, node, outputs)
-        if kind == "git.commit":
-            return await self._run_git_commit(run, node, outputs)
-        if kind == "git.push":
-            return await self._run_git_push(run, node_id)
-        if kind == "git.sync-base":
-            return await self._run_git_sync(run, node_id)
-        if kind == "github.draft-pr":
-            return await self._run_draft_pr(run, node, outputs)
-        if kind == "github.wait-ci":
-            return await self._run_wait_ci(run, node, outputs)
-        if kind in ("github.pr-comment", "github.issue-comment", "github.pr-update"):
-            return await self._run_github_note(run, node, outputs)
-        if kind == "notify.webhook":
-            return await self._run_webhook(run, node, outputs)
+        if kind == "if":
+            return _if_port(run, node, outputs), node_id
+        handlers: dict[str, Callable[[], Awaitable[tuple[str, str] | None]]] = {
+            "agent": lambda: self._graph_agent(run, cancel, node, outputs),
+            "check": lambda: self._graph_check(run, cancel, node, outputs),
+            "workflow": lambda: self._run_subworkflow(run, cancel, node, outputs),
+            "fork": lambda: self._run_fork(run, cancel, graph, node, outputs),
+            "dispatch": lambda: self._run_dispatch(run, cancel, node, outputs),
+            "git.commit": lambda: self._run_git_commit(run, node, outputs),
+            "git.push": lambda: self._run_git_push(run, node_id),
+            "git.sync-base": lambda: self._run_git_sync(run, node_id),
+            "github.draft-pr": lambda: self._run_draft_pr(run, node, outputs),
+            "github.wait-ci": lambda: self._run_wait_ci(run, node, outputs),
+            "github.pr-comment": lambda: self._run_github_note(run, node, outputs),
+            "github.issue-comment": lambda: self._run_github_note(run, node, outputs),
+            "github.pr-update": lambda: self._run_github_note(run, node, outputs),
+            "notify.webhook": lambda: self._run_webhook(run, node, outputs),
+        }
+        if kind in handlers:
+            return await handlers[kind]()
         await self._fail(run, f'graph node "{node_id}" ({kind}) is not executed by the Python port')
         return None
+
+    async def _graph_agent(
+        self,
+        run: Run,
+        cancel: asyncio.Event,
+        node: dict[str, Any],
+        outputs: dict[str, dict[str, str]],
+    ) -> tuple[str, str] | None:
+        node_id = str(node.get("id", ""))
+        step = Step(
+            id=node_id,
+            name=str(node.get("name") or node_id),
+            prompt=render_refs(str(node.get("prompt") or "{{task}}"), outputs),
+            skill=str(node.get("skill") or ""),
+            runner=str(node.get("runner") or ""),
+            model=str(node.get("model") or ""),
+        )
+        if await self._agent_step(run, cancel, graph_step=step) == "stop":
+            return None
+        outputs[node_id] = {"summary": "done"}
+        return "done", node_id
+
+    async def _graph_check(
+        self,
+        run: Run,
+        cancel: asyncio.Event,
+        node: dict[str, Any],
+        outputs: dict[str, dict[str, str]],
+    ) -> tuple[str, str] | None:
+        node_id = str(node.get("id", ""))
+        raw_allow = node.get("bashAllowlist")
+        allow = (
+            tuple(i for i in raw_allow if isinstance(i, str)) if isinstance(raw_allow, list) else ()
+        )
+        step = Step(
+            id=node_id,
+            name=node_id,
+            command=render_refs(str(node.get("command") or ""), outputs),
+            bash_allowlist=allow,
+        )
+        code, output = await self._run_check(run, step, cancel)
+        await self._note(run.id, "check-output", output or f"exit {code}", node_id)
+        if cancel.is_set() or code < 0:
+            await self._mark_cancelled(self._fresh(run))
+            return None
+        outputs[node_id] = {"exitCode": str(code), "output": output[-2_000:]}
+        return ("pass" if code == 0 else "fail"), node_id
 
     async def _park_graph(
         self,
@@ -784,7 +791,7 @@ class Engine:
         deadline = ""
         if isinstance(timeout, int) and timeout > 0:
             deadline = stamp(now() + timedelta(milliseconds=timeout))
-        current = get_run(self.db, run.id) or run
+        current = self._fresh(run)
         current.status = "waiting"
         current.ask = render_refs(text, outputs).replace("{{task}}", run.task)
         current.awaiting_answer_since = stamp()
@@ -806,7 +813,7 @@ class Engine:
         loops: dict[str, int],
         outputs: dict[str, dict[str, str]],
     ) -> GraphResult | None:
-        current = get_run(self.db, run.id) or run
+        current = self._fresh(run)
         park = current.graph_park
         if not park:
             return None
@@ -883,7 +890,7 @@ class Engine:
         outputs[node_id] = {"runId": child_id, "status": "running", "summary": ""}
         settled = await self._await_children([child_id], "all", cancel)
         if settled is None:
-            await self._mark_cancelled(get_run(self.db, run.id) or run)
+            await self._mark_cancelled(self._fresh(run))
             return None
         status = settled.get(child_id, "failed")
         child = get_run(self.db, child_id)
@@ -924,7 +931,7 @@ class Engine:
             return "failed", shape.join
         settled = await self._await_children(child_ids, shape.wait, cancel)
         if settled is None:
-            await self._mark_cancelled(get_run(self.db, run.id) or run)
+            await self._mark_cancelled(self._fresh(run))
             return None
         succeeded = [item for item in settled.values() if item in ("done", "review")]
         if shape.wait == "any":
@@ -961,7 +968,7 @@ class Engine:
         outputs[node_id] = {"runId": child_id, "status": "running", "summary": ""}
         settled = await self._await_children([child_id], "all", cancel)
         if settled is None:
-            await self._mark_cancelled(get_run(self.db, run.id) or run)
+            await self._mark_cancelled(self._fresh(run))
             return None
         status = settled.get(child_id, "failed")
         outputs[node_id] = {"runId": child_id, "status": status, "summary": ""}
@@ -1206,29 +1213,92 @@ class Engine:
         followup: str = "",
         graph_step: Step | None = None,
     ) -> str:
-        steps = run.definition().steps
-        index = run.step_index if not followup else 0
         if graph_step is not None:
-            steps = (graph_step,)
-            index = 0
+            steps, index = (graph_step,), 0
         elif followup:
-            steps = (Step(id="followup", name="Follow up", prompt=followup),)
-            index = 0
-        elif index >= len(steps):
+            steps, index = (Step(id="followup", name="Follow up", prompt=followup),), 0
+        else:
+            steps, index = run.definition().steps, run.step_index
+            if index >= len(steps):
+                return "stop"
+        step = steps[index]
+        first = index == 0 and not followup and graph_step is None
+        if first and "```mermaid" in run.task:
+            await self._note(run.id, "text", run.task)
+        try:
+            spec = await self._agent_spec(run, cancel, steps, index, resume=bool(followup))
+        except AgentTempDirError as exc:
+            await self._fail(self._fresh(run), str(exc))
             return "stop"
+        if run.session_runner != spec.runner:
+            opened = self._fresh(run)
+            opened.session_runner = spec.runner
+            await self._save(opened)
+            run.session_runner = spec.runner
+        turn = await self._stream_turn(run, cancel, spec, step.id)
+        if turn is None:
+            return "stop"
+        texts, in_gained, out_gained, saw_text, compacted_turn = turn
+        gained = in_gained + out_gained
+        full = self._coalescer.take_full(run.id, "message")
+        if full and not saw_text:
+            await self._note(run.id, "item.completed", _delta_snapshot(full), step.id)
+        current = self._fresh(run)
+        current.tokens_used += gained
+        current.input_tokens += in_gained
+        current.output_tokens += out_gained
+        if gained:
+            await self._note(
+                current.id, "usage.updated", _usage_event(current.tokens_used, gained), step.id
+            )
+        if run.pending_reports:
+            current.pending_reports = []
+        joined = "\n".join(texts)
+        await self._refresh_live_title(current, joined)
+        from app.engine.handoff import append_heartbeat
+
+        append_heartbeat(self.config.data_dir, current.id, "turn complete", at=stamp())
+        continued = await self._continue_compacted(current, cancel, joined, compacted_turn, step.id)
+        if continued is not None:
+            return continued
+        nudged = await self._nudge_autonomous(current, cancel, joined)
+        if nudged is not None:
+            return nudged
+        finishing = run.id in self._finish
+        if "CEZ:ASK" in joined and not followup and not finishing:
+            current.status = "waiting"
+            current.ask = _ask_line(joined)
+            current.awaiting_answer_since = stamp()
+            await self._save(current)
+            await self._note(current.id, "lifecycle", "waiting")
+            self._notify(current, "running")
+            return "stop"
+        if joined.rstrip().endswith("CEZ:MONITORING") and not finishing:
+            return await self._park_monitoring(current)
+        current.pending_note = ""
+        current.check_failure = ""
+        await self._save(current)
+        await self._autosave(current, "turn end")
+        return "ok"
+
+    async def _agent_spec(
+        self,
+        run: Run,
+        cancel: asyncio.Event,
+        steps: tuple[Step, ...],
+        index: int,
+        *,
+        resume: bool,
+    ) -> AgentSpec:
+        """The prompt, environment and runner for one agent step."""
+        from app.engine.handoff import HANDOFF_INSTRUCTIONS, handoff_path, seed_handoff
+        from app.features.settings.store import read_prompt
+
         step = steps[index]
         project = get_project(self.db, run.project_id)
         root = Path(project.root) if project else self.config.repo_root
-        system_parts: list[str] = []
         # Global rules first; the project's own prompt follows and wins on conflict.
-        from app.features.settings.store import read_prompt
-
-        global_prompt = read_prompt(self.config.data_dir).strip()
-        if global_prompt:
-            system_parts.append(global_prompt)
-        instructions, _naming = run_instructions(root)
-        if instructions:
-            system_parts.append(instructions)
+        system_parts = [read_prompt(self.config.data_dir).strip(), run_instructions(root)[0]]
         if step.skill:
             skill = find_skill(root, step.skill)
             if skill is None:
@@ -1239,10 +1309,6 @@ class Engine:
                 await self._note(run.id, "note", f'skill "{step.skill}" was not found', step.id)
             else:
                 system_parts.append(skill.body)
-        if not followup and graph_step is None and index == 0 and "```mermaid" in run.task:
-            await self._note(run.id, "text", run.task)
-        from app.engine.handoff import HANDOFF_INSTRUCTIONS, handoff_path, seed_handoff
-
         seeded = seed_handoff(
             self.config.data_dir,
             run_id=run.id,
@@ -1259,66 +1325,61 @@ class Engine:
             )
         if self.config.dry_run and step.bash_allowlist:
             await self._note(
-                run.id,
-                "note",
-                "bashAllowlist is not applied by the dry-run mock",
-                step.id,
+                run.id, "note", "bashAllowlist is not applied by the dry-run mock", step.id
             )
-        reports = list(run.pending_reports)
         prompt = build_user_prompt(
             steps,
             index,
             prompt_task(run),
             check_failure=run.check_failure,
             pending_note=run.pending_note,
-            reports=reports,
+            reports=list(run.pending_reports),
         )
         if run.attachment_paths:
             prompt += "\n\nThe user attached:\n" + "\n".join(run.attachment_paths)
         if seeded.is_file():
             prompt = f"{HANDOFF_INSTRUCTIONS}\n\n{prompt}"
-        try:
-            tmp_env = agent_tmp_env(self.config.data_dir, run.id, enabled=self.config.agent_tmpdir)
-        except AgentTempDirError as exc:
-            await self._fail(get_run(self.db, run.id) or run, str(exc))
-            return "stop"
-        spec = AgentSpec(
+        tmp_env = agent_tmp_env(self.config.data_dir, run.id, enabled=self.config.agent_tmpdir)
+        runner = step.runner or run.runner
+        return AgentSpec(
             user_prompt=prompt,
-            system_prompt="\n\n".join(system_parts),
+            system_prompt="\n\n".join(part for part in system_parts if part),
             cwd=run.worktree_path or str(root),
-            runner=step.runner or run.runner,
+            runner=runner,
             model=step.model or run.model,
             cancel=cancel,
             allowed_tools=step.allowed_tools,
             bash_allowlist=step.bash_allowlist,
             session_id=run.id,
-            resume=bool(followup) or run.step_index > 0,
+            resume=resume or run.step_index > 0,
             timeout_ms=15 * 60 * 1000,
             images=tuple(
                 {"mediaType": str(image.get("mediaType", "")), "data": str(image.get("data", ""))}
                 for image in run.images
-                if index == 0 and not followup
+                if index == 0 and not resume
             ),
             mcp_servers=load_project_mcp(root),
             codex_thread=run.codex_thread,
-            profile_home=_profile_home(self.config, run.account_id, step.runner or run.runner),
+            profile_home=_profile_home(self.config, run.account_id, runner),
             handoff_file=str(handoff_path(self.config.data_dir, run.id)),
             env=tuple((tmp_env | automation_env(run)).items()),
         )
-        if run.session_runner != spec.runner:
-            opened = get_run(self.db, run.id) or run
-            opened.session_runner = spec.runner
-            await self._save(opened)
-            run.session_runner = spec.runner
-        texts: list[str] = []
-        in_gained = 0
-        out_gained = 0
-        saw_text = False
-        compacted_turn = False
-        paused = asyncio.Event()
-        watch: asyncio.Task[None] | None = None
+
+    async def _stream_turn(
+        self, run: Run, cancel: asyncio.Event, spec: AgentSpec, step_id: str
+    ) -> tuple[list[str], int, int, bool, bool] | None:
+        """Stream one agent turn into the run's feed.
+
+        Returns `(texts, input tokens, output tokens, saw text, compacted)`, or None when
+        the run ended (cancelled, failed, paused at the memory cap) before the turn did.
+        """
         from app.features.settings.store import read_memory
 
+        texts: list[str] = []
+        in_gained = out_gained = 0
+        saw_text = compacted_turn = False
+        paused = asyncio.Event()
+        watch: asyncio.Task[None] | None = None
         if read_memory(self.config.data_dir):
             watch = asyncio.create_task(self._watch_memory(run, Path(spec.cwd), paused))
         try:
@@ -1331,7 +1392,12 @@ class Engine:
                     self._coalescer.push(run.id, "message", "text", event.text, self._live_delta)
                     continue
                 if event.type == "plan" and event.text:
-                    await self._note(run.id, "plan.updated", event.text, step.id)
+                    await self._note(run.id, "plan.updated", event.text, step_id)
+                    continue
+                if event.type == "session" and event.text:
+                    current_run = self._fresh(run)
+                    current_run.codex_thread = event.text
+                    await self._save(current_run)
                     continue
                 if event.type == "text" and event.text:
                     saw_text = True
@@ -1340,35 +1406,24 @@ class Engine:
                         in_gained += parsed[0]
                         out_gained += parsed[1]
                     texts.append(event.text)
-                if event.type == "session" and event.text:
-                    current_run = get_run(self.db, run.id) or run
-                    current_run.codex_thread = event.text
-                    await self._save(current_run)
-                    continue
-                if event.type == "text" and event.text:
-                    await self._emit_live(run.id, "item.delta", event.text, step.id)
-                await self._note(run.id, event.type, event.text or event.name, step.id)
-                for v2_type, v2_text in v2_snapshots(event.type, event.text, event.name, step.id):
-                    await self._note(run.id, v2_type, v2_text, step.id)
+                    await self._emit_live(run.id, "item.delta", event.text, step_id)
+                await self._note(run.id, event.type, event.text or event.name, step_id)
+                for v2_type, v2_text in v2_snapshots(event.type, event.text, event.name, step_id):
+                    await self._note(run.id, v2_type, v2_text, step_id)
                 if event.type == "turn-end" and event.name == "context-compaction":
                     compacted_turn = True
-                if event.type == "error":
-                    if paused.is_set():
-                        break
+                if event.type == "error" and not paused.is_set():
                     if cancel.is_set() or event.text == "cancelled":
-                        if run.id in self._finish:
-                            await self._mark_done(get_run(self.db, run.id) or run)
-                        else:
-                            await self._mark_cancelled(get_run(self.db, run.id) or run)
-                        return "stop"
-                    await self._fail(get_run(self.db, run.id) or run, event.text or "agent failed")
-                    return "stop"
+                        await self._stop(run)
+                    else:
+                        await self._fail(self._fresh(run), event.text or "agent failed")
+                    return None
         finally:
             self._coalescer.flush()
             if watch is not None:
                 watch.cancel()
         if paused.is_set():
-            current = get_run(self.db, run.id) or run
+            current = self._fresh(run)
             current.status = "waiting"
             current.ask = (
                 "Paused because this task crossed the memory cap. Send a message to resume."
@@ -1376,58 +1431,8 @@ class Engine:
             current.error = ""
             current.finished_at = ""
             await self._save(current)
-            return "stop"
-        gained = in_gained + out_gained
-        if not saw_text:
-            full = self._coalescer.take_full(run.id, "message")
-            if full:
-                await self._note(
-                    run.id,
-                    "item.completed",
-                    _delta_snapshot(full),
-                    step.id,
-                )
-        else:
-            self._coalescer.take_full(run.id, "message")
-        current = get_run(self.db, run.id) or run
-        current.tokens_used += gained
-        current.input_tokens += in_gained
-        current.output_tokens += out_gained
-        if gained:
-            await self._note(
-                current.id,
-                "usage.updated",
-                _usage_event(current.tokens_used, gained),
-                step.id,
-            )
-        if reports:
-            current.pending_reports = []
-        joined = "\n".join(texts)
-        await self._refresh_live_title(current, joined)
-        from app.engine.handoff import append_heartbeat
-
-        append_heartbeat(self.config.data_dir, current.id, "turn complete", at=stamp())
-        continued = await self._continue_compacted(current, cancel, joined, compacted_turn, step.id)
-        if continued is not None:
-            return continued
-        nudged = await self._nudge_autonomous(current, cancel, joined)
-        if nudged is not None:
-            return nudged
-        if "CEZ:ASK" in joined and not followup and run.id not in self._finish:
-            current.status = "waiting"
-            current.ask = _ask_line(joined)
-            current.awaiting_answer_since = stamp()
-            await self._save(current)
-            await self._note(current.id, "lifecycle", "waiting")
-            self._notify(current, "running")
-            return "stop"
-        if joined.rstrip().endswith("CEZ:MONITORING") and run.id not in self._finish:
-            return await self._park_monitoring(current)
-        current.pending_note = ""
-        current.check_failure = ""
-        await self._save(current)
-        await self._autosave(current, "turn end")
-        return "ok"
+            return None
+        return texts, in_gained, out_gained, saw_text, compacted_turn
 
     async def _run_check(self, run: Run, step: Step, cancel: asyncio.Event) -> tuple[int, str]:
         project = get_project(self.db, run.project_id)
@@ -1495,14 +1500,11 @@ class Engine:
         code, output = await self._run_check(run, step, cancel)
         await self._note(run.id, "check-output", output or f"exit {code}", step.id)
         if cancel.is_set() or code < 0:
-            if run.id in self._finish:
-                await self._mark_done(get_run(self.db, run.id) or run)
-            else:
-                await self._mark_cancelled(get_run(self.db, run.id) or run)
+            await self._stop(run)
             return "stop"
         if code == 0:
             return "ok"
-        current = get_run(self.db, run.id) or run
+        current = self._fresh(run)
         if step.retry and retryable_exit(step.retry_on, code):
             used = current.retries.get(step.id, 0)
             target = next(
@@ -1564,7 +1566,7 @@ class Engine:
         )
 
     async def _enter_review(self, run: Run) -> None:
-        current = get_run(self.db, run.id) or run
+        current = self._fresh(run)
         if current.status in ("cancelled", "failed"):
             return
         stopped = "the task was finished" if run.id in self._finish else ""
@@ -1606,6 +1608,14 @@ class Engine:
         await self._schedule_auto_resume(run)
         self._reap(run.id)
         return run
+
+    def _fresh(self, run: Run) -> Run:
+        return get_run(self.db, run.id) or run
+
+    async def _stop(self, run: Run) -> None:
+        """Settle a cancelled walk: done when the user chose Finish, cancelled otherwise."""
+        run = self._fresh(run)
+        await (self._mark_done(run) if run.id in self._finish else self._mark_cancelled(run))
 
     async def _mark_cancelled(self, run: Run) -> None:
         if run.status == "cancelled":

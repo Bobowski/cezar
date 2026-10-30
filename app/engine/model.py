@@ -272,6 +272,7 @@ class Run:
     notes: str = ""
     attachment_paths: list[str] = field(default_factory=list)
     dispatch_report: dict[str, object] = field(default_factory=dict)
+    graph_park: dict[str, object] = field(default_factory=dict)
     account_id: str = ""
     landing: dict[str, object] = field(default_factory=dict)
 
@@ -336,6 +337,8 @@ class Run:
         }
         if self.dispatch_report:
             body["dispatch_report"] = self.dispatch_report
+        if self.graph_park:
+            body["graph_park"] = self.graph_park
         if self.landing:
             body["landing"] = self.landing
         return body
@@ -410,6 +413,7 @@ class Run:
             notes=_text(data.get("notes")),
             attachment_paths=_strings(data.get("attachment_paths")),
             dispatch_report=_dict(data.get("dispatch_report")),
+            graph_park=_dict(data.get("graph_park")),
             account_id=_text(data.get("account_id")),
             landing=_dict(data.get("landing")),
         )

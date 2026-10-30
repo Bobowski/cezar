@@ -10,6 +10,7 @@ from app.features.task.data import list_commits, list_worktree_files
 from app.features.task.mermaid import diagrams
 from app.features.task.urls import (
     TASK,
+    TASK_APPROVE,
     TASK_CANCEL,
     TASK_COMMIT,
     TASK_DELETE,
@@ -20,6 +21,7 @@ from app.features.task.urls import (
     TASK_NOTES,
     TASK_PR,
     TASK_PUSH,
+    TASK_REJECT,
     TASK_REVIEW,
     TASK_SHELL,
     TaskView,
@@ -149,7 +151,31 @@ def render(
     if run.status == "waiting" and run.ask:
         blocks.append(h.Div({"class": "card-block ask"}, h.Strong("The agent asked"), h.P(run.ask)))
     blocks.extend(_pane(run, view, diff, transcript, len(events)))
-    if run.status in ("waiting", "review"):
+    if run.status == "waiting" and run.graph_park.get("kind") == "gate.human":
+        blocks.append(
+            h.Form(
+                {"class": "composer", "id": "gate"},
+                data.indicator("_saving"),
+                h.Label(
+                    {"class": "field"},
+                    h.Span("Comment (optional)"),
+                    h.Textarea({"maxlength": "20000"}, data.bind("message")),
+                ),
+                h.Button(
+                    {"class": "btn btn-primary", "type": "button"},
+                    data.on("click", at.post(TASK_APPROVE.href(run.id))),
+                    data.attr("disabled", "$_saving"),
+                    "Approve",
+                ),
+                h.Button(
+                    {"class": "btn btn-danger", "type": "button"},
+                    data.on("click", at.post(TASK_REJECT.href(run.id))),
+                    data.attr("disabled", "$_saving"),
+                    "Reject",
+                ),
+            )
+        )
+    elif run.status in ("waiting", "review"):
         blocks.append(
             h.Form(
                 {"class": "composer"},

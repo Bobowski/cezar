@@ -57,7 +57,14 @@ from app.engine.gitwork import (
     remove_worktree,
     task_diff,
 )
-from app.engine.graph import advance, compare_values, enter_graph, fork_shape, render_refs
+from app.engine.graph import (
+    GraphResult,
+    advance,
+    compare_values,
+    enter_graph,
+    fork_shape,
+    render_refs,
+)
 from app.engine.instructions import run_instructions
 from app.engine.model import TERMINAL, Automation, Project, Run, Settings, Step, Workflow
 from app.engine.namer import propose_name, propose_title
@@ -347,6 +354,7 @@ class Engine:
 
     async def tick(self) -> None:
         await self._resume_due()
+        await self._expire_parks()
         await self._launch_due()
         await self._wake_monitors()
         await self._resume_limited()
@@ -570,7 +578,8 @@ class Engine:
         body = cast(dict[str, Any], graph)
         loops: dict[str, int] = {}
         outputs: dict[str, dict[str, str]] = {}
-        cursor = enter_graph(body, loops)
+        resumed = await self._resume_park(run, body, loops, outputs)
+        cursor = resumed or enter_graph(body, loops)
         for _guard in range(50):
             if cancel.is_set():
                 if run.id in self._finish:
@@ -623,7 +632,7 @@ class Engine:
             elif kind == "if":
                 port = _if_port(run, node, outputs)
             else:
-                outcome = await self._graph_system(run, cancel, body, node, outputs)
+                outcome = await self._graph_system(run, cancel, body, node, outputs, loops)
                 if outcome is None:
                     return
                 port, node_id = outcome
@@ -637,9 +646,15 @@ class Engine:
         graph: dict[str, Any],
         node: dict[str, Any],
         outputs: dict[str, dict[str, str]],
+        loops: dict[str, int],
     ) -> tuple[str, str] | None:
         node_id = str(node.get("id", ""))
         kind = str(node.get("type", ""))
+        if kind in ("gate.human", "ask-user"):
+            await self._park_graph(run, node, outputs, loops)
+            return None
+        if kind == "workflow":
+            return await self._run_subworkflow(run, cancel, node, outputs)
         if kind == "join":
             await self._fail(run, "a join can only be reached from a fork")
             return None
@@ -663,6 +678,133 @@ class Engine:
             return await self._run_webhook(run, node, outputs)
         await self._fail(run, f'graph node "{node_id}" ({kind}) is not executed by the Python port')
         return None
+
+    async def _park_graph(
+        self,
+        run: Run,
+        node: dict[str, Any],
+        outputs: dict[str, dict[str, str]],
+        loops: dict[str, int],
+    ) -> None:
+        """Park the run as `waiting` with the walk's state saved on the row.
+
+        The coroutine ends, so the park holds no slot and a restart loses nothing.
+        """
+        node_id = str(node.get("id", ""))
+        kind = str(node.get("type", ""))
+        text = str(node.get("message" if kind == "gate.human" else "question") or "")
+        timeout = node.get("timeoutMs")
+        deadline = ""
+        if isinstance(timeout, int) and timeout > 0:
+            deadline = stamp(now() + timedelta(milliseconds=timeout))
+        current = get_run(self.db, run.id) or run
+        current.status = "waiting"
+        current.ask = render_refs(text, outputs).replace("{{task}}", run.task)
+        current.awaiting_answer_since = stamp()
+        current.graph_park = {
+            "node": node_id,
+            "kind": kind,
+            "loops": dict(loops),
+            "outputs": {key: dict(value) for key, value in outputs.items()},
+            "deadline": deadline,
+        }
+        await self._save(current)
+        await self._note(current.id, "lifecycle", "waiting", node_id)
+        self._notify(current, "running")
+
+    async def _resume_park(
+        self,
+        run: Run,
+        graph: dict[str, Any],
+        loops: dict[str, int],
+        outputs: dict[str, dict[str, str]],
+    ) -> GraphResult | None:
+        current = get_run(self.db, run.id) or run
+        park = current.graph_park
+        if not park:
+            return None
+        current.graph_park = {}
+        await self._save(current)
+        reply = park.get("reply")
+        if not isinstance(reply, dict):
+            return None
+        for key, value in cast(dict[str, Any], park.get("loops") or {}).items():
+            loops[str(key)] = int(value)
+        for key, fields in cast(dict[str, Any], park.get("outputs") or {}).items():
+            outputs[str(key)] = {str(a): str(b) for a, b in fields.items()}
+        node_id = str(park.get("node", ""))
+        port = str(reply.get("port", ""))
+        if port == "answered":
+            outputs[node_id] = {"answer": str(reply.get("text", ""))}
+        elif port in ("approve", "reject"):
+            outputs[node_id] = {"comment": str(reply.get("text", ""))}
+        return advance(graph, node_id, port, loops)
+
+    async def resolve_park(self, run_id: str, kind: str, port: str, text: str = "") -> str | None:
+        """Route a parked `gate.human` or `ask-user` to a port and queue the run."""
+        run = get_run(self.db, run_id)
+        if run is None:
+            return "not found"
+        park = run.graph_park
+        if run.status != "waiting" or park.get("kind") != kind or "reply" in park:
+            return "this run is not waiting on that"
+        run.graph_park = {**park, "reply": {"port": port, "text": text.strip()[:20_000]}}
+        run.ask = ""
+        run.awaiting_answer_since = ""
+        run.status = "queued"
+        await self._save(run)
+        self.kick()
+        return None
+
+    async def _expire_parks(self) -> None:
+        moment = now()
+        for run in list_runs(self.db, None, "waiting", limit=100):
+            due = parse_stamp(str(run.graph_park.get("deadline") or ""))
+            if due is not None and due <= moment and "reply" not in run.graph_park:
+                await self.resolve_park(run.id, str(run.graph_park.get("kind")), "timeout")
+
+    async def _run_subworkflow(
+        self,
+        run: Run,
+        cancel: asyncio.Event,
+        node: dict[str, Any],
+        outputs: dict[str, dict[str, str]],
+    ) -> tuple[str, str] | None:
+        node_id = str(node.get("id", ""))
+        name = str(node.get("workflow") or "")
+        project = get_project(self.db, run.project_id)
+        chosen = find_workflow(Path(project.root), name) if project else None
+        if chosen is None:
+            await self._note(run.id, "note", f'no workflow named "{name}"', node_id)
+            return "failed", node_id
+        prompt = render_refs(str(node.get("prompt") or "{{task}}"), outputs)
+        child_id, reason = await self.dispatch(
+            run.id,
+            DispatchOrder(
+                objective=prompt.replace("{{task}}", run.task)[:4_000],
+                title=str(node.get("name") or name),
+                max_cost=node.get("budgetUsd")
+                if type(node.get("budgetUsd")) in (int, float)
+                else None,
+            ),
+            nested=chosen,
+        )
+        if reason or not child_id:
+            await self._note(run.id, "note", f"sub-workflow refused — {reason}", node_id)
+            return "failed", node_id
+        await self._note(run.id, "note", f'started sub-workflow "{name}" as {child_id}', node_id)
+        outputs[node_id] = {"runId": child_id, "status": "running", "summary": ""}
+        settled = await self._await_children([child_id], "all", cancel)
+        if settled is None:
+            await self._mark_cancelled(get_run(self.db, run.id) or run)
+            return None
+        status = settled.get(child_id, "failed")
+        child = get_run(self.db, child_id)
+        summary = ""
+        if child is not None:
+            summary = str(child.dispatch_report.get("result") or child.error or "")
+        outputs[node_id] = {"runId": child_id, "status": status, "summary": summary}
+        return ("done" if status in ("done", "review") else "failed"), node_id
 
     async def _run_fork(
         self,
@@ -2263,6 +2405,10 @@ class Engine:
         run = get_run(self.db, run_id)
         if run is None:
             return "not found"
+        if run.status == "waiting" and run.graph_park:
+            if run.graph_park.get("kind") != "ask-user":
+                return "approve or reject this gate"
+            return await self.resolve_park(run_id, "ask-user", "answered", text)
         if run.status == "waiting":
             run.pending_note = f"The user answered:\n{text}"
             run.ask = ""
@@ -2304,7 +2450,9 @@ class Engine:
             return None
         return "nothing is scheduled"
 
-    async def dispatch(self, parent_id: str, order: DispatchOrder) -> tuple[str | None, str | None]:
+    async def dispatch(
+        self, parent_id: str, order: DispatchOrder, nested: Workflow | None = None
+    ) -> tuple[str | None, str | None]:
         if not self.config.dispatch_enabled:
             return None, "dispatch is disabled on this cockpit (CEZ_DISPATCH=0)"
         parent = get_run(self.db, parent_id)
@@ -2338,7 +2486,7 @@ class Engine:
         if not objective:
             return None, "objective is empty"
         envelope = child_task_envelope(order, parent.id, parent.branch)
-        workflow = Workflow(
+        workflow = nested or Workflow(
             name="(planned)",
             description="",
             source="built-in",
@@ -2361,6 +2509,9 @@ class Engine:
             budget_usd=budget,
             base_branch=parent.branch,
             kind=order.kind or "implement",
+            # A nested workflow's parent awaits the child in its node; a report would
+            # requeue a parent that already settled on the child's failure.
+            reported=nested is not None,
         )
         await self.enqueue(child)
         await self._note(parent.id, "note", f'dispatched "{child.title}" ({child.id})')

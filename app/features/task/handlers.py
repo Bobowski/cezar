@@ -16,6 +16,7 @@ from app.engine.gitwork import Diff, task_diff
 from app.engine.model import Run
 from app.features.task.urls import (
     TASK,
+    TASK_APPROVE,
     TASK_CANCEL,
     TASK_COMMIT,
     TASK_DELETE,
@@ -26,6 +27,7 @@ from app.features.task.urls import (
     TASK_NOTES,
     TASK_PR,
     TASK_PUSH,
+    TASK_REJECT,
     TASK_REVIEW,
     TASK_SHELL,
     TaskView,
@@ -50,6 +52,8 @@ class TaskPage:
         app.add(TASK_FINISH, self.finish)
         app.add(TASK_DELETE, self.delete)
         app.add(TASK_MESSAGE, self.message)
+        app.add(TASK_APPROVE, self.approve)
+        app.add(TASK_REJECT, self.reject)
         app.add(TASK_DISPATCH, self.dispatch)
         app.add(TASK_COMMIT, self.commit)
         app.add(TASK_PUSH, self.push)
@@ -124,6 +128,23 @@ class TaskPage:
             return
         message = str(signals.get("message", "")).strip()
         reason = await self.engine.deliver(run_id, message)
+        if reason:
+            self._tell(w, tab, reason, 409 if reason != "not found" else 404)
+            return
+        SSE(w).patch_signals({"message": "", "_error": ""})
+
+    async def approve(self, c: Context, w: Writer) -> None:
+        await self._gate(c, w, "approve")
+
+    async def reject(self, c: Context, w: Writer) -> None:
+        await self._gate(c, w, "reject")
+
+    async def _gate(self, c: Context, w: Writer, port: str) -> None:
+        run_id, tab, signals = await self._input(c, w)
+        if run_id is None or signals is None or tab is None:
+            return
+        comment = str(signals.get("message", "")).strip()
+        reason = await self.engine.resolve_park(run_id, "gate.human", port, comment)
         if reason:
             self._tell(w, tab, reason, 409 if reason != "not found" else 404)
             return

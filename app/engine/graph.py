@@ -50,7 +50,10 @@ def ports_of(node: dict[str, Any]) -> tuple[str, ...]:
         count = node.get("branches")
         width = count if isinstance(count, int) and 2 <= count <= 4 else 3
         return tuple(str(index) for index in range(1, width + 1))
-    return _PORTS.get(kind, ("done", "failed"))
+    ports = _PORTS.get(kind, ("done", "failed"))
+    if kind in ("gate.human", "ask-user") and node.get("timeoutMs"):
+        return (*ports, "timeout")
+    return ports
 
 
 def parse_edge_from(source: str, nodes: list[dict[str, Any]]) -> tuple[str, str] | None:

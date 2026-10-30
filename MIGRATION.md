@@ -60,7 +60,7 @@ treat it as a non-git directory.
 | What happens to a `running` row after restart? | It becomes `failed` with "interrupted by restart". The subprocess is gone. `queued` stays queued. `waiting` stays, so the question is still on screen. The TypeScript `recover()` path resumes the session; this does not. |
 | Does `waiting` hold a parallelism slot? | No. The agent process has exited. `max_parallel` still defaults to 2 and caps `running` work. |
 | Dry run | Default off, matching TypeScript. Compose sets `CEZ_DRY_RUN=1`. |
-| Graph workflows (`version: 2`) | Loaded and walked for `start`, `agent`, `check`, `if`, `loop`, `end`, `fork`, `join`, `dispatch`, `git.commit`, `git.push`, `git.sync-base`, `github.draft-pr`, and `github.wait-ci` (no PR fails; dry-run reports green). A cycle that does not pass a loop `repeat` port is rejected. `github.pr-comment`, `github.issue-comment`, and `github.pr-update` are a dry-run note or a failure. `gate.human`, `ask-user`, and nested `workflow` fail the run (`Engine._graph_system`). |
+| Graph workflows (`version: 2`) | Loaded and walked for `start`, `agent`, `check`, `if`, `loop`, `end`, `fork`, `join`, `dispatch`, `git.commit`, `git.push`, `git.sync-base`, `github.draft-pr`, and `github.wait-ci` (no PR fails; dry-run reports green). A cycle that does not pass a loop `repeat` port is rejected. `github.pr-comment`, `github.issue-comment`, and `github.pr-update` are a dry-run note or a failure. `gate.human`, `ask-user`, and nested `workflow` are executed (`tests/test_graph_human.py`). |
 | `onFail` on an agent step | A load error. TypeScript's schema allows the key and ignores it. |
 | Secrets on a check | Injected into the check environment from an AES-256-GCM store under the data directory. Values are not returned by the list API. A `cezar` audience is not given to checks. The check itself is always `bash -lc`. |
 | `allowedTools` / `bashAllowlist` | Claude argv maps a non-empty allowlist to `Bash(<prefix>:*)`. Pi drops Bash. Copilot is `--allow-all-tools` and the allowlist is not mapped. A check step always runs `bash -lc`, the same as TypeScript: the allowlist does not gate it. |
@@ -133,9 +133,9 @@ A non-done status is tagged with one owner stream: `partial · A`, `not done · 
 recovery, and env vars. **B** is HTTP routes and the CLI. **C** is UI screens,
 settings keys, and e2e coverage. **D** is webhooks, integrations, agent profiles,
 the WebSocket bus, persistence shape, and hosted terminal policy.
-This pass: **179 done**, **12 partial**, **17 not done**, **14 intentionally not ported** (222 rows).
-Open rows (partial + not done + intentionally not ported): **A 11, B 20, C 5, D 7** (43).
-The porting backlog (partial + not done, leaving the accepted exclusions aside) is **A 5, B 13, C 4, D 7** (29).
+This pass: **181 done**, **11 partial**, **16 not done**, **14 intentionally not ported** (222 rows).
+Open rows (partial + not done + intentionally not ported): **A 9, B 20, C 5, D 7** (41).
+The porting backlog (partial + not done, leaving the accepted exclusions aside) is **A 3, B 13, C 4, D 7** (27).
 Every row is in one of those four states.
 
 ### Persistence and model
@@ -163,7 +163,7 @@ Every row is in one of those four states.
 | Chain note when there are 2+ agent steps; `CEZ:DONE` does not skip | done | `test_cez_done_does_not_skip_the_next_agent_step` |
 | Built-in `quick-task`; a valid file overrides it; a bad file does not | done | `tests/test_workflows.py` |
 | Queued file snapshot is not replaced by the built-in when the file disappears | done | `test_a_deleted_file_does_not_replace_a_queued_snapshot_with_the_builtin` |
-| Version 2 graph workflows | partial · A | `tests/test_graph.py` walks the spec example, including the loop cap. `tests/test_graph_nodes.py` runs a fork, a dispatch, a commit, a dry-run draft PR, and `github.wait-ci`. `tests/test_stream_a.py` runs `github.pr-comment`, `github.pr-update` (`pr ready`, a label, a reviewer), and `github.issue-comment` against a fake `gh`, and fails a comment when the task has no PR. `gate.human`, `ask-user`, and nested `workflow` are a separate not-done row. TypeScript executes them in `packages/cezar/src/workflows/graph.ts`. |
+| Version 2 graph workflows | done | `tests/test_graph.py` walks the spec example, including the loop cap. `tests/test_graph_nodes.py` runs a fork, a dispatch, a commit, a dry-run draft PR, and `github.wait-ci`. `tests/test_stream_a.py` runs `github.pr-comment`, `github.pr-update` (`pr ready`, a label, a reviewer), and `github.issue-comment` against a fake `gh`, and fails a comment when the task has no PR. `gate.human`, `ask-user`, and nested `workflow` are the next row. |
 | Node editor | done | Loops, fork, dispatch, git, draft PR, and dry-run wait-ci are walked. `/workflows/{name}/editor` is a server-drawn canvas: start a graph, add a node, move it, connect it, and save version-2 YAML. `tests/test_stream_a_close.py`, `e2e/test_screens.py`. |
 | `init` example `fix-and-verify.yaml` and `project-conventions.md`, never overwrite | done | `tests/test_cli.py` |
 | `.ai/cezar/.gitignore` entry list | done | `test_gitignore_appends_missing_entries_and_keeps_user_lines` |
@@ -584,7 +584,7 @@ separate gap.
 | Run open-in, adopt PR, patch record | not done · B | `packages/cezar/src/server/server.ts`: `POST /api/v1/runs/:id/open-in`, `POST …/open-in-cli`, `POST …/pr/adopt`, `PATCH /api/v1/runs/:id`. `GET /open-targets` and `POST /open-in` stay the done row. |
 | Workflow JSON create, delete, validate, parse, nodes | not done · B | `packages/cezar/src/server/server.ts`: `POST /api/v1/workflows`, `DELETE /api/v1/workflows/:name`, `GET /api/v1/workflows/nodes`, `POST /api/v1/workflows/validate`, `POST /api/v1/workflows/parse`, `POST /api/v1/workflows/graph`. HTML create, delete, and the canvas editor stay done. |
 | Automation check detail, log retry, tracker options | not done · B | `packages/cezar/src/server/server.ts`: `GET /api/v1/automation-checks/:id`, `POST /api/v1/automation-log/:id/retry`, `GET /api/v1/tracker/automation-options`. `POST /automations/:id/check` returning `matches: 0` stays the partial JSON row. |
-| Graph nodes `gate.human`, `ask-user`, nested `workflow` | not done · A | `packages/cezar/src/workflows/graph.ts` executes all three. `Engine._graph_system` in `app/engine/engine.py` fails the run with "is not executed by the Python port". No test names them. The other version-2 nodes stay the partial graph row. |
+| Graph nodes `gate.human`, `ask-user`, nested `workflow` | done | `tests/test_graph_human.py`. `gate.human` and `ask-user` park the run as `waiting` (no slot) with the message in `run.ask`; the walk's loops and node outputs are saved in `Run.graph_park`, so a restart resumes at the right port (`test_a_parked_gate_survives_a_restart_and_a_timeout_routes_timeout`). `POST /tasks/{run_id}/approve` and `/reject` (optional comment as the `comment` output) route the `approve` and `reject` ports (`test_a_gate_parks_then_approve_routes_the_approve_port`, `test_a_gate_reject_routes_the_reject_port`, `test_the_task_page_approves_and_rejects_a_gate`). `POST /tasks/{run_id}/message` answers `ask-user` and exposes `{{nodes.<id>.answer}}` (`test_ask_user_resumes_on_answered_with_the_answer_as_output`, `test_the_task_page_rejects_a_gate_and_answers_an_ask`). `timeoutMs` adds a `timeout` port, fired by `Engine._expire_parks` on the tick. A nested `workflow` starts the named saved workflow as a child through `Engine.dispatch`, waits, and routes `done` or `failed` with `runId`, `status`, `summary` (`test_a_nested_workflow_runs_as_a_child_and_routes_done`, `test_a_nested_workflow_that_fails_routes_failed`, `test_an_unknown_nested_workflow_routes_failed`). Not ported: TypeScript's ask card with `options` buttons (the `options` list is ignored; the answer is free text), and re-attaching to a running sub-workflow after a restart (a `running` parent is failed by `mark_interrupted`, as for `dispatch`). |
 | GitHub and tracker pollers | not done · A | `packages/cezar/src/automations/github-poller.ts` and `packages/cezar/src/automations/tracker-poller.ts` poll enabled automations. Python `Engine._launch_due` starts a run for every enabled row whose `next_at` is due. A `github` or `tracker` kind is stored and then fired on that interval. Inbound `POST /hooks/github`, `/hooks/jira`, and `/hooks/linear` are a Python addition. TypeScript has no inbound hook routes. |
 | CLI subcommands and `cez task` flags | not done · B | `packages/cezar/src/server/tracker/connections-cli.ts`: `tracker-connections list` and `remove`. `packages/cezar/src/workspace/projects-cli.ts`: `projects tag` (and `projects rm` as an alias of remove). `packages/cezar/src/automations/automation-cli.ts`: `add`, `run`, `update`, `show`, `enable`, `pause`, `delete`, plus `add --cron`, `--at`, `--on`, `--every`, `--kind tracker`. `packages/cezar/src/dispatch/task-cli.ts`: `create` flags `--kind`, `--review-of`, `--scope`, `--budget`, `--success`, `--evidence`, `--tools`, `--retry-limit`. Python `task create` posts an objective. `automation cron` and `automation tracker` only set `kind` on a JSON body. |
 | Env vars read by TypeScript and not by `app/` | not done · A | Outside the intentionally not ported desktop, telemetry, self-update, and skills-auto-update set: `CEZ_AGENT_MODELS_LOCKED` (`packages/cezar/src/config.ts`), `CEZ_CODEX_REASONING` (`packages/cezar/src/core/codex-app-server-runner.ts`), `CEZ_AGENT_TMPDIR`, `CEZ_SHARED_CACHE_DIR`, `CEZ_GITHUB_REPO`, `CEZ_GITHUB_NUMBER`, `CEZ_GITHUB_EVENT`, `CEZ_PR_HEAD_SHA`, `CEZ_PR_HEAD_REF`, `CEZ_PR_BASE_REF` (`packages/cezar/src/workflows/run.ts`), `CEZ_TREE_DIR` (`packages/cezar/src/dispatch/prompts.ts`). `CEZ_REAL_AGENTS` is Python-only. |
@@ -648,15 +648,15 @@ How a row was placed when it touched two areas:
 
 ### A — runners, event stream, workflows and graph
 
-2 partial, 3 not done, 6 intentionally not ported.
+1 partial, 2 not done, 6 intentionally not ported.
 
-Partial: version 2 graph workflows; resume of a live CLI session after restart.
+Partial: resume of a live CLI session after restart.
 
-Not done: graph nodes `gate.human`, `ask-user`, nested `workflow`; GitHub and tracker pollers; env vars read by TypeScript and not by `app/`.
+Not done: GitHub and tracker pollers; env vars read by TypeScript and not by `app/`.
 
 Intentionally not ported: skills auto-update, host telemetry send, telemetry send, `CEZ_UPDATE_CHANNEL` / `CEZ_SUPERVISED`, `CEZ_DESKTOP` / `CEZ_DESKTOP_*` / `CEZ_DISCLAIM_EXEC`, `CEZ_SKILLS_AUTO_UPDATE`.
 
-Owns: `app/engine/runners/`, `app/engine/agents.py`, `app/engine/namer.py`, `app/engine/workflows.py`, `app/engine/graph.py`, `app/engine/skills.py`, `app/engine/prompts.py`, `app/engine/retention.py`, `app/engine/deltas.py`, `app/engine/session_extras.py`, `app/engine/dispatch_logic.py`, `tests/test_runners.py`, `tests/test_runner_gaps.py`, `tests/test_graph.py`, `tests/test_graph_nodes.py`, `tests/test_workflows.py`, `tests/fakes/`.
+Owns: `app/engine/runners/`, `app/engine/agents.py`, `app/engine/namer.py`, `app/engine/workflows.py`, `app/engine/graph.py`, `app/engine/skills.py`, `app/engine/prompts.py`, `app/engine/retention.py`, `app/engine/deltas.py`, `app/engine/session_extras.py`, `app/engine/dispatch_logic.py`, `tests/test_runners.py`, `tests/test_runner_gaps.py`, `tests/test_graph.py`, `tests/test_graph_nodes.py`, `tests/test_graph_human.py`, `tests/test_workflows.py`, `tests/fakes/`.
 
 The node editor is `app/features/workflows/editor.py`. C still renders `/workflows/{name}` from that folder.
 

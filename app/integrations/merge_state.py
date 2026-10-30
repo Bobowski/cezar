@@ -7,8 +7,9 @@ is `ready`. Dry-run builds a ready document and does not call `gh`.
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
+
+from app.engine.gitwork import gh as _gh
 
 _METHODS = ("squash", "merge", "rebase")
 _PASSING = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
@@ -156,23 +157,6 @@ def load_merge_state(number: int, cwd: Path) -> tuple[dict[str, object] | None, 
     policy = _policy(policy_out) if policy_ok else {}
     tier = "detailed" if isinstance(pr.get("statusCheckRollup"), list) else "none"
     return normalize_merge_state(pr, policy, checks_tier=tier, requirements_readable=policy_ok), ""
-
-
-def _gh(cwd: Path, args: list[str]) -> tuple[bool, str, str]:
-    try:
-        proc = subprocess.run(
-            ["gh", *args],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, "", str(exc)
-    if proc.returncode != 0:
-        return False, proc.stdout, (proc.stderr or proc.stdout).strip()
-    return True, proc.stdout, ""
 
 
 def _policy(raw: str) -> dict[str, object]:

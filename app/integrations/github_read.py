@@ -8,10 +8,10 @@ dry-run off, the same shapes come from `gh` in the repository. A missing
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 from pathlib import Path
 from typing import Any
+
+from app.engine.gitwork import gh as _gh
 
 GH_CHECKS_MAX = 100
 GH_SEARCH_MAX = 50
@@ -696,23 +696,6 @@ def _after(later: str | None, earlier: str | None) -> bool:
     if not later or not earlier:
         return False
     return later > earlier
-
-
-def _gh(cwd: Path, args: list[str]) -> tuple[bool, str, str]:
-    try:
-        env = {**os.environ, "GH_PROMPT_DISABLED": "1"}
-        proc = subprocess.run(
-            ["gh", *args],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-            env=env,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, "", str(exc)
-    return proc.returncode == 0, proc.stdout, proc.stderr or proc.stdout
 
 
 def repo_handle(cwd: Path) -> str:

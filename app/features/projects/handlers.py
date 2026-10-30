@@ -5,9 +5,9 @@ from pathlib import Path
 import apsw
 from litewriter import LiteWriter
 from stario import App, Context, Relay, Writer
-from stario.datastar import SSE, read_signals
-from stario.exceptions import RequestBodyError
+from stario.datastar import SSE
 
+from app.common.live import read_form, stream
 from app.common.shell import load_chrome
 from app.config import Config
 from app.engine.engine import CHANGED, Engine
@@ -40,20 +40,10 @@ class ProjectsPage:
         w.html(self._render(uuid.uuid7().hex))
 
     async def live(self, c: Context, w: Writer) -> None:
-        tab = await _tab(c, w)
-        if tab is None:
-            return
-        async with self.relay.subscribe(CHANGED, f"tab.{tab}", latest=True) as events:
-            sse = SSE(w)
-            sse.patch_elements(self._render(tab))
-            async for subject, payload in c.alive(events):
-                if subject == CHANGED:
-                    sse.patch_elements(self._render(tab))
-                else:
-                    sse.patch_signals(payload)
+        await stream(c, w, self.relay, self._render)
 
     async def add(self, c: Context, w: Writer) -> None:
-        signals, tab = await _form(c, w)
+        signals, tab = await read_form(c, w)
         if signals is None or tab is None:
             return
         raw = str(signals.get("path", "")).strip()
@@ -71,7 +61,7 @@ class ProjectsPage:
         SSE(w).patch_signals({"path": "", "_error": ""})
 
     async def base(self, c: Context, w: Writer) -> None:
-        signals, tab = await _form(c, w)
+        signals, tab = await read_form(c, w)
         if signals is None or tab is None:
             return
         project_id = c.match.params["project_id"]
@@ -110,26 +100,8 @@ class ProjectsPage:
         )
 
 
-async def _form(c: Context, w: Writer):
-    try:
-        signals = await read_signals(c.req)
-    except RequestBodyError:
-        w.text("invalid input", 400)
-        return None, None
-    tab = str(signals.get("tab", ""))
-    if not (tab.isalnum() and len(tab) <= 32):
-        w.text("tab must be a short id", 400)
-        return None, None
-    return signals, tab
-
-
-async def _tab(c: Context, w: Writer) -> str | None:
-    _signals, tab = await _form(c, w)
-    return tab
-
-
 async def _id(c: Context, w: Writer):
-    _signals, tab = await _form(c, w)
+    _signals, tab = await read_form(c, w)
     project_id = c.match.params["project_id"]
     if tab is None:
         return None, None

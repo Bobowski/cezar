@@ -16,11 +16,11 @@ from typing import cast
 
 from litewriter import LiteWriter
 from stario import App, Context, Route, Writer
-from stario.datastar import SSE, read_signals
-from stario.exceptions import RequestBodyError
+from stario.datastar import SSE
 from stario.json import JsonValue
 from stario.json import dumps as json_dumps
 
+from app.common.body import json_body, optional_body
 from app.config import RUNNERS, Config
 from app.engine.catalog import load_workflows
 from app.engine.engine import Engine
@@ -93,7 +93,7 @@ class ApiPage:
         project = self._bound(c, w)
         if project is None:
             return
-        body = await _body(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         workflow, workflow_name, task, runner, model, autonomous, reason, status = _create_input(
@@ -106,7 +106,9 @@ class ApiPage:
         if locked:
             w.json({"error": locked}, status=409)
             return
-        run, plan_reason = self.engine.plan_run(
+        variants = body.get("variants")
+        runs, plan_reason = self.engine.plan_variants(
+            variants if isinstance(variants, int) else 1,
             project=project,
             task=task,
             workflow_name=workflow_name,
@@ -115,7 +117,7 @@ class ApiPage:
             autonomous=autonomous,
             workflow=workflow,
         )
-        if run is None:
+        if not runs:
             missing = plan_reason is not None and plan_reason.startswith("unknown workflow:")
             w.json({"error": plan_reason or "invalid task"}, status=404 if missing else 400)
             return
@@ -123,46 +125,22 @@ class ApiPage:
         if isinstance(images, str):
             w.json({"error": images}, status=400)
             return
-        if images:
-            run.images = images
-        account_error = _account(self.config, body.get("accountId"), runner, run)
-        if account_error:
-            w.json({"error": account_error}, status=400)
-            return
-        count = body.get("variants", 1)
-        if isinstance(count, int) and not isinstance(count, bool) and count > 1:
-            group = run.id
-            made = [run]
-            run.group_id = group
-            run.variant = "A"
-            for letter in "BC"[: count - 1]:
-                sibling, sibling_reason = self.engine.plan_run(
-                    project=project,
-                    task=task,
-                    workflow_name=workflow_name,
-                    runner=runner,
-                    model=model,
-                    autonomous=autonomous,
-                    workflow=workflow,
-                )
-                if sibling is None:
-                    w.json({"error": sibling_reason or "invalid task"}, status=400)
-                    return
-                sibling.group_id = group
-                sibling.variant = letter
-                sibling.account_id = run.account_id
-                if images:
-                    sibling.images = images
-                made.append(sibling)
+        for run in runs:
+            if images:
+                run.images = images
+            account_error = _account(self.config, body.get("accountId"), runner, run)
+            if account_error:
+                w.json({"error": account_error}, status=400)
+                return
+        if len(runs) > 1:
             w.json(
-                cast(JsonValue, {"runs": [public_run(item, full=True) for item in made]}),
+                cast(JsonValue, {"runs": [public_run(item, full=True) for item in runs]}),
                 status=201,
             )
-            for item in made:
-                await self.engine.enqueue(item)
-            return
-        w.json(cast(JsonValue, public_run(run, full=True)), status=201)
-        await self.engine.enqueue(run)
+        else:
+            w.json(cast(JsonValue, public_run(runs[0], full=True)), status=201)
+        for run in runs:
+            await self.engine.enqueue(run)
 
     async def run(self, c: Context, w: Writer) -> None:
         run = self._existing(c, w)
@@ -268,7 +246,7 @@ class ApiPage:
         run = self._existing(c, w)
         if run is None:
             return
-        body = await _body(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         text = body.get("text", "")
@@ -328,7 +306,7 @@ class ApiPage:
         run = self._existing(c, w)
         if run is None:
             return
-        body = await _optional_body(c)
+        body = await optional_body(c)
         archived = True if body is None else body.get("archived") is not False
         reason = await self.engine.set_archived(run.id, archived)
         if reason:
@@ -341,7 +319,7 @@ class ApiPage:
         run = self._existing(c, w)
         if run is None:
             return
-        body = await _optional_body(c)
+        body = await optional_body(c)
         pinned = True if body is None else body.get("pinned") is not False
         reason = await self.engine.set_pinned(run.id, pinned)
         if reason:
@@ -354,7 +332,7 @@ class ApiPage:
         run = self._existing(c, w)
         if run is None:
             return
-        body = await _body(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         text = body.get("text", "")
@@ -450,7 +428,7 @@ class ApiPage:
         if scope is None:
             w.json({"error": "not found"}, status=404)
             return
-        body = await _body(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         value = body.get("value", "")
@@ -507,7 +485,7 @@ class ApiPage:
         w.json(cast(JsonValue, jira_issue(self.config, c.match.params.get("key", ""))))
 
     async def linear_issue(self, c: Context, w: Writer) -> None:
-        body = await _optional_body(c) or {}
+        body = await optional_body(c) or {}
         issue_id = body.get("id", "")
         ident = issue_id if isinstance(issue_id, str) else ""
         w.json(cast(JsonValue, linear_issue(self.config, ident)))
@@ -627,18 +605,6 @@ def _create_input(
     return None, workflow_name.strip(), task, runner, model, autonomous, "", 200
 
 
-async def _body(c: Context, w: Writer) -> dict[str, object] | None:
-    try:
-        loaded = await read_signals(c.req)
-    except RequestBodyError:
-        w.json({"error": "invalid json"}, status=400)
-        return None
-    if not isinstance(loaded, dict):
-        w.json({"error": "invalid json"}, status=400)
-        return None
-    return cast(dict[str, object], loaded)
-
-
 def _ok_id(value: str) -> bool:
     return len(value) == 32 and all(ch in "0123456789abcdef" for ch in value)
 
@@ -667,16 +633,6 @@ def _write_sse(w: Writer, event: str, data: object, event_id: str) -> None:
     lines.append(f"event: {event}")
     lines.extend(f"data: {line}" for line in raw.split("\n"))
     w.write(("\n".join(lines) + "\n\n").encode())
-
-
-async def _optional_body(c: Context) -> dict[str, object] | None:
-    try:
-        loaded = await read_signals(c.req)
-    except RequestBodyError:
-        return None
-    if isinstance(loaded, dict):
-        return cast(dict[str, object], loaded)
-    return None
 
 
 def _images(raw: object) -> list[dict[str, object]] | str | None:

@@ -3,12 +3,11 @@ from dataclasses import dataclass
 
 from litewriter import LiteWriter
 from stario import App, Context, Relay, Writer
-from stario.datastar import SSE, read_signals
-from stario.exceptions import RequestBodyError
 
+from app.common.live import read_form, stream
 from app.common.shell import load_chrome
 from app.config import RUNNERS, Config
-from app.engine.engine import CHANGED, Engine
+from app.engine.engine import Engine
 from app.engine.model import Settings
 from app.features.settings.urls import SETTINGS, SETTINGS_LIVE, SETTINGS_SAVE
 from app.features.settings.views import render
@@ -33,33 +32,11 @@ class SettingsPage:
         w.html(self._render(uuid.uuid7().hex))
 
     async def live(self, c: Context, w: Writer) -> None:
-        try:
-            signals = await read_signals(c.req)
-        except RequestBodyError:
-            w.text("tab must be a short id", 400)
-            return
-        tab = str(signals.get("tab", ""))
-        if not (tab.isalnum() and len(tab) <= 32):
-            w.text("tab must be a short id", 400)
-            return
-        async with self.relay.subscribe(CHANGED, f"tab.{tab}", latest=True) as events:
-            sse = SSE(w)
-            sse.patch_elements(self._render(tab))
-            async for subject, payload in c.alive(events):
-                if subject == CHANGED:
-                    sse.patch_elements(self._render(tab))
-                else:
-                    sse.patch_signals(payload)
+        await stream(c, w, self.relay, self._render)
 
     async def save(self, c: Context, w: Writer) -> None:
-        try:
-            signals = await read_signals(c.req)
-        except RequestBodyError:
-            w.text("invalid input", 400)
-            return
-        tab = str(signals.get("tab", ""))
-        if not (tab.isalnum() and len(tab) <= 32):
-            w.text("tab must be a short id", 400)
+        signals, _tab = await read_form(c, w)
+        if signals is None:
             return
         raw = signals.get("max_parallel")
         if isinstance(raw, str) and raw.isdecimal():

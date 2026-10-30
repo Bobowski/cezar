@@ -5,14 +5,14 @@ from pathlib import Path
 
 from litewriter import LiteWriter
 from stario import App, Context, Relay, Writer
-from stario.datastar import SSE, read_signals
-from stario.exceptions import RequestBodyError
+from stario.datastar import SSE
 
 from app.clock import after, stamp
+from app.common.live import read_form, read_tab, stream
 from app.common.shell import load_chrome
 from app.config import Config
 from app.engine.catalog import load_workflows
-from app.engine.engine import CHANGED, Engine
+from app.engine.engine import Engine
 from app.engine.model import Automation
 from app.features.automations.data import parse_form, signals_for
 from app.features.automations.forms import (
@@ -90,21 +90,11 @@ class AutomationsPage:
 
     async def live(self, c: Context, w: Writer) -> None:
         view = self._view(c.req.query)
-        tab = await _tab(c, w)
-        if tab is None:
-            return
-        async with self.relay.subscribe(CHANGED, f"tab.{tab}", latest=True) as events:
-            sse = SSE(w)
-            sse.patch_elements(self._render(view, tab))
-            async for subject, payload in c.alive(events):
-                if subject == CHANGED:
-                    sse.patch_elements(self._render(view, tab))
-                else:
-                    sse.patch_signals(payload)
+        await stream(c, w, self.relay, lambda tab: self._render(view, tab))
 
     async def create(self, c: Context, w: Writer) -> None:
         view = self._view(c.req.query)
-        signals, tab = await _form(c, w)
+        signals, tab = await read_form(c, w)
         if signals is None or tab is None:
             return
         project = get_project(self.db, view.project)
@@ -181,7 +171,7 @@ class AutomationsPage:
         if not _valid_id(automation_id):
             w.text("not found", 404)
             return
-        tab = await _tab(c, w)
+        tab = await read_tab(c, w)
         if tab is None:
             return
         sse = SSE(w)
@@ -197,7 +187,7 @@ class AutomationsPage:
         automation_id, tab = await _id(c, w)
         if automation_id is None or tab is None:
             return
-        signals, _tab_id = await _form(c, w)
+        signals, _tab_id = await read_form(c, w)
         item = get_automation(self.db, automation_id)
         if item is None or signals is None:
             w.text("not found", 404)
@@ -236,7 +226,7 @@ class AutomationsPage:
         item = self._known(c, w)
         if item is None:
             return
-        tab = await _tab(c, w)
+        tab = await read_tab(c, w)
         if tab is None:
             return
         log_view = LogView.from_query(c.req.query)
@@ -352,26 +342,8 @@ class AutomationsPage:
         )
 
 
-async def _form(c: Context, w: Writer):
-    try:
-        signals = await read_signals(c.req)
-    except RequestBodyError:
-        w.text("invalid input", 400)
-        return None, None
-    tab = str(signals.get("tab", ""))
-    if not (tab.isalnum() and len(tab) <= 32):
-        w.text("tab must be a short id", 400)
-        return None, None
-    return signals, tab
-
-
-async def _tab(c: Context, w: Writer) -> str | None:
-    _signals, tab = await _form(c, w)
-    return tab
-
-
 async def _id(c: Context, w: Writer):
-    _signals, tab = await _form(c, w)
+    _signals, tab = await read_form(c, w)
     automation_id = c.match.params["automation_id"]
     if tab is None:
         return None, None

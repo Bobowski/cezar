@@ -6,10 +6,11 @@ from stario import App, Context, Relay, Writer
 from stario.datastar import SSE, read_signals
 from stario.exceptions import RequestBodyError
 
+from app.common.live import stream
 from app.common.shell import load_chrome
 from app.config import RUNNERS, Config
 from app.engine.catalog import load_workflows
-from app.engine.engine import CHANGED, Engine
+from app.engine.engine import Engine
 from app.engine.model import Workflow
 from app.engine.skills import load_skills
 from app.engine.workflows import skills_to_steps
@@ -113,25 +114,12 @@ class TasksPage:
 
     async def live(self, c: Context, w: Writer) -> None:
         view = self._view(c.req.query)
-        try:
-            signals = await read_signals(c.req)
-        except RequestBodyError:
-            w.text("tab must be a short id", 400)
-            return
-        tab = str(signals.get("tab", ""))
-        if not (tab.isalnum() and len(tab) <= 32):
-            w.text("tab must be a short id", 400)
-            return
-        async with self.relay.subscribe(CHANGED, f"tab.{tab}", latest=True) as events:
-            sse = SSE(w)
-            sse.patch_elements(render_list(self._runs(view), view, self._chrome(view.project), tab))
-            async for subject, payload in c.alive(events):
-                if subject == CHANGED:
-                    sse.patch_elements(
-                        render_list(self._runs(view), view, self._chrome(view.project), tab)
-                    )
-                else:
-                    sse.patch_signals(payload)
+        await stream(
+            c,
+            w,
+            self.relay,
+            lambda tab: render_list(self._runs(view), view, self._chrome(view.project), tab),
+        )
 
     async def create(self, c: Context, w: Writer) -> None:
         view = self._view(c.req.query)
@@ -176,7 +164,8 @@ class TasksPage:
         if skill_reason:
             w.text(skill_reason, 400)
             return
-        run, reason = self.engine.plan_run(
+        made, reason = self.engine.plan_variants(
+            count,
             project=project,
             task=task,
             workflow_name=workflow,
@@ -186,33 +175,13 @@ class TasksPage:
             workflow=chosen,
             in_place=not worktree,
         )
-        if run is None:
+        if not made:
             self.relay.publish(f"tab.{tab}", {"_error": reason or "could not start"})
             SSE(w).patch_signals({"_error": reason or "could not start"})
             return
-        made = [run]
-        if count > 1:
-            run.group_id = run.id
-            run.variant = "A"
-            for letter in "BC"[: count - 1]:
-                sibling, sibling_reason = self.engine.plan_run(
-                    project=project,
-                    task=task,
-                    workflow_name=workflow,
-                    runner=runner,
-                    model=model,
-                    autonomous=autonomous,
-                    workflow=chosen,
-                    in_place=not worktree,
-                )
-                if sibling is None:
-                    w.text(sibling_reason or "could not start", 400)
-                    return
-                sibling.group_id = run.id
-                sibling.variant = letter
-                made.append(sibling)
         for item in made:
             await self.engine.enqueue(item)
+        run = made[0]
         target = COMPARE.href(run.id) if count > 1 else TASK.href(run.id)
         SSE(w).navigate(target)
 

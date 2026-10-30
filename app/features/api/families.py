@@ -16,11 +16,10 @@ from typing import cast
 
 from litewriter import LiteWriter
 from stario import App, Context, Route, Writer
-from stario.datastar import read_signals
-from stario.exceptions import RequestBodyError
 from stario.json import JsonValue
 
 from app.clock import after, stamp
+from app.common.body import json_body, optional_body
 from app.config import (
     RUNNERS,
     Config,
@@ -151,7 +150,7 @@ class RouteFamilies:
         project = self._project(c, w)
         if project is None or not self._automations(w):
             return
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         item, reason = self._new_automation(project, body)
@@ -176,7 +175,7 @@ class RouteFamilies:
         item = self._known_automation(c, w)
         if item is None:
             return
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         expected = body.get("expectedRevision")
@@ -234,7 +233,7 @@ class RouteFamilies:
         item = self._known_automation(c, w)
         if item is None:
             return
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         entry = await self.engine.check_automation(item, body.get("execute") is True)
@@ -255,7 +254,7 @@ class RouteFamilies:
     async def deferred_options(self, c: Context, w: Writer) -> None:
         if self._project(c, w) is None or not self._automations(w):
             return
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         if not task_text(body.get("task")):
@@ -266,7 +265,7 @@ class RouteFamilies:
     async def deferred_preview(self, c: Context, w: Writer) -> None:
         if self._project(c, w) is None or not self._automations(w):
             return
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         if not task_text(body.get("task")):
@@ -278,7 +277,7 @@ class RouteFamilies:
         project = self._project(c, w)
         if project is None or not self._automations(w):
             return
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         text = task_text(body.get("task"))
@@ -406,7 +405,7 @@ class RouteFamilies:
         if item.tracked == "outside-repo":
             w.json({"error": "user files are not written by this cockpit"}, status=409)
             return
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         content = body.get("content")
@@ -468,7 +467,7 @@ class RouteFamilies:
         if row.get("startedTaskId"):
             w.json({"error": "already started"}, status=409)
             return
-        body = await _optional(c)
+        body = await optional_body(c)
         extra = ""
         prompt = body.get("prompt") if isinstance(body, dict) else None
         if isinstance(prompt, str) and prompt:
@@ -513,7 +512,7 @@ class RouteFamilies:
         if not runs:
             w.json({"error": "not found"}, status=404)
             return
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         run_id = body.get("runId")
@@ -549,7 +548,7 @@ class RouteFamilies:
         if not self.config.dispatch_enabled:
             w.json({"error": "dispatch is disabled on this cockpit (CEZ_DISPATCH=0)"}, status=409)
             return
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         order, reason = _order(body)
@@ -571,7 +570,7 @@ class RouteFamilies:
         run = self._run(c, w)
         if run is None:
             return
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         reason = await self.engine.record_report(run.id, body)
@@ -614,7 +613,7 @@ class RouteFamilies:
                 status=409,
             )
             return
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         target = body.get("target")
@@ -629,7 +628,7 @@ class RouteFamilies:
         w.json({"opened": True, "path": project.root})
 
     async def add_project(self, c: Context, w: Writer) -> None:
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         root = body.get("root")
@@ -655,7 +654,7 @@ class RouteFamilies:
         if project is None:
             w.json({"error": "not found"}, status=404)
             return
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         name = body.get("name", project.name)
@@ -748,7 +747,7 @@ class RouteFamilies:
         )
 
     async def put_workspace_config(self, c: Context, w: Writer) -> None:
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         raw = body.get("maxParallel")
@@ -1064,25 +1063,3 @@ def _scheduled(row: dict[str, str]) -> dict[str, object]:
             "status": "pending",
         }
     }
-
-
-async def _object(c: Context, w: Writer) -> dict[str, object] | None:
-    try:
-        loaded = await read_signals(c.req)
-    except RequestBodyError:
-        w.json({"error": "invalid json"}, status=400)
-        return None
-    if not isinstance(loaded, dict):
-        w.json({"error": "invalid json"}, status=400)
-        return None
-    return cast(dict[str, object], loaded)
-
-
-async def _optional(c: Context) -> dict[str, object] | None:
-    try:
-        loaded = await read_signals(c.req)
-    except RequestBodyError:
-        return None
-    if isinstance(loaded, dict):
-        return cast(dict[str, object], loaded)
-    return None

@@ -6,9 +6,9 @@ dry-run is off.
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
+from app.engine.gitwork import gh as _gh
 from app.integrations.merge_state import dry_run_merge_state, load_merge_state
 
 METHODS = frozenset({"merge", "squash", "rebase"})
@@ -122,20 +122,3 @@ def review_pr(number: int, event: str, body: str, *, dry_run: bool, cwd: Path) -
     if not ok:
         return {"ok": False, "status": 409, "error": err or "gh pr review failed"}
     return {"ok": True, "submitted": True, "dryRun": False, "event": event, "number": number}
-
-
-def _gh(cwd: Path, args: list[str]) -> tuple[bool, str, str]:
-    try:
-        proc = subprocess.run(
-            ["gh", *args],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, "", str(exc)
-    if proc.returncode != 0:
-        return False, proc.stdout, (proc.stderr or proc.stdout).strip()
-    return True, proc.stdout, ""

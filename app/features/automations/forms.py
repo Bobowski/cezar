@@ -202,20 +202,19 @@ def _filter_lines(item: Automation) -> list[HtmlElement]:
     return lines
 
 
-def render_summary(item: Automation) -> HtmlElement:
-    toggle = (
-        h.Button(
-            {"type": "button", "class": "btn"},
-            data.on("click", at.post(AUTOMATIONS_PAUSE.href(item.id))),
-            "Pause",
-        )
-        if item.enabled
-        else h.Button(
-            {"type": "button", "class": "btn"},
-            data.on("click", at.post(AUTOMATIONS_ENABLE.href(item.id))),
-            "Enable",
-        )
+def toggle_button(item: Automation) -> HtmlElement:
+    pause = item.enabled
+    return h.Button(
+        {"type": "button", "class": "btn"},
+        data.on(
+            "click", at.post((AUTOMATIONS_PAUSE if pause else AUTOMATIONS_ENABLE).href(item.id))
+        ),
+        "Pause" if pause else "Enable",
     )
+
+
+def render_summary(item: Automation) -> HtmlElement:
+    toggle = toggle_button(item)
     last = (
         h.A({"href": TASK.href(item.last_run_id)}, "last run")
         if item.last_run_id

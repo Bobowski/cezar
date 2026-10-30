@@ -9,7 +9,6 @@ beyond `repo.root`, and `projects[]` has no `root`.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import cast
 
 from litewriter import LiteWriter
@@ -28,7 +27,7 @@ from app.config import (
 from app.engine.checks import backend_checks
 from app.engine.disk_health import disk_health
 from app.engine.engine import Engine
-from app.engine.gitwork import git, head_branch, is_git_repo
+from app.engine.gitwork import forge_kind, head_branch, is_git_repo
 from app.features.health.urls import API_HEALTH, HEALTH
 from app.http.loopback import hosted_mode
 from app.integrations.service import webhooks_enabled
@@ -70,7 +69,7 @@ def _health(db: LiteWriter, engine: Engine, config: Config) -> dict[str, object]
         "defaultRunner": get_settings(db).default_runner
         if get_settings(db).default_runner in RUNNERS
         else "claude",
-        "forge": _forge(root),
+        "forge": forge_kind(root),
         "capabilities": {
             "localHandoff": local,
             "terminal": terminal_enabled(not local),
@@ -94,16 +93,3 @@ def _health(db: LiteWriter, engine: Engine, config: Config) -> dict[str, object]
     if disk is not None:
         body["disk"] = disk
     return body
-
-
-def _forge(root: Path) -> dict[str, str] | None:
-    """Kind only. Health does not shell out to `gh`, so `available` stays absent."""
-    if not is_git_repo(root):
-        return None
-    ok, out, _err = git(root, ["remote", "get-url", "origin"])
-    if not ok:
-        return None
-    host = out.strip().lower()
-    if "github.com" in host or ".ghe.com" in host:
-        return {"kind": "github"}
-    return None

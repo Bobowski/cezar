@@ -12,11 +12,10 @@ from typing import cast
 
 from litewriter import LiteWriter
 from stario import App, Context, Route, Writer
-from stario.datastar import read_signals
-from stario.exceptions import RequestBodyError
 from stario.json import JsonValue
 
 from app.clock import stamp
+from app.common.body import json_body
 from app.config import RUNNERS, Config
 from app.engine import project_forge
 from app.engine.disk_health import disk_health
@@ -129,7 +128,7 @@ class CloseoutApi:
         project = self._project(c, w)
         if project is None:
             return
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         task = body.get("task")
@@ -193,7 +192,7 @@ class CloseoutApi:
         project = self._project(c, w)
         if project is None:
             return
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         scope = body.get("scope")
@@ -258,7 +257,7 @@ class CloseoutApi:
     async def post_draft(self, c: Context, w: Writer) -> None:
         if self._project(c, w) is None:
             return
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         text = body.get("text")
@@ -275,7 +274,7 @@ class CloseoutApi:
     async def put_layouts(self, c: Context, w: Writer) -> None:
         if self._project(c, w) is None:
             return
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         raw = body.get("layouts", body)
@@ -296,7 +295,7 @@ class CloseoutApi:
     async def put_templates(self, c: Context, w: Writer) -> None:
         if self._project(c, w) is None:
             return
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         raw = body.get("templates")
@@ -350,7 +349,7 @@ class CloseoutApi:
         run = self._run(c, w)
         if run is None:
             return
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         text = body.get("text")
@@ -366,7 +365,7 @@ class CloseoutApi:
         run = self._run(c, w)
         if run is None:
             return
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         images = _images(body.get("images"))
@@ -422,7 +421,7 @@ class CloseoutApi:
         _send(w, {"profiles": profiles(self._path("profiles.json"))})
 
     async def post_profile(self, c: Context, w: Writer) -> None:
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         name = body.get("name")
@@ -439,7 +438,7 @@ class CloseoutApi:
         _send(w, branding(self._path("branding.json")))
 
     async def put_branding(self, c: Context, w: Writer) -> None:
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         name = body.get("name")
@@ -459,7 +458,7 @@ class CloseoutApi:
         _send(w, {"templates": list(_TEMPLATES)})
 
     async def checkout(self, c: Context, w: Writer) -> None:
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         url = body.get("url")
@@ -475,7 +474,7 @@ class CloseoutApi:
         await self._register_forged(w, result)
 
     async def create_github(self, c: Context, w: Writer) -> None:
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         name = body.get("name")
@@ -511,7 +510,7 @@ class CloseoutApi:
         await self._provider_command(c, w, update_provider)
 
     async def enable_provider(self, c: Context, w: Writer) -> None:
-        body = await _object(c, w)
+        body = await json_body(c, w)
         if body is None:
             return
         enabled = body.get("enabled")
@@ -614,15 +613,3 @@ def _credential_names(path: Path) -> list[str]:
     if isinstance(loaded, dict):
         return [key for key in loaded if isinstance(key, str)]
     return []
-
-
-async def _object(c: Context, w: Writer) -> dict[str, object] | None:
-    try:
-        loaded = await read_signals(c.req)
-    except RequestBodyError:
-        _send(w, {"error": "invalid json"}, status=400)
-        return None
-    if not isinstance(loaded, dict):
-        _send(w, {"error": "invalid json"}, status=400)
-        return None
-    return cast(dict[str, object], loaded)

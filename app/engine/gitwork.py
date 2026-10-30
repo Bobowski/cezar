@@ -64,6 +64,34 @@ def git(cwd: Path, args: list[str], timeout: float = 30) -> tuple[bool, str, str
     return proc.returncode == 0, proc.stdout, proc.stderr
 
 
+def gh(cwd: Path, args: list[str], timeout: float = 30) -> tuple[bool, str, str]:
+    """`gh` in `cwd` as (ok, stdout, error text); never prompts."""
+    try:
+        proc = subprocess.run(
+            ["gh", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env={**os.environ, "GH_PROMPT_DISABLED": "1"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, "", str(exc)
+    if proc.returncode != 0:
+        return False, proc.stdout, (proc.stderr or proc.stdout).strip()
+    return True, proc.stdout, ""
+
+
+def forge_kind(root: Path) -> dict[str, str] | None:
+    """`{"kind": "github"}` when `origin` is on github.com or a GHE host. No `gh` call."""
+    ok, out, _err = git(root, ["remote", "get-url", "origin"])
+    host = out.strip().lower()
+    if ok and is_git_repo(root) and ("github.com" in host or ".ghe.com" in host):
+        return {"kind": "github"}
+    return None
+
+
 def is_git_repo(path: Path) -> bool:
     ok, out, _err = git(path, ["rev-parse", "--is-inside-work-tree"])
     return ok and out.strip() == "true"

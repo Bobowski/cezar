@@ -2532,6 +2532,19 @@ class Engine:
         )
         return run, None
 
+    def plan_variants(self, count: int, **plan: Any) -> tuple[list[Run], str | None]:
+        """`count` runs of one plan (1 to 3), lettered A to C and grouped when there are several."""
+        runs: list[Run] = []
+        for letter in "ABC"[:count]:
+            run, reason = self.plan_run(**plan)
+            if run is None:
+                return [], reason
+            if count > 1:
+                run.group_id = runs[0].id if runs else run.id
+                run.variant = letter
+            runs.append(run)
+        return runs, None
+
     def _namer_model(self) -> str:
         """`namerModel`: the cheap alias the title and branch namer asks Claude with."""
         from app.features.settings.store import read_agent_defaults

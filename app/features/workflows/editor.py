@@ -11,10 +11,10 @@ from typing import Any
 import yaml
 from litewriter import LiteWriter
 from stario import App, Context, Relay, Writer, h
-from stario.datastar import SSE, at, data, read_signals
-from stario.exceptions import RequestBodyError
+from stario.datastar import at, data
 from stario.markup import HtmlElement
 
+from app.common.live import read_form, stream
 from app.common.shell import Chrome, frame, load_chrome
 from app.config import Config
 from app.engine.catalog import WORKFLOWS_DIR
@@ -68,17 +68,10 @@ class EditorPage:
     async def live(self, c: Context, w: Writer) -> None:
         name = c.match.params.get("name", "")
         view = self._view(c.req.query)
-        tab = await _tab(c, w)
-        if tab is None or not _NAME.fullmatch(name):
+        if not _NAME.fullmatch(name):
+            w.text("unknown workflow", 404)
             return
-        async with self.relay.subscribe(CHANGED, f"tab.{tab}", latest=True) as events:
-            sse = SSE(w)
-            sse.patch_elements(self._render(view, name, tab, ""))
-            async for subject, payload in c.alive(events):
-                if subject == CHANGED:
-                    sse.patch_elements(self._render(view, name, tab, ""))
-                else:
-                    sse.patch_signals(payload)
+        await stream(c, w, self.relay, lambda tab: self._render(view, name, tab, ""))
 
     async def start(self, c: Context, w: Writer) -> None:
         await self._mutate(c, w, lambda doc, _signals, name: blank(name), replace=True)
@@ -114,7 +107,7 @@ class EditorPage:
     async def _mutate(self, c: Context, w: Writer, edit, *, replace: bool = False) -> None:
         name = c.match.params.get("name", "")
         view = self._view(c.req.query)
-        signals, tab = await _form(c, w)
+        signals, tab = await read_form(c, w)
         if signals is None or tab is None or not _NAME.fullmatch(name):
             return
         path = _path(self, view, name)
@@ -345,21 +338,3 @@ def _num(value: object) -> int:
     if isinstance(value, str) and value.lstrip("-").isdigit():
         return int(value)
     return 0
-
-
-async def _form(c: Context, w: Writer):
-    try:
-        signals = await read_signals(c.req)
-    except RequestBodyError:
-        w.text("invalid input", 400)
-        return None, None
-    tab = str(signals.get("tab", ""))
-    if not (tab.isalnum() and len(tab) <= 32):
-        w.text("tab must be a short id", 400)
-        return None, None
-    return signals, tab
-
-
-async def _tab(c: Context, w: Writer) -> str | None:
-    signals, tab = await _form(c, w)
-    return tab

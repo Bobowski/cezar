@@ -115,21 +115,9 @@ def update_receiver(
     if issue:
         return None, issue
     if url != row.get("url"):
-        settings = {
-            key: row.get(key)
-            for key in (
-                "name",
-                "url",
-                "format",
-                "profile",
-                "preset",
-                "events",
-                "includeScheduledFailures",
-                "scope",
-                "graceSeconds",
-                "allowLocalNetwork",
-            )
-        }
+        from app.integrations.registry import SETTING_KEYS
+
+        settings = {key: row.get(key) for key in ("name", *SETTING_KEYS)}
         settings["name"] = clean
         settings["url"] = url
         row = registry.update(receiver_id, settings, expected_revision)

@@ -172,19 +172,7 @@ class EndpointRegistry:
             "destination": mask_destination(str(receiver.get("url", ""))),
             **{
                 key: receiver[key]
-                for key in (
-                    "format",
-                    "profile",
-                    "preset",
-                    "events",
-                    "includeScheduledFailures",
-                    "scope",
-                    "graceSeconds",
-                    "allowLocalNetwork",
-                    "revision",
-                    "deliveryRevision",
-                    "state",
-                )
+                for key in (*SETTING_KEYS[1:], "revision", "deliveryRevision", "state")
             },
             "consecutiveFailures": receiver.get("consecutiveFailures", 0),
             "activationBlocked": bool(receiver.get("activationBlocked")),
@@ -283,21 +271,7 @@ class EndpointRegistry:
     def update(self, receiver_id: str, settings: dict, expected_revision: int) -> dict:
         row = self._find(receiver_id)
         self._check_revision(row, expected_revision)
-        changed = [
-            key
-            for key in (
-                "url",
-                "format",
-                "profile",
-                "preset",
-                "events",
-                "includeScheduledFailures",
-                "scope",
-                "graceSeconds",
-                "allowLocalNetwork",
-            )
-            if key in settings and settings[key] != row.get(key)
-        ]
+        changed = [key for key in SETTING_KEYS if key in settings and settings[key] != row.get(key)]
         if "url" in changed:
             issue = destination_issue(settings["url"])
             if issue:
@@ -464,6 +438,19 @@ class EndpointRegistry:
                 row["state"] = "suspended"
                 row["nextProbeAt"] = stamp()
         self._commit("delivery_result", row, source="system")
+
+
+SETTING_KEYS = (
+    "url",
+    "format",
+    "profile",
+    "preset",
+    "events",
+    "includeScheduledFailures",
+    "scope",
+    "graceSeconds",
+    "allowLocalNetwork",
+)
 
 
 def _defaults(name: str, url: str) -> dict:

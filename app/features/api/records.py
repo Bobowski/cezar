@@ -12,7 +12,7 @@ from typing import cast
 
 from stario.json import JsonValue
 
-from app.engine.gitwork import git, head_branch, is_git_repo
+from app.engine.gitwork import forge_kind, head_branch, is_git_repo
 from app.engine.model import Run
 from app.engine.proc_usage import current_usage
 
@@ -121,22 +121,10 @@ def public_project(
     }
     if status == "ok":
         body["branch"] = head_branch(path)
-    forge = _forge(path)
+    forge = forge_kind(path)
     if forge is not None:
         body["forge"] = cast(JsonValue, forge)
     return body
-
-
-def _forge(root: Path) -> dict[str, str] | None:
-    if not is_git_repo(root):
-        return None
-    ok, out, _err = git(root, ["remote", "get-url", "origin"])
-    if not ok:
-        return None
-    host = out.strip().lower()
-    if "github.com" in host or ".ghe.com" in host:
-        return {"kind": "github"}
-    return None
 
 
 def _steps(run: Run) -> list[JsonValue]:

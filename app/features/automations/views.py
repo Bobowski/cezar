@@ -8,14 +8,12 @@ from stario.markup import HtmlElement
 from app.clock import parse_stamp
 from app.common.shell import Chrome, frame
 from app.engine.model import Automation, Workflow
-from app.features.automations.forms import new_link
+from app.features.automations.forms import new_link, toggle_button
 from app.features.automations.urls import (
     AUTOMATION,
     AUTOMATIONS_CREATE,
     AUTOMATIONS_DELETE,
-    AUTOMATIONS_ENABLE,
     AUTOMATIONS_LIVE,
-    AUTOMATIONS_PAUSE,
     AUTOMATIONS_RUN,
     AutomationsView,
 )
@@ -30,19 +28,7 @@ def render(
 ) -> HtmlElement:
     rows = []
     for item in items:
-        toggle = (
-            h.Button(
-                {"type": "button", "class": "btn"},
-                data.on("click", at.post(AUTOMATIONS_PAUSE.href(item.id))),
-                "Pause",
-            )
-            if item.enabled
-            else h.Button(
-                {"type": "button", "class": "btn"},
-                data.on("click", at.post(AUTOMATIONS_ENABLE.href(item.id))),
-                "Enable",
-            )
-        )
+        toggle = toggle_button(item)
         rows.append(
             h.Div(
                 {"class": "card-block"},

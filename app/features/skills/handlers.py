@@ -5,9 +5,9 @@ from pathlib import Path
 
 from litewriter import LiteWriter
 from stario import App, Context, Relay, Writer
-from stario.datastar import SSE, read_signals
-from stario.exceptions import RequestBodyError
+from stario.datastar import SSE
 
+from app.common.live import read_form, read_tab, stream
 from app.common.shell import load_chrome
 from app.config import Config
 from app.engine.engine import CHANGED, Engine
@@ -43,38 +43,16 @@ class SkillsPage:
 
     async def live(self, c: Context, w: Writer) -> None:
         view = self._view(c.req.query)
-        try:
-            signals = await read_signals(c.req)
-        except RequestBodyError:
-            w.text("tab must be a short id", 400)
-            return
-        tab = str(signals.get("tab", ""))
-        if not (tab.isalnum() and len(tab) <= 32):
-            w.text("tab must be a short id", 400)
-            return
-        async with self.relay.subscribe(CHANGED, f"tab.{tab}", latest=True) as events:
-            sse = SSE(w)
-            sse.patch_elements(self._render(view, tab))
-            async for subject, payload in c.alive(events):
-                if subject == CHANGED:
-                    sse.patch_elements(self._render(view, tab))
-                else:
-                    sse.patch_signals(payload)
+        await stream(c, w, self.relay, lambda tab: self._render(view, tab))
 
     async def create(self, c: Context, w: Writer) -> None:
         view = self._view(c.req.query)
-        try:
-            signals = await read_signals(c.req)
-        except RequestBodyError:
-            w.text("invalid input", 400)
+        signals, tab = await read_form(c, w)
+        if signals is None:
             return
-        tab = str(signals.get("tab", ""))
         name = str(signals.get("name", "")).strip()
         description = str(signals.get("description", "")).strip()
         body = str(signals.get("body", "")).strip()
-        if not (tab.isalnum() and len(tab) <= 32):
-            w.text("tab must be a short id", 400)
-            return
         if not valid_skill_name(name):
             w.text("name must be letters, digits, or hyphens", 400)
             return
@@ -90,14 +68,7 @@ class SkillsPage:
         self.relay.publish(CHANGED, {})
 
     async def refresh(self, c: Context, w: Writer) -> None:
-        try:
-            signals = await read_signals(c.req)
-        except RequestBodyError:
-            w.text("invalid input", 400)
-            return
-        tab = str(signals.get("tab", ""))
-        if not (tab.isalnum() and len(tab) <= 32):
-            w.text("tab must be a short id", 400)
+        if await read_tab(c, w) is None:
             return
         w.empty()
         await asyncio.to_thread(refresh_team_skills, self.config.data_dir)

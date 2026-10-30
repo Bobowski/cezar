@@ -8,10 +8,11 @@ from stario import App, Context, Relay, Writer
 from stario.datastar import SSE, read_signals
 from stario.exceptions import RequestBodyError
 
+from app.common.live import stream
 from app.common.shell import load_chrome
 from app.config import Config, terminal_enabled
 from app.engine.dispatch_logic import DispatchOrder
-from app.engine.engine import CHANGED, Engine
+from app.engine.engine import Engine
 from app.engine.gitwork import Diff, task_diff
 from app.engine.model import Run
 from app.features.task.urls import (
@@ -89,24 +90,11 @@ class TaskPage:
 
     async def live(self, c: Context, w: Writer) -> None:
         run_id = c.match.params["run_id"]
-        try:
-            signals = await read_signals(c.req)
-        except RequestBodyError:
-            w.text("tab must be a short id", 400)
-            return
-        tab = str(signals.get("tab", ""))
-        if not _run_id(run_id) or not (tab.isalnum() and len(tab) <= 32):
-            w.text("tab must be a short id", 400)
+        if not _run_id(run_id):
+            w.text("not found", 404)
             return
         view = TaskView.from_query(c.req.query)
-        async with self.relay.subscribe(CHANGED, f"tab.{tab}", latest=True) as events:
-            sse = SSE(w)
-            sse.patch_elements(await self._picture(run_id, view, tab))
-            async for subject, payload in c.alive(events):
-                if subject == CHANGED:
-                    sse.patch_elements(await self._picture(run_id, view, tab))
-                else:
-                    sse.patch_signals(payload)
+        await stream(c, w, self.relay, lambda tab: self._picture(run_id, view, tab))
 
     async def cancel(self, c: Context, w: Writer) -> None:
         await self._command(c, w, self.engine.cancel)

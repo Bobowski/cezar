@@ -6,9 +6,9 @@ from pathlib import Path
 import yaml
 from litewriter import LiteWriter
 from stario import App, Context, Relay, Writer
-from stario.datastar import SSE, read_signals
-from stario.exceptions import RequestBodyError
+from stario.datastar import SSE
 
+from app.common.live import read_form, stream
 from app.common.shell import load_chrome
 from app.config import Config
 from app.engine.catalog import WORKFLOWS_DIR, load_workflows
@@ -65,21 +65,11 @@ class WorkflowsPage:
 
     async def live(self, c: Context, w: Writer) -> None:
         view = self._view(c.req.query)
-        tab = await _tab(c, w)
-        if tab is None:
-            return
-        async with self.relay.subscribe(CHANGED, f"tab.{tab}", latest=True) as events:
-            sse = SSE(w)
-            sse.patch_elements(self._render(view, tab))
-            async for subject, payload in c.alive(events):
-                if subject == CHANGED:
-                    sse.patch_elements(self._render(view, tab))
-                else:
-                    sse.patch_signals(payload)
+        await stream(c, w, self.relay, lambda tab: self._render(view, tab))
 
     async def create(self, c: Context, w: Writer) -> None:
         view = self._view(c.req.query)
-        signals, tab = await _form(c, w)
+        signals, tab = await read_form(c, w)
         if signals is None or tab is None:
             return
         name = str(signals.get("name", "")).strip()
@@ -112,7 +102,7 @@ class WorkflowsPage:
     async def delete(self, c: Context, w: Writer) -> None:
         view = self._view(c.req.query)
         name = c.match.params["name"]
-        signals, tab = await _form(c, w)
+        signals, tab = await read_form(c, w)
         if tab is None:
             return
         if not _NAME.fullmatch(name):
@@ -151,21 +141,3 @@ class WorkflowsPage:
             load_chrome(self.db, self.config, "Workflows", "workflows", view.project),
             tab,
         )
-
-
-async def _tab(c: Context, w: Writer) -> str | None:
-    signals, tab = await _form(c, w)
-    return tab
-
-
-async def _form(c: Context, w: Writer):
-    try:
-        signals = await read_signals(c.req)
-    except RequestBodyError:
-        w.text("invalid input", 400)
-        return None, None
-    tab = str(signals.get("tab", ""))
-    if not (tab.isalnum() and len(tab) <= 32):
-        w.text("tab must be a short id", 400)
-        return None, None
-    return signals, tab

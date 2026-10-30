@@ -771,7 +771,9 @@ async def test_dispatch_is_off_when_the_flag_says_so(tmp_path: Path):
 async def test_a_missing_backend_fails_the_run_instead_of_spawning(tmp_path: Path):
     repo = tmp_path / "repo"
     init_repo(repo)
-    cfg = config_for(tmp_path, repo, dry_run=False)
+    # An absolute path that cannot exist, so a real `claude` on PATH is never used.
+    missing = {runner: str(tmp_path / "no-such-bin" / runner) for runner in RUNNERS}
+    cfg = config_for(tmp_path, repo, dry_run=False, runner_bins=missing)
     async with LiteWriter(cfg.db_path, schema=schema, claim=5) as db:
         engine = Engine(db, Relay(), cfg)
         await engine.startup()

@@ -74,6 +74,51 @@ treat it as a non-git directory.
 
 ## Size
 
+Line counts, file counts, and the TypeScript comparison live in
+[docs/ts-vs-python-comparison.md](docs/ts-vs-python-comparison.md), which holds the
+current measurements. They are not repeated here so the two documents cannot disagree.
+
+## Checks
+
+`uv run ruff check`, `uv run ruff format --check`, `uv run pyright`, and
+`uv run pytest -q` were run on this branch with no failures: ruff clean, 689 files
+already formatted, pyright 0 errors, **375 tests passed**.
+`uv run --group e2e pytest e2e -q` passed **14** of 14 Chromium walks. The tests are
+hermetic: they pass whether or not the real `claude` and `gh` are installed or a
+`GITHUB_TOKEN` is set.
+
+`docker compose up --build` was run on this slice: the image built (bash, git,
+and the cryptography package for the secret store) and the container became
+healthy. An earlier boot (before Basic auth) ran a dry-run task to `review` on
+`cez/<id8>` inside the mounted repo. This boot checked the gate: `/health` was
+200 with no credentials, `/tasks` and `/api/v1/health` were 401, and the
+generated password from the data volume authenticated `/api/v1/health`. Git is invoked with `safe.directory=*` for that process only,
+because the container user does not own the mounted checkout and would otherwise
+treat it as a non-git directory.
+
+## Decisions
+
+| Question | Choice |
+| --- | --- |
+| Where does state live? | SQLite. `import-runs` copies a `runs.json` array into that table and, when a sibling `runs/<id>.ndjson` exists, copies those events too. The parser and `events_near` are tested. The CLI's write into SQLite is not. Workflows and skills stay files under `.ai/cezar/` so they can still be committed. |
+| What does a finished workflow become? | `done`, unless `CEZ_REVIEW_GATE=1` (or `reviewGate: true` in `.ai/cezar/config.json`) and the worktree has a diff and the run is not autonomous. Then it parks at `review`. Finish accepts that park and does not merge. Headless `run` treats both `review` and `done` as exit 0. |
+| What happens to a `running` row after restart? | `Engine.recover` (called at the end of `Engine.startup`, before routes and the tick loop) first sweeps `<data dir>/tmp/<run id>` directories of runs that are not live, then resumes a `running` agent whose runner opened a session (`Run.session_runner`; Claude and Pi by run id, Codex and OpenCode when `codex_thread` is stored; any runner under dry-run) as a queued follow-up with `--resume` and the restart prompt that points at `CEZ_HANDOFF_FILE`. A `running` linear workflow with no session yet (queued behind the working-tree lease, or still spawning) is re-queued whole, as TypeScript does. Every other `running` row becomes `failed` with "interrupted by restart" (`mark_interrupted`): a runner that cannot resume, a graph parent whose dispatched children are still in flight, or a graph run with no session (TypeScript re-queues it at its persisted cursor; this port keeps none, so a re-run from the entry could repeat a commit, push or PR node). `queued` stays queued and the tick picks it up. `waiting` stays, so the question or graph park is still on screen. |
+| Does `waiting` hold a parallelism slot? | No. The agent process has exited. `max_parallel` still defaults to 2 and caps `running` work. |
+| Dry run | Default off, matching TypeScript. Compose sets `CEZ_DRY_RUN=1`. |
+| Graph workflows (`version: 2`) | Loaded and walked for `start`, `agent`, `check`, `if`, `loop`, `end`, `fork`, `join`, `dispatch`, `git.commit`, `git.push`, `git.sync-base`, `github.draft-pr`, and `github.wait-ci` (no PR fails; dry-run reports green). A cycle that does not pass a loop `repeat` port is rejected. `github.pr-comment`, `github.issue-comment`, and `github.pr-update` are a dry-run note or a failure. `gate.human`, `ask-user`, and nested `workflow` are executed (`tests/test_graph_human.py`). |
+| `onFail` on an agent step | A load error. TypeScript's schema allows the key and ignores it. |
+| Secrets on a check | Injected into the check environment from an AES-256-GCM store under the data directory. Values are not returned by the list API. A `cezar` audience is not given to checks. The check itself is always `bash -lc`. |
+| `allowedTools` / `bashAllowlist` | Claude argv maps a non-empty allowlist to `Bash(<prefix>:*)`. Pi drops Bash. Copilot is `--allow-all-tools` and the allowlist is not mapped. A check step always runs `bash -lc`, the same as TypeScript: the allowlist does not gate it. |
+| Diff base | `resolve_task_diff_base` in `app/engine/git_diff_base.py`: the freshest base ref (`origin/<base>` when the local branch is behind it), and a repointed HEAD measured against `<branch>@{started_at}` unless the merge-base attributes fewer lines. Same rule as `resolveTaskDiffBase` in `packages/cezar/src/git-diff-base.ts`. |
+| Fetch | Skipped when dry-run is on. Otherwise one best-effort `git fetch` of the base branch. |
+| Dispatch | Cap of 4 in-flight children and the budget carve are ported. A settled child stores a report on the parent. A running parent whose runner implements `steer` receives that report as a Claude-shaped user frame on the open stdin (`ProtocolRunner.steer`). `CEZ_DISPATCH=0` refuses new children. |
+| Automations | Paused until enabled. A `schedule` row fires on its interval; a `github` or `tracker` row is polled on it and starts a run per new match (off under `CEZ_DRY_RUN=1` and `CEZ_AUTOMATIONS=0`). An enabled row idle longer than its own interval is moved forward at startup and does not fire a backlog; a poll is baselined on enable, so existing items never fire. Jira and Linear events are not history: the tracker poll sees issues currently in the wanted status. |
+| URL shape | `?project=` on workspace pages, not `/p/:projectId/...`. |
+| Host guard and login | Loopback `Host` check on `/api`, including health, with the same 403 text as #426. A missing Host is untrusted. `CEZ_REMOTE=1` or a non-loopback bind (compose's `0.0.0.0`) skips it, matching hosted mode, and then requires HTTP Basic auth. `GET /health` stays open for the healthcheck. A loopback bind does not ask for a password. The TypeScript process has no login; its VPS install puts this challenge on nginx. There is no nginx in compose, so the Python process issues it. |
+| CSS | Hand-written from the cockpit tokens in `packages/web/src/styles/index.css`. Not DaisyUI. The React screens are not reproduced. |
+
+## Size
+
 Measured with cloc 1.98 on 2026-10-29. Code lines exclude blanks and comments.
 TypeScript application rows are `packages/**/*.{ts,tsx}` whose file name does not
 contain `test` or `spec` and whose path is not `packages/web/e2e`. An earlier

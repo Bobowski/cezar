@@ -61,6 +61,9 @@ def cockpit(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Cockpit]:
     init_repo(repo)
     port = _free_port()
     env = os.environ.copy()
+    # Hermetic: the "gh is not authenticated" walk must not see the host's token.
+    for name in ("CEZ_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"):
+        env.pop(name, None)
     env.update(
         {
             "CEZ_DRY_RUN": "1",

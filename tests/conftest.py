@@ -35,6 +35,9 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("CEZ_REPO", str(root))
     monkeypatch.setenv("CEZ_DRY_RUN", "1")
     monkeypatch.setenv("CEZ_DISPATCH", "1")
+    # Hermetic: a developer's or CI's own forge token must not leak into the app config.
+    for name in ("CEZ_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
     return root
 
 

@@ -189,6 +189,19 @@ def definition_issue(kind: str, events: tuple[str, ...], filters: dict[str, obje
     unknown = [item for item in events if item not in EVENTS]
     if unknown:
         return f"unknown event {unknown[0]}"
+    checkout = filters.get("checkout")
+    fork_heads = filters.get("allowForkHeads")
+    if checkout not in (None, "", "base", "pr-head"):
+        return "filters.checkout must be base or pr-head"
+    if fork_heads is not None and not isinstance(fork_heads, bool):
+        return "filters.allowForkHeads must be true or false"
+    if checkout == "pr-head":
+        if any(not item.startswith("pull_request.") for item in events):
+            return "checkout pr-head needs pull_request events only"
+        if "pull_request.closed" in events or "pull_request.merged" in events:
+            return "checkout pr-head cannot be used with pull_request.closed or pull_request.merged"
+    elif fork_heads:
+        return "filters.allowForkHeads needs checkout pr-head"
     wants_labels = "issue.labeled" in events or "issue.unlabeled" in events
     if wants_labels and not filters.get("changedLabels"):
         return "filters.changedLabels is required for issue label events"

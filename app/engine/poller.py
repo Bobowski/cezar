@@ -19,10 +19,12 @@ from typing import TYPE_CHECKING
 
 from app.clock import after, now, parse_stamp, stamp
 from app.config import automations_enabled
+from app.engine.git_remotes import enterprise_host
 from app.engine.model import Automation, Run
 from app.integrations import github_poll, tracker_poll
 from app.integrations.github_poll import Candidate, GhError, gh_api
 from app.integrations.github_read import repo_handle
+from app.integrations.pr_head import resolve_pr_head
 from app.store import polling
 from app.store.db import get_automation, get_project, list_enabled_automations, save_automation
 
@@ -30,6 +32,14 @@ if TYPE_CHECKING:
     from app.engine.engine import Engine
 
 POLL_KINDS = ("github", "tracker")
+# A launch that ended without a run on purpose (a closed PR, an unadmitted fork). Not retried.
+SKIPPED = "skipped: "
+
+
+def _launch_status(run_id: str | None, error: str) -> str:
+    if run_id:
+        return "launched"
+    return "skipped" if error.startswith(SKIPPED) else "launch-error"
 
 
 def automation_env(run: Run) -> dict[str, str]:
@@ -145,7 +155,7 @@ class AutomationPoller:
                     continue
                 run_id, error = await self.launch(item, row)
                 row["runId"], row["error"] = run_id or "", error
-                row["status"] = "launched" if run_id else "launch-error"
+                row["status"] = _launch_status(run_id, error)
                 launched += 1 if run_id else 0
             await engine.db.write(
                 polling.mark_seen,
@@ -185,8 +195,15 @@ class AutomationPoller:
                 )
                 return None
             since = max(since, str(state["since"]))
+        host = await asyncio.to_thread(enterprise_host, root, repo)
         result = await asyncio.to_thread(
-            github_poll.poll, repo, item.events, filters, since=since, gh=gh_api
+            github_poll.poll,
+            repo,
+            item.events,
+            filters,
+            since=since,
+            gh=lambda args: gh_api(args, host=host),
+            enterprise=bool(host),
         )
         rows: list[dict[str, object]] = [
             {
@@ -238,6 +255,9 @@ class AutomationPoller:
         project = get_project(engine.db, item.project_id)
         if project is None:
             return None, "the project is gone"
+        root = Path(project.root)
+        fork_sha = ""
+        note = ""
         values: dict[str, str] = {}
         info: dict[str, object] = {"automationId": item.id, "kind": item.kind}
         raw = row.get("candidate")
@@ -262,11 +282,34 @@ class AutomationPoller:
                 }
             )
             if cand.event.startswith("pull_request."):
-                head = await asyncio.to_thread(
-                    github_poll.pr_head, lambda a: gh_api(a), cand.repo, cand.number
-                )
-                if head:
-                    info["prHead"] = head
+                host = await asyncio.to_thread(enterprise_host, root, cand.repo)
+
+                def gh(args: list[str], host: str = host) -> str:
+                    return gh_api(args, host=host)
+
+                if item.filters.get("checkout") == "pr-head":
+                    resolution = await asyncio.to_thread(
+                        resolve_pr_head,
+                        root,
+                        cand.repo,
+                        cand.number,
+                        allow_fork_heads=item.filters.get("allowForkHeads") is True,
+                        dry_run=engine.config.dry_run,
+                        gh=gh,
+                    )
+                    if resolution.kind == "skipped":
+                        return None, f"{SKIPPED}{resolution.reason}"
+                    if resolution.kind == "failed":
+                        return None, resolution.reason
+                    fork_sha = str(resolution.head["headSha"])
+                    note = resolution.note
+                    info["prHead"] = resolution.head
+                    if resolution.head.get("untrusted"):
+                        info["untrustedHead"] = True
+                else:
+                    head = await asyncio.to_thread(github_poll.pr_head, gh, cand.repo, cand.number)
+                    if head:
+                        info["prHead"] = head
         else:
             tracked = tracker_poll.TrackerCandidate.from_json(raw)
             if tracked is None:
@@ -284,11 +327,16 @@ class AutomationPoller:
             workflow_name=item.workflow,
             runner=item.runner or "claude",
             autonomous=True,
+            # A pull-request head is verified in its own worktree, forked from the fetched sha.
+            base_branch=fork_sha,
+            in_place=False if fork_sha else None,
         )
         if run is None:
             return None, reason or "could not plan a run"
         run.automation = info
         await engine.enqueue(run)
+        if note:
+            await engine._note(run.id, "note", note)
         stored = get_automation(engine.db, item.id)
         if stored is not None:
             await engine.db.write(save_automation, replace(stored, last_run_id=run.id))
@@ -317,7 +365,7 @@ class AutomationPoller:
         for row in failed:
             run_id, error = await self.launch(item, row)
             row["runId"], row["error"] = run_id or "", error
-            row["status"] = "launched" if run_id else "launch-error"
+            row["status"] = _launch_status(run_id, error)
             launched += 1 if run_id else 0
         entry["launched"] = int(str(entry.get("launched") or 0)) + launched
         entry["retriedAt"] = stamp()

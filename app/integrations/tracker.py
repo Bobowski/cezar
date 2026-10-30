@@ -374,7 +374,7 @@ def _fetch_issues(
         if query.strip():
             jql += f' AND text ~ "{query.strip()}"'
         loaded = _get(
-            f"{origin}/rest/api/3/search?jql={_query(jql)}",
+            f"{origin}/rest/api/3/search?jql={_query(jql)}&fields={_JIRA_FIELDS}",
             _jira_headers(record["credentials"]),
         )
         if isinstance(loaded, dict) and loaded.get("available") is False:
@@ -389,7 +389,8 @@ def _fetch_issues(
         {
             "query": (
                 "query($term: String) { issues(filter: { title: { contains: $term } }) "
-                "{ nodes { id identifier title url createdAt updatedAt state { name } } } }"
+                "{ nodes { id identifier title url createdAt updatedAt state { name } "
+                "labels(first: 50) { nodes { name } } } } }"
             ),
             "variables": {"term": term},
         },
@@ -404,6 +405,22 @@ def _fetch_issues(
     return [_linear_item(item) for item in nodes if isinstance(item, dict)], ""
 
 
+# The fields `jira.ts` asks for, minus the ones a list row does not show.
+_JIRA_FIELDS = "project,summary,created,updated,labels,status"
+
+
+def _names(raw: object) -> list[str]:
+    """Jira labels are strings, Linear labels are `{name}` nodes."""
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        name = item if isinstance(item, str) else _mapping(item).get("name")
+        if isinstance(name, str) and name:
+            out.append(name)
+    return out
+
+
 def _jira_item(origin: str, item: dict[str, Any]) -> dict[str, Any]:
     fields = _mapping(item.get("fields"))
     status = _mapping(fields.get("status"))
@@ -415,7 +432,7 @@ def _jira_item(origin: str, item: dict[str, Any]) -> dict[str, Any]:
         "author": "",
         "createdAt": str(fields.get("created", "")),
         "updatedAt": str(fields.get("updated", "")),
-        "labels": [],
+        "labels": _names(fields.get("labels")),
         "body": "",
         "bodyTruncated": False,
         "unsupportedContent": False,
@@ -432,7 +449,7 @@ def _linear_item(item: dict[str, Any]) -> dict[str, Any]:
         "author": "",
         "createdAt": str(item.get("createdAt", "")),
         "updatedAt": str(item.get("updatedAt", "")),
-        "labels": [],
+        "labels": _names(_mapping(item.get("labels")).get("nodes")),
         "body": "",
         "bodyTruncated": False,
         "unsupportedContent": False,

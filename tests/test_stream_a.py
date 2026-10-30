@@ -307,6 +307,8 @@ async def test_an_interrupted_run_resumes_the_cli_session(tmp_path: Path):
         run.status = "running"
         run.worktree_path = str(repo)
         run.started_at = stamp()
+        # A graph run with no session is failed, not re-queued: there is no persisted cursor.
+        run.workflow_def = {"name": "g", "graph": {"nodes": [], "edges": []}}
         await db.write(insert_run, run)
         await engine.recover()
         assert _got(db, run.id).error == "interrupted by restart"

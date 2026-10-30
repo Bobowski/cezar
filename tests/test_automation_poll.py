@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import uuid
 from datetime import timedelta
 from pathlib import Path
@@ -22,12 +23,19 @@ from tests.test_engine import SpecCapture, config_for
 
 from app.clock import now, stamp
 from app.engine.engine import Engine
-from app.engine.model import Automation
+from app.engine.model import Automation, Run
 from app.engine.poller import automation_env
 from app.integrations.github_poll import Candidate, GhError, matches_filters, poll
 from app.main import bootstrap
 from app.store import polling
-from app.store.db import get_automation, get_run, list_runs, save_automation, schema
+from app.store.db import (
+    get_automation,
+    get_run,
+    list_events,
+    list_runs,
+    save_automation,
+    schema,
+)
 
 FAKES = Path(__file__).parent / "fakes"
 FUTURE = "2099-01-01T00:00:00Z"
@@ -559,3 +567,233 @@ async def test_a_schedule_cannot_be_checked_from_the_screen(live):
     assert (await live.post(f"/automations/{ident}/check", json={"tab": "t1"})).status_code == 409
     api = await live.post(f"/api/v1/automations/{ident}/check", json={})
     assert api.json()["matches"] == 0 and "no event filter" in api.json()["message"]
+
+
+# ---- GitHub Enterprise and checkout: pr-head ---------------------------------------------------
+
+
+def git_run(cwd: Path, *args: str) -> str:
+    done = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    return done.stdout.strip()
+
+
+def pull_request(sha: str, *, state: str = "open", head_repo: str | None = "acme/shop") -> dict:
+    return {
+        "state": state,
+        "html_url": "https://github.com/acme/shop/pull/7",
+        "head": {
+            "sha": sha,
+            "ref": "feature",
+            "repo": {"full_name": head_repo} if head_repo else None,
+        },
+        "base": {"ref": "main"},
+    }
+
+
+@pytest.fixture
+def pr_origin(world: Engine, tmp_path: Path) -> str:
+    """`origin` is a bare repo that serves `refs/pull/7/head`. Returns that head's sha."""
+    repo = world.config.repo_root
+    bare = tmp_path / "origin.git"
+    git_run(tmp_path, "init", "--bare", "-b", "main", str(bare))
+    git_run(repo, "remote", "add", "origin", str(bare))
+    git_run(repo, "push", "origin", "main")
+    author = tmp_path / "author"
+    git_run(tmp_path, "clone", str(bare), str(author))
+    git_run(author, "config", "user.email", "t@example.com")
+    git_run(author, "config", "user.name", "Test")
+    (author / "pr.txt").write_text("the pull request\n", encoding="utf-8")
+    git_run(author, "add", "pr.txt")
+    git_run(author, "-c", "commit.gpgsign=false", "commit", "-m", "pr work")
+    sha = git_run(author, "rev-parse", "HEAD")
+    git_run(author, "push", "origin", "HEAD:refs/pull/7/head")
+    return sha
+
+
+async def launch_pr(world: Engine, fake_gh: Path, sha: str, **filters: object):
+    serve(fake_gh, [item(7, pr=True)], pull_7_json=pull_request(sha))
+    watch = automation(world, filters={"checkout": "pr-head"} | filters)
+    await world.create_automation(watch)
+    return watch, await world.poller.check(watch, "execute")
+
+
+async def test_pr_head_forks_the_worktree_from_the_pull_request(
+    world: Engine, fake_gh: Path, pr_origin: str
+):
+    watch, entry = await launch_pr(world, fake_gh, pr_origin)
+    assert entry["launched"] == 1, entry
+    run = get_run(world.db, str(entry["candidates"][0]["runId"]))  # type: ignore[index]
+    assert run is not None and run.base_branch == pr_origin and run.in_place is False
+    assert run.automation["prHead"] == {
+        "number": 7,
+        "repo": "acme/shop",
+        "headRepo": "acme/shop",
+        "headRef": "feature",
+        "headSha": pr_origin,
+        "baseRef": "main",
+        "ref": "refs/cezar/pr/7",
+        "url": "https://github.com/acme/shop/pull/7",
+        "untrusted": False,
+    }
+    assert "untrustedHead" not in run.automation
+    assert automation_env(run)["CEZ_PR_HEAD_SHA"] == pr_origin
+    repo = world.config.repo_root
+    assert git_run(repo, "rev-parse", "refs/cezar/pr/7") == pr_origin
+    prepared = await world._prepare(run)
+    worktree = Path(prepared.worktree_path)
+    assert git_run(worktree, "rev-parse", "HEAD") == pr_origin
+    assert (worktree / "pr.txt").is_file()
+    assert prepared.base_sha == pr_origin
+    # The PR's commit is the fork point, so the run's diff is its own work, not the PR.
+    published, reason = await world.open_draft_pr(run.id)
+    assert published is None and reason is not None
+    assert reason == "run is still active — wait for the review gate"
+    finished = get_run(world.db, run.id) or run
+    finished.status = "done"
+    await world._save(finished)
+    _published, reason = await world.open_draft_pr(run.id)
+    assert reason == (
+        "this run verified pull request #7; publishing its changes is not supported yet"
+    )
+
+
+async def test_pr_head_skips_a_closed_pull_request_and_an_unadmitted_fork(
+    world: Engine, fake_gh: Path, pr_origin: str
+):
+    serve(fake_gh, [item(7, pr=True)], pull_7_json=pull_request(pr_origin, state="closed"))
+    watch = automation(world, filters={"checkout": "pr-head"})
+    await world.create_automation(watch)
+    entry = await world.poller.check(watch, "execute")
+    row = entry["candidates"][0]  # type: ignore[index]
+    assert (entry["launched"], row["status"], row["error"]) == (
+        0,
+        "skipped",
+        "skipped: pr-not-open",
+    )
+    assert list_runs(world.db, None, None) == []
+
+    serve(fake_gh, [item(7, pr=True)], pull_7_json=pull_request(pr_origin, head_repo="evil/shop"))
+    other = automation(world, filters={"checkout": "pr-head"}, name="fork")
+    await world.create_automation(other)
+    entry = await world.poller.check(other, "execute")
+    assert entry["candidates"][0]["error"] == "skipped: fork-head"  # type: ignore[index]
+    assert list_runs(world.db, None, None) == []
+
+    admitted = automation(
+        world, filters={"checkout": "pr-head", "allowForkHeads": True}, name="admit"
+    )
+    await world.create_automation(admitted)
+    entry = await world.poller.check(admitted, "execute")
+    assert entry["launched"] == 1, entry
+    run = list_runs(world.db, None, None)[0]
+    assert run.automation["untrustedHead"] is True
+    assert run.automation["prHead"]["untrusted"] is True  # type: ignore[index]
+
+
+async def test_pr_head_fails_the_launch_when_the_head_cannot_be_reached(
+    world: Engine, fake_gh: Path, pr_origin: str
+):
+    serve(fake_gh, [item(7, pr=True)])  # no pull-7.json: the fake `gh api` exits 1
+    watch = automation(world, filters={"checkout": "pr-head"})
+    await world.create_automation(watch)
+    entry = await world.poller.check(watch, "execute")
+    row = entry["candidates"][0]  # type: ignore[index]
+    assert row["status"] == "launch-error"
+    assert row["error"].startswith("pr-head-unavailable: could not read the pull request")
+    assert list_runs(world.db, None, None) == []
+
+    wrong = "c" * 40
+    serve(fake_gh, [item(7, pr=True)], pull_7_json=pull_request(wrong))
+    moved = automation(world, filters={"checkout": "pr-head"}, name="moved")
+    await world.create_automation(moved)
+    entry = await world.poller.check(moved, "execute")
+    assert entry["launched"] == 1
+    run = list_runs(world.db, None, None)[0]
+    assert run.base_branch == pr_origin  # the fetched head wins over the API's
+    notes = [e for e in list_events(world.db, run.id) if "moved while launching" in str(e)]
+    assert notes
+
+
+async def test_an_untrusted_head_runs_its_checks_without_credentials(world: Engine):
+    from app.engine.model import Step
+    from app.secrets.store import SecretStore
+
+    SecretStore(world.config.data_dir / "secrets").set(
+        world.boot_project_id, "TOKEN_X", "s3cret-value-123", root=str(world.config.repo_root)
+    )
+    run = Run(
+        id=uuid.uuid4().hex,
+        project_id=world.boot_project_id,
+        title="t",
+        task="t",
+        workflow="quick-task",
+        status="running",
+        runner="claude",
+        created_at=stamp(),
+        worktree_path=str(world.config.repo_root),
+        workflow_def={},
+        automation={"untrustedHead": True},
+    )
+    step = Step(id="c", name="c", command='printf %s "${TOKEN_X:-none}"')
+    _code, output = await world._run_check(run, step, asyncio.Event())
+    trusted = dataclasses.replace(run, automation={})
+    _code, trusted_output = await world._run_check(trusted, step, asyncio.Event())
+    assert output.strip() == "none"
+    assert trusted_output.strip() not in ("none", "")  # the value was bound, then masked
+
+
+def test_pr_head_definitions_are_validated():
+    from app.integrations.github_poll import definition_issue
+
+    opened = ("pull_request.opened",)
+    assert definition_issue("github", opened, {"checkout": "pr-head"}) is None
+    assert definition_issue("github", opened, {"checkout": "base"}) is None
+    assert definition_issue("github", opened, {"checkout": "tag"})
+    assert definition_issue("github", ("issue.opened",), {"checkout": "pr-head"})
+    assert definition_issue("github", ("pull_request.merged",), {"checkout": "pr-head"})
+    assert definition_issue("github", opened, {"allowForkHeads": True})
+    assert definition_issue("github", opened, {"checkout": "pr-head", "allowForkHeads": "y"})
+    assert (
+        definition_issue("github", opened, {"checkout": "pr-head", "allowForkHeads": True}) is None
+    )
+
+
+async def test_the_automation_form_saves_the_pr_head_options(world: Engine):
+    from app.features.automations.data import parse_form
+    from app.store.db import get_project
+
+    project = get_project(world.db, world.boot_project_id)
+    assert project is not None
+    base = GITHUB_FORM | {"kind": "github", "events": ["pull_request.opened"]}
+    form, issue = parse_form(base | {"f_prHead": True, "f_allowForkHeads": True}, project, "claude")
+    assert form is not None, issue
+    assert form.filters["checkout"] == "pr-head" and form.filters["allowForkHeads"] is True
+    plain, _ = parse_form(base, project, "claude")
+    assert plain is not None and "checkout" not in plain.filters
+    closed = base | {"events": ["pull_request.closed"], "f_prHead": True}
+    assert parse_form(closed, project, "claude")[0] is None
+
+
+async def test_a_github_enterprise_remote_passes_its_host_to_gh_api(world: Engine, fake_gh: Path):
+    repo = world.config.repo_root
+    git_run(repo, "remote", "add", "origin", "git@acme.ghe.com:acme/shop.git")
+    serve(fake_gh, [item(7, pr=True)], pull_7_json=pull_request("a" * 40))
+    watch = automation(world, filters={"repo": "acme/shop"})
+    await world.create_automation(watch)
+    entry = await world.poller.check(watch, "execute")
+    log = calls(fake_gh)
+    api_calls = [line for line in log.splitlines() if line.startswith("api ")]
+    assert api_calls and all(line.startswith("api --hostname acme.ghe.com ") for line in api_calls)
+    assert any("/search/issues" in line for line in api_calls)
+    # Enterprise repository URLs are `https://api.<sub>.ghe.com/repos/...`: they still match.
+    assert entry["matches"] == 1 and entry["launched"] == 1
+    assert any("pulls/7" in line for line in api_calls)
+
+
+async def test_a_github_dot_com_remote_adds_no_hostname(world: Engine, fake_gh: Path):
+    git_run(world.config.repo_root, "remote", "add", "origin", "git@github.com:acme/shop.git")
+    serve(fake_gh, [item(7, pr=True)])
+    watch = automation(world, filters={"repo": "acme/shop"})
+    await world.create_automation(watch)
+    await world.poller.check(watch, "execute")
+    assert "--hostname" not in calls(fake_gh)

@@ -25,6 +25,13 @@ from stario import App, Relay
 
 from app.clock import after, now, parse_stamp, stamp
 from app.config import RUNNERS, Config, single_project
+from app.engine.agent_tmp import (
+    AgentTempDirError,
+    agent_tmp_env,
+    remove_agent_tmp_dir,
+    shared_cache_dir,
+    sweep_agent_tmp_dirs,
+)
 from app.engine.agents import AgentSpec, Runner, usage_from_line
 from app.engine.autosave import autosave_commit
 from app.engine.catalog import find_workflow, load_workflows
@@ -92,6 +99,7 @@ from app.engine.terminal_hub import TerminalHub
 from app.engine.uploads import materialize
 from app.engine.usage_limit import parse_usage_limit
 from app.engine.workflows import newer_catalog_workflow, retryable_exit
+from app.integrations.pr_head import prune_pr_head_refs
 from app.secrets.store import SecretStore, redact
 from app.store import polling
 from app.store.db import (
@@ -369,14 +377,28 @@ class Engine:
 
         `queued` stays queued for the first tick and `waiting` stays waiting, graph parks
         included. A `running` agent with a resumable session is queued as a follow-up that
-        reopens it and points the agent at its handoff file. Every other `running` row fails
-        with "interrupted by restart": no session yet, a runner that cannot resume, or a graph
-        parent still waiting on its dispatched children (re-attaching to those is not ported).
+        reopens it and points the agent at its handoff file. A `running` linear workflow that
+        never reached an agent session (queued behind the working-tree lease, or still
+        spawning) goes back to the queue whole, as TypeScript does. Every other `running` row
+        fails with "interrupted by restart": a runner that cannot resume, a graph parent still
+        waiting on its dispatched children (re-attaching to those is not ported), or a graph
+        with no session yet. TypeScript re-queues that last one at its persisted cursor; this
+        port persists none, so a re-run from the entry could repeat a commit, push or PR node.
         """
         from app.engine.handoff import append_heartbeat
 
+        # A crash never reaches the terminal reap, so sweep every temp directory of a run that
+        # is not live.
+        live = {
+            run.id
+            for status in ("queued", "waiting", "running")
+            for run in list_runs(self.db, None, status, limit=1000)
+        }
+        await asyncio.to_thread(sweep_agent_tmp_dirs, self.config.data_dir, live)
         for run in list_runs(self.db, None, "running", limit=1000):
             if not self._resumable(run):
+                if not run.session_runner and not run.definition().graph:
+                    await self._requeue_whole(run)
                 continue
             if run.definition().graph and count_in_flight_children(self.db, run.id):
                 continue
@@ -393,6 +415,18 @@ class Engine:
                 "cezar restarted — resuming the interrupted task from its last session",
             )
         await self.db.write(mark_interrupted)
+
+    async def _requeue_whole(self, run: Run) -> None:
+        """A `running` row that had no agent session: nothing to resume, so start it over."""
+        run.status = "queued"
+        run.error = ""
+        run.finished_at = ""
+        await self._save(run)
+        await self._note(
+            run.id,
+            "lifecycle",
+            "cezar restarted — the task had not reached its agent session, so it was re-queued",
+        )
 
     async def serve(self) -> None:
         while self.app is not None and not self.app.shutting_down:
@@ -581,6 +615,7 @@ class Engine:
             dry_run=self.config.dry_run,
             cwd=root,
             binary=self.config.runner_bins.get("claude", "claude"),
+            model=self._namer_model(),
         )
         wanted = named.branch if named and named.branch else None
         if named and named.title:
@@ -1242,6 +1277,11 @@ class Engine:
             prompt += "\n\nThe user attached:\n" + "\n".join(run.attachment_paths)
         if seeded.is_file():
             prompt = f"{HANDOFF_INSTRUCTIONS}\n\n{prompt}"
+        try:
+            tmp_env = agent_tmp_env(self.config.data_dir, run.id, enabled=self.config.agent_tmpdir)
+        except AgentTempDirError as exc:
+            await self._fail(get_run(self.db, run.id) or run, str(exc))
+            return "stop"
         spec = AgentSpec(
             user_prompt=prompt,
             system_prompt="\n\n".join(system_parts),
@@ -1263,7 +1303,7 @@ class Engine:
             codex_thread=run.codex_thread,
             profile_home=_profile_home(self.config, run.account_id, step.runner or run.runner),
             handoff_file=str(handoff_path(self.config.data_dir, run.id)),
-            env=tuple(automation_env(run).items()),
+            env=tuple((tmp_env | automation_env(run)).items()),
         )
         if run.session_runner != spec.runner:
             opened = get_run(self.db, run.id) or run
@@ -1392,11 +1432,18 @@ class Engine:
     async def _run_check(self, run: Run, step: Step, cancel: asyncio.Event) -> tuple[int, str]:
         project = get_project(self.db, run.project_id)
         store = SecretStore(self.config.data_dir / "secrets")
-        values, notes = store.resolve(
-            "checks",
-            project_id=run.project_id,
-            root=project.root if project else "",
-            bindings=step.secret_bindings,
+        # A fork's head is untrusted code. Like GitHub Actions withholding secrets from fork
+        # PRs, its checks get no credentials.
+        untrusted = run.automation.get("untrustedHead") is True
+        values, notes = (
+            ({}, [])
+            if untrusted
+            else store.resolve(
+                "checks",
+                project_id=run.project_id,
+                root=project.root if project else "",
+                bindings=step.secret_bindings,
+            )
         )
         for note in notes:
             await self._note(run.id, "note", note, step.id)
@@ -1411,6 +1458,9 @@ class Engine:
         )
         env["CEZ_TASK_ID"] = run.id
         env.update(automation_env(run))
+        cache = shared_cache_dir(self.config.data_dir, run.project_id) if run.project_id else None
+        if cache is not None:
+            env["CEZ_SHARED_CACHE_DIR"] = str(cache)
         from app.engine.handoff import handoff_path
 
         env["CEZ_HANDOFF_FILE"] = str(handoff_path(self.config.data_dir, run.id))
@@ -1796,6 +1846,7 @@ class Engine:
             dry_run=self.config.dry_run,
             cwd=root,
             binary=self.config.runner_bins.get("claude", "claude"),
+            model=self._namer_model(),
         )
         if title and title != run.title:
             run.title = title
@@ -1993,6 +2044,7 @@ class Engine:
 
     def _reap(self, run_id: str) -> None:
         reap_task_processes(run_id, enabled=self.config.task_process_reap)
+        remove_agent_tmp_dir(self.config.data_dir, run_id)
 
     async def _deliver_report(self, parent_id: str, child_id: str, text: str) -> None:
         parent = get_run(self.db, parent_id)
@@ -2157,6 +2209,7 @@ class Engine:
             self.config.runner_bins.get(runner, runner),
             approval_gate=self.config.approval_gate,
             codex_network_off=self.config.codex_network_off,
+            codex_reasoning=self.config.codex_reasoning,
         )
         self._runners[runner] = created
         return created
@@ -2187,6 +2240,16 @@ class Engine:
                     {"projectId": project.id, "runId": run_id, "kind": "reclaimed"},
                 )
             runs = list_runs(self.db, project.id, None, limit=10_000)
+            # A reclaimed worktree no longer needs the PR head it forked from.
+            needed = {
+                int(head["number"])
+                for run in runs
+                if run.worktree_path
+                and not run.worktree_reclaimed_at
+                and isinstance(head := run.automation.get("prHead"), dict)
+                and isinstance(head.get("number"), int)
+            }
+            await asyncio.to_thread(prune_pr_head_refs, Path(project.root), needed)
             for run_id in select_index_prune(
                 runs, keep=self.config.runs_keep, archived_keep=self.config.archived_keep
             ):
@@ -2327,6 +2390,12 @@ class Engine:
             return None, "run is still active — wait for the review gate"
         if not run.worktree_path or not run.branch or run.in_place:
             return None, "no worktree/branch to publish"
+        head = run.automation.get("prHead")
+        if isinstance(head, dict) and head.get("number"):
+            return None, (
+                f"this run verified pull request #{head['number']}; "
+                "publishing its changes is not supported yet"
+            )
         result = await asyncio.to_thread(
             create_draft_pr,
             Path(run.worktree_path),
@@ -2375,10 +2444,22 @@ class Engine:
         if chosen is None:
             return None, f"unknown workflow: {workflow_name}"
         workflow = chosen
+        from app.features.settings.store import read_composer_defaults
+
+        composer = read_composer_defaults(self.config.data_dir)
         if autonomous is None:
-            autonomous = self.config.autonomous_default is True
+            autonomous = (
+                composer.autonomous
+                if composer.autonomous is not None
+                else self.config.autonomous_default is True
+            )
         if in_place is None:
-            in_place = not self.config.worktree_default
+            in_place = (
+                not composer.worktree
+                if composer.worktree is not None
+                else not self.config.worktree_default
+            )
+        model = self.default_model(runner, model)
         run = Run(
             id=uuid.uuid4().hex,
             project_id=project.id,
@@ -2391,7 +2472,7 @@ class Engine:
             workflow_def=workflow.to_json(),
             autonomous=autonomous,
             in_place=in_place,
-            model=model.strip(),
+            model=model,
             parent_id=parent.id if parent else "",
             root_id=(parent.root_id or parent.id) if parent else "",
             budget_usd=budget_usd,
@@ -2399,6 +2480,37 @@ class Engine:
             kind=kind,
         )
         return run, None
+
+    def _namer_model(self) -> str:
+        """`namerModel`: the cheap alias the title and branch namer asks Claude with."""
+        from app.features.settings.store import read_agent_defaults
+
+        return read_agent_defaults(self.config.data_dir).namer_model
+
+    def models_locked(self) -> bool:
+        """`CEZ_AGENT_MODELS_LOCKED=1` or `modelsLocked` on the Agents page."""
+        from app.features.settings.store import models_locked
+
+        return models_locked(self.config.agent_models_locked, self.config.data_dir)
+
+    def model_lock_error(self, model: str) -> str | None:
+        """The refusal for a task that names a model while the agents' own setting rules."""
+        from app.features.settings.store import MODELS_LOCKED_ERROR
+
+        return MODELS_LOCKED_ERROR if model.strip() and self.models_locked() else None
+
+    def default_model(self, runner: str, picked: str = "") -> str:
+        """The model a new task runs: the pick, else the runner's `defaultModels` preset.
+
+        Locked means neither applies and the agent's own configured model runs.
+        """
+        from app.features.settings.store import read_agent_defaults
+
+        if self.models_locked():
+            return ""
+        if picked.strip():
+            return picked.strip()
+        return read_agent_defaults(self.config.data_dir).model_for(runner)
 
     async def enqueue(self, run: Run) -> None:
         await self.db.write(insert_run, run)

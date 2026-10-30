@@ -5,37 +5,53 @@ global skills, and resources.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from litewriter import LiteWriter
 from stario import App, Context, Writer, h
 from stario.datastar import read_signals
+from stario.datastar.format import SignalValue
 from stario.exceptions import RequestBodyError
 from stario.markup import HtmlElement
 
 from app.common.shell import frame, load_chrome
-from app.config import Config
+from app.config import RUNNERS, Config
 from app.engine.engine import Engine
+from app.engine.providers import provider_status
+from app.features.places.urls import SETTINGS_AGENTS
 from app.features.settings import workspace_views as views
 from app.features.settings.nav import settings_nav
 from app.features.settings.store import (
+    ComposerDefaults,
+    parse_agent_defaults,
     parse_checks,
     parse_memory,
     parse_prompt,
+    parse_skill_defaults,
     parse_skill_repo,
     parse_tracker,
+    parse_tri,
+    read_agent_defaults,
     read_checks,
+    read_composer_defaults,
     read_memory,
     read_prompt,
+    read_skill_defaults,
     read_skill_repos,
     read_tracker,
+    tri_word,
+    write_agent_defaults,
     write_checks,
+    write_composer_defaults,
     write_memory,
     write_prompt,
+    write_skill_defaults,
     write_skill_repos,
     write_tracker,
 )
 from app.features.settings.urls import (
+    AGENTS_SAVE,
     GLOBAL_INSTRUCTIONS,
     GLOBAL_INSTRUCTIONS_SAVE,
     GLOBAL_SKILLS,
@@ -58,6 +74,8 @@ class WorkspaceSettings:
     config: Config
 
     def register(self, app: App) -> None:
+        app.add(SETTINGS_AGENTS, self.agents)
+        app.add(AGENTS_SAVE, self.save_agents)
         app.add(TASKS_SETTINGS, self.tasks)
         app.add(TASKS_SETTINGS_SAVE, self.save_tasks)
         app.add(TRACKER_SETTINGS, self.tracker)
@@ -70,16 +88,60 @@ class WorkspaceSettings:
         app.add(RESOURCES, self.resources)
         app.add(RESOURCES_SAVE, self.save_resources)
 
+    async def agents(self, _c: Context, w: Writer) -> None:
+        status = provider_status(self.config.runner_bins)
+        providers = status.get("providers")
+        lines = []
+        if isinstance(providers, list):
+            for item in providers:
+                if isinstance(item, dict):
+                    lines.append(
+                        f"{item.get('provider')}: "
+                        f"{'installed' if item.get('installed') else 'missing'}"
+                    )
+        defaults = read_agent_defaults(self.config.data_dir)
+        signals: dict[str, SignalValue] = {
+            "planner_model": defaults.planner_model,
+            "namer_model": defaults.namer_model,
+            "locked": defaults.locked,
+        }
+        for runner in RUNNERS:
+            signals[f"model_{runner}"] = defaults.models.get(runner, "")
+            signals[f"auto_{runner}"] = runner in defaults.auto
+        w.html(self._page("Agents", "agents", signals, *views.agents(lines, defaults)))
+
+    async def save_agents(self, c: Context, w: Writer) -> None:
+        signals = await _signals(c, w)
+        if signals is None:
+            return
+        value, issue = parse_agent_defaults(signals)
+        if issue or value is None:
+            w.text(issue or "invalid agent defaults", 400)
+            return
+        write_agent_defaults(self.config.data_dir, value)
+        w.redirect(SETTINGS_AGENTS.href(), 303)
+
     async def tasks(self, _c: Context, w: Writer) -> None:
         project = get_project(self.db, self.engine.boot_project_id)
         branch = project.base_branch if project else "main"
         checks = read_checks(self.config.data_dir, self.engine.boot_project_id)
+        composer = read_composer_defaults(self.config.data_dir)
+        default_skill, ask_skill = read_skill_defaults(
+            self.config.data_dir, self.engine.boot_project_id
+        )
         w.html(
             self._page(
                 "Tasks",
                 "task-settings",
-                {"branch": branch, "checks": ", ".join(checks)},
-                *views.tasks(branch, checks),
+                {
+                    "branch": branch,
+                    "checks": ", ".join(checks),
+                    "default_skill": default_skill,
+                    "ask_skill": ask_skill,
+                    "composer_autonomous": tri_word(composer.autonomous),
+                    "composer_worktree": tri_word(composer.worktree),
+                },
+                *views.tasks(branch, checks, composer, default_skill, ask_skill),
             )
         )
 
@@ -92,11 +154,27 @@ class WorkspaceSettings:
         if issue or checks is None:
             w.text(issue or "invalid checks", 400)
             return
+        skills, issue = parse_skill_defaults(
+            str(signals.get("default_skill", "")), str(signals.get("ask_skill", ""))
+        )
+        if issue or skills is None:
+            w.text(issue or "invalid skill", 400)
+            return
+        autonomous, issue = parse_tri(signals.get("composer_autonomous"))
+        if issue:
+            w.text(issue, 400)
+            return
+        worktree, issue = parse_tri(signals.get("composer_worktree"))
+        if issue:
+            w.text(issue, 400)
+            return
         reason = await self.engine.set_base_branch(self.engine.boot_project_id, branch)
         if reason:
             w.text(reason, 404 if reason == "not found" else 400)
             return
         write_checks(self.config.data_dir, self.engine.boot_project_id, checks)
+        write_skill_defaults(self.config.data_dir, self.engine.boot_project_id, *skills)
+        write_composer_defaults(self.config.data_dir, ComposerDefaults(autonomous, worktree))
         w.redirect(TASKS_SETTINGS.href(), 303)
 
     async def tracker(self, _c: Context, w: Writer) -> None:
@@ -206,9 +284,15 @@ class WorkspaceSettings:
         write_memory(self.config.data_dir, limit)
         w.redirect(RESOURCES.href(), 303)
 
-    def _page(self, title: str, element_id: str, signals: dict[str, str], *children: HtmlElement):
+    def _page(
+        self,
+        title: str,
+        element_id: str,
+        signals: Mapping[str, SignalValue],
+        *children: HtmlElement,
+    ):
         chrome = load_chrome(self.db, self.config, title, "settings", self.engine.boot_project_id)
-        payload: dict[str, str] = {"tab": uuid.uuid7().hex}
+        payload: dict[str, SignalValue] = {"tab": uuid.uuid7().hex}
         payload.update(signals)
         return frame(
             chrome,

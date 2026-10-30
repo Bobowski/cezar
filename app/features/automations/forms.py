@@ -102,6 +102,16 @@ def _github_fields() -> HtmlElement:
         _text_field(
             "Most items per poll (1-100)", "f_maxRecords", type="number", min="1", max="100"
         ),
+        h.Label(
+            {"class": "inline"},
+            h.Input({"type": "checkbox"}, data.bind("f_prHead")),
+            " Fork the worktree from the pull request's head (pull_request events, not closed)",
+        ),
+        h.Label(
+            {"class": "inline"},
+            h.Input({"type": "checkbox"}, data.bind("f_allowForkHeads")),
+            " Admit heads from forks (untrusted code, checks run without credentials)",
+        ),
     )
 
 

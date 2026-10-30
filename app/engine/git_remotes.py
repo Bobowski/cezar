@@ -226,3 +226,38 @@ def _gh_config_hosts() -> set[str]:
             if host:
                 hosts.add(host.lower())
     return hosts
+
+
+_SAFE_HOST = re.compile(r"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$", re.IGNORECASE)
+
+
+def remote_for_repo(root: Path, repo: str) -> tuple[str, str]:
+    """`(remote name, host)` of the remote whose URL is `owner/name`.
+
+    Falls back to the base remote (else `origin`) with its own host when none matches, and to
+    an empty host when a URL cannot be read. The host is what `gh api --hostname` needs on
+    GitHub Enterprise (`remoteForRepo` in `pr-head.ts`). A host that is not a safe hostname is
+    dropped.
+    """
+    remotes = resolve_task_remotes(root)
+
+    def host_of(name: str) -> tuple[str, str]:
+        ok, out, _err = git(root, ["remote", "get-url", name])
+        parsed = parse_remote(out.strip()) if ok else None
+        return (parsed.owner + "/" + parsed.repo, parsed.host) if parsed else ("", "")
+
+    fallback = remotes.base or "origin"
+    for name in remotes.names:
+        slug, host = host_of(name)
+        if slug.lower() == repo.lower():
+            return name, host if _SAFE_HOST.match(host) else ""
+    _slug, host = host_of(fallback) if remotes.names else ("", "")
+    return fallback, host if _SAFE_HOST.match(host) else ""
+
+
+def enterprise_host(root: Path, repo: str) -> str:
+    """The GitHub Enterprise host for `repo`, or empty for github.com and unknown hosts."""
+    _name, host = remote_for_repo(root, repo)
+    if not host or host.lower() == "github.com" or not is_github_host(host):
+        return ""
+    return host.lower()

@@ -100,19 +100,23 @@ def sanitize_branch(raw: str) -> str | None:
 
 
 async def propose_name(
-    task: str, naming: str, *, dry_run: bool, cwd: Path, binary: str
+    task: str, naming: str, *, dry_run: bool, cwd: Path, binary: str, model: str = ""
 ) -> NameResult | None:
     if not naming.strip() or not auto_naming_active(dry_run=dry_run):
         return None
     prompt = build_namer_prompt(task, naming)
-    text = mock_namer_answer(prompt) if dry_run else await _ask_claude(binary, cwd, prompt, naming)
+    text = (
+        mock_namer_answer(prompt)
+        if dry_run
+        else await _ask_claude(binary, cwd, prompt, naming, model)
+    )
     if not text:
         return None
     return compose_name_result(text, task, naming)
 
 
 async def propose_title(
-    task: str, turn: str, *, dry_run: bool, cwd: Path, binary: str
+    task: str, turn: str, *, dry_run: bool, cwd: Path, binary: str, model: str = ""
 ) -> str | None:
     """Live title refresh. Branch naming is not asked again."""
     if not auto_naming_active(dry_run=dry_run):
@@ -121,7 +125,9 @@ async def propose_title(
     if turn.strip():
         body = f"{body}\n\nLatest turn:\n{turn.strip()[:1000]}"
     prompt = build_namer_prompt(body, "")
-    text = mock_namer_answer(prompt) if dry_run else await _ask_claude(binary, cwd, prompt, "")
+    text = (
+        mock_namer_answer(prompt) if dry_run else await _ask_claude(binary, cwd, prompt, "", model)
+    )
     if not text:
         return None
     named = compose_name_result(text, task, "")
@@ -130,7 +136,7 @@ async def propose_title(
     return named.title
 
 
-async def _ask_claude(binary: str, cwd: Path, prompt: str, naming: str) -> str:
+async def _ask_claude(binary: str, cwd: Path, prompt: str, naming: str, model: str) -> str:
     import asyncio
 
     from app.engine.agents import AgentSpec
@@ -143,7 +149,7 @@ async def _ask_claude(binary: str, cwd: Path, prompt: str, naming: str) -> str:
         system_prompt=system,
         cwd=str(cwd),
         runner="claude",
-        model="",
+        model=model,
         cancel=asyncio.Event(),
         timeout_ms=20_000,
     )

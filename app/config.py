@@ -60,6 +60,13 @@ class Config:
     approval_gate: bool = False
     # Codex sandbox opt-out: `workspace-write` instead of `danger-full-access`.
     codex_network_off: bool = False
+    # `summary` on Codex `turn/start`: auto, concise, detailed or none. An unknown value is auto.
+    codex_reasoning: str = "auto"
+    # Exact "1": every agent's native model setting is authoritative, a task cannot override it.
+    # The Agents settings page can turn the same lock on (`modelsLocked`).
+    agent_models_locked: bool = False
+    # Exact "0" keeps the host TMPDIR. Otherwise each agent run gets `<data_dir>/tmp/<run id>`.
+    agent_tmpdir: bool = True
     github_token: str = ""
     github_api: str = "https://api.github.com"
     jira_base: str = ""
@@ -132,6 +139,9 @@ class Config:
             listen_port=_port(os.environ.get("STARIO_PORT", "4321")),
             approval_gate=_flag("CEZ_APPROVAL_GATE", "0"),
             codex_network_off=os.environ.get("CEZ_CODEX_NETWORK") == "0",
+            codex_reasoning=_reasoning(os.environ.get("CEZ_CODEX_REASONING")),
+            agent_models_locked=os.environ.get("CEZ_AGENT_MODELS_LOCKED") == "1",
+            agent_tmpdir=os.environ.get("CEZ_AGENT_TMPDIR") != "0",
             github_token=os.environ.get("CEZ_GITHUB_TOKEN", os.environ.get("GITHUB_TOKEN", "")),
             github_api=os.environ.get("CEZ_GITHUB_API", "https://api.github.com"),
             jira_base=os.environ.get("CEZ_JIRA_BASE", ""),
@@ -159,6 +169,15 @@ class Config:
             hide_cost=_flag("CEZ_HIDE_COST", "0"),
             hide_token_metrics=_flag("CEZ_HIDE_TOKEN_METRICS", "0"),
         )
+
+
+REASONING_SUMMARIES = ("auto", "concise", "detailed", "none")
+
+
+def _reasoning(raw: str | None) -> str:
+    """`reasoningSummary` in `codex-app-server-runner.ts`: unset or unknown is `auto`."""
+    value = (raw or "").strip().lower()
+    return value if value in REASONING_SUMMARIES else "auto"
 
 
 def _tri(name: str) -> bool | None:

@@ -205,20 +205,6 @@ def privacy(chrome: Chrome, tab: str) -> HtmlElement:
     )
 
 
-def agents(lines: list[str], chrome: Chrome, tab: str) -> HtmlElement:
-    return frame(
-        chrome,
-        None,
-        {"tab": tab},
-        h.Main(
-            {"id": "agents"},
-            settings_nav(),
-            h.H1("Agents"),
-            h.Ul({"id": "agent-bins"}, *[h.Li(line) for line in lines]),
-        ),
-    )
-
-
 def webhooks(names: list[str], chrome: Chrome, tab: str) -> HtmlElement:
     rows = [h.Li(name) for name in names] or [h.Li({"class": "muted"}, "No receivers.")]
     return frame(

@@ -3,8 +3,18 @@ from stario.datastar import at, data
 from stario.datastar.format import string_literal
 from stario.markup import HtmlElement
 
-from app.features.settings.store import KINDS, SkillRepo, TrackerConnection
+from app.config import RUNNERS
+from app.features.settings.store import (
+    AUTO_RUNNERS,
+    KINDS,
+    AgentDefaults,
+    ComposerDefaults,
+    SkillRepo,
+    TrackerConnection,
+    tri_word,
+)
 from app.features.settings.urls import (
+    AGENTS_SAVE,
     GLOBAL_INSTRUCTIONS_SAVE,
     GLOBAL_SKILLS_REMOVE,
     GLOBAL_SKILLS_SAVE,
@@ -14,7 +24,28 @@ from app.features.settings.urls import (
 )
 
 
-def tasks(branch: str, checks: list[str]) -> tuple[HtmlElement, ...]:
+def _tri(label: str, key: str, current: bool | None) -> HtmlElement:
+    return h.Label(
+        {"class": "field"},
+        h.Span(label),
+        h.Select(
+            {"aria-label": label},
+            data.bind(key),
+            *[
+                h.Option({"value": word, "selected": word == tri_word(current)}, word)
+                for word in ("inherit", "on", "off")
+            ],
+        ),
+    )
+
+
+def tasks(
+    branch: str,
+    checks: list[str],
+    composer: ComposerDefaults,
+    default_skill: str,
+    ask_skill: str,
+) -> tuple[HtmlElement, ...]:
     rows = [h.Li(name) for name in checks] or [h.Li({"class": "muted"}, "No required checks.")]
     return (
         h.P(
@@ -45,10 +76,98 @@ def tasks(branch: str, checks: list[str]) -> tuple[HtmlElement, ...]:
                     data.bind("checks"),
                 ),
             ),
+            h.Label(
+                {"class": "field"},
+                h.Span("Default skill"),
+                h.Input(
+                    {"maxlength": "200", "aria-label": "Default skill", "id": "default-skill"},
+                    data.bind("default_skill"),
+                ),
+            ),
+            h.Label(
+                {"class": "field"},
+                h.Span("Ask skill (a task that ends in ?)"),
+                h.Input(
+                    {"maxlength": "200", "aria-label": "Ask skill", "id": "ask-skill"},
+                    data.bind("ask_skill"),
+                ),
+            ),
+            _tri("New tasks are autonomous", "composer_autonomous", composer.autonomous),
+            _tri("New tasks get their own worktree", "composer_worktree", composer.worktree),
             h.Button({"class": "btn btn-primary", "type": "submit"}, "Save"),
         ),
         h.P({"class": "meta"}, f"Landing branch: {branch}"),
+        h.P(
+            {"id": "composer-defaults"},
+            f"New task form: autonomous {tri_word(composer.autonomous)}, "
+            f"worktree {tri_word(composer.worktree)}, "
+            f"skill {default_skill or 'none'}, ask skill {ask_skill or 'none'}.",
+        ),
         h.Ul({"id": "required-checks"}, *rows),
+    )
+
+
+def agents(lines: list[str], defaults: AgentDefaults) -> tuple[HtmlElement, ...]:
+    fields: list[HtmlElement] = []
+    for runner in RUNNERS:
+        fields.append(
+            h.Label(
+                {"class": "field"},
+                h.Span(f"{runner} model"),
+                h.Input(
+                    {"maxlength": "200", "placeholder": "auto", "aria-label": f"{runner} model"},
+                    data.bind(f"model_{runner}"),
+                ),
+            )
+        )
+        if runner in AUTO_RUNNERS:
+            fields.append(
+                h.Label(
+                    {"class": "inline"},
+                    h.Input({"type": "checkbox"}, data.bind(f"auto_{runner}")),
+                    f"{runner}: auto when empty, ignore every other default",
+                )
+            )
+    summary = ", ".join(f"{runner}={model}" for runner, model in defaults.models.items())
+    return (
+        h.P(
+            {"class": "sub"},
+            "The model a new task starts with, per agent. Empty is auto: no model flag, "
+            "the agent's own setting decides. Locked makes the agents' own model settings "
+            "authoritative and a task cannot override them.",
+        ),
+        h.Ul({"id": "agent-bins"}, *[h.Li(line) for line in lines]),
+        h.Form(
+            {"class": "composer"},
+            data.on("submit", at.post(AGENTS_SAVE.href()), prevent=True),
+            *fields,
+            h.Label(
+                {"class": "field"},
+                h.Span("Planner model (Claude alias)"),
+                h.Input(
+                    {"maxlength": "200", "aria-label": "Planner model"}, data.bind("planner_model")
+                ),
+            ),
+            h.Label(
+                {"class": "field"},
+                h.Span("Namer model (Claude alias)"),
+                h.Input(
+                    {"maxlength": "200", "aria-label": "Namer model"}, data.bind("namer_model")
+                ),
+            ),
+            h.Label(
+                {"class": "inline"},
+                h.Input({"type": "checkbox"}, data.bind("locked")),
+                "Models locked — use each agent's own model setting",
+            ),
+            h.Button({"class": "btn btn-primary", "type": "submit"}, "Save"),
+        ),
+        h.P(
+            {"id": "agent-defaults"},
+            f"Defaults: {summary or 'all auto'}. Planner {defaults.planner_model}, "
+            f"namer {defaults.namer_model}. "
+            f"{'Models are locked.' if defaults.locked else 'Models are not locked.'}",
+        ),
     )
 
 

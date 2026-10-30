@@ -308,15 +308,27 @@ async def test_a_restart_resumes_a_running_agent_with_its_session_and_handoff(wo
     assert (get_run(engine.db, run.id) or run).status == "done"
 
 
-async def test_a_restart_fails_a_running_agent_that_never_opened_a_session(world):
+async def test_a_restart_requeues_a_running_workflow_that_never_opened_a_session(world):
     engine, repo = world
-    run = await _live(engine, repo, session="")
-    queued = await _start(engine, "still queued")
+    run = await _live(engine, repo, session="", step_index=0, started_at=stamp())
     await engine.recover()
     stored = get_run(engine.db, run.id) or run
-    assert stored.status == "failed"
-    assert stored.error == "interrupted by restart"
-    assert (get_run(engine.db, queued.id) or queued).status == "queued"
+    assert stored.status == "queued"
+    assert stored.error == "" and stored.mode == "workflow"
+    assert stored.started_at == run.started_at
+    # It starts over as a whole run: the scheduler picks it up and it finishes.
+    await engine.tick()
+    await asyncio.gather(*list(engine._tasks.values()))
+    assert (get_run(engine.db, run.id) or run).status == "done"
+
+
+async def test_a_restart_fails_a_graph_run_that_never_opened_a_session(world):
+    engine, repo = world
+    graph = {"nodes": [], "edges": []}
+    run = await _live(engine, repo, session="", workflow_def={"name": "g", "graph": graph})
+    await engine.recover()
+    stored = get_run(engine.db, run.id) or run
+    assert stored.status == "failed" and stored.error == "interrupted by restart"
 
 
 async def test_a_restart_fails_a_running_agent_whose_runner_cannot_resume(world):

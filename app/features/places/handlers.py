@@ -10,7 +10,6 @@ from app.config import Config
 from app.engine.catalog import load_workflows
 from app.engine.engine import Engine
 from app.engine.gitwork import git
-from app.engine.providers import provider_status
 from app.engine.receipts import is_unread
 from app.features.places import views
 from app.features.places.urls import (
@@ -20,7 +19,6 @@ from app.features.places.urls import (
     INBOX_READ,
     PALETTE_RESULTS,
     REPO,
-    SETTINGS_AGENTS,
     SETTINGS_PRIVACY,
     SETTINGS_WEBHOOKS,
     SETTINGS_WEBHOOKS_SAVE,
@@ -55,7 +53,6 @@ class PlacesPage:
         app.add(WORKFLOW, self.workflow)
         app.add(COMPARE, self.compare)
         app.add(SETTINGS_PRIVACY, self.privacy)
-        app.add(SETTINGS_AGENTS, self.agents)
         app.add(SETTINGS_WEBHOOKS, self.webhooks)
         app.add(SETTINGS_WEBHOOKS_SAVE, self.save_webhook)
         app.add(SETTINGS_WORKTREES, self.worktrees)
@@ -152,19 +149,6 @@ class PlacesPage:
 
     async def privacy(self, c: Context, w: Writer) -> None:
         w.html(views.privacy(self._chrome("Privacy", "settings"), uuid.uuid7().hex))
-
-    async def agents(self, c: Context, w: Writer) -> None:
-        status = provider_status(self.config.runner_bins)
-        providers = status.get("providers")
-        lines = []
-        if isinstance(providers, list):
-            for item in providers:
-                if isinstance(item, dict):
-                    lines.append(
-                        f"{item.get('provider')}: "
-                        f"{'installed' if item.get('installed') else 'missing'}"
-                    )
-        w.html(views.agents(lines, self._chrome("Agents", "settings"), uuid.uuid7().hex))
 
     async def webhooks(self, c: Context, w: Writer) -> None:
         w.html(

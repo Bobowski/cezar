@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from stario.json import dumps
 
+from app.config import RUNNERS
 from app.integrations.clients import forge_base_issue
 
 _CHECK = re.compile(r"[A-Za-z0-9_-]{1,80}")
@@ -248,3 +249,180 @@ def parse_memory(raw: object) -> tuple[int | None, str | None]:
     if not MEMORY_MIN <= raw <= MEMORY_MAX:
         return None, f"memory cap is from {MEMORY_MIN} to {MEMORY_MAX} MB, or empty"
     return raw, None
+
+
+# --- agent defaults (`defaultModels`, `defaultModelsAuto`, `modelsLocked`, planner, namer) ---
+
+AUTO_RUNNERS = ("claude", "codex", "opencode", "pi")
+MODEL_MAX = 200
+DEFAULT_PLANNER_MODEL = "sonnet"
+DEFAULT_NAMER_MODEL = "haiku"
+MODELS_LOCKED_ERROR = (
+    "agent models are locked — configure the model in the native coding-agent settings"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class AgentDefaults:
+    """`defaultModels`, `defaultModelsAuto`, `modelsLocked`, `plannerModel`, `namerModel`."""
+
+    models: dict[str, str]
+    auto: tuple[str, ...] = ()
+    locked: bool = False
+    planner_model: str = DEFAULT_PLANNER_MODEL
+    namer_model: str = DEFAULT_NAMER_MODEL
+
+    def model_for(self, runner: str) -> str:
+        """The model a new task on `runner` starts with. Empty is auto: no `--model` flag."""
+        if self.locked:
+            return ""
+        return self.models.get(runner, "")
+
+
+def agent_defaults_path(data_dir: Path) -> Path:
+    return data_dir / "agent-defaults.json"
+
+
+def read_agent_defaults(data_dir: Path) -> AgentDefaults:
+    raw = _load(agent_defaults_path(data_dir))
+    models: dict[str, str] = {}
+    stored = raw.get("defaultModels")
+    if isinstance(stored, dict):
+        for runner, value in stored.items():
+            if runner in RUNNERS and isinstance(value, str) and value.strip():
+                models[runner] = value.strip()[:MODEL_MAX]
+    flags = raw.get("defaultModelsAuto")
+    auto = tuple(r for r in AUTO_RUNNERS if isinstance(flags, dict) and flags.get(r) is True)
+    planner, namer = raw.get("plannerModel"), raw.get("namerModel")
+    return AgentDefaults(
+        models,
+        auto,
+        raw.get("modelsLocked") is True,
+        planner.strip() if isinstance(planner, str) and planner.strip() else DEFAULT_PLANNER_MODEL,
+        namer.strip() if isinstance(namer, str) and namer.strip() else DEFAULT_NAMER_MODEL,
+    )
+
+
+def write_agent_defaults(data_dir: Path, value: AgentDefaults) -> None:
+    body: dict[str, object] = {
+        "plannerModel": value.planner_model,
+        "namerModel": value.namer_model,
+    }
+    if value.models:
+        body["defaultModels"] = dict(value.models)
+    if value.auto:
+        body["defaultModelsAuto"] = {runner: True for runner in value.auto}
+    if value.locked:
+        body["modelsLocked"] = True
+    _save(agent_defaults_path(data_dir), body)
+
+
+def _text(signals: dict[str, object], key: str) -> str:
+    raw = signals.get(key, "")
+    return raw.strip() if isinstance(raw, str) else ""
+
+
+def parse_agent_defaults(signals: dict[str, object]) -> tuple[AgentDefaults | None, str | None]:
+    models: dict[str, str] = {}
+    auto: list[str] = []
+    for runner in RUNNERS:
+        text = _text(signals, f"model_{runner}")
+        if len(text) > MODEL_MAX:
+            return None, f"a model id is at most {MODEL_MAX} characters"
+        if text:
+            models[runner] = text
+        elif runner in AUTO_RUNNERS and signals.get(f"auto_{runner}") is True:
+            auto.append(runner)
+    planner = _text(signals, "planner_model") or DEFAULT_PLANNER_MODEL
+    namer = _text(signals, "namer_model") or DEFAULT_NAMER_MODEL
+    if len(planner) > MODEL_MAX or len(namer) > MODEL_MAX:
+        return None, f"a model id is at most {MODEL_MAX} characters"
+    locked = signals.get("locked") is True
+    return AgentDefaults(models, tuple(auto), locked, planner, namer), None
+
+
+def models_locked(config_locked: bool, data_dir: Path) -> bool:
+    """`CEZ_AGENT_MODELS_LOCKED=1` (on `Config`) or `modelsLocked` on the Agents page."""
+    return config_locked or read_agent_defaults(data_dir).locked
+
+
+# --- composer defaults (`composerDefaults`) ---
+
+
+@dataclass(frozen=True, slots=True)
+class ComposerDefaults:
+    """`autonomous` and `worktree`: `None` leaves the process default (`CEZ_*_DEFAULT`)."""
+
+    autonomous: bool | None = None
+    worktree: bool | None = None
+
+
+def composer_path(data_dir: Path) -> Path:
+    return data_dir / "composer-defaults.json"
+
+
+def read_composer_defaults(data_dir: Path) -> ComposerDefaults:
+    raw = _load(composer_path(data_dir))
+    auto, tree = raw.get("autonomous"), raw.get("worktree")
+    return ComposerDefaults(
+        auto if isinstance(auto, bool) else None, tree if isinstance(tree, bool) else None
+    )
+
+
+def write_composer_defaults(data_dir: Path, value: ComposerDefaults) -> None:
+    body: dict[str, object] = {}
+    if value.autonomous is not None:
+        body["autonomous"] = value.autonomous
+    if value.worktree is not None:
+        body["worktree"] = value.worktree
+    _save(composer_path(data_dir), body)
+
+
+def parse_tri(raw: object) -> tuple[bool | None, str | None]:
+    """`inherit` (or empty), `on`, `off`."""
+    text = raw.strip().lower() if isinstance(raw, str) else ""
+    if text in ("", "inherit"):
+        return None, None
+    if text in ("on", "off"):
+        return text == "on", None
+    return None, "a composer default is inherit, on, or off"
+
+
+def tri_word(value: bool | None) -> str:
+    return "inherit" if value is None else ("on" if value else "off")
+
+
+# --- the skill a new task preselects (`defaultSkill`, `askSkill`), per project ---
+
+SKILL_MAX = 200
+
+
+def read_skill_defaults(data_dir: Path, project_id: str) -> tuple[str, str]:
+    raw = _load(checks_path(data_dir, project_id))
+    default, ask = raw.get("defaultSkill"), raw.get("askSkill")
+    return (
+        default.strip() if isinstance(default, str) else "",
+        ask.strip() if isinstance(ask, str) else "",
+    )
+
+
+def write_skill_defaults(data_dir: Path, project_id: str, default: str, ask: str) -> None:
+    current = _load(checks_path(data_dir, project_id))
+    for key, value in (("defaultSkill", default), ("askSkill", ask)):
+        if value:
+            current[key] = value
+        else:
+            current.pop(key, None)
+    _save(checks_path(data_dir, project_id), current)
+
+
+def parse_skill_defaults(default: str, ask: str) -> tuple[tuple[str, str] | None, str | None]:
+    default, ask = default.strip(), ask.strip()
+    if len(default) > SKILL_MAX or len(ask) > SKILL_MAX:
+        return None, f"a skill name is at most {SKILL_MAX} characters"
+    return (default, ask), None
+
+
+def looks_like_question(text: str) -> bool:
+    """A message ending in `?` asks. `looksLikeQuestion` in `new-task-form.ts`."""
+    return text.strip().endswith("?")

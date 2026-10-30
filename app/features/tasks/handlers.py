@@ -10,7 +10,15 @@ from app.common.shell import load_chrome
 from app.config import RUNNERS, Config
 from app.engine.catalog import load_workflows
 from app.engine.engine import CHANGED, Engine
+from app.engine.model import Workflow
+from app.engine.skills import load_skills
+from app.engine.workflows import skills_to_steps
 from app.features.places.urls import COMPARE
+from app.features.settings.store import (
+    looks_like_question,
+    read_composer_defaults,
+    read_skill_defaults,
+)
 from app.features.task.urls import TASK
 from app.features.tasks.urls import (
     HOME,
@@ -76,6 +84,17 @@ class TasksPage:
             chosen = (
                 "quick-task" if "quick-task" in names else (names[0] if names else "quick-task")
             )
+        composer = read_composer_defaults(self.config.data_dir)
+        autonomous = (
+            composer.autonomous
+            if composer.autonomous is not None
+            else self.config.autonomous_default is True
+        )
+        worktree = (
+            composer.worktree if composer.worktree is not None else self.config.worktree_default
+        )
+        default_skill, _ask = read_skill_defaults(self.config.data_dir, view.project)
+        skills = tuple(skill.name for skill in load_skills(project_root(project)))
         w.html(
             render_new(
                 workflows,
@@ -85,6 +104,11 @@ class TasksPage:
                 settings.default_runner,
                 chosen,
                 launched=bool(launch),
+                model=self.engine.default_model(settings.default_runner),
+                autonomous=autonomous,
+                worktree=worktree,
+                skills=skills,
+                default_skill=default_skill if default_skill in skills else "",
             )
         )
 
@@ -123,6 +147,8 @@ class TasksPage:
         runner = str(signals.get("runner", "")).strip()
         model = str(signals.get("model", "")).strip()
         autonomous = signals.get("autonomous") is True
+        worktree = signals.get("worktree") is not False
+        skill = str(signals.get("skill", "")).strip()
         if not (tab.isalnum() and len(tab) <= 32):
             w.text("tab must be a short id", 400)
             return
@@ -135,6 +161,10 @@ class TasksPage:
         if len(model) > 120:
             w.text("model is too long", 400)
             return
+        locked = self.engine.model_lock_error(model)
+        if locked:
+            w.text(locked, 409)
+            return
         count = _variant_count(signals.get("variants", 1))
         if isinstance(count, str):
             w.text(count, 400)
@@ -143,6 +173,10 @@ class TasksPage:
         if project is None:
             w.text("unknown project", 400)
             return
+        chosen, skill_reason = self._skill_workflow(project, view.project, task, workflow, skill)
+        if skill_reason:
+            w.text(skill_reason, 400)
+            return
         run, reason = self.engine.plan_run(
             project=project,
             task=task,
@@ -150,6 +184,8 @@ class TasksPage:
             runner=runner,
             model=model,
             autonomous=autonomous,
+            workflow=chosen,
+            in_place=not worktree,
         )
         if run is None:
             self.relay.publish(f"tab.{tab}", {"_error": reason or "could not start"})
@@ -167,6 +203,8 @@ class TasksPage:
                     runner=runner,
                     model=model,
                     autonomous=autonomous,
+                    workflow=chosen,
+                    in_place=not worktree,
                 )
                 if sibling is None:
                     w.text(sibling_reason or "could not start", 400)
@@ -178,6 +216,38 @@ class TasksPage:
             await self.engine.enqueue(item)
         target = COMPARE.href(run.id) if count > 1 else TASK.href(run.id)
         SSE(w).navigate(target)
+
+    def _skill_workflow(
+        self, project: object, project_id: str, task: str, workflow: str, skill: str
+    ) -> tuple[Workflow | None, str]:
+        """A one-skill workflow for the pick, or for the project's `defaultSkill` / `askSkill`.
+
+        The defaults apply only while the workflow stays `quick-task` and the skill is left on
+        Default; a question picks `askSkill` over `defaultSkill`.
+        """
+        names = {item.name for item in load_skills(project_root(project))}
+        if skill == "none":
+            return None, ""
+        if skill:
+            if skill not in names:
+                return None, f"unknown skill: {skill}"
+            wanted = skill
+        elif workflow != "quick-task":
+            return None, ""
+        else:
+            default, ask = read_skill_defaults(self.config.data_dir, project_id)
+            wanted = ask if ask and looks_like_question(task) else default
+            if wanted not in names:
+                return None, ""
+        return (
+            Workflow(
+                name=wanted,
+                description=f"Skill {wanted}",
+                steps=skills_to_steps([wanted]),
+                source="skill",
+            ),
+            "",
+        )
 
     async def archive_finished(self, c: Context, w: Writer) -> None:
         view = self._view(c.req.query)

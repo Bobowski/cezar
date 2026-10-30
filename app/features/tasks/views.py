@@ -78,6 +78,11 @@ def render_new(
     workflow: str,
     *,
     launched: bool,
+    model: str = "",
+    autonomous: bool = False,
+    worktree: bool = True,
+    skills: tuple[str, ...] = (),
+    default_skill: str = "",
 ) -> HtmlElement:
     return frame(
         chrome,
@@ -87,9 +92,11 @@ def render_new(
             "task": "",
             "workflow": workflow,
             "runner": default_runner,
-            "model": "",
+            "model": model,
+            "skill": "",
             "variants": "1",
-            "autonomous": False,
+            "autonomous": autonomous,
+            "worktree": worktree,
             "_error": "",
         },
         h.Main(
@@ -131,6 +138,20 @@ def render_new(
                 ),
                 h.Label(
                     {"class": "field"},
+                    h.Span("Skill"),
+                    h.Select(
+                        {"aria-label": "Skill"},
+                        data.bind("skill"),
+                        h.Option(
+                            {"value": ""},
+                            f"Default ({default_skill})" if default_skill else "Default (none)",
+                        ),
+                        h.Option({"value": "none"}, "No skill"),
+                        *[h.Option({"value": name}, name) for name in skills],
+                    ),
+                ),
+                h.Label(
+                    {"class": "field"},
                     h.Span("Model (optional)"),
                     h.Input({"type": "text", "maxlength": "120"}, data.bind("model")),
                 ),
@@ -149,6 +170,11 @@ def render_new(
                     {"class": "inline"},
                     h.Input({"type": "checkbox"}, data.bind("autonomous")),
                     "Autonomous — tell the agent not to stop and ask",
+                ),
+                h.Label(
+                    {"class": "inline"},
+                    h.Input({"type": "checkbox"}, data.bind("worktree")),
+                    "Own worktree — off runs in the checkout",
                 ),
                 h.P(
                     {"class": "error", "role": "alert"}, data.show("$_error"), data.text("$_error")

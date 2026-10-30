@@ -47,7 +47,7 @@ from app.engine.workspace_files import (
     write_templates,
 )
 from app.features.api.handlers import _images
-from app.features.settings.store import read_skill_repos
+from app.features.settings.store import read_agent_defaults, read_skill_repos
 from app.store.db import get_project, get_run, list_events, list_runs
 
 _TEMPLATES: tuple[dict[str, object], ...] = (
@@ -138,13 +138,17 @@ class CloseoutApi:
             return
         import asyncio
 
-        binary = self.config.runner_bins.get(_runner(body, self.db), "claude")
+        runner = _runner(body, self.db)
+        binary = self.config.runner_bins.get(runner, "claude")
+        # `plannerModel` is a Claude alias: other runners pick their own default.
+        planner_model = read_agent_defaults(self.config.data_dir).planner_model
         result = await asyncio.to_thread(
             plan_chain,
             project.root,
             task.strip(),
             binary=binary,
             dry_run=self.config.dry_run,
+            model=planner_model if runner == "claude" else "",
         )
         _send(w, result)
 

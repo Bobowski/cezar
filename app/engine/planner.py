@@ -29,6 +29,7 @@ def plan_chain(
     *,
     binary: str,
     dry_run: bool,
+    model: str = "",
     spawn: Spawn | None = None,
 ) -> dict[str, object]:
     from pathlib import Path
@@ -39,7 +40,8 @@ def plan_chain(
     if dry_run:
         text = _canned()
     else:
-        code, text = (spawn or _spawn)([binary], f"{_SYSTEM}\n\n{prompt}")
+        argv = [binary, "--model", model] if model else [binary]
+        code, text = (spawn or _spawn)(argv, f"{_SYSTEM}\n\n{prompt}")
         if code != 0 or not text.strip():
             return _fallback()
     parsed = _parse(text, names)

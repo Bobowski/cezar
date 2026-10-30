@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import socket
 import time
@@ -303,11 +304,13 @@ class ProtocolRunner:
         *,
         approval_gate: bool = False,
         codex_network_off: bool = False,
+        codex_reasoning: str = "auto",
     ) -> None:
         self.runner = runner
         self.binary = binary
         self.approval_gate = approval_gate
         self.codex_network_off = codex_network_off
+        self.codex_reasoning = codex_reasoning
         self.resume_lock_retry_s: tuple[float, ...] = RESUME_LOCK_RETRY_S
         self._open: dict[str, tuple[asyncio.subprocess.Process, Path | None]] = {}
         self._opencode: dict[str, tuple[asyncio.subprocess.Process, int]] = {}
@@ -323,7 +326,9 @@ class ProtocolRunner:
             )
             if parked is not None and parked[0].returncode is None:
                 proc, mcp_path = parked
-                async for event in _continue_parked(proc, spec, self.runner):
+                async for event in _continue_parked(
+                    proc, spec, self.runner, codex_reasoning=self.codex_reasoning
+                ):
                     yield event
                 if proc.returncode is None and not spec.cancel.is_set():
                     self._open[spec.session_id] = (proc, mcp_path)
@@ -338,6 +343,7 @@ class ProtocolRunner:
                 spec,
                 approval_gate=self.approval_gate,
                 codex_network_off=self.codex_network_off,
+                codex_reasoning=self.codex_reasoning,
                 hold=hold,
                 mcp_hold=mcp_hold,
                 lock_retries=self.resume_lock_retry_s,
@@ -420,6 +426,7 @@ async def _process_turn(
     *,
     approval_gate: bool,
     codex_network_off: bool,
+    codex_reasoning: str = "auto",
     hold: list[asyncio.subprocess.Process | None] | None = None,
     mcp_hold: list[Path | None] | None = None,
     lock_retries: tuple[float, ...] = (),
@@ -444,6 +451,7 @@ async def _process_turn(
             frames = _codex_frames(
                 prompt,
                 codex_network_off,
+                reasoning=codex_reasoning,
                 thread_id=spec.codex_thread,
                 resume=spec.resume,
                 mcp_config=codex_mcp_config(spec.mcp_servers),
@@ -464,7 +472,15 @@ async def _process_turn(
             ):
                 yield event
         else:
-            await _write(proc, _opening_lines(runner, spec, codex_network_off=codex_network_off))
+            await _write(
+                proc,
+                _opening_lines(
+                    runner,
+                    spec,
+                    codex_network_off=codex_network_off,
+                    codex_reasoning=codex_reasoning,
+                ),
+            )
             async for event in _read_until_done(
                 proc, spec, state, runner, 0, idle_ms=spec.timeout_ms
             ):
@@ -559,6 +575,7 @@ def _codex_frames(
     prompt: str,
     network_off: bool,
     *,
+    reasoning: str = "auto",
     thread_id: str,
     resume: bool,
     mcp_config: dict[str, Any],
@@ -581,7 +598,7 @@ def _codex_frames(
             "jsonrpc": "2.0",
             "id": 3,
             "method": "turn/start",
-            "params": {"input": [{"type": "text", "text": prompt}]},
+            "params": {"input": [{"type": "text", "text": prompt}], "summary": reasoning},
         },
     ]
 
@@ -680,6 +697,12 @@ async def _rpc_turn(
         index += 1
 
 
+def _agent_dirs(spec: AgentSpec) -> tuple[str, ...]:
+    """The run's own temp directory: the file tools must reach what `TMPDIR` names."""
+    named = dict(spec.env).get("TMPDIR", "")
+    return (named,) if named and os.path.isdir(named) else ()
+
+
 def _args(runner: str, spec: AgentSpec, *, approval_gate: bool, mcp_path: str = "") -> list[str]:
     tools = spec.allowed_tools or ("Read", "Edit", "Write", "Grep", "Glob", "Bash")
     if runner == "claude":
@@ -691,6 +714,7 @@ def _args(runner: str, spec: AgentSpec, *, approval_gate: bool, mcp_path: str = 
             session_id=spec.session_id,
             resume=spec.resume,
             approval_gate=approval_gate,
+            extra_dirs=_agent_dirs(spec),
         )
         if mcp_path:
             args.extend(["--mcp-config", mcp_path])
@@ -719,12 +743,12 @@ def _args(runner: str, spec: AgentSpec, *, approval_gate: bool, mcp_path: str = 
     if runner == "junie":
         return build_junie_args(spec.cwd)
     if runner == "copilot":
-        return build_copilot_args(model=spec.model)
+        return build_copilot_args(model=spec.model, extra_dirs=_agent_dirs(spec))
     return []
 
 
 def _opening_lines(
-    runner: str, spec: AgentSpec, *, codex_network_off: bool
+    runner: str, spec: AgentSpec, *, codex_network_off: bool, codex_reasoning: str = "auto"
 ) -> list[dict[str, Any]]:
     prompt = spec.user_prompt
     if runner in ("codex", "opencode") and spec.system_prompt:
@@ -762,7 +786,10 @@ def _opening_lines(
                 "jsonrpc": "2.0",
                 "id": 3,
                 "method": "turn/start",
-                "params": {"input": [{"type": "text", "text": prompt}]},
+                "params": {
+                    "input": [{"type": "text", "text": prompt}],
+                    "summary": codex_reasoning,
+                },
             },
         ]
     if runner in ("junie", "copilot"):
@@ -1063,11 +1090,18 @@ async def _finish_proc(proc: asyncio.subprocess.Process, mcp_path: Path | None) 
 
 
 async def _continue_parked(
-    proc: asyncio.subprocess.Process, spec: AgentSpec, runner: str
+    proc: asyncio.subprocess.Process,
+    spec: AgentSpec,
+    runner: str,
+    *,
+    codex_reasoning: str = "auto",
 ) -> AsyncIterator[AgentEvent]:
     """A follow-up on the process that stayed open after the previous turn."""
     state = TurnState()
-    await _write(proc, _opening_lines(runner, spec, codex_network_off=False))
+    await _write(
+        proc,
+        _opening_lines(runner, spec, codex_network_off=False, codex_reasoning=codex_reasoning),
+    )
     async for event in _read_until_done(proc, spec, state, runner, 0, idle_ms=spec.timeout_ms):
         yield event
     if state.input_tokens or state.output_tokens:

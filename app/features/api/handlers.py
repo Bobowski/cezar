@@ -102,6 +102,10 @@ class ApiPage:
         if reason:
             w.json({"error": reason}, status=status)
             return
+        locked = self.engine.model_lock_error(model)
+        if locked:
+            w.json({"error": locked}, status=409)
+            return
         run, plan_reason = self.engine.plan_run(
             project=project,
             task=task,

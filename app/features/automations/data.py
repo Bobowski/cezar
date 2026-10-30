@@ -103,6 +103,10 @@ def parse_form(
         repo = _text(signals, "f_repo")
         if repo:
             filters["repo"] = repo
+        if signals.get("f_prHead") is True:
+            filters["checkout"] = "pr-head"
+            if signals.get("f_allowForkHeads") is True:
+                filters["allowForkHeads"] = True
     if kind == "tracker":
         for key in ("status", "query"):
             value = _text(signals, f"t_{key}")
@@ -141,6 +145,8 @@ def signals_for(item: Automation | None, workflow: str = "quick-task") -> dict[s
         "f_repo": "",
         "f_lookbackDays": "",
         "f_maxRecords": "",
+        "f_prHead": False,
+        "f_allowForkHeads": False,
         "t_status": "",
         "t_query": "",
         "t_allLabels": "",
@@ -166,6 +172,8 @@ def signals_for(item: Automation | None, workflow: str = "quick-task") -> dict[s
     for key in ("repo", "lookbackDays", "maxRecords"):
         value = filters.get(key)
         base[f"f_{key}"] = "" if value is None else str(value)
+    base["f_prHead"] = filters.get("checkout") == "pr-head"
+    base["f_allowForkHeads"] = filters.get("allowForkHeads") is True
     if item.kind == "tracker":
         base["t_status"] = str(filters.get("status", ""))
         base["t_query"] = str(filters.get("query", ""))

@@ -5,8 +5,9 @@ from stario.markup import HtmlElement
 from app.common.shell import Chrome, frame, status_chip
 from app.engine.gitwork import Diff
 from app.engine.model import Event, Run
+from app.features.commit.urls import TASK_COMMIT_DETAIL
 from app.features.places.urls import COMPARE
-from app.features.task.data import list_commits, list_worktree_files
+from app.features.task.data import list_commits, list_worktree_files, split_commit_line
 from app.features.task.mermaid import diagrams
 from app.features.task.urls import (
     TASK,
@@ -20,6 +21,7 @@ from app.features.task.urls import (
     TASK_MESSAGE,
     TASK_NOTES,
     TASK_PR,
+    TASK_PR_ADOPT,
     TASK_PUSH,
     TASK_REJECT,
     TASK_REVIEW,
@@ -143,6 +145,7 @@ def render(
             h.Div({"class": "actions"}, *actions) if actions else None,
         ),
         _merge_box(merge, run.id) if merge and merge.get("available") else None,
+        _adopt_form(run) if _can_adopt(run) else None,
         panes,
         h.Ol({"class": "steps"}, *rail),
     ]
@@ -237,6 +240,7 @@ def render(
             "message": "",
             "objective": "",
             "notes": run.notes,
+            "adopt_pr": "",
             "command": "",
             "_shell": "",
             "_error": "",
@@ -256,9 +260,17 @@ def _pane(
         rows = [h.Li(name) for name in names] or [h.Li({"class": "muted"}, "No files yet.")]
         return [h.H2("Files"), h.Ul(*rows)]
     if view.pane == "commits":
-        lines = list_commits(run.worktree_path)
-        rows = [h.Li(line) for line in lines] or [h.Li({"class": "muted"}, "No commits.")]
-        return [h.H2("Commits"), h.Ul(*rows)]
+        rows = []
+        for line in list_commits(run.worktree_path):
+            parsed = split_commit_line(line)
+            if parsed is None:
+                rows.append(h.Li(line))
+                continue
+            sha, subject = parsed
+            rows.append(
+                h.Li(h.A({"href": TASK_COMMIT_DETAIL.href(run.id, sha)}, sha), f" {subject}")
+            )
+        return [h.H2("Commits"), h.Ul(*(rows or [h.Li({"class": "muted"}, "No commits.")]))]
     if view.pane == "graph":
         graph = run.workflow_def.get("graph")
         nodes = graph.get("nodes") if isinstance(graph, dict) else None
@@ -318,6 +330,26 @@ def _pane(
             *transcript,
         )
     ]
+
+
+def _can_adopt(run: Run) -> bool:
+    return bool(run.branch) and not run.in_place and not run.pull_request_url
+
+
+def _adopt_form(run: Run) -> HtmlElement:
+    return h.Form(
+        {"class": "composer", "id": "adopt-pr"},
+        data.on("submit", at.post(TASK_PR_ADOPT.href(run.id)), prevent=True),
+        data.indicator("_adopting"),
+        h.Label(
+            {"class": "field"},
+            h.Span("Adopt an existing pull request (number or URL, empty to find this branch's)"),
+            h.Input({"maxlength": "300", "aria-label": "Pull request"}, data.bind("adopt_pr")),
+        ),
+        h.Button(
+            {"class": "btn", "type": "submit"}, data.attr("disabled", "$_adopting"), "Adopt PR"
+        ),
+    )
 
 
 def _merge_box(payload: dict[str, object], run_id: str) -> HtmlElement:

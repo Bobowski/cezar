@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from app.engine.gitwork import git
+from app.features.commit.urls import valid_sha
 
 
 def list_worktree_files(root: str) -> list[str]:
@@ -31,3 +32,9 @@ def list_commits(root: str) -> list[str]:
     if not ok:
         return []
     return [line for line in out.splitlines() if line.strip()]
+
+
+def split_commit_line(line: str) -> tuple[str, str] | None:
+    """`(sha, subject)` of a `git log --oneline` line; None when it has no leading hash."""
+    sha, _space, subject = line.strip().partition(" ")
+    return (sha, subject) if valid_sha(sha) else None

@@ -15,7 +15,6 @@ from app.engine.skills import load_skills
 from app.engine.workflows import skills_to_steps
 from app.features.places.urls import COMPARE
 from app.features.settings.store import (
-    looks_like_question,
     read_composer_defaults,
     read_skill_defaults,
 )
@@ -220,10 +219,11 @@ class TasksPage:
     def _skill_workflow(
         self, project: object, project_id: str, task: str, workflow: str, skill: str
     ) -> tuple[Workflow | None, str]:
-        """A one-skill workflow for the pick, or for the project's `defaultSkill` / `askSkill`.
+        """A one-skill workflow for the pick, or for the project's `defaultSkill`.
 
-        The defaults apply only while the workflow stays `quick-task` and the skill is left on
-        Default; a question picks `askSkill` over `defaultSkill`.
+        The default applies only while the workflow stays `quick-task` and the skill is left on
+        Default. `askSkill` is stored and editable but nothing reads it: it belongs to an Ask
+        mode this port does not have, and the text of a task never selects it.
         """
         names = {item.name for item in load_skills(project_root(project))}
         if skill == "none":
@@ -235,8 +235,7 @@ class TasksPage:
         elif workflow != "quick-task":
             return None, ""
         else:
-            default, ask = read_skill_defaults(self.config.data_dir, project_id)
-            wanted = ask if ask and looks_like_question(task) else default
+            wanted, _ask = read_skill_defaults(self.config.data_dir, project_id)
             if wanted not in names:
                 return None, ""
         return (

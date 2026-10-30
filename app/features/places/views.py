@@ -4,6 +4,8 @@ from stario.markup import HtmlElement
 
 from app.common.shell import Chrome, frame, status_chip
 from app.engine.model import Run, Workflow
+from app.features.commit.urls import REPO_COMMIT, valid_sha
+from app.features.github.urls import GITHUB_ISSUE, GITHUB_PRS
 from app.features.places.urls import (
     GITHUB,
     INBOX_READ,
@@ -15,6 +17,7 @@ from app.features.places.urls import (
 from app.features.settings.nav import settings_nav
 from app.features.task.urls import TASK
 from app.features.tasks.urls import TASKS_NEW
+from app.features.tracker.urls import TRACKER_ITEM
 
 
 def inbox(runs: list[Run], chrome: Chrome, tab: str) -> HtmlElement:
@@ -45,9 +48,17 @@ def inbox(runs: list[Run], chrome: Chrome, tab: str) -> HtmlElement:
 
 
 def github(
-    owner: str, repo_name: str, lines: list[str], notice: str, chrome: Chrome, tab: str
+    owner: str,
+    repo_name: str,
+    issues: list[tuple[int | None, str]],
+    notice: str,
+    chrome: Chrome,
+    tab: str,
 ) -> HtmlElement:
-    items = [h.Li(line) for line in lines] or [h.Li({"class": "muted"}, "No open issues.")]
+    items = [
+        h.Li(h.A({"href": GITHUB_ISSUE.href(str(number))}, text) if number else text)
+        for number, text in issues
+    ] or [h.Li({"class": "muted"}, "No open issues.")]
     return frame(
         chrome,
         None,
@@ -55,6 +66,7 @@ def github(
         h.Main(
             {"id": "github"},
             h.H1("GitHub"),
+            h.Nav({"class": "filters"}, h.A({"href": GITHUB_PRS.href()}, "Pull requests")),
             h.Form(
                 {"method": "get", "action": GITHUB.href(), "class": "composer"},
                 h.Label(
@@ -75,7 +87,15 @@ def github(
     )
 
 
-def tracker(kind: str, key: str, notice: str, chrome: Chrome, tab: str) -> HtmlElement:
+def tracker(
+    kind: str,
+    key: str,
+    notice: str,
+    found_id: str,
+    items: list[tuple[str, str]],
+    chrome: Chrome,
+    tab: str,
+) -> HtmlElement:
     return frame(
         chrome,
         None,
@@ -105,7 +125,16 @@ def tracker(kind: str, key: str, notice: str, chrome: Chrome, tab: str) -> HtmlE
                 ),
                 h.Button({"class": "btn btn-primary", "type": "submit"}, "Look up"),
             ),
-            h.P({"id": "tracker-result", "class": "sub"}, notice),
+            h.P(
+                {"id": "tracker-result", "class": "sub"},
+                h.A({"href": TRACKER_ITEM.href(found_id)}, notice) if found_id else notice,
+            ),
+            h.Ul(
+                {"id": "tracker-items"},
+                *[h.Li(h.A({"href": TRACKER_ITEM.href(item_id)}, text)) for item_id, text in items],
+            )
+            if items
+            else None,
         ),
     )
 
@@ -121,7 +150,9 @@ def repo(pane: str, lines: list[str], chrome: Chrome, tab: str) -> HtmlElement:
         if name == chosen:
             attrs["class"] = "on"
         links.append(h.A(attrs, name))
-    rows = [h.Li(line) for line in lines] or [h.Li({"class": "muted"}, "Nothing here.")]
+    rows = [h.Li(*(_commit_line(line) if chosen == "commits" else [line])) for line in lines] or [
+        h.Li({"class": "muted"}, "Nothing here.")
+    ]
     return frame(
         chrome,
         None,
@@ -134,6 +165,13 @@ def repo(pane: str, lines: list[str], chrome: Chrome, tab: str) -> HtmlElement:
             h.Ul({"id": "git-rows"}, *rows),
         ),
     )
+
+
+def _commit_line(line: str) -> list[str | HtmlElement]:
+    sha, _space, subject = line.strip().partition(" ")
+    if not valid_sha(sha):
+        return [line]
+    return [h.A({"href": REPO_COMMIT.href(sha)}, sha), f" {subject}"]
 
 
 def workflow(item: Workflow | None, chrome: Chrome, tab: str) -> HtmlElement:

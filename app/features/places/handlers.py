@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -35,6 +36,7 @@ from app.features.settings.store import (
 )
 from app.integrations.clients import github_issues, jira_issue, linear_issue
 from app.integrations.hooks import load_receivers, save_receiver
+from app.integrations.tracker import list_issues
 from app.store.db import get_project, get_run, list_runs
 
 
@@ -72,7 +74,7 @@ class PlacesPage:
         owner = c.req.query.get("owner", "")
         repo = c.req.query.get("repo", "")
         notice = ""
-        titles: list[str] = []
+        titles: list[tuple[int | None, str]] = []
         if not owner or not repo:
             notice = "Name an owner and a repository to list open issues."
         else:
@@ -83,7 +85,7 @@ class PlacesPage:
                 issues = loaded.get("issues")
                 rows = issues if isinstance(issues, list) else []
                 titles = [
-                    f"#{item.get('number')} {item.get('title', '')}"
+                    (_number(item.get("number")), f"#{item.get('number')} {item.get('title', '')}")
                     for item in rows
                     if isinstance(item, dict)
                 ]
@@ -100,18 +102,42 @@ class PlacesPage:
             kind = "jira"
         key = c.req.query.get("key", "").strip()
         notice = "Enter an issue key."
+        found_id = ""
         if key:
             cfg = replace(self.config, **tracker_overrides(self.config.data_dir))
             loaded = linear_issue(cfg, key) if kind == "linear" else jira_issue(cfg, key)
             if loaded.get("available") is not True:
                 notice = str(loaded.get("reason", "unavailable"))
             elif kind == "linear":
-                notice = f"{loaded.get('identifier', key)} {loaded.get('title', '')}".strip()
+                found_id = str(loaded.get("identifier", key))
+                notice = f"{found_id} {loaded.get('title', '')}".strip()
             else:
-                notice = f"{loaded.get('key', key)} {loaded.get('summary', '')}".strip()
+                found_id = str(loaded.get("key", key))
+                notice = f"{found_id} {loaded.get('summary', '')}".strip()
         w.html(
-            views.tracker(kind, key, notice, self._chrome("Tracker", "tracker"), uuid.uuid7().hex)
+            views.tracker(
+                kind,
+                key,
+                notice,
+                found_id,
+                await self._tracker_items(),
+                self._chrome("Tracker", "tracker"),
+                uuid.uuid7().hex,
+            )
         )
+
+    async def _tracker_items(self) -> list[tuple[str, str]]:
+        """The associated project's issues, when the tracker is configured. Quiet otherwise."""
+        project = get_project(self.db, self.engine.boot_project_id)
+        root = Path(project.root) if project else self.config.repo_root
+        cfg = replace(self.config, **tracker_overrides(self.config.data_dir))
+        listed = await asyncio.to_thread(list_issues, cfg, root, state="active")
+        rows = listed.get("items") if listed.get("available") is True else None
+        return [
+            (str(row["id"]), f"{row['id']} {row.get('title', '')}".strip())
+            for row in (rows if isinstance(rows, list) else [])
+            if isinstance(row, dict) and row.get("id")
+        ][:50]
 
     async def repo(self, c: Context, w: Writer) -> None:
         pane = c.req.query.get("pane", "commits")
@@ -258,3 +284,7 @@ def _matches(haystack: str, tokens: list[str]) -> bool:
         return True
     text = haystack.lower()
     return all(token in text for token in tokens)
+
+
+def _number(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None

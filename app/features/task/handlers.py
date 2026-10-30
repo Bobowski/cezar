@@ -26,6 +26,7 @@ from app.features.task.urls import (
     TASK_MESSAGE,
     TASK_NOTES,
     TASK_PR,
+    TASK_PR_ADOPT,
     TASK_PUSH,
     TASK_REJECT,
     TASK_REVIEW,
@@ -58,6 +59,7 @@ class TaskPage:
         app.add(TASK_COMMIT, self.commit)
         app.add(TASK_PUSH, self.push)
         app.add(TASK_PR, self.draft_pr)
+        app.add(TASK_PR_ADOPT, self.adopt_pr)
         app.add(TASK_REVIEW, self.review)
         app.add(TASK_NOTES, self.notes)
         app.add(TASK_SHELL, self.shell)
@@ -193,6 +195,22 @@ class TaskPage:
             self._tell(w, tab, reason, 409)
             return
         w.empty()
+
+    async def adopt_pr(self, c: Context, w: Writer) -> None:
+        from app.integrations.pr_adopt import parse_pr_ref
+
+        run_id, tab, signals = await self._input(c, w)
+        if run_id is None or tab is None or signals is None:
+            return
+        ref = str(signals.get("adopt_pr", "")).strip()
+        if len(ref) > 300 or (ref and parse_pr_ref(ref) is None):
+            self._tell(w, tab, "enter a pull request number or URL", 400)
+            return
+        url, reason = await self.engine.adopt_pr(run_id, ref)
+        if reason or url is None:
+            self._tell(w, tab, reason or "refused", 404 if reason == "not found" else 409)
+            return
+        SSE(w).patch_signals({"adopt_pr": "", "_error": ""})
 
     async def review(self, c: Context, w: Writer) -> None:
         from app.integrations.github_review import review_pr

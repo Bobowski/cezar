@@ -421,8 +421,3 @@ def parse_skill_defaults(default: str, ask: str) -> tuple[tuple[str, str] | None
     if len(default) > SKILL_MAX or len(ask) > SKILL_MAX:
         return None, f"a skill name is at most {SKILL_MAX} characters"
     return (default, ask), None
-
-
-def looks_like_question(text: str) -> bool:
-    """A message ending in `?` asks. `looksLikeQuestion` in `new-task-form.ts`."""
-    return text.strip().endswith("?")

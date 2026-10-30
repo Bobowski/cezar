@@ -297,3 +297,12 @@ textarea { min-height: 8rem; resize: vertical; }
   .top { flex-direction: column; align-items: stretch; }
   .calendar td { height: auto; min-height: 2.5rem; }
 }
+
+.diff .d-add { color: var(--success); }
+.diff .d-del { color: var(--danger); }
+.diff .d-hunk { color: var(--info); }
+.diff-file { margin-bottom: 0.9rem; }
+.diff-file h3 { font-family: var(--mono); font-size: 0.85rem; margin: 0 0 0.3rem; }
+.pr-body { white-space: pre-wrap; }
+.comment { padding: 0.5rem 0.7rem; border: 1px solid var(--border); border-radius: 0.5rem; }
+.comment p { margin: 0.3rem 0 0; white-space: pre-wrap; }

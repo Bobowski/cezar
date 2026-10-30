@@ -301,7 +301,8 @@ async def test_the_tasks_page_saves_composer_and_skill_defaults(client, repo: Pa
         return max(runs, key=lambda run: run["createdAt"])
 
     assert (await start("tidy the header"))["workflow"] == "ship"
-    assert (await start("why is the header red?"))["workflow"] == "explain"
+    # TypeScript has no question heuristic: `askSkill` is stored, never picked from the text.
+    assert (await start("why is the header red?"))["workflow"] == "ship"
     assert (await start("tidy again", skill="none"))["workflow"] == "quick-task"
     assert (await start("tidy again", skill="explain"))["workflow"] == "explain"
     missing = await client.post(

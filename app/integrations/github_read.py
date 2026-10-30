@@ -320,6 +320,52 @@ def github_pr_changes(cwd: Path, number: int, *, dry_run: bool) -> dict[str, Any
         return {"available": False, "reason": _reason(str(exc))}
 
 
+def github_item(cwd: Path, kind: str, number: int, *, dry_run: bool) -> dict[str, Any]:
+    """One pull request or issue for its detail screen: `{available, item}`.
+
+    A number `gh` does not know is `{available: False, code: "not_found"}`.
+    """
+    if dry_run:
+        pool = catalog()["issues" if kind == "issue" else "prs"]
+        for row in pool:
+            if row["number"] == number:
+                return {"available": True, "item": {**row, "state": "OPEN"}}
+        return _item_missing(kind, number)
+    fields = "number,title,state,author,body,url,labels"
+    if kind == "pr":
+        fields += ",isDraft,headRefName,baseRefName,additions,deletions,reviewDecision"
+    try:
+        ok, out, err = _gh(
+            cwd, ["pr" if kind == "pr" else "issue", "view", str(number), "--json", fields]
+        )
+    except OSError as exc:
+        return {"available": False, "code": "unavailable", "reason": _reason(str(exc))}
+    if not ok:
+        folded = err.lower()
+        if "could not resolve" in folded or ("not found" in folded and "gh" not in folded):
+            return _item_missing(kind, number)
+        return {"available": False, "code": "unavailable", "reason": _reason(err)}
+    loaded = _loads(out)
+    if not isinstance(loaded, dict) or not loaded:
+        return _item_missing(kind, number)
+    labels = loaded.get("labels")
+    author = loaded.get("author")
+    item = {
+        **loaded,
+        "kind": kind,
+        "author": author.get("login", "") if isinstance(author, dict) else "",
+        "labels": [str(row.get("name", "")) for row in labels if isinstance(row, dict)]
+        if isinstance(labels, list)
+        else [],
+    }
+    return {"available": True, "item": item}
+
+
+def _item_missing(kind: str, number: int) -> dict[str, Any]:
+    name = "pull request" if kind == "pr" else "issue"
+    return {"available": False, "code": "not_found", "reason": f"{name} {number} was not found"}
+
+
 class PrNotFound(Exception):
     pass
 

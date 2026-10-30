@@ -2415,6 +2415,55 @@ class Engine:
         await self._note(run.id, "note", f"draft PR created: {url}{suffix}")
         return {"url": url, "dryRun": bool(result.get("dryRun"))}, None
 
+    async def adopt_pr(self, run_id: str, ref_text: str) -> tuple[str | None, str | None]:
+        """Record a PR the agent (or the user) opened. Returns `(url, reason)`.
+
+        Like `POST /api/v1/runs/:id/pr/adopt`, the status stays: the agent's session, not the
+        cockpit, owns the run. An empty `ref_text` finds the open PR for the task's branch; a
+        number or URL adopts that PR once it is shown to be this task's.
+        """
+        from app.integrations.pr_adopt import (
+            PrTarget,
+            adopt_named,
+            find_branch_pr,
+            parse_pr_ref,
+            resolve_pr_target,
+        )
+
+        run = get_run(self.db, run_id)
+        if run is None:
+            return None, "not found"
+        if run.pull_request_url:
+            return run.pull_request_url, None
+        if not run.worktree_path or not run.branch or run.in_place:
+            return None, "no worktree/branch to adopt a pull request for"
+        worktree = Path(run.worktree_path)
+        dry = self.config.dry_run
+        target = await asyncio.to_thread(resolve_pr_target, worktree, run.branch, run.base_branch)
+        if target is None:
+            if not dry:
+                return None, "no git remote to look up pull requests on"
+            target = PrTarget(None, run.branch, None)
+        if ref_text.strip():
+            ref = parse_pr_ref(ref_text)
+            if ref is None:
+                return None, "enter a pull request number or URL"
+            found = await asyncio.to_thread(adopt_named, worktree, target, ref, dry_run=dry)
+            if isinstance(found, str):
+                return None, found
+            url = found[0]
+        else:
+            branch_pr = await asyncio.to_thread(find_branch_pr, worktree, target, dry_run=dry)
+            if branch_pr is None:
+                return None, f"no open pull request found for branch {run.branch}"
+            url = branch_pr[0]
+        if not url:
+            return None, "the pull request has no URL"
+        run.pull_request_url = url
+        await self._save(run)
+        await self._note(run.id, "note", f"PR adopted: {url}")
+        return url, None
+
     def plan_run(
         self,
         *,
@@ -2460,9 +2509,17 @@ class Engine:
                 else not self.config.worktree_default
             )
         model = self.default_model(runner, model)
+        from app.integrations.accounts import selected_account
+
+        account_id = (
+            parent.account_id
+            if parent and parent.account_id and parent.runner == runner
+            else selected_account(self.config, project.id, runner)
+        )
         run = Run(
             id=uuid.uuid4().hex,
             project_id=project.id,
+            account_id=account_id,
             title=title_from(text),
             task=text,
             workflow=workflow.name,

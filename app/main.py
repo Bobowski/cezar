@@ -12,8 +12,11 @@ from app.features.api.families import RouteFamilies
 from app.features.api.handlers import ApiPage
 from app.features.api.surface import SurfaceApi
 from app.features.automations.handlers import AutomationsPage
+from app.features.commit.handlers import CommitPages
 from app.features.dashboard.handlers import DashboardPage
+from app.features.editors.accounts import AccountsPage
 from app.features.editors.handlers import EditorsPage
+from app.features.github.handlers import GithubPages
 from app.features.health.handlers import HealthPage
 from app.features.places.handlers import PlacesPage
 from app.features.projects.handlers import ProjectsPage
@@ -22,6 +25,7 @@ from app.features.settings.handlers import SettingsPage
 from app.features.skills.handlers import SkillsPage
 from app.features.task.handlers import TaskPage
 from app.features.tasks.handlers import TasksPage
+from app.features.tracker.handlers import TrackerItemPage
 from app.features.workflows.editor import EditorPage
 from app.features.workflows.handlers import WorkflowsPage
 from app.http.basic_auth import basic_auth
@@ -51,7 +55,11 @@ async def bootstrap(app: App, span: Span):
         SettingsPage(db, relay, engine, config).register(app)
         SecretsPage(db, engine, config).register(app)
         PlacesPage(db, engine, config).register(app)
+        GithubPages(db, engine, config).register(app)
+        TrackerItemPage(db, engine, config).register(app)
+        CommitPages(db, engine, config).register(app)
         EditorsPage(db, engine, config).register(app)
+        AccountsPage(db, engine, config).register(app)
         HealthPage(db, engine, config).register(app)
         ApiPage(db, engine, config).register(app)
         SurfaceApi(db, engine, config).register(app)

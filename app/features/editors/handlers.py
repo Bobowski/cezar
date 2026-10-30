@@ -13,13 +13,11 @@ from stario.datastar import at, data, read_signals
 from stario.exceptions import RequestBodyError
 
 from app.common.shell import frame, load_chrome
-from app.config import RUNNERS, Config
+from app.config import Config
 from app.engine.engine import Engine
 from app.engine.ui_state import merge_state, read_state
 from app.features.editors import store
 from app.features.editors.urls import (
-    ACCOUNTS,
-    ACCOUNTS_SAVE,
     AGENT_CONFIG,
     AGENT_CONFIG_ONE,
     AGENT_CONFIG_SAVE,
@@ -50,8 +48,6 @@ class EditorsPage:
         app.add(AGENT_CONFIG, self.agent_config)
         app.add(AGENT_CONFIG_ONE, self.agent_file)
         app.add(AGENT_CONFIG_SAVE, self.save_agent_file)
-        app.add(ACCOUNTS, self.accounts)
-        app.add(ACCOUNTS_SAVE, self.save_account)
         app.add(NOTIFICATIONS, self.notifications)
         app.add(NOTIFICATIONS_SAVE, self.save_notifications)
         app.add(KEYBOARD, self.keyboard)
@@ -137,54 +133,6 @@ class EditorsPage:
             w.text(reason, 404)
             return
         w.redirect(AGENT_CONFIG.href(), 303)
-
-    async def accounts(self, _c: Context, w: Writer) -> None:
-        rows = store.list_accounts(self.config)
-        items = [h.Li(f"{row['name']} · {row['runner']}") for row in rows] or [
-            h.Li({"class": "muted"}, "No extra accounts.")
-        ]
-        w.html(
-            self._main(
-                "Agent accounts",
-                "accounts",
-                h.Form(
-                    data.on("submit", at.post(ACCOUNTS_SAVE.href()), prevent=True),
-                    h.Label(
-                        {"class": "field"},
-                        h.Span("Name"),
-                        h.Input(
-                            {"required": True, "maxlength": "80", "aria-label": "Name"},
-                            data.bind("name"),
-                        ),
-                    ),
-                    h.Label(
-                        {"class": "field"},
-                        h.Span("Runner"),
-                        h.Select(
-                            {"aria-label": "Runner"},
-                            data.bind("runner"),
-                            *[h.Option({"value": runner}, runner) for runner in RUNNERS],
-                        ),
-                    ),
-                    h.Button({"class": "btn btn-primary", "type": "submit"}, "Add account"),
-                ),
-                h.Ul({"id": "account-list"}, *items),
-                signals={"name": "", "runner": "claude"},
-            )
-        )
-
-    async def save_account(self, c: Context, w: Writer) -> None:
-        signals = await _signals(c, w)
-        if signals is None:
-            return
-        reason = store.add_account(
-            self.config, str(signals.get("name", "")), str(signals.get("runner", "claude"))
-        )
-        if reason:
-            status = 409 if reason.startswith("agent accounts are disabled") else 400
-            w.text(reason, status)
-            return
-        w.redirect(ACCOUNTS.href(), 303)
 
     async def notifications(self, _c: Context, w: Writer) -> None:
         state = read_state(self._ui())

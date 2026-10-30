@@ -8,7 +8,9 @@ from stario.markup import HtmlElement
 from app.clock import parse_stamp
 from app.common.shell import Chrome, frame
 from app.engine.model import Automation, Workflow
+from app.features.automations.forms import new_link
 from app.features.automations.urls import (
+    AUTOMATION,
     AUTOMATIONS_CREATE,
     AUTOMATIONS_DELETE,
     AUTOMATIONS_ENABLE,
@@ -44,11 +46,10 @@ def render(
         rows.append(
             h.Div(
                 {"class": "card-block"},
-                h.Strong(item.name),
+                h.Strong(h.A({"href": AUTOMATION.href(item.id)}, item.name)),
                 h.P(
                     {"class": "sub"},
-                    "every "
-                    f"{item.every_minutes} min · "
+                    f"{item.kind} · every {item.every_minutes} min · "
                     f"{'enabled' if item.enabled else 'paused'} · next {item.next_at}",
                 ),
                 h.P(item.task),
@@ -81,9 +82,10 @@ def render(
             h.H1("Automations"),
             h.P(
                 {"class": "sub"},
-                "Interval schedules only. GitHub, Jira, and Linear triggers are not in this port. "
-                "Enabling a stale schedule does not launch a backlog.",
+                "Schedules fire on their interval. GitHub and tracker automations poll on it and "
+                "start a run per new match. Enabling a stale automation does not launch a backlog.",
             ),
+            new_link(view),
             *rows,
             _calendar(items),
             h.Form(

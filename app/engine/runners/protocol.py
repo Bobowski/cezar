@@ -409,6 +409,7 @@ def _child_env(spec: AgentSpec) -> dict[str, str]:
         env["CEZ_TASK_ID"] = spec.session_id
     if spec.handoff_file:
         env["CEZ_HANDOFF_FILE"] = spec.handoff_file
+    env.update(dict(spec.env))
     return env
 
 

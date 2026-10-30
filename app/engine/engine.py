@@ -68,6 +68,7 @@ from app.engine.graph import (
 from app.engine.instructions import run_instructions
 from app.engine.model import TERMINAL, Automation, Project, Run, Settings, Step, Workflow
 from app.engine.namer import propose_name, propose_title
+from app.engine.poller import AutomationPoller, automation_env
 from app.engine.prompts import (
     AUTO_RESUME_GRACE_S,
     AUTONOMOUS_NUDGE,
@@ -92,6 +93,7 @@ from app.engine.uploads import materialize
 from app.engine.usage_limit import parse_usage_limit
 from app.engine.workflows import newer_catalog_workflow, retryable_exit
 from app.secrets.store import SecretStore, redact
+from app.store import polling
 from app.store.db import (
     add_event,
     count_in_flight_children,
@@ -289,6 +291,7 @@ class Engine:
     _land_attempts: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        self.poller = AutomationPoller(self)
         self._coalescer.spawn = self._schedule
         self._terminals.bind(self._schedule)
 
@@ -404,6 +407,7 @@ class Engine:
         await self._resume_due()
         await self._expire_parks()
         await self._launch_due()
+        await self.poller.tick()
         await self._wake_monitors()
         await self._resume_limited()
         await self._periodic_autosave()
@@ -1259,6 +1263,7 @@ class Engine:
             codex_thread=run.codex_thread,
             profile_home=_profile_home(self.config, run.account_id, step.runner or run.runner),
             handoff_file=str(handoff_path(self.config.data_dir, run.id)),
+            env=tuple(automation_env(run).items()),
         )
         if run.session_runner != spec.runner:
             opened = get_run(self.db, run.id) or run
@@ -1405,6 +1410,7 @@ class Engine:
             }
         )
         env["CEZ_TASK_ID"] = run.id
+        env.update(automation_env(run))
         from app.engine.handoff import handoff_path
 
         env["CEZ_HANDOFF_FILE"] = str(handoff_path(self.config.data_dir, run.id))
@@ -2704,6 +2710,8 @@ class Engine:
         if enabled and (due is None or due < moment):
             nxt = after(item.every_minutes, moment)
         await self.db.write(save_automation, replace(item, enabled=enabled, next_at=nxt))
+        if enabled and not item.enabled and item.kind != "schedule":
+            await self.poller.baseline(item)
         self.publish()
         return None
 
@@ -2730,9 +2738,33 @@ class Engine:
 
         return get_automation(self.db, automation_id)
 
+    async def save_automation_edit(self, before: Automation, after_edit: Automation) -> None:
+        """Save an edit. A changed trigger starts its cursor over, so old items never fire."""
+        await self.db.write(save_automation, after_edit)
+        changed = (before.kind, before.events, before.filters) != (
+            after_edit.kind,
+            after_edit.events,
+            after_edit.filters,
+        )
+        if changed and after_edit.kind != "schedule":
+            await self.poller.baseline(after_edit)
+        self.publish()
+
+    async def check_automation(self, item: Automation, execute: bool) -> dict[str, object]:
+        """Poll a GitHub or tracker automation now. A preview launches nothing."""
+        return await self.poller.check(item, "execute" if execute else "preview")
+
+    async def retry_automation_log(
+        self, automation_id: str, entry_id: str
+    ) -> tuple[dict[str, object] | None, str | None, int]:
+        return await self.poller.retry(automation_id, entry_id)
+
     async def _launch_due(self) -> None:
+        """Only a `schedule` row fires on time. `github` and `tracker` rows wait for a match."""
         moment = now()
         for item in list_enabled_automations(self.db):
+            if item.kind not in ("", "schedule"):
+                continue
             due = parse_stamp(item.next_at)
             if due is not None and due <= moment:
                 await self._spawn_automation(item, move_schedule=True)
@@ -2759,7 +2791,7 @@ class Engine:
             else:
                 updated = replace(updated, next_at=after(item.every_minutes))
         await self.db.write(save_automation, updated)
-        self.publish()
+        await self.poller.record_run(item, run.id, "schedule" if move_schedule else "manual")
         return run.id
 
 
@@ -2778,6 +2810,9 @@ def rebaseline_automations(tx: Tx) -> None:
 
         if due < moment - timedelta(minutes=item.every_minutes):
             save_automation(tx, replace(item, next_at=after(item.every_minutes, moment)))
+            if item.kind != "schedule":
+                polling.reset_state(tx, item.id)
+                polling.clear_seen(tx, item.id)
 
 
 def _if_port(run: Run, node: dict[str, Any], outputs: dict[str, dict[str, str]]) -> str:

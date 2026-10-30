@@ -40,6 +40,8 @@ class AgentSpec:
     # A Claude or Codex profile home. Empty keeps the user's default login.
     profile_home: str = ""
     handoff_file: str = ""
+    # Extra CEZ_* names for the child, such as the GitHub item an automation matched.
+    env: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

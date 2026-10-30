@@ -188,15 +188,15 @@ async def test_github_automation_filters_and_stats(client):
             "task": "look at the pull request",
             "everyMinutes": 60,
             "kind": "github",
-            "events": ["pull_request"],
-            "filters": {"action": "opened"},
+            "events": ["pull_request.opened"],
+            "filters": {"authors": ["octocat"]},
         },
     )
     assert created.status_code == 201
     body = created.json()
     assert body["kind"] == "github"
-    assert body["events"] == ["pull_request"]
-    assert body["filters"] == {"action": "opened"}
+    assert body["events"] == ["pull_request.opened"]
+    assert body["filters"] == {"authors": ["octocat"]}
     listed = (await client.get("/api/v1/automations")).json()
     assert listed["stats"]["total"] >= 1
     assert listed["stats"]["enabled"] == 0

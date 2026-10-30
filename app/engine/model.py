@@ -278,6 +278,8 @@ class Run:
     graph_park: dict[str, object] = field(default_factory=dict)
     account_id: str = ""
     landing: dict[str, object] = field(default_factory=dict)
+    # The automation that started this run and the item it matched (empty for a person).
+    automation: dict[str, object] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, object]:
         body: dict[str, object] = {
@@ -345,6 +347,8 @@ class Run:
             body["graph_park"] = self.graph_park
         if self.landing:
             body["landing"] = self.landing
+        if self.automation:
+            body["automation"] = self.automation
         return body
 
     @classmethod
@@ -421,6 +425,7 @@ class Run:
             graph_park=_dict(data.get("graph_park")),
             account_id=_text(data.get("account_id")),
             landing=_dict(data.get("landing")),
+            automation=_dict(data.get("automation")),
         )
 
     def definition(self) -> Workflow:

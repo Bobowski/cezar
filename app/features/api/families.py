@@ -48,6 +48,7 @@ from app.engine.model import Automation, Project, Run, Settings
 from app.engine.todos import mark_started, read_todos, remove_todo
 from app.features.api.records import public_run
 from app.http.loopback import hosted_mode
+from app.integrations.github_poll import definition_issue
 from app.store.db import (
     get_automation,
     get_project,
@@ -56,9 +57,9 @@ from app.store.db import (
     list_automations,
     list_projects,
     list_runs,
-    save_automation,
     save_project,
 )
+from app.store.polling import list_log
 
 
 def _spawn(args: list[str]) -> None:
@@ -189,8 +190,7 @@ class RouteFamilies:
         if updated is None:
             w.json({"error": reason or "invalid automation"}, status=400)
             return
-        await self.db.write(save_automation, updated)
-        self.engine.publish()
+        await self.engine.save_automation_edit(item, updated)
         w.json(cast(JsonValue, _automation(updated)))
 
     async def delete_automation(self, c: Context, w: Writer) -> None:
@@ -237,33 +237,18 @@ class RouteFamilies:
         body = await _object(c, w)
         if body is None:
             return
-        execute = body.get("execute") is True
-        w.json(
-            {
-                "id": uuid.uuid4().hex,
-                "automationId": item.id,
-                "mode": "execute" if execute else "preview",
-                "status": "complete",
-                "matches": 0,
-                "launched": False,
-                "message": "a schedule has no event filter; use run to launch it",
-            }
-        )
+        entry = await self.engine.check_automation(item, body.get("execute") is True)
+        w.json(cast(JsonValue, _check(entry)))
 
     async def automation_log(self, c: Context, w: Writer) -> None:
         project = self._project(c, w)
         if project is None or not self._automations(w):
             return
+        names = {item.id: item.name for item in list_automations(self.db, project.id)}
         entries = [
-            {
-                "id": item.id,
-                "automationId": item.id,
-                "runId": item.last_run_id,
-                "name": item.name,
-                "at": item.created_at,
-            }
-            for item in list_automations(self.db, project.id)
-            if item.last_run_id
+            {**_check(entry), "name": names[str(entry["automationId"])], "at": entry["at"]}
+            for entry in list_log(self.db, None, 200)
+            if str(entry.get("automationId")) in names
         ]
         w.json(cast(JsonValue, {"entries": entries}))
 
@@ -860,6 +845,14 @@ class RouteFamilies:
         runner = body.get("runner", get_settings(self.db).default_runner)
         if not isinstance(runner, str) or runner not in RUNNERS:
             return None, "unknown runner"
+        kind, events, filters = (
+            _kind(body.get("kind")),
+            _events(body.get("events")),
+            _filters(body.get("filters")),
+        )
+        issue = definition_issue(kind, events, filters)
+        if issue:
+            return None, issue
         return (
             Automation(
                 id=uuid.uuid4().hex,
@@ -872,12 +865,36 @@ class RouteFamilies:
                 enabled=body.get("enable") is True,
                 next_at=after(every),
                 created_at=stamp(),
-                kind=_kind(body.get("kind")),
-                events=_events(body.get("events")),
-                filters=_filters(body.get("filters")),
+                kind=kind,
+                events=events,
+                filters=filters,
             ),
             None,
         )
+
+
+def _check(entry: dict[str, object]) -> dict[str, object]:
+    """A log entry as the check the CLI prints: `launched` is a flag, `launchedCount` a number."""
+    count = entry.get("launched")
+    number = count if isinstance(count, int) and not isinstance(count, bool) else 0
+    rows = entry.get("candidates")
+    runs = (
+        [str(r["runId"]) for r in rows if isinstance(r, dict) and r.get("runId")]
+        if isinstance(rows, list)
+        else []
+    )
+    return {
+        "id": entry.get("id", ""),
+        "automationId": entry.get("automationId", ""),
+        "mode": entry.get("mode", ""),
+        "status": entry.get("status", "complete"),
+        "matches": entry.get("matches", 0),
+        "launched": number > 0,
+        "launchedCount": number,
+        "message": entry.get("message", ""),
+        "runId": runs[0] if runs else "",
+        "candidates": rows if isinstance(rows, list) else [],
+    }
 
 
 def _kind(value: object) -> str:
@@ -936,6 +953,12 @@ def _apply_update(
         return None, "unknown workflow"
     if runner not in RUNNERS:
         return None, "unknown runner"
+    kind = _kind(body["kind"]) if "kind" in body else item.kind
+    events = _events(body["events"]) if "events" in body else item.events
+    filters = _filters(body["filters"]) if "filters" in body else item.filters
+    issue = definition_issue(kind, events, filters)
+    if issue:
+        return None, issue
     return (
         replace(
             item,
@@ -944,6 +967,9 @@ def _apply_update(
             every_minutes=every,
             workflow=workflow,
             runner=runner,
+            kind=kind,
+            events=events,
+            filters=filters,
             revision=item.revision + 1,
         ),
         None,

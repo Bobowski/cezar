@@ -9,8 +9,9 @@ from stario.json import dumps, loads
 
 from app.clock import now, stamp
 from app.engine.model import Automation, Event, Project, Run, Settings
+from app.store import polling
 
-TABLES = frozenset({"runs", "events", "projects", "settings", "automations"})
+TABLES = frozenset({"runs", "events", "projects", "settings", "automations", "automation_log"})
 
 RUN_COLUMNS = {
     "project_id": "TEXT AS (data->>'project_id')",
@@ -104,6 +105,7 @@ def schema(tx: Tx) -> None:
     )
     _columns(tx, "automations", AUTOMATION_COLUMNS)
     tx.execute("CREATE INDEX IF NOT EXISTS automations_due ON automations(enabled, next_at)")
+    polling.schema(tx)
 
 
 def _run(row: IdData) -> Run:
@@ -336,6 +338,10 @@ def save_settings(tx: Tx, settings: Settings) -> None:
     )
 
 
+def automation_from_row(row: IdData) -> Automation:
+    return _automation(row)
+
+
 def insert_automation(tx: Tx, item: Automation) -> None:
     tx.execute(
         "INSERT INTO automations (id, data) VALUES (:id, :data)",
@@ -354,6 +360,7 @@ def save_automation(tx: Tx, item: Automation) -> None:
 
 def delete_automation(tx: Tx, automation_id: str) -> None:
     tx.execute("DELETE FROM automations WHERE id = :id", id=automation_id)
+    polling.forget(tx, automation_id)
 
 
 def get_automation(db: LiteWriter, automation_id: str) -> Automation | None:

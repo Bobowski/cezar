@@ -669,6 +669,11 @@ def _gh(cwd: Path, args: list[str]) -> tuple[bool, str, str]:
     return proc.returncode == 0, proc.stdout, proc.stderr or proc.stdout
 
 
+def repo_handle(cwd: Path) -> str:
+    """`owner/name` of the repository `gh` resolves in `cwd`, or empty."""
+    return _handle(cwd)
+
+
 def _handle(cwd: Path) -> str:
     ok, out, _err = _gh(cwd, ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])
     return out.strip() if ok else ""

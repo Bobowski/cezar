@@ -218,6 +218,75 @@ def list_issues(
     return {"available": True, "items": items, "association": association}
 
 
+def automation_options(config: Config, root: Path) -> dict[str, Any]:
+    """What a tracker automation can be built from: the association, its events, its statuses."""
+    record, error = _read(config, root)
+    association = read_association(root)
+    if config.dry_run or record is None:
+        return {
+            "available": False,
+            "code": "unavailable" if error else "not_configured",
+            "reason": error or "tracker is not configured",
+        }
+    if association is None:
+        return {
+            "available": False,
+            "code": "no_association",
+            "reason": "choose a Jira project or Linear team for this project first",
+        }
+    statuses = _statuses(config, record, association)
+    if isinstance(statuses, str):
+        return {"available": False, "code": "unavailable", "reason": statuses}
+    return {
+        "available": True,
+        "association": association,
+        "events": ["issue.status_changed"],
+        "statuses": statuses,
+    }
+
+
+def _statuses(
+    config: Config, record: dict[str, Any], association: dict[str, Any]
+) -> list[dict[str, str]] | str:
+    creds = record["credentials"]
+    if record["kind"] == "jira":
+        origin = str(creds["origin"]).rstrip("/")
+        project = _query(str(association["externalId"]))
+        loaded = _get(f"{origin}/rest/api/3/project/{project}/statuses", _jira_headers(creds))
+        if isinstance(loaded, dict) and loaded.get("available") is False:
+            return str(loaded.get("reason", "jira is unavailable"))
+        if not isinstance(loaded, list):
+            return "jira returned an unexpected payload"
+        seen: dict[str, str] = {}
+        for kind in loaded:
+            for status in _mapping(kind).get("statuses") or []:
+                row = _mapping(status)
+                if row.get("id") and row.get("name"):
+                    seen.setdefault(str(row["id"]), str(row["name"]))
+        return [{"id": ident, "name": name} for ident, name in seen.items()]
+    loaded = _post(
+        config.linear_api,
+        {
+            "query": (
+                "query($team: ID) { workflowStates(filter: { team: { id: { eq: $team } } }) "
+                "{ nodes { id name } } }"
+            ),
+            "variables": {"team": association["externalId"]},
+        },
+        {"authorization": str(creds["key"]), "content-type": "application/json"},
+    )
+    if isinstance(loaded, dict) and loaded.get("available") is False:
+        return str(loaded.get("reason", "linear is unavailable"))
+    nodes = _mapping(_mapping(_mapping(loaded).get("data")).get("workflowStates")).get("nodes")
+    if not isinstance(nodes, list):
+        return "linear returned an unexpected payload"
+    return [
+        {"id": str(item["id"]), "name": str(item["name"])}
+        for item in nodes
+        if isinstance(item, dict) and item.get("id") and item.get("name")
+    ]
+
+
 def candidates(config: Config, root: Path) -> dict[str, Any]:
     record, error = _read(config, root)
     if record is None:
@@ -320,7 +389,7 @@ def _fetch_issues(
         {
             "query": (
                 "query($term: String) { issues(filter: { title: { contains: $term } }) "
-                "{ nodes { id identifier title url createdAt updatedAt } } }"
+                "{ nodes { id identifier title url createdAt updatedAt state { name } } } }"
             ),
             "variables": {"term": term},
         },
@@ -368,7 +437,7 @@ def _linear_item(item: dict[str, Any]) -> dict[str, Any]:
         "bodyTruncated": False,
         "unsupportedContent": False,
         "url": str(item.get("url", "")),
-        "status": "",
+        "status": str(_mapping(item.get("state")).get("name", "")),
     }
 
 

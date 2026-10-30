@@ -527,6 +527,48 @@ def _env_path(config: Config, root: Path) -> Path:
     return config.data_dir / "tracker-connections" / f"{digest}.env"
 
 
+def connection_inventory(config: Config) -> list[dict[str, str | None]]:
+    """Every stored credential file: its id, project root and provider, never the secret."""
+    folder = config.data_dir / "tracker-connections"
+    rows: list[dict[str, str | None]] = []
+    if not folder.is_dir():
+        return rows
+    for path in sorted(folder.glob("*.env")):
+        digest = path.stem
+        try:
+            values = dict(
+                line.split("=", 1)
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if "=" in line and not line.lstrip().startswith("#")
+            )
+        except OSError, ValueError:
+            rows.append({"id": digest, "root": None, "provider": None, "status": "invalid"})
+            continue
+        provider = "jira" if "JIRA_API_TOKEN" in values else "linear"
+        has_key = "JIRA_API_TOKEN" in values or "LINEAR_API_KEY" in values
+        rows.append(
+            {
+                "id": digest,
+                "root": values.get("PROJECT_ROOT") or None,
+                "provider": provider if has_key else None,
+                "status": "valid" if has_key and values.get("PROJECT_ROOT") else "invalid",
+            }
+        )
+    return rows
+
+
+def remove_connection_id(config: Config, digest: str) -> bool:
+    """Delete one credential file by its 64-hex id. The vendor token is not revoked."""
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return False
+    path = config.data_dir / "tracker-connections" / f"{digest}.env"
+    try:
+        path.unlink()
+    except OSError:
+        return False
+    return True
+
+
 def _read(config: Config, root: Path) -> tuple[dict[str, Any] | None, str]:
     path = _env_path(config, root)
     if not path.is_file():

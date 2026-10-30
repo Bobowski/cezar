@@ -7,7 +7,10 @@
 from __future__ import annotations
 
 import json
+import re
+import uuid
 from collections.abc import Callable
+from pathlib import Path
 from typing import cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -22,7 +25,9 @@ Fetch = Callable[..., object]
 
 _TASK_USAGE = """cez task — dispatch cezar tasks from inside a task
 
-  cez task create "<objective>" [--title "…"] [--kind implement|review]
+  cez task create "<objective>" [--title "…"] [--kind implement|review] [--runner <id>]
+                 [--review-of <id>[,<id>]] [--scope "…"] [--budget <usd>] [--success "…"]
+                 [--evidence "…"] [--tools <tool>[,<tool>]] [--retry-limit 0-3]
   cez task report --status done|partial|failed|blocked --result "…"
   cez task list
 """
@@ -39,7 +44,19 @@ _AUTO_USAGE = """cez automation — create and manage schedule automations
   cez automation create --json '<json>'
   cez automation cron --json '<json>'
   cez automation tracker --json '<json>'
-  cez automation check <id>
+  cez automation check <id> [--execute]
+  cez automation add --name <name> --prompt <text> | --prompt-file <path>
+                     (--every <5m|1h> | --cron "0 */N * * *" | --at "YYYY-MM-DD HH:MM"
+                      | --on <event>[,<event>] [--every <5m|1h>]
+                      | --kind tracker --to-status <name>)
+                     [--workflow <w>] [--runner <id>] [--label <l>]... [--author <a>]...
+                     [--require-label <l>]... [--enable]
+  cez automation update <id> (--json '<json>' | --file <path>)
+  cez automation show <id>
+  cez automation run <id>
+  cez automation enable <id>
+  cez automation pause <id>
+  cez automation delete <id>
 """
 
 
@@ -171,6 +188,12 @@ def run_automation_command(
             return 1
         log(str(response.get("id", "")))
         return 0
+    if command in ("add", "update", "show", "run", "enable", "pause", "delete"):
+        try:
+            return _automation_more(command, args[1:], base, log, error, caller)
+        except (ValueError, OSError) as exc:
+            error(f"cez automation: {exc}")
+            return 1
     if command == "check":
         flags, positionals = _split(args[1:])
         ident = flags.get("id") or (positionals[0] if positionals else "")
@@ -296,6 +319,30 @@ def _task_create(
         body["title"] = flags["title"]
     if runner:
         body["runner"] = runner
+    review_of = _listed(flags.get("review-of", ""))
+    if review_of:
+        body["review_of"] = review_of
+    if flags.get("scope"):
+        body["scope"] = flags["scope"]
+    if "budget" in flags:
+        try:
+            budget = float(flags["budget"])
+        except ValueError:
+            raise ValueError("--budget wants a number") from None
+        if budget <= 0:
+            raise ValueError("--budget wants a number above zero")
+        body["max_cost"] = budget
+    if flags.get("success"):
+        body["success_criteria"] = flags["success"]
+    if flags.get("evidence"):
+        body["required_evidence"] = flags["evidence"]
+    tools = _listed(flags.get("tools", ""))
+    if tools:
+        body["allowed_tools"] = tools
+    if "retry-limit" in flags:
+        if not flags["retry-limit"].isdecimal() or not 0 <= int(flags["retry-limit"]) <= 3:
+            raise ValueError("--retry-limit wants a whole number from 0 to 3")
+        body["retry_limit"] = int(flags["retry-limit"])
     status, response = _call(fetch, "POST", f"{base}/runs/{task_id}/dispatch", body)
     if status not in (200, 201) or not isinstance(response, dict):
         raise ValueError(f"dispatch refused — {_error_text(response, status)}")
@@ -306,6 +353,293 @@ def _task_create(
         + (f" on branch {branch}" if isinstance(branch, str) and branch else "")
     )
     return 0
+
+
+def _listed(raw: str) -> list[str]:
+    """A comma list, or a repeated flag, as clean strings."""
+    return [part.strip() for line in raw.split("\n") for part in line.split(",") if part.strip()]
+
+
+def _minutes(raw: str) -> int:
+    """`5m`, `1h`, `300s`, or bare seconds, as whole minutes (the schedule API's unit)."""
+    match = re.fullmatch(r"(\d+)\s*([smh]?)", raw.strip())
+    if not match:
+        raise ValueError(f'--every wants a duration like 5m, 1h or 300s, not "{raw}"')
+    amount, unit = int(match.group(1)), match.group(2) or "s"
+    seconds = amount * {"s": 1, "m": 60, "h": 3600}[unit]
+    return max(1, -(-seconds // 60))
+
+
+def _cron_minutes(raw: str) -> int | None:
+    """The only cron shapes the interval API can state exactly: every N minutes or hours."""
+    parts = raw.split()
+    if len(parts) != 5 or parts[2:] != ["*", "*", "*"]:
+        return None
+    minute, hour = parts[0], parts[1]
+    if hour == "*" and (found := re.fullmatch(r"\*/(\d+)", minute)):
+        return int(found.group(1)) or None
+    if minute == "0" and (found := re.fullmatch(r"\*/(\d+)", hour)):
+        return int(found.group(1)) * 60 or None
+    return None
+
+
+def _automation_body(flags: dict[str, str]) -> dict[str, object]:
+    """The `add` flags as the POST /automations body they stand for."""
+    unsupported = [
+        name
+        for name in (
+            "model",
+            "autonomous",
+            "no-autonomous",
+            "dispatch",
+            "max-subtasks",
+            "review-child",
+        )
+        if name in flags
+    ]
+    if unsupported:
+        raise ValueError(
+            f"--{unsupported[0]} has no effect in this cockpit's automation API; use --json instead"
+        )
+    name = flags.get("name", "").strip()
+    if not name:
+        raise ValueError("--name is required")
+    if flags.get("prompt") and flags.get("prompt-file"):
+        raise ValueError("give the prompt as --prompt OR --prompt-file, not both")
+    prompt = (
+        Path(flags["prompt-file"]).read_text(encoding="utf-8")
+        if flags.get("prompt-file")
+        else flags.get("prompt", "")
+    )
+    if not prompt.strip():
+        raise ValueError("--prompt (or --prompt-file) is required")
+    kind = flags.get("kind", "")
+    if kind and kind not in ("schedule", "github", "tracker"):
+        raise ValueError("--kind must be github, schedule or tracker")
+    timed = [name for name in ("cron", "at") if flags.get(name)]
+    if len(timed) > 1:
+        raise ValueError("give --cron OR --at, not both")
+    if timed and flags.get("on"):
+        raise ValueError(f"give --{timed[0]} (a schedule) OR --on (a poll), not both")
+    if not timed and not flags.get("on") and not flags.get("every") and kind != "tracker":
+        raise ValueError("give --every, --cron, --at, or --on <event>")
+    body: dict[str, object] = {"name": name, "task": prompt}
+    for key in ("workflow", "runner"):
+        if flags.get(key):
+            body[key] = flags[key]
+    filters: dict[str, object] = {}
+    if kind == "tracker" or (kind != "github" and flags.get("to-status")):
+        if timed:
+            raise ValueError("tracker polls use --to-status/--require-label, not --cron/--at")
+        if flags.get("changed-label"):
+            raise ValueError(
+                "--changed-label has no effect: the tracker poll filters by status and labels"
+            )
+        body["kind"] = "tracker"
+        statuses = _listed(flags.get("to-status", ""))
+        if len(statuses) > 1:
+            raise ValueError("a tracker poll watches one --to-status")
+        if statuses:
+            filters["status"] = statuses[0]
+        if flags.get("require-label"):
+            filters["allLabels"] = _listed(flags["require-label"])
+        body["everyMinutes"] = _minutes(flags["every"]) if flags.get("every") else 30
+    elif flags.get("on"):
+        body["kind"] = "github"
+        body["events"] = _listed(flags["on"])
+        if flags.get("label"):
+            filters["anyLabels"] = _listed(flags["label"])
+        if flags.get("author"):
+            filters["authors"] = _listed(flags["author"])
+        body["everyMinutes"] = _minutes(flags["every"]) if flags.get("every") else 5
+    else:
+        if flags.get("to-status") or flags.get("require-label") or flags.get("changed-label"):
+            raise ValueError("--to-status/--require-label need --kind tracker")
+        body["kind"] = "schedule"
+        if flags.get("cron"):
+            every = _cron_minutes(flags["cron"])
+            if every is None:
+                raise ValueError(
+                    f'--cron "{flags["cron"]}" is not supported: this cockpit runs on an interval. '
+                    'Use "*/N * * * *" or "0 */N * * *", --every, or --at for one run'
+                )
+            body["everyMinutes"] = every
+        elif flags.get("every"):
+            body["everyMinutes"] = _minutes(flags["every"])
+        if flags.get("label") or flags.get("author"):
+            raise ValueError("--label/--author need --on")
+    if filters:
+        body["filters"] = filters
+    if "enable" in flags:
+        body["enable"] = True
+    return body
+
+
+def _automation_more(
+    command: str,
+    args: list[str],
+    base: str,
+    log: Callable[[str], None],
+    error: Callable[[str], None],
+    fetch: Fetch,
+) -> int:
+    flags, positionals = _split(args)
+    if command == "add":
+        if flags.get("at"):
+            return _automation_at(flags, base, log, error, fetch)
+        status, response = _call(fetch, "POST", f"{base}/automations", _automation_body(flags))
+        if status not in (200, 201) or not isinstance(response, dict):
+            error(f"cez automation: create refused — {_error_text(response, status)}")
+            return 1
+        log(f"created automation {response.get('id', '')}")
+        return 0
+    ident = flags.get("id") or (positionals[0] if positionals else "")
+    if not ident:
+        raise ValueError(f"an automation id is required: cez automation {command} <id>")
+    url = f"{base}/automations/{ident}"
+    if command == "update":
+        raw = flags.get("json")
+        if flags.get("file"):
+            raw = Path(flags["file"]).read_text(encoding="utf-8")
+        if not raw:
+            raise ValueError("pass --json '<json>' or --file <path>")
+        try:
+            patch = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"the definition is not valid JSON — {exc}") from None
+        if not isinstance(patch, dict):
+            raise ValueError("the definition must be an object")
+        status, current = _call(fetch, "GET", url)
+        if status != 200 or not isinstance(current, dict):
+            error(f"cez automation: could not read {ident} — {_error_text(current, status)}")
+            return 1
+        body: dict[str, object] = {}
+        for key in (
+            "name",
+            "task",
+            "everyMinutes",
+            "workflow",
+            "runner",
+            "kind",
+            "events",
+            "filters",
+        ):
+            value = patch[key] if key in patch else current.get(key)
+            if value is not None:
+                body[key] = value
+        body["expectedRevision"] = current.get("revision")
+        status, response = _call(fetch, "PUT", url, body)
+        if status != 200 or not isinstance(response, dict):
+            error(f"cez automation: update refused — {_error_text(response, status)}")
+            return 1
+        log(f"updated automation {ident} (revision {response.get('revision', '')})")
+        return 0
+    if command == "show":
+        status, response = _call(fetch, "GET", url)
+        if status != 200 or not isinstance(response, dict):
+            error(f"cez automation: {_error_text(response, status)}")
+            return 1
+        log(json_dumps(cast(JsonValue, response)))
+        return 0
+    verbs = {
+        "run": ("POST", f"{url}/run"),
+        "enable": ("POST", f"{url}/enable"),
+        "pause": ("POST", f"{url}/pause"),
+        "delete": ("DELETE", url),
+    }
+    method, target = verbs[command]
+    status, response = _call(fetch, method, target)
+    if status not in (200, 201):
+        error(f"cez automation: {command} refused — {_error_text(response, status)}")
+        return 1
+    if command == "run" and isinstance(response, dict):
+        log(f"started automation {ident} by hand — task {response.get('runId', '')} is queued")
+    else:
+        log(f"{command} {ident}")
+    return 0
+
+
+def _automation_at(
+    flags: dict[str, str],
+    base: str,
+    log: Callable[[str], None],
+    error: Callable[[str], None],
+    fetch: Fetch,
+) -> int:
+    """`add --at` is a one-shot: the deferred-start routes preview the time, then create it."""
+    body = _automation_body(
+        {key: value for key, value in flags.items() if key != "at"} | {"every": "1h"}
+    )
+    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})[ T](\d{1,2}):(\d{2})", flags["at"].strip())
+    if not match:
+        raise ValueError(f'--at "{flags["at"]}" is not a date and time; give "YYYY-MM-DD HH:MM"')
+    if body["kind"] != "schedule":
+        raise ValueError("--at makes a one-shot run; it cannot be combined with --on or --kind")
+    task: dict[str, object] = {"task": body["task"]}
+    if body.get("workflow"):
+        task["workflow"] = body["workflow"]
+    start = {
+        "kind": "at",
+        "date": match.group(1),
+        "hour": int(match.group(2)),
+        "minute": int(match.group(3)),
+    }
+    status, preview = _call(
+        fetch, "POST", f"{base}/deferred-start/preview", {"task": task, "start": start}
+    )
+    if status != 200 or not isinstance(preview, dict) or preview.get("available") is not True:
+        message = preview.get("message") if isinstance(preview, dict) else None
+        error(f"cez automation: {message or _error_text(preview, status)}")
+        return 1
+    status, created = _call(
+        fetch,
+        "POST",
+        f"{base}/deferred-start",
+        {
+            "task": task,
+            "start": start,
+            "idempotencyKey": uuid.uuid4().hex,
+            "previewRevision": preview.get("previewRevision"),
+        },
+    )
+    scheduled = created.get("scheduled") if isinstance(created, dict) else None
+    if status not in (200, 201) or not isinstance(scheduled, dict):
+        error(f"cez automation: create refused — {_error_text(created, status)}")
+        return 1
+    log(
+        f"created automation {scheduled.get('automationId', '')} "
+        f"for {scheduled.get('notBefore', '')}"
+    )
+    return 0
+
+
+def run_tracker_connections_command(
+    args: list[str],
+    log: Callable[[str], None],
+    error: Callable[[str], None],
+) -> int:
+    """List or remove the local tracker credential files. Never calls a vendor."""
+    from app.config import Config
+    from app.integrations.tracker import connection_inventory, remove_connection_id
+
+    config = Config.from_env()
+    if len(args) == 1 and args[0] == "list":
+        log("ID\tROOT\tPROVIDER\tSTATUS")
+        for row in connection_inventory(config):
+            root = json_dumps(row["root"] if row["root"] is not None else "unknown")
+            log(f"{row['id']}\t{root}\t{row['provider'] or 'unknown'}\t{row['status']}")
+        return 0
+    if len(args) == 2 and args[0] == "remove":
+        if not remove_connection_id(config, args[1]):
+            error(
+                "Cannot access tracker credentials. Check the connection ID "
+                "and local storage permissions."
+            )
+            return 1
+        log("Local credential entry removed. This does not revoke the vendor token.")
+        return 0
+    error("Usage: cez tracker-connections list | remove <64-hex-id>")
+    return 1
 
 
 def _task_report(
@@ -393,7 +727,21 @@ def _missing(command: str) -> str:
     )
 
 
-_BOOLEANS = frozenset({"workspace", "all", "enable"})
+_BOOLEANS = frozenset(
+    {
+        "workspace",
+        "all",
+        "enable",
+        "execute",
+        "autonomous",
+        "no-autonomous",
+        "dispatch",
+        "review-child",
+    }
+)
+_REPEATED = frozenset(
+    {"label", "author", "require-label", "to-status", "changed-label", "review-of"}
+)
 
 
 def _split(args: list[str]) -> tuple[dict[str, str], list[str]]:
@@ -409,7 +757,7 @@ def _split(args: list[str]) -> tuple[dict[str, str], list[str]]:
                 found[name] = ""
                 index += 1
                 continue
-            found[name] = nxt
+            found[name] = f"{found[name]}\n{nxt}" if name in _REPEATED and name in found else nxt
             index += 2
             continue
         positionals.append(item)

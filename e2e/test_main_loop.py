@@ -20,6 +20,8 @@ import pytest
 from playwright.sync_api import sync_playwright
 from tests.conftest import init_repo
 
+from browser_launch import launch_chromium
+
 
 def _free_port() -> int:
     with socket.socket() as sock:
@@ -68,7 +70,7 @@ def test_a_new_task_reaches_done(tmp_path: Path) -> None:
     try:
         _wait_healthy(port)
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            browser = launch_chromium(playwright)
             page = browser.new_page()
             page.goto(f"http://127.0.0.1:{port}/tasks/new", wait_until="networkidle")
             page.locator("textarea").fill("write a note from the browser")
@@ -155,7 +157,7 @@ def test_review_commit_push_draft_pr_and_instructions(tmp_path: Path) -> None:
     try:
         _wait_healthy(port)
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            browser = launch_chromium(playwright)
             page = browser.new_page()
             page.goto(f"http://127.0.0.1:{port}/tasks/new", wait_until="networkidle")
             page.locator("textarea").fill("change the readme")

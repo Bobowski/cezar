@@ -24,6 +24,7 @@ from app.cli_commands import (
     run_secrets_command,
     run_task_command,
     run_telemetry_command,
+    run_tracker_connections_command,
 )
 from app.clock import stamp
 from app.config import RUNNERS, Config, apply_overrides, single_project
@@ -72,11 +73,12 @@ def main(argv: list[str] | None = None) -> int:
     projects = sub.add_parser("projects", parents=[common])
     projects.add_argument("action", nargs="?", default="list")
     projects.add_argument("value", nargs="?")
+    projects.add_argument("tags", nargs="*")
 
     importer = sub.add_parser("import-runs", parents=[common])
     importer.add_argument("path")
 
-    for name in ("task", "automation", "runs", "secrets", "telemetry"):
+    for name in ("task", "automation", "runs", "secrets", "telemetry", "tracker-connections"):
         extra = sub.add_parser(name)
         extra.add_argument("rest", nargs=argparse.REMAINDER)
 
@@ -129,9 +131,11 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(
                 run_secrets_command(args.rest, read_value=_stdin, log=_out, error=_err)
             )
+        if command == "tracker-connections":
+            return run_tracker_connections_command(args.rest, _out, _err)
         if command == "telemetry":
             return run_telemetry_command(args.rest, _out, _err)
-        return asyncio.run(projects_command(args.action, args.value))
+        return asyncio.run(projects_command(args.action, args.value, args.tags))
     except ClaimBusy:
         print("the database is in use by a running cockpit", file=sys.stderr)
         return 1
@@ -208,7 +212,7 @@ async def import_runs_command(path: Path) -> int:
         return 0
 
 
-async def projects_command(action: str, value: str | None) -> int:
+async def projects_command(action: str, value: str | None, tags: list[str] | None = None) -> int:
     config = Config.from_env()
     async with LiteWriter(config.db_path, schema=schema, claim=30) as db:
         relay: Relay[dict[str, str]] = Relay()
@@ -218,7 +222,7 @@ async def projects_command(action: str, value: str | None) -> int:
             for project in list_projects(db):
                 print(f"{project.id}\t{project.root}")
             return 0
-        if action in ("add", "remove") and single_project():
+        if action in ("add", "remove", "rm", "tag") and single_project():
             print(
                 "add/remove/tag are unavailable when CEZ_SINGLE_PROJECT=1",
                 file=sys.stderr,
@@ -232,7 +236,24 @@ async def projects_command(action: str, value: str | None) -> int:
                 return 1
             print(f"{project.id}\t{project.root}")
             return 0
-        if action == "remove":
+        if action == "tag":
+            from dataclasses import replace
+
+            from app.store.db import get_project, save_project
+
+            found = get_project(db, value) if value else None
+            if found is None:
+                print("projects tag <id> [<tag>...]: not found", file=sys.stderr)
+                return 1
+            kept: list[str] = []
+            for tag in tags or []:
+                clean = tag.strip()
+                if clean and clean.lower() not in (item.lower() for item in kept):
+                    kept.append(clean)
+            await db.write(save_project, replace(found, tags=tuple(kept)))
+            print(f"{found.id}\t[{' '.join(kept)}]" if kept else f"{found.id}\t(no tags)")
+            return 0
+        if action in ("remove", "rm"):
             if not value:
                 print("projects remove <id>", file=sys.stderr)
                 return 1

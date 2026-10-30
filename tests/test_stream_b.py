@@ -31,6 +31,12 @@ async def test_health_reports_disk_flags_versions_and_forge(client, repo: Path, 
     assert health["disk"]["freeBytes"] >= 0
     assert health["capabilities"]["terminal"] is True
     assert health["capabilities"]["designMode"] is True
+    assert health["capabilities"]["webhooks"] is False
+    for value, expected in (("1", True), ("true", False), ("0", False)):
+        monkeypatch.setenv("CEZ_WEBHOOKS", value)
+        webhook_health = (await client.get("/api/v1/health")).json()
+        assert webhook_health["capabilities"]["webhooks"] is expected, value
+    monkeypatch.delenv("CEZ_WEBHOOKS")
     git = next(row for row in health["checks"] if row["name"] == "git")
     assert git["available"] is True
     assert git["version"]

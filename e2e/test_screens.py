@@ -18,6 +18,8 @@ import pytest
 from playwright.sync_api import Page, expect
 from tests.conftest import init_repo
 
+from browser_launch import launch_chromium
+
 
 class Cockpit:
     def __init__(self, base: str, repo: Path, data: Path, process: subprocess.Popen[str]) -> None:
@@ -101,7 +103,7 @@ def page(cockpit: Cockpit) -> Iterator[Page]:
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
+        browser = launch_chromium(playwright)
         tab = browser.new_page()
         yield tab
         browser.close()
@@ -352,3 +354,110 @@ def test_the_node_editor_adds_moves_and_connects(page: Page, cockpit: Cockpit) -
         encoding="utf-8"
     )
     assert "id: review" in text and "x: 300" in text
+
+
+def _run_git(cwd: Path, *args: str) -> str:
+    done = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    return done.stdout.strip()
+
+
+def test_a_graph_gate_is_approved_and_rejected_in_the_browser(page: Page, cockpit: Cockpit) -> None:
+    graph = (
+        "name: ship-gate\nversion: 2\nnodes:\n"
+        "  - {id: start, type: start}\n"
+        "  - {id: ok, type: end, status: success}\n"
+        "  - {id: no, type: end, status: failed}\n"
+        "  - {id: ready, type: check, command: 'true'}\n"
+        "  - {id: ask, type: gate.human, message: 'ship {{task}}?'}\n"
+        "edges:\n"
+        "  - {from: start, to: ready}\n"
+        "  - {from: ready.pass, to: ask}\n"
+        "  - {from: ask.approve, to: ok}\n"
+        "  - {from: ask.reject, to: no}\n"
+    )
+    folder = cockpit.repo / ".ai" / "cezar" / "workflows"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "ship-gate.yaml").write_text(graph, encoding="utf-8")
+    for verdict, final in (("Approve", "done"), ("Reject", "failed")):
+        page.goto(cockpit.url("/tasks/new"), wait_until="domcontentloaded")
+        page.get_by_label("Workflow").select_option("ship-gate")
+        page.locator("textarea").fill(f"gate walk {verdict}")
+        page.get_by_role("button", name="Start").click()
+        page.wait_for_url(re.compile(r"/tasks/[0-9a-f]{32}$"), timeout=15_000)
+        expect(page.locator("#gate")).to_be_visible(timeout=15_000)
+        expect(page.get_by_text("ship gate walk")).to_be_visible()
+        page.locator("#gate textarea").fill("from the browser")
+        page.locator("#gate").get_by_role("button", name=verdict).click()
+        page.get_by_text(final, exact=True).wait_for(timeout=15_000)
+        expect(page.locator("#gate")).to_have_count(0)
+
+
+def test_an_automation_is_created_then_opened_and_its_log_read(
+    page: Page, cockpit: Cockpit
+) -> None:
+    page.goto(cockpit.url("/automations/new"), wait_until="domcontentloaded")
+    expect(page.get_by_role("heading", name="New automation")).to_be_visible()
+    page.get_by_role("textbox", name="Name", exact=True).fill("Walk automation")
+    page.get_by_role("textbox", name="Task", exact=True).fill("tidy the walk")
+    page.get_by_label("Every N minutes").fill("30")
+    page.get_by_role("button", name="Add paused automation").click()
+    page.wait_for_url(re.compile(r"/automations/[0-9a-f]{32}$"), timeout=15_000)
+    expect(page.get_by_role("heading", name="Walk automation")).to_be_visible()
+    expect(page.locator("#automation-summary")).to_contain_text("paused")
+    page.get_by_role("button", name="Enable").click()
+    expect(page.locator("#automation-summary")).to_contain_text("enabled", timeout=10_000)
+    page.get_by_role("button", name="Run now").click()
+    expect(page.get_by_role("link", name="last run")).to_be_visible(timeout=15_000)
+    page.get_by_role("link", name="execution log").click()
+    page.wait_for_url(re.compile(r"/automations/[0-9a-f]{32}/log"))
+    expect(page.get_by_role("heading", name="Execution log")).to_be_visible()
+    expect(page.locator("#log-entries")).to_be_visible()
+
+
+def test_the_pull_request_detail_reads_the_dry_run_catalog(page: Page, cockpit: Cockpit) -> None:
+    page.goto(cockpit.url("/github/prs"), wait_until="domcontentloaded")
+    links = page.locator("a[href^='/github/prs/']")
+    assert links.count() > 0
+    first = links.first
+    title = first.inner_text()
+    first.click()
+    page.wait_for_url(re.compile(r"/github/prs/\d+"))
+    expect(page.locator("#pr-body")).to_be_visible()
+    expect(page.locator("body")).to_contain_text(title.strip())
+    page.goto(page.url + "?pane=changes", wait_until="domcontentloaded")
+    expect(page.locator("#pr-changes")).to_be_visible()
+    expect(page.locator("#pr-body")).to_have_count(0)
+
+
+def test_a_commit_opens_its_detail(page: Page, cockpit: Cockpit) -> None:
+    sha = _run_git(cockpit.repo, "rev-parse", "HEAD")
+    page.goto(cockpit.url("/git?pane=commits"), wait_until="domcontentloaded")
+    page.locator(f"a[href='/git/commits/{sha[:7]}']").click()
+    page.wait_for_url(re.compile(r"/git/commits/"))
+    expect(page.locator("body")).to_contain_text("README.md")
+    expect(page.locator(".d-add").first).to_be_visible()
+    assert page.goto(cockpit.url("/git/commits/deadbeef")).status == 404
+
+
+def test_accounts_show_signed_in_state_and_details(page: Page, cockpit: Cockpit) -> None:
+    page.goto(cockpit.url("/settings/accounts"), wait_until="domcontentloaded")
+    page.get_by_label("Name").fill("Status Work")
+    page.get_by_label("Runner").select_option("claude")
+    _click(page, "Add account")
+    page.goto(cockpit.url("/settings/accounts"), wait_until="domcontentloaded")
+    link = page.get_by_role("link", name="Status Work · claude")
+    expect(link).to_be_visible()
+    account_id = (link.get_attribute("href") or "").rsplit("/", 1)[-1]
+    item = page.locator("#account-list").locator("li").filter(has_text="Status Work")
+    expect(item).to_contain_text("not signed in")
+    (cockpit.data / "agent-homes" / account_id / ".claude.json").write_text(
+        '{"oauthAccount": {"emailAddress": "walk@example.com", "displayName": "W"}}',
+        encoding="utf-8",
+    )
+    page.goto(cockpit.url("/settings/accounts"), wait_until="domcontentloaded")
+    expect(item).to_contain_text("signed in")
+    expect(item).not_to_contain_text("not signed in")
+    expect(page.locator("body")).not_to_contain_text("walk@example.com")
+    page.get_by_role("link", name="Status Work · claude").click()
+    page.wait_for_url(re.compile(r"/settings/accounts/"))
+    expect(page.locator("body")).to_contain_text("walk@example.com")
